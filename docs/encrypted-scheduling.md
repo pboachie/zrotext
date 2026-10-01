@@ -57,9 +57,33 @@ become a new attempt. Consent withdrawal, qualifying responses, human takeover
 and cancellation must share the decision service's fence and existing unsent
 message cancellation semantics. A grant winner cannot be described as prevented.
 
-Persistent occurrences, bounded claims, durable replay/dispatch links, and their
-export/erasure/retention integration remain prerequisites for a runtime worker.
-Those requirements are not supplied by the time and policy helpers alone.
+Migration 077 and `encrypted_schedule::store` supply immutable account-scoped
+policies, series and exact-action occurrences. Scheduling, claiming, deferring,
+cancelling and starting dispatch consume the shared transaction-bound approved
+action permit. A request replay preserves its occurrence and dispatch identity;
+a changed request conflicts. A claim has a 30-second, expiry/window-capped lease,
+and pacing applies across the request's routine rather than resetting for a new
+series. Renderer/phone absence waits without creating another queue or extending
+the deadline. An already-bound action cannot adopt an arbitrary dispatch marker:
+reserve first, then separately confirm the exact encrypted message using that
+reserved marker. Dispatch checks that immutable link again.
+
+The initiating owner session remains part of the effect fence through actual
+phone grant and durable intent. Missing, revoked or expired sessions refuse
+effects; stored IDs cannot manufacture credentials. Migration 077's integration
+actor branch refuses every effect until a separate real executor-grant adapter
+extends its predicate. Such an actor identifies the exact executor grant UUID,
+never a connector-wide identity. Independent schedule/send permissions cannot
+replace owner approval. Deferred constraint guards check attempts, dispatch
+fences and durable-intent events again at commit after blocking writes.
+
+Authoritative reconciliation maps the existing message state; delivered means
+this occurrence's transport completed, never that a shared commitment was
+fulfilled. Unknown outcomes do not retry. Owner export includes independently
+paged policy/series/occurrence/audit metadata with account-bound cursors. Account
+erasure explicitly removes all four planes. Bounded retention uses the configured
+sealed-content retention interval, preserves still-live action replay identities,
+and removes ended expired work before orphan audit/series/policies.
 A separately reviewed noninteractive capability is also required before an
 unattended worker can replace live owner-session-driven candidate operations.
 
@@ -76,5 +100,9 @@ cargo test --locked -p zrotext-server encrypted_schedule
 cargo test --locked -p zrotext-server encrypted_schedule -- --include-ignored
 ```
 
-These read-only timezone tests do not prove durable worker safety, approvals,
-carrier delivery or release readiness.
+The suite also executes the actual migration and real shared-action PostgreSQL
+fixtures for replay, missing rendering, exact encrypted message links and live
+owner-session effect refusal. These checks do not prove physical carrier delivery.
+There is no unattended worker, owner scheduling UI, authorized content renderer,
+or activated runtime endpoint in this candidate. Those remain integration work;
+no gate is enabled by this library.

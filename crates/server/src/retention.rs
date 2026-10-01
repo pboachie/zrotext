@@ -357,7 +357,13 @@ pub async fn prune(
     // An absent optional proof table must not turn total mandatory pruning
     // failure into a successful worker tick.
     let mandatory_unavailable = failures == mandatory_steps;
-    let workflow_schedule = step("workflow_schedule", &mut first_error, &mut failures, crate::encrypted_schedule::lifecycle::prune(client,policy.sealed_inbound_days,limit)).await;
+    let workflow_schedule = step(
+        "workflow_schedule",
+        &mut first_error,
+        &mut failures,
+        crate::encrypted_schedule::lifecycle::prune(client, policy.sealed_inbound_days, limit),
+    )
+    .await;
     let workflow_contexts = step(
         "workflow_contexts",
         &mut first_error,

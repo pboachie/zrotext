@@ -393,6 +393,43 @@ async fn export_account(
         Ok(view) => view,
         Err(error) => return error.into_response(),
     };
+    let workflow_decisions =
+        match crate::http_owner_conversations::context::decisions::lifecycle::export(
+            &mut client,
+            &principal,
+            [
+                query.workflow_actions_before.as_deref(),
+                query.workflow_action_versions_before.as_deref(),
+                query.workflow_action_mutations_before.as_deref(),
+                query.workflow_correlations_before.as_deref(),
+                query.workflow_message_links_before.as_deref(),
+                query.workflow_routines_before.as_deref(),
+                query.workflow_context_fences_before.as_deref(),
+            ],
+        )
+        .await
+        {
+            Ok(view) => view,
+            Err(error) => return error.into_response(),
+        };
+    let workflow_schedule = match crate::encrypted_schedule::lifecycle::export(
+        &mut client,
+        &principal,
+        crate::encrypted_schedule::lifecycle::Cursors {
+            policies: query.schedule_policies_before,
+            series: query.schedule_series_before,
+            occurrences: query.schedule_occurrences_before,
+            audit: query.schedule_audit_before,
+        },
+    )
+    .await
+    {
+        Ok(view) => view,
+        Err(error) => return error.into_response(),
+    };
+    Json(ExportView {
+        workflow_decisions,
+        workflow_schedule,
         workflow_context,
         confirmation_inventory:
             match crate::http_owner_conversations::confirmation_records::inventory(
