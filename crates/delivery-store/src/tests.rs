@@ -294,9 +294,9 @@ const TEST_MIGRATIONS: [(&str, &str); 72] = [
         include_str!("../../../deploy/compose/migrations/071_sealed_grant_authority.sql"),
     ),
     (
-        "070_conversation_confirmation_records.sql",
+        "071_conversation_confirmation_records.sql",
         include_str!(
-            "../../../deploy/compose/migrations/070_conversation_confirmation_records.sql"
+            "../../../deploy/compose/migrations/071_conversation_confirmation_records.sql"
         ),
     ),
 ];
