@@ -4,17 +4,33 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex">
-  <title>Account · ZROtext</title>
+  <title>Account Â· ZROtext</title>
   <link rel="stylesheet" href="/owner/devices.css">
+  <script defer src="/owner/owner-shell.js"></script>
   <script defer src="/owner/account.js"></script>
 </head>
-<body>
-  <main>
+<body class="owner-shell" data-owner-page="account">
+  <a class="skip-link" href="#owner-main">Skip to content</a>
+  <aside class="owner-rail" aria-label="ZROtext workspace">
+    <a class="owner-brand" href="/owner/devices"><svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><rect width="48" height="48" rx="11" fill="#b6f36a"/><path d="M12 14h24L15 33h21M13 24h9" fill="none" stroke="#0b100b" stroke-width="4" stroke-linecap="square" stroke-linejoin="miter"/></svg><span><strong>ZRO</strong>text</span></a>
+    <p class="rail-label">Owner workspace</p>
+    <nav class="owner-nav" aria-label="Owner navigation"><a href="/owner/devices" data-owner-only hidden>Fleet overview</a>
+<a href="/owner/devices#message-activity" data-owner-only hidden>Message activity</a>
+<a href="/owner/devices#connection-details" data-owner-only hidden>Connection details</a>
+<a href="/owner/sms-lines" data-owner-only hidden>SMS lines</a>
+<a href="/owner/seats" data-owner-only hidden>Team seats</a>
+<a href="/owner/devices#account-security" data-owner-only hidden>Security & sessions</a>
+<a href="/owner/account" aria-current="page">Account setup</a>
+<a id="owner-billing-link" href="/billing" data-owner-only hidden>Plans & usage <span class="nav-note">Test mode</span></a>
+<a id="owner-observer-link" href="/owner/observer" hidden>Observer device status</a></nav>
+    <p class="rail-status" id="owner-nav-status">Sign in to open owner controls. Real sending remains gated.</p>
+  </aside>
+  <main id="owner-main" tabindex="-1">
     <header>
       <div><p class="eyebrow">ZROtext owner account</p><h1>Account setup</h1></div>
       <a href="/owner/devices">Devices and sign in</a>
     </header>
-    <p><a href="/owner/template-preview">Local template preview</a> · Preview personalized text without sending or saving it.</p>
+    <p><a href="/owner/template-preview">Local template preview</a> Â· Preview personalized text without sending or saving it.</p>
     <p id="account-status" role="status" aria-live="polite"></p>
 
     <section aria-labelledby="register-title">
@@ -88,6 +104,6 @@
       </form>
     </section>
   </main>
-  <footer><a href="/source">Source code for this server</a> · <a href="/about/version">Build version</a></footer>
+  <footer><a href="/source">Source code for this server</a> Â· <a href="/about/version">Build version</a></footer>
 </body>
 </html>

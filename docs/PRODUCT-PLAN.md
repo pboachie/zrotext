@@ -55,8 +55,8 @@ Deliver the first complete non-AI journey: inquiry → intake → owner response
 |---|---|
 | Contacts and consent | Manual entry and CSV import with normalization, duplicate review, source/purpose/time of permission, and suppression visibility. Importing a number does not establish consent. |
 | Conversations | Account- and line-scoped history, related job or appointment context, and an owner exceptions queue. Message content is decrypted at authorized clients. |
-| Templates and scheduling | Personalization and SMS-segment preview; owner-selected recipient timezone, sending window, pacing and expiry. When recipient timing is unknown, hold scheduled automation for owner review. |
-| Approvals | Bind the decision to the exact action, recipient, content and timing. Editing a draft invalidates earlier approval. Record the resulting message or failure. |
+| Approvals | First establish the [exact workflow action contract](../protocol/v1/workflow-action-contract.md). Bind the decision to the exact action, recipient, content and timing. Editing a draft invalidates earlier approval. Record the resulting message or failure. |
+| Templates and scheduling | Depends on exact-action approvals; personalization and SMS-segment preview, owner-selected recipient timezone, sending window, pacing and expiry. When recipient timing is unknown, hold scheduled automation for owner review. |
 | Reply tracking | Match responses to the relevant active request; route unclear matches to the owner. Stop applicable reminders after a response, cancellation or withdrawal. |
 
 The scheduler stores approved encrypted work plus minimal routing/timing metadata. A changing template or contextual follow-up requires an available authorized client or connector to render and encrypt it; the relay does not need message plaintext. If that process is offline, show the waiting state and honor expiry. Check suppression and current permission again before dispatch, including already queued work.
@@ -91,6 +91,12 @@ Provide an n8n recipe using its documented [Webhook](https://docs.n8n.io/integra
 **Exit criteria:** templates configure existing services rather than inventing separate message queues or bypassing suppression. Concurrent acceptances cannot overbook. Batch previews identify duplicates and segments, keep recipients private, and show per-message outcomes. RSVP export depends on the planned export capability.
 
 ### Managed AI and larger campaigns
+
+The [hosted engineering readiness contract](HOSTED-READINESS.md) stages
+metering, reservations, invoice-bound recovery and owner presentation behind
+core messaging acceptance. It reuses existing owners and keeps self-hosted
+mode and each optional service's authority separate. TEST billing groundwork
+does not establish hosted launch readiness or authorize activation.
 
 These are independent later additions, not prerequisites for the customer-controlled assistant.
 

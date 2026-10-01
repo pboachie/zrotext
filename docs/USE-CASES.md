@@ -53,7 +53,7 @@ Owners lose time collecting the same details and tracking unanswered inquiries w
 
 ### Required capabilities
 
-- [Contacts, consent and conversations](ROADMAP.md#cap-contacts) (Planned)
+- [Contacts, consent and conversations](ROADMAP.md#cap-contacts) (Build)
 - [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Planned)
 - [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Planned)
 - [Customer-controlled AI assistant](ROADMAP.md#cap-assistant) (Planned)
@@ -92,7 +92,7 @@ Capturing a thought or delegating a small task should not require opening anothe
 
 ### Required capabilities
 
-- [Contacts, consent and conversations](ROADMAP.md#cap-contacts) (Planned)
+- [Contacts, consent and conversations](ROADMAP.md#cap-contacts) (Build)
 - [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Planned)
 - [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Planned)
 - [Customer-controlled AI assistant](ROADMAP.md#cap-assistant) (Planned)
@@ -131,7 +131,7 @@ Customers need progress updates, and owners need a clear record of approval befo
 
 ### Required capabilities
 
-- [Contacts, consent and conversations](ROADMAP.md#cap-contacts) (Planned)
+- [Contacts, consent and conversations](ROADMAP.md#cap-contacts) (Build)
 - [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Planned)
 - [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Planned)
 - [Workflow connector and integrations](ROADMAP.md#cap-integrations) (Planned)
@@ -170,7 +170,7 @@ A cancelled appointment leaves unused time while several customers may want the 
 
 ### Required capabilities
 
-- [Contacts, consent and conversations](ROADMAP.md#cap-contacts) (Planned)
+- [Contacts, consent and conversations](ROADMAP.md#cap-contacts) (Build)
 - [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Planned)
 - [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Planned)
 - [Workflow connector and integrations](ROADMAP.md#cap-integrations) (Planned)
@@ -209,7 +209,7 @@ Hosts need to reach guests personally and follow up without repeatedly messaging
 
 ### Required capabilities
 
-- [Contacts, consent and conversations](ROADMAP.md#cap-contacts) (Planned)
+- [Contacts, consent and conversations](ROADMAP.md#cap-contacts) (Build)
 - [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Planned)
 - [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Planned)
 - [Workflow connector and integrations](ROADMAP.md#cap-integrations) (Planned)
@@ -249,7 +249,7 @@ Coordinators need to fill an opening without continuing to contact people after 
 
 ### Required capabilities
 
-- [Contacts, consent and conversations](ROADMAP.md#cap-contacts) (Planned)
+- [Contacts, consent and conversations](ROADMAP.md#cap-contacts) (Build)
 - [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Planned)
 - [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Planned)
 - [Workflow connector and integrations](ROADMAP.md#cap-integrations) (Planned)
@@ -288,7 +288,7 @@ Small recurring responsibilities are easy to forget or duplicate when coordinati
 
 ### Required capabilities
 
-- [Contacts, consent and conversations](ROADMAP.md#cap-contacts) (Planned)
+- [Contacts, consent and conversations](ROADMAP.md#cap-contacts) (Build)
 - [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Planned)
 - [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Planned)
 - [Workflow connector and integrations](ROADMAP.md#cap-integrations) (Planned)
@@ -327,7 +327,7 @@ Small lending programs need a simple way to accept requests and track availabili
 
 ### Required capabilities
 
-- [Contacts, consent and conversations](ROADMAP.md#cap-contacts) (Planned)
+- [Contacts, consent and conversations](ROADMAP.md#cap-contacts) (Build)
 - [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Planned)
 - [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Planned)
 - [Workflow connector and integrations](ROADMAP.md#cap-integrations) (Planned)
@@ -366,7 +366,7 @@ An alert is useful only when someone accepts responsibility and others can see t
 
 ### Required capabilities
 
-- [Contacts, consent and conversations](ROADMAP.md#cap-contacts) (Planned)
+- [Contacts, consent and conversations](ROADMAP.md#cap-contacts) (Build)
 - [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Planned)
 - [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Planned)
 - [Workflow connector and integrations](ROADMAP.md#cap-integrations) (Planned)

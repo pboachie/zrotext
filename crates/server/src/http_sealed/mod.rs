@@ -17,7 +17,7 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
 };
 use serde::Serialize;
 use std::sync::Arc;
@@ -34,6 +34,8 @@ const MIN_ENVELOPE_BYTES: usize = 426;
 const MAX_ENVELOPE_BYTES: usize = 34_213;
 const MAX_INBOUND_ENVELOPE_BYTES: usize = 34_082;
 const IDEMPOTENCY_HEADER: &str = "idempotency-key";
+
+mod lifecycle;
 
 #[derive(Clone)]
 pub struct SealedHttpState {
@@ -88,8 +90,11 @@ impl SealedHttpState {
 
 pub fn router(state: SealedHttpState) -> Router {
     Router::new()
-        .route("/messages", post(accept))
+        .route("/messages", post(accept).get(lifecycle::list))
+        .route("/messages/{message_id}", get(lifecycle::status))
+        .route("/messages/{message_id}/cancel", post(lifecycle::cancel))
         .route("/inbound-events", post(accept_inbound))
+        .merge(resources::routes())
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(middleware::from_fn(no_store_response))
         .with_state(Arc::new(state))
@@ -120,6 +125,7 @@ enum SealedHttpError {
     StaleEvent,
     EventIdConflict,
     SequenceConflict,
+    CancellationConflict,
 }
 
 impl IntoResponse for SealedHttpError {
@@ -141,6 +147,7 @@ impl IntoResponse for SealedHttpError {
             Self::StaleEvent => (StatusCode::BAD_REQUEST, "stale_event"),
             Self::EventIdConflict => (StatusCode::CONFLICT, "event_id_conflict"),
             Self::SequenceConflict => (StatusCode::CONFLICT, "sequence_conflict"),
+            Self::CancellationConflict => (StatusCode::CONFLICT, "cancellation_conflict"),
         };
         let mut response = (status, Json(ErrorBody { code })).into_response();
         if status == StatusCode::TOO_MANY_REQUESTS || code == "billing_pending" {
@@ -301,6 +308,38 @@ impl axum::extract::FromRequestParts<Arc<SealedHttpState>> for SealedAcceptAuth 
     }
 }
 
+/// The resource-group extractor: the same enabled gate, bearer authentication
+/// and account slot as the admission extractor, but no sealed content type —
+/// resource reads are ordinary GETs and carry no envelope body.
+struct SealedResourceAuth {
+    principal: auth::ApiPrincipal,
+    _slot: crate::http_auth::preauth::AccountSlot,
+}
+
+impl axum::extract::FromRequestParts<Arc<SealedHttpState>> for SealedResourceAuth {
+    type Rejection = SealedHttpError;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &Arc<SealedHttpState>,
+    ) -> Result<Self, SealedHttpError> {
+        if !state.enabled {
+            return Err(SealedHttpError::NotFound);
+        }
+        let token = bearer(&parts.headers)?;
+        let principal = {
+            let client = connect(&state.database_url).await?;
+            auth::authenticate_api_key(&client, &state.hasher, token)
+                .await
+                .map_err(map_auth)?
+        };
+        let _slot =
+            crate::http_auth::preauth::AccountSlot::try_acquire(principal.tenant.account_id())
+                .ok_or(SealedHttpError::RateLimited)?;
+        Ok(Self { principal, _slot })
+    }
+}
+
 #[derive(Serialize)]
 struct AcceptedBody {
     message_id: Uuid,
@@ -381,6 +420,8 @@ async fn accept_inbound(
     )
         .into_response())
 }
+
+mod resources;
 
 #[cfg(test)]
 mod tests;
