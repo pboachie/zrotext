@@ -43,7 +43,7 @@ export function authorizeWorkflowContext02(manifest: Manifest02, claims: {
       || claims.version !== bound.version || !same(claims.digest, bound.digest)) fail("workflow manifest binding");
   const active = (key: ManifestKey02): boolean => key.state === 1 && key.fromMs <= nowMs && nowMs < key.untilMs;
   const reader = bound.keys.find((key) => key.role === 2 && same(key.keyId, claims.readerId));
-  const signer = bound.keys.find((key) => key.role === 4 && same(key.deviceId, claims.deviceId) && same(key.lineId, claims.lineId));
+  const signer = bound.keys.find((key) => key.role === 4 && active(key) && same(key.deviceId, claims.deviceId) && same(key.lineId, claims.lineId));
   if (!reader || !active(reader) || !(reader.scope & 8) || !signer || !active(signer) || signer.scope !== 2) fail("workflow reader and line authority");
   return Uint8Array.from(reader.point);
 }

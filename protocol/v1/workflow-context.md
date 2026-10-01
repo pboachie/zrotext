@@ -42,7 +42,8 @@ first asynchronous operation and check the exact expected header before opening.
 
 Current root pin, manifest, reader, owner role/session, line approval and exact
 interval binding are required before writes/reads and again after lock waits.
-Writes require an active interval; retained reads also permit history. Withdrawn
+Writes require an active interval and its originating owner session to remain
+authorized at both write fences; retained reads also permit history. Withdrawn
 or expired intervals, stale manifests, changed peers/readers or revoked access
 fail closed. An owner can refresh a context revision under a newer manifest that
 retains the same reader and trust generation. Historical version reads require
@@ -98,8 +99,11 @@ prevents a head without its immutable version.
 The existing retention worker purges ciphertext on expiry or withdrawal, keeping
 request digests as replay tombstones. A later bounded pass removes context,
 versions, exceptions and audit after the sealed-inbound retention interval.
-Purged bytes cannot be rewritten or rehydrated. Interval cleanup waits for its
-dependent contexts rather than bypassing the foreign key.
+Purged bytes cannot be rewritten or rehydrated. Interval cleanup erases the closed
+interval's peer-bearing statement at the
+existing sealed-content retention cutoff, while retaining identity for its
+dependent contexts. The resulting withdrawn phase also schedules context
+ciphertext purge; no foreign key or content-retention window is bypassed.
 
 Owner export includes independent 20-row pages for all four introduced tables:
 `workflow_contexts_before`, `workflow_versions_before`, `workflow_exceptions_before`

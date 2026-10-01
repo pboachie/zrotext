@@ -517,10 +517,14 @@ async fn expiry_removes_reader_access_and_cannot_extend_an_expired_context() {
             .await
             .unwrap()
             .get(0);
-    c.h.expires_ms = now + 1000;
+    c.h.expires_ms = now + 30_000;
     let bytes = c.bytes();
     c.write(Uuid::new_v4(), 0, &bytes).await.unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let remaining: i64 = c.f.db.query_one("SELECT GREATEST($1::bigint-floor(extract(epoch FROM clock_timestamp())*1000)::bigint,0)", &[&c.h.expires_ms]).await.unwrap().get(0);
+    tokio::time::sleep(std::time::Duration::from_millis(
+        remaining.clamp(0, 30_000) as u64 + 100,
+    ))
+    .await;
     assert!(
         read(&mut c.f.connect().await, &c.owner, c.h.context, None)
             .await
@@ -594,7 +598,7 @@ async fn erasure_plan_removes_all_introduced_records_before_conversation_parents
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
 async fn expiry_during_version_insert_rolls_back_context_ciphertext_and_audit() {
     let mut c = Case::new().await;
-    c.f.db.batch_execute("CREATE FUNCTION delay_context_version() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(1.1);RETURN NEW;END $$; CREATE TRIGGER delay_context_version BEFORE INSERT ON workflow_context_versions FOR EACH ROW EXECUTE FUNCTION delay_context_version()").await.unwrap();
+    c.f.db.batch_execute("CREATE SEQUENCE context_delay_calls; CREATE FUNCTION delay_context_version() RETURNS trigger LANGUAGE plpgsql AS $$ DECLARE remaining double precision; BEGIN PERFORM nextval('context_delay_calls'); SELECT LEAST(GREATEST((expires_at_ms-floor(extract(epoch FROM clock_timestamp())*1000)::bigint)::double precision/1000,0),30) INTO remaining FROM workflow_contexts WHERE account_id=NEW.account_id AND id=NEW.context_id; PERFORM pg_sleep(remaining+0.1); RETURN NEW; END $$; CREATE TRIGGER delay_context_version BEFORE INSERT ON workflow_context_versions FOR EACH ROW EXECUTE FUNCTION delay_context_version()").await.unwrap();
     let now: i64 =
         c.f.db
             .query_one(
@@ -604,8 +608,16 @@ async fn expiry_during_version_insert_rolls_back_context_ciphertext_and_audit() 
             .await
             .unwrap()
             .get(0);
-    c.h.expires_ms = now + 1000;
+    c.h.expires_ms = now + 30_000;
     assert!(c.write(Uuid::new_v4(), 0, &c.bytes()).await.is_err());
+    assert!(
+        c.f.db
+            .query_one("SELECT is_called FROM context_delay_calls", &[])
+            .await
+            .unwrap()
+            .get::<_, bool>(0),
+        "the expiry test must reach its blocking insert before refusal"
+    );
     let row=c.f.db.query_one("SELECT (SELECT count(*) FROM workflow_contexts),(SELECT count(*) FROM workflow_context_versions),(SELECT count(*) FROM workflow_context_audit)",&[]).await.unwrap();
     for index in 0..3 {
         assert_eq!(row.get::<_, i64>(index), 0);
@@ -694,5 +706,95 @@ async fn retained_ciphertext_budget_refuses_creation_without_partial_context_or_
     assert_eq!(row.get::<_, i64>(0), 0);
     assert_eq!(row.get::<_, i64>(1), 0);
     assert_eq!(row.get::<_, i64>(2), 2);
+    c.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn retained_workflow_identity_does_not_extend_closed_interval_peer_statement() {
+    let c = Case::new().await;
+    c.write(Uuid::new_v4(), 0, &c.bytes()).await.unwrap();
+    c.f.db.execute("UPDATE conversation_intervals SET phase='history',closed_at=clock_timestamp()-interval '40 days' WHERE account_id=$1 AND id=$2", &[&c.f.account,&c.s.interval]).await.unwrap();
+    super::super::lifecycle::activation::prune(&mut c.f.connect().await, 30, 100)
+        .await
+        .unwrap();
+    let row=c.f.db.query_one("SELECT phase,statement IS NULL FROM conversation_intervals WHERE account_id=$1 AND id=$2", &[&c.f.account,&c.s.interval]).await.unwrap();
+    assert_eq!(row.get::<_, String>(0), "withdrawn");
+    assert!(row.get::<_, bool>(1));
+    assert_eq!(
+        c.f.db
+            .query_one(
+                "SELECT count(*) FROM workflow_contexts WHERE account_id=$1 AND id=$2",
+                &[&c.f.account, &c.h.context]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        1
+    );
+    assert_eq!(
+        lifecycle::prune(&mut c.f.connect().await, 30, 100)
+            .await
+            .unwrap(),
+        1
+    );
+    assert!(c.f.db.query_one("SELECT envelope IS NULL FROM workflow_context_versions WHERE account_id=$1 AND context_id=$2", &[&c.f.account,&c.h.context]).await.unwrap().get::<_,bool>(0));
+    c.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn another_live_owner_session_cannot_extend_a_revoked_origin_interval() {
+    let c = Case::new().await;
+    let owner = activation::tests::fresh_session(&c.f, &c.owner).await;
+    write(
+        &mut c.f.connect().await,
+        &owner,
+        Uuid::new_v4(),
+        0,
+        &c.bytes(),
+    )
+    .await
+    .unwrap();
+    c.f.db
+        .execute(
+            "UPDATE sessions SET revoked_at=clock_timestamp() WHERE id=$1",
+            &[&c.owner.session_id],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        c.f.db
+            .query_one(
+                "SELECT phase FROM conversation_intervals WHERE account_id=$1 AND id=$2",
+                &[&c.f.account, &c.s.interval]
+            )
+            .await
+            .unwrap()
+            .get::<_, String>(0),
+        "active",
+        "the background closer has not run"
+    );
+    let mut db = c.f.connect().await;
+    let tx = db.transaction().await.unwrap();
+    fresh_owner(&tx, &owner).await.unwrap();
+    tx.commit().await.unwrap();
+    let mut next = c.h.clone();
+    next.revision = 2;
+    assert!(matches!(
+        write(
+            &mut c.f.connect().await,
+            &owner,
+            Uuid::new_v4(),
+            1,
+            &Case::envelope(&next, 99)
+        )
+        .await,
+        Err(ConversationError::Forbidden)
+    ));
+    let row=c.f.db.query_one("SELECT (SELECT revision FROM workflow_contexts),(SELECT count(*) FROM workflow_context_versions),(SELECT count(*) FROM workflow_context_audit)", &[]).await.unwrap();
+    for i in 0..3 {
+        assert_eq!(row.get::<_, i64>(i), 1);
+    }
     c.cleanup().await;
 }

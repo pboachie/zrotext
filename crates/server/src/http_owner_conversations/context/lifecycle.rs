@@ -130,6 +130,9 @@ pub(crate) async fn prune(
     limit: i64,
 ) -> Result<u64, tokio_postgres::Error> {
     let tx = client.transaction().await?;
+    if !installed(&tx).await? {
+        return Ok(0);
+    }
     let limit = limit.clamp(1, 500);
     let accounts=tx.query("SELECT a.id FROM accounts a WHERE EXISTS(SELECT 1 FROM workflow_contexts c JOIN conversation_intervals i ON (i.account_id,i.id)=(c.account_id,c.interval_id) WHERE c.account_id=a.id AND ((c.purged_at IS NULL AND (c.expires_at_ms<=floor(extract(epoch FROM clock_timestamp())*1000)::bigint OR i.phase IN ('withdrawn','expired'))) OR c.purged_at<=clock_timestamp()-$1::int*interval '1 day')) ORDER BY a.id FOR UPDATE OF a SKIP LOCKED LIMIT $2",&[&days,&limit]).await?;
     let mut changed = 0;
@@ -167,4 +170,14 @@ pub(crate) async fn prune(
     }
     tx.commit().await?;
     Ok(changed)
+}
+
+/// Whether the optional context schema is available in the current search path.
+pub(crate) async fn installed(
+    tx: &tokio_postgres::Transaction<'_>,
+) -> Result<bool, tokio_postgres::Error> {
+    Ok(tx
+        .query_one("SELECT to_regclass('workflow_contexts') IS NOT NULL", &[])
+        .await?
+        .get(0))
 }

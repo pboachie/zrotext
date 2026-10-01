@@ -60,6 +60,10 @@ async fn authorize(
     if now >= h.expires_ms || h.expires_ms.saturating_sub(now) > 30 * 86_400_000 {
         return Err(ConversationError::Forbidden);
     }
+    if writing {
+        // An active row alone cannot outlive the approval's owner-session fence.
+        activation::origin(tx, &s).await?;
+    }
     fresh_owner(tx, owner).await
 }
 
