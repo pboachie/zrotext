@@ -11,6 +11,11 @@ that offline ceremony.
 
 ## Pin and independent context
 
+The [default-off custody adapter](root-custody-01.md) composes this unchanged
+possession transcript with a separate bundle signature and atomic persistence.
+It does not supply an independently distributed owner client or enable a route
+in the standard server binary.
+
 The exact 94-byte pin remains `ZTRP[4] || 02[u8] || account_id[16] ||
 generation[u64be] || root_public_point[65]`. This ceremony accepts **generation
 one only**, a nonzero account, and an on-curve uncompressed P-256 point beginning
