@@ -357,7 +357,9 @@ impl Adapters {
                 .any(|p| p.member == member || !members.contains(&p.member))
             || peers[0].member == peers[1].member
             || peers[0].key == peers[1].key
-            || peers.iter().any(|peer| peer.key == *signer.verifying_key())
+            || peers
+                .iter()
+                .any(|peer| peer.key == *signer.verifying_key() || peer.key == probe.key)
         {
             return Err("adapter membership");
         }

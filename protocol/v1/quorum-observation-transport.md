@@ -28,8 +28,12 @@ Each endpoint has `member_id`, an absolute credential-free HTTPS `url` (no
 query/fragment), `public_key_base64` containing the pinned SEC1 P-256 public
 point, and `bearer_file` for a separate outbound bearer credential. Members are
 bounded file-safe identities. Probe signing identity is independent of the
-member's report signing identity. Pins are configuration authority, never
-learned from a remote response. Secret files/configuration are provisioned by
+local and both peer report signing identities; reuse of any quorum member's
+key as the probe authority is rejected. This prevents one member credential from
+signing its own vote and supplying facts that induce another member's local
+vote. Distinct keys do not independently prove operational failure-domain
+separation; the configured probe authorities remain explicit operator trust.
+Pins are configuration authority, never learned from a remote response. Secret files/configuration are provisioned by
 private operations and mounted read-only; Compose forwards only the private
 configuration-file path, not its contents. Each replica owns its store and
 replay directory; never share that directory between processes.

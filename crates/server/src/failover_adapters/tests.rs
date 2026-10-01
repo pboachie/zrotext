@@ -557,11 +557,15 @@ async fn configured_adapter_fetches_peers_and_probe_then_publishes_original_time
     let entry = |member: &str, url: reqwest::Url, key: &SigningKey| serde_json::json!({"member_id":member,"url":url.as_str(),"public_key_base64":STANDARD.encode(key.verifying_key().to_sec1_bytes()),"bearer_file":bearer_file});
     let config = serde_json::json!({"namespace":"synthetic-quorum","signing_key_file":signer_file,"serving_bearer_file":bearer_file,"probe":entry("member-a",probe_url,&probe_key),"peers":[entry("member-b",b_url,&b_key),entry("member-c",c_url,&c_key)],"ca_certificate_file":ca_file});
     let config_file = scratch.0.join("adapter.json");
-    let mut reused_key = config.clone();
-    reused_key["probe"]["public_key_base64"] =
-        serde_json::json!(STANDARD.encode(key().verifying_key().to_sec1_bytes()));
-    fs::write(&config_file, serde_json::to_vec(&reused_key).unwrap()).unwrap();
-    assert!(Adapters::load(&config_file, &env).is_err());
+    // No quorum member's report key may also attest this member's probe facts.
+    // Otherwise a peer can produce its own vote and induce a second local vote.
+    for reused in [key(), b_key.clone(), c_key.clone()] {
+        let mut reused_key = config.clone();
+        reused_key["probe"]["public_key_base64"] =
+            serde_json::json!(STANDARD.encode(reused.verifying_key().to_sec1_bytes()));
+        fs::write(&config_file, serde_json::to_vec(&reused_key).unwrap()).unwrap();
+        assert!(Adapters::load(&config_file, &env).is_err());
+    }
     fs::write(&config_file, serde_json::to_vec(&config).unwrap()).unwrap();
     let adapters = Adapters::load(&config_file, &env).unwrap();
     let app = adapters.router();
