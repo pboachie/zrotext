@@ -472,7 +472,7 @@ pub(super) async fn prepared() -> (Fixture, SessionPrincipal) {
         include_str!("../../../../deploy/compose/migrations/074_agent_authority.sql"),
         include_str!("../../../../deploy/compose/migrations/077_encrypted_schedule.sql"),
         include_str!(
-            "../../../../deploy/compose/migrations/078_workflow_integration_authority.sql"
+            "../../../../deploy/compose/migrations/079_workflow_integration_authority.sql"
         ),
     ] {
         f.db.batch_execute(migration).await.unwrap();

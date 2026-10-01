@@ -115,7 +115,7 @@ const EXPORT_SCHEMA: [(&str, &str); 78] = export_schema!(
     "075_workflow_context.sql",
     "076_workflow_decisions.sql",
     "077_encrypted_schedule.sql",
-    "078_workflow_integration_authority.sql",
+    "079_workflow_integration_authority.sql",
 );
 #[test]
 fn export_schema_includes_every_checked_in_migration() {
