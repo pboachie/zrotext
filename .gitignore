@@ -20,3 +20,4 @@ __pycache__/
 /.worktrees/
 /.codex-remote-attachments/
 /.claude/settings.local.json
+web/owner/node_modules/

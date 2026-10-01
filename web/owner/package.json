@@ -1,0 +1,1 @@
+{"name":"zrotext-owner-rendered-tests","version":"0.0.0","private":true,"scripts":{"test:rendered":"node --test browser/*.test.js"},"devDependencies":{"playwright":"1.63.0"}}

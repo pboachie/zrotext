@@ -94,6 +94,15 @@ jobs:
           persist-credentials: false
       - name: Test owner browser flows
         run: node --test web/owner/*.test.js
+      - name: Install rendered owner acceptance dependencies
+        working-directory: web/owner
+        run: npm ci --ignore-scripts
+      - name: Install Chromium for rendered owner acceptance
+        working-directory: web/owner
+        run: npx playwright install --with-deps chromium
+      - name: Verify rendered owner layouts and navigation
+        working-directory: web/owner
+        run: npm run test:rendered
       - name: Test draft sealed-content vectors and TypeScript reader
         working-directory: sdk/typescript
         run: npm ci --ignore-scripts && npm test
