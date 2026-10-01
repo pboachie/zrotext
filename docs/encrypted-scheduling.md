@@ -63,7 +63,13 @@ cancelling and starting dispatch consume the shared transaction-bound approved
 action permit. A request replay preserves its occurrence and dispatch identity;
 a changed request conflicts. A claim has a 30-second, expiry/window-capped lease,
 and pacing applies across the request's routine rather than resetting for a new
-series. Renderer/phone absence waits without creating another queue or extending
+series. The minimum pacing interval begins at committed dispatch admission,
+not before awaited admission writes; it does not promise carrier timing.
+Admission transitions recheck the database clock after their final awaited
+authority/write operation and again at transaction commit, including the
+consumed lease after its fields are cleared. Cancellation, STOP, expiry and
+reconciliation do not require an unexpired claim lease. Renderer/phone absence
+waits without creating another queue or extending
 the deadline. An already-bound action cannot adopt an arbitrary dispatch marker:
 reserve first, then separately confirm the exact encrypted message using that
 reserved marker. Dispatch checks that immutable link again.
