@@ -279,6 +279,7 @@ fn reject_idempotency_key(headers: &HeaderMap) -> Result<(), SealedHttpError> {
 /// order before any pooled connection is taken.
 struct SealedAcceptAuth {
     principal: auth::ApiPrincipal,
+    segment_limit: Option<u8>,
     _slot: crate::http_auth::preauth::AccountSlot,
 }
 
@@ -294,6 +295,7 @@ impl axum::extract::FromRequestParts<Arc<SealedHttpState>> for SealedAcceptAuth 
         }
         sealed_content_type(&parts.headers)?;
         reject_idempotency_key(&parts.headers)?;
+        let segment_limit = segment_limit(&parts.headers)?;
         let token = bearer(&parts.headers)?;
         let principal = {
             let client = connect(&state.database_url).await?;
@@ -304,7 +306,11 @@ impl axum::extract::FromRequestParts<Arc<SealedHttpState>> for SealedAcceptAuth 
         let _slot =
             crate::http_auth::preauth::AccountSlot::try_acquire(principal.tenant.account_id())
                 .ok_or(SealedHttpError::RateLimited)?;
-        Ok(Self { principal, _slot })
+        Ok(Self {
+            principal,
+            segment_limit,
+            _slot,
+        })
     }
 }
 
@@ -346,6 +352,20 @@ struct AcceptedBody {
     created: bool,
 }
 
+fn segment_limit(headers: &HeaderMap) -> Result<Option<u8>, SealedHttpError> {
+    let mut values = headers.get_all("x-zrotext-sealed-segment-limit").iter();
+    let Some(value) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(SealedHttpError::BadRequest);
+    }
+    match value.as_bytes() {
+        [value @ b'1'..=b'6'] => Ok(Some(*value - b'0')),
+        _ => Err(SealedHttpError::BadRequest),
+    }
+}
+
 async fn accept(
     State(state): State<Arc<SealedHttpState>>,
     headers: HeaderMap,
@@ -357,7 +377,7 @@ async fn accept(
         return Err(SealedHttpError::BadRequest);
     }
     let mut client = connect(&state.database_url).await?;
-    let outcome = sealed_outbound::admit_candidate02(
+    let outcome = sealed_outbound::admit_candidate02_with_limit(
         &mut client,
         &auth.principal,
         &state.hasher,
@@ -367,6 +387,7 @@ async fn accept(
             billing_enabled: state.billing_enabled,
         },
         &body,
+        auth.segment_limit,
     )
     .await
     .map_err(map_admit)?;

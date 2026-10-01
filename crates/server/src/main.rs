@@ -85,6 +85,7 @@ struct Config {
     m0_test_token: Option<String>,
     alpha_policy: Arc<AlphaPolicy>,
     dispatch_runtime_enabled: bool,
+    sealed_dispatch_enabled: bool,
     mfa_recovery_only: bool,
     mfa_enrollment_enabled: bool,
     sms_line_activation_enabled: bool,
@@ -293,6 +294,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Sealed v1 message admission. Disabled by default; off leaves the
     // route unmounted so no sealed code path runs.
     let sealed_admission_enabled = optional_bool("SEALED_ADMISSION_ENABLED")?;
+    let sealed_dispatch_enabled = optional_bool("SEALED_DISPATCH_ENABLED")?;
     // Independent-quorum failover executor and member-side reporting loop.
     // Disabled by default; when off (or absent) nothing further is read and
     // no thread, database or store access exists. When on, the validated
@@ -343,6 +345,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .filter(|token| token.len() >= 32),
         alpha_policy,
         dispatch_runtime_enabled,
+        sealed_dispatch_enabled,
         mfa_recovery_only,
         mfa_enrollment_enabled,
         sms_line_activation_enabled,
@@ -729,6 +732,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             auth_hasher: auth_state.hasher.clone(),
             alpha_policy: config.alpha_policy.clone(),
             dispatch_runtime_enabled: config.dispatch_runtime_enabled,
+            sealed_dispatch_enabled: config.sealed_dispatch_enabled,
             inbound_pilot_enabled,
             line_opt_out_enabled,
             sms_line_activation_enabled: config.sms_line_activation_enabled,
@@ -781,6 +785,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .nest("/v1/observer", http_observer::router(observer_state))
             .merge(http_owner_export::router(owner_export_state))
             .merge(http_owner_erasure::router(owner_erasure_state))
+            .merge(zrotext_server::http_message_summary::router(
+                owner_messages_state.clone(),
+            ))
             .merge(http_owner_messages::router(owner_messages_state))
             .merge(http_owner_events::router(owner_events_state))
             .merge(http_owner_review::router(owner_review_state))
@@ -810,11 +817,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
             app = app.nest("/v1/sealed", http_sealed::router(sealed_state));
         }
+        if config.sealed_dispatch_enabled {
+            if !config.dispatch_runtime_enabled || !config.alpha_policy.enabled() {
+                return Err("sealed dispatch requires enabled dispatch and alpha policy".into());
+            }
+            app = app.merge(zrotext_server::sealed_dispatch::http::router(
+                config.database_url.clone(),
+                config.site_id.clone(),
+                config.deployment_epoch,
+                config.alpha_policy.clone(),
+            ));
+        }
     } else if config.alpha_policy.enabled()
         || inbound_pilot_enabled
         || line_opt_out_enabled
         || config.sms_line_activation_enabled
         || config.sealed_admission_enabled
+        || config.sealed_dispatch_enabled
         || webhook_delivery_enabled
         || webhook_management_configured
         || usage_limits_enabled
@@ -1524,6 +1543,7 @@ mod tests {
             m0_test_token: None,
             alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
             dispatch_runtime_enabled: false,
+            sealed_dispatch_enabled: false,
             mfa_recovery_only: false,
             mfa_enrollment_enabled: false,
             sms_line_activation_enabled: false,
@@ -1691,6 +1711,7 @@ mod tests {
             m0_test_token: None,
             alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
             dispatch_runtime_enabled: false,
+            sealed_dispatch_enabled: false,
             mfa_recovery_only: false,
             mfa_enrollment_enabled: false,
             sms_line_activation_enabled: false,
