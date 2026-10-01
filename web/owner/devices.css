@@ -86,7 +86,7 @@ code, .eyebrow, .rail-label, .rail-status, .nav-note { font-family: Consolas, "C
   .owner-shell { padding-left: 0; }
   .owner-rail { position: static; width: 100%; border-right: 0; border-bottom: 1px solid var(--owner-border); padding: 1rem; }
   .owner-brand { margin-bottom: .75rem; }
-  .owner-nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .owner-nav { grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr)); }
   .owner-nav a { font-size: .875rem; padding: .5rem; }
   .rail-label { margin-bottom: .5rem; }
   .rail-status { margin: .75rem 0 0; }

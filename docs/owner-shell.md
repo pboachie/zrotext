@@ -6,8 +6,9 @@ devices and message activity, followed by the existing security, pairing and
 administration controls. Connection details and security links target the actual
 sections without changing their forms or identifiers.
 
-The desktop navigation rail becomes a wrapping two-column navigation above the
-content on compact screens. Each page identifies its current destination. A skip
+The desktop navigation rail becomes navigation above the content on compact
+screens. Its columns adapt to the available space and text size, preserving
+whole words when text grows to 200%. Each page identifies its current destination. A skip
 link moves keyboard focus directly to the main content. Controls retain visible
 focus, text can grow to 200%, and reduced-motion preferences are respected.
 
