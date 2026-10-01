@@ -25,7 +25,7 @@ async function owner(width, hold = false) {
   const page = await browser.newPage({ viewport: { width, height: 900 } });
   await page.clock.install({ time: observed });
   const state = { value: 0, capped: false, status: 200, hold, release: null, requests: [], observed,
-    heldDevice: null, releaseDevice: null };
+    heldDevice: null, releaseDevice: null, networkFailure: false };
   await page.context().addCookies([{ name: "__Host-zrotext_csrf", value: "ztc_synthetic", url: "https://example.test", secure: true, sameSite: "Strict" }]);
   await page.route("**/*", async route => {
     const request = route.request(), url = new URL(request.url());
@@ -42,6 +42,7 @@ async function owner(width, hold = false) {
       state.requests.push({ device, headers: request.headers() });
       if (state.hold) await new Promise(resolve => { state.release = resolve; });
       if (device && device === state.heldDevice) await new Promise(resolve => { state.releaseDevice = resolve; });
+      if (state.networkFailure) return route.abort("connectionfailed");
       return route.fulfill({ status: state.status, json: value });
     }
     if (url.pathname === "/v1/enrollment/devices") return route.fulfill({ json: { devices: [first, second].map((id, index) => ({
@@ -133,5 +134,24 @@ test("UTC midnight expires observations without a fast refresh loop", async () =
     await page.clock.fastForward(1100);
     assert.equal(await page.locator("#summary-submitted").textContent(), "0 (stale)");
     assert.equal(state.requests.length, count);
+  } finally { await page.close(); }
+});
+
+
+test("an initial transient network failure retries while automatic refresh remains enabled", async () => {
+  const { page, state } = await owner(390, true);
+  try {
+    for (let attempt = 0; !state.release && attempt < 200; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(typeof state.release, "function");
+    state.networkFailure = true;
+    state.hold = false;
+    state.release();
+    await page.waitForFunction(() => document.getElementById("summary-submitted").textContent === "Unavailable");
+    const requests = state.requests.length;
+    state.networkFailure = false;
+    state.value = 7;
+    await page.clock.fastForward(15001);
+    await page.waitForFunction(() => document.getElementById("summary-submitted").textContent === "7", undefined, { timeout: 1500 });
+    assert.equal(state.requests.length, requests + 1);
   } finally { await page.close(); }
 });

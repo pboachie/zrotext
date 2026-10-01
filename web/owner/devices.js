@@ -372,9 +372,11 @@ async function api(path, method = "GET", body = undefined) {
       signal: typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(requestTimeoutMs) : undefined,
     });
   } catch (error) {
-    throw new Error(error && error.name === "TimeoutError"
+    const failure = new Error(error && error.name === "TimeoutError"
       ? "The server did not respond in time. Try again."
       : "Could not reach the server. Check your connection and try again.");
+    failure.retryable = true;
+    throw failure;
   }
   if (requestEpoch !== ownerEpoch) {
     throw new Error("Your sign-in expired. Sign in again.");
@@ -1225,7 +1227,7 @@ async function loadSummary(automatic = false, scopeChanged = false) {
   } catch (error) {
     if (stale()) return;
     if (summarySnapshot) { summarySnapshot.expired = true; summarySnapshot.error = "Refresh failed"; }
-    summaryRetryable = error.status >= 500 || error.name === "TypeError";
+    summaryRetryable = error.status >= 500 || error.retryable === true;
     renderSummary(`Summary unavailable. ${summarySnapshot ? "Showing historical metadata; current counts are unknown. " : ""}${error.message}`);
     if (summarySnapshot) ageSummary(); else scheduleSummaryRetry();
   } finally {
