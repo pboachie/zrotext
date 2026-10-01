@@ -292,8 +292,8 @@ const MIGRATIONS: &[(&str, &str)] = &[
         ),
     ),
     (
-        "068_contacts_consent.sql",
-        include_str!("../../../../deploy/compose/migrations/068_contacts_consent.sql"),
+        "067_contacts_consent.sql",
+        include_str!("../../../../deploy/compose/migrations/067_contacts_consent.sql"),
     ),
 ];
 

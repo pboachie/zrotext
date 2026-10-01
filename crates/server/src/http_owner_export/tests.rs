@@ -104,7 +104,7 @@ const EXPORT_SCHEMA: [(&str, &str); 67] = export_schema!(
     "064_owner_conversation_consent.sql",
     "065_conversation_activation.sql",
     "066_conversation_interval_session_index.sql",
-    "068_contacts_consent.sql",
+    "067_contacts_consent.sql",
 );
 #[test]
 fn export_schema_includes_every_checked_in_migration() {
