@@ -8,6 +8,7 @@ mod dispatch;
 mod http;
 mod lifecycle;
 mod replies;
+mod safety;
 mod support;
 pub(crate) use support::Case;
 

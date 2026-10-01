@@ -3,6 +3,11 @@
 CREATE TABLE workflow_context_fences (
     account_id uuid NOT NULL, context_id uuid NOT NULL,
     stopped_at timestamptz, actor_user_id uuid,
+    takeover_request_id uuid, takeover_digest bytea, takeover_result bytea,
+    UNIQUE(account_id,takeover_request_id),
+    CHECK((takeover_request_id IS NULL AND takeover_digest IS NULL AND takeover_result IS NULL)
+        OR (takeover_request_id IS NOT NULL AND takeover_request_id<>'00000000-0000-0000-0000-000000000000'::uuid
+            AND takeover_digest IS NOT NULL AND takeover_result IS NOT NULL AND octet_length(takeover_digest)=32 AND octet_length(takeover_result) BETWEEN 2 AND 4096 AND stopped_at IS NOT NULL)),
     PRIMARY KEY(account_id,context_id),
     FOREIGN KEY(account_id,context_id) REFERENCES workflow_contexts(account_id,id)
 );
@@ -41,7 +46,11 @@ BEGIN
            NEW.generation IS DISTINCT FROM OLD.generation THEN
             RAISE EXCEPTION 'workflow routine binding is immutable' USING ERRCODE='23514';
         END IF;
-    ELSIF NEW.context_id IS DISTINCT FROM OLD.context_id OR
+    ELSIF (OLD.takeover_request_id IS NOT NULL AND
+           (NEW.takeover_request_id IS DISTINCT FROM OLD.takeover_request_id OR
+            NEW.takeover_digest IS DISTINCT FROM OLD.takeover_digest OR
+            NEW.takeover_result IS DISTINCT FROM OLD.takeover_result)) OR
+          NEW.context_id IS DISTINCT FROM OLD.context_id OR
           (OLD.actor_user_id IS NOT NULL AND NEW.actor_user_id IS DISTINCT FROM OLD.actor_user_id) THEN
         RAISE EXCEPTION 'workflow takeover identity is immutable' USING ERRCODE='23514';
     END IF;
@@ -87,7 +96,8 @@ CREATE TABLE workflow_action_mutations (
 );
 CREATE INDEX workflow_mutations_context ON workflow_action_mutations(account_id,context_id,request_id);
 CREATE TABLE workflow_reply_correlations (
-    account_id uuid NOT NULL, event_id uuid NOT NULL, context_id uuid NOT NULL,
+    account_id uuid NOT NULL, event_id uuid NOT NULL, live_event_id uuid, context_id uuid NOT NULL,
+    safety_routine_id uuid, result bytea NOT NULL CHECK(octet_length(result) BETWEEN 2 AND 4096),
     action_id uuid, action_revision bigint, binding_digest bytea,
     disposition text NOT NULL CHECK(disposition IN ('qualifying','ambiguous','late','unrelated')),
     request_digest bytea NOT NULL CHECK(octet_length(request_digest)=32),
@@ -95,7 +105,12 @@ CREATE TABLE workflow_reply_correlations (
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY(account_id,event_id), UNIQUE(account_id,request_id),
     FOREIGN KEY(account_id,context_id) REFERENCES workflow_contexts(account_id,id),
-    FOREIGN KEY(account_id,event_id) REFERENCES conversation_inbound_provenance(account_id,event_id),
+    FOREIGN KEY(account_id,live_event_id) REFERENCES conversation_inbound_provenance(account_id,event_id)
+        ON DELETE SET NULL (live_event_id),
+    FOREIGN KEY(account_id,safety_routine_id) REFERENCES workflow_routines(account_id,id),
+    UNIQUE(account_id,safety_routine_id),
+    CHECK(live_event_id IS NULL OR live_event_id=event_id),
+    CHECK((disposition='qualifying')=(safety_routine_id IS NOT NULL)),
     FOREIGN KEY(account_id,action_id,action_revision,binding_digest)
         REFERENCES workflow_action_versions(account_id,action_id,revision,binding_digest),
     CHECK((action_id IS NULL AND action_revision IS NULL AND binding_digest IS NULL)
@@ -125,8 +140,21 @@ CREATE TRIGGER workflow_version_immutable BEFORE UPDATE ON workflow_action_versi
     FOR EACH ROW EXECUTE FUNCTION workflow_record_immutable();
 CREATE TRIGGER workflow_mutation_immutable BEFORE UPDATE ON workflow_action_mutations
     FOR EACH ROW EXECUTE FUNCTION workflow_record_immutable();
-CREATE TRIGGER workflow_reply_immutable BEFORE UPDATE ON workflow_reply_correlations
-    FOR EACH ROW EXECUTE FUNCTION workflow_record_immutable();
+CREATE FUNCTION workflow_reply_guard() RETURNS trigger LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+BEGIN
+    IF TG_OP='INSERT' THEN
+        IF NEW.live_event_id IS DISTINCT FROM NEW.event_id THEN
+            RAISE EXCEPTION 'workflow reply requires exact live provenance' USING ERRCODE='23514';
+        END IF;
+    ELSIF (to_jsonb(NEW)-'live_event_id') IS DISTINCT FROM (to_jsonb(OLD)-'live_event_id') OR
+          NOT (OLD.live_event_id IS NOT NULL AND NEW.live_event_id IS NULL AND
+               NOT EXISTS(SELECT 1 FROM conversation_inbound_provenance WHERE account_id=OLD.account_id AND event_id=OLD.event_id)) THEN
+        RAISE EXCEPTION 'workflow reply tombstone is immutable' USING ERRCODE='23514';
+    END IF;
+    RETURN NEW;
+END; $$;
+CREATE TRIGGER workflow_reply_immutable BEFORE INSERT OR UPDATE ON workflow_reply_correlations
+    FOR EACH ROW EXECUTE FUNCTION workflow_reply_guard();
 CREATE FUNCTION workflow_link_guard() RETURNS trigger LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
 BEGIN
     IF TG_OP='INSERT' THEN
@@ -175,6 +203,10 @@ SELECT EXISTS(SELECT 1 FROM workflow_message_links l
         (a.account_id,a.id,a.revision)
     JOIN workflow_routines r ON (r.account_id,r.id)=(a.account_id,a.routine_id)
     JOIN workflow_contexts c ON (c.account_id,c.id)=(a.account_id,a.context_id)
+    JOIN conversation_intervals i ON (i.account_id,i.id)=(c.account_id,c.interval_id)
+    JOIN sessions origin ON (origin.account_id,origin.id)=(i.account_id,i.initiating_session_id)
+    JOIN users origin_user ON origin_user.id=origin.user_id
+    JOIN memberships origin_owner ON (origin_owner.account_id,origin_owner.user_id)=(origin.account_id,origin.user_id)
     JOIN workflow_context_fences f ON (f.account_id,f.context_id)=(c.account_id,c.id)
     JOIN sealed_manifest_authorities root ON root.account_id=a.account_id
     JOIN memberships approver ON (approver.account_id,approver.user_id)=(a.account_id,a.approved_by)
@@ -193,6 +225,9 @@ SELECT EXISTS(SELECT 1 FROM workflow_message_links l
     WHERE l.account_id=wanted_account AND l.message_id=wanted_message
       AND m.workflow_action_id=a.id AND l.live_message_id=m.id AND a.phase='dispatching'
         AND approver.role='owner' AND approver.revoked_at IS NULL AND approval_user.email_verified_at IS NOT NULL
+        AND i.phase='active' AND i.statement IS NOT NULL
+        AND origin.revoked_at IS NULL AND origin.expires_at>clock_timestamp()
+        AND origin_user.email_verified_at IS NOT NULL AND origin_owner.role='owner' AND origin_owner.revoked_at IS NULL
         AND r.generation=v.authority_generation AND r.stopped_at IS NULL AND f.stopped_at IS NULL
         AND c.purged_at IS NULL AND c.expires_at_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint
         AND root.revoked_at IS NULL AND root.generation=v.context_trust_generation

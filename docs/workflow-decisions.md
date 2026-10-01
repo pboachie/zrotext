@@ -6,6 +6,8 @@ separate work. No model output, receipt, silence, or caller-supplied authority
 flag approves an action.
 
 An action binds the complete descriptor defined by the workflow action contract.
+Edits retain the action's context and routine identity; changing either requires
+a new action. This preserves bounded takeover and context retention ownership.
 The service stores immutable revisions and their canonical SHA-256 digest. An
 owner decision requires a current authenticated owner session, exact revision
 and digest, expected record version, and a replay-safe request identifier. An
@@ -37,6 +39,17 @@ messages through the shared delivery transaction. An already-issued grant is
 reported as irreversible and remains unknown; takeover never claims to recall
 it. Grant issuance, encrypted retrieval, and first durable radio intent each
 check the current workflow fence independently.
+These checks also require an active conversation interval and its current,
+verified originating owner session. Pause, withdrawal, and origin revocation
+fence new effects immediately without waiting for retention.
+
+Safety records do not consume the discretionary mutation journal. The bounded
+context fence stores one exact takeover request, digest, and result; repeating
+that request returns its original result, while a different request for the
+stopped context conflicts. A qualifying signed response stores one exact STOP
+result per immutable routine. Later events cannot allocate another routine STOP
+and are classified as ambiguous. All operations share the same account-scoped
+request identity checks, so a safety request cannot be reused for another action.
 
 A response correlation requires an original signed inbound event in the exact
 context interval and an explicit owner-selected request. The service verifies
@@ -72,6 +85,9 @@ purges encrypted bytes at the existing deadline. Later metadata pruning waits
 for linked messages to disappear before deleting action authority, so a
 surviving message cannot lose its workflow fence. A stopped routine or context
 cannot be reopened by clearing its stop timestamp.
+Reply correlations retain immutable event identity and replay metadata while a
+nullable live-provenance reference clears during source retention. This permits
+provenance and event erasure without restoring source or execution authority.
 
 Message retention clears only the live message reference through its foreign
 key. The original message identifier, dispatch identifier, ciphertext digest,

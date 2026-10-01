@@ -44,16 +44,10 @@ async fn replay<T: serde::de::DeserializeOwned>(
     request: Uuid,
     digest: &[u8],
 ) -> Result<Option<T>, ConversationError> {
-    if request.is_nil() {
-        return Err(ConversationError::Invalid);
-    }
-    let Some(row)=tx.query_opt("SELECT request_digest,result FROM workflow_action_mutations WHERE account_id=$1 AND request_id=$2",&[&account,&request]).await? else{return Ok(None)};
-    if row.get::<_, Vec<u8>>(0) != digest {
-        return Err(ConversationError::Conflict);
-    }
-    serde_json::from_slice(&row.get::<_, Vec<u8>>(1))
-        .map(Some)
-        .map_err(|_| ConversationError::Conflict)
+    store::replay_bytes(tx, account, request, digest)
+        .await?
+        .map(|bytes| serde_json::from_slice(&bytes).map_err(|_| ConversationError::Conflict))
+        .transpose()
 }
 async fn record<T: Serialize>(
     tx: &Transaction<'_>,
@@ -148,7 +142,7 @@ pub async fn takeover(
         tx.commit().await?;
         return Ok(result);
     }
-    tx.execute("INSERT INTO workflow_context_fences(account_id,context_id,stopped_at,actor_user_id) VALUES($1,$2,clock_timestamp(),$3) ON CONFLICT(account_id,context_id) DO UPDATE SET stopped_at=COALESCE(workflow_context_fences.stopped_at,EXCLUDED.stopped_at),actor_user_id=COALESCE(workflow_context_fences.actor_user_id,EXCLUDED.actor_user_id)",&[&account,&context,&owner.user_id]).await?;
+    if tx.execute("INSERT INTO workflow_context_fences(account_id,context_id,stopped_at,actor_user_id) VALUES($1,$2,clock_timestamp(),$3) ON CONFLICT(account_id,context_id) DO UPDATE SET stopped_at=EXCLUDED.stopped_at,actor_user_id=EXCLUDED.actor_user_id WHERE workflow_context_fences.stopped_at IS NULL",&[&account,&context,&owner.user_id]).await?!=1 {return Err(ConversationError::Conflict);}
     let (stopped_routines, cancelled_messages, irreversible_messages) =
         stop(&tx, account, context, None).await?;
     let result = TakeoverResult {
@@ -157,7 +151,8 @@ pub async fn takeover(
         cancelled_messages,
         irreversible_messages,
     };
-    record(&tx, owner, (context, context), request, 6, &digest, &result).await?;
+    let encoded = serde_json::to_vec(&result).map_err(|_| ConversationError::Unavailable)?;
+    tx.execute("UPDATE workflow_context_fences SET takeover_request_id=$3,takeover_digest=$4,takeover_result=$5 WHERE account_id=$1 AND context_id=$2",&[&account,&context,&request,&digest,&encoded]).await?;
     authorize(&tx, owner, &mut authority, &h, true).await?;
     drop(authority);
     tx.commit().await?;
@@ -223,6 +218,13 @@ pub async fn correlate_reply(
     let bytes = load(&tx, account, input.context_id, Some(input.context_revision)).await?;
     let h = wire::parse(&bytes)?;
     authorize(&tx, owner, &mut authority, &h, true).await?;
+    // Historical replay restores metadata only, under current owner/context authority.
+    if let Some(result) = replay(&tx, account, request, &digest).await? {
+        authorize(&tx, owner, &mut authority, &h, true).await?;
+        drop(authority);
+        tx.commit().await?;
+        return Ok(result);
+    }
     let event=tx.query_opt("SELECT p.trust_generation,p.manifest_version,p.manifest_digest,p.verified_manifest,p.accepted_at_ms,e.envelope FROM conversation_inbound_provenance p JOIN sealed_inbound_events e ON (e.account_id,e.id)=(p.account_id,p.event_id) WHERE p.account_id=$1 AND p.event_id=$2 AND p.interval_id=$3 AND e.device_id=$4 AND e.line_id=$5 AND e.binding_generation=$6 FOR SHARE OF p,e",
         &[&account,&input.event_id,&h.interval,&h.device,&h.line,&h.binding_generation]).await?.ok_or(ConversationError::NotFound)?;
     let interval = activation::load(&tx, account, h.interval).await?;
@@ -247,12 +249,6 @@ pub async fn correlate_reply(
     authority
         .verify_history(&wanted, &snapshot, &source)
         .await?;
-    if let Some(result) = replay(&tx, account, request, &digest).await? {
-        authorize(&tx, owner, &mut authority, &h, true).await?;
-        drop(authority);
-        tx.commit().await?;
-        return Ok(result);
-    }
     if let Some(row)=tx.query_opt("SELECT request_digest,request_id FROM workflow_reply_correlations WHERE account_id=$1 AND event_id=$2",&[&account,&input.event_id]).await? {
         if row.get::<_,Vec<u8>>(0)!=digest{return Err(ConversationError::Conflict);}
         let original:Uuid=row.get(1);let result=replay(&tx,account,original,&digest).await?.ok_or(ConversationError::Unavailable)?;
@@ -269,7 +265,7 @@ pub async fn correlate_reply(
             return Err(ConversationError::NotFound);
         }
         tx.query_opt("SELECT 1 FROM workflow_context_fences WHERE account_id=$1 AND context_id=$2 FOR UPDATE",&[&account,&h.context]).await?.ok_or(ConversationError::NotFound)?;
-        tx.query_opt("SELECT 1 FROM workflow_routines WHERE account_id=$1 AND id=$2 AND context_id=$3 FOR UPDATE",&[&account,&d.identities()?.routine,&h.context]).await?.ok_or(ConversationError::NotFound)?;
+        let stopped=tx.query_opt("SELECT stopped_at IS NOT NULL FROM workflow_routines WHERE account_id=$1 AND id=$2 AND context_id=$3 FOR UPDATE",&[&account,&d.identities()?.routine,&h.context]).await?.ok_or(ConversationError::NotFound)?.get::<_,bool>(0);
         let current = store::head(&tx, account, key.action_id).await?;
         if current.key != key {
             return Err(ConversationError::Conflict);
@@ -283,6 +279,9 @@ pub async fn correlate_reply(
             claims.observed_ms as i64,
             activation::now(&tx).await?,
         );
+        if disposition == ReplyDisposition::Qualifying && stopped {
+            disposition = ReplyDisposition::Ambiguous;
+        }
         if disposition == ReplyDisposition::Qualifying {
             stop_routine = Some(d.identities()?.routine);
         }
@@ -308,8 +307,6 @@ pub async fn correlate_reply(
     let action = key.map(|k| k.action_id);
     let revision = key.map(|k| k.revision);
     let binding = key.map(|k| k.binding_digest.to_vec());
-    tx.execute("INSERT INTO workflow_reply_correlations(account_id,event_id,context_id,action_id,action_revision,binding_digest,disposition,request_digest,request_id,actor_user_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
-        &[&account,&input.event_id,&h.context,&action,&revision,&binding,&label,&digest,&request,&owner.user_id]).await?;
     let result = CorrelationResult {
         event_id: input.event_id,
         disposition: label.into(),
@@ -317,16 +314,22 @@ pub async fn correlate_reply(
         cancelled_messages: counts.1,
         irreversible_messages: counts.2,
     };
-    record(
-        &tx,
-        owner,
-        (h.context, input.event_id),
-        request,
-        5,
-        &digest,
-        &result,
-    )
-    .await?;
+    let encoded = serde_json::to_vec(&result).map_err(|_| ConversationError::Unavailable)?;
+    tx.execute("INSERT INTO workflow_reply_correlations(account_id,event_id,live_event_id,context_id,action_id,action_revision,binding_digest,disposition,request_digest,request_id,actor_user_id,safety_routine_id,result) VALUES($1,$2,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
+        &[&account,&input.event_id,&h.context,&action,&revision,&binding,&label,&digest,&request,&owner.user_id,&stop_routine,&encoded]).await?;
+    // One safety record per immutable routine cannot consume discretionary capacity.
+    if stop_routine.is_none() {
+        record(
+            &tx,
+            owner,
+            (h.context, input.event_id),
+            request,
+            5,
+            &digest,
+            &result,
+        )
+        .await?;
+    }
     authorize(&tx, owner, &mut authority, &h, true).await?;
     drop(authority);
     tx.commit().await?;
