@@ -76,6 +76,9 @@ let browsingOlderMessages = false;
 const preconditionFreshMs = 90_000;
 let preconditionTimer = null;
 let preconditionRows = [];
+const fleetRows = new Map();
+let selectedDeviceId = null;
+let fleetSnapshotFailed = false;
 
 function stopPreconditionAging() {
   if (preconditionTimer !== null) window.clearTimeout(preconditionTimer);
@@ -95,7 +98,7 @@ function agePreconditions() {
     // Include request latency and time spent suspended. Once expired, a clock
     // adjustment cannot make a saved observation fresh again.
     const elapsed = Math.max(0, performance.now() - entry.started, Date.now() - entry.wallStarted);
-    entry.expired ||= elapsed >= entry.remaining;
+    entry.expired ||= elapsed >= entry.remaining || fleetSnapshotFailed;
     const text = devicePreconditionsText(entry.device, entry.expired);
     if (entry.element.textContent !== text) entry.element.textContent = text;
     if (!entry.expired) nextExpiry = Math.min(nextExpiry, entry.remaining - elapsed);
@@ -512,6 +515,13 @@ function clearOwnerState() {
   clearInboundHistory();
   clearWebhookEndpoints();
   byId("device-list").replaceChildren();
+  fleetRows.clear();
+  selectedDeviceId = null;
+  fleetSnapshotFailed = false;
+  renderSelectedDevice();
+  byId("device-detail-content").hidden = true;
+  message("device-detail-status", "Sign in to inspect device snapshots.");
+  message("fleet-summary", "Sign in to load fleet observations.");
   byId("device-cap-prompt").hidden = true;
   message("device-cap-prompt", "");
   byId("more-devices").hidden = true;
@@ -925,6 +935,98 @@ function devicePreconditionsText(device, expired = false) {
   return `${observations} ${explanation}${blockers.length && unknown ? " Other local preconditions are unavailable." : ""} Carrier readiness unknown.`;
 }
 
+function deviceConnectivityText(device) {
+  return device.revoked ? "Revoked · gateway authorization removed" :
+    device.active_socket_lease === true
+      ? "Approved · authenticated socket lease observed (may lag up to 90 seconds) · SMS readiness unknown"
+      : device.active_socket_lease === false
+        ? "Approved · no current authenticated socket lease · SMS readiness unknown"
+        : "Approved for connection · live status unavailable";
+}
+
+function renderSelectedDevice() {
+  const entry = fleetRows.get(selectedDeviceId);
+  for (const [id, row] of fleetRows) row.select.setAttribute("aria-pressed", String(id === selectedDeviceId));
+  const content = byId("device-detail-content");
+  preconditionRows = preconditionRows.filter(row => row.element !== byId("device-detail-preconditions"));
+  content.hidden = !entry;
+  if (!entry) {
+    message("device-detail-status", selectedDeviceId
+      ? "The selected device is absent from this loaded page. It may have been removed or moved to an older page. Choose another device or load more."
+      : "Choose a device to inspect its latest loaded snapshot.");
+    for (const id of ["device-detail-name", "device-detail-id", "device-detail-connectivity", "device-detail-queue", "device-detail-preconditions"]) byId(id).textContent = "";
+    return;
+  }
+  const device = entry.device;
+  byId("device-detail-name").textContent = device.display_name || "Unnamed gateway";
+  byId("device-detail-id").textContent = device.device_id;
+  byId("device-detail-connectivity").textContent = deviceConnectivityText(device);
+  byId("device-detail-queue").textContent = deviceQueueText(device);
+  byId("device-detail-preconditions").textContent = devicePreconditionsText(device, entry.observation.expired);
+  message("device-detail-status", fleetSnapshotFailed
+    ? "Refresh failed. Showing an older loaded snapshot; current connectivity and queue counts are unknown."
+    : `Loaded observation: ${dateText(device.status_observed_at_ms)}. This is not an exact heartbeat time.`);
+  preconditionRows.push({ ...entry.observation, element: byId("device-detail-preconditions") });
+  agePreconditions();
+}
+
+function updateFleetRow(device, started, wallStarted) {
+  let entry = fleetRows.get(device.device_id);
+  if (!entry) {
+    const row = document.createElement("li");
+    const detail = document.createElement("div");
+    const name = document.createElement("strong");
+    const id = document.createElement("code");
+    const state = document.createElement("span");
+    const queue = document.createElement("span");
+    const preconditions = document.createElement("span");
+    preconditions.setAttribute("aria-live", "off");
+    detail.append(name, id, state, queue, preconditions);
+    const revoke = document.createElement("button");
+    revoke.type = "button";
+    revoke.className = "quiet";
+    revoke.textContent = "Revoke";
+    const select = document.createElement("button");
+    select.type = "button";
+    select.className = "fleet-select";
+    select.textContent = "View details";
+    row.append(detail, revoke, select);
+    entry = { row, name, id, state, queue, preconditions, revoke, select, device };
+    fleetRows.set(device.device_id, entry);
+    select.addEventListener("click", () => { selectedDeviceId = entry.device.device_id; renderSelectedDevice(); });
+    revoke.addEventListener("click", async () => {
+      const current = entry.device;
+      if (current.revoked || !window.confirm(`Revoke ${current.display_name}? Its gateway connection will lose authorization.`)) return;
+      entry.revoking = true;
+      revoke.disabled = true;
+      try {
+        await api(`/v1/enrollment/devices/${encodeURIComponent(current.device_id)}`, "DELETE");
+        await Promise.all([loadDevices(), loadDeviceCapacity()]);
+      } catch (error) {
+        message("device-status", error.message);
+      } finally {
+        entry.revoking = false;
+        revoke.disabled = false;
+      }
+    });
+  }
+  entry.device = device;
+  entry.name.textContent = device.display_name || "Unnamed gateway";
+  entry.id.textContent = device.device_id;
+  entry.state.textContent = deviceConnectivityText(device);
+  entry.queue.textContent = deviceQueueText(device);
+  entry.preconditions.textContent = devicePreconditionsText(device);
+  entry.revoke.hidden = !!device.revoked;
+  entry.revoke.disabled = !!entry.revoking;
+  entry.revoke.setAttribute("aria-label", `Revoke ${device.display_name}`);
+  entry.select.setAttribute("aria-label", `View details for ${device.display_name || "unnamed gateway"}`);
+  entry.select.setAttribute("aria-controls", "device-detail");
+  entry.row.setAttribute("data-device-id", device.device_id);
+  entry.observation = { device, element: entry.preconditions, started, wallStarted,
+    remaining: preconditionRemaining(device), expired: false };
+  return entry;
+}
+
 async function loadDevices(reset = true, automatic = false) {
   if (!reset && !nextDeviceCursor) return;
   deviceLoads += 1;
@@ -938,12 +1040,8 @@ async function loadDevices(reset = true, automatic = false) {
   const moreButton = byId("more-devices");
   moreButton.disabled = true;
   if (!automatic) message("device-status", "Loading devices…");
-  if (reset && !automatic) {
-    clearPreconditionRows();
-    byId("device-list").replaceChildren();
-    moreButton.hidden = true;
-    nextDeviceCursor = null;
-    shownDeviceCount = 0;
+  if (reset) {
+    message("fleet-summary", fleetRows.size ? "Refreshing loaded observations; previous snapshots remain visible." : "Fleet observations are loading.");
   }
   try {
     const path = cursor
@@ -954,73 +1052,36 @@ async function loadDevices(reset = true, automatic = false) {
     if (automatic && (!canRefreshDashboard() || viewingList("device-list"))) return;
     if (!page || !Array.isArray(page.devices)) throw new Error("The device response was invalid.");
     const devices = page.devices;
-    if (automatic) {
+    if (devices.some(device => !device || typeof device.device_id !== "string" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(device.device_id)) ||
+        new Set(devices.map(device => device.device_id)).size !== devices.length) throw new Error("The device response contained ambiguous identities.");
+    const focused = document.activeElement;
+    if (reset) {
       clearPreconditionRows();
-      byId("device-list").replaceChildren();
-      moreButton.hidden = true;
-      nextDeviceCursor = null;
-      shownDeviceCount = 0;
+      const ids = new Set(devices.map(device => device.device_id));
+      for (const id of fleetRows.keys()) if (!ids.has(id)) fleetRows.delete(id);
     }
-    moreButton.disabled = false;
-    if (reset && devices.length === 0) {
-      message("device-status", "No approved devices yet.");
-      return;
-    }
+    fleetSnapshotFailed = false;
+    for (const device of devices) updateFleetRow(device, started, wallStarted);
+    preconditionRows = [...fleetRows.values()].map(entry => entry.observation);
+    byId("device-list").replaceChildren(...[...fleetRows.values()].map(entry => entry.row));
+    if (focused && byId("device-list").contains(focused) && !focused.hidden && typeof focused.focus === "function") focused.focus({ preventScroll: true });
     nextDeviceCursor = page.next_cursor || null;
-    shownDeviceCount += devices.length;
+    shownDeviceCount = fleetRows.size;
     moreButton.hidden = !nextDeviceCursor;
-    message("device-status", `${shownDeviceCount} device${shownDeviceCount === 1 ? "" : "s"} shown${nextDeviceCursor ? "; more available" : ""}. Revoked devices stay visible.`);
-    const rows = [];
-    for (const device of devices) {
-      const row = document.createElement("li");
-      const detail = document.createElement("div");
-      const name = document.createElement("strong");
-      const id = document.createElement("code");
-      const state = document.createElement("span");
-      name.textContent = device.display_name;
-      id.textContent = device.device_id;
-      state.textContent = device.revoked
-        ? "Revoked"
-        : device.active_socket_lease === true
-          ? "Approved · authenticated socket lease observed (may lag up to 90 seconds) · SMS readiness unknown"
-          : device.active_socket_lease === false
-            ? "Approved · no current authenticated socket lease · SMS readiness unknown"
-            : "Approved for connection · live status unavailable";
-      const queue = document.createElement("span");
-      queue.textContent = deviceQueueText(device);
-      const preconditions = document.createElement("span");
-      preconditions.setAttribute("aria-live", "off");
-      preconditions.textContent = devicePreconditionsText(device);
-      preconditionRows.push({ device, element: preconditions, started, wallStarted,
-        remaining: preconditionRemaining(device), expired: false });
-      detail.append(name, id, state, queue, preconditions);
-      row.append(detail);
-      if (!device.revoked) {
-        const revoke = document.createElement("button");
-        revoke.type = "button";
-        revoke.textContent = "Revoke";
-        revoke.setAttribute("aria-label", `Revoke ${device.display_name}`);
-        revoke.addEventListener("click", async () => {
-          if (!window.confirm(`Revoke ${device.display_name}? Its gateway connection will lose authorization.`)) return;
-          revoke.disabled = true;
-          try {
-            await api(`/v1/enrollment/devices/${encodeURIComponent(device.device_id)}`, "DELETE");
-            await Promise.all([loadDevices(), loadDeviceCapacity()]);
-          } catch (error) {
-            message("device-status", error.message);
-            revoke.disabled = false;
-          }
-        });
-        row.append(revoke);
-      }
-      rows.push(row);
-    }
-    byId("device-list").append(...rows);
+    const observed = [...fleetRows.values()].filter(entry => !entry.device.revoked && entry.device.active_socket_lease === true).length;
+    message("fleet-summary", `${shownDeviceCount} loaded device${shownDeviceCount === 1 ? "" : "s"} · ${observed} authenticated socket lease${observed === 1 ? "" : "s"} observed. Counts cover loaded pages only; carrier readiness remains unknown.`);
+    message("device-status", shownDeviceCount === 0 ? "No approved devices yet." : `${shownDeviceCount} device${shownDeviceCount === 1 ? "" : "s"} shown${nextDeviceCursor ? "; more available" : ""}. Revoked devices stay visible.`);
+    renderSelectedDevice();
     agePreconditions();
   } catch (error) {
     if (stale()) return;
     moreButton.disabled = false;
-    message("device-status", `Could not load devices. ${automatic ? "Showing the previous snapshot; counts may be stale. " : ""}${error.message}`);
+    fleetSnapshotFailed = true;
+    message("fleet-summary", fleetRows.size ? "Refresh failed. Loaded page observations and counts may be stale." : "Fleet observations unavailable. Retry Refresh.");
+    renderSelectedDevice();
+    agePreconditions();
+    message("device-status", `Could not load devices. ${fleetRows.size ? "Showing the previous snapshot; counts may be stale. " : ""}${error.message}`);
   } finally {
     deviceLoads -= 1;
     if (deviceLoads === 0 && devicesSignalDuringLoad) {
