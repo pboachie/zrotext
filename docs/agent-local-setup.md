@@ -11,7 +11,7 @@ Use a trusted source checkout with Python 3.12 and Node.js 22. Windows was teste
 POSIX uses standard Python atomic replacement but was not verified locally.
 The selected server artifact is the local-preview stdio server from
 [#616 / PR #678](https://github.com/pboachie/zrotext/pull/678), built with its existing
-SDK. That dependency remains a separate draft; this installer does not download,
+SDK. That dependency remains a separate local-preview artifact; this installer does not download,
 execute installation scripts, modify another branch, or publish a package.
 
 Choose the server `.mjs` file from the source revision you reviewed and supply its
