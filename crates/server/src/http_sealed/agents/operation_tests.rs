@@ -555,3 +555,58 @@ async fn issue(
     base.db.execute("INSERT INTO agent_authority_grants(account_id,grant_id,api_key_id,connector_id,connector_key_id,signer_key_id,device_id,line_id,binding_generation,recipient_digest,metadata_allowed,content_allowed,draft_allowed,send_allowed,reader_identity,owner_self_notification,created_by_user,created_session,created_ms,expires_ms,message_limit,turn_limit) VALUES($1,$2,$3,$4,$5,$6,$7,$8,1,$9,$10,$11,$12,$13,$4,true,$14,$15,$16,$17,3,3)",&[&base.account,&grant,&key,&connector,&reader.as_slice(),&base.signer.as_slice(),&base.device,&base.line,&recipient.as_slice(),&permissions[0],&permissions[1],&permissions[2],&permissions[3],&base.user,&Uuid::new_v4(),&now,&(now+100_000)]).await.unwrap();
     (token, grant)
 }
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; uses an isolated signed fixture"]
+async fn draft_expiry_is_rechecked_after_the_final_identity_query_stalls() {
+    let case = Case::new([false, false, true, false]).await;
+    let principal = agent_grants::authenticate_agent(&case.base.db, &case.base.hasher, &case.token)
+        .await
+        .unwrap();
+    let mut bytes = case.envelope(Uuid::new_v4(), false).await;
+    let now: i64 = case
+        .base
+        .db
+        .query_one(
+            "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    bytes[146..154].copy_from_slice(&(now as u64).to_be_bytes());
+    bytes[154..162].copy_from_slice(&((now + 2000) as u64).to_be_bytes());
+    sign(&case.base, &mut bytes);
+    // Retain the actual constrained table and its FKs. A test-only view injects
+    // a storage stall into the second identity lookup, after initial crypto
+    // validation; it never changes or bypasses an authority guard.
+    case.base.db.batch_execute("ALTER TABLE api_keys RENAME TO draft_test_api_keys; CREATE SEQUENCE draft_identity_reads; CREATE FUNCTION draft_identity_delay() RETURNS boolean LANGUAGE plpgsql VOLATILE AS $$ BEGIN IF nextval('draft_identity_reads')=2 THEN PERFORM pg_sleep(3); END IF; RETURN true; END; $$; CREATE VIEW api_keys AS SELECT * FROM draft_test_api_keys WHERE draft_identity_delay()").await.unwrap();
+    let mut db = case.base.connect().await;
+    let tx = db.transaction().await.unwrap();
+    assert!(matches!(
+        store::validate_agent_draft(
+            &tx,
+            &case.base.hasher,
+            &principal,
+            Uuid::new_v4(),
+            &bytes,
+            now
+        )
+        .await,
+        Err(store::StoreError::Denied)
+    ));
+    tx.rollback().await.unwrap();
+    let reads: i64 = case
+        .base
+        .db
+        .query_one("SELECT last_value FROM draft_identity_reads", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        reads, 2,
+        "the regression must reach the delayed final identity check"
+    );
+    assert_eq!(case.effects().await, (0, 0, 0, 0, 0));
+    case.base.cleanup().await;
+}

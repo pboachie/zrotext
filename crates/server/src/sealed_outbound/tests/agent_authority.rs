@@ -296,3 +296,95 @@ async fn cancelled_and_scrubbed_agent_work_keeps_its_consumed_budget_and_cannot_
     assert_eq!(refunds, 1);
     case.base.cleanup().await;
 }
+
+async fn assert_authority_wait(case: &AgentCase, pid: i32) {
+    for _ in 0..80 {
+        let blocked: bool = case.base.db.query_one("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock')", &[&pid]).await.unwrap().get(0);
+        if blocked {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("authority withdrawal and effect validation must serialize");
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; uses an isolated disposable schema"]
+async fn ordinary_key_and_connector_withdrawal_serialize_with_new_agent_effect_authority() {
+    let withdrawals = [
+        "UPDATE api_keys SET revoked_at=clock_timestamp() WHERE account_id=$1 AND id=(SELECT api_key_id FROM agent_authority_grants WHERE account_id=$1 AND grant_id=$2)",
+        "UPDATE connector_grants SET revoked_ms=floor(extract(epoch FROM clock_timestamp())*1000)::bigint,revoked_by_user=(SELECT created_by_user FROM agent_authority_grants WHERE account_id=$1 AND grant_id=$2) WHERE account_id=$1 AND kind='send' AND connector_id=(SELECT connector_id FROM agent_authority_grants WHERE account_id=$1 AND grant_id=$2)",
+    ];
+    for withdrawal in withdrawals {
+        for effect_first in [false, true] {
+            let case = AgentCase::new(1, 1).await;
+            let bytes = case.base.envelope(Uuid::new_v4()).await;
+            let action = case.approve(Uuid::new_v4(), &bytes).await;
+            assert!(case.send(&bytes, action.action).await.unwrap().created);
+            let mut first = case.base.connect().await;
+            let tx = first.transaction().await.unwrap();
+            let other = case.base.connect().await;
+            let pid: i32 = other
+                .query_one("SELECT pg_backend_pid()", &[])
+                .await
+                .unwrap()
+                .get(0);
+            let account = case.base.account;
+            let grant = case.grant;
+            let message = action.message;
+            if effect_first {
+                tx.query_one(
+                    "SELECT require_live_agent_action($1,$2)",
+                    &[&account, &message],
+                )
+                .await
+                .unwrap();
+                let pending =
+                    tokio::spawn(
+                        async move { other.execute(withdrawal, &[&account, &grant]).await },
+                    );
+                assert_authority_wait(&case, pid).await;
+                tx.commit().await.unwrap();
+                assert_eq!(pending.await.unwrap().unwrap(), 1);
+            } else {
+                assert_eq!(
+                    tx.execute(withdrawal, &[&account, &grant]).await.unwrap(),
+                    1
+                );
+                let pending = tokio::spawn(async move {
+                    other
+                        .query_one(
+                            "SELECT require_live_agent_action($1,$2)",
+                            &[&account, &message],
+                        )
+                        .await
+                });
+                assert_authority_wait(&case, pid).await;
+                tx.commit().await.unwrap();
+                assert_eq!(
+                    pending
+                        .await
+                        .unwrap()
+                        .unwrap_err()
+                        .as_db_error()
+                        .unwrap()
+                        .code()
+                        .code(),
+                    "23514"
+                );
+            }
+            assert!(
+                case.base
+                    .db
+                    .query_one(
+                        "SELECT require_live_agent_action($1,$2)",
+                        &[&account, &message]
+                    )
+                    .await
+                    .is_err()
+            );
+            assert_eq!(case.reservations().await, (1, 1, 1));
+            case.base.cleanup().await;
+        }
+    }
+}

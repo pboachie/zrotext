@@ -411,7 +411,10 @@ async fn validate_action(
     {
         return Err(StoreError::Denied);
     }
-    load(tx, account, grant_id, registered_key, operation).await?;
+    let final_grant = load(tx, account, grant_id, registered_key, operation).await?;
+    if expires_ms <= final_grant.current.now_ms {
+        return Err(StoreError::Denied);
+    }
     Ok(Action {
         account,
         grant: grant_id,

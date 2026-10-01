@@ -162,6 +162,44 @@ BEGIN
     -- dispatch-job locks in the reverse order.
     PERFORM 1 FROM agent_authority_grants WHERE account_id=wanted_account
         AND grant_id=wanted_grant FOR SHARE;
+    -- The sealed effect caller already owns root/account/device/session/line
+    -- fences. Lock remaining withdrawable agent authority before reading it.
+    -- Password/reset paths take users before API keys; preserve that order.
+    PERFORM u.id FROM users u WHERE u.id IN (
+        SELECT k.created_by_user_id FROM api_keys k JOIN agent_authority_grants g
+            ON g.api_key_id=k.id AND g.account_id=k.account_id
+            WHERE g.account_id=wanted_account AND g.grant_id=wanted_grant
+        UNION
+        SELECT p.approved_by_user FROM agent_authority_approvals p
+            JOIN agent_authority_actions a ON a.account_id=p.account_id AND a.action_id=p.action_id
+            WHERE a.account_id=wanted_account AND a.message_id=wanted_message AND a.grant_id=wanted_grant
+    ) ORDER BY u.id FOR SHARE;
+    PERFORM m.user_id FROM memberships m WHERE m.account_id=wanted_account AND m.user_id IN (
+        SELECT k.created_by_user_id FROM api_keys k JOIN agent_authority_grants g
+            ON g.api_key_id=k.id AND g.account_id=k.account_id
+            WHERE g.account_id=wanted_account AND g.grant_id=wanted_grant
+        UNION
+        SELECT p.approved_by_user FROM agent_authority_approvals p
+            JOIN agent_authority_actions a ON a.account_id=p.account_id AND a.action_id=p.action_id
+            WHERE a.account_id=wanted_account AND a.message_id=wanted_message AND a.grant_id=wanted_grant
+    ) ORDER BY m.user_id FOR SHARE;
+    PERFORM k.id FROM api_keys k JOIN agent_authority_grants g
+        ON g.api_key_id=k.id AND g.account_id=k.account_id
+        WHERE g.account_id=wanted_account AND g.grant_id=wanted_grant FOR SHARE OF k;
+    PERFORM c.connector_id FROM connector_registrations c JOIN agent_authority_grants g
+        ON g.account_id=c.account_id AND g.connector_id=c.connector_id
+        WHERE g.account_id=wanted_account AND g.grant_id=wanted_grant FOR SHARE OF c;
+    PERFORM k.key_id FROM connector_keys k JOIN agent_authority_grants g
+        ON g.account_id=k.account_id AND g.connector_id=k.connector_id AND g.connector_key_id=k.key_id
+        WHERE g.account_id=wanted_account AND g.grant_id=wanted_grant FOR SHARE OF k;
+    PERFORM c.grant_id FROM connector_grants c JOIN agent_authority_grants g
+        ON g.account_id=c.account_id AND g.connector_id=c.connector_id AND g.line_id=c.line_id
+        WHERE g.account_id=wanted_account AND g.grant_id=wanted_grant AND c.kind='send'
+        ORDER BY c.grant_id FOR SHARE OF c;
+    PERFORM p.action_id FROM agent_authority_approvals p JOIN agent_authority_actions a
+        ON a.account_id=p.account_id AND a.action_id=p.action_id
+        WHERE a.account_id=wanted_account AND a.message_id=wanted_message AND a.grant_id=wanted_grant
+        FOR SHARE OF p;
     current_ms := floor(extract(epoch FROM clock_timestamp())*1000)::bigint;
     IF NOT EXISTS (
         SELECT 1 FROM agent_authority_grants g

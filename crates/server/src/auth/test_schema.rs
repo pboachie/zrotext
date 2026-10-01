@@ -14,9 +14,24 @@ pub(crate) async fn apply(db: &Client) {
     files.sort();
     for file in files {
         prepare_indexes(db, file.file_name().unwrap().to_str().unwrap()).await;
-        db.batch_execute(&std::fs::read_to_string(file).unwrap())
-            .await
-            .unwrap();
+        let transaction = file
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("070_");
+        if transaction {
+            db.batch_execute("BEGIN").await.unwrap();
+        }
+        let result = db
+            .batch_execute(&std::fs::read_to_string(file).unwrap())
+            .await;
+        if transaction {
+            db.batch_execute(if result.is_ok() { "COMMIT" } else { "ROLLBACK" })
+                .await
+                .unwrap();
+        }
+        result.unwrap();
     }
 }
 
@@ -64,6 +79,9 @@ async fn prepare_indexes(db: &Client, file: &str) {
         ],
         "066" => &[
             "CREATE INDEX CONCURRENTLY erasure_fk_conversation_interval_session ON conversation_intervals(account_id,initiating_session_id)",
+        ],
+        "070" => &[
+            "CREATE INDEX CONCURRENTLY messages_summary_queue ON messages(account_id,state,created_at) WHERE state IN ('accepted','queued','claimed','submitting','submitted')",
         ],
         _ => &[],
     };
