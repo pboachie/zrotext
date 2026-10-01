@@ -3,7 +3,6 @@ package org.zrotext.gateway
 
 import android.content.Intent
 import android.net.Uri
-import android.os.Bundle
 import android.os.Build
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityNodeInfo
@@ -48,14 +47,6 @@ class ConversationEntryOptInDeviceTest {
             return null
         }
         instrumentation.waitForIdleSync()
-        val diagnosticLabel = "Open conversation review"
-        instrumentation.sendStatus(0, Bundle().apply {
-            putString("stream", "Opt-in accessibility lookup: native=" +
-                instrumentation.uiAutomation.rootInActiveWindow
-                    ?.findAccessibilityNodeInfosByText(diagnosticLabel)?.size +
-                "; traversal=" + matchingText(diagnosticLabel).size +
-                "; clickable=" + (node(diagnosticLabel) != null) + "\n")
-        })
         fun click(label: String) {
             val deadline = SystemClock.elapsedRealtime() + 5000
             while (node(label) == null && SystemClock.elapsedRealtime() < deadline) Thread.sleep(25)
