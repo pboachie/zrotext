@@ -472,3 +472,54 @@ copies the existing built SDK and locked HPKE ESM graph to an explicitly selecte
 asset directory. Serving that directory on the disabled conversation router and
 supplying existing-user custodian/authority/endpoint configuration are separate
 assembly responsibilities; this change creates no default production mount.
+
+The dormant conversation execution candidate uses authenticated channel kind 18
+only after the phone has durably claimed its local attempt and retained the
+original verified ZTCR evidence. Its request is the existing 118-byte ZTCW01
+header, exact conversation scope (252–265 bytes), message UUID, durable local
+attempt UUID and SHA-256 of the full original signed envelope, in that order.
+The request is 434–447 bytes with no trailing bytes. The server derives every
+authority field from the authenticated connection and stored confirmed proof;
+the local UUID is a selector, never permission.
+
+Kind 19 echoes the authenticated header and challenge, followed by a u16 big
+endian length and 1–2048 bytes of the existing `sealed_execution_grant` JSON.
+No trailing bytes are permitted; the maximum response is 2168 bytes. Fields are
+the existing version-1 grant schema, with reader role 1, a conservative segment
+ceiling of 6 and positive integers at most 2^53−1. This conversation policy has
+one possible attempt per message: the initial queued job generation must be 0,
+the persisted attempt generation is exactly 1, and Android independently
+requires 1. A reply is emitted only after the immutable grant, attempt, job and
+device fence commit together. The full envelope digest includes its signature;
+the unsigned digest excludes the existing signature bytes.
+
+The first deadline is the minimum of the original signed confirmation deadline,
+current manifest and selected-role deadlines, original owner-session deadline,
+phone lease and a 30-second writer-clock ceiling. An exact retry can return the
+same still-live committed record under the same authenticated session and
+current authority. It cannot change the deadline, attempt or generation.
+Reconnect, changed authority, uncertain status, cancellation, refund, redacted
+proof and expiration deny execution admission. Kinds 14/15 remain read-only
+confirmed-content retrieval and never claim an attempt.
+
+The unnumbered execution schema candidate preserves alpha admission unchanged
+and permits sealed effects only for this exact confirmed conversation. Existing
+radio evidence and timeout reconciliation update the retained attempt and
+fence; no-radio evidence may release the busy fence but never replaces the
+message's permanent execution record. No automatic retry is authorized.
+The authenticated radio-event path checks the negotiated conversation session
+and fresh original proof, owner, phone, manifest and key authority before
+recording a new submit intent and again before acknowledging submission permission.
+Historical callbacks may reconcile the original immutable attempt after that
+permission expires or is revoked; they cannot reopen submission authority.
+The additive execution candidate records the original trusted enqueue metering
+policy atomically with its proof. Legacy NULL receipts cannot execute. Metered
+admission requires its original exact reservation and no refund; explicit trusted
+unmetered admission does not create a charge. Retrying after a configuration
+change preserves the original policy receipt.
+Retention keeps immutable execution metadata, export paginates metadata without
+content or channel tokens, and guarded account erasure deletes execution rows
+before their referenced parents. Existing immutable trust/line erasure blockers
+still apply. This candidate is outside the ordinary migration directory and
+remains unmounted until its allocation, review and aggregate validation gates
+are satisfied. It does not authorize real SMS or create credentials.

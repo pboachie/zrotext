@@ -72,6 +72,36 @@ impl Policy {
     }
 }
 impl Negotiated {
+    pub(super) async fn execution_current(
+        &self,
+        client: &mut tokio_postgres::Client,
+        device: DeviceSession,
+        state: &DeviceSocketState,
+        message: Uuid,
+        attempt: Uuid,
+    ) -> Result<bool, ConversationError> {
+        if device != self.device || state.deployment_epoch != self.deployment_epoch {
+            return Ok(false);
+        }
+        crate::http_owner_conversations::channel::execution::permission::current(
+            client,
+            &AuthenticatedChannelSession {
+                device: InboundSession {
+                    account_id: device.account_id,
+                    device_id: device.device_id,
+                    site_id: state.site_id.as_str(),
+                    instance_id: state.instance_id.as_str(),
+                    connection_epoch: device.connection_epoch,
+                    deployment_epoch: self.deployment_epoch,
+                },
+                phone_session: self.phone_session,
+                origin_hash: self.origin_hash,
+            },
+            message,
+            attempt,
+        )
+        .await
+    }
     pub(super) async fn handle(
         &self,
         client: &mut tokio_postgres::Client,

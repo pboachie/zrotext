@@ -1269,7 +1269,12 @@ async fn run_socket(
                             let (current_grant, previous_intent) = match durable_intent_preflight(
                                 &client, session, event_id, message_id, attempt_id, &state,
                             ).await {
-                                Ok((grant, intent)) => (Some(grant), Some(intent)),
+                                Ok((grant, intent)) => {
+                                    let grant = grant && conversation_execution_current(
+                                        &mut client, session, &state, conversation_session.as_ref(), message_id, attempt_id,
+                                    ).await.unwrap_or(false);
+                                    (Some(grant), Some(intent))
+                                },
                                 Err(_) => (None, None),
                             };
                             if let Some(code) = durable_intent_preflight_close_code(
@@ -1302,7 +1307,10 @@ async fn run_socket(
                         let submit_permitted = matches!(evidence, RadioEvidence::DurableSubmitIntent)
                             && grant_still_current(&client, session, message_id, attempt_id, &state)
                                 .await
-                                .unwrap_or(false);
+                                .unwrap_or(false)
+                            && conversation_execution_current(
+                                &mut client, session, &state, conversation_session.as_ref(), message_id, attempt_id,
+                            ).await.unwrap_or(false);
                         drop(client);
                         if !send_frame(&mut socket, ServerFrame::RadioEventAck {
                             v: 1, event_id, state: next, submit_permitted,
@@ -1671,6 +1679,33 @@ fn store_session(session: DeviceSession, state: &DeviceSocketState) -> SessionRe
         instance_id: state.instance_id.clone(),
         epoch: session.connection_epoch,
         deployment_epoch: state.deployment_epoch,
+    }
+}
+
+async fn conversation_execution_current(
+    client: &mut Client,
+    session: DeviceSession,
+    state: &DeviceSocketState,
+    negotiated: Option<&conversation::Negotiated>,
+    message: Uuid,
+    attempt: Uuid,
+) -> Result<bool, crate::http_owner_conversations::ConversationError> {
+    let row = client
+        .query_opt(
+            "SELECT transport_mode FROM messages WHERE account_id=$1 AND id=$2 AND device_id=$3",
+            &[&session.account_id, &message, &session.device_id],
+        )
+        .await?;
+    match row.map(|r| r.get::<_, String>(0)).as_deref() {
+        Some("synthetic_alpha") => Ok(true),
+        Some("sealed_candidate02") => match negotiated {
+            Some(held) => {
+                held.execution_current(client, session, state, message, attempt)
+                    .await
+            }
+            None => Ok(false),
+        },
+        _ => Ok(false),
     }
 }
 

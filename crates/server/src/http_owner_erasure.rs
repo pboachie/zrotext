@@ -103,6 +103,10 @@ const BLOCKED_TABLES: &[&str] = &[
 /// counts stay honest.
 const DELETE_PLAN: &[(&str, &str)] = &[
     (
+        "conversation_execution_records",
+        "DELETE FROM conversation_execution_records WHERE account_id=$1",
+    ),
+    (
         "conversation_confirmation_records",
         "DELETE FROM conversation_confirmation_records WHERE account_id=$1",
     ),
@@ -653,8 +657,47 @@ async fn erase_account(
     {
         return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
     }
+    let execution_installed =
+        match crate::http_owner_conversations::channel::execution::lifecycle::installed(&tx).await {
+            Ok(value) => value,
+            Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+        };
+    if execution_installed {
+        if !crate::http_owner_conversations::channel::execution::lifecycle::validate(&tx)
+            .await
+            .unwrap_or(false)
+        {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+        }
+        // Account-before-record matches execution admission. These locks may
+        // wait, so repeat the live owner check before staging any disable/delete.
+        if tx.query("SELECT message_id FROM conversation_execution_records WHERE account_id=$1 ORDER BY message_id FOR UPDATE",&[&account_id]).await.is_err() {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE,"unavailable");
+        }
+        let still_live=tx.query_one("SELECT EXISTS(SELECT 1 FROM sessions s JOIN memberships m ON (m.account_id,m.user_id)=(s.account_id,s.user_id) JOIN accounts a ON a.id=s.account_id JOIN users u ON u.id=s.user_id WHERE s.id=$1 AND s.account_id=$2 AND s.user_id=$3 AND s.revoked_at IS NULL AND s.expires_at>clock_timestamp() AND m.role='owner' AND m.revoked_at IS NULL AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL)",&[&principal.session_id,&account_id,&principal.user_id]).await;
+        match still_live {
+            Ok(row) if row.get::<_, bool>(0) => {}
+            Ok(_) => return auth_error(crate::auth::AuthError::Unauthorized),
+            Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+        }
+        // This disable and every deletion commit together; any failure rolls
+        // back both. All rows which could wait have now been fenced.
+        if tx
+            .execute(
+                "UPDATE accounts SET disabled_at=clock_timestamp() WHERE id=$1",
+                &[&account_id],
+            )
+            .await
+            .is_err()
+        {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+        }
+    }
     let mut deleted = Vec::new();
     for &(table, sql) in DELETE_PLAN {
+        if table == "conversation_execution_records" && !execution_installed {
+            continue;
+        }
         if table == "conversation_confirmation_records" && !confirmation_installed {
             continue;
         }

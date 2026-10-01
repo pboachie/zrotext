@@ -43,7 +43,7 @@ fn request(
     bytes: &[u8],
 ) -> Result<(u8, Uuid), ConversationError> {
     if !(118..=48_000).contains(&bytes.len())
-        || !matches!(bytes[5], 1 | 3 | 5 | 6 | 8 | 10 | 12 | 14 | 16)
+        || !matches!(bytes[5], 1 | 3 | 5 | 6 | 8 | 10 | 12 | 14 | 16 | 18)
     {
         return Err(ConversationError::Invalid);
     }
@@ -56,6 +56,7 @@ fn request(
         || kind == 12 && bytes.len() < 375
         || kind == 14 && !(386..=399).contains(&bytes.len())
         || kind == 16 && bytes.len() != 134
+        || kind == 18 && !(434..=447).contains(&bytes.len())
         || kind == 1 && bytes.len() != 118
         || kind == 3 && !(370..=383).contains(&bytes.len())
         || kind == 5
@@ -174,6 +175,9 @@ pub async fn handle(
     if kind == 14 {
         return delivery::handle(client, authenticated, challenge, bytes).await;
     }
+    if kind == 18 {
+        return execution::handle(client, authenticated, challenge, bytes).await;
+    }
     if matches!(kind, 6 | 8 | 10) {
         return installation::handle(client, authenticated, kind, challenge, bytes).await;
     }
@@ -221,6 +225,7 @@ pub async fn handle(
 
 mod capture;
 mod delivery;
+pub(crate) mod execution;
 mod installation;
 mod proposal;
 #[cfg(test)]

@@ -17,6 +17,9 @@ const SCHEMA: &str = include_str!(
     "../../../../../../deploy/compose/migration-candidates/NNN_conversation_confirmation_records.sql"
 );
 
+#[path = "../../channel/execution/tests.rs"]
+mod execution_tests;
+
 struct Case {
     f: Fixture,
     owner: SessionPrincipal,

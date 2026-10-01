@@ -128,13 +128,50 @@ pub async fn enqueue_confirmed_send(
         if !outcome.created {
             return Err(ConversationError::Conflict.into());
         }
-        tx.execute("INSERT INTO conversation_confirmation_records(account_id,message_id,interval_id,initiating_session_id,device_id,line_id, \
+        let metering_receipt = lifecycle::execution_metering_installed(&tx).await?;
+        let sql = if metering_receipt {
+            "INSERT INTO conversation_confirmation_records(account_id,message_id,interval_id,initiating_session_id,device_id,line_id, \
+            binding_generation,trust_generation,manifest_version,manifest_digest,signer_key_id,reader_key_id,body_digest, \
+            expires_at_ms,envelope_digest,confirmation_digest,signature_digest,confirmation,signature,execution_metered) \
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)"
+        } else {
+            "INSERT INTO conversation_confirmation_records(account_id,message_id,interval_id,initiating_session_id,device_id,line_id, \
             binding_generation,trust_generation,manifest_version,manifest_digest,signer_key_id,reader_key_id,body_digest, \
             expires_at_ms,envelope_digest,confirmation_digest,signature_digest,confirmation,signature) \
-            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)",
-            &[&c.account,&c.message,&c.interval,&c.session,&c.device,&c.line,&c.generation,&c.trust_generation,&c.version,
-              &c.manifest.as_slice(),&c.signer.as_slice(),&c.reader.as_slice(),&c.body_digest.as_slice(),&c.expires_ms,
-              &c.envelope_digest.as_slice(),&confirmation_digest.as_slice(),&signature_digest.as_slice(),&packet.confirmation,&packet.signature]).await?;
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)"
+        };
+        let manifest = c.manifest.as_slice();
+        let signer = c.signer.as_slice();
+        let reader = c.reader.as_slice();
+        let body = c.body_digest.as_slice();
+        let envelope_digest = c.envelope_digest.as_slice();
+        let confirmation_hash = confirmation_digest.as_slice();
+        let signature_hash = signature_digest.as_slice();
+        let mut parameters: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = vec![
+            &c.account,
+            &c.message,
+            &c.interval,
+            &c.session,
+            &c.device,
+            &c.line,
+            &c.generation,
+            &c.trust_generation,
+            &c.version,
+            &manifest,
+            &signer,
+            &reader,
+            &body,
+            &c.expires_ms,
+            &envelope_digest,
+            &confirmation_hash,
+            &signature_hash,
+            &packet.confirmation,
+            &packet.signature,
+        ];
+        if metering_receipt {
+            parameters.push(&billing_enabled);
+        }
+        tx.execute(sql, &parameters).await?;
     } else if outcome.created {
         return Err(ConversationError::Conflict.into());
     }

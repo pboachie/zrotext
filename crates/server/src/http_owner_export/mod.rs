@@ -56,6 +56,7 @@ struct ExportQuery {
     sealed_before: Option<Uuid>,
     interval_before: Option<Uuid>,
     confirmation_before: Option<Uuid>,
+    execution_before: Option<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -152,6 +153,8 @@ fn message_view(row: &Row) -> Result<MessageView, tokio_postgres::Error> {
 
 #[derive(Serialize)]
 struct ExportView {
+    execution_inventory:
+        crate::http_owner_conversations::channel::execution::lifecycle::ExecutionInventory,
     confirmation_inventory: crate::http_owner_conversations::send::queue::lifecycle::ProofInventory,
     conversation_inventory: crate::http_owner_conversations::lifecycle::ConversationInventory,
     generated_at_ms: i64,
@@ -330,7 +333,19 @@ async fn export_account(
             Ok(view) => view,
             Err(error) => return error.into_response(),
         };
+    let execution_inventory =
+        match crate::http_owner_conversations::channel::execution::lifecycle::inventory(
+            &mut client,
+            &principal,
+            query.execution_before,
+        )
+        .await
+        {
+            Ok(view) => view,
+            Err(error) => return error.into_response(),
+        };
     Json(ExportView {
+        execution_inventory,
         confirmation_inventory,
         conversation_inventory,
         generated_at_ms: SystemTime::now()

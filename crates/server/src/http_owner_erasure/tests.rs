@@ -291,6 +291,12 @@ const MIGRATIONS: &[(&str, &str)] = &[
             "../../../../deploy/compose/migration-candidates/NNN_conversation_confirmation_records.sql"
         ),
     ),
+    (
+        "../migration-candidates/NNN_conversation_execution_records.sql",
+        include_str!(
+            "../../../../deploy/compose/migration-candidates/NNN_conversation_execution_records.sql"
+        ),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in
@@ -3088,10 +3094,22 @@ async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeo
 
 #[test]
 fn confirmed_proof_delete_precedes_every_referenced_parent() {
+    let execution = DELETE_PLAN
+        .iter()
+        .position(|(table, _)| *table == "conversation_execution_records")
+        .unwrap();
     let proof = DELETE_PLAN
         .iter()
         .position(|(table, _)| *table == "conversation_confirmation_records")
         .unwrap();
+    assert!(execution < proof);
+    assert!(
+        execution
+            < DELETE_PLAN
+                .iter()
+                .position(|(table, _)| *table == "message_attempts")
+                .unwrap()
+    );
     for parent in ["conversation_intervals", "messages", "devices", "sessions"] {
         assert!(
             proof
@@ -3109,7 +3127,7 @@ async fn malformed_confirmation_schema_fails_erasure_closed_without_partial_dele
     let (admin, mut db, database_url, schema) = migrated_schema("proof_shape").await;
     let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
     let (a, session_a, _b, _session_b, app) = fixture(&mut db, &hasher, &database_url, None).await;
-    db.batch_execute("DROP TABLE conversation_confirmation_records; CREATE TABLE conversation_confirmation_records(account_id uuid NOT NULL)").await.unwrap();
+    db.batch_execute("DROP TABLE conversation_execution_records CASCADE; DROP TABLE conversation_confirmation_records; CREATE TABLE conversation_confirmation_records(account_id uuid NOT NULL)").await.unwrap();
     db.execute(
         "INSERT INTO conversation_confirmation_records(account_id) VALUES($1)",
         &[&a.account_id],
@@ -3142,6 +3160,137 @@ async fn malformed_confirmation_schema_fails_erasure_closed_without_partial_dele
             .get(0);
         assert!(count > 0);
     }
+    admin
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn execution_installed_schema_erasure_succeeds_and_absence_keeps_existing_behavior() {
+    for absent in [false, true] {
+        let (admin, mut db, database_url, schema) = migrated_schema("execution_erase").await;
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
+        let (a, session, _b, _bsession, app) = fixture(&mut db, &hasher, &database_url, None).await;
+        if absent {
+            db.batch_execute("DROP TABLE conversation_execution_records CASCADE")
+                .await
+                .unwrap();
+        }
+        let response = app
+            .oneshot(erasure_post(
+                Some(&session.token),
+                Some(&session.csrf_token),
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let report = body(response).await;
+        let listed = report["deleted"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["table"] == "conversation_execution_records");
+        assert_eq!(listed, !absent);
+        assert_eq!(
+            db.query_one(
+                "SELECT count(*) FROM accounts WHERE id=$1",
+                &[&a.account_id]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+            0
+        );
+        admin
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn execution_schema_wait_expired_owner_rolls_back_disable_and_all_deletes() {
+    let (admin, mut db, database_url, schema) = migrated_schema("execution_expiry").await;
+    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
+    let handler_database_url = handler_url(&database_url, "zt_execution_erase_expiry");
+    let (a, session, _b, _bsession, app) =
+        fixture(&mut db, &hasher, &handler_database_url, None).await;
+    db.execute("UPDATE sessions SET last_used_at=clock_timestamp(),expires_at=clock_timestamp()+interval '2 seconds' WHERE id=$1",&[&session.id]).await.unwrap();
+    let pid = db
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get::<_, i32>(0);
+    let blocker = db.transaction().await.unwrap();
+    blocker
+        .batch_execute("LOCK TABLE conversation_execution_records IN ACCESS EXCLUSIVE MODE")
+        .await
+        .unwrap();
+    let token = session.token.clone();
+    let csrf = session.csrf_token.clone();
+    let request = tokio::spawn(async move {
+        app.oneshot(erasure_post(
+            Some(&token),
+            Some(&csrf),
+            Some(ORIGIN),
+            &crate::test_keys::password(1),
+            None,
+        ))
+        .await
+        .unwrap()
+    });
+    wait_until_handler_is_blocked_by(&admin, "zt_execution_erase_expiry", pid).await;
+    // The lock is on the installed execution table after the authenticated
+    // owner fence, rather than on an earlier password/session read.
+    let waiting:String=admin.query_one("SELECT query FROM pg_stat_activity WHERE application_name='zt_execution_erase_expiry' AND $1=ANY(pg_blocking_pids(pid))",&[&pid]).await.unwrap().get(0);
+    assert!(waiting.contains("conversation_execution_records"));
+    tokio::time::timeout(std::time::Duration::from_secs(4), async {
+        loop {
+            if admin
+                .query_one(
+                    &format!(
+                        "SELECT expires_at<=clock_timestamp() FROM {schema}.sessions WHERE id=$1"
+                    ),
+                    &[&session.id],
+                )
+                .await
+                .unwrap()
+                .get::<_, bool>(0)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    blocker.commit().await.unwrap();
+    assert_eq!(request.await.unwrap().status(), StatusCode::UNAUTHORIZED);
+    assert!(
+        db.query_one(
+            "SELECT disabled_at IS NULL FROM accounts WHERE id=$1",
+            &[&a.account_id]
+        )
+        .await
+        .unwrap()
+        .get::<_, bool>(0)
+    );
+    assert_eq!(
+        db.query_one(
+            "SELECT count(*) FROM messages WHERE account_id=$1",
+            &[&a.account_id]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        2
+    );
     admin
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await
