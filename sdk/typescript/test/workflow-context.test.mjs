@@ -39,7 +39,7 @@ async function fixture(){
   const manifest=await verifyManifest02(concat(unsigned,signature),{accountId:account,generation:1n,rootPoint,version:0n,digest:zero32,anchorDigest:zero32},now);
   const scope={kind:1,accountId:account,deviceId:device,lineId:line,intervalId:bytes(4,16),contextId:bytes(5,16),bindingGeneration:1n,revision:1n,expiresMs:now+300000n,
     trustGeneration:1n,manifestVersion:1n,peerDigest:hash(enc.encode('+12')),readerId:reader,manifestDigest:Uint8Array.from(manifest.digest)};
-  return {manifest,scope,archive};
+  return {manifest,scope,archive,root};
 }
 test('client HPKE roundtrip hides content and rejects ciphertext or every identity substitution',async()=>{
   const f=await fixture(),plain=enc.encode('synthetic workflow private canary');
@@ -74,4 +74,24 @@ test('authority, expiry, bounds and caller snapshots fail closed before encrypti
   f.scope.contextId.fill(9);plain.fill(0);
   const sealed=await promise;
   assert.deepEqual(await openWorkflowContext(f.manifest,expected,now,f.archive.privateKey,sealed),enc.encode('synthetic context'));
+});
+
+
+test('a retired signer before the active line signer does not remove workflow authority',async()=>{
+  const f=await fixture();
+  const archiveRecord=f.manifest.bytes.slice(151,300),originalSigner=f.manifest.bytes.slice(300,449),ownerRecord=f.manifest.bytes.slice(449,598);
+  const pair=await crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);
+  const point=new Uint8Array(await crypto.subtle.exportKey('raw',pair.publicKey));
+  const extra=concat(Uint8Array.of(4),await keyId(0x0101,point),point,f.scope.deviceId,f.scope.lineId,Uint8Array.of(0,2),u64(now-1000n),u64(now+3600000n),Uint8Array.of(1));
+  const signers=[originalSigner,extra].sort((a,b)=>Buffer.compare(Buffer.from(a.slice(1,33)),Buffer.from(b.slice(1,33))));
+  signers[0][148]=2;signers[1][148]=1;
+  const header=f.manifest.bytes.slice(0,151);header[150]=4;
+  const unsigned=concat(header,archiveRecord,...signers,ownerRecord);
+  const signature=canonicalSignature02(new Uint8Array(await crypto.subtle.sign({name:'ECDSA',hash:'SHA-256'},f.root.privateKey,concat(enc.encode('ZTSE/manifest/v2\0'),u32(unsigned.length),unsigned))));
+  const zero32=new Uint8Array(32);
+  const manifest=await verifyManifest02(concat(unsigned,signature),{accountId:f.scope.accountId,generation:1n,rootPoint:f.manifest.rootPoint,version:0n,digest:zero32,anchorDigest:zero32},now);
+  const scope={...f.scope,manifestDigest:Uint8Array.from(manifest.digest)};
+  const plain=enc.encode('synthetic context with rotated signer');
+  const ciphertext=await sealWorkflowContext(manifest,scope,now,plain);
+  assert.deepEqual(await openWorkflowContext(manifest,scope,now,f.archive.privateKey,ciphertext),plain);
 });
