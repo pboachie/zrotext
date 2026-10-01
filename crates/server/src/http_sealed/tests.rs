@@ -292,7 +292,7 @@ struct RouteCase {
 async fn apply_agent_authority_schema(f: &Fixture) {
     for sql in [
         include_str!("../../../../deploy/compose/migrations/068_connector_registration.sql"),
-        include_str!("../../../../deploy/compose/migrations/073_agent_authority.sql"),
+        include_str!("../../../../deploy/compose/migrations/074_agent_authority.sql"),
     ] {
         f.db.batch_execute(sql).await.unwrap();
     }

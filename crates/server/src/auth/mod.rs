@@ -36,6 +36,7 @@ const REGISTRATION_ADVISORY_LOCK: i64 = 0x5a54524547495354;
 pub mod abuse_limits;
 pub mod account;
 pub mod agent_grants;
+pub mod collaboration;
 pub mod mfa;
 mod password_work;
 #[cfg(test)]
