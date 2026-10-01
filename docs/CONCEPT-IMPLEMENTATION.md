@@ -58,9 +58,9 @@ length cannot substitute for an account/device message total.
 | Local Pause | Existing `onPause` stops connections, not permission-enabled local SMS processing | Keep the local-processing limitation beside the action; Android settings can revoke receiving access. No claim of suppressing already granted or submitted work |
 | Simulate a message | Existing synthetic receptionist demo is a separate local script | Label simulation and link only to that demo; it cannot grant real sending or stand in for the stable API |
 
-## Reviewed accessibility implementation awaiting integration
+## Merged automated accessibility checks and remaining acceptance
 
-Reviewed #701, pending merge, adapts compact owner navigation to available width
+Merged #701 adapts compact owner navigation to available width
 and text size. Combined owner activity/navigation tests pass at compact and wide
 viewports with 200% text. Android landscape tests use actual scrolling and the
 Compose frame clock to reveal platform-visible status and reachable Pause and
@@ -68,7 +68,8 @@ its local-processing disclosure. These are automated implementation checks, not
 completed #612 acceptance. The [candidate accessibility contract](CANDIDATE-ACCESSIBILITY.md)
 keeps actual TalkBack/Switch Access, keyboard-open editing/masking/focus return,
 permission revocation, final integrated lifecycle traversal and physical OEM/motion
-acceptance open. #690 is merged; reviewed local #701 integration does not mean #701 has merged.
+acceptance open. Merged #690 and #701 provide implementation and automated
+verification; they do not complete the final human acceptance gate.
 
 ## State and freshness grammar
 
