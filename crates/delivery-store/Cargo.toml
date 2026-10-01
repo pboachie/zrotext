@@ -9,7 +9,7 @@ license.workspace = true
 zrotext-domain = { path = "../domain" }
 # 0.7.17 added execute_typed, query_typed_one and query_typed_opt.
 tokio-postgres = { version = "0.7.17", features = ["with-uuid-1"] }
-tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread", "sync"] }
+tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 uuid.workspace = true
 sha2 = "0.11.0"
 thiserror = "2.0.20"
