@@ -542,7 +542,7 @@
             ["#617", "https://github.com/pboachie/zrotext/issues/617"],
             ["#620", "https://github.com/pboachie/zrotext/issues/620"]
           ],
-          "evidence_note": "proposal only; no runtime implementation",
+          "evidence_note": "product proposal; dormant connector registration/key-lifecycle contract in crates/server/src/sealed_connector_registry (line-scoped read/send grants, independent approval, rotation, revocation, audit) with no runtime route enabled",
           "done": [],
           "todo": [
             "Shared services for dashboard actions, SDK tools and signed workflow events",
