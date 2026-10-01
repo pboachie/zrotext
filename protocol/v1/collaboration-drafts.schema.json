@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/zrotext/collaboration-drafts.schema.json",
+  "title": "Selected encrypted drafting collaboration contract",
+  "description": "Default-off cookie-session routes. Opaque bytes are not decrypted or sent by the server; encryption and authenticity are the client's responsibility.",
+  "$defs": {
+    "draft_create": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "draft_id",
+        "ciphertext_base64"
+      ],
+      "properties": {
+        "draft_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "ciphertext_base64": {
+          "type": "string",
+          "minLength": 40,
+          "maxLength": 10924,
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+          "if": {
+            "minLength": 10924
+          },
+          "then": {
+            "pattern": "=$"
+          }
+        }
+      }
+    },
+    "grant_create": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "user_id",
+        "role",
+        "confirm_widening",
+        "current_password"
+      ],
+      "properties": {
+        "user_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "role": {
+          "const": "encrypted_drafter"
+        },
+        "confirm_widening": {
+          "const": true
+        },
+        "code": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 1024
+        }
+      },
+      "patternProperties": {
+        "^current_password$": {
+          "type": "string",
+          "minLength": 12,
+          "maxLength": 1024
+        }
+      }
+    },
+    "draft": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "draft_id",
+        "grant_id",
+        "author_user_id",
+        "ciphertext_base64",
+        "created_at_ms",
+        "deleted_at_ms"
+      ],
+      "properties": {
+        "draft_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "grant_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "author_user_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "ciphertext_base64": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 10924
+        },
+        "created_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "deleted_at_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      },
+      "if": {
+        "properties": {
+          "deleted_at_ms": {
+            "type": "null"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "ciphertext_base64": {
+            "type": "string",
+            "minLength": 40
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "ciphertext_base64": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    "grant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "grant_id",
+        "user_id",
+        "role",
+        "created_at_ms",
+        "revoked_at_ms"
+      ],
+      "properties": {
+        "grant_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "user_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "role": {
+          "const": "encrypted_drafter"
+        },
+        "created_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "revoked_at_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    "export_cursor": {
+      "type": "string",
+      "description": "Canonical draft UUID followed by author UUID; account authority is supplied by the authenticated owner session.",
+      "minLength": 73,
+      "maxLength": 73,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "not": {
+        "anyOf": [
+          {
+            "pattern": "^00000000-0000-0000-0000-000000000000:"
+          },
+          {
+            "pattern": ":00000000-0000-0000-0000-000000000000$"
+          }
+        ]
+      }
+    }
+  }
+}
