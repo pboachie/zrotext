@@ -14,6 +14,14 @@ PACKAGE = "org.zrotext.gateway."
 PRECONDITIONS = PACKAGE + "DevicePreconditionsDeviceTest"
 RCS_RISK = PACKAGE + "DefaultSmsAppRcsRiskDeviceTest"
 ACCESSIBILITY = PACKAGE + "GatewayAccessibilityDeviceTest"
+ACCESSIBILITY_METHODS = frozenset({
+    "sectionsAreHeadingsInReadingOrder",
+    "statusRegionsExcludeRoutineHeartbeatCounters",
+    "homeObservationsKeepReadOnlyLabelsAndReadingOrderAtCurrentTextScale",
+    "platformNodesExposeHeadingsAndVisibleStatusRegions",
+    "fieldsKeepLabelsAndTokensRemainPasswordFields",
+    "actionsRetainNamesAndMinimumTouchTargetsAtCurrentTextScale",
+})
 MANIFEST_AUTHORITY = PACKAGE + "ManifestAuthorityDeviceTest"
 NETWORK_SERVICE = PACKAGE + "NetworkServiceDeviceTest"
 OUTBOUND_ENVELOPE = PACKAGE + "OutboundEnvelopeDeviceTest"
@@ -119,6 +127,10 @@ def verify_results(output, expected):
     final_codes = re.findall(r"^INSTRUMENTATION_CODE: (-?\d+)\s*$", output, re.MULTILINE)
     if final_codes != ["-1"] or counts != Counter(expected):
         raise ValueError("Instrumentation did not complete the exact expected test counts")
+    if ACCESSIBILITY in expected:
+        observed = {name for cls, name in completed if cls == ACCESSIBILITY}
+        if observed != ACCESSIBILITY_METHODS:
+            raise ValueError("Accessibility did not exercise the exact Home acceptance corpus")
     if SEALED_PREPARATION in expected:
         custody = re.findall(r"^INSTRUMENTATION_RESULT: preparationCustody=(.*)$", output, re.MULTILINE)
         if len(custody) != 1 or custody[0].strip() not in ("unsupported", "platform-reported-hardware"):

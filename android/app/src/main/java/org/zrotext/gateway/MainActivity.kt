@@ -8,6 +8,8 @@ import android.os.Build
 import android.os.Bundle
 import android.net.Uri
 import android.os.SystemClock
+import android.os.Handler
+import android.os.Looper
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.text.KeyboardOptions
@@ -80,6 +82,23 @@ class MainActivity : ComponentActivity() {
     private var signingSecurity by mutableStateOf("")
     private var defaultSmsAppRcsRisk by mutableStateOf(DefaultSmsAppRcsRisk.Risk.UNAVAILABLE)
     private var permissionDisclosure by mutableStateOf<GatewayPermissionPurpose?>(null)
+    // Separate read authority. Nothing here is persisted, saved in a Bundle,
+    // inferred from pairing, or shared with a heartbeat/radio service.
+    private var summaryOrigin by mutableStateOf("")
+    private var summaryDeviceId by mutableStateOf("")
+    private var summaryCredential by mutableStateOf("")
+    private var summaryView by mutableStateOf(GatewaySummaryState.View(GatewaySummaryState.Phase.UNAVAILABLE, null))
+    private var summaryStatus by mutableStateOf("Message counts are unavailable on this phone. An authorized summary reader is not connected.")
+    private val summaryState = GatewaySummaryState()
+    private val summaryClient = GatewaySummaryClient()
+    private val summaryWorker = Executors.newSingleThreadExecutor()
+    private val summaryHandler = Handler(Looper.getMainLooper())
+    private var summaryRead: GatewaySummaryClient.Read? = null
+    private var summarySelectedDevice: java.util.UUID? = null
+    private var summaryHome = false
+    private var summaryResumed = false
+    private var summaryRequested = false
+    private val summaryAge = Runnable { updateSummaryView() }
     private val pairingWorker = Executors.newSingleThreadExecutor()
     // Release activation remains disabled. No intent, saved state or preference enables it.
     internal var conversationSetupEnabled = false
@@ -154,7 +173,7 @@ class MainActivity : ComponentActivity() {
 
                 GatewayCompanion(initialPage = GatewayPage.entries.firstOrNull {
                     it.name == intent.getStringExtra("gateway_screen")
-                } ?: GatewayPage.HOME) { page, navigate ->
+                } ?: GatewayPage.HOME, onPageChanged = ::summaryPageChanged) { page, navigate ->
                     if (page == GatewayPage.HOME) {
                         GatewayHome(
                             AuthenticatedGatewayStatus.value, GatewayStatus.value,
@@ -162,9 +181,12 @@ class MainActivity : ComponentActivity() {
                             sims.firstOrNull { it.first == selectedSim }?.second ?: "Not selected",
                             pairingStatus,
                             power = rememberGatewayPower(),
+                            summary = summaryView,
+                            summaryStatus = summaryStatus,
                             onSetup = { navigate(GatewayPage.SETUP) },
                             onConnection = { navigate(GatewayPage.CONNECTION) },
                             onPause = {
+                                clearSummaryReader(clearKey = true)
                                 startService(Intent(this@MainActivity, GatewayService::class.java)
                                     .setAction(GatewayService.ACTION_PAUSE))
                                 startService(Intent(this@MainActivity, AuthenticatedGatewayService::class.java)
@@ -250,6 +272,28 @@ class MainActivity : ComponentActivity() {
                             startService(Intent(this@MainActivity, AuthenticatedGatewayService::class.java)
                                 .setAction(AuthenticatedGatewayService.ACTION_PAUSE))
                         }) { Text("Pause authenticated heartbeat") }
+                        HorizontalDivider()
+                        GatewaySectionTitle("Message summary reader")
+                        Text("Optional read-only metadata. Use a separate messages:read API key restricted to this device. Connection and pairing credentials cannot read counts. Nothing is saved; backgrounding the app clears this key. This action never starts a service or sends SMS.")
+                        OutlinedTextField(value = summaryOrigin, onValueChange = {
+                            summaryOrigin = it; clearSummaryReader(clearKey = true)
+                        }, label = { Text("Summary HTTPS origin") })
+                        OutlinedTextField(value = summaryDeviceId, onValueChange = {
+                            summaryDeviceId = it; clearSummaryReader(clearKey = true)
+                        }, label = { Text("Summary device UUID") })
+                        OutlinedTextField(value = summaryCredential, onValueChange = {
+                            summaryCredential = it; clearSummaryReader(clearKey = false)
+                        }, visualTransformation = PasswordVisualTransformation(),
+                            label = { Text("Separate messages-read API key") })
+                        GatewayButton(onClick = {
+                            if (prepareSummaryRead()) {
+                                summaryRequested = true
+                                navigate(GatewayPage.HOME)
+                            }
+                        }) { Text("Read summary on Home") }
+                        GatewayButton(onClick = { clearSummaryReader(clearKey = true) }) { Text("Clear summary reader") }
+                        Text(summaryStatus)
+
                     }
                     if (page == GatewayPage.TOOLS) {
                         GatewaySectionTitle("Advanced pilots")
@@ -336,13 +380,24 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        summaryResumed = true
+        if (summaryHome) summaryState.resume()
+        updateSummaryView()
         refreshSims()
         defaultSmsAppRcsRisk = DefaultSmsAppRcsRisk.observe(this)
+    }
+
+    override fun onPause() {
+        summaryResumed = false
+        clearSummaryReader(clearKey = true)
+        super.onPause()
     }
 
     override fun onDestroy() {
         closeConversationEntry()
         conversationWorker.shutdownNow()
+        clearSummaryReader(clearKey = true)
+        summaryWorker.shutdownNow()
         pairingWorker.shutdownNow()
         super.onDestroy()
     }
@@ -633,6 +688,98 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    private fun clearSummaryReader(clearKey: Boolean) {
+        summaryRead?.cancel()
+        summaryRead = null
+        summaryRequested = false
+        summaryHandler.removeCallbacks(summaryAge)
+        summaryState.clear()
+        summarySelectedDevice = null
+        if (clearKey) summaryCredential = ""
+        summaryView = summaryState.view(SystemClock.elapsedRealtime(), System.currentTimeMillis())
+        summaryStatus = "Message counts are unavailable on this phone. An authorized summary reader is not connected."
+    }
+    private fun prepareSummaryRead(): Boolean {
+        val selected = GatewayInputValidation.deviceId(summaryDeviceId)
+        if (selected == null) {
+            summaryStatus = "Enter the summary device UUID and a separate messages-read API key."
+            return false
+        }
+        return try {
+            // Validate the exact origin and credential realm before navigation.
+            GatewaySummaryClient.request(summaryOrigin, summaryCredential, selected)
+            if (summarySelectedDevice != selected) {
+                summaryState.select(selected)
+                summarySelectedDevice = selected
+            }
+            true
+        } catch (_: IllegalArgumentException) {
+            summaryStatus = "Enter an HTTPS origin and a separate messages-read API key for this device."
+            false
+        }
+    }
+    private fun summaryPageChanged(page: GatewayPage) {
+        summaryHome = page == GatewayPage.HOME
+        if (!summaryHome) {
+            summaryRead?.cancel()
+            summaryRead = null
+            summaryHandler.removeCallbacks(summaryAge)
+            summaryState.pause()
+            summaryRequested = false
+        } else if (summaryResumed) {
+            summaryState.resume()
+            if (summaryRequested) {
+                summaryRequested = false
+                readSummary()
+            }
+        }
+        updateSummaryView()
+    }
+    private fun readSummary() {
+        if (!summaryHome || !summaryResumed) return
+        val selected = summarySelectedDevice ?: return
+        val ticket = summaryState.begin(SystemClock.elapsedRealtime(), System.currentTimeMillis()) ?: return
+        val read = try { summaryClient.newRead(summaryOrigin, summaryCredential, selected) }
+            catch (_: IllegalArgumentException) {
+                summaryState.fail(ticket)
+                summaryStatus = "The summary reader configuration is unavailable."
+                updateSummaryView()
+                return
+            }
+        summaryRead = read
+        summaryStatus = "Loading device-scoped writer metadata…"
+        updateSummaryView()
+        summaryWorker.execute {
+            val result = read.execute()
+            runOnUiThread {
+                val applied = when (result) {
+                    is GatewaySummaryClient.Result.Success -> summaryState.complete(ticket, result.snapshot)
+                    is GatewaySummaryClient.Result.Refused -> summaryState.fail(ticket)
+                }
+                if (applied) {
+                    summaryRead = null
+                    summaryStatus = when (result) {
+                        is GatewaySummaryClient.Result.Success -> "Read-only writer metadata. Sending and delivery remain separate."
+                        is GatewaySummaryClient.Result.Refused -> when (result.reason) {
+                            GatewaySummaryClient.Failure.UNAUTHORIZED, GatewaySummaryClient.Failure.FORBIDDEN -> "Summary access refused. Check the separate device-scoped read key."
+                            else -> "Summary unavailable. Return to Connection to retry explicitly."
+                        }
+                    }
+                    if (result is GatewaySummaryClient.Result.Refused && result.reason in listOf(
+                        GatewaySummaryClient.Failure.UNAUTHORIZED, GatewaySummaryClient.Failure.FORBIDDEN)) summaryCredential = ""
+                    updateSummaryView()
+                }
+            }
+        }
+    }
+    private fun updateSummaryView() {
+        summaryHandler.removeCallbacks(summaryAge)
+        summaryView = summaryState.view(SystemClock.elapsedRealtime(), System.currentTimeMillis())
+        if (summaryView.phase == GatewaySummaryState.Phase.STALE) summaryStatus = "Historical writer metadata; current counts are unknown. Return to Connection to refresh explicitly."
+        if (summaryHome && summaryResumed && summaryView.freshForMs > 0)
+            summaryHandler.postDelayed(summaryAge, minOf(1_000L, summaryView.freshForMs))
     }
 
     private fun beginPairing() {
