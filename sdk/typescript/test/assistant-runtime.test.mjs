@@ -111,8 +111,10 @@ test('current consent, provider selection, reader generation, takeover and windo
 });
 test('model prompt injection cannot add tools, recipients, approvals or free-text commitment authority',async t=>{
   const f=await fixture(t);
-  f.provider.generate=async()=>({text:enc.encode('quote and payment commitment'),approved:true,recipientId:randomUUID()});
+  const text=enc.encode('quote and payment commitment');
+  f.provider.generate=async()=>({text,approved:true,recipientId:randomUUID()});
   assert.equal((await f.runner.run(f.e)).state,'unknown');assert.equal(f.observed.proposals.length,0);
+  assert.ok(text.every(byte=>byte===0));
 });
 test('durable duplicate and concurrent invocations consume at most one provider call',async t=>{
   const f=await fixture(t);

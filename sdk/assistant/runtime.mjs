@@ -109,8 +109,10 @@ export class AssistantRunner {
         now:this.#now(),expiresMs:e.expiresMs,units:p.callUnits,callLimit:p.callLimit,unitLimit:p.unitLimit,turnLimit:p.turnLimit});
       if (previous) return Object.freeze(previous);
       reserved=true;
-      const selected=object(await this.#reader.readSelected(authority,e,{signal:controller.signal}),['instructions','content']);
-      held.push(selected.instructions,selected.content);
+      const rawSelected=await this.#reader.readSelected(authority,e,{signal:controller.signal});
+      if (rawSelected && typeof rawSelected==='object')
+        for (const field of ['instructions','content']) held.push(Object.getOwnPropertyDescriptor(rawSelected,field)?.value);
+      const selected=object(rawSelected,['instructions','content']);
       const instructions=bytes(selected.instructions,8192), content=bytes(selected.content,32768);
       held.push(instructions,content);
       authority=await this.#current(e,controller.signal);
@@ -132,7 +134,8 @@ export class AssistantRunner {
         return response;
       }),timeout]);
       clearTimeout(timer);
-      const output=object(response,['text']); held.push(output.text);
+      if (response && typeof response==='object') held.push(Object.getOwnPropertyDescriptor(response,'text')?.value);
+      const output=object(response,['text']);
       const text=bytes(output.text,8192); held.push(text);
       authority=await this.#current(e,controller.signal);
       const actionId=randomUUID();
