@@ -66,7 +66,14 @@
     const result = await controller.confirm(); el("status").textContent = result.status === "queued" ? "Confirmed message queued. Delivery is pending." : "Simulator accepted the confirmed message. Carrier delivery is not tested.";
   }));
   el("cancel").addEventListener("click", () => { try { controller.edit(controller.state().draft); } catch { controller.clear(); } render(); el("body").focus(); });
-  const clear = () => { setupRevision++; custodyLifetime?.abort(); adapter?.close?.(); controller?.clear(); hadScope = false; render(); el("status").textContent = "Conversation cleared. Check authorization again."; };
+  const clear = () => {
+    setupRevision++;
+    try { try { custodyLifetime?.abort(); } finally { adapter?.close?.(); } }
+    finally {
+      try { controller?.clear(); }
+      finally { hadScope = false; render(); el("status").textContent = "Conversation cleared. Check authorization again."; }
+    }
+  };
   el("clear").addEventListener("click", clear);
   window.addEventListener("pagehide", clear);
   document.addEventListener("visibilitychange", () => { if (document.hidden) clear(); });

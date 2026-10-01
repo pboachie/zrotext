@@ -9,7 +9,11 @@
   function create({enabled=false,fetch:request,readAuthority,currentCsrf,custody,endpoints,initialEvent}) {
     let closed=!enabled,custodyClosed=false;
     const closeListeners=new Set();
-    function close(){if(custodyClosed)return;closed=true;custodyClosed=true;custody?.close();for(const listener of closeListeners){try{listener();}catch{ /* Closure cannot depend on presentation delivery. */ }}closeListeners.clear();}
+    function close(){
+      if(custodyClosed)return;closed=true;custodyClosed=true;
+      try{custody?.close();}
+      finally{for(const listener of closeListeners){try{listener();}catch{ /* Closure cannot depend on presentation delivery. */ }}closeListeners.clear();}
+    }
     async function useCustody(run){try{return await run();}catch(error){close();throw error;}}
     if(enabled && (typeof request!=="function" || typeof readAuthority!=="function" || typeof currentCsrf!=="function" ||
        !custody || ["openSealed","prepare","signReviewed","close"].some(k=>typeof custody[k]!=="function") ||
