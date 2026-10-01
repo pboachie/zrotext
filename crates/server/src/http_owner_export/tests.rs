@@ -38,6 +38,7 @@ macro_rules! export_schema {
         };
     }
 const EXPORT_SCHEMA: [(&str, &str); 90] = export_schema!(
+const EXPORT_SCHEMA: [(&str, &str); 67] = export_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -128,6 +129,7 @@ const EXPORT_SCHEMA: [(&str, &str); 90] = export_schema!(
     "088_original_reply_readers.sql",
     "089_original_routine_sources.sql",
     "090_invoice_usage_observations.sql",
+    "068_contacts_consent.sql",
 );
 #[test]
 fn export_schema_includes_every_checked_in_migration() {
@@ -684,6 +686,13 @@ async fn export_paginates_full_history_beyond_the_first_page() {
                 1,
                 Zeroizing::new(vec![9_u8; 32]),
             )
+            .unwrap(),
+        )),
+    });
+    let first = body(
+        app.clone()
+            .oneshot(get("/v1/owner/export", Some(&session_a)))
+            .await
             .unwrap(),
         )),
     });

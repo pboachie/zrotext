@@ -740,6 +740,9 @@ their consent records with everything else. The default-off workflow services
 check current purpose consent alongside their exact owner approval and other
 authority fences. Ordinary message admission retains its existing suppression
 and hold checks.
+their consent records with everything else. The contacts and consent
+records do not gate message sending; admission and suppression checks are
+unchanged by this data.
 
 ## Source for modified deployments
 
