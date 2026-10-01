@@ -109,3 +109,8 @@ code, .eyebrow, .rail-label, .rail-status, .nav-note { font-family: Consolas, "C
 #approved-devices #device-list li span { display: block; margin-top: .4rem; }
 .fleet-select[aria-pressed="true"] { background: var(--owner-raised); box-shadow: inset 0 0 0 2px var(--owner-accent); }
 @media (max-width: 75rem) { .fleet-workspace { grid-template-columns: minmax(0, 1fr); } }
+.summary-cards { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem;margin-top:1rem; }
+.summary-cards > div { background:var(--owner-raised);border:1px solid var(--owner-border);border-radius:.5rem;padding:1rem;min-width:0;overflow-wrap:anywhere; }
+.summary-value { font-size:2rem;font-weight:700;margin:.5rem 0;color:var(--owner-accent); }
+#message-summary[data-stale="true"] .summary-value { color:var(--owner-caution); }
+@media(max-width:55rem) { .summary-cards { grid-template-columns:1fr; } }
