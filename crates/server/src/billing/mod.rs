@@ -12,6 +12,7 @@ use uuid::Uuid;
 pub mod drain;
 pub mod exposure;
 pub mod http;
+pub(crate) mod invoice;
 pub mod owner;
 pub mod plans;
 pub mod review;
@@ -158,7 +159,13 @@ pub fn verify_event(
     // object shape is acknowledged and durably recorded instead of being
     // answered with 4xx, so a legitimate provider event is never dropped and
     // retried until Stripe gives up on it.
-    let mut unsupported = false;
+    // This configured TEST endpoint owns one platform account. Connected-
+    // account events and a different object dialect are retained for review,
+    // without borrowing their customer pointers as platform authority.
+    let foreign_context = !json["account"].is_null()
+        || !json["context"].is_null()
+        || (!json["api_version"].is_null() && json["api_version"] != risk::STRIPE_API_VERSION);
+    let mut unsupported = foreign_context;
     let payment_failed_at_unix = if event_type == "invoice.payment_failed" {
         match json["created"]
             .as_i64()
@@ -227,7 +234,10 @@ pub fn verify_event(
         }
         Err(other) => return Err(other),
     };
-    if unsupported && !risk_review_required {
+    if foreign_context {
+        risk_review_required = false;
+        shape = EventShape::default();
+    } else if unsupported && !risk_review_required {
         // An invoice failure without a usable creation time cannot anchor
         // grace; do not queue it under an unsupported disposition.
         shape = EventShape::default();
@@ -853,6 +863,27 @@ pub async fn reconcile_snapshot_with_quotas(
     quota_plans: &[TestQuotaPlan],
     expected_generation: i64,
 ) -> Result<(), BillingError> {
+    reconcile_with_invoice(
+        client,
+        account_id,
+        snapshot,
+        recognized_prices,
+        quota_plans,
+        expected_generation,
+        None,
+    )
+    .await
+}
+
+async fn reconcile_with_invoice(
+    client: &mut Client,
+    account_id: Uuid,
+    snapshot: &SubscriptionSnapshot,
+    recognized_prices: &[String],
+    quota_plans: &[TestQuotaPlan],
+    expected_generation: i64,
+    current_invoice: Option<&invoice::CurrentInvoice>,
+) -> Result<(), BillingError> {
     valid_id(&snapshot.subscription_id, "sub_")?;
     valid_id(&snapshot.customer_id, "cus_")?;
     if let Some(price_id) = &snapshot.price_id {
@@ -995,6 +1026,15 @@ pub async fn reconcile_snapshot_with_quotas(
         )
         .await?;
     }
+    invoice::apply(
+        &tx,
+        account_id,
+        snapshot,
+        current_invoice,
+        quota_plans,
+        expected_generation,
+    )
+    .await?;
     tx.commit().await?;
     Ok(())
 }

@@ -19,6 +19,7 @@ use uuid::Uuid;
 #[serde(rename_all = "camelCase")]
 struct BillingStatus {
     local_usage: Option<super::usage::UsageView>,
+    invoice_period: Option<super::invoice::lifecycle::PeriodStatus>,
     mode: &'static str,
     customer_bound: bool,
     pending_reconciliations: i64,
@@ -110,7 +111,7 @@ async fn status(
     headers: HeaderMap,
 ) -> Result<Json<BillingStatus>, AuthHttpError> {
     http_auth::require_session_cookie(&headers)?;
-    let db = connect(&state.database_url).await?;
+    let mut db = connect(&state.database_url).await?;
     let owner =
         http_auth::require_owner(&db, &state.hasher, &state.canonical_origin, &headers, false)
             .await?;
@@ -168,6 +169,9 @@ async fn status(
         .collect();
     Ok(Json(BillingStatus {
         local_usage: super::usage::current(&db, account_id)
+            .await
+            .map_err(|_| AuthHttpError::Unavailable)?,
+        invoice_period: super::invoice::lifecycle::status(&mut db, &owner)
             .await
             .map_err(|_| AuthHttpError::Unavailable)?,
         mode: "test",
