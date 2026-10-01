@@ -866,142 +866,20 @@ impl<'a> DeliveryStore<'a> {
         session: &SessionRecord,
         attempt_id: Uuid,
     ) -> Result<GrantRecord, StoreError> {
-        if claim.account_id != session.account_id || claim.device_id != session.device_id {
-            return Err(StoreError::StaleFence);
-        }
         let tx = self.client.transaction().await?;
-        let authority = tx
-            .query_typed_one(
-                "SELECT epoch,dispatch_enabled FROM deployment_authority WHERE singleton=TRUE FOR SHARE",
-                &[],
-            )
-            .await?;
-        let deployment_epoch: i64 = authority.get(0);
-        let dispatch_enabled: bool = authority.get(1);
-        if !dispatch_enabled {
-            return Err(StoreError::DispatchDisabled);
-        }
-        if deployment_epoch != session.deployment_epoch {
-            return Err(StoreError::StaleFence);
-        }
-        let device = tx.query_typed_opt(
-            "SELECT revoked_at IS NOT NULL FROM devices WHERE account_id=$1 AND id=$2 FOR SHARE",
-            &[(&claim.account_id, Type::UUID), (&claim.device_id, Type::UUID)],
-        ).await?.ok_or(StoreError::StaleFence)?;
-        if device.get::<_, bool>(0) {
-            return Err(StoreError::Revoked);
-        }
-        // Serialize dispatch with both signed opt-outs and owner holds. A
-        // withdrawal that wins this lock must prevent any later radio grant.
-        tx.query_typed_opt(
-            "SELECT id FROM accounts WHERE id=$1 AND disabled_at IS NULL FOR NO KEY UPDATE",
-            &[(&claim.account_id, Type::UUID)],
-        )
-        .await?
-        .ok_or(StoreError::StaleFence)?;
-        // No session fields change here. SHARE fences reconnects while staying
-        // compatible with consent-changing signed inbound ingest, which takes
-        // the account lock only for STOP/START transitions.
-        let current_session = tx
-            .query_typed_opt(
-                "SELECT ds.connection_epoch,ds.site_id,ds.instance_id,ds.lease_until>clock_timestamp() AS live, \
-                  s.enabled,s.draining FROM device_sessions ds JOIN sites s ON s.site_id=ds.site_id \
-                  WHERE ds.account_id=$1 AND ds.device_id=$2 FOR SHARE OF ds",
-                &[(&session.account_id, Type::UUID), (&session.device_id, Type::UUID)],
-            )
-            .await?
-            .ok_or(StoreError::StaleFence)?;
-        if current_session.get::<_, i64>(0) != session.epoch
-            || current_session.get::<_, String>(1) != session.site_id
-            || current_session.get::<_, String>(2) != session.instance_id
-            || !current_session.get::<_, bool>(3)
-            || !current_session.get::<_, bool>(4)
-            || current_session.get::<_, bool>(5)
-        {
-            return Err(StoreError::StaleFence);
-        }
-        let job = tx
-            .query_typed_opt(
-                "SELECT j.generation,j.lease_owner,j.lease_until>clock_timestamp(),j.grant_issued_at IS NULL, \
-                        m.state,m.expires_at>clock_timestamp(),m.recipient_digest,m.recipient_e164 \
-                 FROM dispatch_jobs j JOIN messages m ON m.id=j.message_id \
-                 WHERE j.account_id=$1 AND j.message_id=$2 AND j.device_id=$3 \
-                   AND m.transport_mode='synthetic_alpha' FOR UPDATE OF j,m",
-                &[(&claim.account_id, Type::UUID), (&claim.message_id, Type::UUID),
-                  (&claim.device_id, Type::UUID)],
-            )
-            .await?
-            .ok_or(StoreError::StaleFence)?;
-        if job.get::<_, i64>(0) != claim.generation
-            || job.get::<_, Option<String>>(1).as_deref() != Some(claim.worker_id.as_str())
-            || !job.get::<_, bool>(2)
-            || !job.get::<_, bool>(3)
-            || job.get::<_, String>(4) != "claimed"
-            || !job.get::<_, bool>(5)
-        {
-            return Err(StoreError::StaleFence);
-        }
-        let recipient: Option<String> = job.get(7);
-        let recipient = recipient.ok_or(StoreError::StaleFence)?;
-        if tx.query_typed_opt(
-            "SELECT 1 FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164=$2 AND active=TRUE \
-             UNION ALL SELECT 1 FROM owner_recipient_holds \
-             WHERE account_id=$1 AND recipient_e164=$2 AND released_at IS NULL LIMIT 1",
-            &[(&claim.account_id, Type::UUID), (&recipient, Type::TEXT)],
-        ).await?.is_some() {
-            cancel_pre_grant(&tx, claim.account_id, claim.message_id).await?;
-            tx.commit().await?;
-            return Err(StoreError::RecipientSuppressed);
-        }
-        let recipient_digest: Vec<u8> = job.get(6);
-        tx.execute_typed(
-            "INSERT INTO message_attempts (id,account_id,message_id,device_id,generation,session_epoch,deployment_epoch,status) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,'granted')",
-            &[(&attempt_id, Type::UUID), (&claim.account_id, Type::UUID),
-              (&claim.message_id, Type::UUID), (&claim.device_id, Type::UUID),
-              (&claim.generation, Type::INT8), (&session.epoch, Type::INT8),
-              (&deployment_epoch, Type::INT8)],
-        )
-        .await?;
-        let inserted = tx.query_typed_one(
-            "INSERT INTO dispatch_fences (message_id,account_id,device_id,attempt_id,generation,session_epoch, \
-              deployment_epoch,recipient_digest,grant_expires_at,outcome) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,clock_timestamp()+interval '30 seconds','granted') \
-             RETURNING (extract(epoch FROM grant_expires_at)*1000)::bigint",
-            &[(&claim.message_id, Type::UUID), (&claim.account_id, Type::UUID),
-              (&claim.device_id, Type::UUID), (&attempt_id, Type::UUID),
-              (&claim.generation, Type::INT8), (&session.epoch, Type::INT8),
-              (&deployment_epoch, Type::INT8), (&recipient_digest, Type::BYTEA)],
-        ).await;
-        let inserted = match inserted {
-            Ok(row) => row,
-            Err(error) => {
-                if error.as_db_error().is_some_and(|db| {
-                    db.code() == &SqlState::UNIQUE_VIOLATION
-                        && db.constraint() == Some("dispatch_fences_active_device")
-                }) {
-                    return Err(StoreError::DeviceBusy);
-                }
-                return Err(StoreError::Database(error));
-            }
-        };
-        tx.execute_typed(
-            "UPDATE dispatch_jobs SET grant_issued_at=now() WHERE message_id=$1",
-            &[(&claim.message_id, Type::UUID)],
-        )
-        .await?;
-        tx.commit().await?;
-        Ok(GrantRecord {
-            account_id: claim.account_id,
-            message_id: claim.message_id,
+        let result = grant_in_transaction(
+            &tx,
+            claim,
+            session,
             attempt_id,
-            device_id: claim.device_id,
-            generation: claim.generation,
-            session_epoch: session.epoch,
-            deployment_epoch,
-            recipient_digest,
-            expires_at_ms: inserted.get(0),
-        })
+            GrantTransport::SyntheticAlpha,
+            None,
+        )
+        .await;
+        if result.is_ok() || matches!(result, Err(StoreError::RecipientSuppressed)) {
+            tx.commit().await?;
+        }
+        result
     }
 
     pub async fn synthetic_payload_for_grant(
@@ -1131,6 +1009,44 @@ impl<'a> DeliveryStore<'a> {
         let digest = radio_event_digest(&event, code);
         let observed_at = event.observed_at_ms as f64;
         let tx = self.client.transaction().await?;
+        let mut sealed_intent = false;
+        // Sealed intent shares the grant/fetch lock order. Lock authority and
+        // account before the message so revocation cannot race a first submit.
+        // Historical callbacks and exact replays retain their old semantics.
+        if event.evidence == Evidence::DurableSubmitIntent {
+            let sealed: bool = tx.query_typed_one(
+                "SELECT EXISTS(SELECT 1 FROM messages WHERE account_id=$1 AND id=$2 AND transport_mode='sealed_candidate02')",
+                &[(&event.account_id, Type::UUID), (&event.message_id, Type::UUID)],
+            ).await?.get(0);
+            if sealed {
+                sealed_intent = true;
+                tx.query_typed_opt("SELECT account_id FROM sealed_manifest_authorities WHERE account_id=$1 FOR UPDATE",
+                    &[(&event.account_id, Type::UUID)]).await?;
+                tx.query_typed_opt(
+                    "SELECT id FROM accounts WHERE id=$1 FOR NO KEY UPDATE",
+                    &[(&event.account_id, Type::UUID)],
+                )
+                .await?;
+                // Hold the current identity rows through the final intent
+                // guard and commit. Reconnect/line/device/writer changes must
+                // serialize, while historical exact receipt replays remain
+                // eligible even when the locked identity is already revoked.
+                tx.query_typed_opt(
+                    "SELECT g.attempt_id FROM sealed_grant_authorizations g \
+                     JOIN device_sessions ds ON (ds.account_id,ds.device_id)=(g.account_id,g.device_id) \
+                     JOIN devices d ON (d.account_id,d.id)=(g.account_id,g.device_id) \
+                     JOIN device_keys k ON (k.account_id,k.device_id)=(g.account_id,g.device_id) \
+                     JOIN sites s ON s.site_id=g.site_id JOIN deployment_authority p ON p.singleton \
+                     JOIN phone_lines l ON (l.account_id,l.id)=(g.account_id,g.line_id) \
+                     JOIN device_line_bindings b ON (b.account_id,b.line_id,b.device_id,b.generation)= \
+                         (g.account_id,g.line_id,g.device_id,g.binding_generation) \
+                     WHERE g.account_id=$1 AND g.message_id=$2 AND g.device_id=$3 AND g.attempt_id=$4 \
+                     FOR SHARE OF ds,d,k,s,p,l,b",
+                    &[(&event.account_id, Type::UUID),(&event.message_id, Type::UUID),
+                      (&event.device_id, Type::UUID),(&event.attempt_id, Type::UUID)],
+                ).await?;
+            }
+        }
         let row = tx
             .query_typed_opt(
                 "SELECT state,recipient_e164 IS NULL FROM messages \
@@ -1304,6 +1220,17 @@ impl<'a> DeliveryStore<'a> {
                 &[(&event.attempt_id, Type::UUID), (&status, Type::TEXT)],
             )
             .await?;
+        }
+        if sealed_intent {
+            // A blocked final write can outlive the grant after the insert
+            // trigger checked it. Roll back the complete intent in that case.
+            let current: bool = tx.query_typed_one(
+                "SELECT sealed_grant_current($1) AND EXISTS(SELECT 1 FROM dispatch_fences WHERE attempt_id=$1 AND outcome='submitting' AND grant_expires_at>clock_timestamp())",
+                &[(&event.attempt_id, Type::UUID)],
+            ).await?.get(0);
+            if !current {
+                return Err(StoreError::StaleFence);
+            }
         }
         tx.commit().await?;
         Ok(next)
@@ -1824,6 +1751,175 @@ fn state_from_str(value: &str) -> Option<MessageState> {
 
 fn state_from_row(row: &Row) -> Result<MessageState, StoreError> {
     state_from_str(&row.get::<_, String>(0)).ok_or(StoreError::InvalidTransition)
+}
+
+/// Storage mode selected only after transport-specific authority verification.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GrantTransport {
+    SyntheticAlpha,
+    SealedCandidate02,
+}
+impl GrantTransport {
+    fn wire(self) -> &'static str {
+        match self {
+            Self::SyntheticAlpha => "synthetic_alpha",
+            Self::SealedCandidate02 => "sealed_candidate02",
+        }
+    }
+}
+
+/// Reuse the one-use attempt/fence transition within the caller's transaction.
+/// Sealed callers must hold and recheck current signed manifest/line authority,
+/// and insert immutable authorized provenance before invoking this helper.
+/// No helper commits: refusal rolls back unless the caller commits suppression.
+pub async fn grant_in_transaction(
+    tx: &Transaction<'_>,
+    claim: &Claim,
+    session: &SessionRecord,
+    attempt_id: Uuid,
+    transport: GrantTransport,
+    deadline_ms: Option<i64>,
+) -> Result<GrantRecord, StoreError> {
+    if claim.account_id != session.account_id || claim.device_id != session.device_id {
+        return Err(StoreError::StaleFence);
+    }
+    let authority = tx
+        .query_typed_one(
+            "SELECT epoch,dispatch_enabled FROM deployment_authority WHERE singleton=TRUE FOR SHARE",
+            &[],
+        )
+        .await?;
+    let deployment_epoch: i64 = authority.get(0);
+    let dispatch_enabled: bool = authority.get(1);
+    if !dispatch_enabled {
+        return Err(StoreError::DispatchDisabled);
+    }
+    if deployment_epoch != session.deployment_epoch {
+        return Err(StoreError::StaleFence);
+    }
+    let device = tx
+        .query_typed_opt(
+            "SELECT revoked_at IS NOT NULL FROM devices WHERE account_id=$1 AND id=$2 FOR SHARE",
+            &[
+                (&claim.account_id, Type::UUID),
+                (&claim.device_id, Type::UUID),
+            ],
+        )
+        .await?
+        .ok_or(StoreError::StaleFence)?;
+    if device.get::<_, bool>(0) {
+        return Err(StoreError::Revoked);
+    }
+    // Serialize dispatch with both signed opt-outs and owner holds. A
+    // withdrawal that wins this lock must prevent any later radio grant.
+    tx.query_typed_opt(
+        "SELECT id FROM accounts WHERE id=$1 AND disabled_at IS NULL FOR NO KEY UPDATE",
+        &[(&claim.account_id, Type::UUID)],
+    )
+    .await?
+    .ok_or(StoreError::StaleFence)?;
+    // No session fields change here. SHARE fences reconnects while staying
+    // compatible with consent-changing signed inbound ingest, which takes
+    // the account lock only for STOP/START transitions.
+    let current_session = tx
+        .query_typed_opt(
+            "SELECT ds.connection_epoch,ds.site_id,ds.instance_id,ds.lease_until>clock_timestamp() AS live, \
+              s.enabled,s.draining FROM device_sessions ds JOIN sites s ON s.site_id=ds.site_id \
+              WHERE ds.account_id=$1 AND ds.device_id=$2 FOR SHARE OF ds",
+            &[(&session.account_id, Type::UUID), (&session.device_id, Type::UUID)],
+        )
+        .await?
+        .ok_or(StoreError::StaleFence)?;
+    if current_session.get::<_, i64>(0) != session.epoch
+        || current_session.get::<_, String>(1) != session.site_id
+        || current_session.get::<_, String>(2) != session.instance_id
+        || !current_session.get::<_, bool>(3)
+        || !current_session.get::<_, bool>(4)
+        || current_session.get::<_, bool>(5)
+    {
+        return Err(StoreError::StaleFence);
+    }
+    let job = tx
+        .query_typed_opt(
+            "SELECT j.generation,j.lease_owner,j.lease_until>clock_timestamp(),j.grant_issued_at IS NULL, \
+                    m.state,m.expires_at>clock_timestamp(),m.recipient_digest,m.recipient_e164 \
+             FROM dispatch_jobs j JOIN messages m ON m.id=j.message_id \
+             WHERE j.account_id=$1 AND j.message_id=$2 AND j.device_id=$3 \
+               AND m.transport_mode=$4 FOR UPDATE OF j,m",
+            &[(&claim.account_id, Type::UUID), (&claim.message_id, Type::UUID),
+              (&claim.device_id, Type::UUID), (&transport.wire(), Type::TEXT)],
+        )
+        .await?
+        .ok_or(StoreError::StaleFence)?;
+    if job.get::<_, i64>(0) != claim.generation
+        || job.get::<_, Option<String>>(1).as_deref() != Some(claim.worker_id.as_str())
+        || !job.get::<_, bool>(2)
+        || !job.get::<_, bool>(3)
+        || job.get::<_, String>(4) != "claimed"
+        || !job.get::<_, bool>(5)
+    {
+        return Err(StoreError::StaleFence);
+    }
+    let recipient: Option<String> = job.get(7);
+    let recipient = recipient.ok_or(StoreError::StaleFence)?;
+    if tx.query_typed_opt(
+        "SELECT 1 FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164=$2 AND active=TRUE \
+         UNION ALL SELECT 1 FROM owner_recipient_holds \
+         WHERE account_id=$1 AND recipient_e164=$2 AND released_at IS NULL LIMIT 1",
+        &[(&claim.account_id, Type::UUID), (&recipient, Type::TEXT)],
+    ).await?.is_some() {
+        cancel_pre_grant(tx, claim.account_id, claim.message_id).await?;
+        return Err(StoreError::RecipientSuppressed);
+    }
+    let recipient_digest: Vec<u8> = job.get(6);
+    tx.execute_typed(
+        "INSERT INTO message_attempts (id,account_id,message_id,device_id,generation,session_epoch,deployment_epoch,status) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'granted')",
+        &[(&attempt_id, Type::UUID), (&claim.account_id, Type::UUID),
+          (&claim.message_id, Type::UUID), (&claim.device_id, Type::UUID),
+          (&claim.generation, Type::INT8), (&session.epoch, Type::INT8),
+          (&deployment_epoch, Type::INT8)],
+    )
+    .await?;
+    let inserted = tx.query_typed_one(
+        "INSERT INTO dispatch_fences (message_id,account_id,device_id,attempt_id,generation,session_epoch, \
+          deployment_epoch,recipient_digest,grant_expires_at,outcome) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,LEAST(clock_timestamp()+interval '30 seconds',to_timestamp($9::bigint::double precision/1000)),'granted') \
+         RETURNING (extract(epoch FROM grant_expires_at)*1000)::bigint",
+        &[(&claim.message_id, Type::UUID), (&claim.account_id, Type::UUID),
+          (&claim.device_id, Type::UUID), (&attempt_id, Type::UUID),
+          (&claim.generation, Type::INT8), (&session.epoch, Type::INT8),
+          (&deployment_epoch, Type::INT8), (&recipient_digest, Type::BYTEA),
+          (&deadline_ms, Type::INT8)],
+    ).await;
+    let inserted = match inserted {
+        Ok(row) => row,
+        Err(error) => {
+            if error.as_db_error().is_some_and(|db| {
+                db.code() == &SqlState::UNIQUE_VIOLATION
+                    && db.constraint() == Some("dispatch_fences_active_device")
+            }) {
+                return Err(StoreError::DeviceBusy);
+            }
+            return Err(StoreError::Database(error));
+        }
+    };
+    tx.execute_typed(
+        "UPDATE dispatch_jobs SET grant_issued_at=now() WHERE message_id=$1",
+        &[(&claim.message_id, Type::UUID)],
+    )
+    .await?;
+    Ok(GrantRecord {
+        account_id: claim.account_id,
+        message_id: claim.message_id,
+        attempt_id,
+        device_id: claim.device_id,
+        generation: claim.generation,
+        session_epoch: session.epoch,
+        deployment_epoch,
+        recipient_digest,
+        expires_at_ms: inserted.get(0),
+    })
 }
 
 #[cfg(test)]
