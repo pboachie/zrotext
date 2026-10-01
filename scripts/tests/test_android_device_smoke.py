@@ -76,13 +76,13 @@ class DeviceSmokeTests(unittest.TestCase):
     def test_exact_selected_counts_pass(self):
         output = result(smoke.PRECONDITIONS, code=1) + result(smoke.PRECONDITIONS)
         smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n", {smoke.PRECONDITIONS: 1})
-        for index in range(5):
-            output += result(smoke.ACCESSIBILITY, f"example{index}")
-        smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n", {smoke.PRECONDITIONS: 1, smoke.ACCESSIBILITY: 5})
+        for name in sorted(smoke.ACCESSIBILITY_METHODS):
+            output += result(smoke.ACCESSIBILITY, name)
+        smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n", {smoke.PRECONDITIONS: 1, smoke.ACCESSIBILITY: 6})
         for index in range(12):
             output += result(smoke.MANIFEST_AUTHORITY, f"example{index}")
         smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n",
-                             {smoke.PRECONDITIONS: 1, smoke.ACCESSIBILITY: 5, smoke.MANIFEST_AUTHORITY: 12})
+                             {smoke.PRECONDITIONS: 1, smoke.ACCESSIBILITY: 6, smoke.MANIFEST_AUTHORITY: 12})
 
     def test_failure_skips_and_incomplete_runs_fail(self):
         for code in [-1, -2, -3, -4]:
@@ -109,11 +109,22 @@ class DeviceSmokeTests(unittest.TestCase):
             expected = {smoke.PRECONDITIONS: 1, smoke.ACCESSIBILITY: 6}
             self.assertEqual(smoke.selected_tests(root), expected)
             partial = result(smoke.PRECONDITIONS) + ''.join(
-                result(smoke.ACCESSIBILITY, f'check{index}') for index in range(5))
+                result(smoke.ACCESSIBILITY, name) for name in sorted(smoke.ACCESSIBILITY_METHODS)
+                if name != 'homeObservationsKeepReadOnlyLabelsAndReadingOrderAtCurrentTextScale')
             with self.assertRaises(ValueError):
                 smoke.verify_results(partial + 'INSTRUMENTATION_CODE: -1\n', expected)
             smoke.verify_results(partial + result(smoke.ACCESSIBILITY, 'homeObservationsKeepReadOnlyLabelsAndReadingOrderAtCurrentTextScale')
                                  + 'INSTRUMENTATION_CODE: -1\n', expected)
+
+    def test_same_count_cannot_replace_home_acceptance_with_another_test(self):
+        expected = {smoke.ACCESSIBILITY: 6}
+        home = "homeObservationsKeepReadOnlyLabelsAndReadingOrderAtCurrentTextScale"
+        output = "".join(result(smoke.ACCESSIBILITY, name) for name in smoke.ACCESSIBILITY_METHODS)
+        smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n", expected)
+        substituted = output.replace(result(smoke.ACCESSIBILITY, home),
+                                     result(smoke.ACCESSIBILITY, "unrelatedPassingTest"))
+        with self.assertRaisesRegex(ValueError, "exact Home acceptance corpus"):
+            smoke.verify_results(substituted + "INSTRUMENTATION_CODE: -1\n", expected)
 
     def test_manifest_authority_is_selected_only_when_source_exists(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -27,6 +27,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -61,8 +62,10 @@ internal enum class GatewayPage(val label: String) {
 /** Navigation is presentation only: changing pages never starts a service or asks for access. */
 @Composable
 internal fun GatewayCompanion(initialPage: GatewayPage = GatewayPage.HOME,
+    onPageChanged: (GatewayPage) -> Unit = {},
     content: @Composable ColumnScope.(GatewayPage, (GatewayPage) -> Unit) -> Unit) {
     var page by rememberSaveable { mutableStateOf(initialPage) }
+    LaunchedEffect(page) { onPageChanged(page) }
     val screenState = rememberSaveableStateHolder()
     val navigate: (GatewayPage) -> Unit = { page = it }
     BackHandler(enabled = page != GatewayPage.HOME) { page = GatewayPage.HOME }
@@ -120,6 +123,8 @@ internal fun GatewayHome(
     sim: String,
     pairingStatus: String,
     power: GatewayPowerObservation = GatewayPowerObservation.unavailable(),
+    summary: GatewaySummaryState.View = GatewaySummaryState.View(GatewaySummaryState.Phase.UNAVAILABLE, null),
+    summaryStatus: String = "Message counts are unavailable on this phone. An authorized summary reader is not connected.",
     onSetup: () -> Unit,
     onConnection: () -> Unit,
     onPause: () -> Unit
@@ -138,6 +143,30 @@ internal fun GatewayHome(
             GatewayStatusText("Device status", authenticatedStatus)
             Text("Connection proof, not SMS readiness.", style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+        }
+    }
+    GatewayEntrance(1, motion) {
+        Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.large,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                GatewaySectionTitle("Message activity")
+                fun label(count: GatewaySummaryCount?): String = when (summary.phase) {
+                    GatewaySummaryState.Phase.UNAVAILABLE -> "Unavailable"
+                    GatewaySummaryState.Phase.LOADING -> count?.let { "${it.label()} (refreshing)" } ?: "Loading…"
+                    GatewaySummaryState.Phase.STALE -> count?.let { "${it.label()} (stale)" } ?: "Unavailable"
+                    GatewaySummaryState.Phase.FRESH -> count?.label() ?: "Unavailable"
+                }
+                GatewayObservationRow("Submitted today", label(summary.snapshot?.submittedToday))
+                GatewayObservationRow("In queue", label(summary.snapshot?.pending))
+                GatewayObservationRow("Awaiting receipt", label(summary.snapshot?.inFlight))
+                Text(summaryStatus, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                summary.snapshot?.let { snapshot ->
+                    Text("Device-scoped UTC observation: ${java.time.Instant.ofEpochMilli(snapshot.observedMs)}. Submitted is not delivered. In queue includes accepted, queued and claimed work, which can already hold a grant. Awaiting receipt includes submitting and submitted states.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+
+            }
         }
     }
     GatewayEntrance(1, motion) {
