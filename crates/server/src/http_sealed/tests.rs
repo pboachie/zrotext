@@ -1045,23 +1045,44 @@ async fn disabled_state_hides_the_resource_groups_before_any_check() {
 
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
-async fn usage_reports_the_current_period_without_currency() {
+async fn usage_pages_history_with_cursors_and_counter_semantics() {
     let (case, token) = resource_case("billing:read").await;
     let f = &case.fixture;
-    f.db.execute(
-        "INSERT INTO usage_periods(account_id,metric,period_start,period_end,limit_units,reserved_units,refunded_units)          VALUES($1,'outbound_message',date_trunc('month',current_date AT TIME ZONE 'UTC')::date,(date_trunc('month',current_date AT TIME ZONE 'UTC')+interval '1 month')::date,100,7,2)",
-        &[&f.account],
-    ).await.unwrap();
+    for (months_ago, limit, reserved, refunded) in [
+        (0_i32, 100_i64, 7_i64, 2_i64),
+        (1_i32, 100_i64, 60_i64, 0_i64),
+        (2_i32, 50_i64, 10_i64, 1_i64),
+    ] {
+        f.db.execute(
+            "WITH m AS (SELECT (date_trunc('month',current_date AT TIME ZONE 'UTC') \
+             - ($2::int * interval '1 month'))::date AS s) \
+             INSERT INTO usage_periods(account_id,metric,period_start,period_end, \
+             limit_units,reserved_units,refunded_units) \
+             SELECT $1,'outbound_message',s,(s + interval '1 month')::date,$3,$4,$5 FROM m",
+            &[&f.account, &months_ago, &limit, &reserved, &refunded],
+        )
+        .await
+        .unwrap();
+    }
     let app = router(case.state());
-    let response = app.oneshot(get_request(&token, "/usage")).await.unwrap();
+    let response = app
+        .clone()
+        .oneshot(get_request(&token, "/usage?limit=2"))
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    #[derive(serde::Deserialize)]
+    struct UsagePage {
+        usage: Vec<UsageRow>,
+        next_before: Option<String>,
+    }
     #[derive(serde::Deserialize)]
     #[expect(
         dead_code,
         reason = "projection contract fields are asserted selectively"
     )]
-    struct Usage {
+    struct UsageRow {
         metric: String,
         period_start: String,
         period_end: String,
@@ -1071,26 +1092,109 @@ async fn usage_reports_the_current_period_without_currency() {
         used_units: i64,
     }
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let usage: Usage = serde_json::from_slice(&body).unwrap();
-    assert_eq!(usage.metric, "outbound_message");
-    assert_eq!(usage.limit_units, 100);
-    assert_eq!(usage.reserved_units, 7);
-    assert_eq!(usage.refunded_units, 2);
-    assert_eq!(usage.used_units, 5);
-    assert!(usage.period_start.ends_with("-01"));
+    let page: UsagePage = serde_json::from_slice(&body).unwrap();
+    assert_eq!(page.usage.len(), 2, "limit bounds the page");
+    let head = &page.usage[0];
+    assert_eq!(head.metric, "outbound_message");
+    assert!(
+        head.period_start.ends_with("-01"),
+        "periods are UTC calendar months"
+    );
+    assert_eq!(head.limit_units, 100);
+    assert_eq!(head.reserved_units, 7);
+    assert_eq!(head.refunded_units, 2);
+    assert_eq!(
+        head.used_units, 5,
+        "used is reservations minus exactly-once refunds"
+    );
+    let cursor = page
+        .next_before
+        .clone()
+        .expect("a full page carries a cursor");
+
+    let response = app
+        .oneshot(get_request(
+            &token,
+            &format!("/usage?limit=2&before={cursor}"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let rest: UsagePage = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        rest.usage.len(),
+        1,
+        "the cursor pages the remaining history"
+    );
+    assert_eq!(rest.next_before, None, "history is exhausted");
+    assert_ne!(rest.usage[0].period_start, head.period_start);
     case.fixture.cleanup().await;
 }
 
+/// No history is a consistent empty page, never a distinction beyond
+/// emptiness, and another account's periods stay invisible (#631).
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
-async fn usage_without_a_period_row_is_not_found() {
+async fn usage_without_history_is_an_empty_page_and_tenant_scoped() {
     let (case, token) = resource_case("billing:read").await;
+    let f = &case.fixture;
+    // Another account owns a period; the caller must not see it.
+    let other = uuid::Uuid::new_v4();
+    f.db.execute("INSERT INTO accounts(id) VALUES($1)", &[&other])
+        .await
+        .unwrap();
+    f.db.execute(
+        "INSERT INTO usage_periods(account_id,metric,period_start,period_end,limit_units) \
+         VALUES($1,'outbound_message',date_trunc('month',current_date AT TIME ZONE 'UTC')::date, \
+         (date_trunc('month',current_date AT TIME ZONE 'UTC')+interval '1 month')::date,10)",
+        &[&other],
+    )
+    .await
+    .unwrap();
     let app = router(case.state());
     let response = app.oneshot(get_request(&token, "/usage")).await.unwrap();
-    assert_eq!(
-        code(response).await,
-        (StatusCode::NOT_FOUND, "not_found".into())
+    assert_eq!(response.status(), StatusCode::OK);
+    #[derive(serde::Deserialize)]
+    struct UsagePage {
+        usage: Vec<serde_json::Value>,
+        next_before: Option<String>,
+    }
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let page: UsagePage = serde_json::from_slice(&body).unwrap();
+    assert!(
+        page.usage.is_empty(),
+        "no periods of this account, none of the other"
     );
+    assert_eq!(page.next_before, None);
+    case.fixture.cleanup().await;
+}
+
+/// Out-of-bounds limits and malformed cursors are invalid_request.
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn usage_rejects_unbounded_and_malformed_queries() {
+    let (case, token) = resource_case("billing:read").await;
+    let app = router(case.state());
+    for path in [
+        "/usage?limit=0",
+        &format!("/usage?limit={}", 24 + 1),
+        "/usage?before=not-a-date",
+        "/usage?before=2026-02-30",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(get_request(&token, path))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+    }
+    // The maximum bound itself is valid.
+    let response = app
+        .oneshot(get_request(&token, "/usage?limit=24"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
     case.fixture.cleanup().await;
 }
 
