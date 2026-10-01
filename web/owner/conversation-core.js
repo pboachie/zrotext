@@ -19,13 +19,14 @@
   // An injected authenticated adapter owns authority, encryption and transport.
   // There is no default adapter, persistent credential or production endpoint.
   function create(adapter, now = () => performance.now()) {
-    let current = null, until = 0, draft = "", review = null, revision = 0, busy = false, messages = [];
+    let current = null, until = 0, draft = "", review = null, revision = 0, busy = false, messages = [], uncertain = null;
     function invalidate(clear = false) {
       revision++; review = null;
       if (clear) { current = null; until = 0; draft = ""; messages = []; }
     }
     function live() { if (!current || now() >= until) { invalidate(true); throw new Error("Conversation authorization expired."); } }
     async function authorize() {
+      if (uncertain) throw new Error("Send outcome unknown. Check delivery before sending again.");
       invalidate(true);
       const ticket = revision, started = now();
       const value = await adapter.authority();
@@ -65,6 +66,11 @@
         if (!["simulator_accepted", "queued"].includes(result?.status)) throw new Error("Result unavailable. Do not retry automatically.");
         messages.push(Object.freeze({ direction: "outbound", body: approved.body, status: result.status })); draft = "";
         return result;
+      } catch (error) {
+        if (error?.outcome === "unknown" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(error.messageId)) {
+          invalidate(true); uncertain = Object.freeze({ messageId: error.messageId });
+        }
+        throw error;
       } finally { busy = false; }
     }
     async function read(event) {
@@ -77,7 +83,7 @@
     function state() {
       if (current && now() >= until) invalidate(true);
       const visibleReview = review && !busy ? Object.freeze({ body: review.body, scope: review.scope }) : null;
-      return Object.freeze({ scope: current, draft, review: visibleReview, canConfirm: !!visibleReview, busy, messages: Object.freeze([...messages]) });
+      return Object.freeze({ scope: current, draft, uncertain, review: visibleReview, canConfirm: !!visibleReview, busy, messages: Object.freeze([...messages]) });
     }
     return Object.freeze({ authorize, edit, prepare, confirm, read, clear: () => invalidate(true), state });
   }

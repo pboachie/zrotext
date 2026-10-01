@@ -27,6 +27,13 @@ HEX = re.compile(r"[0-9a-f]{64}\Z")
 COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 ENVIRONMENTS = {"test", "staging", "production", "self-hosted"}
 WEB_FILES = (
+    "web/owner/conversation-bootstrap.js",
+    "web/owner/conversation-core.js",
+    "web/owner/conversation-owner-adapter.js",
+    "web/owner/conversation-owner-setup.js",
+    "web/owner/conversation.css",
+    "web/owner/conversation.html",
+    "web/owner/conversation.js",
     "web/owner/devices.html",
     "web/owner/devices.js",
     "web/owner/owner-shell.js",

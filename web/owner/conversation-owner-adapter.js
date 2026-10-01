@@ -3,6 +3,16 @@
 (function(root) {
   const fields=["account","session","interval","device","line","generation","peer","reader","manifest"];
   const same=(a,b)=>fields.every(k=>a?.[k]===b?.[k]);
+  // Read identity from the already signed proof, never from a new client-generated retry.
+  function messageIdentity(packet) {
+    const encoded=packet?.confirmation;
+    if(typeof encoded!=="string" || encoded.length>416 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded))throw Error("Confirmation identity unavailable");
+    const decoded=atob(encoded),bytes=Uint8Array.from(decoded,c=>c.charCodeAt(0));
+    if(btoa(decoded)!==encoded || bytes.length<297 || bytes.length>310 || decoded.slice(0,4)!=="ZTCS" || bytes[4]!==1)throw Error("Confirmation identity unavailable");
+    const hex=Array.from(bytes.slice(85,101),n=>n.toString(16).padStart(2,"0")).join("");
+    if(/^0+$/.test(hex))throw Error("Confirmation identity unavailable");
+    return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+  }
   /** Explicit owner-session transport. Custody verifies/decrypts/signs locally; no key or bearer is accepted here.
    * Endpoint paths are supplied by the dormant integration owner. No endpoint/default adapter is mounted.
    */
@@ -50,12 +60,19 @@
         if(used)throw Error("Confirmation consumed");used=true;
         guard();sameCsrf(protection);await live(selected);sameCsrf(protection);guard();
         const packet=await useCustody(()=>custody.signReviewed(review,selected,body));guard();sameCsrf(protection);await live(selected);sameCsrf(protection);guard();
-        // A signature never authorizes a changed draft. No retry after a lost/ambiguous POST.
-        const response=await request(path(endpoints.submit),{method:"POST",credentials:"same-origin",mode:"same-origin",redirect:"error",cache:"no-store",
-          headers:{"Content-Type":"application/json","x-zrotext-csrf":protection},body:JSON.stringify(packet)});
-        if(!response.ok)throw Error("Confirmed submission unavailable");
-        const result=await response.json();await live(selected);sameCsrf(protection);guard();
-        if(result?.status!=="queued")throw Error("Submission result unavailable");
+        const messageId=messageIdentity(packet),url=path(endpoints.submit),encoded=JSON.stringify(packet);
+        // Once POST is attempted, transport loss, refusal or a malformed acknowledgement cannot prove absence of admission.
+        try {
+          const response=await request(url,{method:"POST",credentials:"same-origin",mode:"same-origin",redirect:"error",cache:"no-store",
+            headers:{"Content-Type":"application/json","x-zrotext-csrf":protection},body:encoded});
+          if(!response.ok)throw Error("Confirmed submission unavailable");
+          const result=await response.json();await live(selected);sameCsrf(protection);guard();
+          if(result?.status!=="queued")throw Error("Submission result unavailable");
+        } catch {
+          // Teardown listeners may clear presentation while confirmation is still pending.
+          try{close();}catch{ /* UNKNOWN must survive cleanup failure. */ }
+          throw Object.freeze(Object.assign(Error("Send outcome unknown. Check delivery before sending again."),{outcome:"unknown",messageId}));
+        }
         return Object.freeze({status:"queued"});
       }});
     }

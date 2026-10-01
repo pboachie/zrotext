@@ -42,6 +42,18 @@ not a trust anchor. Clients must independently compare an existing root pin and
 verify signed manifest history, exact account and durable high-water/time bounds.
 No private key, message content or credential appears in the projection.
 
+## Confirmed-send uncertainty
+
+The browser consumes each exact confirmation before attempting its POST. A lost,
+refused or malformed acknowledgement after the POST attempt cannot establish
+that admission did not occur. The transport closes custody and the page clears
+plaintext, retains only the signed confirmation's message UUID as UNKNOWN, and
+blocks another authorization or send in that page, including after Clear. Check
+delivery for that UUID before starting a fresh send. This in-memory safeguard does
+not survive closing or reloading the page and does not prove carrier delivery.
+Pre-POST validation failures do not claim that a send was attempted. There is no
+automatic replay or fresh message identity after an uncertain attempt.
+
 ## Authenticated binary proposal bundle
 
 Kinds 16 and 17 reuse the exact 118-byte authenticated channel header defined in

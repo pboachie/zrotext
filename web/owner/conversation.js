@@ -14,6 +14,7 @@
     const s = controller ? controller.state() : { scope: null, draft: "", review: null, canConfirm: false, busy: setupPending, messages: [] };
     if (s.scope) hadScope = true;
     else if (hadScope && adapter && !globalThis.ZtConversationSimulatorAdapter) adapter.close();
+    if(s.uncertain) el("status").textContent = `Send outcome unknown. Check delivery before sending again. Message ID: ${s.uncertain.messageId}`;
     el("composer").disabled = !s.scope || s.busy;
     el("confirm").disabled = !s.canConfirm;
     el("confirmation").hidden = !s.review;
@@ -28,11 +29,12 @@
     }
   }
   async function action(fn) {
-    try { await fn(); } catch { el("status").textContent = "Action unavailable. Check authorization and review again; no automatic retry occurs."; }
+    try { await fn(); } catch { const uncertain=controller?.state().uncertain; el("status").textContent = uncertain ? `Send outcome unknown. Check delivery before sending again. Message ID: ${uncertain.messageId}` : "Action unavailable. Check authorization and review again; no automatic retry occurs."; }
     render();
   }
   el("connect").disabled = false;
   el("connect").addEventListener("click", () => action(async () => {
+    if (controller?.state().uncertain) throw Error("Check delivery before sending again");
     if (setupPending) throw Error("Setup in progress");
     setupPending = true; el("connect").disabled = true;
     el("status").textContent = "Checking conversation authorization.";
@@ -72,7 +74,7 @@
     try { try { custodyLifetime?.abort(); } finally { try { if(ordinary)setup.close(); } finally { adapter?.close?.(); } } }
     finally {
       try { controller?.clear(); }
-      finally { hadScope = false; render(); el("status").textContent = "Conversation cleared. Check authorization again."; }
+      finally { hadScope = false; el("status").textContent = "Conversation cleared. Check authorization again."; render(); }
     }
   };
   if (ordinary) {

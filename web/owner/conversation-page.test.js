@@ -4,7 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { randomUUID } = require("node:crypto");
 const core = require("./conversation-core.js");
-async function page({ expireReview = false, adapterAvailable = true, ownerSetup, ownerFactory, resultStatus = "simulator_accepted", closeError } = {}) {
+async function page({ expireReview = false, adapterAvailable = true, ownerSetup, ownerFactory, resultStatus = "simulator_accepted", closeError, acceptedError } = {}) {
   const previous = new Map(), elements = new Map(), events = {}, writes = [];
   let time = 0, accepted = 0;
   const scope = {account:randomUUID(),session:randomUUID(),interval:randomUUID(),device:randomUUID(),line:randomUUID(),generation:"1",peer:"+12",reader:"fixture",manifest:"fixture"};
@@ -21,7 +21,7 @@ async function page({ expireReview = false, adapterAvailable = true, ownerSetup,
     } return elements.get(id);
   }
   const adapter = { initialEvent:randomUUID(),authority:async()=>({phase:"active",validForMs:60000,scope}),read:async()=>literal,
-    prepare:async()=>({confirm:async(guard)=>{guard();accepted++;return {status:resultStatus};}}),onClose(fn){events.close=fn;},close(){if(closeError)throw Error(closeError);} };
+    prepare:async()=>({confirm:async(guard)=>{guard();accepted++;if(acceptedError)throw acceptedError;return {status:resultStatus};}}),onClose(fn){events.close=fn;},close(){if(closeError)throw Error(closeError);} };
   const values = { document:{hidden:false,getElementById:element,createElement:()=>({textContent:""}),addEventListener(event,fn){events[event]=fn;}},
     window:{addEventListener(event,fn){events[event]=fn;}},setInterval(fn){events.timer=fn;return 1;},
     ZtConversation:{create(a){const c=core.create(a,()=>time);return {...c,prepare:async()=>{const review=await c.prepare();if(expireReview)time=60000;return review;}};}},
@@ -66,3 +66,13 @@ for(const trigger of ["clear","pagehide","visibilitychange"])test(trigger+" clea
 
 test("ordinary page constructs real owner setup without injected owner global and leaves opt-ins unchecked",async()=>{const factory=require("./conversation-owner-setup.js");let constructed=0;const p=await page({adapterAvailable:false,ownerFactory:{create:options=>{constructed++;return factory.create(options);}}});try{assert.equal(constructed,1);assert.equal(globalThis.ZtConversationOwnerSetup,undefined);assert.equal(p.element("owner-enabled").checked,undefined);assert.equal(p.element("content-consent").checked,undefined);assert.equal(p.element("composer").disabled,true);await p.click("connect");assert.match(p.element("status").textContent,/Action unavailable/);assert.equal(p.accepted(),0);assert.ok(p.element("activate-conversation").listeners.click);const html=require("node:fs").readFileSync(require("node:path").join(__dirname,"conversation.html"),"utf8");assert.ok(html.indexOf('src="conversation-bootstrap.js"')<html.indexOf('src="conversation-owner-setup.js"'));assert.ok(html.indexOf('src="conversation-owner-setup.js"')<html.indexOf('src="conversation.js"'));}finally{p.cleanup();}});
 test("ordinary page clear fences a late activation result and aborts its explicit lifetime",async()=>{let release,signal,closed=0;const p=await page({adapterAvailable:false,ownerFactory:{create:()=>({close(){closed++;},activate:async(_file,options)=>{signal=options.signal;await new Promise(resolve=>release=resolve);}})}});try{p.element("activation-file").files=[{}];const pending=p.click("activate-conversation");await Promise.resolve();await p.click("clear");assert.equal(signal.aborted,true);assert.equal(closed,1);release();await pending;assert.ok(!p.element("status").textContent.startsWith("Activation submitted"));assert.equal(p.element("composer").disabled,true);}finally{p.cleanup();}});
+
+test("lost accepted response clears plaintext and displays identity with no new send",async()=>{
+ const messageId="12345678-1234-1234-1234-123456789abc";
+ const p=await page({acceptedError:Object.assign(Error("Fixed unknown outcome"),{outcome:"unknown",messageId})});
+ try{await p.click("connect");p.input(p.literal);await p.click("review");await p.click("confirm");
+ assert.equal(p.accepted(),1);assert.equal(p.element("body").value,"");assert.equal(p.element("review-body").textContent,"");assert.equal(p.element("messages").children.length,0);assert.equal(p.element("composer").disabled,true);
+ assert.match(p.element("status").textContent,/Send outcome unknown/);assert.ok(p.element("status").textContent.includes(messageId));
+ await p.click("clear");assert.ok(p.element("status").textContent.includes(messageId));await p.click("connect");await p.click("confirm");assert.equal(p.accepted(),1);
+ }finally{p.cleanup();}
+});
