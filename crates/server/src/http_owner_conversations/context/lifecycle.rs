@@ -145,6 +145,9 @@ pub(crate) async fn prune(
         for row in rows {
             let id: Uuid = row.get(0);
             if row.get::<_, bool>(1) {
+                if !super::decisions::lifecycle::erase_context(&tx, account, id).await? {
+                    continue;
+                }
                 for table in [
                     "workflow_context_audit",
                     "workflow_exceptions",

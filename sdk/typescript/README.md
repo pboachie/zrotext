@@ -359,3 +359,10 @@ workflow and callable example using `agent-recipe`, the shared fixture adapter a
 a local customer-controlled reader. They exercise durable synthetic identities,
 owner review and bounded reply routing; production grants and activation remain
 unavailable.
+
+`workflow-decisions.ts` supplies the complete `workflow-action-01` canonical
+descriptor and SHA-256 binding for customer proposals. It rejects missing or
+unknown fields and snapshots inputs before hashing. TypeScript integers must be
+safe integers. Computing a binding or reading historical action state grants no
+approval, content-reader or dispatch authority. The durable decision service
+remains a separate candidate implementation; this codec performs no networking.

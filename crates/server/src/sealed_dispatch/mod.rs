@@ -6,6 +6,24 @@ pub mod http;
 mod tests;
 pub mod wire;
 
+/// Optional metadata marker leaves ordinary queue behavior unchanged. A workflow
+/// marker always requires the independently guarded exact action before disclosure.
+async fn workflow_current(tx: &Transaction<'_>, account: Uuid, message: Uuid) -> Result<(), Error> {
+    let marked:bool=tx.query_one("SELECT (to_jsonb(m)->>'workflow_action_id') IS NOT NULL FROM messages m WHERE account_id=$1 AND id=$2",&[&account,&message]).await?.get(0);
+    if marked
+        && !tx
+            .query_one(
+                "SELECT workflow_effect_current($1,$2)",
+                &[&account, &message],
+            )
+            .await?
+            .get::<_, bool>(0)
+    {
+        return Err(Error::Refused);
+    }
+    Ok(())
+}
+
 use crate::{
     alpha_policy::AlphaPolicy,
     sealed_envelope::{self, ExpectedRecipient, Kind, Profile},
@@ -178,6 +196,7 @@ pub async fn grant(
         return Ok(None);
     };
     let message: Uuid = picked.get(0);
+    workflow_current(&tx, session.account_id, message).await?;
     let row=tx.query_one("SELECT sealed_line_id,sealed_binding_generation,sealed_manifest_generation, \
         sealed_manifest_version,sealed_manifest_digest,request_digest,transport_payload,sealed_segment_limit, \
         floor(extract(epoch FROM expires_at)*1000)::bigint FROM messages \
@@ -301,6 +320,7 @@ pub async fn grant(
         expires_at_ms: granted.expires_at_ms,
         segment_count: queued.segment_limit,
     };
+    workflow_current(&tx, session.account_id, message).await?;
     drop(authority);
     tx.commit().await?;
     Ok(Some(frame))
@@ -370,6 +390,7 @@ pub async fn fetch(
         deployment_epoch: grant.deployment_epoch,
     };
     live(&tx, &session, grant.line_id, grant.binding_generation).await?;
+    workflow_current(&tx, grant.account_id, grant.message_id).await?;
     let row=tx.query_opt("SELECT g.site_id,g.instance_id,g.manifest_generation,g.manifest_version,g.manifest_digest, \
         g.unsigned_digest,m.transport_payload,g.segment_limit,floor(extract(epoch FROM m.expires_at)*1000)::bigint \
         FROM sealed_grant_authorizations g JOIN dispatch_fences f ON (f.account_id,f.message_id,f.attempt_id)= \
@@ -443,6 +464,7 @@ pub async fn fetch(
     if now(&tx).await? >= grant.expires_at_ms {
         return Err(Error::Refused);
     }
+    workflow_current(&tx, grant.account_id, grant.message_id).await?;
     drop(authority);
     tx.commit().await?;
     Ok(queued.bytes)
