@@ -40,6 +40,12 @@ class SealedSessionClockTest {
     }
 
     @Test
+    fun timeOverflowRefusesInsteadOfReturningAWrappedTimestamp() {
+        val clock = SealedSessionClock.establish(77L, Long.MAX_VALUE, 0L)
+        assertNull(clock!!.nowMs(1L))
+    }
+
+    @Test
     fun aBrokenAnchorIsRefusedAtEstablishment() {
         assertNull(SealedSessionClock.establish(0L, 1_800_000_000_000L, 1L))
         assertNull(SealedSessionClock.establish(77L, 0L, 1L))

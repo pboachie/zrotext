@@ -10,9 +10,9 @@ package org.zrotext.gateway
  * only valid within one connection epoch and only while the monotonic clock
  * has not reset:
  *
- * - **Reboot invalidation:** `elapsedRealtime` resets at boot, so an elapsed
- *   reading at or below the anchor's cannot belong to this boot; time becomes
- *   unavailable rather than silently wrong.
+ * - **Elapsed-clock regression:** readings at or below the anchor are refused.
+ *   The owner must discard this in-memory clock at session teardown or reboot;
+ *   elapsed readings alone cannot prove boot identity.
  * - **Session invalidation:** the anchor belongs to one `connectionEpoch`; a
  *   clock from another epoch never matches, so a stale clock cannot vouch for
  *   a new session's grants.
@@ -36,6 +36,7 @@ internal class SealedSessionClock private constructor(
         if (currentElapsedMs <= anchorElapsedMs) return null
         val ageMs = currentElapsedMs - anchorElapsedMs
         if (ageMs > MAX_ANCHOR_AGE_MS) return null
+        if (anchorHubMs > Long.MAX_VALUE - ageMs) return null
         return anchorHubMs + ageMs
     }
 
@@ -46,8 +47,8 @@ internal class SealedSessionClock private constructor(
     companion object {
         /**
          * A session clock is usable for one minute of monotonic age. Grant
-         * expiries sit at most 35 seconds ahead of trusted time, so a fresh
-         * anchor inside this bound cannot make an expired grant look live.
+         * expiries sit at most 35 seconds ahead of trusted time. The caller
+         * must authenticate and validate the initial sample independently.
          */
         const val MAX_ANCHOR_AGE_MS: Long = 60_000
 
