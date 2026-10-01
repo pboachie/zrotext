@@ -4,7 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { randomUUID } = require("node:crypto");
 const core = require("./conversation-core.js");
-async function page({ expireReview = false, adapterAvailable = true, ownerSetup, resultStatus = "simulator_accepted", closeError } = {}) {
+async function page({ expireReview = false, adapterAvailable = true, ownerSetup, ownerFactory, resultStatus = "simulator_accepted", closeError } = {}) {
   const previous = new Map(), elements = new Map(), events = {}, writes = [];
   let time = 0, accepted = 0;
   const scope = {account:randomUUID(),session:randomUUID(),interval:randomUUID(),device:randomUUID(),line:randomUUID(),generation:"1",peer:"+12",reader:"fixture",manifest:"fixture"};
@@ -26,7 +26,7 @@ async function page({ expireReview = false, adapterAvailable = true, ownerSetup,
     window:{addEventListener(event,fn){events[event]=fn;}},setInterval(fn){events.timer=fn;return 1;},
     ZtConversation:{create(a){const c=core.create(a,()=>time);return {...c,prepare:async()=>{const review=await c.prepare();if(expireReview)time=60000;return review;}};}},
     ZtConversationSimulatorAdapter:adapterAvailable?adapter:undefined,
-    ZtConversationOwnerSetup:ownerSetup };
+    ZtConversationOwnerSetup:ownerSetup,ZtConversationOwnerSetupFactory:ownerFactory };
   for (const [name,value] of Object.entries(values)) {previous.set(name,Object.getOwnPropertyDescriptor(globalThis,name));Object.defineProperty(globalThis,name,{value,writable:true,configurable:true});}
   delete require.cache[require.resolve("./conversation.js")];require("./conversation.js");
   return {element,events,writes,literal,accepted:()=>accepted,async click(id){await element(id).listeners.click();},input(value){element("body").value=value;element("body").listeners.input();},
@@ -63,3 +63,6 @@ test("queued acceptance renders pending delivery distinctly from fixture accepta
 for(const trigger of ["clear","pagehide","visibilitychange"])test(trigger+" clears plaintext and review even when custody teardown throws",async()=>{
  const p=await page({closeError:"Synthetic custody close failure"});try{await p.click("connect");p.input(p.literal);await p.click("review");assert.equal(p.element("review-body").textContent,p.literal);if(trigger==="clear")await assert.rejects(p.click("clear"),/Synthetic custody close failure/);else{if(trigger==="visibilitychange")globalThis.document.hidden=true;assert.throws(()=>p.events[trigger](),/Synthetic custody close failure/);}assert.equal(p.element("messages").children.length,0);assert.equal(p.element("body").value,"");assert.equal(p.element("review-body").textContent,"");assert.equal(p.element("selection").textContent,"");assert.equal(p.element("confirmation").hidden,true);assert.equal(p.element("composer").disabled,true);assert.equal(p.accepted(),0);}finally{p.cleanup();}
 });
+
+test("ordinary page constructs real owner setup without injected owner global and leaves opt-ins unchecked",async()=>{const factory=require("./conversation-owner-setup.js");let constructed=0;const p=await page({adapterAvailable:false,ownerFactory:{create:options=>{constructed++;return factory.create(options);}}});try{assert.equal(constructed,1);assert.equal(globalThis.ZtConversationOwnerSetup,undefined);assert.equal(p.element("owner-enabled").checked,undefined);assert.equal(p.element("content-consent").checked,undefined);assert.equal(p.element("composer").disabled,true);await p.click("connect");assert.match(p.element("status").textContent,/Action unavailable/);assert.equal(p.accepted(),0);assert.ok(p.element("activate-conversation").listeners.click);const html=require("node:fs").readFileSync(require("node:path").join(__dirname,"conversation.html"),"utf8");assert.ok(html.indexOf('src="conversation-bootstrap.js"')<html.indexOf('src="conversation-owner-setup.js"'));assert.ok(html.indexOf('src="conversation-owner-setup.js"')<html.indexOf('src="conversation.js"'));}finally{p.cleanup();}});
+test("ordinary page clear fences a late activation result and aborts its explicit lifetime",async()=>{let release,signal,closed=0;const p=await page({adapterAvailable:false,ownerFactory:{create:()=>({close(){closed++;},activate:async(_file,options)=>{signal=options.signal;await new Promise(resolve=>release=resolve);}})}});try{p.element("activation-file").files=[{}];const pending=p.click("activate-conversation");await Promise.resolve();await p.click("clear");assert.equal(signal.aborted,true);assert.equal(closed,1);release();await pending;assert.ok(!p.element("status").textContent.startsWith("Activation submitted"));assert.equal(p.element("composer").disabled,true);}finally{p.cleanup();}});

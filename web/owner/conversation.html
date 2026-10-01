@@ -4,18 +4,36 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex"><title>Conversation simulator · ZROtext</title>
   <link rel="stylesheet" href="devices.css"><link rel="stylesheet" href="conversation.css">
-  <script defer src="conversation-core.js"></script><script defer src="conversation-owner-adapter.js"></script><script defer src="conversation.js"></script>
+  <script defer src="conversation-core.js"></script><script defer src="conversation-owner-adapter.js"></script><script defer src="conversation-bootstrap.js"></script><script defer src="conversation-owner-setup.js"></script><script defer src="conversation.js"></script>
 </head>
 <body><main>
   <header><div><p class="eyebrow">ZROtext</p><h1>One conversation</h1></div></header>
-  <p>Conversation access requires explicit setup and current browser and phone approval. Pairing and SMS permissions do not grant body-transfer consent. Synthetic adapters can be used for testing.</p>
+  <p>Conversation access requires explicit setup and current browser and phone approval. Pairing and SMS permissions do not grant body-transfer consent.</p>
   <p id="status" role="status" aria-live="polite">Conversation setup unavailable.</p>
+  <fieldset id="owner-setup"><legend>Existing owner custody</legend>
+    <label><input id="owner-enabled" type="checkbox"> Enable explicit conversation setup in this page.</label>
+    <p>Use your existing offline custodian's public root receipt and accepted manifest checkpoint. Independently compare the account, root fingerprint, manifest version and digest below. A server download is not that independent receipt. No root private key or root recovery token belongs in this page.</p>
+    <label>Account UUID <input id="owner-account" autocomplete="off" maxlength="36"></label>
+    <label>Device UUID <input id="owner-device" autocomplete="off" maxlength="36"></label>
+    <label>Line UUID <input id="owner-line" autocomplete="off" maxlength="36"></label>
+    <label>Line binding generation <input id="owner-generation" inputmode="numeric" autocomplete="off" maxlength="16"></label>
+    <label>Exact peer <input id="owner-peer" autocomplete="off" maxlength="16"></label>
+    <label>Independently compared root fingerprint (64 lowercase hex characters) <input id="owner-fingerprint" autocomplete="off" maxlength="64"></label>
+    <label>Independently accepted manifest version <input id="owner-version" inputmode="numeric" autocomplete="off" maxlength="19"></label>
+    <label>Independently accepted manifest digest (64 lowercase hex characters) <input id="owner-digest" autocomplete="off" maxlength="64"></label>
+    <label>Optional received event UUID <input id="owner-event" autocomplete="off" maxlength="36"></label>
+    <label><input id="content-consent" type="checkbox"> Allow phone SMS body transfer for this exact line and peer. Pairing and SMS permission do not grant this consent; separate phone approval is required.</label>
+    <label>Existing root-signed activation successor <input id="activation-file" type="file" accept="application/octet-stream"></label>
+    <button id="activate-conversation" type="button">Submit activation for phone approval</button>
+    <p>Activation requires an existing root-signed public successor preserving all current key records. Missing signer output stays unavailable. Then approve and install on the phone before checking authorization. Historical messages whose manifests this session has not verified stay unavailable.</p>
+    <div id="custody-artifacts"></div>
+  </fieldset>
   <label><input id="session-custody" type="checkbox"> Use a session-only signing key for this exact conversation. Leaving, logging out or expiry closes it; setup requires my existing owner-root approval.</label>
   <button id="connect" type="button" disabled>Check conversation authorization</button>
   <p id="selection"></p><section aria-label="Conversation"><div id="messages" aria-live="polite"></div></section>
   <fieldset id="composer" disabled><legend>Write to the approved peer</legend>
     <label for="body">Message text</label><textarea id="body" rows="5" maxlength="32768" autocomplete="off" spellcheck="false" aria-describedby="body-help"></textarea>
-    <p id="body-help">Up to 32,768 UTF-8 bytes. Review preserves every character and space. This simulator does not estimate SMS segments or carrier delivery.</p>
+    <p id="body-help">Up to 32,768 UTF-8 bytes. Review preserves every character and space. Queuing does not confirm carrier delivery.</p>
     <button id="review" type="button">Review message</button>
   </fieldset>
   <section id="confirmation" hidden aria-labelledby="review-title"><h2 id="review-title">Confirm this exact message</h2>

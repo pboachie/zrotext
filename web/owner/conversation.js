@@ -3,7 +3,8 @@
 (() => {
   const el = (id) => document.getElementById(id);
   let adapter = globalThis.ZtConversationSimulatorAdapter;
-  const setup = globalThis.ZtConversationOwnerSetup;
+  const ordinary = !globalThis.ZtConversationOwnerSetup && globalThis.ZtConversationOwnerSetupFactory;
+  const setup = globalThis.ZtConversationOwnerSetup || (ordinary && ordinary.create({enabled:true,host:el("custody-artifacts"),readSelection:()=>({enabled:el("owner-enabled").checked,contentConsent:el("content-consent").checked,sessionConsent:el("session-custody").checked,account_id:el("owner-account").value,device_id:el("owner-device").value,line_id:el("owner-line").value,binding_generation:Number(el("owner-generation").value),peer:el("owner-peer").value,rootFingerprint:el("owner-fingerprint").value,manifestVersion:el("owner-version").value,manifestDigest:el("owner-digest").value,event_id:el("owner-event").value})}));
   if (!adapter && !setup) return; // No implicit credentials, network or activation.
   let controller = adapter ? ZtConversation.create(adapter) : null;
   let setupPending = false, setupRevision = 0;
@@ -44,7 +45,7 @@
       render();
       custodyLifetime?.abort(); custodyLifetime = new AbortController();
       const sdk = await import("/v1/owner/conversation-sdk/sdk/conversation-custody.js");
-      const options = await setup.custodyOptions();
+      const options = await setup.custodyOptions({signal:custodyLifetime.signal});
       const custody = await sdk.prepareConversationCustody02({ ...options, signal: custodyLifetime.signal });
       if (ticket !== setupRevision) { custody.close(); throw Error("Setup closed"); }
       try { adapter = ZtConversationOwnerTransport.create({ ...setup.transportOptions, enabled: true, custody }); }
@@ -68,12 +69,17 @@
   el("cancel").addEventListener("click", () => { try { controller.edit(controller.state().draft); } catch { controller.clear(); } render(); el("body").focus(); });
   const clear = () => {
     setupRevision++;
-    try { try { custodyLifetime?.abort(); } finally { adapter?.close?.(); } }
+    try { try { custodyLifetime?.abort(); } finally { try { if(ordinary)setup.close(); } finally { adapter?.close?.(); } } }
     finally {
       try { controller?.clear(); }
       finally { hadScope = false; render(); el("status").textContent = "Conversation cleared. Check authorization again."; }
     }
   };
+  if (ordinary) {
+    el("activate-conversation").addEventListener("click",()=>action(async()=>{if(el("activation-file").files.length!==1)throw Error("Existing root-signed activation successor required");const ticket=++setupRevision;custodyLifetime?.abort();custodyLifetime=new AbortController();await setup.activate(el("activation-file").files[0],{signal:custodyLifetime.signal});if(ticket!==setupRevision)throw Error("Activation closed");el("activation-file").value="";el("status").textContent="Activation submitted. Explicit phone approval and installation are still required; check authorization after both finish.";}));
+    el("owner-setup").addEventListener("input",event=>{if(event.target.closest("#custody-artifacts")||event.target.id==="activation-file")return;if(custodyLifetime||setupPending){setup.close();clear();}});
+    el("session-custody").addEventListener("change",()=>{if(custodyLifetime||setupPending){setup.close();clear();}});
+  }
   el("clear").addEventListener("click", clear);
   window.addEventListener("pagehide", clear);
   document.addEventListener("visibilitychange", () => { if (document.hidden) clear(); });
