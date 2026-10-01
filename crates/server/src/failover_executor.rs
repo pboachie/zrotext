@@ -1017,6 +1017,8 @@ impl WriterAuthority for PgWriterAuthority {
     }
 }
 
+mod pg_epoch_witness;
+
 /// PostgreSQL implementation of the `ExternalEpochAnchor` port (issue #647):
 /// the writer database's `deployment_authority.epoch` IS the anchored
 /// authority — the epoch every promotion's compare-and-set moves and nothing
@@ -1036,14 +1038,16 @@ impl WriterAuthority for PgWriterAuthority {
 ///   serves `new_epoch` — recording is witnessing an applied promotion, not
 ///   writing one. An epoch the row does not serve is refused, so the
 ///   anchor's monotonic bound can only ever follow the authority forward.
+///   Equal or backward records are refused; completion replay is still safe
+///   because the executor treats witnessing as best effort after its CAS.
 ///
 /// The honest limitation, stated plainly: because this anchor lives in the
 /// same database as the authority, it cannot witness a whole-database
-/// restore (both reads return the restored epoch together). It satisfies
-/// the binding — the executor's restore check and promotion gate run against
-/// it, and they would catch any rollback the database itself exhibits — and
-/// it is the seam a truly external authority (the interface's purpose)
-/// plugs into without further executor changes.
+/// restore across process restart: its high-water witness exists only in
+/// this adapter instance. Within that instance, confirmed observations never
+/// regress, including after reconnect, so a later restore snapshot below the
+/// observed high-water fails closed. Restart loses that independent memory;
+/// durable restore detection still requires a genuinely external authority.
 pub struct PgExternalEpochAnchor {
     /// A plain (unguarded) authority port used only as the connection
     /// machinery: one dedicated connection, bounded operations, reconnect
@@ -1052,6 +1056,7 @@ pub struct PgExternalEpochAnchor {
     /// any connection, and a dormant replica's executor fails closed on its
     /// authority reads long before it reaches an anchor question.
     port: PgWriterAuthority,
+    witness: pg_epoch_witness::EpochWitness,
 }
 
 impl PgExternalEpochAnchor {
@@ -1060,6 +1065,7 @@ impl PgExternalEpochAnchor {
     pub fn new(database_url: String) -> Result<Self, String> {
         Ok(Self {
             port: PgWriterAuthority::new(database_url)?,
+            witness: pg_epoch_witness::EpochWitness::default(),
         })
     }
 }
@@ -1079,7 +1085,7 @@ impl ExternalEpochAnchor for PgExternalEpochAnchor {
             })
         });
         match anchored {
-            Ok(epoch) => AnchorReading::Confirmed { epoch },
+            Ok(epoch) => self.witness.observe(epoch),
             Err(_) => AnchorReading::Unconfirmed,
         }
     }
@@ -1098,13 +1104,7 @@ impl ExternalEpochAnchor for PgExternalEpochAnchor {
             })
         });
         match served {
-            // The authority row already serves the promotion: witnessed.
-            // An at-or-below row is a refusal naming the served epoch, so
-            // the anchor's bound only follows the authority forward.
-            Ok(epoch) if epoch >= new_epoch => AnchorRecord::Recorded,
-            Ok(epoch) => AnchorRecord::Refused {
-                anchored_epoch: epoch,
-            },
+            Ok(epoch) => self.witness.record(epoch, new_epoch),
             Err(_) => AnchorRecord::RefusedUnconfirmed,
         }
     }
