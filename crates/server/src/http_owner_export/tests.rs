@@ -108,6 +108,7 @@ const EXPORT_SCHEMA: [(&str, &str); 71] = export_schema!(
     "068_connector_registration.sql",
     "069_sealed_root_custody.sql",
     "070_message_summary_metadata.sql",
+    "071_sealed_grant_authority.sql",
     "074_collaboration_drafts.sql",
 );
 #[test]

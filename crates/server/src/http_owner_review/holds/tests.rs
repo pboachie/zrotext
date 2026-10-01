@@ -30,7 +30,7 @@ macro_rules! migration {
 
 // Holds are checked by admission and released by inbound, so these routes run
 // on the complete schema. SQL is embedded at build time.
-const TEST_MIGRATIONS: [(&str, &str); 71] = [
+const TEST_MIGRATIONS: [(&str, &str); 72] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -101,6 +101,7 @@ const TEST_MIGRATIONS: [(&str, &str); 71] = [
     migration!("068_connector_registration.sql"),
     migration!("069_sealed_root_custody.sql"),
     migration!("070_message_summary_metadata.sql"),
+    migration!("071_sealed_grant_authority.sql"),
     migration!("074_collaboration_drafts.sql"),
 ];
 
