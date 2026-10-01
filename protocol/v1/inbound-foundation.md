@@ -2,6 +2,12 @@
 
 This describes the inbound store API. The Android local vault keeps reply bodies on the phone; an opt-in device-stream frame carries signed metadata only. A customer-decryptable sealed envelope is a separate proposed format. Owner endpoint management is described in [webhook-endpoints.md](webhook-endpoints.md). The webhook sender is disabled by default; use synthetic or consented test content.
 
+The [customer-local reply event adapter](../../docs/customer-reply-events.md)
+is an experimental signed-webhook/resume implementation over these original
+event identities. It keeps a bounded metadata/action checkpoint ledger, never
+a second message queue, and cannot approve or send SMS. Production agent grants
+and selected sealed-content reader readiness remain unavailable.
+
 `inbound::ingest` accepts an event only through an enrolled device's current
 writer session. It checks the tenant/device, site and instance, connection and
 deployment epochs, live lease, active key/account/site, device P-256 signature,
