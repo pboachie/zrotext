@@ -1,0 +1,18 @@
+{
+  "format": "quorum-observation-01",
+  "namespace": "19f8e1902cc92e54719a3972122d7dcdbb3337854968185cfeab1a87664244c6",
+  "purpose": "report",
+  "journal": "v1 member=member-a seq=7 at=20 writer=unreachable fence=false,true stop=true standby=true former=-",
+  "member_id": "member-a",
+  "sequence": 7,
+  "observed_at_ms": 20,
+  "description": "Unsigned synthetic signature input. Tests generate signatures in memory; no private key is stored in this vector.",
+  "topology_values": [
+    "synthetic-quorum",
+    "writer",
+    "standby",
+    "member-a",
+    "member-b",
+    "member-c"
+  ]
+}
