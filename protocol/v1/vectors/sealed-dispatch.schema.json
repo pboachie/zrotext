@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Optional sealed readiness and exact-envelope fetch version 1",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/ready"
+    },
+    {
+      "$ref": "#/$defs/fetch"
+    }
+  ],
+  "$defs": {
+    "ready": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "type",
+        "grant_version",
+        "connection_epoch",
+        "line_id",
+        "binding_generation",
+        "reader_key_id"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "sealed_ready"
+        },
+        "grant_version": {
+          "const": 1
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "line_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "binding_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reader_key_id": {
+          "type": "string",
+          "description": "Base64url without padding of exactly 32 bytes.",
+          "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+        }
+      }
+    },
+    "fetch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "grant",
+        "signature_der"
+      ],
+      "properties": {
+        "grant": {
+          "$ref": "sealed-execution-grant.schema.json#/$defs/sealed_execution_grant"
+        },
+        "signature_der": {
+          "type": "string",
+          "minLength": 11,
+          "maxLength": 107,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        }
+      }
+    }
+  }
+}

@@ -171,6 +171,17 @@ impl CurrentAuthority<'_, '_> {
         Ok(self.manifest.admission_deadline(wanted, now)? as i64)
     }
 
+    pub(crate) async fn outbound_deadline(
+        &mut self,
+        wanted: &EnvelopeAuthority<'_>,
+    ) -> Result<i64, AdmissionError> {
+        let now = self.checked_time().await?;
+        if wanted.kind != Kind::Outbound || wanted.account_id != *self.account.as_bytes() {
+            return Err("outbound deadline identity".into());
+        }
+        Ok(self.manifest.admission_deadline(wanted, now)? as i64)
+    }
+
     /// Re-prove the original signature without rewriting its authenticated epoch.
     /// Snapshot came from the immutable verified-ingest provenance table, not
     /// from untrusted envelope claims. Current reader AND signer remain required.

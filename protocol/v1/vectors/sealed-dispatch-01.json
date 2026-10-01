@@ -1,0 +1,34 @@
+{
+  "status": "DORMANT_TEST_ONLY",
+  "protocol": "zrotext-device-status-v2+sealed-dispatch-v1",
+  "ready": {
+    "v": 1,
+    "type": "sealed_ready",
+    "grant_version": 1,
+    "connection_epoch": 1,
+    "line_id": "03030303-0303-0303-0303-030303030303",
+    "binding_generation": 1,
+    "reader_key_id": "9wny3JJQo96to8fTnz-zsxFEOaKuBNKxH3F4U27EbYw"
+  },
+  "grant": {
+    "v": 1,
+    "type": "sealed_execution_grant",
+    "grant_version": 1,
+    "account_id": "01010101-0101-0101-0101-010101010101",
+    "device_id": "02020202-0202-0202-0202-020202020202",
+    "line_id": "03030303-0303-0303-0303-030303030303",
+    "message_id": "04040404-0404-0404-0404-040404040404",
+    "attempt_id": "51515151-5151-4151-8151-515151515151",
+    "connection_epoch": 1,
+    "deployment_epoch": 1,
+    "binding_generation": 1,
+    "attempt_generation": 1,
+    "reader_role": 1,
+    "reader_key_id": "9wny3JJQo96to8fTnz-zsxFEOaKuBNKxH3F4U27EbYw",
+    "envelope_sha256": "TxkQZ11Po_pzgUkvzsq5E2h8TObudZ_JpkvX-U5vpaE",
+    "unsigned_sha256": "7B7AvGU7SrPT13KyPAJtxR3Mz8D5Spphcqev7dQR9v8",
+    "expires_at_ms": 1700000015000,
+    "segment_count": 1
+  },
+  "transcriptHex": "5a542f7365616c65642d656e76656c6f70652d66657463682f76310001010101010101010101010101010101010101010202020202020202020202020202020203030303030303030303030303030303040404040404040404040404040404045151515151514151815151515151515100000000000000010000000000000001000000000000000100000000000000010000018bcfe5a298f709f2dc9250a3deada3c7d39f3fb3b3114439a2ae04d2b11f7178536ec46d8c4f1910675d4fa3fa7381492fcecab913687c4ce6ee759fc9a64bd7f94e6fa5a1ec1ec0bc653b4ab3d3d772b23c026dc51dcccfc0f94a9a6172a7afedd411f6ff"
+}
