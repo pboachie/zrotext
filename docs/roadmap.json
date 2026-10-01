@@ -205,7 +205,8 @@
             ["API outline", "ARCHITECTURE.md#planned-api-v1-outline"],
             ["sealed SDK preparation", "../sdk/typescript/README.md"],
             ["#569", "https://github.com/pboachie/zrotext/pull/569"],
-            ["TypeScript SDK #537", "https://github.com/pboachie/zrotext/issues/537"]
+            ["TypeScript SDK #537", "https://github.com/pboachie/zrotext/issues/537"],
+            ["non-UI implementation boundaries", "non-ui-implementation.md"]
           ],
           "done": [
             "Route outline and sealed send shape ([outline](ARCHITECTURE.md#planned-api-v1-outline))",
@@ -350,7 +351,8 @@
             ["#162", "https://github.com/pboachie/zrotext/pull/162"],
             ["#260", "https://github.com/pboachie/zrotext/pull/260"],
             ["#464", "https://github.com/pboachie/zrotext/pull/464"],
-            ["#525", "https://github.com/pboachie/zrotext/pull/525"]
+            ["#525", "https://github.com/pboachie/zrotext/pull/525"],
+            ["non-UI implementation boundaries", "non-ui-implementation.md"]
           ],
           "done": [
             "Draft protocol and validation gates",
@@ -554,7 +556,8 @@
           "short": "Workflow integrations",
           "stage": "planned",
           "evidence": [
-            ["product proposal", "PRODUCT-PLAN.md#customer-controlled-assistant"]
+            ["product proposal", "PRODUCT-PLAN.md#customer-controlled-assistant"],
+            ["non-UI implementation boundaries", "non-ui-implementation.md"]
           ],
           "evidence_note": "product proposal; dormant connector registration/key-lifecycle contract in crates/server/src/sealed_connector_registry (line-scoped read/send grants, independent approval, rotation, revocation, audit) with no runtime route enabled",
           "done": [],
