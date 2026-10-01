@@ -8,6 +8,7 @@ async fn teardown_removes_owned_triggers_and_composite_function_dependencies_bef
     f.db.batch_execute(
         r#"
         CREATE TABLE typed_cleanup_row(id uuid);
+        CREATE TABLE "quoted""cleanup_row"(id uuid);
         CREATE FUNCTION checked_cleanup_value(item uuid) RETURNS boolean
             LANGUAGE sql AS 'SELECT item IS NOT NULL';
         ALTER TABLE typed_cleanup_row ADD CONSTRAINT typed_cleanup_check
