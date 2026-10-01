@@ -25,7 +25,7 @@ internal class ConversationAndroidConnectionInputs(
     private val dispatch: ConversationSendTransport
 ) {
     private val application = checkNotNull(context.applicationContext)
-    private val payloadKeys = DevicePayloadKeyStore(payloadAlias.also { require(it.isNotBlank()) })
+    private val payloadKeys = DevicePayloadKeyStore(application, payloadAlias.also { require(it.isNotBlank()) })
     private val signingKeys = DeviceSigningKeyStore(application)
 
     /**

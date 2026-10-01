@@ -108,7 +108,7 @@ class ConversationExecutionCompositionTest {
             override fun open(value: InboundVault.Sealed, aad: String): String = error("No proof")
         }, Draft02TrustStore(object : Draft02TrustStore.Storage {
             override fun <T> locked(action: Draft02TrustStore.Session.() -> T): T = error("No enrolled trust")
-        }), DevicePayloadKeyStore("fixture-existing-payload"), DeviceSigningKeyStore(app, "fixture-existing-signing"),
+        }), DevicePayloadKeyStore(app, "fixture-existing-payload"), DeviceSigningKeyStore(app, "fixture-existing-signing"),
             Executor { it.run() }, { _, _ -> error("No selected keys") }, { _, _ -> error("No authority") },
             { error("No decision") }, { null }, { null }, object : ConversationSendTransport {
                 override fun submit(message: String, attempt: String, scope: ConversationCaptureScope, body: String) = error("No legacy fallback")

@@ -53,7 +53,7 @@ class ConversationRadioSubmissionTest {
         },protection,{elapsed},{check(it==scope)})
         private val boundary=ConversationExecutionBoundary(admission,clock,{
             ConversationExecutionAuthority(scope,phone,true,true,true,true,true)
-        },radio,DevicePayloadKeyStore("fixture-unused")){error("No hardware preparation in this fixture")}
+        },radio,DevicePayloadKeyStore(RuntimeEnvironment.getApplication(), "fixture-unused")){error("No hardware preparation in this fixture")}
         var metadataCalls=0;var fakeCalls=0;var platformFactories=0;var selections=0
         var permit=true;var lostAck=false;var ambiguous=false
         var ackHook:()->Unit={};var selectedHook:()->Unit={}

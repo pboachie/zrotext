@@ -90,7 +90,7 @@ class ConversationConnectionFactoryTest {
             override fun <T> locked(action: Draft02TrustStore.Session.() -> T): T = error("No enrolled trust fixture")
         })
         return ConversationConnectionInputs(capture.journal(), sends.sends(), protection, trust,
-            DevicePayloadKeyStore("fixture-existing-payload"), DeviceSigningKeyStore(context,"fixture-existing-signing"),
+            DevicePayloadKeyStore(context, "fixture-existing-payload"), DeviceSigningKeyStore(context,"fixture-existing-signing"),
             java.util.concurrent.Executor { it.run() }, { _, _ -> error("No independently verified bindings") },
             { _, _ -> error("No authority") }, { error("No decision") }, { null }, loss,
             object : ConversationSendTransport {
