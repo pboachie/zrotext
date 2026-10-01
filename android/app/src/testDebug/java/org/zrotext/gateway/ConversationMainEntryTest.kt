@@ -2,6 +2,7 @@
 package org.zrotext.gateway
 
 import android.net.Uri
+import android.content.Intent
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.lifecycle.Lifecycle
@@ -9,20 +10,35 @@ import androidx.compose.ui.unit.dp
 import android.content.res.Configuration
 import org.junit.Assert.*
 import org.junit.Rule
+import org.junit.rules.ExternalResource
+import org.junit.rules.RuleChain
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 /** Actual MainActivity navigation with synthetic presentation ports; no service or radio. */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28, 34], qualifiers = "w320dp-h640dp")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class ConversationMainEntryTest {
-    @get:Rule(order = 0) val receiverPermission = ConversationReceiverPermissionRule()
-    @get:Rule(order = 1) val compose = createAndroidComposeRule<MainActivity>()
+    val compose = createAndroidComposeRule<MainActivity>()
+    @get:Rule val rules: RuleChain = RuleChain.outerRule(object : ExternalResource() {
+        override fun before() {
+            // Android grants this merged AndroidX signature permission at installation.
+            // Robolectric needs the grant before MainActivity registers Home's receiver.
+            val app = org.robolectric.RuntimeEnvironment.getApplication()
+            org.robolectric.Shadows.shadowOf(app)
+                .grantPermissions("${app.packageName}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION")
+        }
+    }).around(compose)
     private val line = UUID.randomUUID().toString()
     private val interval = UUID.randomUUID().toString()
     private val request = UUID.randomUUID().toString()
@@ -171,6 +187,113 @@ class ConversationMainEntryTest {
         click("Close conversation review")
         compose.onNodeWithText("Open conversation review").assertExists()
     }
+    private fun activeReplyFixture() {
+        installFixture(); click("Agree and continue")
+        emit(ConversationPresentationSnapshot(2, ConversationPresentationPhase.CONFIRMED_ACTIVE, interval, line, 1, 60000, true))
+        compose.onNodeWithText("Import public reply authority").assertIsEnabled()
+        compose.onNodeWithText("Select reply authority file").assertDoesNotExist()
+    }
+    @Test fun foregroundPasteRequiresExplicitActionAndPassesExactCandidateWithoutClosingReview() {
+        activeReplyFixture()
+        val calls = AtomicInteger(); val actual = AtomicReference<Pair<ByteArray, ByteArray>>()
+        compose.runOnIdle { compose.activity.conversationReplyInstaller = { bytes, signer, complete ->
+            actual.set(bytes to signer); calls.incrementAndGet(); complete(true)
+        } }
+        val (text, expected, signer) = conversationReplyTextFixture()
+        click("Import public reply authority")
+        compose.onNodeWithText("Public reply authority (base64)").performTextInput(text)
+        assertEquals(0, calls.get())
+        click("Verify pasted reply authority")
+        compose.waitUntil(5000) { calls.get() == 1 }
+        compose.waitUntil(5000) { compose.onAllNodesWithText("Reply authority verified for the current interval. This action did not send a message.").fetchSemanticsNodes().isNotEmpty() }
+        assertArrayEquals(expected, actual.get().first); assertArrayEquals(signer, actual.get().second)
+        assertEquals(0, handles[0].closes)
+        assertEquals(listOf("approve:$request:1"), ports[0].actions)
+    }
+    @Test fun cancellingForegroundPasteDoesNotApplyOrRemountTheConsentPane() {
+        activeReplyFixture(); val subscriptions = ports[0].subscriptions
+        val calls = AtomicInteger()
+        compose.runOnIdle { compose.activity.conversationReplyInstaller = { _, _, _ -> calls.incrementAndGet() } }
+        click("Import public reply authority")
+        compose.onNodeWithText("Public reply authority (base64)").performTextInput(conversationReplyTextFixture().first)
+        click("Cancel reply import"); assertEquals(0, calls.get()); assertEquals(0, handles[0].closes)
+        assertEquals(subscriptions, ports[0].subscriptions)
+        click("Import public reply authority")
+        compose.onNodeWithText("Verify pasted reply authority").assertIsNotEnabled()
+    }
+    @Test fun externalPickerBackgroundStopsActiveReviewAndCannotResumePendingImport() {
+        activeReplyFixture(); val calls = AtomicInteger()
+        compose.runOnIdle { compose.activity.conversationReplyInstaller = { _, _, _ -> calls.incrementAndGet() } }
+        click("Import public reply authority")
+        compose.onNodeWithText("Public reply authority (base64)").performTextInput(conversationReplyTextFixture().first)
+        compose.runOnIdle { compose.activity.startActivity(Intent(Intent.ACTION_OPEN_DOCUMENT).setType("application/octet-stream")) }
+        // Robolectric dispatches the lifecycle Android delivers when an external picker backgrounds the phone UI.
+        compose.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
+        compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED); compose.waitForIdle()
+        assertEquals(1, handles[0].closes); assertEquals(0, calls.get())
+        compose.onNodeWithText("Verify pasted reply authority").assertDoesNotExist()
+        compose.onNodeWithText("Conversation review").assertDoesNotExist()
+    }
+    @Test fun completionAfterBackgroundCannotClaimVerifiedReplyAuthority() {
+        activeReplyFixture(); val completion = AtomicReference<((Boolean) -> Unit)>()
+        compose.runOnIdle { compose.activity.conversationReplyInstaller = { _, _, complete -> completion.set(complete) } }
+        click("Import public reply authority")
+        compose.onNodeWithText("Public reply authority (base64)").performTextInput(conversationReplyTextFixture().first)
+        click("Verify pasted reply authority"); compose.waitUntil(5000) { completion.get() != null }
+        compose.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
+        compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+        compose.runOnIdle { completion.get()(true) }; compose.waitForIdle()
+        compose.onNodeWithText("Reply authority verified for the current interval. This action did not send a message.").assertDoesNotExist()
+        assertEquals(1, handles[0].closes)
+    }
+    @Test fun queuedImportRejectsOriginalLeaseExpiryBeforeTimerDelivery() {
+        activeReplyFixture(); val calls = AtomicInteger()
+        val worker = MainActivity::class.java.getDeclaredField("conversationWorker").apply { isAccessible = true }
+            .get(compose.activity) as ExecutorService
+        val started = CountDownLatch(1); val release = CountDownLatch(1); val drained = CountDownLatch(1)
+        compose.runOnIdle { compose.activity.conversationReplyInstaller = { _, _, _ -> calls.incrementAndGet() } }
+        click("Import public reply authority")
+        compose.onNodeWithText("Public reply authority (base64)").performTextInput(conversationReplyTextFixture().first)
+        worker.execute { started.countDown(); release.await(5, TimeUnit.SECONDS) }
+        assertTrue(started.await(5, TimeUnit.SECONDS))
+        try {
+            click("Verify pasted reply authority")
+            compose.runOnIdle {
+                // Do not deliver a UI expiry timer before the queued worker checks the original deadline.
+                org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(61000))
+                release.countDown(); worker.execute { drained.countDown() }
+                assertTrue(drained.await(5, TimeUnit.SECONDS)); assertEquals(0, calls.get())
+            }
+        } finally { release.countDown() }
+        compose.waitForIdle()
+        compose.onNodeWithText("Reply authority verified for the current interval. This action did not send a message.").assertDoesNotExist()
+    }
+    @Test fun newerActiveObservationInvalidatesPendingImportAndItsCompletion() {
+        activeReplyFixture(); val completion = AtomicReference<((Boolean) -> Unit)>()
+        compose.runOnIdle { compose.activity.conversationReplyInstaller = { _, _, complete -> completion.set(complete) } }
+        click("Import public reply authority")
+        compose.onNodeWithText("Public reply authority (base64)").performTextInput(conversationReplyTextFixture().first)
+        click("Verify pasted reply authority"); compose.waitUntil(5000) { completion.get() != null }
+        emit(ConversationPresentationSnapshot(3, ConversationPresentationPhase.CONFIRMED_ACTIVE, interval, line, 1, 60000, true))
+        compose.runOnIdle { completion.get()(true) }; compose.waitForIdle()
+        compose.onNodeWithText("Reply authority verified for the current interval. This action did not send a message.").assertDoesNotExist()
+        assertEquals(0, handles[0].closes)
+        click("Import public reply authority")
+        compose.onNodeWithText("Verify pasted reply authority").assertIsNotEnabled()
+    }
+    @Test fun completionCannotClaimVerifiedAfterOriginalDeadlineBeforeTimerDelivery() {
+        activeReplyFixture(); val completion = AtomicReference<((Boolean) -> Unit)>()
+        compose.runOnIdle { compose.activity.conversationReplyInstaller = { _, _, complete -> completion.set(complete) } }
+        click("Import public reply authority")
+        compose.onNodeWithText("Public reply authority (base64)").performTextInput(conversationReplyTextFixture().first)
+        click("Verify pasted reply authority"); compose.waitUntil(5000) { completion.get() != null }
+        compose.runOnIdle {
+            org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(61000))
+            completion.get()(true)
+        }
+        compose.waitForIdle()
+        compose.onNodeWithText("Reply authority verified for the current interval. This action did not send a message.").assertDoesNotExist()
+    }
 
     private class Handle(val ready: () -> Unit, val failure: Boolean) : ConversationSetupEntrySession.Handle {
         var closes = 0
@@ -179,14 +302,15 @@ class ConversationMainEntryTest {
     }
     private inner class Port : ConversationPresentationPort {
         val actions = mutableListOf<String>()
-        private var listener: ((ConversationPresentationSnapshot) -> Unit)? = null
+        private val listeners = mutableListOf<(ConversationPresentationSnapshot) -> Unit>()
+        var subscriptions = 0
         private var state = ConversationPresentationSnapshot(1, ConversationPresentationPhase.AWAITING_PHONE_REVIEW,
             review = ConversationPhoneReview(request, interval, line, 1, "+12", ConversationActivationCodec.DISCLOSURE,
                 "conversation-content-v1", Draft02OutboundPreparation.hash(ConversationActivationCodec.DISCLOSURE.toByteArray()), 60000))
         override fun observe(listener: (ConversationPresentationSnapshot) -> Unit): AutoCloseable {
-            this.listener = listener; listener(state); return AutoCloseable { this.listener = null }
+            subscriptions++; listeners += listener; listener(state); return AutoCloseable { listeners.remove(listener) }
         }
-        fun emit(value: ConversationPresentationSnapshot) { state = value; listener?.invoke(value) }
+        fun emit(value: ConversationPresentationSnapshot) { state = value; listeners.toList().forEach { it(value) } }
         override fun refresh() = Unit
         override fun approvePhoneReview(requestId: String, observedVersion: Long) { actions += "approve:$requestId:$observedVersion" }
         override fun declinePhoneReview(requestId: String, observedVersion: Long) { actions += "decline:$requestId:$observedVersion" }

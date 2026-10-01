@@ -44,13 +44,17 @@ class ConversationAndroidConnectionInputsTest {
         assertEquals(ConversationStopReason.SIM_CHANGED, loss(line.copy(cardId = null)))
     }
     @Test fun constructionAndFailedOpenPublishNoJournalsOrDispatch() {
+        val record = PayloadKeyLifecycleFileStore.recordFile(context, "fixture-existing-payload")
+        assertFalse(record.exists())
         val provider = provider
+        assertFalse(record.exists())
         assertFalse(context.getDatabasePath(ConversationJournalStores.CAPTURE_FILE).exists())
         assertFalse(context.getDatabasePath(ConversationJournalStores.SEND_FILE).exists())
         f.refuse { provider.openForUserAction(f.session, f.scope, f.review, 0,
             ConversationConnectionBindings(ByteArray(65), ByteArray(32))) }
         assertFalse(context.getDatabasePath(ConversationJournalStores.CAPTURE_FILE).exists())
         assertFalse(context.getDatabasePath(ConversationJournalStores.SEND_FILE).exists())
+        assertFalse(record.exists())
         assertEquals(0, dispatches)
     }
     @Test fun permissionSessionAndCloseLossFenceOwnedCallbacks() {

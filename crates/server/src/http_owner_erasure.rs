@@ -735,9 +735,9 @@ async fn erase_account(
             Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
         }
         // The existing helper acquires billing-customer before account, including
-        // the concurrent-new-binding recheck. SQL locks survive this guard's drop.
+        // the concurrent-new-binding recheck. SQL locks belong to the transaction.
         match zrotext_delivery_store::sealed::lock_account(&tx, account_id, false).await {
-            Ok(guard) => drop(guard),
+            Ok(_) => {}
             Err(zrotext_delivery_store::StoreError::Revoked) => {
                 return auth_error(AuthError::Unauthorized);
             }

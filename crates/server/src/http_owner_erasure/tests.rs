@@ -3549,7 +3549,7 @@ async fn execution_record_wait_holds_owner_lock_and_expiry_rolls_back_all_delete
         .unwrap()
     });
     wait_until_handler_is_blocked_by(&admin, "zt_execution_record_expiry", pid).await;
-    // EXCLUSIVE permits schema SELECTs but blocks the exact FOR UPDATE record
+    // EXCLUSIVE permits plain SELECT queries but blocks the exact FOR UPDATE record
     // acquisition. Observe the known blocker while the owner is still live.
     let waiting:String=admin.query_one("SELECT query FROM pg_stat_activity WHERE application_name='zt_execution_record_expiry' AND $1=ANY(pg_blocking_pids(pid))",&[&pid]).await.unwrap().get(0);
     assert!(waiting.contains("SELECT message_id FROM conversation_execution_records"));

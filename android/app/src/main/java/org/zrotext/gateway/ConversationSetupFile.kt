@@ -3,6 +3,18 @@ package org.zrotext.gateway
 
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
+import java.util.Base64
+
+/** Standard canonical base64 only; bound decoded size before allocating the candidate. */
+internal fun decodeConversationReplyText(text: String): ConversationUserSetupProvider.ReplyAuthority {
+    require(text.length in 4..21900 && text.length % 4 == 0)
+    require(Regex("[A-Za-z0-9+/]+={0,2}").matches(text))
+    val padding = if (text.endsWith("==")) 2 else if (text.endsWith("=")) 1 else 0
+    require(text.length / 4 * 3 - padding in 1..16423)
+    val bytes = Base64.getDecoder().decode(text)
+    require(Base64.getEncoder().encodeToString(bytes) == text)
+    return ConversationUserSetupProvider.decodeReplyAuthority(bytes)
+}
 
 /** A SIM chosen elsewhere cannot rename the authoritative line in a consent disclosure. */
 internal fun conversationEntryLineLabel(binding: LocalLineBinding,

@@ -49,7 +49,7 @@ class ConversationProductionBoundaryTest {
         admission.prepare(byteArrayOf(1),true);val recovery=admission.beginRecovery();initialChallenge=recovery.challenge;admission.completeRecovery(recovery.challenge,byteArrayOf(1))
         val time=clock.beginRequest();clock.installAuthenticatedReply(time.challenge,time.session,100000)
         hooks=ConversationLifecycleHooks(admission,sends.sends(),clock,recoveryPolicy){check(it==scope);remoteCloseCalls++;if(remoteCloseFails)throw java.io.IOException("fixture closure uncertain")}
-        execution=ConversationExecutionBoundary(admission,clock,{current},dispatch,DevicePayloadKeyStore(RuntimeEnvironment.getApplication(), "fixture-unused")){preparationCalls++;null}
+        execution=ConversationExecutionBoundary(admission,clock,{current},dispatch,DevicePayloadKeyStore(context, "fixture-unused")){preparationCalls++;null}
     }
     @After fun cleanup(){capture.close();sends.close();dispatch.close()}
     private fun prepare(generation:Long=1,version:Long=2,digest:String=scope.activationDigest):SealedDispatchExecutor.Outcome {
