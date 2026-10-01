@@ -37,7 +37,7 @@ macro_rules! migration {
 }
 
 // The routes run on the complete schema, SQL embedded at build time.
-const TEST_MIGRATIONS: [(&str, &str); 81] = [
+const TEST_MIGRATIONS: [(&str, &str); 82] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -119,6 +119,7 @@ const TEST_MIGRATIONS: [(&str, &str); 81] = [
     migration!("079_workflow_integration_authority.sql"),
     migration!("080_test_exposure_reservations.sql"),
     migration!("081_invoice_bound_test_billing.sql"),
+    migration!("082_conversation_execution_records.sql"),
 ];
 
 #[test]
