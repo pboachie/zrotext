@@ -1,6 +1,23 @@
 {
   "description": "Synthetic opaque storage bytes only; not authentic encrypted content or a sendable message.",
-  "valid_draft_create": {"draft_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "ciphertext_base64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
-  "valid_grant_record": {"grant_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "user_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "role": "encrypted_drafter", "created_at_ms": 946684800000, "revoked_at_ms": null},
-  "valid_deleted_draft": {"draft_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "grant_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "author_user_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "ciphertext_base64": null, "created_at_ms": 946684800000, "deleted_at_ms": 946684800001}
+  "valid_draft_create": {
+    "draft_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "ciphertext_base64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  },
+  "valid_grant_record": {
+    "grant_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    "user_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "role": "encrypted_drafter",
+    "created_at_ms": 946684800000,
+    "revoked_at_ms": null
+  },
+  "valid_deleted_draft": {
+    "draft_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "grant_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    "author_user_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "ciphertext_base64": null,
+    "created_at_ms": 946684800000,
+    "deleted_at_ms": 946684800001
+  },
+  "valid_export_cursor": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 }

@@ -89,6 +89,37 @@ async fn draft_fence(tx: &Transaction<'_>, member: &SessionPrincipal) -> Result<
     Ok(row.get(0))
 }
 
+// The initial locks order revocation against the operation, but wall-clock
+// expiry can still pass during a later query/write. Check again before any
+// mutation commits or any buffered ciphertext leaves the transaction.
+async fn commit_member(tx: Transaction<'_>, member: &SessionPrincipal) -> Result<(), AuthError> {
+    super::require_current_member(&tx, member).await?;
+    tx.commit().await?;
+    Ok(())
+}
+async fn commit_owner(tx: Transaction<'_>, owner: &SessionPrincipal) -> Result<(), AuthError> {
+    super::require_current_owner(&tx, owner).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Canonical composite position, scoped by the owner's account in SQL.
+pub fn decode_export_cursor(value: Option<&str>) -> Result<Option<(Uuid, Uuid)>, AuthError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.len() != 73 {
+        return Err(AuthError::InvalidInput);
+    }
+    let (draft, author) = value.split_once(':').ok_or(AuthError::InvalidInput)?;
+    let draft = Uuid::parse_str(draft).map_err(|_| AuthError::InvalidInput)?;
+    let author = Uuid::parse_str(author).map_err(|_| AuthError::InvalidInput)?;
+    if draft.is_nil() || author.is_nil() || format!("{draft}:{author}") != value {
+        return Err(AuthError::InvalidInput);
+    }
+    Ok(Some((draft, author)))
+}
+
 pub struct GrantRequest<'a> {
     pub target: Uuid,
     pub confirmed: bool,
@@ -122,7 +153,7 @@ pub async fn grant_with_proof(
     .await?;
     super::require_current_owner(&tx, owner).await?;
     tx.query_opt("SELECT 1 FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.account_id=$1 AND m.user_id=$2 AND m.revoked_at IS NULL AND u.email_verified_at IS NOT NULL FOR SHARE OF m,u", &[&owner.tenant.account_id(),&target]).await?.ok_or(AuthError::Forbidden)?;
-    if let Some(row)=tx.query_opt("SELECT id,user_id,(extract(epoch FROM created_at)*1000)::bigint,NULL::bigint FROM collaboration_draft_grants WHERE account_id=$1 AND user_id=$2 AND revoked_at IS NULL", &[&owner.tenant.account_id(),&target]).await? {tx.commit().await?;return Ok(grant_view(row));}
+    if let Some(row)=tx.query_opt("SELECT id,user_id,(extract(epoch FROM created_at)*1000)::bigint,NULL::bigint FROM collaboration_draft_grants WHERE account_id=$1 AND user_id=$2 AND revoked_at IS NULL", &[&owner.tenant.account_id(),&target]).await? {commit_owner(tx, owner).await?;return Ok(grant_view(row));}
     let count: i64 = tx
         .query_one(
             "SELECT count(*) FROM collaboration_draft_grants WHERE account_id=$1",
@@ -135,7 +166,7 @@ pub async fn grant_with_proof(
     }
     let row=tx.query_one("INSERT INTO collaboration_draft_grants(id,account_id,user_id,role) VALUES($1,$2,$3,'encrypted_drafter') RETURNING id,user_id,(extract(epoch FROM created_at)*1000)::bigint,NULL::bigint", &[&Uuid::new_v4(),&owner.tenant.account_id(),&target]).await?;
     let view = grant_view(row);
-    tx.commit().await?;
+    commit_owner(tx, owner).await?;
     Ok(view)
 }
 
@@ -150,7 +181,7 @@ pub async fn revoke(
     if row.is_some() {
         tx.execute("UPDATE collaboration_drafts SET ciphertext=NULL,deleted_at=coalesce(deleted_at,clock_timestamp()) WHERE account_id=$1 AND grant_id=$2", &[&owner.tenant.account_id(),&id]).await?;
     }
-    tx.commit().await?;
+    commit_owner(tx, owner).await?;
     Ok(row.is_some())
 }
 
@@ -168,7 +199,7 @@ pub async fn create(
     let digest = Sha256::digest(&bytes).to_vec();
     if let Some(row)=tx.query_opt("SELECT id,grant_id,user_id,ciphertext,(extract(epoch FROM created_at)*1000)::bigint,(extract(epoch FROM deleted_at)*1000)::bigint,ciphertext_digest FROM collaboration_drafts WHERE account_id=$1 AND user_id=$2 AND id=$3", &[&member.tenant.account_id(),&member.user_id,&id]).await?{
         if row.get::<_,Uuid>(1)!=grant || row.get::<_,Option<i64>>(5).is_some() || row.get::<_,Vec<u8>>(6)!=digest{return Err(AuthError::Conflict);}
-        let view=draft_view(row);tx.commit().await?;return Ok((view,false));
+        let view=draft_view(row);commit_member(tx, member).await?;return Ok((view,false));
     }
     let row=tx.query_one("SELECT count(*),count(*) FILTER(WHERE deleted_at IS NULL) FROM collaboration_drafts WHERE account_id=$1 AND grant_id=$2", &[&member.tenant.account_id(),&grant]).await?;
     if row.get::<_, i64>(0) >= MAX_DRAFT_IDS || row.get::<_, i64>(1) >= MAX_LIVE_DRAFTS {
@@ -176,7 +207,7 @@ pub async fn create(
     }
     let row=tx.query_one("INSERT INTO collaboration_drafts(id,account_id,user_id,grant_id,ciphertext,ciphertext_digest) VALUES($1,$2,$3,$4,$5,$6) RETURNING id,grant_id,user_id,ciphertext,(extract(epoch FROM created_at)*1000)::bigint,NULL::bigint", &[&id,&member.tenant.account_id(),&member.user_id,&grant,&bytes,&digest]).await?;
     let view = draft_view(row);
-    tx.commit().await?;
+    commit_member(tx, member).await?;
     Ok((view, true))
 }
 
@@ -189,7 +220,7 @@ pub async fn own_drafts(
     let grant = draft_fence(&tx, member).await?;
     let rows=tx.query("SELECT id,grant_id,user_id,ciphertext,(extract(epoch FROM created_at)*1000)::bigint,NULL::bigint FROM collaboration_drafts WHERE account_id=$1 AND user_id=$2 AND grant_id=$3 AND deleted_at IS NULL AND($4::uuid IS NULL OR id=$4) ORDER BY id LIMIT 20", &[&member.tenant.account_id(),&member.user_id,&grant,&id]).await?;
     let views = rows.into_iter().map(draft_view).collect();
-    tx.commit().await?;
+    commit_member(tx, member).await?;
     Ok(views)
 }
 pub async fn delete_own(
@@ -200,7 +231,7 @@ pub async fn delete_own(
     let tx = client.transaction().await?;
     let grant = draft_fence(&tx, member).await?;
     tx.execute("UPDATE collaboration_drafts SET ciphertext=NULL,deleted_at=coalesce(deleted_at,clock_timestamp()) WHERE account_id=$1 AND user_id=$2 AND grant_id=$3 AND id=$4", &[&member.tenant.account_id(),&member.user_id,&grant,&id]).await?;
-    tx.commit().await?;
+    commit_member(tx, member).await?;
     Ok(())
 }
 
@@ -209,17 +240,19 @@ pub struct ExportPage {
     pub grants: Vec<GrantView>,
     pub drafts: Vec<DraftView>,
     pub drafts_truncated: bool,
-    pub next_cursor: Option<Uuid>,
+    pub next_cursor: Option<String>,
 }
 pub async fn export(
     client: &mut Client,
     owner: &SessionPrincipal,
-    before: Option<Uuid>,
+    before: Option<(Uuid, Uuid)>,
 ) -> Result<ExportPage, AuthError> {
     let tx = client.transaction().await?;
     owner_fence(&tx, owner).await?;
     let grants=tx.query("SELECT id,user_id,(extract(epoch FROM created_at)*1000)::bigint,(extract(epoch FROM revoked_at)*1000)::bigint FROM collaboration_draft_grants WHERE account_id=$1 ORDER BY id LIMIT 100", &[&owner.tenant.account_id()]).await?.into_iter().map(grant_view).collect();
-    let rows=tx.query("SELECT id,grant_id,user_id,ciphertext,(extract(epoch FROM created_at)*1000)::bigint,(extract(epoch FROM deleted_at)*1000)::bigint FROM collaboration_drafts WHERE account_id=$1 AND($2::uuid IS NULL OR id<$2) ORDER BY id DESC LIMIT 21", &[&owner.tenant.account_id(),&before]).await?;
+    let before_id = before.map(|position| position.0);
+    let before_author = before.map(|position| position.1);
+    let rows=tx.query("SELECT id,grant_id,user_id,ciphertext,(extract(epoch FROM created_at)*1000)::bigint,(extract(epoch FROM deleted_at)*1000)::bigint FROM collaboration_drafts WHERE account_id=$1 AND($2::uuid IS NULL OR (id,user_id)<($2,$3::uuid)) ORDER BY id DESC,user_id DESC LIMIT 21", &[&owner.tenant.account_id(),&before_id,&before_author]).await?;
     let truncated = rows.len() > PAGE_SIZE as usize;
     let drafts: Vec<_> = rows
         .into_iter()
@@ -227,11 +260,13 @@ pub async fn export(
         .map(draft_view)
         .collect();
     let next_cursor = if truncated {
-        drafts.last().map(|draft| draft.draft_id)
+        drafts
+            .last()
+            .map(|draft| format!("{}:{}", draft.draft_id, draft.author_user_id))
     } else {
         None
     };
-    tx.commit().await?;
+    commit_owner(tx, owner).await?;
     Ok(ExportPage {
         grants,
         drafts,
@@ -248,6 +283,6 @@ pub async fn list_grants(
     owner_fence(&tx, owner).await?;
     let rows=tx.query("SELECT id,user_id,(extract(epoch FROM created_at)*1000)::bigint,(extract(epoch FROM revoked_at)*1000)::bigint FROM collaboration_draft_grants WHERE account_id=$1 ORDER BY id LIMIT 100", &[&owner.tenant.account_id()]).await?;
     let views = rows.into_iter().map(grant_view).collect();
-    tx.commit().await?;
+    commit_owner(tx, owner).await?;
     Ok(views)
 }

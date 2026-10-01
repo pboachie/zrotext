@@ -20,8 +20,17 @@ def validator(name):
 class CollaborationDraftContractTest(unittest.TestCase):
     def test_checked_in_synthetic_vectors_match_selected_shapes(self):
         vectors = json.loads((ROOT / "vectors" / "collaboration-drafts.json").read_text(encoding="utf-8"))
-        for name, kind in [("valid_draft_create", "draft_create"), ("valid_grant_record", "grant"), ("valid_deleted_draft", "draft")]:
+        for name, kind in [("valid_draft_create", "draft_create"), ("valid_grant_record", "grant"), ("valid_deleted_draft", "draft"), ("valid_export_cursor", "export_cursor")]:
             validator(kind).validate(vectors[name])
+
+    def test_export_cursor_requires_both_canonical_identities(self):
+        check = validator("export_cursor")
+        value = f"{IDENTITY}:{IDENTITY}"
+        check.validate(value)
+        for malformed in [IDENTITY, value.upper(), value + ":extra", "invalid",
+                          f"00000000-0000-0000-0000-000000000000:{IDENTITY}",
+                          f"{IDENTITY}:00000000-0000-0000-0000-000000000000"]:
+            self.assertFalse(check.is_valid(malformed))
 
     def test_only_selected_confirmed_drafting_grant_is_valid(self):
         grant = {"user_id": IDENTITY, "role": "encrypted_drafter", "confirm_widening": True,

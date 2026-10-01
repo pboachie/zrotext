@@ -51,7 +51,7 @@ struct DraftBody {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExportQuery {
-    before: Option<Uuid>,
+    before: Option<String>,
 }
 
 async fn charge(
@@ -205,9 +205,13 @@ async fn export(
     let owner = require_owner_read(&client, &state.hasher, &headers).await?;
     charge(&client, &state, &owner, Limit::CollaborationDraft).await?;
     Ok(Json(
-        drafts::export(&mut client, &owner, query.before)
-            .await
-            .map_err(map_auth)?,
+        drafts::export(
+            &mut client,
+            &owner,
+            drafts::decode_export_cursor(query.before.as_deref()).map_err(map_auth)?,
+        )
+        .await
+        .map_err(map_auth)?,
     )
     .into_response())
 }

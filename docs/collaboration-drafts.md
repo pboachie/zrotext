@@ -35,7 +35,7 @@ cannot substitute for a browser session.
 | `POST /drafts` | Live encrypted-drafter grant | Create own opaque artifact; identical retry returns the existing artifact |
 | `GET /drafts/{draft_id}` | Live encrypted-drafter grant | Own live artifact only; another author/account is not found |
 | `DELETE /drafts/{draft_id}` | Live encrypted-drafter grant | Delete own bytes and retain an idempotency tombstone; repeated delete is harmless |
-| `GET /export?before=<uuid>` | Current owner | Account grant metadata and a capped page of ciphertext/tombstones |
+| `GET /export?before=<draft-uuid>:<author-uuid>` | Current owner | Account grant metadata and a capped page of ciphertext/tombstones |
 
 An owner needs a separate live drafting grant for the draft CRUD routes. The
 owner's account takeout and grant-management authority come from the existing
@@ -69,14 +69,14 @@ between tenants. Full body/storage budgets return `413`/`429`, not partial data.
 
 Revocation scrubs ciphertext transactionally and blocks further grant use.
 Every operation rechecks session, membership, account and grant authority after
-lock waits; cached principals cannot outlive those fences. Removing a member
+lock waits and immediately before committing a mutation or releasing a read; cached principals cannot outlive those fences. Removing a member
 through the existing seat lifecycle cascades grants and artifacts. Account or
 user erasure also cascades them. A deleted artifact retains only immutable
 identity/digest metadata until its grant/member/account is erased.
 
 Export returns grant metadata and at most 20 artifacts per page, including
 deletion tombstones. `drafts_truncated` and `next_cursor` identify remaining
-records. Live bytes are base64 ciphertext; deleted bytes are null. Export never
+records. The canonical lowercase `draft-uuid:author-uuid` cursor orders both identities, so equal draft IDs from different authors remain exportable. Cursor positions never change the authenticated account scope. Live bytes are base64 ciphertext; deleted bytes are null. Export never
 decrypts them or gives the caller encryption keys. All responses are no-store.
 
 The [schema](../protocol/v1/collaboration-drafts.schema.json) describes the

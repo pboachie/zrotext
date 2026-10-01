@@ -166,6 +166,23 @@
           "minimum": 0
         }
       }
+    },
+    "export_cursor": {
+      "type": "string",
+      "description": "Canonical draft UUID followed by author UUID; account authority is supplied by the authenticated owner session.",
+      "minLength": 73,
+      "maxLength": 73,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "not": {
+        "anyOf": [
+          {
+            "pattern": "^00000000-0000-0000-0000-000000000000:"
+          },
+          {
+            "pattern": ":00000000-0000-0000-0000-000000000000$"
+          }
+        ]
+      }
     }
   }
 }

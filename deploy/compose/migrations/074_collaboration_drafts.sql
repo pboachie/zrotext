@@ -31,7 +31,7 @@ CREATE TABLE collaboration_drafts (
     CHECK (ciphertext IS NULL OR octet_length(ciphertext) BETWEEN 28 AND 8192)
 );
 CREATE INDEX collaboration_drafts_grant ON collaboration_drafts(account_id,user_id,grant_id,id);
-CREATE INDEX collaboration_drafts_export ON collaboration_drafts(account_id,id);
+CREATE INDEX collaboration_drafts_export ON collaboration_drafts(account_id,id,user_id);
 
 CREATE FUNCTION collaboration_grant_identity_guard() RETURNS trigger
 LANGUAGE plpgsql SET search_path=pg_catalog AS $$
