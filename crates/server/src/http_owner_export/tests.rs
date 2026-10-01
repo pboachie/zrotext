@@ -113,6 +113,7 @@ const EXPORT_SCHEMA: [(&str, &str); 76] = export_schema!(
     "073_collaboration_drafts.sql",
     "074_agent_authority.sql",
     "075_workflow_context.sql",
+    "076_workflow_decisions.sql",
     "../migration-candidates/NNN_conversation_execution_records.sql",
 );
 #[test]
