@@ -11,14 +11,6 @@ use tokio_postgres::Transaction;
 use uuid::Uuid;
 mod enrollment;
 
-pub(crate) struct ManifestSnapshot {
-    pub generation: i64,
-    pub version: i64,
-    pub digest: [u8; 32],
-    pub bytes: Vec<u8>,
-    pub accepted_ms: i64,
-}
-
 /// Public directory candidate only; a client must retain its independent root pin/history.
 pub(crate) struct PublicCandidate {
     pub pin: Vec<u8>,
