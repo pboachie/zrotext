@@ -390,6 +390,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/m0/device-test", get(device_test))
         .merge(owner_ui::source_router(source_url))
         .with_state(config.clone());
+    let failover_adapters = if let Some(quorum) = &failover_executor_env {
+        match env::var("FAILOVER_QUORUM_ADAPTER_CONFIG") {
+            Ok(path) if !path.is_empty() => {
+                Some(zrotext_server::failover_adapters::Adapters::load(
+                    std::path::Path::new(&path),
+                    quorum,
+                )?)
+            }
+            Ok(_) | Err(env::VarError::NotPresent) => None,
+            Err(_) => return Err("adapter configuration path must be UTF-8".into()),
+        }
+    } else {
+        None
+    };
+    if let Some(adapters) = &failover_adapters {
+        app = app.merge(adapters.router());
+    }
     let retention_database = config.database_url.clone();
     let retention_policy = config.retention;
     let retention_draining = config.draining.clone();
@@ -932,11 +949,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }));
         }
     }
-    let _failover_executor_thread = failover_executor::spawn_failover_executor(
+    let _failover_executor_thread = failover_executor::spawn_failover_executor_with_adapters(
         failover_executor_env,
         config.database_url.clone(),
         config.draining.clone(),
         failover_executor_healthy.unwrap_or_default(),
+        failover_adapters,
     );
     eprintln!(
         "zrotext site={} instance={} listening={bind}",
