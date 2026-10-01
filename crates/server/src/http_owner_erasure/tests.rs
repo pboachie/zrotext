@@ -3652,8 +3652,8 @@ async fn execution_partial_schema_erasure_fails_without_disabling_or_deleting_ac
         'sessions',(SELECT jsonb_agg(id ORDER BY id) FROM sessions), \
         'users',(SELECT jsonb_agg(id ORDER BY id) FROM users), \
         'memberships',(SELECT jsonb_agg(to_jsonb(member) ORDER BY member.account_id,member.user_id) FROM memberships member), \
-        'confirmation',(SELECT jsonb_agg(to_jsonb(p) ORDER BY p.message_id) FROM conversation_confirmation_records p))";
-    let before: serde_json::Value = db.query_one(snapshot, &[]).await.unwrap().get(0);
+        'confirmation',(SELECT jsonb_agg(to_jsonb(p) ORDER BY p.message_id) FROM conversation_confirmation_records p))::text";
+    let before: String = db.query_one(snapshot, &[]).await.unwrap().get(0);
     let response = app
         .oneshot(erasure_post(
             Some(&session.token),
@@ -3665,7 +3665,7 @@ async fn execution_partial_schema_erasure_fails_without_disabling_or_deleting_ac
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let after: serde_json::Value = db.query_one(snapshot, &[]).await.unwrap().get(0);
+    let after: String = db.query_one(snapshot, &[]).await.unwrap().get(0);
     assert_eq!(after, before);
     assert!(
         db.query_one(
