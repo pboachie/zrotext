@@ -26,6 +26,17 @@ The following slices are merged groundwork. Their limited scope does not advance
 
 The signed restricted rc.2 Android candidate is published; it is not general release or concept-fidelity acceptance for the next candidate. Native Home/navigation/motion and guided setup are merged (#603/#604/#648); #611 adds remaining observations and #612 verifies the integrated owner/Android tree. TypeScript sealed envelope preparation and shared cross-client/adversarial vectors are merged groundwork, not a complete enabled runtime. `POST /v1/sealed/messages` admission and `POST /v1/sealed/inbound-events` upload are mounted behind the off-by-default sealed-admission flag; negotiated dispatch/fetch is separately mounted behind the default-off sealed-dispatch gate, and scoped lifecycle/device/usage surfaces share the sealed-admission gate. Android service routing still does not offer sealed negotiation. Canonical `/v1/sealed/*` is the existing candidate family; proposed `/v1/messages` is not a competing implemented plaintext route. Conversation consent/read and protected phone-journal groundwork (#613/#650/#651/#652/#655) is merged and dormant, not a complete general conversation product. Library-only durable workflow services, provisioning/key lifecycle caller integration and real-device evidence remain runtime gates.
 
+The owner concept foundation now includes the merged shared shell, selected
+fleet details, outbound activity and authoritative writer summaries
+(#683/#685/#690/#695). Android local power is merged in #693. #605 composes
+the summary, hardware and activity hierarchy. Android offers an optional manual
+device-scoped summary reader with an independent masked `messages:read` API key,
+explicit HTTPS origin and device UUID. It stores no credential, clears access
+on backgrounding or scope changes, cancels off Home and labels expired counts
+as historical. A phone connection credential cannot provide that authority;
+missing observations remain unavailable. Integrated authenticated network,
+final human and physical-device acceptance remain open.
+
 ## Delivery sequence
 
 Each slice should have its own focused implementation and verification changes. Synthetic prototypes can be developed before the foundation is complete, but customer sending depends on the [general sending gates](ROADMAP.md#path-to-general-sending).
