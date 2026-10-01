@@ -608,5 +608,8 @@ async fn draft_expiry_is_rechecked_after_the_final_identity_query_stalls() {
         "the regression must reach the delayed final identity check"
     );
     assert_eq!(case.effects().await, (0, 0, 0, 0, 0));
+    // Restore only this regression's latency seam after every assertion.
+    // Restricted shared teardown must not remove arbitrary views or functions.
+    case.base.db.batch_execute("DROP VIEW api_keys RESTRICT; ALTER TABLE draft_test_api_keys RENAME TO api_keys; DROP FUNCTION draft_identity_delay() RESTRICT; DROP SEQUENCE draft_identity_reads RESTRICT").await.unwrap();
     case.base.cleanup().await;
 }

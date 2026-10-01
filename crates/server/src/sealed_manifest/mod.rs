@@ -319,18 +319,30 @@ impl VerifiedManifest {
         self.roles
             .iter()
             .filter(|k| k.role == 3 && k.point.as_slice() == point && k.active(now))
-            .map(|k| (k.id, k.scope, k.until))
+            .map(|k| (k.id, k.scope, k.until.min(self.expires)))
             .next()
     }
 
     pub(crate) fn active_agent_signer(&self, line: &[u8; 16], signer: &[u8; 32], now: u64) -> bool {
-        self.roles.iter().any(|key| {
-            key.role == 5
-                && key.scope == 1
-                && key.line == *line
-                && key.id == *signer
-                && key.active(now)
-        })
+        self.active_agent_signer_until(line, signer, now).is_some()
+    }
+
+    pub(crate) fn active_agent_signer_until(
+        &self,
+        line: &[u8; 16],
+        signer: &[u8; 32],
+        now: u64,
+    ) -> Option<u64> {
+        self.roles
+            .iter()
+            .find(|key| {
+                key.role == 5
+                    && key.scope == 1
+                    && key.line == *line
+                    && key.id == *signer
+                    && key.active(now)
+            })
+            .map(|key| key.until.min(self.expires))
     }
 
     pub(crate) fn active_agent_reader(&self, key_id: &[u8; 32], directions: u16, now: u64) -> bool {
