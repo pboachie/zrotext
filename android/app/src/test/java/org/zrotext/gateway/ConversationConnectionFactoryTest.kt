@@ -74,7 +74,7 @@ class ConversationConnectionFactoryTest {
         return connection
     }
     private fun drain() { worker.submit {}.get(5, TimeUnit.SECONDS) }
-    private fun inputs(loss: () -> ConversationStopReason? = { null }): ConversationConnectionInputs {
+    private fun inputs(releaseResources: () -> Unit = {}, loss: () -> ConversationStopReason? = { null }): ConversationConnectionInputs {
         val context = RuntimeEnvironment.getApplication()
         val capture = Room.inMemoryDatabaseBuilder(context, ConversationCaptureDatabase::class.java).allowMainThreadQueries().build()
         val sends = Room.inMemoryDatabaseBuilder(context, ConversationSendDatabase::class.java).allowMainThreadQueries().build()
@@ -95,7 +95,7 @@ class ConversationConnectionFactoryTest {
             { _, _ -> error("No authority") }, { error("No decision") }, { null }, loss,
             object : ConversationSendTransport {
                 override fun submit(message: String, attempt: String, scope: ConversationCaptureScope, body: String): ConversationSubmission = error("No dispatch")
-            })
+            }, releaseResources)
     }
     @After fun cleanup() {
         connections.forEach { it.close() }; mount.pause(ConversationStopReason.WORKER_SHUTDOWN)
@@ -137,12 +137,14 @@ class ConversationConnectionFactoryTest {
         assertNull(mount.firstReceipt())
     }
     @Test fun independentProviderLossRefusesAssemblyBeforeMountOrPublication() {
-        val provided = inputs { ConversationStopReason.READER_CHANGED }
+        var releases = 0
+        val provided = inputs(releaseResources = { releases++ }) { ConversationStopReason.READER_CHANGED }
         val connection = negotiate(factory(inputs={ provided })); drain()
-        assertNull(connection.wire.currentSession()); assertEquals(0,publications); assertNull(mount.firstReceipt())
+        assertNull(connection.wire.currentSession()); assertEquals(0,publications); assertNull(mount.firstReceipt()); assertEquals(1, releases)
     }
     @Test fun closeDuringPublicationClosesRealAssemblyBeforeAnyProposalOrKeyUse() {
-        val provided = inputs()
+        val releases = java.util.concurrent.atomic.AtomicInteger(0)
+        val provided = inputs(releaseResources = { releases.incrementAndGet() })
         lateinit var connection: ConversationSocketNegotiation
         val entered = CountDownLatch(1); val release = CountDownLatch(1)
         var handle: ConversationConnectionFactory.Connection? = null
@@ -166,10 +168,11 @@ class ConversationConnectionFactoryTest {
                 }
                 assertNull(failure.get())
             } finally { operation.join(2000) }
-            connection.close(); assertNull(mount.firstReceipt()); assertNull(connection.wire.currentSession())
+            connection.close(); assertEquals(0, releases.get()); assertNull(mount.firstReceipt()); assertNull(connection.wire.currentSession())
             assertThrows(IllegalStateException::class.java) { checkNotNull(handle).presentation }
         } finally { release.countDown() }
-        drain(); assertEquals(1,publications)
+        drain(); assertEquals(1,publications); assertEquals(1, releases.get())
+        connection.close(); drain(); assertEquals(1, releases.get())
     }
     @Test fun aClosedOldHandleCannotPauseReplacementAssembly() {
         val provided = inputs()

@@ -57,7 +57,7 @@ internal class ConversationAndroidConnectionInputs(
                 delivery, { expected, _ -> owned.requireLocal(expected); bindings },
                 { expected, _ -> owned.requireLocal(expected); handles.requireOpen() },
                 { expected -> owned.requireLocal(expected); decision.consume(expected); owned.requireLocal(expected) },
-                { subscription -> owned.observedLine(subscription) }, { owned.loss() }, dispatch)
+                { subscription -> owned.observedLine(subscription) }, { owned.loss() }, dispatch, owned::close)
             return owned
         } catch (error: Exception) { runCatching { owned.close() }; throw error }
     }

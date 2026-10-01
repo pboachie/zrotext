@@ -24,7 +24,10 @@ internal class ConversationConnectionBindings(archivePoint: ByteArray, outboundS
     override fun toString() = "ConversationConnectionBindings(redacted)"
 }
 
-/** Caller owns storage/executors and previously enrolled hardware keys. No provisioning defaults. */
+/** Caller supplies previously enrolled hardware keys and executors. No provisioning defaults.
+ * releaseOwnedResources must own only this connection storage, never a successor/shared handle.
+ * Factory invokes it once after an accepted lifecycle closure attempt, or before runtime creation.
+ */
 internal class ConversationConnectionInputs(
     val capture: ConversationCaptureDao, val sends: ConversationSendDao,
     val protection: ConversationJournalProtection, val trust: Draft02TrustStore,
@@ -35,8 +38,14 @@ internal class ConversationConnectionInputs(
     val consumePhoneDecision: (ConversationCaptureScope) -> Unit,
     val observedLine: (Int) -> ConversationRuntimeMount.ObservedLine?,
     val lifecycleLoss: () -> ConversationStopReason?,
-    val dispatch: ConversationSendTransport
-)
+    val dispatch: ConversationSendTransport,
+    private val releaseOwnedResources: () -> Unit = {}
+) {
+    private val resourcesReleased = AtomicBoolean(false)
+    internal fun releaseResources() {
+        if (resourcesReleased.compareAndSet(false, true)) releaseOwnedResources()
+    }
+}
 
 /** Process-only configuration. Neither installation nor negotiation grants phone consent. */
 internal class ConversationConnectionFactory(
@@ -64,6 +73,8 @@ internal class ConversationConnectionFactory(
         return ConversationSocketNegotiation(socket, identity, epoch, elapsedMillis, worker, { wire, guard ->
             var candidate: Connection? = null
             var original: ByteArray? = null
+            var acquired: ConversationConnectionInputs? = null
+            var assembledRuntime: ConversationAuthenticatedRuntime? = null
             try {
                 guard()
                 val session = checkNotNull(wire.currentSession())
@@ -74,7 +85,7 @@ internal class ConversationConnectionFactory(
                 guard()
                 original = proposal.statement()
                 val parsed = validateProposal(checkNotNull(original), proposal.review, session, site, instance)
-                val inputs = inputsForSession(session)
+                val inputs = inputsForSession(session).also { acquired = it }
                 guard()
                 check(inputs.lifecycleLoss() == null)
                 lateinit var runtime: ConversationAuthenticatedRuntime
@@ -131,12 +142,13 @@ internal class ConversationConnectionFactory(
                             requireSession()
                         }, activation::install, worker, inputs.delivery)
                     runtimeBuilt = true
+                    assembledRuntime = runtime
                     val crypto = ConversationContentCrypto(inputs.payloadKeys, inputs.signingKeys, {
                         val scope = runtime.currentScope()
                         if (scope == null) null else authority(scope, checkNotNull(runtime.trustedNowMs()))
                     })
                     val content = ConversationContentSession(runtime, crypto, inputs.dispatch, mount)
-                    candidate = Connection(runtime, content, activation, ::requireSession)
+                    candidate = Connection(runtime, content, activation, ::requireSession, inputs::releaseResources)
                     guard()
                     synchronized(gate) {
                         check(!closed)
@@ -158,7 +170,14 @@ internal class ConversationConnectionFactory(
                     throw error
                 }
             } catch (error: Exception) {
-                try { lose() } finally { candidate?.close() }
+                try { lose() } finally {
+                    if (candidate != null) candidate?.close()
+                    else acquired?.let { inputs ->
+                        val built = assembledRuntime
+                        if (built == null) runCatching { inputs.releaseResources() }
+                        else built.lifecycleLost(ConversationStopReason.PHONE_SESSION_LOST, inputs::releaseResources)
+                    }
+                }
                 throw error
             } finally { original?.fill(0) }
         }, ::lose)
@@ -168,7 +187,8 @@ internal class ConversationConnectionFactory(
         private val runtime: ConversationAuthenticatedRuntime,
         private val content: ConversationContentSession,
         private val activation: ConversationPhoneActivation,
-        private val guard: () -> Unit
+        private val guard: () -> Unit,
+        private val releaseResources: () -> Unit
     ) : AutoCloseable {
         private val closed = AtomicBoolean(false)
         internal fun requireLive() { check(!closed.get()); guard(); check(!closed.get()) }
@@ -181,7 +201,10 @@ internal class ConversationConnectionFactory(
         }
         @Synchronized override fun close() {
             if (!closed.compareAndSet(false, true)) return
-            try { content.close() } finally { activation.close() }
+            try { content.close() } finally {
+                try { runtime.lifecycleLost(ConversationStopReason.PHONE_SESSION_LOST, releaseResources) }
+                finally { activation.close() }
+            }
         }
         override fun toString() = "ConversationConnection(redacted)"
     }
