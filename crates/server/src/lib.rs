@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+pub mod agent_authority;
 pub mod alpha_policy;
 pub mod api_json;
 pub mod auth;
