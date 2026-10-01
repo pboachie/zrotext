@@ -395,6 +395,9 @@ function showSignedIn(signedIn) {
   byId("sign-in").hidden = signedIn;
   byId("owner-content").hidden = !signedIn;
   byId("logout").hidden = !signedIn;
+  if (typeof document.dispatchEvent === "function" && typeof CustomEvent === "function") {
+    document.dispatchEvent(new CustomEvent("zrotext-owner-session", { detail: { signedIn } }));
+  }
 }
 
 function clearMfaChallenge() {
