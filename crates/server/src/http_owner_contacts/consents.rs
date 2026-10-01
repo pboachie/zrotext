@@ -307,7 +307,7 @@ pub(super) async fn record_consent(
     // transition is coherent.
     let current = tx
         .query_opt(
-            "SELECT action,expires_at FROM contact_consent_records \
+            "SELECT action,expires_at,floor(extract(epoch FROM effective_at)*1000)::bigint FROM contact_consent_records \
              WHERE account_id=$1 AND contact_id=$2 AND purpose=$3 \
              ORDER BY effective_at DESC,recorded_at DESC,id DESC LIMIT 1",
             &[&account_id, &contact_id, &body.purpose.as_str()],
@@ -317,6 +317,12 @@ pub(super) async fn record_consent(
         Ok(row) => row,
         Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
     };
+    if current.as_ref().is_some_and(|row| {
+        let latest_effective_ms: i64 = row.get(2);
+        body.effective_at_ms < latest_effective_ms
+    }) {
+        return error(StatusCode::CONFLICT, "consent_conflict");
+    }
     let coherent = match (&current, body.action) {
         (None, ConsentAction::Grant) => true,
         (None, ConsentAction::Withdraw) => false,

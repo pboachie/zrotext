@@ -704,6 +704,8 @@ expiry and the recording member. The current state of a purpose is its
 newest event: a withdrawal stands until a later grant, and a grant whose
 expiry has passed reads as expired with no write. Marketing grants must
 carry an expiry of at most two years; withdrawals never carry one.
+An event cannot precede the latest effective event for that purpose;
+backdated transitions return `409 consent_conflict` without appending history.
 Creating or importing a contact never creates consent, and nothing in the
 contacts API clears a suppression, releases an off-channel hold or revives
 cancelled work: those signed and owner-recorded planes are untouched.

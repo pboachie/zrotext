@@ -35,6 +35,7 @@ pub enum CsvError {
     TooManyRows,
     RaggedRow { line: usize },
     UnterminatedQuote { line: usize },
+    MalformedQuote { line: usize },
     ControlCharacter { line: usize },
     CellTooLarge { line: usize },
 }
@@ -139,7 +140,11 @@ fn parse_csv_line(line: &str, line_number: usize) -> Result<Option<Vec<String>>,
     let mut cell = String::new();
     let mut in_quotes = false;
     let mut characters = line.chars().peekable();
+    let mut quoted = false;
     while let Some(character) = characters.next() {
+        if quoted && !in_quotes && character != ',' {
+            return Err(CsvError::MalformedQuote { line: line_number });
+        }
         match character {
             '"' if in_quotes => {
                 if characters.peek() == Some(&'"') {
@@ -150,15 +155,20 @@ fn parse_csv_line(line: &str, line_number: usize) -> Result<Option<Vec<String>>,
                 }
             }
             '"' => {
+                if !cell.is_empty() || quoted {
+                    return Err(CsvError::MalformedQuote { line: line_number });
+                }
+                quoted = true;
                 in_quotes = true;
             }
             ',' if !in_quotes => {
                 push_cell(&mut cells, &mut cell, line_number)?;
+                quoted = false;
             }
             '\r' | '\t' => {
                 return Err(CsvError::ControlCharacter { line: line_number });
             }
-            other if (other as u32) < 0x20 => {
+            other if other.is_control() => {
                 return Err(CsvError::ControlCharacter { line: line_number });
             }
             other => cell.push(other),
@@ -186,6 +196,21 @@ fn push_cell(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_quoting_and_control_characters_are_refused() {
+        for row in [
+            "+12,A\"da\",notes",
+            "+12,\"Ada\"suffix,notes",
+            "+12,Ada,control\u{7f}",
+            "+12,Ada,control\u{85}",
+        ] {
+            assert!(
+                parse_contacts_csv(format!("recipient,name,notes\n{row}").as_bytes()).is_err(),
+                "{row:?}"
+            );
+        }
+    }
 
     #[test]
     fn parses_header_and_rows_with_optional_notes() {

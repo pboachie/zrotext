@@ -19,6 +19,8 @@ use tokio_postgres::{Client, NoTls};
 use tower::ServiceExt;
 use zeroize::Zeroizing;
 
+mod consent_chronology;
+
 const ORIGIN: &str = "https://test.example";
 
 macro_rules! migration {
@@ -1036,7 +1038,10 @@ async fn consent_records_track_purpose_expiry_and_withdrawal() {
         .send(post_json(
             &consent_path,
             &owned.owner,
-            &grant("marketing", Some(now + 3_600_000)),
+            &json!({
+                "purpose": "marketing", "action": "grant", "source": "manual_entry",
+                "effective_at_ms": now - 10_000, "expires_at_ms": now + 3_600_000,
+            }),
         ))
         .await;
     assert_eq!(response.status(), StatusCode::OK);
