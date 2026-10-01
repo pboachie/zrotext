@@ -742,34 +742,46 @@ impl<'a> DeliveryStore<'a> {
             return Err(StoreError::InvalidInput);
         }
         let tx = self.client.transaction().await?;
-        let rows = tx.query(
-            "SELECT j.account_id,j.message_id FROM dispatch_jobs j JOIN messages m ON m.id=j.message_id \
-             WHERE j.grant_issued_at IS NULL AND j.finished_at IS NULL \
-               AND m.expires_at<=now() AND m.state IN ('queued','claimed') \
-             ORDER BY m.expires_at,m.id FOR UPDATE OF j SKIP LOCKED LIMIT $1",
-            &[&limit],
-        ).await?;
-        let mut expired = 0;
-        for row in &rows {
-            let account_id: Uuid = row.get(0);
-            let message_id: Uuid = row.get(1);
-            let updated = tx.execute(
-                "UPDATE messages SET state='expired',state_version=state_version+1,updated_at=now() \
-                 WHERE account_id=$1 AND id=$2 AND state IN ('queued','claimed') AND expires_at<=now()",
-                &[&account_id, &message_id],
-            ).await?;
-            if updated != 1 {
-                continue;
-            }
-            tx.execute(
-                "UPDATE dispatch_jobs SET lease_owner=NULL,lease_until=NULL,finished_at=now() WHERE account_id=$1 AND message_id=$2",
-                &[&account_id, &message_id],
-            ).await?;
-            refund_outbound(&tx, account_id, message_id).await?;
-            expired += 1;
-        }
+        // One set-based statement per batch: pick under the job lock, expire
+        // the still-eligible messages, close their jobs, and refund each
+        // exactly-once through the unique ledger entry, all inside this
+        // transaction. The count reflects only messages this sweep expired.
+        let expired: i64 = tx
+            .query_typed_one(
+                "WITH picked AS ( \
+                   SELECT j.account_id,j.message_id FROM dispatch_jobs j JOIN messages m ON m.id=j.message_id \
+                   WHERE j.grant_issued_at IS NULL AND j.finished_at IS NULL \
+                     AND m.expires_at<=now() AND m.state IN ('queued','claimed') \
+                   ORDER BY m.expires_at,m.id FOR UPDATE OF j SKIP LOCKED LIMIT $1), \
+                 expired AS ( \
+                   UPDATE messages m SET state='expired',state_version=state_version+1,updated_at=now() \
+                   FROM picked WHERE m.account_id=picked.account_id AND m.id=picked.message_id \
+                     AND m.state IN ('queued','claimed') AND m.expires_at<=now() \
+                   RETURNING m.account_id,m.id AS message_id), \
+                 jobs AS ( \
+                   UPDATE dispatch_jobs j SET lease_owner=NULL,lease_until=NULL,finished_at=now() \
+                   FROM expired WHERE j.account_id=expired.account_id AND j.message_id=expired.message_id), \
+                 ledger AS ( \
+                   INSERT INTO usage_ledger(account_id,message_id,metric,period_start,entry_kind,units) \
+                   SELECT l.account_id,l.message_id,l.metric,l.period_start,'refund',-1 \
+                   FROM usage_ledger l JOIN expired \
+                     ON (expired.account_id,expired.message_id)=(l.account_id,l.message_id) \
+                   WHERE l.entry_kind='reserve' \
+                   ON CONFLICT (account_id,message_id,entry_kind) DO NOTHING \
+                   RETURNING account_id,metric,period_start::text), \
+                 periods AS ( \
+                   UPDATE usage_periods p SET refunded_units=refunded_units+per_batch.c \
+                   FROM (SELECT ledger.account_id,ledger.metric,ledger.period_start::date AS period_start, \
+                         count(*)::bigint AS c FROM ledger GROUP BY 1,2,3) per_batch \
+                   WHERE (p.account_id,p.metric,p.period_start)= \
+                     (per_batch.account_id,per_batch.metric,per_batch.period_start)) \
+                 SELECT count(*) FROM expired",
+                &[(&limit, Type::INT8)],
+            )
+            .await?
+            .get(0);
         tx.commit().await?;
-        Ok(expired)
+        Ok(expired as u64)
     }
 
     /// Silence after a grant is ambiguous. Keep the device fence and mark the
@@ -781,67 +793,52 @@ impl<'a> DeliveryStore<'a> {
             return Err(StoreError::InvalidInput);
         }
         let tx = self.client.transaction().await?;
-        let rows = tx
-            .query(
-                "SELECT m.account_id,m.id,a.id,m.state FROM messages m \
-             JOIN dispatch_fences f ON (f.account_id,f.message_id)=(m.account_id,m.id) \
-             JOIN message_attempts a ON a.id=f.attempt_id \
-             WHERE (m.state='claimed' AND f.outcome='granted' AND f.grant_expires_at<=now()) \
-                OR (m.state='submitting' AND f.outcome='submitting' \
-                    AND a.updated_at<=now()-interval '2 minutes') \
-             ORDER BY m.updated_at,m.id FOR UPDATE OF m SKIP LOCKED LIMIT $1",
-                &[&limit],
+        // One set-based statement per batch: lock the message rows, move each
+        // to unknown with the evidence its prior state implies, mark its
+        // attempt and fence unknown, and emit the matching event. The digest
+        // is the same account/message/attempt/code SHA-256 the per-row loop
+        // computed.
+        let swept: i64 = tx
+            .query_typed_one(
+                "WITH picked AS ( \
+                   SELECT m.account_id,m.id AS message_id,a.id AS attempt_id, \
+                     CASE WHEN m.state='claimed' THEN 'grant_timeout' \
+                          ELSE 'sent_callback_timeout' END AS code \
+                   FROM messages m \
+                   JOIN dispatch_fences f ON (f.account_id,f.message_id)=(m.account_id,m.id) \
+                   JOIN message_attempts a ON a.id=f.attempt_id \
+                   WHERE (m.state='claimed' AND f.outcome='granted' AND f.grant_expires_at<=now()) \
+                      OR (m.state='submitting' AND f.outcome='submitting' \
+                          AND a.updated_at<=now()-interval '2 minutes') \
+                   ORDER BY m.updated_at,m.id FOR UPDATE OF m SKIP LOCKED LIMIT $1), \
+                 swept AS ( \
+                   UPDATE messages m SET state='unknown',state_version=state_version+1,updated_at=now() \
+                   FROM picked WHERE m.account_id=picked.account_id AND m.id=picked.message_id \
+                     AND m.state IN ('claimed','submitting') \
+                   RETURNING m.account_id,m.id), \
+                 attempts AS ( \
+                   UPDATE message_attempts a SET status='unknown',updated_at=now() \
+                   FROM swept JOIN picked ON (picked.account_id,picked.message_id)=(swept.account_id,swept.id) \
+                   WHERE a.id=picked.attempt_id), \
+                 fences AS ( \
+                   UPDATE dispatch_fences f SET outcome='unknown' \
+                   FROM swept JOIN picked ON (picked.account_id,picked.message_id)=(swept.account_id,swept.id) \
+                   WHERE f.attempt_id=picked.attempt_id), \
+                 events AS ( \
+                   INSERT INTO message_events (id,account_id,message_id,attempt_id,evidence_code, \
+                    event_digest,observed_at,resulting_state) \
+                   SELECT gen_random_uuid(),picked.account_id,picked.message_id,picked.attempt_id,picked.code, \
+                     sha256(uuid_send(picked.account_id)||uuid_send(picked.message_id)|| \
+                            uuid_send(picked.attempt_id)||picked.code::bytea),now(),'unknown' \
+                   FROM picked JOIN swept \
+                     ON (swept.account_id,swept.id)=(picked.account_id,picked.message_id)) \
+                 SELECT count(*) FROM swept",
+                &[(&limit, Type::INT8)],
             )
-            .await?;
-        for row in &rows {
-            let account_id: Uuid = row.get(0);
-            let message_id: Uuid = row.get(1);
-            let attempt_id: Uuid = row.get(2);
-            let current =
-                state_from_str(&row.get::<_, String>(3)).ok_or(StoreError::InvalidTransition)?;
-            let evidence = if current == MessageState::Claimed {
-                Evidence::GrantTimeout
-            } else {
-                Evidence::SentCallbackTimeout
-            };
-            let next = current
-                .apply(evidence)
-                .map_err(|_| StoreError::InvalidTransition)?;
-            let code = match evidence {
-                Evidence::GrantTimeout => "grant_timeout",
-                Evidence::SentCallbackTimeout => "sent_callback_timeout",
-                _ => unreachable!(),
-            };
-            let mut hash = Sha256::new();
-            hash.update(account_id.as_bytes());
-            hash.update(message_id.as_bytes());
-            hash.update(attempt_id.as_bytes());
-            hash.update(code.as_bytes());
-            let digest = hash.finalize().to_vec();
-            tx.execute(
-                "UPDATE messages SET state=$3,state_version=state_version+1,updated_at=now() \
-                 WHERE account_id=$1 AND id=$2",
-                &[&account_id, &message_id, &state_name(next)],
-            )
-            .await?;
-            tx.execute(
-                "UPDATE message_attempts SET status='unknown',updated_at=now() WHERE id=$1",
-                &[&attempt_id],
-            )
-            .await?;
-            tx.execute(
-                "UPDATE dispatch_fences SET outcome='unknown' WHERE attempt_id=$1",
-                &[&attempt_id],
-            )
-            .await?;
-            tx.execute(
-                "INSERT INTO message_events (id,account_id,message_id,attempt_id,evidence_code, \
-                 event_digest,observed_at,resulting_state) VALUES ($1,$2,$3,$4,$5,$6,now(),'unknown')",
-                &[&Uuid::new_v4(), &account_id, &message_id, &attempt_id, &code, &digest],
-            ).await?;
-        }
+            .await?
+            .get(0);
         tx.commit().await?;
-        Ok(rows.len() as u64)
+        Ok(swept as u64)
     }
 
     /// A sent callback proves carrier acceptance, not handset delivery. Close
@@ -852,45 +849,41 @@ impl<'a> DeliveryStore<'a> {
             return Err(StoreError::InvalidInput);
         }
         let tx = self.client.transaction().await?;
-        let rows = tx
-            .query(
-                "SELECT m.account_id,m.id,a.id FROM messages m \
-             JOIN dispatch_fences f ON (f.account_id,f.message_id)=(m.account_id,m.id) \
-             JOIN message_attempts a ON a.id=f.attempt_id \
-             WHERE m.state='submitted' AND f.outcome='submitted' AND a.status='submitted' \
-               AND m.updated_at<=now()-interval '24 hours' \
-             ORDER BY m.updated_at,m.id FOR UPDATE OF m SKIP LOCKED LIMIT $1",
-                &[&limit],
+        // One set-based statement per batch: lock the message rows, move
+        // each still-submitted message to delivery_unknown and emit its
+        // delivery_timeout event with the same digest the per-row loop
+        // computed.
+        let swept: i64 = tx
+            .query_typed_one(
+                "WITH picked AS ( \
+                   SELECT m.account_id,m.id AS message_id,a.id AS attempt_id \
+                   FROM messages m \
+                   JOIN dispatch_fences f ON (f.account_id,f.message_id)=(m.account_id,m.id) \
+                   JOIN message_attempts a ON a.id=f.attempt_id \
+                   WHERE m.state='submitted' AND f.outcome='submitted' AND a.status='submitted' \
+                     AND m.updated_at<=now()-interval '24 hours' \
+                   ORDER BY m.updated_at,m.id FOR UPDATE OF m SKIP LOCKED LIMIT $1), \
+                 swept AS ( \
+                   UPDATE messages m SET state='delivery_unknown',state_version=state_version+1,updated_at=now() \
+                   FROM picked WHERE m.account_id=picked.account_id AND m.id=picked.message_id \
+                     AND m.state='submitted' \
+                   RETURNING m.account_id,m.id), \
+                 events AS ( \
+                   INSERT INTO message_events (id,account_id,message_id,attempt_id,evidence_code, \
+                    event_digest,observed_at,resulting_state) \
+                   SELECT gen_random_uuid(),picked.account_id,picked.message_id,picked.attempt_id,'delivery_timeout', \
+                     sha256(uuid_send(picked.account_id)||uuid_send(picked.message_id)|| \
+                            uuid_send(picked.attempt_id)||'delivery_timeout'::bytea), \
+                     now(),'delivery_unknown' \
+                   FROM picked JOIN swept \
+                     ON (swept.account_id,swept.id)=(picked.account_id,picked.message_id)) \
+                 SELECT count(*) FROM swept",
+                &[(&limit, Type::INT8)],
             )
-            .await?;
-        for row in &rows {
-            let account_id: Uuid = row.get(0);
-            let message_id: Uuid = row.get(1);
-            let attempt_id: Uuid = row.get(2);
-            let next = MessageState::Submitted
-                .apply(Evidence::DeliveryTimeout)
-                .map_err(|_| StoreError::InvalidTransition)?;
-            let mut hash = Sha256::new();
-            hash.update(account_id.as_bytes());
-            hash.update(message_id.as_bytes());
-            hash.update(attempt_id.as_bytes());
-            hash.update(b"delivery_timeout");
-            let digest = hash.finalize().to_vec();
-            tx.execute(
-                "UPDATE messages SET state=$3,state_version=state_version+1,updated_at=now() \
-                 WHERE account_id=$1 AND id=$2",
-                &[&account_id, &message_id, &state_name(next)],
-            )
-            .await?;
-            tx.execute(
-                "INSERT INTO message_events (id,account_id,message_id,attempt_id,evidence_code, \
-                 event_digest,observed_at,resulting_state) VALUES ($1,$2,$3,$4,'delivery_timeout',$5,now(),$6)",
-                &[&Uuid::new_v4(), &account_id, &message_id, &attempt_id, &digest,
-                  &state_name(next)],
-            ).await?;
-        }
+            .await?
+            .get(0);
         tx.commit().await?;
-        Ok(rows.len() as u64)
+        Ok(swept as u64)
     }
 
     /// Grant transaction checks authority, session and worker generation. A

@@ -59,6 +59,26 @@ class RuntimeRoleTest(unittest.TestCase):
             if migration.name == "057_webhook_history_index.sql":
                 cls.sql("CREATE INDEX CONCURRENTLY webhook_deliveries_history "
                         "ON public.webhook_deliveries(endpoint_id,created_at DESC,id DESC);")
+            if migration.name == "060_optout_review_indexes.sql":
+                cls.sql("CREATE INDEX CONCURRENTLY recipient_suppressions_review_queue "
+                        "ON public.recipient_suppressions(account_id,changed_at DESC,recipient_e164 DESC) "
+                        "WHERE active AND source IN ('sms_review','sms_unsolicited_review');")
+                cls.sql("CREATE INDEX CONCURRENTLY recipient_suppressions_review_event "
+                        "ON public.recipient_suppressions(account_id,COALESCE(source_event_id,source_unsolicited_event_id)) "
+                        "WHERE source IN ('sms_review','sms_unsolicited_review');")
+                cls.sql("DROP INDEX CONCURRENTLY IF EXISTS "
+                        "public.recipient_suppressions_active;")
+            if migration.name == "066_conversation_interval_session_index.sql":
+                cls.sql("CREATE INDEX CONCURRENTLY erasure_fk_conversation_interval_session "
+                        "ON public.conversation_intervals(account_id,initiating_session_id);")
+            if migration.name == "062_pending_recipient_index.sql":
+                cls.sql("CREATE INDEX CONCURRENTLY messages_pending_recipient "
+                        "ON public.messages(recipient_e164,account_id) "
+                        "WHERE state IN ('queued','claimed') "
+                        "AND recipient_e164 IS NOT NULL;")
+            if migration.name == "061_inbound_events_attempt_fk_index.sql":
+                cls.sql("CREATE INDEX CONCURRENTLY erasure_fk_inbound_events_attempt "
+                        "ON public.inbound_events(account_id,device_id,message_id,attempt_id);")
             if migration.name == "058_drop_abuse_counters_updated_index.sql":
                 cls.sql("DROP INDEX CONCURRENTLY IF EXISTS "
                         "public.auth_abuse_counters_stale;")

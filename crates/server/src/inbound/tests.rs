@@ -1908,6 +1908,7 @@ async fn signed_stop_after_content_retention_still_suppresses_recipient() {
         include_str!("../../../../deploy/compose/migrations/021_billing_payment_grace.sql"),
         include_str!("../../../../deploy/compose/migrations/022_pending_owner_expiry.sql"),
         include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
+        include_str!("../../../../deploy/compose/migrations/063_retention_blocked_stamp.sql"),
         include_str!(
             "../../../../deploy/compose/migrations/023_billing_py_charge_and_unsupported.sql"
         ),
@@ -1984,6 +1985,16 @@ async fn signed_stop_after_content_retention_still_suppresses_recipient() {
          'submitted',0,1)",
         &[&Uuid::new_v4(), &account, &message, &attempt, &vec![4u8; 32]],
     )
+    .await
+    .unwrap();
+    db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/064_owner_conversation_consent.sql"
+    ))
+    .await
+    .unwrap();
+    db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/065_conversation_activation.sql"
+    ))
     .await
     .unwrap();
     let pruned = crate::retention::prune(
@@ -2105,6 +2116,14 @@ async fn signed_stop_after_content_retention_still_suppresses_recipient() {
     db.execute(
         "UPDATE message_events SET received_at=now()-interval '91 days' WHERE attempt_id=$1",
         &[&attempt],
+    )
+    .await
+    .unwrap();
+    // The recheck stamp from the blocked pass above is still inside its
+    // interval; age it past the interval so this prune retires the recipient.
+    db.execute(
+        "UPDATE messages SET retention_blocked_at=now()-interval '2 hours' WHERE id=$1",
+        &[&message],
     )
     .await
     .unwrap();

@@ -33,6 +33,18 @@ Account and device screens should include loading, empty, error, and stale state
 
 Sealed dashboard rules: fetch metadata and ciphertext; decrypt locally; render messages as plain text; never send decrypted content through HTMX forms or analytics; server search only metadata. Keep a clear vault-locked state, local-search limit, and explicit export sensitivity prompt.
 
+## Android companion screens
+
+The native gateway opens on **Home**, showing actual authenticated-service status, session heartbeat acknowledgments, the selected SIM and this session's pairing proof status. Test socket state stays separate. No sample queue, battery, usage or SMS-readiness metrics are displayed.
+
+**Setup** contains purpose-specific permission disclosures, SIM selection and device pairing. **Connection** contains authenticated heartbeat controls and the explicit reboot-resume choice. **Tools** contains transport diagnostics and controlled inbound metadata, one-shot SMS and debug-only MMS pilots. Changing screens does not request permissions or start a session; Back returns to Home. Each screen scrolls with large text and the keyboard. Pause stops connections but does not revoke Android SMS receiving access or stop permission-enabled local SMS processing.
+
+These screens organize existing pilot capabilities; they do not implement full conversation synchronization. The sample artwork below remains a design reference.
+
+The concept-inspired Home uses a signal ring, compact labelled icon shortcuts and spring-in cards. Only known connection proof/authentication observations animate; paused/offline states remain still and unknown or repair states use attention styling. Custom motion stops when the activity is not resumed or Android animations are disabled. Secondary phone details and Android access observations open in dismissible, scrollable bottom sheets. Access grants are independent observations, not authorization to start a pilot or send; app notification enablement does not guarantee a particular channel's delivery. Pause stays in the main Home flow.
+
+Setup presents an overview and separate access, SIM and pairing steps. Steps are navigation, not completion or readiness claims. Pairing can proceed without SIM selection; current connection-start controls require a selected SIM, while SMS access remains optional for pairing and connection tests. Back returns from a step to overview, then Home. Step changes reset the scroll position and expose a named accessibility pane. The activity supplies existing controls and handlers; pairing values remain masked and activity-local, and a recreated screen requires re-entering them. The access step exposes verified public privacy and deletion-request instructions through browser-only links; tapping a link sends no deletion request.
+
 ## Reference assets
 
 - [ZROtext mark](assets/zrotext-mark.svg): editable SVG used in the README.

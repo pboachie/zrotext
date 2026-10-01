@@ -33,6 +33,8 @@ pub enum IngestError {
     BudgetExhausted,
     #[error("sealed ingest database operation failed")]
     Database(#[from] tokio_postgres::Error),
+    #[error("conversation capture authority rejected")]
+    Conversation(#[from] crate::http_owner_conversations::ConversationError),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -69,6 +71,48 @@ pub async fn ingest_candidate02(
     binding_generation: i64,
     manifest_bytes: &[u8],
     envelope_bytes: &[u8],
+) -> Result<IngestOutcome, IngestError> {
+    ingest_inner(
+        client,
+        session,
+        line,
+        binding_generation,
+        manifest_bytes,
+        envelope_bytes,
+        None,
+    )
+    .await
+}
+
+pub async fn ingest_conversation(
+    client: &mut Client,
+    session: InboundSession<'_>,
+    line: Uuid,
+    binding_generation: i64,
+    manifest_bytes: &[u8],
+    envelope_bytes: &[u8],
+    interval: crate::http_owner_conversations::activation::CaptureInterval,
+) -> Result<IngestOutcome, IngestError> {
+    ingest_inner(
+        client,
+        session,
+        line,
+        binding_generation,
+        manifest_bytes,
+        envelope_bytes,
+        Some(interval),
+    )
+    .await
+}
+
+async fn ingest_inner(
+    client: &mut Client,
+    session: InboundSession<'_>,
+    line: Uuid,
+    binding_generation: i64,
+    manifest_bytes: &[u8],
+    envelope_bytes: &[u8],
+    interval: Option<crate::http_owner_conversations::activation::CaptureInterval>,
 ) -> Result<IngestOutcome, IngestError> {
     // Parse before obtaining database locks. These are untrusted selectors until
     // manifest authorization and exact signature verification both pass below.
@@ -111,11 +155,24 @@ pub async fn ingest_candidate02(
         recipients: &recipients,
     };
     let tx = client.transaction().await?;
-    let admission =
+    let mut admission =
         sealed_manifest_store::admit(&tx, session, line, binding_generation, manifest_bytes)
             .await?;
     let context = admission.context(&wanted).await?;
     let verified = sealed_envelope::verify(envelope_bytes, &context)?;
+    let scoped = match interval {
+        Some(selector) => Some(
+            crate::http_owner_conversations::activation::check_capture(
+                &tx,
+                session,
+                selector,
+                &claims,
+                binding_generation,
+            )
+            .await?,
+        ),
+        None => None,
+    };
     let received_ms = check_age(&tx, observed_ms).await?;
     // Charge the shared account/device storage budget before the INSERT, in
     // this transaction, so a saturated budget never writes envelope bytes. An
@@ -177,7 +234,36 @@ pub async fn ingest_candidate02(
     // checks. Recheck all temporal authority immediately before committing either
     // outcome. Held row locks serialize revocation/rebinding/session replacement.
     check_age(&tx, observed_ms).await?;
+    if let (Some(selector), Some(scope)) = (interval, scoped) {
+        crate::http_owner_conversations::activation::check_capture(
+            &tx,
+            session,
+            selector,
+            &claims,
+            binding_generation,
+        )
+        .await?;
+        let snapshot = admission.snapshot(&wanted).await?;
+        crate::http_owner_conversations::activation::save_provenance(
+            &tx,
+            &scope,
+            event_id,
+            &snapshot,
+            inserted.is_some(),
+        )
+        .await?;
+    }
     admission.context(&wanted).await?;
+    if let Some(selector) = interval {
+        crate::http_owner_conversations::activation::check_capture(
+            &tx,
+            session,
+            selector,
+            &claims,
+            binding_generation,
+        )
+        .await?;
+    }
     drop(admission);
     tx.commit().await?;
     Ok(IngestOutcome {

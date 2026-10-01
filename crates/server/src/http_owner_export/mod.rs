@@ -53,6 +53,8 @@ async fn no_store(request: Request, next: Next) -> Response {
 #[serde(deny_unknown_fields)]
 struct ExportQuery {
     before: Option<Uuid>,
+    sealed_before: Option<Uuid>,
+    interval_before: Option<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -149,6 +151,7 @@ fn message_view(row: &Row) -> Result<MessageView, tokio_postgres::Error> {
 
 #[derive(Serialize)]
 struct ExportView {
+    conversation_inventory: crate::http_owner_conversations::lifecycle::ConversationInventory,
     generated_at_ms: i64,
     account: AccountView,
     devices: Vec<DeviceView>,
@@ -165,7 +168,7 @@ async fn export_account(
     if let Err(error) = crate::http_auth::require_owner_read_headers(&headers) {
         return error.into_response();
     }
-    let Ok(client) = crate::runtime_db::connect(&state.database_url).await else {
+    let Ok(mut client) = crate::runtime_db::connect(&state.database_url).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     let principal = match require_owner_read(&client, &state.auth_hasher, &headers).await {
@@ -303,7 +306,19 @@ async fn export_account(
     } else {
         None
     };
+    let conversation_inventory = match crate::http_owner_conversations::lifecycle::inventory(
+        &mut client,
+        &principal,
+        query.sealed_before,
+        query.interval_before,
+    )
+    .await
+    {
+        Ok(view) => view,
+        Err(error) => return error.into_response(),
+    };
     Json(ExportView {
+        conversation_inventory,
         generated_at_ms: SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_millis() as i64)

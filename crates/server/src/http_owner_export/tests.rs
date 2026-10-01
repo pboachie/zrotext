@@ -36,7 +36,7 @@ macro_rules! export_schema {
             [$(($name, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/compose/migrations/", $name)))),+]
         };
     }
-const EXPORT_SCHEMA: [(&str, &str); 59] = export_schema!(
+const EXPORT_SCHEMA: [(&str, &str); 66] = export_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -96,6 +96,13 @@ const EXPORT_SCHEMA: [(&str, &str); 59] = export_schema!(
     "057_webhook_history_index.sql",
     "058_drop_abuse_counters_updated_index.sql",
     "059_erasure_fk_indexes.sql",
+    "060_optout_review_indexes.sql",
+    "061_inbound_events_attempt_fk_index.sql",
+    "062_pending_recipient_index.sql",
+    "063_retention_blocked_stamp.sql",
+    "064_owner_conversation_consent.sql",
+    "065_conversation_activation.sql",
+    "066_conversation_interval_session_index.sql",
 );
 #[test]
 fn export_schema_includes_every_checked_in_migration() {
@@ -196,6 +203,27 @@ async fn export_is_tenant_bound_and_carries_owner_content() {
                 .await
                 .unwrap();
         }
+        if name == "060_optout_review_indexes.sql" {
+            db.batch_execute("CREATE INDEX recipient_suppressions_review_queue ON recipient_suppressions(account_id,changed_at DESC,recipient_e164 DESC) WHERE active AND source IN ('sms_review','sms_unsolicited_review')")
+                .await
+                .unwrap();
+            db.batch_execute("CREATE INDEX recipient_suppressions_review_event ON recipient_suppressions(account_id,COALESCE(source_event_id,source_unsolicited_event_id)) WHERE source IN ('sms_review','sms_unsolicited_review')")
+                .await
+                .unwrap();
+            db.batch_execute("DROP INDEX IF EXISTS recipient_suppressions_active")
+                .await
+                .unwrap();
+        }
+        if name == "061_inbound_events_attempt_fk_index.sql" {
+            db.batch_execute("CREATE INDEX erasure_fk_inbound_events_attempt ON inbound_events(account_id,device_id,message_id,attempt_id)")
+                .await
+                .unwrap();
+        }
+        if name == "062_pending_recipient_index.sql" {
+            db.batch_execute("CREATE INDEX messages_pending_recipient ON messages(recipient_e164,account_id) WHERE state IN ('queued','claimed') AND recipient_e164 IS NOT NULL")
+                .await
+                .unwrap();
+        }
         if name == "034_delivery_sweep_index.sql" {
             db.batch_execute(
                 "CREATE INDEX CONCURRENTLY messages_in_flight_updated \
@@ -212,6 +240,11 @@ async fn export_is_tenant_bound_and_carries_owner_content() {
             )
             .await
             .unwrap();
+        }
+        if name == "066_conversation_interval_session_index.sql" {
+            db.batch_execute("CREATE INDEX erasure_fk_conversation_interval_session ON conversation_intervals(account_id,initiating_session_id)")
+                .await
+                .unwrap();
         }
         if name == "049_owner_queue_probe_indexes.sql" {
             db.batch_execute(
@@ -399,6 +432,26 @@ async fn export_is_tenant_bound_and_carries_owner_content() {
     assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
     let raw = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
     let takeout: Value = serde_json::from_slice(&raw).unwrap();
+    assert!(takeout["conversation_inventory"]["consent"].is_null());
+    assert_eq!(
+        takeout["conversation_inventory"]["sealed_events"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        takeout["conversation_inventory"]["sealed_events_truncated"],
+        false
+    );
+    assert!(takeout["conversation_inventory"]["sealed_events_next_cursor"].is_null());
+    let unknown_sealed = app
+        .clone()
+        .oneshot(get(
+            &format!("/v1/owner/export?sealed_before={}", Uuid::new_v4()),
+            Some(&session_a),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(unknown_sealed.status(), StatusCode::NOT_FOUND);
+    assert_eq!(unknown_sealed.headers()[header::CACHE_CONTROL], "no-store");
     assert_eq!(takeout["account"]["account_id"], a.account_id.to_string());
     assert_eq!(takeout["account"]["email"], "export-a@example.test");
     assert_eq!(takeout["account"]["email_verified"], true);
@@ -502,7 +555,11 @@ async fn export_paginates_full_history_beyond_the_first_page() {
         include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
         include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
         include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+        include_str!("../../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
+        include_str!("../../../../deploy/compose/migrations/043_sealed_candidate_inbound.sql"),
         include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
+        include_str!("../../../../deploy/compose/migrations/064_owner_conversation_consent.sql"),
+        include_str!("../../../../deploy/compose/migrations/065_conversation_activation.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }

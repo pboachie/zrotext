@@ -34,7 +34,7 @@ macro_rules! migration {
 }
 
 // Complete reviewed schema, embedded at build time.
-const TEST_MIGRATIONS: [(&str, &str); 59] = [
+const TEST_MIGRATIONS: [(&str, &str); 66] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -94,6 +94,13 @@ const TEST_MIGRATIONS: [(&str, &str); 59] = [
     migration!("057_webhook_history_index.sql"),
     migration!("058_drop_abuse_counters_updated_index.sql"),
     migration!("059_erasure_fk_indexes.sql"),
+    migration!("060_optout_review_indexes.sql"),
+    migration!("061_inbound_events_attempt_fk_index.sql"),
+    migration!("062_pending_recipient_index.sql"),
+    migration!("063_retention_blocked_stamp.sql"),
+    migration!("064_owner_conversation_consent.sql"),
+    migration!("065_conversation_activation.sql"),
+    migration!("066_conversation_interval_session_index.sql"),
 ];
 #[test]
 fn exchange_fixture_tracks_numbered_migrations() {
@@ -203,6 +210,27 @@ async fn migrated_schema(prefix: &str) -> (Client, String, String, Client) {
                 .await
                 .unwrap();
         }
+        if name == "060_optout_review_indexes.sql" {
+            db.batch_execute("CREATE INDEX recipient_suppressions_review_queue ON recipient_suppressions(account_id,changed_at DESC,recipient_e164 DESC) WHERE active AND source IN ('sms_review','sms_unsolicited_review')")
+                .await
+                .unwrap();
+            db.batch_execute("CREATE INDEX recipient_suppressions_review_event ON recipient_suppressions(account_id,COALESCE(source_event_id,source_unsolicited_event_id)) WHERE source IN ('sms_review','sms_unsolicited_review')")
+                .await
+                .unwrap();
+            db.batch_execute("DROP INDEX IF EXISTS recipient_suppressions_active")
+                .await
+                .unwrap();
+        }
+        if name == "061_inbound_events_attempt_fk_index.sql" {
+            db.batch_execute("CREATE INDEX erasure_fk_inbound_events_attempt ON inbound_events(account_id,device_id,message_id,attempt_id)")
+                .await
+                .unwrap();
+        }
+        if name == "062_pending_recipient_index.sql" {
+            db.batch_execute("CREATE INDEX messages_pending_recipient ON messages(recipient_e164,account_id) WHERE state IN ('queued','claimed') AND recipient_e164 IS NOT NULL")
+                .await
+                .unwrap();
+        }
         if name == "034_delivery_sweep_index.sql" {
             // Mirror the migrator's autocommit preparation.
             db.batch_execute(
@@ -220,6 +248,11 @@ async fn migrated_schema(prefix: &str) -> (Client, String, String, Client) {
             )
             .await
             .unwrap();
+        }
+        if name == "066_conversation_interval_session_index.sql" {
+            db.batch_execute("CREATE INDEX erasure_fk_conversation_interval_session ON conversation_intervals(account_id,initiating_session_id)")
+                .await
+                .unwrap();
         }
         if name == "049_owner_queue_probe_indexes.sql" {
             db.batch_execute(

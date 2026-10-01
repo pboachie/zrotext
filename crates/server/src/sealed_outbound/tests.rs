@@ -22,6 +22,10 @@ struct TestCase {
     principal: ApiPrincipal,
     hasher: TokenHasher,
     user: Uuid,
+    /// The bearer token text; the cross-client interop lane posts through the
+    /// real HTTP route, which authenticates from headers, not from a principal.
+    #[cfg(feature = "sealed-interop-tests")]
+    token: String,
 }
 impl Deref for TestCase {
     type Target = Fixture;
@@ -111,6 +115,8 @@ impl TestCase {
             principal,
             hasher,
             user,
+            #[cfg(feature = "sealed-interop-tests")]
+            token,
         }
     }
     fn writer(&self) -> WriterContext<'static> {
@@ -266,6 +272,16 @@ async fn candidate_queue_replays_without_spending_or_rehydration_and_refunds_onc
         message_days: 1,
         ..Default::default()
     };
+    db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/064_owner_conversation_consent.sql"
+    ))
+    .await
+    .unwrap();
+    db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/065_conversation_activation.sql"
+    ))
+    .await
+    .unwrap();
     assert_eq!(
         crate::retention::prune(&mut db, policy, 100)
             .await

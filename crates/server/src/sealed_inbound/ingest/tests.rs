@@ -447,6 +447,16 @@ async fn candidate_ingest_preserves_legacy_profile_constraints_and_prune_tombsto
         sealed_inbound_days: 0,
         ..Default::default()
     };
+    db.batch_execute(include_str!(
+        "../../../../../deploy/compose/migrations/064_owner_conversation_consent.sql"
+    ))
+    .await
+    .unwrap();
+    db.batch_execute(include_str!(
+        "../../../../../deploy/compose/migrations/065_conversation_activation.sql"
+    ))
+    .await
+    .unwrap();
     let pruned = crate::retention::prune(&mut db, policy, 10).await.unwrap();
     assert_eq!(pruned.sealed_inbound_events, 2);
     assert_eq!(count(&f).await, 2);

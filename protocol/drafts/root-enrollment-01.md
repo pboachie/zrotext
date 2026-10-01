@@ -4,7 +4,10 @@
 existing [RootPin02 candidate](zt-sealed-draft-02-manifest-candidate.md).
 It does not enroll a root, establish trust, enable a route, or close Q1, Q3 or
 Q10 in the [decision log](zt-009-decision-log.md). There is no HTTP endpoint,
-database write, client custody implementation or sealed runtime caller.
+database write or sealed runtime caller. The only signer is the candidate
+offline owner CLI's `unlock` command, which a non-default cargo feature keeps
+out of every standard build; no client custody implementation exists beyond
+that offline ceremony.
 
 ## Pin and independent context
 

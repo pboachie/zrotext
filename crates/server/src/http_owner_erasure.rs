@@ -102,6 +102,18 @@ const BLOCKED_TABLES: &[&str] = &[
 /// account row are deleted explicitly anyway, so the reported per-table
 /// counts stay honest.
 const DELETE_PLAN: &[(&str, &str)] = &[
+    (
+        "conversation_inbound_provenance",
+        "DELETE FROM conversation_inbound_provenance WHERE account_id=$1",
+    ),
+    (
+        "conversation_intervals",
+        "DELETE FROM conversation_intervals WHERE account_id=$1",
+    ),
+    (
+        "owner_conversation_consents",
+        "DELETE FROM owner_conversation_consents WHERE account_id=$1",
+    ),
     // Consent and inbound history over messages, attempts and devices.
     (
         "recipient_suppressions",

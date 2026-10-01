@@ -19,6 +19,8 @@ TEST_ONLY = {
     # Compiled only in the isolated native-console test harness, not runtime code.
     "ZT_TERMINAL_NATIVE_CASE",
     "ZT_OWNER_NATIVE_CASE",
+    # Compiled only under cfg(test) + conversation-simulator-tests; never a server setting.
+    "ZT_CONVERSATION_SIM_DIR",
     "ZT_AUTH_TEST_DATABASE_URL",
     "ZT_DELIVERY_TEST_DATABASE_URL",
     "ZT_FAILOVER_TEST_DATABASE_URL",

@@ -150,10 +150,11 @@ pub async fn admit_candidate02(
         .start()
         .await?;
     // Authority always precedes the billing/account locks, matching inbound admission.
-    let authority = outbound::lock_current(&tx, principal.tenant.account_id()).await?;
+    let mut authority = outbound::lock_current(&tx, principal.tenant.account_id()).await?;
     let account =
         sealed::lock_account(&tx, principal.tenant.account_id(), writer.billing_enabled).await?;
     let generation = bindings(&tx, principal, &writer, device, line).await?;
+    let manifest_generation = authority.generation();
     let context = authority.context(&wanted).await?;
     let verified = sealed_envelope::verify(bytes, &context)?;
     fresh(&tx, observed, expires).await?;
@@ -163,7 +164,7 @@ pub async fn admit_candidate02(
             device_id: device,
             line_id: line,
             binding_generation: generation,
-            manifest_generation: authority.generation(),
+            manifest_generation,
             manifest_version: context.keyset_version as i64,
             manifest_digest: &context.manifest_digest,
             signer_key_id: &wanted.signer_key_id,

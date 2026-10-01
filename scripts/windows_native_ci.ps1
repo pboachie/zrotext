@@ -98,6 +98,19 @@ function Test-ReducedOutput([string[]]$Lines) {
         if(@($Lines | Where-Object {Test-SuiteSummary $_ $suite.Passed}).Count -ne 1){return $false}
     }
     return $true
+}
+# The unlock candidate is a non-default cargo feature: the default owner binary
+# must keep refusing the command (its suite above stays at 4), while the feature
+# build adds one bounded-argument suite and native unlock stages.
+$unlockSuites=@(@{Package='zrotext-owner';Passed=5})
+function Test-UnlockOutput([string[]]$Lines) {
+    foreach($line in $Lines) {
+        if($line -match '^test result: ' -and $line -notmatch '^test result: ok\. \d+ passed; 0 failed; 0 ignored;'){return $false}
+    }
+    foreach($suite in $unlockSuites) {
+        if(@($Lines | Where-Object {Test-SuiteSummary $_ $suite.Passed}).Count -ne 1){return $false}
+    }
+    return $true
 }function Test-PureGuards {
     $good=@{GITHUB_ACTIONS='true';RUNNER_ENVIRONMENT='github-hosted';RUNNER_OS='Windows';ImageOS='win25'}
     Assert-CiHost $good
@@ -120,6 +133,11 @@ function Test-ReducedOutput([string[]]$Lines) {
     if(-not (Test-ReducedOutput $good)){throw 'Reduced-rights summary acceptance regression.'}
     foreach($bad in @(@($good[0]),($good+'test result: FAILED. 3 passed; 1 failed; 0 ignored;'),($good+'test result: ok. 1 passed; 0 failed; 2 ignored;'),($good+$good[1]))) {
         if(Test-ReducedOutput $bad){throw 'Reduced-rights summary refusal regression.'}
+    }
+    $unlockGood=@('test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured')
+    if(-not (Test-UnlockOutput $unlockGood)){throw 'Unlock summary acceptance regression.'}
+    foreach($bad in @(@('test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured'),($unlockGood+'test result: FAILED. 4 passed; 1 failed; 0 ignored;'),($unlockGood+$unlockGood[0]),@('test result: ok. 5 passed; 0 failed; 1 ignored; 0 measured'))) {
+        if(Test-UnlockOutput $bad){throw 'Unlock summary refusal regression.'}
     }    # Validation fixtures only: empty temporary files, never executable launch,
     # local accounts, credentials, ACL changes or native helper invocation.
     if($IsWindows) {
@@ -183,6 +201,14 @@ if($ReducedRightsSuites) {
     $summaries=@($lines | Where-Object {$_ -is [string] -and $_ -match '^test result: '})
     if($code -ne 0 -or -not (Test-ReducedOutput $summaries)){throw 'Reduced-rights native suites failed or expected counts changed.'}
     Write-Output 'Native CI terminal and owner suites: all passed, zero ignored, reduced-rights children.'
+    # Separate feature build: proves the default refusal above while exercising
+    # the candidate unlock command end to end in fresh hidden child consoles.
+    $unlockArguments=@('test','--locked','--no-fail-fast')+@($unlockSuites | ForEach-Object {'-p';$_.Package})+@('--features','unlock')
+    $unlockLines=@(& cargo @unlockArguments 2>&1 | ForEach-Object {$line="$_";Write-Host $line;$line})
+    $unlockCode=$LASTEXITCODE
+    $unlockSummaries=@($unlockLines | Where-Object {$_ -is [string] -and $_ -match '^test result: '})
+    if($unlockCode -ne 0 -or -not (Test-UnlockOutput $unlockSummaries)){throw 'Reduced-rights unlock suite failed or expected count changed.'}
+    Write-Output 'Native CI owner unlock suite: all passed, zero ignored, reduced-rights children.'
     exit 0
 }if($CompileOnly){Add-Type -Path (Join-Path $PSScriptRoot 'windows_native_ci.cs');Write-Output 'Native CI helper compilation: PASS';exit 0}
 

@@ -1,0 +1,13 @@
+-- SPDX-License-Identifier: AGPL-3.0-only
+-- Retention recheck stamp (issue #654, formerly #488). A message past the
+-- content cutoff can stay unprunable for weeks because a dispatch fence is
+-- still open or positive sent evidence is still inside the event window.
+-- Every fifteen-second tick re-evaluated those predicates for every such
+-- row. The prune now stamps blocked candidates here and skips rows stamped
+-- within the last hour, so each blocked row is rechecked at most once an
+-- hour instead of 5,760 times a day, and previously blocked content may
+-- outlive its cutoff by at most that recheck interval.
+-- ADD COLUMN of a nullable column without a default is a catalog-only
+-- change in supported PostgreSQL versions; no table rewrite, no exclusive
+-- lock.
+ALTER TABLE messages ADD COLUMN retention_blocked_at timestamp with time zone;

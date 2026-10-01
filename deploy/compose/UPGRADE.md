@@ -154,7 +154,7 @@ migration credential in an API environment.
 
 - Migrations are numbered SQL files in `deploy/compose/migrations/`, append-only
   and consecutive from `001_foundation.sql`. The current highest migration in
-  this repository is **059** (`059_erasure_fk_indexes.sql`). Never
+  this repository is **066** (`066_conversation_interval_session_index.sql`). Never
   edit a file that is already applied; a change is always a new file with the
   next number.
 - The runner takes a fixed PostgreSQL advisory lock for the whole run, creates
@@ -167,13 +167,18 @@ migration credential in an API environment.
 - Editing an applied migration file makes the next run fail with
   "applied migration NNN differs from its file; restore the original file and
   add a new migration". Do not repair `schema_migrations` by hand.
-- Migrations 034, 040, 049, 050, 052, 057 and 059 are documented exceptions: they build their indexes with
+- Migrations 034, 040, 049, 050, 052, 057, 059, 060, 061, 062 and 066 are documented exceptions: they build their indexes with
   `CREATE INDEX CONCURRENTLY` before recording the numbered file; see the
   [Compose guide](README.md) for the interrupted-build and rollback rules that
   apply to them. Migration 059 builds five foreign-key support indexes for
   owner account erasure the same way: a matching invalid index left by an
   interrupted build is dropped and rebuilt, and an index of the same name with
   a different definition stops the migration without being replaced.
+  Migration 060 builds the opt-out review queue and event lookup indexes the
+  same way and drops the redundant `recipient_suppressions_active` index
+  online once both are valid. Migration 061 adds the
+  `erasure_fk_inbound_events_attempt` foreign-key support index for owner
+  account erasure the same way.
 - Migration 054 drops the `device_auth_challenges` table. Device socket
   challenges are now stateless, but an older binary still writes that table,
   so once 054 is applied every device handshake served by an older API

@@ -259,10 +259,42 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "059_erasure_fk_indexes.sql",
         include_str!("../../../../deploy/compose/migrations/059_erasure_fk_indexes.sql"),
     ),
+    (
+        "060_optout_review_indexes.sql",
+        include_str!("../../../../deploy/compose/migrations/060_optout_review_indexes.sql"),
+    ),
+    (
+        "061_inbound_events_attempt_fk_index.sql",
+        include_str!(
+            "../../../../deploy/compose/migrations/061_inbound_events_attempt_fk_index.sql"
+        ),
+    ),
+    (
+        "062_pending_recipient_index.sql",
+        include_str!("../../../../deploy/compose/migrations/062_pending_recipient_index.sql"),
+    ),
+    (
+        "063_retention_blocked_stamp.sql",
+        include_str!("../../../../deploy/compose/migrations/063_retention_blocked_stamp.sql"),
+    ),
+    (
+        "064_owner_conversation_consent.sql",
+        include_str!("../../../../deploy/compose/migrations/064_owner_conversation_consent.sql"),
+    ),
+    (
+        "065_conversation_activation.sql",
+        include_str!("../../../../deploy/compose/migrations/065_conversation_activation.sql"),
+    ),
+    (
+        "066_conversation_interval_session_index.sql",
+        include_str!(
+            "../../../../deploy/compose/migrations/066_conversation_interval_session_index.sql"
+        ),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in
-/// autocommit mode before the numbered 034, 040, 049, 050, 052 and 059 files record
+/// autocommit mode before the numbered 034, 040, 049, 050, 052, 059, 060, 061, 062 and 066 files record
 /// their checksum gates (deploy/compose/README.md, "Migration 034 is a narrow
 /// online-index exception"). The gate SQL validates the exact index
 /// definition; a fresh fixture schema builds the identical index with a
@@ -303,6 +335,22 @@ const PREPARED_INDEXES: &[(&str, &str)] = &[
     (
         "059_erasure_fk_indexes.sql",
         "CREATE INDEX erasure_fk_webhook_deliveries_event ON webhook_deliveries(account_id,event_id); CREATE INDEX erasure_fk_suppressions_attempt ON recipient_suppressions(source_attempt_id); CREATE INDEX erasure_fk_suppressions_event ON recipient_suppressions(account_id,source_event_id); CREATE INDEX erasure_fk_holds_release_event ON owner_recipient_holds(account_id,release_event_id) WHERE release_event_id IS NOT NULL; CREATE INDEX erasure_fk_opt_out_audit_release_event ON owner_opt_out_audit(account_id,release_event_id) WHERE release_event_id IS NOT NULL",
+    ),
+    (
+        "060_optout_review_indexes.sql",
+        "CREATE INDEX recipient_suppressions_review_queue ON recipient_suppressions(account_id,changed_at DESC,recipient_e164 DESC) WHERE active AND source IN ('sms_review','sms_unsolicited_review'); CREATE INDEX recipient_suppressions_review_event ON recipient_suppressions(account_id,COALESCE(source_event_id,source_unsolicited_event_id)) WHERE source IN ('sms_review','sms_unsolicited_review'); DROP INDEX recipient_suppressions_active",
+    ),
+    (
+        "061_inbound_events_attempt_fk_index.sql",
+        "CREATE INDEX erasure_fk_inbound_events_attempt ON inbound_events(account_id,device_id,message_id,attempt_id)",
+    ),
+    (
+        "062_pending_recipient_index.sql",
+        "CREATE INDEX messages_pending_recipient ON messages(recipient_e164,account_id) WHERE state IN ('queued','claimed') AND recipient_e164 IS NOT NULL",
+    ),
+    (
+        "066_conversation_interval_session_index.sql",
+        "CREATE INDEX erasure_fk_conversation_interval_session ON conversation_intervals(account_id,initiating_session_id)",
     ),
 ];
 
@@ -1183,12 +1231,25 @@ async fn phone_line_tombstone_blocks_erasure() {
     let (a, session_a, _b, _session_b, app) = fixture(&mut db, &hasher, &database_url, None).await;
     // A pending line identity tombstone: schema policy keeps it, so the
     // whole erasure must fail closed before anything is deleted.
+    let line = Uuid::new_v4();
     db.execute(
         "INSERT INTO phone_lines(id,account_id,state) VALUES($1,$2,'pending')",
-        &[&Uuid::new_v4(), &a.account_id],
+        &[&line, &a.account_id],
     )
     .await
     .unwrap();
+    let device: Uuid = db
+        .query_one(
+            "SELECT id FROM devices WHERE account_id=$1 LIMIT 1",
+            &[&a.account_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    db.execute("INSERT INTO device_line_bindings(account_id,line_id,device_id,generation) VALUES($1,$2,$3,1)", &[&a.account_id, &line, &device]).await.unwrap();
+    // Withdrawn selection on a historical binding: complete account erasure
+    // is still blocked by immutable line identities and must retain this row.
+    db.execute("INSERT INTO owner_conversation_consents(account_id,device_id,line_id,binding_generation,peer,disclosure_version,enabled_by,revoked_at) VALUES($1,$2,$3,1,NULL,'conversation-content-v1',$4,clock_timestamp())", &[&a.account_id, &device, &line, &a.user_id]).await.unwrap();
     let response = app
         .clone()
         .oneshot(erasure_post(
@@ -1209,6 +1270,7 @@ async fn phone_line_tombstone_blocks_erasure() {
         "SELECT count(*) FROM messages WHERE account_id=$1",
         "SELECT count(*) FROM sessions WHERE account_id=$1",
         "SELECT count(*) FROM phone_lines WHERE account_id=$1",
+        "SELECT count(*) FROM owner_conversation_consents WHERE account_id=$1",
     ] {
         let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
         assert_eq!(
@@ -1249,6 +1311,17 @@ async fn sealed_trust_history_blocks_erasure() {
     )
     .await
     .unwrap();
+    // Synthetic storage fixtures prove guarded deletion rolls these new tables back too.
+    let line = Uuid::new_v4();
+    let interval = Uuid::new_v4();
+    let event = Uuid::new_v4();
+    db.execute("INSERT INTO phone_lines(id,account_id,state,approved_at,current_binding_generation,last_issued_generation) VALUES($1,$2,'active',clock_timestamp(),1,1)",&[&line,&a.account_id]).await.unwrap();
+    db.execute("INSERT INTO device_line_bindings(account_id,line_id,device_id,generation,state,owner_approval_digest,device_confirmation_digest,activated_at) VALUES($1,$2,$3,1,'active',$4,$4,clock_timestamp())",&[&a.account_id,&line,&device_a,&vec![7u8;32]]).await.unwrap();
+    db.execute("INSERT INTO conversation_intervals(account_id,id,receipt_id,device_id,line_id,binding_generation,initiating_session_id,statement,statement_digest,manifest,trust_generation,activation_version,activation_digest,expires_at_ms) VALUES($1,$2,$3,$4,$5,1,$6,$7,$8,$9,1,2,$8,1)",&[&a.account_id,&interval,&Uuid::new_v4(),&device_a,&line,&session_a.id,&vec![8u8;380],&vec![9u8;32],&vec![10u8;364]]).await.unwrap();
+    let mut envelope = vec![11u8; 426];
+    envelope[..6].copy_from_slice(&[0x5a, 0x54, 0x53, 0x45, 2, 2]);
+    db.execute("INSERT INTO sealed_inbound_events(id,account_id,device_id,line_id,binding_generation,device_sequence,observed_at,part_count,envelope,unsigned_digest,envelope_profile) VALUES($1,$2,$3,$4,1,1,clock_timestamp(),NULL,$5,$6,2)",&[&event,&a.account_id,&device_a,&line,&envelope,&vec![12u8;32]]).await.unwrap();
+    db.execute("INSERT INTO conversation_inbound_provenance(account_id,event_id,interval_id,trust_generation,manifest_version,manifest_digest,verified_manifest,accepted_at_ms) VALUES($1,$2,$3,1,2,$4,$5,1)",&[&a.account_id,&event,&interval,&vec![13u8;32],&vec![14u8;364]]).await.unwrap();
     let response = app
         .clone()
         .oneshot(erasure_post(
@@ -1273,6 +1346,9 @@ async fn sealed_trust_history_blocks_erasure() {
         "SELECT count(*) FROM messages WHERE account_id=$1",
         "SELECT count(*) FROM device_keys WHERE account_id=$1",
         "SELECT count(*) FROM known_signing_point_reservations WHERE account_id=$1",
+        "SELECT count(*) FROM conversation_intervals WHERE account_id=$1",
+        "SELECT count(*) FROM conversation_inbound_provenance WHERE account_id=$1",
+        "SELECT count(*) FROM sealed_inbound_events WHERE account_id=$1",
     ] {
         let rows: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
         assert_eq!(
@@ -2716,13 +2792,15 @@ async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeo
     // whole route 0.9-1.4 s, at least 7x under the timeout. All remaining work is
     // linear in the row count. The earlier version of this test put all
     // 5000 attempts on one message and ran on unanalyzed tables. That made
-    // the inbound_events -> message_attempts check quadratic. #515 does not
-    // index that check, which is served only by an index prefix. That one
-    // check took 7.4 s of an 8.5 s DELETE locally and overran 10 s on
-    // loaded runners. The bulk rows now use a few attempts per message, as
+    // the inbound_events -> message_attempts check quadratic: until
+    // migration 061 it was served only by the (account_id, message_id)
+    // prefix of inbound_events_timeline, and that one check took 7.4 s of
+    // an 8.5 s DELETE locally and overran 10 s on loaded runners (#601).
+    // Migration 061 gives it the dedicated four-column index this test now
+    // pins below. The bulk rows still use a few attempts per message, as
     // real retries do, and the populated tables are analyzed, as autovacuum
-    // does in production, so the timing reflects only the checks #515
-    // indexes.
+    // does in production, so the timing does not depend on planner
+    // statistics that a fresh test database lacks.
     let (admin, mut db, database_url, schema) = migrated_schema("fk_scale").await;
     let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(37)).unwrap());
     let handler_database_url = handler_url(&database_url, "zt_erasure_fk_scale");
@@ -2807,22 +2885,56 @@ async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeo
         let count: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
         assert_eq!(count, rows + 1);
     }
+    // Conversation intervals require a line binding, and the registry
+    // forbids deleting bindings, so an account owning intervals can never be
+    // erased. Seed them for the OTHER fixture account: erasing this account
+    // still deletes its sessions, and every deleted session runs the
+    // referential-integrity probe against the cross-tenant table (#660) -
+    // an unindexed probe would sequentially scan it per deleted session.
+    let conversation_line = Uuid::new_v4();
+    db.execute(
+        "INSERT INTO phone_lines(id,account_id) VALUES($1,$2)",
+        &[&conversation_line, &_b.account_id],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO device_line_bindings(account_id,line_id,device_id,generation)          SELECT $1,$2,d.id,1 FROM devices d WHERE d.account_id=$1",
+        &[&_b.account_id, &conversation_line],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO conversation_intervals(account_id,id,receipt_id,device_id,line_id, \
+         binding_generation,initiating_session_id,statement,statement_digest,manifest, \
+         trust_generation,activation_version,activation_digest,expires_at_ms,phase, \
+         accepted_at_ms,approval_signature,installation_signature,closed_at) \
+         SELECT $1,gen_random_uuid(),gen_random_uuid(),d.id,$2,1,s.id, \
+                convert_to(repeat('c',400),'UTF8'),sha256(convert_to('conv','UTF8')), \
+                convert_to(repeat('m',400),'UTF8'),1,2,sha256(convert_to('conv','UTF8')), \
+                9999999999999,'history',1,convert_to(repeat('s',64),'UTF8'), \
+                convert_to(repeat('t',64),'UTF8'),now() \
+         FROM sessions s JOIN devices d ON d.account_id=s.account_id \
+         WHERE s.account_id=$1",
+        &[&_b.account_id, &conversation_line],
+    )
+    .await
+    .unwrap();
     // Production tables carry planner statistics (autovacuum analyzes them
-    // after bulk writes). Without them the foreign-key trigger's generic
-    // plan for inbound_events -> message_attempts, an FK outside #515 that
-    // has no index of its own, filters every event of the device instead of
-    // using the (account_id, message_id) prefix of inbound_events_timeline,
-    // and that one check alone costs seconds. Analyze only the populated
-    // tables; the always-empty hold tables keep their default estimates, as
-    // in a fresh deployment.
+    // after bulk writes), and the foreign-key trigger probes run as generic
+    // plans, so a fresh unanalyzed fixture can pick a different shape than
+    // production would. Analyze only the populated tables; the always-empty
+    // hold tables keep their default estimates, as in a fresh deployment.
+    // The probes themselves stay pinned by the plan and counter checks
+    // below regardless of statistics.
     db.batch_execute(
         "ANALYZE messages, message_attempts, inbound_events, webhook_deliveries, recipient_suppressions",
     )
     .await
     .unwrap();
     // (1) Each foreign-key probe the DELETE triggers is planned as an index
-    // scan on its erasure_fk_* index; without migration 059 each of these
-    // plans is a sequential scan over the account's thousands of rows.
+    // scan on its erasure_fk_* index; without migrations 059 and 061 each of
+    // these plans is a sequential scan over the account's thousands of rows.
     let sample_event: Uuid = db
         .query_one(
             &format!("SELECT e.id {BULK_EVENTS} LIMIT 1"),
@@ -2831,14 +2943,15 @@ async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeo
         .await
         .unwrap()
         .get(0);
-    let sample_attempt: Uuid = db
+    let sample_row = db
         .query_one(
-            &format!("SELECT e.attempt_id {BULK_EVENTS} LIMIT 1"),
+            &format!("SELECT e.attempt_id, e.message_id {BULK_EVENTS} LIMIT 1"),
             &[&a.account_id, &marker],
         )
         .await
-        .unwrap()
-        .get(0);
+        .unwrap();
+    let sample_attempt: Uuid = sample_row.get(0);
+    let sample_message: Uuid = sample_row.get(1);
     for (index, probe, key, with_account) in [
         (
             "erasure_fk_webhook_deliveries_event",
@@ -2889,18 +3002,51 @@ async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeo
             "foreign-key probe must use {index}: {plan}"
         );
     }
+    // The inbound_events -> message_attempts probe keys on all four foreign
+    // key columns; before migration 061 it could only ride the
+    // (account_id, message_id) prefix of inbound_events_timeline.
+    {
+        let plan: String = db
+            .query(
+                "EXPLAIN (COSTS OFF) SELECT 1 FROM inbound_events                  WHERE account_id=$1 AND device_id=$2 AND message_id=$3 AND attempt_id=$4",
+                &[&a.account_id, &device, &sample_message, &sample_attempt],
+            )
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| row.get::<_, String>(0))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            plan.contains("erasure_fk_inbound_events_attempt") && !plan.contains("Seq Scan"),
+            "attempt foreign-key probe must use erasure_fk_inbound_events_attempt: {plan}"
+        );
+    }
 
     // (2) Run the handler's exact delete sequence and read this
     // transaction's own scan counters, then roll it back so the route below
     // erases the same data. Every deleted inbound event fires one probe on
     // each event-keyed index, and every deleted attempt fires one probe on
-    // the attempt index, so each index on a populated referencing table must
+    // the attempt index and on the inbound_events foreign-key index of
+    // migration 061, so each index on a populated referencing table must
     // be scanned at least `rows` times. The two hold tables are left out
     // here: their rows are append-only and block erasure (see
     // schema_protected_consent_rows_block_the_whole_erasure), so an account
     // that can be erased never has any, and step (1) already pins their
     // probes to the account-scoped index.
     {
+        let erased_sessions: i64 = db
+            .query_one(
+                "SELECT count(*) FROM sessions WHERE account_id=$1",
+                &[&a.account_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert!(
+            erased_sessions > 0,
+            "the erased account must own sessions for the probe to fire"
+        );
         let tx = db.transaction().await.unwrap();
         let started = std::time::Instant::now();
         for &(_, sql) in DELETE_PLAN {
@@ -2910,10 +3056,30 @@ async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeo
             "DELETE_PLAN over {rows} referenced rows took {:?}",
             started.elapsed()
         );
+        // Every deleted session row probes the conversation-interval
+        // foreign key once, whatever account owns the intervals.
+        {
+            let index = "erasure_fk_conversation_interval_session";
+            let row = tx
+                .query_one(
+                    "SELECT to_regclass($1) IS NOT NULL, \
+                            coalesce(pg_stat_get_xact_numscans(to_regclass($1)), 0)",
+                    &[&index],
+                )
+                .await
+                .unwrap();
+            assert!(row.get::<_, bool>(0), "index {index} must exist");
+            let scans: i64 = row.get(1);
+            assert!(
+                scans >= erased_sessions,
+                "every deleted session must probe {index}: {scans} scans for {erased_sessions} sessions"
+            );
+        }
         for index in [
             "erasure_fk_webhook_deliveries_event",
             "erasure_fk_suppressions_event",
             "erasure_fk_suppressions_attempt",
+            "erasure_fk_inbound_events_attempt",
         ] {
             let row = tx
                 .query_one(
@@ -2932,7 +3098,12 @@ async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeo
         }
         // For a table, the same counter is its sequential scan count. A
         // per-row sequential scan would show up here as thousands.
-        for table in ["webhook_deliveries", "recipient_suppressions"] {
+        for table in [
+            "webhook_deliveries",
+            "recipient_suppressions",
+            "inbound_events",
+            "conversation_intervals",
+        ] {
             let seq_scans: i64 = tx
                 .query_one(
                     "SELECT pg_stat_get_xact_numscans(to_regclass($1))",

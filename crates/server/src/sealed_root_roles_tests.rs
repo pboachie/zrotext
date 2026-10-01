@@ -537,13 +537,13 @@ async fn root_reservations_genesis_never_waits_on_existing_authority_after_accou
         .is_err()
     );
     genesis_tx.rollback().await.unwrap();
-    let admission = pending.await.unwrap();
+    let mut admission = pending.await.unwrap();
     admission.context(&f.wanted()).await.unwrap();
     drop(admission);
     admission_tx.commit().await.unwrap();
     // The opposite order waits on account only, then rejects the existing pin.
     let tx = a.transaction().await.unwrap();
-    let admission = admit(&tx, f.session(), f.line, 1, &f.bytes).await.unwrap();
+    let mut admission = admit(&tx, f.session(), f.line, 1, &f.bytes).await.unwrap();
     let mut pending = Box::pin(provision(&b, f.account, &f.pin));
     assert!(
         tokio::time::timeout(Duration::from_millis(40), &mut pending)
