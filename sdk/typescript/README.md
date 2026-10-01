@@ -346,6 +346,14 @@ The [local stdio MCP server](../../docs/mcp-local-tools.md) exposes SDK syntax p
 
 The [synthetic agent adapter foundation](../../docs/agent-adapter-simulator.md) adds callable fixture handling and a Python wrapper over this SDK. It cannot activate live messaging or grant agent authority.
 
+## Workflow context candidate
+
+`workflow-context.ts` seals and opens proposed ZTWC01 contexts using the existing
+HPKE implementation and a just-verified role-2 archive reader. It performs no
+networking, persistence, private-key generation or dispatch activation. The
+server's owner router remains unmounted. See
+[`workflow-context.md`](../../protocol/v1/workflow-context.md) for exact authenticated
+identity, version, ciphertext, exception and retention boundaries.
 [Importable agent recipe previews](../../docs/agent-recipes.md) add a disabled n8n
 workflow and callable example using `agent-recipe`, the shared fixture adapter and
 a local customer-controlled reader. They exercise durable synthetic identities,
