@@ -198,6 +198,13 @@ impl Case {
         self.base.cleanup().await;
     }
     pub(crate) async fn bind(&mut self, approved: ActionState) -> ActionState {
+        self.bind_with_dispatch(approved, Uuid::new_v4()).await
+    }
+    pub(crate) async fn bind_with_dispatch(
+        &mut self,
+        approved: ActionState,
+        dispatch: Uuid,
+    ) -> ActionState {
         let message = Uuid::new_v4();
         let f = &mut self.base.f;
         let now = activation::now(&f.connect().await.transaction().await.unwrap())
@@ -240,7 +247,7 @@ impl Case {
         .unwrap();
         let binding = store::RenderedBinding {
             message_id: message,
-            dispatch_id: Uuid::new_v4(),
+            dispatch_id: dispatch,
             message_digest: super::super::descriptor::hex(&Sha256::digest(bytes)),
         };
         bind_message(
