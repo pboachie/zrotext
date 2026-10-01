@@ -145,7 +145,9 @@ class ConversationExecutionCompositionTest {
     @Test fun disabledConcreteFactoryHookUsesActualRuntimeAndClosesEvidenceWithoutFallback() = factoryFixture(false)
     @Test fun hookRefusalClosesOwnedRuntimeAndResourcesWithoutPublication() = factoryFixture(true)
 
-    @Test fun executionDeadlineSharesRealAdmissionAndDoesNotRenewAcrossWaitsOrLoss() {
+    @Test fun executionDeadlineSharesRealAdmissionAndDoesNotRenewAcrossWaitsOrLoss() = executionDeadlineFixture(false)
+    @Test fun replyBindingPublicationCannotEnterAfterAuthenticatedSessionLoss() = executionDeadlineFixture(true)
+    private fun executionDeadlineFixture(loseBeforePublication: Boolean) {
         val app = RuntimeEnvironment.getApplication()
         val capture = Room.inMemoryDatabaseBuilder(app, ConversationCaptureDatabase::class.java).allowMainThreadQueries().build()
         val sends = Room.inMemoryDatabaseBuilder(app, ConversationSendDatabase::class.java).allowMainThreadQueries().build()
@@ -182,6 +184,14 @@ class ConversationExecutionCompositionTest {
             runtime.propose(f.review, byteArrayOf(1)); assertNull(runtime.executionDeadline(f.scope))
             runtime.presentation.approvePhoneReview(f.review.requestId, checkNotNull(snapshot).version)
             assertTrue(runtime.captureEligible()); assertEquals(110000L, runtime.executionDeadline(f.scope))
+            if (loseBeforePublication) {
+                val binding = java.util.concurrent.atomic.AtomicReference("unavailable")
+                // Same publication gate used after the controller's verified manifest CAS.
+                phone = null
+                assertThrows(Exception::class.java) { runtime.withActiveScope(f.scope) { binding.set("reply-enabled") } }
+                assertEquals("unavailable", binding.get())
+                return
+            }
             delay = true; val shortened = checkNotNull(runtime.executionDeadline(f.scope))
             assertTrue(shortened <= 110000 && shortened > checkNotNull(runtime.trustedNowMs()))
             elapsed = 10000; assertNull(runtime.executionDeadline(f.scope))

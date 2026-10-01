@@ -171,14 +171,21 @@ internal class ConversationUserSetupController(
                 val handle = checkNotNull(connection.get()); handle.requireLive()
                 val active = checkNotNull(executionConnection.get())
                 val scope = checkNotNull(active.runtime.currentScope())
+                val deadline = checkNotNull(active.runtime.executionDeadline(scope))
                 fun now(): Long {
-                    requireOpen(); handle.requireLive()
-                    check(active.wire.currentSession() == active.phone && active.runtime.currentScope() == scope &&
-                        active.runtime.captureEligible() && active.inputs.lifecycleLoss() == null)
-                    val value = checkNotNull(active.runtime.trustedNowMs())
-                    active.inputs.requireAuthority(scope, value)
-                    return checkNotNull(active.runtime.trustedNowMs()).also { check(it >= value) }
+                    // Trust storage invokes this while locked: never enter admission/Room here.
+                    requireOpen(); handle.requireLive(); active.runtime.requireExecutionOpen()
+                    check(active.wire.currentSession() == active.phone)
+                    return checkNotNull(active.runtime.trustedNowMs()).also { check(it in 1 until deadline) }
                 }
+                fun requireActive() {
+                    now()
+                    check(active.runtime.currentScope() == scope && active.runtime.captureEligible() &&
+                        active.inputs.lifecycleLoss() == null)
+                    active.inputs.requireAuthority(scope, now())
+                    now()
+                }
+                requireActive()
                 val before = active.currentCrypto(scope, now())
                 val saved = active.inputs.trust.inspect()
                 val snapshot = checkNotNull(saved.snapshot)
@@ -208,18 +215,20 @@ internal class ConversationUserSetupController(
                     return checkAt
                 }
                 checkRoles(candidate)
+                requireActive()
                 val current = active.inputs.trust.currentAuthority(::now)
                 check(current.version == before.authority.version && current.digest.contentEquals(before.authority.digest))
                 check(active.inputs.trust.acceptManifest(snapshot, bytes, ::now).status == Draft02TrustStore.Status.NEEDS_FRESHNESS)
                 val installedAuthority = active.inputs.trust.currentAuthority(::now)
                 check(installedAuthority.version == candidate.version && installedAuthority.digest.contentEquals(candidate.digest))
+                requireActive()
                 val finalRoles = checkRoles(installedAuthority)
                 active.runtime.withActiveScope(scope) {
                     synchronized(gate) {
                         check(!closed && connection.get() === handle && executionConnection.get() === active)
                         active.runtime.requireExecutionOpen()
                         check(active.wire.currentSession() == active.phone)
-                        finalRoles(checkNotNull(active.runtime.trustedNowMs()))
+                        finalRoles(now())
                         check(selectedBindings.compareAndSet(bindings, ConversationConnectionBindings(bindings.archivePoint, signer)))
                     }
                 }
