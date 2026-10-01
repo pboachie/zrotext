@@ -2076,14 +2076,13 @@ fn pg_epoch_anchor_witnesses_only_applied_promotions() {
         },
         "a promotion the authority never applied is not witnessed"
     );
-    // The Pg adapter's record is a verification, not a write: the row
-    // serving an epoch IS the anchor's confirmation of it, so recording the
-    // currently served epoch is witnessed. The refused record above is what
-    // keeps the anchor from ever claiming an epoch the authority lacks.
+    // Merely replaying the already observed epoch is not a forward record.
     assert_eq!(
         anchor.record_promotion(base_epoch),
-        AnchorRecord::Recorded,
-        "the row serving the epoch is the anchor's own confirmation"
+        AnchorRecord::Refused {
+            anchored_epoch: base_epoch
+        },
+        "equal and backward records are refused"
     );
     assert_eq!(
         anchor.confirmed_epoch(),
@@ -2109,6 +2108,39 @@ fn pg_epoch_anchor_witnesses_only_applied_promotions() {
         anchor.confirmed_epoch(),
         AnchorReading::Confirmed { epoch: new_epoch },
         "the anchor follows the authority forward"
+    );
+
+    assert_eq!(
+        anchor.record_promotion(new_epoch),
+        AnchorRecord::Refused {
+            anchored_epoch: new_epoch
+        }
+    );
+    assert_eq!(
+        anchor.record_promotion(base_epoch),
+        AnchorRecord::Refused {
+            anchored_epoch: new_epoch
+        }
+    );
+    runtime.block_on(admin(&url, |client| async move {
+        client
+            .execute(
+                "UPDATE deployment_authority SET epoch=$1 WHERE singleton=TRUE",
+                &[&(base_epoch as i64)],
+            )
+            .await
+            .unwrap();
+    }));
+    assert_eq!(
+        anchor.confirmed_epoch(),
+        AnchorReading::Confirmed { epoch: new_epoch },
+        "an observed epoch survives a database rollback within the adapter instance"
+    );
+    assert_eq!(
+        anchor.record_promotion(base_epoch),
+        AnchorRecord::Refused {
+            anchored_epoch: new_epoch
+        }
     );
 
     drop(authority);
