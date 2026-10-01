@@ -168,6 +168,7 @@ BEGIN
 END;
 $$;
 
+
 CREATE FUNCTION conversation_execution_record_guard() RETURNS trigger
 LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
 BEGIN
