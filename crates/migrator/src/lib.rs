@@ -8,6 +8,7 @@ use tokio_postgres::Client;
 
 mod abuse_counters_index_drop;
 mod admission_pending_index;
+mod conversation_erasure_fk_indexes;
 mod erasure_fk_indexes;
 mod inbound_events_attempt_fk_index;
 mod optout_review_indexes;
@@ -17,6 +18,7 @@ mod radio_evidence_index;
 mod recent_attempt_index;
 use abuse_counters_index_drop::*;
 use admission_pending_index::*;
+use conversation_erasure_fk_indexes::*;
 mod webhook_history_index;
 use erasure_fk_indexes::*;
 use inbound_events_attempt_fk_index::*;
@@ -140,6 +142,10 @@ pub enum MigrationError {
     AbuseCountersStaleIndexPresent,
     #[error("opt-out review indexes are absent, invalid, or the redundant active index remains")]
     OptoutReviewIndexesUnavailable,
+    #[error(
+        "the conversation interval erasure foreign-key support indexes are absent, invalid, or have the wrong definition"
+    )]
+    ConversationErasureFkIndexesUnavailable,
     #[error(
         "the pending-recipient or retention-due index is absent, invalid, or has the wrong definition"
     )]
@@ -343,6 +349,9 @@ async fn apply_locked(
     if ledger.contains_key(&PENDING_RECIPIENT_INDEX_MIGRATION) {
         verify_pending_recipient_index(client).await?;
     }
+    if ledger.contains_key(&CONVERSATION_ERASURE_FK_INDEXES_MIGRATION) {
+        verify_conversation_erasure_fk_indexes(client).await?;
+    }
 
     for migration in migrations {
         if ledger.contains_key(&migration.version) {
@@ -458,6 +467,16 @@ async fn apply_locked(
             // transaction. The advisory lock still serializes migrator jobs.
             prepare_pending_recipient_index(client).await?;
         }
+        if migration.version == CONVERSATION_ERASURE_FK_INDEXES_MIGRATION {
+            if migration.filename != CONVERSATION_ERASURE_FK_INDEXES_FILE {
+                return Err(MigrationError::InvalidDirectory(format!(
+                    "migration {CONVERSATION_ERASURE_FK_INDEXES_MIGRATION:03} must be {CONVERSATION_ERASURE_FK_INDEXES_FILE}"
+                )));
+            }
+            // CREATE INDEX CONCURRENTLY cannot run in the numbered migration's
+            // transaction. The advisory lock still serializes migrator jobs.
+            prepare_conversation_erasure_fk_indexes(client).await?;
+        }
         let tx = client.transaction().await?;
         if let Err(error) = tx.batch_execute(&migration.sql).await {
             // Dropping the transaction closes it without committing the failed file.
@@ -541,6 +560,12 @@ async fn apply_locked(
         .any(|migration| migration.version == PENDING_RECIPIENT_INDEX_MIGRATION)
     {
         verify_pending_recipient_index(client).await?;
+    }
+    if migrations
+        .iter()
+        .any(|migration| migration.version == CONVERSATION_ERASURE_FK_INDEXES_MIGRATION)
+    {
+        verify_conversation_erasure_fk_indexes(client).await?;
     }
     Ok(applied)
 }
@@ -908,6 +933,8 @@ async fn verify_m0_shape(tx: &tokio_postgres::Transaction<'_>) -> Result<(), Mig
 mod abuse_counters_index_drop_tests;
 #[cfg(test)]
 mod admission_pending_index_tests;
+#[cfg(test)]
+mod conversation_erasure_fk_indexes_tests;
 #[cfg(test)]
 mod erasure_fk_index_tests;
 #[cfg(test)]

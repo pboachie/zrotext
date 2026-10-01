@@ -30,7 +30,7 @@ macro_rules! migration {
 
 // Holds are checked by admission and released by inbound, so these routes run
 // on the complete schema. SQL is embedded at build time.
-const TEST_MIGRATIONS: [(&str, &str); 65] = [
+const TEST_MIGRATIONS: [(&str, &str); 66] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -96,6 +96,7 @@ const TEST_MIGRATIONS: [(&str, &str); 65] = [
     migration!("063_retention_blocked_stamp.sql"),
     migration!("064_owner_conversation_consent.sql"),
     migration!("065_conversation_activation.sql"),
+    migration!("066_conversation_interval_session_index.sql"),
 ];
 
 #[test]
@@ -362,6 +363,11 @@ async fn owner_holds_and_review_decisions_are_owner_bound_tenant_scoped_and_audi
             )
             .await
             .unwrap();
+        }
+        if name == "066_conversation_interval_session_index.sql" {
+            db.batch_execute("CREATE INDEX erasure_fk_conversation_interval_session ON conversation_intervals(account_id,initiating_session_id)")
+                .await
+                .unwrap();
         }
         if name == "049_owner_queue_probe_indexes.sql" {
             db.batch_execute(

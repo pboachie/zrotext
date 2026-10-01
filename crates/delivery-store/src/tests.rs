@@ -2,7 +2,7 @@ use super::*;
 
 // Keep the admission fixtures on the complete, reviewed schema. SQL is
 // embedded at build time so tests never execute files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 65] = [
+const TEST_MIGRATIONS: [(&str, &str); 66] = [
     (
         "001_foundation.sql",
         include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -267,6 +267,12 @@ const TEST_MIGRATIONS: [(&str, &str); 65] = [
         "065_conversation_activation.sql",
         include_str!("../../../deploy/compose/migrations/065_conversation_activation.sql"),
     ),
+    (
+        "066_conversation_interval_session_index.sql",
+        include_str!(
+            "../../../deploy/compose/migrations/066_conversation_interval_session_index.sql"
+        ),
+    ),
 ];
 
 /// Applies every numbered migration in order. Shared by the PostgreSQL-backed
@@ -343,6 +349,11 @@ pub(crate) async fn apply_test_migrations(client: &Client) {
         }
         if name == "062_pending_recipient_index.sql" {
             client.batch_execute("CREATE INDEX messages_pending_recipient ON messages(recipient_e164,account_id) WHERE state IN ('queued','claimed') AND recipient_e164 IS NOT NULL")
+                .await
+                .unwrap();
+        }
+        if name == "066_conversation_interval_session_index.sql" {
+            client.batch_execute("CREATE INDEX erasure_fk_conversation_interval_session ON conversation_intervals(account_id,initiating_session_id)")
                 .await
                 .unwrap();
         }

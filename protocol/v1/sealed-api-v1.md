@@ -18,9 +18,10 @@ mounted handler accepts only the exact raw-binary content type, verifies the
 manifest chain, signer scope and envelope signature, and queues exact bytes
 toward the bound device; acceptance is never carrier evidence and never an
 execution grant, and sealed dispatch to devices remains deliberately
-unimplemented. Every other endpoint — `POST /v1/sealed/inbound-events` and
-all slice-2 surfaces — remains proposal-only with no route in any flag
-state. Error mapping in the implemented slice is coarser than the contract
+unimplemented. `POST /v1/sealed/inbound-events` is likewise implemented
+behind the same flag (see its section below); all slice-2 surfaces remain
+proposal-only with no route in any flag state. Error mapping in the
+implemented slices is coarser than the contract
 taxonomy: manifest-authority and verification rejections surface as
 `forbidden`/`invalid_request` rather than the proposal's finer
 `future_manifest`, `stale_manifest` and `re_enrollment_required` codes; a
@@ -70,7 +71,9 @@ stored under a different digest fails with `409 idempotency_conflict`.
 
 ### `POST /v1/sealed/inbound-events` — sealed inbound upload
 
-This is the separate sealed inbound route required by Q8. It writes the
+Mounted behind the same default-off `SEALED_ADMISSION_ENABLED` flag as the
+message route; off — the default — leaves the path absent. This is the
+separate sealed inbound route required by Q8. It writes the
 separate `sealed_inbound_events` store (see
 [sealed-inbound-prerequisites.md](sealed-inbound-prerequisites.md)) and is
 never routed through the M1 outbound-attempt inbound pilot. The phone
