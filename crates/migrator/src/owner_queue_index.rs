@@ -4,6 +4,8 @@ use tokio_postgres::Client;
 
 pub(super) const OWNER_QUEUE_INDEX_MIGRATION: i64 = 49;
 pub(super) const OWNER_QUEUE_INDEX_FILE: &str = "049_owner_queue_probe_indexes.sql";
+pub(super) const SUMMARY_INDEX_MIGRATION: i64 = 72;
+pub(super) const SUMMARY_INDEX_FILE: &str = "072_message_summary_metadata.sql";
 
 // Both indexes lead with device_id so the owner queue probes constrain the
 // scan to one device, and their predicates are exactly the probe state sets so
@@ -22,7 +24,7 @@ pub(super) const DROP_OWNER_IN_FLIGHT_STATE_INDEX: &str =
 // Check the complete index shape before deciding whether an interrupted build
 // is ours to remove. A relation with the expected name but a different shape
 // belongs to an operator and must never be dropped automatically.
-fn index_status_sql(index_name: &str, predicate: &str) -> String {
+fn index_status_sql(index_name: &str, predicate: &str, leading_column: &str) -> String {
     format!(
         r#"
 SELECT COALESCE(
@@ -34,7 +36,7 @@ SELECT COALESCE(
     AND ix.indexprs IS NULL
     AND ix.indkey[0] = (
         SELECT attnum FROM pg_catalog.pg_attribute
-        WHERE attrelid = tbl.oid AND attname = 'device_id' AND NOT attisdropped
+        WHERE attrelid = tbl.oid AND attname = '{leading_column}' AND NOT attisdropped
     )
     AND ix.indkey[1] = (
         SELECT attnum FROM pg_catalog.pg_attribute
@@ -85,6 +87,7 @@ WHERE ns.nspname = 'public' AND idx.relname = '{index_name}'
 }
 
 struct OwnerQueueIndexSpec {
+    leading_column: &'static str,
     name: &'static str,
     create: &'static str,
     drop: &'static str,
@@ -93,12 +96,14 @@ struct OwnerQueueIndexSpec {
 
 const OWNER_QUEUE_INDEXES: [OwnerQueueIndexSpec; 2] = [
     OwnerQueueIndexSpec {
+        leading_column: "device_id",
         name: "messages_owner_pending_state",
         create: CREATE_OWNER_PENDING_STATE_INDEX,
         drop: DROP_OWNER_PENDING_STATE_INDEX,
         predicate: "(state = ANY (ARRAY[''accepted''::text, ''queued''::text, ''claimed''::text]))",
     },
     OwnerQueueIndexSpec {
+        leading_column: "device_id",
         name: "messages_owner_in_flight_state",
         create: CREATE_OWNER_IN_FLIGHT_STATE_INDEX,
         drop: DROP_OWNER_IN_FLIGHT_STATE_INDEX,
@@ -106,12 +111,23 @@ const OWNER_QUEUE_INDEXES: [OwnerQueueIndexSpec; 2] = [
     },
 ];
 
+const SUMMARY_QUEUE_INDEX: OwnerQueueIndexSpec = OwnerQueueIndexSpec {
+    leading_column: "account_id",
+    name: "messages_summary_queue",
+    create: "CREATE INDEX CONCURRENTLY messages_summary_queue ON public.messages(account_id,state,created_at) WHERE state IN ('accepted','queued','claimed','submitting','submitted')",
+    drop: "DROP INDEX CONCURRENTLY public.messages_summary_queue",
+    predicate: "(state = ANY (ARRAY[''accepted''::text, ''queued''::text, ''claimed''::text, ''submitting''::text, ''submitted''::text]))",
+};
+
 async fn owner_queue_index_status(
     client: &Client,
     spec: &OwnerQueueIndexSpec,
 ) -> Result<Option<(bool, bool)>, MigrationError> {
     Ok(client
-        .query_opt(&index_status_sql(spec.name, spec.predicate), &[])
+        .query_opt(
+            &index_status_sql(spec.name, spec.predicate, spec.leading_column),
+            &[],
+        )
         .await?
         .map(|row| (row.get(0), row.get(1))))
 }
@@ -169,6 +185,26 @@ pub(super) async fn verify_owner_queue_indexes(client: &Client) -> Result<(), Mi
     if !ready {
         return Err(MigrationError::OwnerQueueIndexUnavailable(
             "messages_owner_pending_state/messages_owner_in_flight_state",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) async fn prepare_summary_queue_index(client: &Client) -> Result<(), MigrationError> {
+    prepare_owner_queue_index(client, &SUMMARY_QUEUE_INDEX).await
+}
+
+pub(super) async fn verify_summary_metadata(client: &Client) -> Result<(), MigrationError> {
+    let ready: bool = client
+        .query_one(
+            "SELECT public.message_summary_metadata_ready('public')",
+            &[],
+        )
+        .await?
+        .get(0);
+    if !ready {
+        return Err(MigrationError::OwnerQueueIndexUnavailable(
+            "message summary metadata",
         ));
     }
     Ok(())

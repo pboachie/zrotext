@@ -34,6 +34,7 @@ async function ownerPage({ eventSource = FakeEventSource } = {}) {
   const makeElement = () => ({
     textContent: "", hidden: false, disabled: false, value: "", checked: false,
     children: [], listeners: {}, openDetails: null,
+    attributes: {}, setAttribute(name, value) { this.attributes[name] = value; },
     replaceChildren(...children) { this.children = children; },
     append(...children) { this.children.push(...children); },
     contains(node) { return this === node || this.children.some((child) => child.contains(node)); },

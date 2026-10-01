@@ -325,6 +325,9 @@ async fn apply_locked(
     if ledger.contains_key(&OWNER_QUEUE_INDEX_MIGRATION) {
         verify_owner_queue_indexes(client).await?;
     }
+    if ledger.contains_key(&SUMMARY_INDEX_MIGRATION) {
+        verify_summary_metadata(client).await?;
+    }
     if ledger.contains_key(&RECENT_ATTEMPT_INDEX_MIGRATION) {
         verify_recent_attempt_index(client).await?;
     }
@@ -384,6 +387,14 @@ async fn apply_locked(
             // CREATE INDEX CONCURRENTLY cannot run in the numbered migration's
             // transaction. The advisory lock still serializes migrator jobs.
             prepare_owner_queue_indexes(client).await?;
+        }
+        if migration.version == SUMMARY_INDEX_MIGRATION {
+            if migration.filename != SUMMARY_INDEX_FILE {
+                return Err(MigrationError::InvalidDirectory(format!(
+                    "migration 072 must be {SUMMARY_INDEX_FILE}"
+                )));
+            }
+            prepare_summary_queue_index(client).await?;
         }
         if migration.version == RECENT_ATTEMPT_INDEX_MIGRATION {
             if migration.filename != RECENT_ATTEMPT_INDEX_FILE {
@@ -512,6 +523,12 @@ async fn apply_locked(
         .any(|migration| migration.version == OWNER_QUEUE_INDEX_MIGRATION)
     {
         verify_owner_queue_indexes(client).await?;
+    }
+    if migrations
+        .iter()
+        .any(|migration| migration.version == SUMMARY_INDEX_MIGRATION)
+    {
+        verify_summary_metadata(client).await?;
     }
     if migrations
         .iter()
