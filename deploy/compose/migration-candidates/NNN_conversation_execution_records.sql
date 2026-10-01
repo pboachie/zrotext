@@ -168,6 +168,76 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION sealed_ordinary_grant_current(wanted uuid) RETURNS boolean
+LANGUAGE sql STABLE SET search_path FROM CURRENT AS $$
+SELECT EXISTS (
+    SELECT 1 FROM sealed_grant_authorizations g
+    JOIN sealed_manifest_authorities r ON r.account_id=g.account_id
+    JOIN accounts a ON a.id=g.account_id
+    JOIN devices d ON (d.account_id,d.id)=(g.account_id,g.device_id)
+    JOIN device_keys k ON (k.account_id,k.device_id)=(g.account_id,g.device_id)
+    JOIN device_sessions ds ON (ds.account_id,ds.device_id)=(g.account_id,g.device_id)
+    JOIN phone_lines l ON (l.account_id,l.id)=(g.account_id,g.line_id)
+    JOIN device_line_bindings b ON (b.account_id,b.line_id,b.device_id,b.generation)=
+        (g.account_id,g.line_id,g.device_id,g.binding_generation)
+    JOIN sites s ON s.site_id=g.site_id
+    JOIN deployment_authority p ON p.singleton
+    JOIN messages m ON (m.account_id,m.id)=(g.account_id,g.message_id)
+    WHERE g.attempt_id=wanted AND a.disabled_at IS NULL AND d.revoked_at IS NULL AND k.revoked_at IS NULL
+      AND r.revoked_at IS NULL AND r.generation=g.manifest_generation AND r.version=g.manifest_version
+      AND r.semantic_digest=g.manifest_digest
+      AND r.last_verified_ms<=floor(extract(epoch FROM clock_timestamp())*1000)::bigint
+      AND g.authority_expires_at_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint
+      AND m.expires_at>clock_timestamp() AND m.transport_mode='sealed_candidate02'
+      AND m.sealed_line_id=g.line_id AND m.sealed_binding_generation=g.binding_generation
+      AND m.sealed_manifest_generation=g.manifest_generation AND m.sealed_manifest_version=g.manifest_version
+      AND m.sealed_manifest_digest=g.manifest_digest AND m.request_digest=g.unsigned_digest
+      AND m.sealed_segment_limit=g.segment_limit AND m.transport_payload IS NOT NULL
+      AND EXISTS(SELECT 1 FROM usage_ledger u WHERE u.account_id=g.account_id
+          AND u.message_id=g.message_id AND u.metric='outbound_message' AND u.entry_kind='reserve' AND u.units=1)
+      AND NOT EXISTS(SELECT 1 FROM usage_ledger u WHERE u.account_id=g.account_id
+          AND u.message_id=g.message_id AND u.metric='outbound_message' AND u.entry_kind='refund')
+      AND ds.connection_epoch=g.connection_epoch AND ds.deployment_epoch=g.deployment_epoch
+      AND ds.site_id=g.site_id AND ds.instance_id=g.instance_id AND ds.lease_until>clock_timestamp()
+      AND p.epoch=g.deployment_epoch AND p.dispatch_enabled AND NOT pg_is_in_recovery()
+      AND s.enabled AND NOT s.draining
+      AND l.state='active' AND l.approved_at IS NOT NULL AND l.current_binding_generation=g.binding_generation
+      AND b.state='active' AND b.purpose='sealed' AND b.activated_at IS NOT NULL
+      AND b.owner_approval_digest IS NOT NULL AND b.device_confirmation_digest IS NOT NULL
+      AND NOT EXISTS(SELECT 1 FROM recipient_suppressions q WHERE q.account_id=g.account_id
+          AND q.recipient_e164=m.recipient_e164 AND q.active)
+      AND NOT EXISTS(SELECT 1 FROM owner_recipient_holds h WHERE h.account_id=g.account_id
+          AND h.recipient_e164=m.recipient_e164 AND h.released_at IS NULL)
+);
+$$;
+
+CREATE OR REPLACE FUNCTION sealed_grant_current(wanted uuid) RETURNS boolean
+LANGUAGE plpgsql STABLE SET search_path FROM CURRENT AS $$
+DECLARE wanted_account uuid; wanted_message uuid;
+BEGIN
+ -- Ordinary provenance precedes the BEFORE INSERT attempt trigger. Require
+ -- one consistent identity across every available source, including that stage.
+ WITH candidates AS (
+ SELECT account_id,message_id FROM message_attempts WHERE id=wanted
+ UNION SELECT account_id,message_id FROM sealed_grant_authorizations WHERE attempt_id=wanted
+ UNION SELECT account_id,message_id FROM conversation_execution_records WHERE attempt_id=wanted)
+ SELECT account_id,message_id INTO wanted_account,wanted_message FROM candidates
+ WHERE (SELECT count(*) FROM candidates)=1;
+ IF NOT FOUND THEN RETURN FALSE; END IF;
+ IF NOT conversation_execution_is_message(wanted_account,wanted_message) THEN
+  RETURN sealed_ordinary_grant_current(wanted);
+ END IF;
+ -- Proof-backed work cannot borrow an ordinary grant or manufacture a ceiling.
+ -- The existing delivery-store final write calls this after updating the fence.
+ RETURN EXISTS(SELECT 1 FROM conversation_execution_records r JOIN message_attempts a ON a.id=r.attempt_id
+ JOIN messages m ON (m.account_id,m.id)=(r.account_id,r.message_id)
+ WHERE r.attempt_id=wanted AND
+ (a.account_id,a.message_id,a.device_id,a.generation,a.session_epoch,a.deployment_epoch)=
+ (r.account_id,r.message_id,r.device_id,r.generation,r.session_epoch,r.deployment_epoch)
+ AND m.device_id=r.device_id AND m.request_digest=r.unsigned_digest AND m.sealed_segment_limit IS NULL
+ AND conversation_execution_initial_valid(r));
+END;
+$$;
 CREATE OR REPLACE FUNCTION sealed_message_effect_state_guard() RETURNS trigger
 LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
 DECLARE r conversation_execution_records;

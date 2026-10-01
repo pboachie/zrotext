@@ -10,6 +10,80 @@ const EXECUTION_SCHEMA: &str = include_str!(
 
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn execution_intent_expiring_during_final_fence_write_rolls_back() {
+    let case = prepared().await;
+    let (envelope, confirmation, signature) = case.packet(Uuid::new_v4(), 30_000).await;
+    case.enqueue(&envelope, &confirmation, &signature)
+        .await
+        .unwrap();
+    case.f
+        .db
+        .execute(
+            "UPDATE device_sessions SET lease_until=clock_timestamp()+interval '5 seconds'",
+            &[],
+        )
+        .await
+        .unwrap();
+    let session = delivery_identity(&case);
+    let attempt = Uuid::new_v4();
+    let frame = request(&case, &session, confirmation.message, attempt, &envelope);
+    issue(&case, &session, &frame).await.unwrap();
+    case.f.db.batch_execute("CREATE FUNCTION delay_conversation_intent() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN \
+        PERFORM pg_sleep(GREATEST(0,extract(epoch FROM OLD.grant_expires_at-clock_timestamp()))+0.01); RETURN NEW; END $$; \
+        CREATE TRIGGER delay_conversation_intent BEFORE UPDATE OF outcome ON dispatch_fences \
+        FOR EACH ROW WHEN (NEW.outcome='submitting') EXECUTE FUNCTION delay_conversation_intent();").await.unwrap();
+    let before = state(&case).await;
+    let observed_at_ms = case
+        .f
+        .db
+        .query_one(
+            "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let event = zrotext_delivery_store::RadioEvent {
+        event_id: Uuid::new_v4(),
+        account_id: confirmation.account,
+        device_id: confirmation.device,
+        message_id: confirmation.message,
+        attempt_id: attempt,
+        evidence: zrotext_domain::Evidence::DurableSubmitIntent,
+        observed_at_ms,
+        segment_index: None,
+        segment_count: None,
+    };
+    let mut connection = case.f.connect().await;
+    connection
+        .batch_execute("SET statement_timeout='10s'")
+        .await
+        .unwrap();
+    let result = zrotext_delivery_store::DeliveryStore::new(&mut connection)
+        .record_radio_event(event)
+        .await;
+    assert!(
+        matches!(result, Err(zrotext_delivery_store::StoreError::StaleFence)),
+        "{result:?}"
+    );
+    assert_eq!(state(&case).await, before);
+    assert_eq!(
+        case.f
+            .db
+            .query_one(
+                "SELECT count(*) FROM message_events WHERE id=$1",
+                &[&event.event_id]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+    case.f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
 async fn execution_radio_event_cannot_borrow_another_devices_attempt() {
     let case = prepared().await;
     let (envelope, confirmation, signature) = case.packet(Uuid::new_v4(), 30_000).await;
