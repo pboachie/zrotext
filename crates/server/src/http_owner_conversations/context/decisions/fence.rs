@@ -55,7 +55,7 @@ pub(crate) async fn checked_descriptor<'tx, 'connection>(
     Ok((authority, header))
 }
 
-async fn contact(
+pub(crate) async fn contact(
     tx: &Transaction<'_>,
     descriptor: &Descriptor,
     header: &wire::Header,

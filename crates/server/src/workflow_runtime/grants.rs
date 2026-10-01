@@ -181,10 +181,13 @@ pub async fn issue_grant(
         return Err(AuthError::Forbidden);
     }
     if let Some(signer) = request.signer {
-        authority
-            .workflow_signer(header.device, header.line, &signer)
+        let deadline = authority
+            .workflow_signer_deadline(header.device, header.line, &signer)
             .await
             .map_err(|_| AuthError::Forbidden)?;
+        if request.expires_ms > deadline {
+            return Err(AuthError::Forbidden);
+        }
     }
     if let Some(envelope) = &request.content_envelope {
         if !request.permissions.allows(Operation::ContextContent) {

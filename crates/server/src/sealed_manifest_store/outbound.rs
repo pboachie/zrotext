@@ -163,13 +163,25 @@ impl CurrentAuthority<'_, '_> {
         line: Uuid,
         id: &[u8; 32],
     ) -> Result<(), AdmissionError> {
+        self.workflow_signer_deadline(device, line, id)
+            .await
+            .map(|_| ())
+    }
+
+    pub(crate) async fn workflow_signer_deadline(
+        &mut self,
+        device: Uuid,
+        line: Uuid,
+        id: &[u8; 32],
+    ) -> Result<i64, AdmissionError> {
         let now = self.checked_time().await?;
         self.manifest
             .conversation_keys(device.as_bytes(), line.as_bytes(), now)?;
-        if !self.manifest.active_agent_signer(line.as_bytes(), id, now) {
-            return Err(AdmissionError::Rejected("workflow signer authority"));
-        }
-        Ok(())
+        let until = self
+            .manifest
+            .active_agent_signer_until(line.as_bytes(), id, now)
+            .ok_or(AdmissionError::Rejected("workflow signer authority"))?;
+        i64::try_from(until).map_err(|_| AdmissionError::Rejected("workflow signer deadline"))
     }
 
     /// Invoke after every potentially blocking storage operation, immediately

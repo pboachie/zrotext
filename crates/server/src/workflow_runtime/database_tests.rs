@@ -40,6 +40,9 @@ fn digest(domain: &[u8], value: &str) -> [u8; 32] {
 }
 impl Case {
     async fn new() -> Self {
+        Self::with_signer(None).await
+    }
+    async fn with_signer(signer_lifetime: Option<i64>) -> Self {
         let (mut f, owner, s) = pending().await;
         activate(&f, &s).await;
         for sql in [include_str!(
@@ -72,6 +75,25 @@ impl Case {
         record.push(1);
         f.bytes.splice(300..300, record);
         f.bytes[150] = 4;
+        let signer = signer_lifetime.map(|lifetime| {
+            let key = SigningKey::generate_from_rng(&mut rand::rng());
+            let point = key.verifying_key().to_sec1_point(false);
+            let id: [u8; 32] =
+                Sha256::digest([b"ZTSE/key/v1\0".as_slice(), &[1, 1], point.as_bytes()].concat())
+                    .into();
+            let mut record = vec![5];
+            record.extend(id);
+            record.extend(point.as_bytes());
+            record.extend([0; 16]);
+            record.extend(f.line.as_bytes());
+            record.extend(1u16.to_be_bytes());
+            record.extend((now - 1000).to_be_bytes());
+            record.extend((now + lifetime).to_be_bytes());
+            record.push(1);
+            f.bytes.splice(598..598, record);
+            f.bytes[150] = 5;
+            id
+        });
         f.resign();
         let mut client = f.connect().await;
         let tx = client.transaction().await.unwrap();
@@ -193,7 +215,7 @@ impl Case {
             contact,
             purpose: Purpose::Operational,
             permissions: Permissions::new(&[Operation::ContextMetadata]).unwrap(),
-            signer: None,
+            signer,
             expires_ms: now + 30000,
             content_envelope: None,
         };
@@ -205,6 +227,38 @@ impl Case {
             factor,
             request,
             header,
+        }
+    }
+    async fn descriptor(&self) -> crate::http_owner_conversations::context::decisions::Descriptor {
+        use crate::http_owner_conversations::context::decisions;
+        let bytes: Vec<u8> = self
+            .f
+            .db
+            .query_one(
+                "SELECT envelope FROM workflow_context_versions WHERE context_id=$1",
+                &[&self.header.context],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        self.f.db.execute("INSERT INTO contact_consent_records(id,account_id,contact_id,purpose,action,source,effective_at,recorded_by) VALUES($1,$2,$3,'operational','grant','manual_entry',clock_timestamp(),$4)", &[&Uuid::new_v4(),&self.f.account,&self.request.contact,&self.owner.user_id]).await.unwrap();
+        decisions::Descriptor {
+            account_id: self.f.account.to_string(),
+            action_id: Uuid::new_v4().to_string(),
+            revision: 1,
+            line_id: self.header.line.to_string(),
+            recipient_id: self.request.contact.to_string(),
+            purpose_id: "00000000-0000-0000-0000-000000000002".into(),
+            content_ref: self.header.context.to_string(),
+            content_digest: decisions::descriptor::hex(&Sha256::digest(bytes)),
+            content_version: 1,
+            not_before: 0,
+            expires_at: self.header.expires_ms / 1000,
+            timezone: "UTC".into(),
+            window_id: "exact-window".into(),
+            routine_id: Uuid::new_v4().to_string(),
+            authority_generation: 1,
+            commitment: "informational".into(),
         }
     }
     async fn issue(&self) -> Result<IssuedCredential, auth::AuthError> {
@@ -790,38 +844,10 @@ async fn transaction_scope_rechecks_a_withdrawal_after_its_constructor() {
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; disposable workflow schema"]
 async fn status_only_grant_reads_current_owner_action_without_approval_or_content_authority() {
-    use crate::http_owner_conversations::context::decisions::{self, Descriptor, model::Decision};
+    use crate::http_owner_conversations::context::decisions::{self, model::Decision};
     let mut case = Case::new().await;
     case.request.permissions = Permissions::new(&[Operation::Status]).unwrap();
-    let bytes: Vec<u8> = case
-        .f
-        .db
-        .query_one(
-            "SELECT envelope FROM workflow_context_versions WHERE context_id=$1",
-            &[&case.header.context],
-        )
-        .await
-        .unwrap()
-        .get(0);
-    case.f.db.execute("INSERT INTO contact_consent_records(id,account_id,contact_id,purpose,action,source,effective_at,recorded_by) VALUES($1,$2,$3,'operational','grant','manual_entry',clock_timestamp(),$4)", &[&Uuid::new_v4(),&case.f.account,&case.request.contact,&case.owner.user_id]).await.unwrap();
-    let descriptor = Descriptor {
-        account_id: case.f.account.to_string(),
-        action_id: Uuid::new_v4().to_string(),
-        revision: 1,
-        line_id: case.header.line.to_string(),
-        recipient_id: case.request.contact.to_string(),
-        purpose_id: "00000000-0000-0000-0000-000000000002".into(),
-        content_ref: case.header.context.to_string(),
-        content_digest: decisions::descriptor::hex(&Sha256::digest(bytes)),
-        content_version: 1,
-        not_before: 0,
-        expires_at: case.header.expires_ms / 1000,
-        timezone: "UTC".into(),
-        window_id: "exact-window".into(),
-        routine_id: Uuid::new_v4().to_string(),
-        authority_generation: 1,
-        commitment: "informational".into(),
-    };
+    let descriptor = case.descriptor().await;
     let mut client = case.f.connect().await;
     let state = decisions::register(&mut client, &case.owner, Uuid::new_v4(), descriptor)
         .await
@@ -940,5 +966,183 @@ async fn transaction_scope_rechecks_device_and_connector_key_revocation() {
         drop(permit);
         tx.rollback().await.unwrap();
     }
+    case.f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; disposable workflow schema"]
+async fn integration_proposal_retries_share_action_ledger_and_require_separate_owner_approval() {
+    use crate::http_owner_conversations::context::decisions::{
+        self,
+        model::{Decision, Phase},
+    };
+    let mut case = Case::with_signer(Some(120000)).await;
+    case.request.permissions = Permissions::new(&[Operation::Propose]).unwrap();
+    let descriptor = case.descriptor().await;
+    let issued = case.issue().await.unwrap();
+    let principal = authenticate(&case.f.db, &case.hasher, &issued.token)
+        .await
+        .unwrap();
+    let mut client = case.f.connect().await;
+    let request = Uuid::new_v4();
+    let first = propose_action(&mut client, &principal, request, descriptor.clone())
+        .await
+        .unwrap();
+    let retry = propose_action(&mut client, &principal, request, descriptor.clone())
+        .await
+        .unwrap();
+    assert_eq!(first.key, retry.key);
+    assert_eq!(first.phase, Phase::Proposed);
+    let facts = client.query_one("SELECT (SELECT count(*) FROM workflow_actions),(SELECT count(*) FROM workflow_action_mutations),actor_kind,actor_grant_id,actor_user_id FROM workflow_action_mutations", &[]).await.unwrap();
+    assert_eq!(facts.get::<_, i64>(0), 1);
+    assert_eq!(facts.get::<_, i64>(1), 1);
+    assert_eq!(facts.get::<_, String>(2), "integration");
+    assert_eq!(facts.get::<_, Uuid>(3), issued.grant_id);
+    assert_eq!(facts.get::<_, Option<Uuid>>(4), None);
+    let origin: Uuid = client
+        .query_one("SELECT integration_origin_grant FROM workflow_actions", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(origin, issued.grant_id);
+    assert!(
+        client
+            .execute(
+                "UPDATE workflow_actions SET integration_origin_grant=NULL",
+                &[]
+            )
+            .await
+            .is_err()
+    );
+    assert!(client.execute("UPDATE workflow_action_mutations SET actor_kind='owner',actor_user_id=$1,actor_grant_id=NULL", &[&case.owner.user_id]).await.is_err());
+    let mut changed = descriptor.clone();
+    changed.commitment = "sensitive".into();
+    assert!(matches!(
+        propose_action(&mut client, &principal, request, changed).await,
+        Err(auth::AuthError::Conflict)
+    ));
+    for operation in [
+        Operation::ContactRead,
+        Operation::ContextMetadata,
+        Operation::ContextContent,
+        Operation::Status,
+        Operation::Schedule,
+        Operation::Send,
+    ] {
+        assert!(principal.require(operation).is_err());
+    }
+    let approved = decisions::decide(
+        &mut client,
+        &case.owner,
+        Uuid::new_v4(),
+        first.record_version,
+        first.key,
+        Decision::Approve,
+    )
+    .await
+    .unwrap();
+    assert_eq!(approved.phase, Phase::Approved);
+    assert_eq!(
+        client
+            .query_one("SELECT count(*) FROM messages", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+    revoke_grant(&mut client, &case.owner, issued.grant_id)
+        .await
+        .unwrap();
+    assert!(
+        propose_action(&mut client, &principal, request, descriptor)
+            .await
+            .is_err()
+    );
+    case.f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; disposable workflow schema"]
+async fn integration_proposals_reject_scope_changes_and_replay_after_owner_takeover() {
+    use crate::http_owner_conversations::context::decisions;
+    let mut case = Case::with_signer(Some(120000)).await;
+    case.request.permissions = Permissions::new(&[Operation::Propose]).unwrap();
+    let descriptor = case.descriptor().await;
+    let issued = case.issue().await.unwrap();
+    let principal = authenticate(&case.f.db, &case.hasher, &issued.token)
+        .await
+        .unwrap();
+    let mut client = case.f.connect().await;
+    for field in 0..6 {
+        let mut wrong = descriptor.clone();
+        match field {
+            0 => wrong.account_id = Uuid::new_v4().to_string(),
+            1 => wrong.line_id = Uuid::new_v4().to_string(),
+            2 => wrong.recipient_id = Uuid::new_v4().to_string(),
+            3 => wrong.purpose_id = "00000000-0000-0000-0000-000000000001".into(),
+            4 => wrong.content_version = 2,
+            _ => wrong.content_digest = decisions::descriptor::hex(&[0; 32]),
+        }
+        assert!(
+            propose_action(&mut client, &principal, Uuid::new_v4(), wrong)
+                .await
+                .is_err()
+        );
+    }
+    assert_eq!(
+        client
+            .query_one("SELECT count(*) FROM workflow_actions", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+    let request = Uuid::new_v4();
+    propose_action(&mut client, &principal, request, descriptor.clone())
+        .await
+        .unwrap();
+    decisions::takeover(
+        &mut client,
+        &case.owner,
+        Uuid::new_v4(),
+        case.header.context,
+    )
+    .await
+    .unwrap();
+    assert!(
+        propose_action(&mut client, &principal, request, descriptor.clone())
+            .await
+            .is_err()
+    );
+    let mut next = descriptor;
+    next.action_id = Uuid::new_v4().to_string();
+    assert!(
+        propose_action(&mut client, &principal, Uuid::new_v4(), next)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        client
+            .query_one("SELECT count(*) FROM workflow_actions", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        1
+    );
+    case.f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; disposable workflow schema"]
+async fn workflow_grant_cannot_outlive_verified_role_five_signer_or_consume_factor_on_refusal() {
+    let mut case = Case::with_signer(Some(45000)).await;
+    case.request.permissions = Permissions::new(&[Operation::Propose]).unwrap();
+    case.request.expires_ms = case.header.expires_ms - 1000;
+    assert!(case.issue().await.is_err());
+    let counts=case.f.db.query_one("SELECT (SELECT count(*) FROM workflow_integration_grants),(SELECT count(*) FROM owner_mfa_recovery_codes WHERE used_at IS NULL)",&[]).await.unwrap();
+    assert_eq!(counts.get::<_, i64>(0), 0);
+    assert_eq!(counts.get::<_, i64>(1), 1);
+    case.request.expires_ms = case.header.expires_ms - 30000;
+    assert!(case.issue().await.is_ok());
     case.f.cleanup().await;
 }

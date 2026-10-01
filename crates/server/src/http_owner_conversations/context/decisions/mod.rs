@@ -5,6 +5,7 @@ pub mod fence;
 pub mod http;
 pub mod lifecycle;
 pub mod model;
+pub(crate) mod proposal;
 pub mod reply;
 pub mod responses;
 pub mod store;

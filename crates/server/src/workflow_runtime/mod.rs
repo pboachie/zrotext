@@ -6,7 +6,9 @@ use uuid::Uuid;
 
 mod authentication;
 mod contacts;
+mod proposals;
 mod status;
+pub use proposals::propose_action;
 pub use status::read_action_status;
 #[cfg(test)]
 mod database_tests;

@@ -117,3 +117,23 @@ END; $$;
 CREATE TRIGGER workflow_integration_access_before_update
     BEFORE UPDATE ON workflow_integration_access
     FOR EACH ROW EXECUTE FUNCTION workflow_integration_access_guard();
+
+-- Actor identities are immutable metadata, retained if their grant is erased.
+-- Missing real grants will fail effect checks; these tombstones never authorize.
+ALTER TABLE workflow_actions ADD COLUMN integration_origin_grant uuid;
+CREATE FUNCTION workflow_integration_origin_immutable() RETURNS trigger
+LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+BEGIN
+    IF NEW.integration_origin_grant IS DISTINCT FROM OLD.integration_origin_grant THEN
+        RAISE EXCEPTION 'workflow origin cannot change' USING ERRCODE='23514';
+    END IF;
+    RETURN NEW;
+END; $$;
+CREATE TRIGGER workflow_integration_origin_guard BEFORE UPDATE ON workflow_actions
+    FOR EACH ROW EXECUTE FUNCTION workflow_integration_origin_immutable();
+ALTER TABLE workflow_action_mutations ALTER COLUMN actor_user_id DROP NOT NULL;
+ALTER TABLE workflow_action_mutations ADD COLUMN actor_kind text NOT NULL DEFAULT 'owner';
+ALTER TABLE workflow_action_mutations ADD COLUMN actor_grant_id uuid;
+ALTER TABLE workflow_action_mutations ADD CONSTRAINT workflow_mutation_actor
+    CHECK((actor_kind='owner' AND actor_user_id IS NOT NULL AND actor_grant_id IS NULL)
+       OR (actor_kind='integration' AND actor_user_id IS NULL AND actor_grant_id IS NOT NULL));
