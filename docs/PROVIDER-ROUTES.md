@@ -1,5 +1,10 @@
 # Provider route research
 
+The generic [explicit transport proposal](../protocol/v1/provider-transport-proposal.md)
+now records a proposed first adapter and per-action route decision for #643.
+The research below remains historical inputs, not current provider eligibility,
+account selection, capacity evidence or runtime activation.
+
 **Research and evaluation only. This document selects nothing, changes no runtime
 behavior, and does not make any capacity, coverage or availability claim.** It
 records what public provider and regulator documentation says about adding a

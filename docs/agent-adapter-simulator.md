@@ -1,5 +1,8 @@
 # Synthetic Python and callable HTTP adapter foundation
 
+For importable n8n and callable examples over this adapter, see
+[agent recipe previews](agent-recipes.md). They remain disabled and synthetic.
+
 **Experimental simulator only; not a released agent messaging SDK.** This
 foundation for #619 exercises the existing profile-01 TypeScript HTTP client
 through a provider-neutral callable function and a Python process wrapper.

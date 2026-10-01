@@ -1,0 +1,49 @@
+{
+  "name": "zrotext_synthetic_recipe",
+  "description": "Disabled synthetic preview: task completion, exact-owner-review request, and verified reply routing. No live send, owner approval, credentials or model access.",
+  "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "synthetic",
+      "operation"
+    ],
+    "properties": {
+      "synthetic": {
+        "const": true
+      },
+      "operation": {
+        "enum": [
+          "task_completion",
+          "owner_proposal",
+          "verified_reply",
+          "journey"
+        ]
+      },
+      "scenario": {
+        "enum": [
+          "normal",
+          "unknown",
+          "offline",
+          "stop",
+          "takeover",
+          "revoked",
+          "missing_grant"
+        ]
+      }
+    }
+  },
+  "runtime": {
+    "implementation": "../typescript/examples/recipe-simulator.mjs",
+    "command": [
+      "node",
+      "examples/recipe-simulator.mjs",
+      "preview"
+    ],
+    "installedState": "disabled",
+    "productionAvailable": false,
+    "contentReader": "customer-controlled local public-fixture reader",
+    "modelProviderAccess": "none",
+    "credentials": []
+  }
+}
