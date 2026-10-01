@@ -506,9 +506,6 @@ pub(super) async fn prepared() -> (Fixture, SessionPrincipal) {
     .unwrap();
     for migration in [
         include_str!("../../../../deploy/compose/migrations/068_connector_registration.sql"),
-        include_str!(
-            "../../../../deploy/compose/migrations/072_conversation_confirmation_records.sql"
-        ),
         include_str!("../../../../deploy/compose/migrations/073_collaboration_drafts.sql"),
         include_str!("../../../../deploy/compose/migrations/074_agent_authority.sql"),
     ] {
