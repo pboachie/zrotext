@@ -76,6 +76,7 @@ pub struct RetentionCounts {
     pub conversation_admissions_closed: u64,
     pub conversation_provenance: u64,
     pub conversation_intervals: u64,
+    pub conversation_confirmations: u64,
 }
 
 impl RetentionCounts {
@@ -94,6 +95,7 @@ impl RetentionCounts {
             self.conversation_admissions_closed,
             self.conversation_provenance,
             self.conversation_intervals,
+            self.conversation_confirmations,
         ]
         .into_iter()
         .any(|count| count >= limit)
@@ -157,7 +159,7 @@ pub async fn prune(
     assert!((1..=1000).contains(&limit));
     let mut first_error: Option<Error> = None;
     let mut failures = 0_u8;
-    let steps = 10_u8;
+    let mandatory_steps = 10_u8;
 
     let idempotency_keys = step(
         "idempotency_keys",
@@ -348,9 +350,17 @@ pub async fn prune(
         ),
     )
     .await;
-    if failures == steps
-        && let Some(error) = first_error
-    {
+    // An absent optional proof table must not turn total mandatory pruning
+    // failure into a successful worker tick.
+    let mandatory_unavailable = failures == mandatory_steps;
+    let conversation_confirmations = step(
+        "conversation_confirmation_records",
+        &mut first_error,
+        &mut failures,
+        crate::http_owner_conversations::confirmation_records::redact(client, limit),
+    )
+    .await;
+    if mandatory_unavailable && let Some(error) = first_error {
         return Err(error);
     }
     Ok(RetentionCounts {
@@ -365,6 +375,7 @@ pub async fn prune(
         conversation_admissions_closed,
         conversation_provenance,
         conversation_intervals,
+        conversation_confirmations,
     })
 }
 
