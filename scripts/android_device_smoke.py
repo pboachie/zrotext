@@ -30,7 +30,7 @@ def selected_tests(root=ROOT):
         expected[RCS_RISK] = 1
     source = root / "android/app/src/androidTest/java/org/zrotext/gateway/GatewayAccessibilityDeviceTest.kt"
     if source.is_file():
-        expected[ACCESSIBILITY] = 5
+        expected[ACCESSIBILITY] = 6
     source = root / "android/app/src/androidTest/java/org/zrotext/gateway/ManifestAuthorityDeviceTest.kt"
     if source.is_file():
         expected[MANIFEST_AUTHORITY] = 12
