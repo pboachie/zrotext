@@ -77,6 +77,7 @@ class AuthenticatedGatewayService : Service() {
     /** Computed once per authenticated session; the inputs cannot change within it. */
     @Volatile private var sessionIdentity: EvidenceIdentity? = null
     @Volatile private var conversationConnection: ConversationSocketNegotiation? = null
+    private var conversationHost: AutoCloseable? = null
     @Volatile private var awaitingEventId: String? = null
     @Volatile private var awaitingEventSentAtNanos = 0L
     @Volatile private var awaitingInboundId: String? = null
@@ -386,10 +387,28 @@ class AuthenticatedGatewayService : Service() {
                                     disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
                                 }
                             }, 15, 15, TimeUnit.SECONDS)
-                            sessionIdentity = EvidenceIdentity.fromStream(
-                                machine.activeAccountId(), machine.activeDeviceId(), url)
-                            conversationConnection = ConversationSocketComposition.create(webSocket,checkNotNull(sessionIdentity),epoch)
-                            conversationConnection?.start()
+                            synchronized(this@AuthenticatedGatewayService) {
+                                if (generation != currentGeneration || socket !== webSocket) return
+                                val identity = EvidenceIdentity.fromStream(machine.activeAccountId(), machine.activeDeviceId(), url)
+                                sessionIdentity = identity
+                                conversationHost = ConversationSocketComposition.registerAuthenticatedHost(webSocket, identity, epoch,
+                                    scheduler, {
+                                        check(generation == currentGeneration && socket === webSocket && sessionIdentity == identity &&
+                                            machine.phase == DeviceStreamMachine.Phase.ACTIVE && machine.heartbeatEpoch() == epoch)
+                                    }, { candidate, guard ->
+                                        synchronized(this@AuthenticatedGatewayService) {
+                                            guard()
+                                            check(conversationConnection == null)
+                                            conversationConnection = candidate // Publish before readiness can receive an early reply.
+                                            candidate.startIfCurrent(guard)
+                                            true
+                                        }
+                                    }, { candidate ->
+                                        synchronized(this@AuthenticatedGatewayService) {
+                                            if (conversationConnection === candidate) conversationConnection = null
+                                        }
+                                    })
+                            }
                             if (inboundUploadRequested || lineOptOutUploadRequested) {
                                 eventPump = scheduler.scheduleAtFixedRate({
                                     if (generation == currentGeneration) {
@@ -1109,7 +1128,9 @@ class AuthenticatedGatewayService : Service() {
     }
 
     private fun closeConversationConnection() {
-        val old=conversationConnection;conversationConnection=null;old?.close()
+        val host=conversationHost;conversationHost=null
+        val old=conversationConnection;conversationConnection=null
+        try {host?.close()} finally {old?.close()}
     }
     private fun halt() {
         generation += 1 // Fence listener callbacks before admission/storage closure can wait.

@@ -23,6 +23,8 @@ internal class ConversationSocketNegotiation(private val socket:WebSocket,
         check(socket.send(JSONObject().put("v",1).put("type","conversation_ready")
             .put("connection_epoch",connectionEpoch).put("challenge",challenge.toString()).toString()))
     }
+    /** Cancellation and enqueue share this monitor; a closed candidate cannot start later. */
+    @Synchronized internal fun startIfCurrent(requireCurrent:()->Unit) { requireCurrent();start() }
     @Synchronized fun accept(frame:JSONObject) {
         check(!closed && !accepted)
         val start=checkNotNull(requestedAt);val now=elapsedMillis();check(now>=start && now-start<=5000)
@@ -53,17 +55,91 @@ internal class ConversationSocketNegotiation(private val socket:WebSocket,
 /** Explicit process-only future setup; no preference, key, permission or cold-start recovery. */
 internal object ConversationSocketComposition {
     @Volatile private var factory:((WebSocket,EvidenceIdentity,Long)->ConversationSocketNegotiation)?=null
-    @Synchronized fun install(value:(WebSocket,EvidenceIdentity,Long)->ConversationSocketNegotiation,enabled:Boolean=false):Boolean {
-        if(!enabled || factory!=null)return false;factory=value;return true
+    @Volatile private var authenticatedHost:AuthenticatedHost?=null
+    private var factoryAttempted=false // One explicit installer cannot silently attach again after reconnect.
+    fun install(value:(WebSocket,EvidenceIdentity,Long)->ConversationSocketNegotiation,enabled:Boolean=false):Boolean =
+        installOwned(value,enabled)!=null
+    /** Atomically pair either registration order; invoke scheduler/provider outside this registry. */
+    private fun pairLocked():(()->Unit)? {
+        val host=authenticatedHost?:return null
+        val creator=factory?:return null
+        if(factoryAttempted)return null
+        if(!host.claim(creator))return null
+        factoryAttempted=true
+        return {host.schedule(creator)}
     }
     /** Closing an obsolete installer cannot clear a later process-only owner. */
-    @Synchronized fun installOwned(value:(WebSocket,EvidenceIdentity,Long)->ConversationSocketNegotiation,
+    fun installOwned(value:(WebSocket,EvidenceIdentity,Long)->ConversationSocketNegotiation,
         enabled:Boolean=false):AutoCloseable? {
-        if(!install(value,enabled))return null
-        return AutoCloseable { synchronized(this) {
-            if(factory===value){factory=null;ConversationProcessMount.runtime.pause(ConversationStopReason.PHONE_SESSION_LOST)}
-        } }
+        val attach=synchronized(this) {
+            if(!enabled || factory!=null || authenticatedHost?.attempted==true)return null
+            factory=value;factoryAttempted=false;pairLocked()
+        }
+        attach?.invoke()
+        return AutoCloseable {
+            val host=synchronized(this) {if(factory===value){factory=null;authenticatedHost}else null}
+            host?.cancelFactory(value)
+        }
+    }
+    /** Only the proof-authenticated ordinary service registers an ACTIVE, immutable socket epoch. */
+    fun registerAuthenticatedHost(socket:WebSocket,identity:EvidenceIdentity,epoch:Long,scheduler:java.util.concurrent.Executor,
+        requireCurrent:()->Unit,
+        publishAndStart:(ConversationSocketNegotiation,()->Unit)->Boolean,
+        unpublishOwned:(ConversationSocketNegotiation)->Unit):AutoCloseable {
+        require(epoch>0)
+        val host=AuthenticatedHost(socket,identity,epoch,scheduler,requireCurrent,publishAndStart,unpublishOwned)
+        val attach=synchronized(this) {
+            check(authenticatedHost==null)
+            authenticatedHost=host;pairLocked()
+        }
+        attach?.invoke()
+        return AutoCloseable {
+            synchronized(this){if(authenticatedHost===host)authenticatedHost=null}
+            host.close()
+        }
+    }
+    private class AuthenticatedHost(private val socket:WebSocket,private val identity:EvidenceIdentity,private val epoch:Long,
+        private val scheduler:java.util.concurrent.Executor,private val requireCurrent:()->Unit,
+        private val publishAndStart:(ConversationSocketNegotiation,()->Unit)->Boolean,
+        private val unpublishOwned:(ConversationSocketNegotiation)->Unit) {
+        private val closed=java.util.concurrent.atomic.AtomicBoolean(false)
+        private val assigned=AtomicReference<((WebSocket,EvidenceIdentity,Long)->ConversationSocketNegotiation)?>(null)
+        private val connection=AtomicReference<ConversationSocketNegotiation?>(null)
+        var attempted=false;private set // Accessed only under the global registry monitor.
+        fun claim(value:(WebSocket,EvidenceIdentity,Long)->ConversationSocketNegotiation):Boolean {
+            if(closed.get() || attempted)return false
+            attempted=true;assigned.set(value);return true
+        }
+        private fun current(value:(WebSocket,EvidenceIdentity,Long)->ConversationSocketNegotiation) {
+            check(!closed.get() && assigned.get()===value && authenticatedHost===this && factory===value)
+            requireCurrent()
+            check(!closed.get() && assigned.get()===value && authenticatedHost===this && factory===value)
+        }
+        fun schedule(value:(WebSocket,EvidenceIdentity,Long)->ConversationSocketNegotiation) {
+            try {scheduler.execute {
+                var candidate:ConversationSocketNegotiation?=null
+                try {
+                    current(value)
+                    candidate=value(socket,identity,epoch)
+                    current(value)
+                    check(connection.compareAndSet(null,candidate))
+                    check(publishAndStart(checkNotNull(candidate)){current(value)})
+                    current(value)
+                } catch(_:Exception) {
+                    candidate?.let {connection.compareAndSet(it,null);try{it.close()}finally{unpublishOwned(it)}}
+                }
+            }} catch(_:Exception){cancelFactory(value)}
+        }
+        fun cancelFactory(value:(WebSocket,EvidenceIdentity,Long)->ConversationSocketNegotiation) {
+            if(assigned.compareAndSet(value,null))closeConnection()
+        }
+        private fun closeConnection() {connection.getAndSet(null)?.let {try{it.close()}finally{unpublishOwned(it)}}}
+        fun close(){closed.set(true);assigned.set(null);closeConnection()}
     }
     fun create(socket:WebSocket,identity:EvidenceIdentity,epoch:Long)=factory?.invoke(socket,identity,epoch)
-    @Synchronized fun clear(){factory=null;ConversationProcessMount.runtime.pause(ConversationStopReason.PHONE_SESSION_LOST)}
+    fun clear(){
+        val old=synchronized(this){val creator=factory;factory=null;creator to authenticatedHost}
+        old.first?.let {old.second?.cancelFactory(it)}
+        ConversationProcessMount.runtime.pause(ConversationStopReason.PHONE_SESSION_LOST)
+    }
 }
