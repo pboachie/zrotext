@@ -70,7 +70,7 @@ impl Case {
     }
     async fn record(&self, expired: bool) -> Uuid {
         let message = Uuid::new_v4();
-        self.f.db.execute("INSERT INTO messages(id,account_id,device_id,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) VALUES($1,$2,$3,$4,'synthetic_alpha',$5,$4,'queued',clock_timestamp()+interval '1 hour')", &[&message,&self.f.account,&self.f.device,&vec![1u8;32],&vec![2u8;32]]).await.unwrap();
+        self.f.db.execute("INSERT INTO messages(id,account_id,device_id,recipient_e164,recipient_digest,transport_mode,transport_payload,request_digest,state,expires_at) VALUES($1,$2,$3,'+12',$4,'synthetic_alpha',$5,$4,'queued',clock_timestamp()+interval '1 hour')", &[&message,&self.f.account,&self.f.device,&vec![1u8;32],&vec![2u8;32]]).await.unwrap();
         let expires: i64 = self
             .f
             .db
