@@ -10,7 +10,7 @@ use p256::ecdsa::{Signature, signature::Signer};
 use tokio_postgres::error::SqlState;
 
 const SCHEMA: &str = include_str!(
-    "../../../../../deploy/compose/migrations/068_conversation_confirmation_records.sql"
+    "../../../../../deploy/compose/migrations/070_conversation_confirmation_records.sql"
 );
 
 struct Case {
