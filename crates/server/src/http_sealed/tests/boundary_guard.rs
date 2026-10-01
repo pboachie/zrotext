@@ -241,7 +241,7 @@ async fn wrong_route_method_and_path_do_not_reach_admission() {
         .unwrap(),
     );
     for (method, uri) in [
-        ("GET", "/messages"),
+        ("PUT", "/messages"),
         ("POST", "/messages/other"),
         ("POST", "/"),
     ] {
@@ -266,6 +266,19 @@ async fn wrong_route_method_and_path_do_not_reach_admission() {
             "{method} {uri} echoed the planted marker"
         );
     }
+    // The lifecycle API now implements GET metadata reads. It still refuses
+    // unauthenticated callers before database work and never echoes content.
+    let request = Request::builder()
+        .method("GET")
+        .uri("/messages")
+        .header(header::CONTENT_TYPE, SEALED_CONTENT_TYPE)
+        .body(Body::from(pad_to_minimum(marker.as_bytes())))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_code_only("unauthenticated lifecycle read", &bytes, "unauthorized");
+    assert!(!crate::sealed_marker::present(&bytes, marker.as_bytes()));
 }
 
 #[test]
