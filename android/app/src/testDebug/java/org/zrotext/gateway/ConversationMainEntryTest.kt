@@ -55,7 +55,6 @@ class ConversationMainEntryTest {
     }
     private fun installFixture(closeFailure: Boolean = false, verifiedLabel: String? = "Fixture line") {
         compose.runOnIdle {
-            compose.activity.conversationSetupEnabled = true
             compose.activity.conversationHandleFactory = { _, ready ->
                 val port = Port(); ports += port
                 Handle({ ready(port) }, closeFailure).also { handles += it }
@@ -67,7 +66,7 @@ class ConversationMainEntryTest {
             field("conversationSelectedLine", line to 1L)
             field("conversationVerifiedLineLabel", verifiedLabel)
         }
-        click("Review selected conversation"); compose.waitForIdle()
+        click("Enable review for this session"); click("Review selected conversation"); compose.waitForIdle()
     }
     private fun field(name: String, value: Any?) {
         MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true }.set(compose.activity, value)
@@ -78,14 +77,77 @@ class ConversationMainEntryTest {
 
     @Test fun ordinaryEntryIsVisibleButDisabledWithoutOpeningAnyConversationJournal() {
         open()
-        compose.onNodeWithText("Conversation setup is not enabled in this build.").assertIsDisplayed()
-        compose.onNodeWithText("Select conversation setup file").assertIsNotEnabled()
+        compose.onNodeWithText("Review is off for this session.").assertIsDisplayed()
+        compose.onNodeWithText("Select conversation setup file").assertIsEnabled()
+        compose.onNodeWithText("Enable review for this session").assertIsNotEnabled()
         compose.onNodeWithText("Review selected conversation").assertIsNotEnabled()
         assertFalse(compose.activity.getDatabasePath(ConversationJournalStores.CAPTURE_FILE).exists())
         assertFalse(compose.activity.getDatabasePath(ConversationJournalStores.SEND_FILE).exists())
         click("Close conversation review")
         compose.onNodeWithText("Open conversation review").assertExists()
     }
+    @Test fun selectingPublicCandidateAndOptingInDoNotOpenSetupOrGrantPhoneApproval() {
+        var created = 0
+        compose.runOnIdle { compose.activity.conversationHandleFactory = { _, _ -> created++; Handle({}, false) } }
+        open(); compose.runOnIdle { compose.activity.acceptConversationSetupFile(Uri.EMPTY) }
+        compose.onNodeWithText("Review selected conversation").assertIsNotEnabled()
+        assertFalse(compose.activity.conversationSetupEnabled)
+        click("Enable review for this session")
+        compose.onNodeWithText("Review selected conversation").assertIsEnabled()
+        assertEquals(0, created)
+        assertFalse(compose.activity.getDatabasePath(ConversationJournalStores.CAPTURE_FILE).exists())
+        assertFalse(compose.activity.getDatabasePath(ConversationJournalStores.SEND_FILE).exists())
+        click("Close conversation review"); assertFalse(compose.activity.conversationSetupEnabled)
+        click("Open conversation review")
+        compose.onNodeWithText("Enable review for this session").assertIsNotEnabled()
+        compose.onNodeWithText("Review selected conversation").assertIsNotEnabled()
+    }
+    @Test fun ordinaryOptInActuallyCallsProviderAndRejectsMissingAuthenticatedCustodyWithoutPublishing() {
+        val uri = Uri.parse("content://fixture.invalid/public-setup")
+        org.robolectric.Shadows.shadowOf(compose.activity.contentResolver)
+            .registerInputStream(uri, java.io.ByteArrayInputStream(byteArrayOf(1)))
+        // No handle factory or presentation port is replaced: this executes the ordinary provider path.
+        assertNull(compose.activity.conversationHandleFactory)
+        open(); compose.runOnIdle { compose.activity.acceptConversationSetupFile(uri) }
+        click("Enable review for this session"); click("Review selected conversation")
+        compose.waitUntil(5000) {
+            compose.onAllNodesWithText("The selected conversation could not be verified. Check pairing, the selected line and the setup file.")
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        assertFalse(compose.activity.conversationSetupEnabled)
+        compose.onNodeWithText("Agree and continue").assertDoesNotExist()
+        compose.onNodeWithText("Content transfer: Confirmed for this interval").assertDoesNotExist()
+        assertFalse(compose.activity.getDatabasePath(ConversationJournalStores.CAPTURE_FILE).exists())
+        assertFalse(compose.activity.getDatabasePath(ConversationJournalStores.SEND_FILE).exists())
+    }
+    @Test fun pickerReturnRequiresFreshOptInAndCannotCarryForegroundApproval() {
+        open(); compose.runOnIdle { compose.activity.acceptConversationSetupFile(Uri.EMPTY) }
+        click("Enable review for this session")
+        compose.runOnIdle { field("conversationPickEpoch", fieldValue("conversationUiEpoch")) }
+        compose.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
+        assertFalse(compose.activity.conversationSetupEnabled)
+        compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+        compose.runOnIdle { compose.activity.acceptConversationSetupFile(Uri.EMPTY); field("conversationPickEpoch", null) }
+        compose.onNodeWithText("Review selected conversation").assertIsNotEnabled()
+        click("Enable review for this session")
+        compose.onNodeWithText("Review selected conversation").assertIsEnabled()
+    }
+    @Test fun candidateReplacementAndCancellationRequireFreshOptInWithoutBackground() {
+        open(); compose.runOnIdle { compose.activity.acceptConversationSetupFile(Uri.EMPTY) }
+        click("Enable review for this session"); assertTrue(compose.activity.conversationSetupEnabled)
+        compose.runOnIdle { compose.activity.acceptConversationSetupFile(Uri.parse("content://fixture.invalid/replacement")) }
+        assertFalse(compose.activity.conversationSetupEnabled)
+        compose.onNodeWithText("Review selected conversation").assertIsNotEnabled()
+        click("Enable review for this session")
+        compose.runOnIdle { compose.activity.acceptConversationSetupFile(null) }
+        assertFalse(compose.activity.conversationSetupEnabled)
+        compose.onNodeWithText("Enable review for this session").assertIsNotEnabled()
+        compose.onNodeWithText("Review selected conversation").assertIsNotEnabled()
+        assertFalse(compose.activity.getDatabasePath(ConversationJournalStores.CAPTURE_FILE).exists())
+        assertFalse(compose.activity.getDatabasePath(ConversationJournalStores.SEND_FILE).exists())
+    }
+    private fun fieldValue(name: String): Any? = MainActivity::class.java.getDeclaredField(name)
+        .apply { isAccessible = true }.get(compose.activity)
     @Test fun consentIsExplicitAndDeclineClosesThenReopenCreatesFreshController() {
         installFixture()
         compose.onNodeWithText(ConversationActivationCodec.DISCLOSURE).assertExists()
@@ -97,7 +159,7 @@ class ConversationMainEntryTest {
             compose.activity.acceptConversationSetupFile(Uri.EMPTY)
             field("conversationSelectedLine", line to 1L); field("conversationVerifiedLineLabel", "Fixture line")
         }
-        click("Review selected conversation")
+        click("Enable review for this session"); click("Review selected conversation")
         assertEquals(2, handles.size); assertTrue(ports[1].actions.isEmpty())
     }
     @Test fun mismatchedLineCannotEnableAgreement() {
@@ -114,6 +176,7 @@ class ConversationMainEntryTest {
         compose.onNodeWithText("Content transfer: Preparing \u2014 capture is not confirmed").assertExists()
         emit(ConversationPresentationSnapshot(3, ConversationPresentationPhase.CONFIRMED_ACTIVE, interval, line, 1, 60000, true))
         click("Stop content transfer"); assertEquals("stop:$interval:3", ports[0].actions.last())
+        assertFalse(compose.activity.conversationSetupEnabled)
         compose.onNodeWithText("Content transfer: Interval closed").assertDoesNotExist()
         emit(ConversationPresentationSnapshot(4, ConversationPresentationPhase.DURABLY_CLOSED,
             intervalId = interval, close = ConversationCloseOutcome.DURABLY_CLOSED))
@@ -123,6 +186,7 @@ class ConversationMainEntryTest {
         installFixture()
         compose.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
         assertEquals(1, handles[0].closes)
+        assertFalse(compose.activity.conversationSetupEnabled)
         compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED); compose.waitForIdle()
         compose.onNodeWithText("Conversation review").assertDoesNotExist()
         compose.onNodeWithText("Agree and continue").assertDoesNotExist()
@@ -139,7 +203,6 @@ class ConversationMainEntryTest {
     @Test fun cancellingPublicFileSelectionCannotStartSetup() {
         var created = 0
         compose.runOnIdle {
-            compose.activity.conversationSetupEnabled = true
             compose.activity.conversationHandleFactory = { _, _ -> created++; Handle({}, false) }
         }
         open(); compose.runOnIdle { compose.activity.acceptConversationSetupFile(null) }
@@ -150,11 +213,10 @@ class ConversationMainEntryTest {
         lateinit var late: (ConversationPresentationPort) -> Unit
         val handle = Handle({}, false)
         compose.runOnIdle {
-            compose.activity.conversationSetupEnabled = true
             compose.activity.conversationHandleFactory = { _, ready -> late = ready; handle }
         }
         open(); compose.runOnIdle { compose.activity.acceptConversationSetupFile(Uri.EMPTY) }
-        click("Review selected conversation")
+        click("Enable review for this session"); click("Review selected conversation")
         compose.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
         compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
         compose.runOnIdle { late(Port()) }; compose.waitForIdle()

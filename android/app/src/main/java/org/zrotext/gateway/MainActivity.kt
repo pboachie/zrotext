@@ -100,8 +100,9 @@ class MainActivity : ComponentActivity() {
     private var summaryRequested = false
     private val summaryAge = Runnable { updateSummaryView() }
     private val pairingWorker = Executors.newSingleThreadExecutor()
-    // Release activation remains disabled. No intent, saved state or preference enables it.
-    internal var conversationSetupEnabled = false
+    // Foreground-only user opt-in. No intent, saved state or preference enables it.
+    internal var conversationSetupEnabled by mutableStateOf(false)
+        private set
     internal var conversationHandleFactory: ((Uri, (ConversationPresentationPort) -> Unit) -> ConversationSetupEntrySession.Handle)? = null
     internal var conversationReplyInstaller: ((ByteArray, ByteArray, (Boolean) -> Unit) -> Unit)? = null
     private val conversationWorker = Executors.newSingleThreadExecutor()
@@ -403,6 +404,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        conversationSetupEnabled = false
         // A file picker may return a public candidate, but never preserves phone authority.
         conversationEntry?.close()
         conversationEntry = null
@@ -418,11 +420,13 @@ class MainActivity : ComponentActivity() {
 
     internal fun acceptConversationSetupFile(uri: Uri?) {
         if (!conversationEntryOpen) return
+        conversationSetupEnabled = false
         conversationSetupFile = uri
         conversationEntryStatus = if (uri == null) "File selection cancelled." else "Public setup selected. Phone approval is still required."
     }
 
     private fun closeConversationEntry() {
+        conversationSetupEnabled = false
         // Capture CLOSE_FAILED while this exact view generation is still observable.
         conversationEntry?.close()
         ++conversationUiEpoch
@@ -483,18 +487,35 @@ class MainActivity : ComponentActivity() {
                     if (port != null) {
                         FutureConversationPane(port, { line, generation ->
                             conversationVerifiedLineLabel?.takeIf { conversationSelectedLine == (line to generation) }
-                        }, Modifier.weight(1f), onDismiss = { closeConversationEntry() })
+                        }, Modifier.weight(1f), onDismiss = { closeConversationEntry() }, onStopRequested = {
+                            conversationSetupEnabled = false
+                            cancelConversationReplyImport()
+                        })
                     } else {
                         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),
                             verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp)) {
                             Text("Select the public phone setup file from the paired browser. The existing paired device, selected line and enrolled hardware key must match. No key is created here.")
-                            if (!conversationSetupEnabled) Text("Conversation setup is not enabled in this build.")
+                            Text(if (conversationSetupEnabled) "Review is enabled for this foreground session. Phone approval is still required."
+                                else "Review is off for this session.")
+                            Text("Selecting a public file does not start setup. Enable review explicitly after selection to check the existing pairing, line and reader. This is not agreement to SMS content transfer: the selected conversation needs separate phone approval. Leaving this app turns review off and closes its setup. No SMS dispatch is enabled here.")
                             Button(onClick = {
+                                conversationSetupEnabled = false
+                                conversationSetupFile = null
                                 conversationPickEpoch = conversationUiEpoch
                                 conversationSetupPicker.launch(arrayOf("application/octet-stream"))
-                            }, enabled = conversationSetupEnabled && conversationEntryState != ConversationSetupEntrySession.State.OPENING &&
+                            }, enabled = conversationEntryState != ConversationSetupEntrySession.State.OPENING &&
                                 conversationEntryState != ConversationSetupEntrySession.State.CLOSE_FAILED,
                                 modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Select conversation setup file") }
+                            Button(onClick = {
+                                if (conversationSetupFile != null && conversationEntryOpen &&
+                                    conversationEntryState != ConversationSetupEntrySession.State.CLOSE_FAILED) {
+                                    conversationSetupEnabled = true
+                                    conversationEntryStatus = "Review enabled. Verify the selected conversation before agreeing to content transfer."
+                                }
+                            }, enabled = !conversationSetupEnabled && conversationSetupFile != null &&
+                                conversationEntryState != ConversationSetupEntrySession.State.OPENING &&
+                                conversationEntryState != ConversationSetupEntrySession.State.CLOSE_FAILED,
+                                modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Enable review for this session") }
                             Button(onClick = { beginConversationEntry() }, enabled = conversationSetupEnabled && conversationSetupFile != null &&
                                 conversationEntryState != ConversationSetupEntrySession.State.OPENING && conversationEntryState != ConversationSetupEntrySession.State.CLOSE_FAILED,
                                 modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Review selected conversation") }
@@ -612,6 +633,7 @@ class MainActivity : ComponentActivity() {
                         runOnUiThread {
                             if (!cancelled.get() && conversationEntryOpen && conversationUiEpoch == epoch) {
                                 conversationEntry?.close(); conversationEntry = null
+                                conversationSetupEnabled = false
                             }
                         }
                     }
