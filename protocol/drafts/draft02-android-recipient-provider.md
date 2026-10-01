@@ -1,5 +1,12 @@
 # Draft-02 Android recipient provider candidate
 
+**Production gate remains unresolved:** issue #625 requires distinct nonempty
+HPKE `info` and AAD. This candidate's empty HPKE AAD does not meet that requirement
+and its support choice is not production acceptance. The implemented
+[local custody lifecycle](android-recipient-lifecycle-01.md) strengthens loss,
+revocation and interrupted-enrollment handling without approving a provider,
+changing this profile or enabling sealed runtime.
+
 `Draft02PublicJcaKeystoreHpke.openDeviceCek` is a dormant API 31+ unwrap primitive. It accepts exact received outbound profile-02 header and `Protected` bytes, the device wrap role/key ID, `enc`, and `ct`. It rejects a wrong profile, kind, flags, protected length, role, key ID, point, wrap length, missing key, or failed authentication. It never creates a replacement key during receipt. `DevicePayloadKeyStore.getOrCreateForEnrollment` is the sole explicit creation path; the private scalar remains non-exportable in Android Keystore. The ECDH output and derived HPKE material exist briefly in app memory and are cleared after use. `KeyInfo.securityLevel` is reported separately and is not presumed to be hardware-backed.
 
 The provider constructs RFC 9180 base-mode `info = ASCII("ZTSE/wrap/v2\0") || received_P2 || 0x01 || pinned_key_id`, where `P2` is the exact 10-byte header followed by the exact bounded `Protected` bytes. Its HPKE AAD is the empty byte string; profile 02 uses one `Open` at sequence zero. The 32-byte result is only a CEK. The authorized caller must independently verify the exact signed envelope, owner-pinned manifest, device/line/reader set, freshness, grant, and replay state before it can use that CEK. This provider does not implement those checks or activate a sealed route.

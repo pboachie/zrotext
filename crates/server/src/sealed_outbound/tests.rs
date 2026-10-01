@@ -256,12 +256,42 @@ async fn candidate_queue_replays_without_spending_or_rehydration_and_refunds_onc
             .await
             .unwrap()
     );
+    let snapshot_sql = "SELECT state,state_version,updated_at,transport_payload, \
+        (SELECT count(*) FROM usage_ledger WHERE message_id=$1 AND entry_kind='refund'), \
+        (SELECT coalesce(sum(units),0)::bigint FROM usage_ledger WHERE message_id=$1), \
+        (SELECT coalesce(sum(refunded_units),0)::bigint FROM usage_periods WHERE account_id=$2) \
+        FROM messages WHERE id=$1";
+    let before =
+        f.db.query_one(snapshot_sql, &[&id, &f.account])
+            .await
+            .unwrap();
+    assert_eq!(before.get::<_, String>(0), "cancelled");
+    assert_eq!(before.get::<_, i64>(4), 1);
+    assert_eq!(before.get::<_, i64>(5), 0);
+    assert_eq!(before.get::<_, i64>(6), 1);
     assert!(
         DeliveryStore::new(&mut db)
             .cancel(f.account, id)
             .await
-            .is_err()
+            .unwrap()
     );
+    assert!(!f.admit(&bytes).await.unwrap().created);
+    let after =
+        f.db.query_one(snapshot_sql, &[&id, &f.account])
+            .await
+            .unwrap();
+    assert_eq!(after.get::<_, String>(0), before.get::<_, String>(0));
+    assert_eq!(after.get::<_, i64>(1), before.get::<_, i64>(1));
+    assert_eq!(
+        after.get::<_, std::time::SystemTime>(2),
+        before.get::<_, std::time::SystemTime>(2)
+    );
+    assert_eq!(after.get::<_, Vec<u8>>(3), before.get::<_, Vec<u8>>(3));
+    for index in 4..=6 {
+        assert_eq!(after.get::<_, i64>(index), before.get::<_, i64>(index));
+    }
+    assert_eq!(counts(&f).await, (1, 1, 1));
+
     f.db.execute(
         "UPDATE messages SET updated_at=now()-interval '2 days' WHERE id=$1",
         &[&id],
