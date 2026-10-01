@@ -125,6 +125,9 @@ pub async fn issue_grant(
     {
         return Err(AuthError::Forbidden);
     }
+    activation::origin(&tx, &s)
+        .await
+        .map_err(|_| AuthError::Forbidden)?;
     let peer: String = tx
         .query_opt(
             "SELECT recipient_e164 FROM contacts WHERE account_id=$1 AND id=$2 FOR SHARE",
@@ -294,6 +297,9 @@ pub async fn issue_grant(
     )
     .await?;
     owner_fence(&tx, owner).await.map_err(registry_error)?;
+    activation::origin(&tx, &s)
+        .await
+        .map_err(|_| AuthError::Forbidden)?;
     // Recheck the ceremony window and every expiring authority after all waits.
     let (final_snapshot, _, _) = authority
         .integration_snapshot(header.device, header.line, &point)

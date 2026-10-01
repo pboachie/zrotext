@@ -145,7 +145,9 @@ The integration runtime adds three independent owner takeout cursors:
 `workflow_grants_before`, `workflow_envelopes_before`, and
 `workflow_access_before`. Each page contains at most 20 account-scoped records.
 Grant exports omit credential hashes; plaintext credentials are returned only
-once when the owner issues a grant. Integration envelope bytes are exported as
+once when the owner issues a grant. Issuance requires both the current creator
+session and the active interval's originating owner session to remain live through
+the final ceremony check. Integration envelope bytes are exported as
 hexadecimal ciphertext and become null after scrubbing.
 
 Integration retention scrubs expired or withdrawn grant projections without
