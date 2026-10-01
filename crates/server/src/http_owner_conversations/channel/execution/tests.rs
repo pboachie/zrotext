@@ -1077,11 +1077,51 @@ async fn execution_raw_sql_requires_actual_envelope_reader_not_another_live_key(
     ).await.unwrap().get::<_,bool>(0));
     let before = state(&case).await;
     let attempt = Uuid::new_v4();
-    let error=case.f.db.execute("INSERT INTO conversation_execution_records(account_id,message_id,device_id,attempt_id,generation,phone_session,origin_hash,site_id,instance_id, \
+    let insert_sql = "INSERT INTO conversation_execution_records(account_id,message_id,device_id,attempt_id,generation,phone_session,origin_hash,site_id,instance_id, \
         session_epoch,deployment_epoch,reader_key_id,envelope_digest,unsigned_digest,expires_at_ms,segment_count) \
         SELECT p.account_id,p.message_id,p.device_id,$3,1,$4,$5,'manifest-test','fixture',1,1,$6,p.envelope_digest,m.request_digest,p.expires_at_ms,6 \
         FROM conversation_confirmation_records p JOIN messages m ON (m.account_id,m.id)=(p.account_id,p.message_id) \
-        WHERE p.account_id=$1 AND p.message_id=$2",&[&c.account,&c.message,&attempt,&Uuid::new_v4(),&vec![9u8;32],&other_reader]).await.unwrap_err();
+        WHERE p.account_id=$1 AND p.message_id=$2";
+    let phone_session = Uuid::new_v4();
+    let origin_hash = vec![9u8; 32];
+    let mut db = case.f.connect().await;
+    let tx = db.transaction().await.unwrap();
+    assert_eq!(
+        tx.execute(
+            insert_sql,
+            &[
+                &c.account,
+                &c.message,
+                &attempt,
+                &phone_session,
+                &origin_hash,
+                &case.phone_reader.key_id.as_slice()
+            ]
+        )
+        .await
+        .unwrap(),
+        1
+    );
+    // The matching raw insert passes the same immediate admission guard. Roll
+    // back before its deferred effects requirement; only the reader changes.
+    tx.rollback().await.unwrap();
+    assert_eq!(state(&case).await, before);
+    let error = case
+        .f
+        .db
+        .execute(
+            insert_sql,
+            &[
+                &c.account,
+                &c.message,
+                &attempt,
+                &phone_session,
+                &origin_hash,
+                &other_reader,
+            ],
+        )
+        .await
+        .unwrap_err();
     assert_eq!(
         error.code(),
         Some(&tokio_postgres::error::SqlState::CHECK_VIOLATION)
