@@ -103,6 +103,22 @@ const BLOCKED_TABLES: &[&str] = &[
 /// counts stay honest.
 pub(crate) const DELETE_PLAN: &[(&str, &str)] = &[
     (
+        "workflow_schedule_audit",
+        "DELETE FROM workflow_schedule_audit WHERE account_id=$1",
+    ),
+    (
+        "workflow_schedule_occurrences",
+        "DELETE FROM workflow_schedule_occurrences WHERE account_id=$1",
+    ),
+    (
+        "workflow_schedule_series",
+        "DELETE FROM workflow_schedule_series WHERE account_id=$1",
+    ),
+    (
+        "workflow_schedule_policies",
+        "DELETE FROM workflow_schedule_policies WHERE account_id=$1",
+    ),
+    (
         "workflow_message_links",
         "DELETE FROM workflow_message_links WHERE account_id=$1",
     ),
