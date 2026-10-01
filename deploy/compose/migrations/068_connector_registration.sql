@@ -1,7 +1,5 @@
 -- SPDX-License-Identifier: AGPL-3.0-only
 -- Line-scoped connector registration and key lifecycle (#640).
--- Number 069 assigned by the lane coordinator (067 conversation-proof schema,
--- 068 contacts/#634); renumbered before this PR left draft.
 -- Dormant: no route provisions or consumes these rows; the sealed manifest
 -- ceremony remains the only trust root and no implicit reader exists.
 

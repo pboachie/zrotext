@@ -8,6 +8,7 @@
 
 use crate::{
     auth::{self, AuthError, TokenHasher},
+    sealed_inbound::upload::{self, UploadContext, UploadError},
     sealed_outbound::{self, AdmitError, WriterContext},
 };
 use axum::{
@@ -27,9 +28,11 @@ use zrotext_delivery_store::StoreError;
 pub(crate) const SEALED_CONTENT_TYPE: &str = "application/vnd.zrotext.sealed.v1";
 /// Request-body cap shared with the envelope pre-allocation bound.
 const MAX_BODY_BYTES: usize = 36_864;
-/// Outbound kind-01 envelope bounds from the sealed v1 contract.
+/// Envelope bounds from the sealed v1 contract: kind-01 outbound and
+/// kind-02 inbound share the floor; inbound tops out lower.
 const MIN_ENVELOPE_BYTES: usize = 426;
 const MAX_ENVELOPE_BYTES: usize = 34_213;
+const MAX_INBOUND_ENVELOPE_BYTES: usize = 34_082;
 const IDEMPOTENCY_HEADER: &str = "idempotency-key";
 
 #[derive(Clone)]
@@ -86,6 +89,8 @@ impl SealedHttpState {
 pub fn router(state: SealedHttpState) -> Router {
     Router::new()
         .route("/messages", post(accept))
+        .route("/inbound-events", post(accept_inbound))
+        .merge(resources::routes())
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(middleware::from_fn(no_store_response))
         .with_state(Arc::new(state))
@@ -113,6 +118,9 @@ enum SealedHttpError {
     QuotaExceeded,
     BillingPending,
     Unavailable,
+    StaleEvent,
+    EventIdConflict,
+    SequenceConflict,
 }
 
 impl IntoResponse for SealedHttpError {
@@ -131,6 +139,9 @@ impl IntoResponse for SealedHttpError {
             Self::QuotaExceeded => (StatusCode::TOO_MANY_REQUESTS, "quota_exceeded"),
             Self::BillingPending => (StatusCode::SERVICE_UNAVAILABLE, "billing_pending"),
             Self::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+            Self::StaleEvent => (StatusCode::BAD_REQUEST, "stale_event"),
+            Self::EventIdConflict => (StatusCode::CONFLICT, "event_id_conflict"),
+            Self::SequenceConflict => (StatusCode::CONFLICT, "sequence_conflict"),
         };
         let mut response = (status, Json(ErrorBody { code })).into_response();
         if status == StatusCode::TOO_MANY_REQUESTS || code == "billing_pending" {
@@ -176,6 +187,18 @@ fn map_admit(error: AdmitError) -> SealedHttpError {
         AdmitError::RateLimited => SealedHttpError::RateLimited,
         AdmitError::Queue(error) => map_store(error),
         AdmitError::Database(_) => SealedHttpError::Unavailable,
+    }
+}
+
+fn map_upload(error: UploadError) -> SealedHttpError {
+    match error {
+        UploadError::InvalidClaims | UploadError::Verification(_) => SealedHttpError::BadRequest,
+        UploadError::Forbidden | UploadError::Authority(_) => SealedHttpError::Forbidden,
+        UploadError::StaleEvent => SealedHttpError::StaleEvent,
+        UploadError::EventConflict => SealedHttpError::EventIdConflict,
+        UploadError::SequenceConflict => SealedHttpError::SequenceConflict,
+        UploadError::BudgetExhausted => SealedHttpError::RateLimited,
+        UploadError::Database(_) => SealedHttpError::Unavailable,
     }
 }
 
@@ -279,6 +302,38 @@ impl axum::extract::FromRequestParts<Arc<SealedHttpState>> for SealedAcceptAuth 
     }
 }
 
+/// The resource-group extractor: the same enabled gate, bearer authentication
+/// and account slot as the admission extractor, but no sealed content type —
+/// resource reads are ordinary GETs and carry no envelope body.
+struct SealedResourceAuth {
+    principal: auth::ApiPrincipal,
+    _slot: crate::http_auth::preauth::AccountSlot,
+}
+
+impl axum::extract::FromRequestParts<Arc<SealedHttpState>> for SealedResourceAuth {
+    type Rejection = SealedHttpError;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &Arc<SealedHttpState>,
+    ) -> Result<Self, SealedHttpError> {
+        if !state.enabled {
+            return Err(SealedHttpError::NotFound);
+        }
+        let token = bearer(&parts.headers)?;
+        let principal = {
+            let client = connect(&state.database_url).await?;
+            auth::authenticate_api_key(&client, &state.hasher, token)
+                .await
+                .map_err(map_auth)?
+        };
+        let _slot =
+            crate::http_auth::preauth::AccountSlot::try_acquire(principal.tenant.account_id())
+                .ok_or(SealedHttpError::RateLimited)?;
+        Ok(Self { principal, _slot })
+    }
+}
+
 #[derive(Serialize)]
 struct AcceptedBody {
     message_id: Uuid,
@@ -318,6 +373,49 @@ async fn accept(
     )
         .into_response())
 }
+
+#[derive(Serialize)]
+struct InboundAcceptedBody {
+    event_id: Uuid,
+    created: bool,
+}
+
+/// `POST /v1/sealed/inbound-events` (#538): one complete kind-02 envelope
+/// captured by a device. Identity is the phone-allocated event id; the
+/// (device, device_sequence) fence and the unsigned digest classify replay
+/// versus conflict. Acceptance is durable storage only.
+async fn accept_inbound(
+    State(state): State<Arc<SealedHttpState>>,
+    _auth: SealedAcceptAuth,
+    body: axum::body::Bytes,
+) -> Result<Response, SealedHttpError> {
+    if !(MIN_ENVELOPE_BYTES..=MAX_INBOUND_ENVELOPE_BYTES).contains(&body.len()) {
+        return Err(SealedHttpError::BadRequest);
+    }
+    let mut client = connect(&state.database_url).await?;
+    let outcome = upload::upload_inbound02(
+        &mut client,
+        &_auth.principal,
+        &state.hasher,
+        UploadContext {
+            site_id: &state.site_id,
+            deployment_epoch: state.deployment_epoch,
+        },
+        &body,
+    )
+    .await
+    .map_err(map_upload)?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(InboundAcceptedBody {
+            event_id: outcome.event_id,
+            created: outcome.created,
+        }),
+    )
+        .into_response())
+}
+
+mod resources;
 
 #[cfg(test)]
 mod tests;

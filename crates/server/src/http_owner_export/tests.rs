@@ -6,6 +6,7 @@ use axum::{
 };
 use serde_json::Value;
 use tower::ServiceExt;
+use zeroize::Zeroizing;
 
 fn get(path: &str, session: Option<&crate::auth::SessionCredentials>) -> Request<Body> {
     let mut request = Request::builder().uri(path);
@@ -36,7 +37,7 @@ macro_rules! export_schema {
             [$(($name, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/compose/migrations/", $name)))),+]
         };
     }
-const EXPORT_SCHEMA: [(&str, &str); 67] = export_schema!(
+const EXPORT_SCHEMA: [(&str, &str); 68] = export_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -103,7 +104,8 @@ const EXPORT_SCHEMA: [(&str, &str); 67] = export_schema!(
     "064_owner_conversation_consent.sql",
     "065_conversation_activation.sql",
     "066_conversation_interval_session_index.sql",
-    "069_connector_registration.sql",
+    "067_contacts_consent.sql",
+    "068_connector_registration.sql",
 );
 #[test]
 fn export_schema_includes_every_checked_in_migration() {
@@ -417,6 +419,13 @@ async fn export_is_tenant_bound_and_carries_owner_content() {
         database_url,
         auth_hasher: hasher,
         canonical_origin: "https://test.example".to_owned(),
+        contacts_vault: Some(Arc::new(
+            crate::http_owner_contacts::vault::ContactFieldVault::new(
+                1,
+                Zeroizing::new(vec![9_u8; 32]),
+            )
+            .unwrap(),
+        )),
     });
     let anonymous = app
         .clone()
@@ -561,6 +570,7 @@ async fn export_paginates_full_history_beyond_the_first_page() {
         include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
         include_str!("../../../../deploy/compose/migrations/064_owner_conversation_consent.sql"),
         include_str!("../../../../deploy/compose/migrations/065_conversation_activation.sql"),
+        include_str!("../../../../deploy/compose/migrations/067_contacts_consent.sql"),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -647,6 +657,13 @@ async fn export_paginates_full_history_beyond_the_first_page() {
         database_url,
         auth_hasher: hasher,
         canonical_origin: "https://test.example".to_owned(),
+        contacts_vault: Some(Arc::new(
+            crate::http_owner_contacts::vault::ContactFieldVault::new(
+                1,
+                Zeroizing::new(vec![9_u8; 32]),
+            )
+            .unwrap(),
+        )),
     });
     let first = body(
         app.clone()
@@ -745,6 +762,287 @@ async fn export_paginates_full_history_beyond_the_first_page() {
         .await
         .unwrap();
     assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+    admin
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn export_carries_contacts_with_consent_history_and_never_foreign_rows() {
+    let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
+        .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
+    let (admin, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let schema = format!("owner_export_contacts_{}", Uuid::new_v4().simple());
+    admin
+        .batch_execute(&format!("CREATE SCHEMA {schema}"))
+        .await
+        .unwrap();
+    let separator = if base_url.contains('?') { '&' } else { '?' };
+    let database_url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
+    let (mut db, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    for (name, migration) in EXPORT_SCHEMA {
+        if name == "034_delivery_sweep_index.sql" {
+            db.batch_execute(
+                "CREATE INDEX CONCURRENTLY messages_in_flight_updated \
+                 ON messages(updated_at,id) \
+                 WHERE state IN ('claimed','submitting','submitted')",
+            )
+            .await
+            .unwrap();
+        }
+        if name == "040_radio_evidence_index.sql" {
+            db.batch_execute(
+                "CREATE INDEX CONCURRENTLY message_events_attempt_evidence \
+                 ON message_events(attempt_id,evidence_code)",
+            )
+            .await
+            .unwrap();
+        }
+        if name == "049_owner_queue_probe_indexes.sql" {
+            db.batch_execute(
+                "CREATE INDEX CONCURRENTLY messages_owner_pending_state \
+                 ON messages(device_id,state,created_at) \
+                 WHERE state IN ('accepted','queued','claimed')",
+            )
+            .await
+            .unwrap();
+            db.batch_execute(
+                "CREATE INDEX CONCURRENTLY messages_owner_in_flight_state \
+                 ON messages(device_id,state,created_at) \
+                 WHERE state IN ('submitting','submitted')",
+            )
+            .await
+            .unwrap();
+        }
+        if name == "050_message_attempts_recent_index.sql" {
+            db.batch_execute(
+                "CREATE INDEX CONCURRENTLY message_attempts_device_created \
+                 ON message_attempts(account_id,device_id,created_at)",
+            )
+            .await
+            .unwrap();
+        }
+        if name == "052_admission_pending_index.sql" {
+            db.batch_execute(
+                "CREATE INDEX CONCURRENTLY messages_admission_pending \
+                 ON messages(account_id,device_id) \
+                 WHERE state IN ('queued','claimed')",
+            )
+            .await
+            .unwrap();
+        }
+        if name == "057_webhook_history_index.sql" {
+            db.batch_execute(
+                "CREATE INDEX CONCURRENTLY webhook_deliveries_history \
+                 ON webhook_deliveries(endpoint_id,created_at DESC,id DESC)",
+            )
+            .await
+            .unwrap();
+        }
+        if name == "058_drop_abuse_counters_updated_index.sql" {
+            db.batch_execute("DROP INDEX IF EXISTS auth_abuse_counters_stale")
+                .await
+                .unwrap();
+        }
+        if name == "059_erasure_fk_indexes.sql" {
+            db.batch_execute(
+                "CREATE INDEX erasure_fk_webhook_deliveries_event ON webhook_deliveries(account_id,event_id); \
+                 CREATE INDEX erasure_fk_suppressions_attempt ON recipient_suppressions(source_attempt_id); \
+                 CREATE INDEX erasure_fk_suppressions_event ON recipient_suppressions(account_id,source_event_id); \
+                 CREATE INDEX erasure_fk_holds_release_event ON owner_recipient_holds(account_id,release_event_id) WHERE release_event_id IS NOT NULL; \
+                 CREATE INDEX erasure_fk_opt_out_audit_release_event ON owner_opt_out_audit(account_id,release_event_id) WHERE release_event_id IS NOT NULL",
+            )
+            .await
+            .unwrap();
+        }
+        if name == "060_optout_review_indexes.sql" {
+            db.batch_execute(
+                "CREATE INDEX recipient_suppressions_review_queue \
+                 ON recipient_suppressions(account_id,changed_at DESC,recipient_e164 DESC) \
+                 WHERE active AND source IN ('sms_review','sms_unsolicited_review')",
+            )
+            .await
+            .unwrap();
+            db.batch_execute(
+                "CREATE INDEX recipient_suppressions_review_event \
+                 ON recipient_suppressions(account_id,COALESCE(source_event_id,source_unsolicited_event_id)) \
+                 WHERE source IN ('sms_review','sms_unsolicited_review')",
+            )
+            .await
+            .unwrap();
+            db.batch_execute("DROP INDEX IF EXISTS recipient_suppressions_active")
+                .await
+                .unwrap();
+        }
+        if name == "061_inbound_events_attempt_fk_index.sql" {
+            db.batch_execute(
+                "CREATE INDEX erasure_fk_inbound_events_attempt \
+                 ON inbound_events(account_id,device_id,message_id,attempt_id)",
+            )
+            .await
+            .unwrap();
+        }
+        if name == "062_pending_recipient_index.sql" {
+            db.batch_execute(
+                "CREATE INDEX messages_pending_recipient \
+                 ON messages(recipient_e164,account_id) \
+                 WHERE state IN ('queued','claimed') AND recipient_e164 IS NOT NULL",
+            )
+            .await
+            .unwrap();
+        }
+        if name == "066_conversation_interval_session_index.sql" {
+            db.batch_execute(
+                "CREATE INDEX erasure_fk_conversation_interval_session \
+                 ON conversation_intervals(account_id,initiating_session_id)",
+            )
+            .await
+            .unwrap();
+        }
+        db.batch_execute(migration)
+            .await
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+    }
+    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(41)).unwrap());
+    let a = register(
+        &mut db,
+        &hasher,
+        "export-contacts-a@example.test",
+        &crate::test_keys::password(7),
+    )
+    .await
+    .unwrap();
+    let b = register(
+        &mut db,
+        &hasher,
+        "export-contacts-b@example.test",
+        &crate::test_keys::password(8),
+    )
+    .await
+    .unwrap();
+    verify_email(&mut db, &hasher, &a.verification_token)
+        .await
+        .unwrap();
+    verify_email(&mut db, &hasher, &b.verification_token)
+        .await
+        .unwrap();
+    let session_a = login(
+        &db,
+        &hasher,
+        "export-contacts-a@example.test",
+        &crate::test_keys::password(7),
+    )
+    .await
+    .unwrap();
+
+    let vault = crate::http_owner_contacts::vault::ContactFieldVault::new(
+        1,
+        Zeroizing::new(vec![9_u8; 32]),
+    )
+    .unwrap();
+    let contact = Uuid::new_v4();
+    let name_ciphertext = vault
+        .seal(
+            a.account_id,
+            contact,
+            crate::http_owner_contacts::vault::ContactField::DisplayName,
+            b"Ada Lovelace",
+        )
+        .unwrap();
+    let notes_ciphertext = vault
+        .seal(
+            a.account_id,
+            contact,
+            crate::http_owner_contacts::vault::ContactField::Notes,
+            b"prefers morning",
+        )
+        .unwrap();
+    db.execute(
+        "INSERT INTO contacts(id,account_id,recipient_e164,display_name_ciphertext,notes_ciphertext) \
+         VALUES($1,$2,'+15550100001',$3,$4)",
+        &[&contact, &a.account_id, &name_ciphertext, &notes_ciphertext],
+    )
+    .await
+    .unwrap();
+    let foreign = Uuid::new_v4();
+    db.execute(
+        "INSERT INTO contacts(id,account_id,recipient_e164) VALUES($1,$2,'+15550100002')",
+        &[&foreign, &b.account_id],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO contact_consent_records \
+         (id,account_id,contact_id,purpose,action,source,effective_at,expires_at,recorded_by) \
+         SELECT $1::uuid,$2::uuid,$3::uuid,'marketing','grant','manual_entry', \
+         now()-interval '1 hour',now()+interval '30 days',$4::uuid \
+         UNION ALL SELECT $5::uuid,$2::uuid,$3::uuid,'marketing','withdraw', \
+         'off_channel_record',now()-interval '30 minutes',NULL,$4::uuid",
+        &[
+            &Uuid::new_v4(),
+            &a.account_id,
+            &contact,
+            &a.user_id,
+            &Uuid::new_v4(),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let app = router(OwnerExportState {
+        database_url,
+        auth_hasher: hasher.clone(),
+        canonical_origin: "https://test.example".to_owned(),
+        contacts_vault: Some(Arc::new(vault)),
+    });
+    let response = app
+        .clone()
+        .oneshot(get("/v1/owner/export", Some(&session_a)))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let report = body(response).await;
+    let contacts: Vec<Value> = serde_json::from_value(report["contacts"].clone()).unwrap();
+    assert_eq!(contacts.len(), 1, "the other account's contact never leaks");
+    assert_eq!(contacts[0]["contact_id"], contact.to_string());
+    assert_eq!(contacts[0]["recipient_e164"], "+15550100001");
+    assert_eq!(contacts[0]["display_name"], "Ada Lovelace");
+    assert_eq!(contacts[0]["notes"], "prefers morning");
+    let states: Vec<Value> = serde_json::from_value(contacts[0]["consents"].clone()).unwrap();
+    assert_eq!(states.len(), 1);
+    assert_eq!(states[0]["purpose"], "marketing");
+    assert_eq!(states[0]["status"], "withdrawn");
+    let history: Vec<Value> =
+        serde_json::from_value(contacts[0]["consent_history"].clone()).unwrap();
+    assert_eq!(history.len(), 2, "the whole consent history exports");
+    assert_eq!(report["contacts_truncated"], false);
+    assert_eq!(report["contacts_next_cursor"], Value::Null);
+
+    // A vault that cannot open the stored ciphertext fails the export
+    // closed instead of shipping unreadable fields. Only the key differs;
+    // the session hasher stays the one that signed the login.
+    let rekeyed = router(OwnerExportState {
+        database_url: format!("{base_url}{separator}options=-csearch_path%3D{schema}"),
+        auth_hasher: hasher,
+        canonical_origin: "https://test.example".to_owned(),
+        contacts_vault: Some(Arc::new(
+            crate::http_owner_contacts::vault::ContactFieldVault::new(
+                2,
+                Zeroizing::new(vec![8_u8; 32]),
+            )
+            .unwrap(),
+        )),
+    });
+    let response = rekeyed
+        .oneshot(get("/v1/owner/export", Some(&session_a)))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
     admin
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await

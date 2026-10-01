@@ -80,12 +80,12 @@ The proposed product direction is **your number, connected to your business, you
 Explore [all proposed use cases](docs/USE-CASES.md), including event invitations and RSVPs, repair updates, appointment waitlists and volunteer coordination. The [product implementation plan](docs/PRODUCT-PLAN.md) connects them to ordered development work and acceptance criteria.
 
 <!-- roadmap:overview -->
-<p align="center"><a href="docs/ROADMAP.md"><img src="docs/assets/roadmap-overview.svg" alt="Roadmap at a glance: 22 capabilities in five tracks. Four are in a restricted pilot, eight are being built, three are in design and seven are planned. None has reached general release." width="820"></a></p>
+<p align="center"><a href="docs/ROADMAP.md"><img src="docs/assets/roadmap-overview.svg" alt="Roadmap at a glance: 22 capabilities in five tracks. Four are in a restricted pilot, nine are being built, three are in design and six are planned. None has reached general release." width="820"></a></p>
 <!-- /roadmap:overview -->
 
 ## Design preview
 
-Try the [interactive text receptionist simulation](docs/RECEPTIONIST-DEMO.md): review a service inquiry, wedding RSVP, or personal assistant request, then approve a scripted reply. It uses synthetic data and sends no SMS.
+Try the [interactive text receptionist simulation](docs/RECEPTIONIST-DEMO.md): review a service inquiry, wedding RSVP, or personal assistant request, then approve a scripted reply. It uses synthetic data and sends no SMS. For a terminal-only walkthrough of the planned agent experience, run the [agent texting quickstart](docs/AGENT-QUICKSTART.md) over the delivery simulator; it is equally synthetic.
 
 These interface studies use synthetic devices, messages and traffic. Click an image to inspect it at full size.
 
