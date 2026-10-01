@@ -396,7 +396,9 @@ async fn expiry_projection_waits_for_account_before_locking_occurrences() {
         .await
         .unwrap()
         .get(0);
-    c.descriptor.expires_at = now + 5;
+    // Leave enough time for actual approval/reservation setup; the worker
+    // still starts only after authoritative database expiry.
+    c.descriptor.expires_at = now + 30;
     let a = c.approved().await;
     let o = reserve(
         &c,
@@ -468,4 +470,355 @@ async fn expiry_projection_waits_for_account_before_locking_occurrences() {
     held.commit().await.unwrap();
     assert_eq!(task.await.unwrap(), 1);
     c.cleanup().await;
+}
+
+async fn stalled_lease_write(operation: &str) {
+    let (mut c, p) = prepared().await;
+    let a = c.approved().await;
+    let o = reserve(
+        &c,
+        &p,
+        a.key,
+        ScheduleRequest {
+            request_id: Uuid::new_v4(),
+            series_id: Uuid::new_v4(),
+            ordinal: 0,
+        },
+    )
+    .await;
+    let key = if operation == "dispatch" {
+        c.bind_with_dispatch(a, o.dispatch_id).await.key
+    } else {
+        a.key
+    };
+    let message = if operation == "dispatch" {
+        Some(
+            c.base
+                .f
+                .db
+                .query_one("SELECT message_id FROM workflow_message_links", &[])
+                .await
+                .unwrap()
+                .get::<_, Uuid>(0),
+        )
+    } else {
+        None
+    };
+    c.base.f.db.batch_execute("CREATE SEQUENCE schedule_write_reached;
+        CREATE TABLE schedule_write_deadline(value bigint NOT NULL);
+        CREATE FUNCTION stall_schedule_write() RETURNS trigger LANGUAGE plpgsql AS $$
+        DECLARE deadline bigint;
+        BEGIN
+          SELECT value INTO deadline FROM schedule_write_deadline;
+          IF deadline IS NULL THEN
+            SELECT lease_until_ms INTO deadline FROM workflow_schedule_occurrences WHERE id=NEW.occurrence_id;
+            INSERT INTO schedule_write_deadline VALUES(deadline);
+          END IF;
+          IF deadline <= floor(extract(epoch FROM clock_timestamp())*1000)::bigint THEN
+            RAISE EXCEPTION 'test never reached a live lease';
+          END IF;
+          PERFORM nextval('schedule_write_reached');
+          PERFORM pg_sleep(31);
+          RETURN NEW;
+        END $$;").await.unwrap();
+    let mut db = c.base.f.connect().await;
+    let tx = db.transaction().await.unwrap();
+    // The deliberate 31-second barrier exceeds the fixture connection timeout.
+    tx.batch_execute("SET LOCAL statement_timeout='45s'")
+        .await
+        .unwrap();
+    let mut permit = lock_approved(&tx, &c.base.owner, key).await.unwrap();
+    let lease = if operation == "claim" {
+        None
+    } else {
+        let lease = claim(&mut permit, o.id).await.unwrap().unwrap();
+        tx.execute(
+            "INSERT INTO schedule_write_deadline VALUES($1)",
+            &[&tx
+                .query_one(
+                    "SELECT lease_until_ms FROM workflow_schedule_occurrences WHERE id=$1",
+                    &[&o.id],
+                )
+                .await
+                .unwrap()
+                .get::<_, i64>(0)],
+        )
+        .await
+        .unwrap();
+        Some(lease)
+    };
+    tx.batch_execute(&format!("CREATE TRIGGER stall_schedule_write BEFORE INSERT ON workflow_schedule_audit FOR EACH ROW WHEN (NEW.operation='{operation}') EXECUTE FUNCTION stall_schedule_write();")).await.unwrap();
+    let refused = match operation {
+        "claim" => claim(&mut permit, o.id).await.is_err(),
+        "defer" => defer(&mut permit, lease.as_ref().unwrap(), Unavailable::Renderer)
+            .await
+            .is_err(),
+        "dispatch" => begin_dispatch(&mut permit, lease.as_ref().unwrap(), message.unwrap())
+            .await
+            .is_err(),
+        _ => unreachable!(),
+    };
+    assert!(
+        tx.query_one("SELECT is_called FROM schedule_write_reached", &[])
+            .await
+            .unwrap()
+            .get::<_, bool>(0),
+        "protected write was not reached"
+    );
+    assert!(tx.query_one("SELECT value<=floor(extract(epoch FROM clock_timestamp())*1000)::bigint FROM schedule_write_deadline", &[]).await.unwrap().get::<_, bool>(0), "lease did not expire during protected write");
+    assert!(
+        refused,
+        "{operation} accepted after its public capped lease expired"
+    );
+    drop(permit);
+    tx.rollback().await.unwrap();
+    let row = c.base.f.db.query_one("SELECT phase,lease_id,(SELECT count(*) FROM workflow_schedule_audit WHERE operation=$1) FROM workflow_schedule_occurrences", &[&operation]).await.unwrap();
+    assert_eq!(row.get::<_, String>(0), "waiting_window");
+    assert_eq!(row.get::<_, Option<Uuid>>(1), None);
+    assert_eq!(row.get::<_, i64>(2), 0);
+    c.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn claim_stalled_during_audit_refuses_an_expired_public_lease() {
+    stalled_lease_write("claim").await;
+}
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn defer_stalled_during_audit_rolls_back_an_expired_public_lease() {
+    stalled_lease_write("defer").await;
+}
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn dispatch_stalled_during_audit_rolls_back_an_expired_public_lease() {
+    stalled_lease_write("dispatch").await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn dispatch_pacing_starts_after_a_blocked_admission_write() {
+    let (mut c, p) = prepared().await;
+    let a = c.approved().await;
+    let o = reserve(
+        &c,
+        &p,
+        a.key,
+        ScheduleRequest {
+            request_id: Uuid::new_v4(),
+            series_id: Uuid::new_v4(),
+            ordinal: 0,
+        },
+    )
+    .await;
+    let bound = c.bind_with_dispatch(a, o.dispatch_id).await;
+    let message: Uuid = c
+        .base
+        .f
+        .db
+        .query_one("SELECT message_id FROM workflow_message_links", &[])
+        .await
+        .unwrap()
+        .get(0);
+    c.base.f.db.batch_execute("CREATE SEQUENCE pacing_write_reached;
+        CREATE FUNCTION stall_pacing_write() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN PERFORM nextval('pacing_write_reached'); PERFORM pg_sleep(5); RETURN NEW; END $$;
+        CREATE TRIGGER stall_pacing_write BEFORE INSERT ON workflow_schedule_audit FOR EACH ROW WHEN (NEW.operation='dispatch') EXECUTE FUNCTION stall_pacing_write();").await.unwrap();
+    let mut db = c.base.f.connect().await;
+    let tx = db.transaction().await.unwrap();
+    // The deliberate 31-second barrier exceeds the fixture connection timeout.
+    tx.batch_execute("SET LOCAL statement_timeout='45s'")
+        .await
+        .unwrap();
+    let mut permit = lock_approved(&tx, &c.base.owner, bound.key).await.unwrap();
+    let lease = claim(&mut permit, o.id).await.unwrap().unwrap();
+    begin_dispatch(&mut permit, &lease, message).await.unwrap();
+    drop(permit);
+    tx.commit().await.unwrap();
+    let row = c.base.f.db.query_one("SELECT pacing_until_ms-floor(extract(epoch FROM clock_timestamp())*1000)::bigint,(SELECT is_called FROM pacing_write_reached) FROM workflow_schedule_series", &[]).await.unwrap();
+    assert!(
+        row.get::<_, bool>(1),
+        "protected admission write was not reached"
+    );
+    assert!(
+        row.get::<_, i64>(0) >= 59_000,
+        "blocked write consumed the minimum pacing interval before admission committed"
+    );
+    c.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn claim_cannot_commit_after_its_public_lease_expires() {
+    let (c, p) = prepared().await;
+    let a = c.approved().await;
+    let o = reserve(
+        &c,
+        &p,
+        a.key,
+        ScheduleRequest {
+            request_id: Uuid::new_v4(),
+            series_id: Uuid::new_v4(),
+            ordinal: 0,
+        },
+    )
+    .await;
+    let mut db = c.base.f.connect().await;
+    let tx = db.transaction().await.unwrap();
+    // Each awaited statement fits the production ten-second timeout; their total exceeds the public lease.
+    tx.batch_execute("SET LOCAL statement_timeout='10s'")
+        .await
+        .unwrap();
+    let mut permit = lock_approved(&tx, &c.base.owner, a.key).await.unwrap();
+    claim(&mut permit, o.id).await.unwrap().unwrap();
+    assert!(
+        tx.query_one(
+            "SELECT $1>floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+            &[&tx
+                .query_one(
+                    "SELECT lease_until_ms FROM workflow_schedule_occurrences WHERE id=$1",
+                    &[&o.id]
+                )
+                .await
+                .unwrap()
+                .get::<_, i64>(0)]
+        )
+        .await
+        .unwrap()
+        .get::<_, bool>(0)
+    );
+    drop(permit);
+    for _ in 0..4 {
+        tx.batch_execute("SELECT pg_sleep(8)").await.unwrap();
+    }
+    assert!(
+        tx.query_one(
+            "SELECT $1<=floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+            &[&tx
+                .query_one(
+                    "SELECT lease_until_ms FROM workflow_schedule_occurrences WHERE id=$1",
+                    &[&o.id]
+                )
+                .await
+                .unwrap()
+                .get::<_, i64>(0)]
+        )
+        .await
+        .unwrap()
+        .get::<_, bool>(0)
+    );
+    assert_eq!(
+        tx.commit().await.unwrap_err().code(),
+        Some(&tokio_postgres::error::SqlState::CHECK_VIOLATION)
+    );
+    assert_eq!(
+        c.base
+            .f
+            .db
+            .query_one("SELECT phase FROM workflow_schedule_occurrences", &[])
+            .await
+            .unwrap()
+            .get::<_, String>(0),
+        "waiting_window"
+    );
+    c.cleanup().await;
+}
+
+async fn delay_admission_commit(operation: &str) {
+    let (mut c, p) = prepared().await;
+    let a = c.approved().await;
+    let o = reserve(
+        &c,
+        &p,
+        a.key,
+        ScheduleRequest {
+            request_id: Uuid::new_v4(),
+            series_id: Uuid::new_v4(),
+            ordinal: 0,
+        },
+    )
+    .await;
+    let key = if operation == "dispatch" {
+        c.bind_with_dispatch(a, o.dispatch_id).await.key
+    } else {
+        a.key
+    };
+    let mut db = c.base.f.connect().await;
+    let tx = db.transaction().await.unwrap();
+    let mut permit = lock_approved(&tx, &c.base.owner, key).await.unwrap();
+    let lease = claim(&mut permit, o.id).await.unwrap().unwrap();
+    drop(permit);
+    if operation == "cancel" {
+        tx.batch_execute("SET LOCAL statement_timeout='10s'")
+            .await
+            .unwrap();
+        for _ in 0..4 {
+            tx.batch_execute("SELECT pg_sleep(8)").await.unwrap();
+        }
+        assert!(tx.query_one("SELECT lease_until_ms<=floor(extract(epoch FROM clock_timestamp())*1000)::bigint FROM workflow_schedule_occurrences WHERE id=$1", &[&o.id]).await.unwrap().get::<_, bool>(0));
+        let mut permit = lock_approved(&tx, &c.base.owner, key).await.unwrap();
+        cancel(&mut permit, o.id).await.unwrap();
+        drop(permit);
+        tx.commit().await.unwrap();
+        assert_eq!(
+            c.base
+                .f
+                .db
+                .query_one("SELECT phase FROM workflow_schedule_occurrences", &[])
+                .await
+                .unwrap()
+                .get::<_, String>(0),
+            "cancelled"
+        );
+    } else {
+        tx.commit().await.unwrap();
+        // This transaction did not create the claim. Its deferred guard must
+        // preserve OLD.lease_until_ms after the admission clears those fields.
+        let tx = db.transaction().await.unwrap();
+        tx.batch_execute("SET LOCAL statement_timeout='10s'")
+            .await
+            .unwrap();
+        let mut permit = lock_approved(&tx, &c.base.owner, key).await.unwrap();
+        if operation == "defer" {
+            defer(&mut permit, &lease, Unavailable::Renderer)
+                .await
+                .unwrap();
+        } else {
+            let message = permit
+                .transaction()
+                .query_one("SELECT message_id FROM workflow_message_links", &[])
+                .await
+                .unwrap()
+                .get::<_, Uuid>(0);
+            begin_dispatch(&mut permit, &lease, message).await.unwrap();
+        }
+        drop(permit);
+        for _ in 0..4 {
+            tx.batch_execute("SELECT pg_sleep(8)").await.unwrap();
+        }
+        assert_eq!(
+            tx.commit().await.unwrap_err().code(),
+            Some(&tokio_postgres::error::SqlState::CHECK_VIOLATION)
+        );
+        let row = c.base.f.db.query_one("SELECT phase,lease_id IS NOT NULL,(SELECT count(*) FROM workflow_schedule_audit WHERE operation=$1) FROM workflow_schedule_occurrences", &[&operation]).await.unwrap();
+        assert_eq!(row.get::<_, String>(0), "claimed");
+        assert!(row.get::<_, bool>(1));
+        assert_eq!(row.get::<_, i64>(2), 0);
+    }
+    c.cleanup().await;
+}
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn defer_cannot_commit_after_consuming_an_expired_prior_claim() {
+    delay_admission_commit("defer").await;
+}
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn dispatch_cannot_commit_after_consuming_an_expired_prior_claim() {
+    delay_admission_commit("dispatch").await;
+}
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn cancellation_commits_after_a_same_transaction_claim_expires() {
+    delay_admission_commit("cancel").await;
 }

@@ -312,6 +312,9 @@ pub(crate) async fn claim_core<'connection>(
         until_ms: until,
     };
     permit.recheck().await?;
+    if now(permit.transaction()).await? >= until {
+        return Err(ConversationError::Conflict);
+    }
     Ok(Some(result))
 }
 
@@ -331,8 +334,10 @@ pub(crate) async fn defer_core<'connection>(
     let key = permit.key();
     let actor = permit.actor();
     let tx = permit.transaction();
+    let locked = tx.query_opt("SELECT lease_until_ms FROM workflow_schedule_occurrences WHERE account_id=$1 AND id=$2 AND phase='claimed' AND lease_id=$3 FOR UPDATE", &[&key.account_id,&lease.occurrence.id,&lease.id]).await?.ok_or(ConversationError::Conflict)?;
+    let deadline: i64 = locked.get("lease_until_ms");
     let instant = now(tx).await?;
-    if instant >= lease.until_ms {
+    if instant >= deadline || deadline != lease.until_ms {
         return Err(ConversationError::Conflict);
     }
     let phase = match unavailable {
@@ -351,7 +356,11 @@ pub(crate) async fn defer_core<'connection>(
         None,
     )
     .await?;
-    permit.recheck().await
+    permit.recheck().await?;
+    if now(permit.transaction()).await? >= deadline {
+        return Err(ConversationError::Conflict);
+    }
+    Ok(())
 }
 
 /// The message must already have the exact explicit owner confirmation in
@@ -422,14 +431,16 @@ pub(crate) async fn begin_dispatch_core<'connection>(
         None,
     )
     .await?;
-    // Repeat timing after the last potentially blocking write.
-    let final_now = now(tx).await?;
-    if final_now >= row.get::<_, i64>("closes_at_ms")
+    // Authority checks can also await database locks. Check the consumed lease
+    // and exact window only after every awaited authority/write operation.
+    permit.recheck().await?;
+    let final_now = now(permit.transaction()).await?;
+    if final_now >= row.get::<_, i64>("lease_until_ms")
+        || final_now >= row.get::<_, i64>("closes_at_ms")
         || final_now >= row.get::<_, i64>("expires_at_ms")
     {
         return Err(ConversationError::Conflict);
     }
-    permit.recheck().await?;
     Ok(dispatch)
 }
 

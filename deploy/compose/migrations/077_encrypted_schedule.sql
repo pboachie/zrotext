@@ -239,3 +239,47 @@ CREATE CONSTRAINT TRIGGER workflow_dispatch_final_guard AFTER INSERT ON dispatch
     DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION workflow_effect_guard();
 CREATE CONSTRAINT TRIGGER workflow_intent_final_guard AFTER INSERT ON message_events
     DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION workflow_effect_guard();
+
+-- Admission deadlines survive API return and are rechecked at transaction
+-- commit. Negative cancellation/expiry/reconciliation transitions remain free
+-- to close work after a lease expires. OLD preserves the consumed claim after
+-- its fields have been cleared; no persisted actor identity creates authority.
+CREATE FUNCTION workflow_schedule_admission_final_guard() RETURNS trigger
+LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+DECLARE deadline bigint; instant bigint;
+BEGIN
+    IF NEW.phase='claimed' THEN
+        deadline := NEW.lease_until_ms;
+    ELSIF OLD.phase='claimed' AND NEW.phase IN ('waiting_renderer','waiting_phone','dispatching') THEN
+        deadline := OLD.lease_until_ms;
+    ELSE
+        RETURN NEW;
+    END IF;
+    -- A queued claim event must not obstruct a later safe negative
+    -- transition in this same transaction. The durable final row owns phase.
+    IF EXISTS(SELECT 1 FROM workflow_schedule_occurrences o
+        WHERE o.account_id=NEW.account_id AND o.id=NEW.id
+          AND o.phase IN ('cancelled','expired','missed_window')) THEN
+        RETURN NEW;
+    END IF;
+    IF NEW.phase='dispatching' THEN
+        -- This series was already locked by the admission transaction. Refresh
+        -- pacing after all admission writes and caller work, not before them.
+        UPDATE workflow_schedule_series s SET pacing_until_ms=greatest(s.pacing_until_ms,
+            floor(extract(epoch FROM clock_timestamp())*1000)::bigint+p.pacing_seconds::bigint*1000)
+        FROM workflow_schedule_policies p WHERE (s.account_id,s.policy_id)=(p.account_id,p.id)
+            AND s.account_id=NEW.account_id AND s.id=NEW.series_id;
+        IF NOT workflow_effect_current(NEW.account_id,NEW.message_id) THEN
+            RAISE EXCEPTION 'workflow schedule admission is fenced' USING ERRCODE='23514';
+        END IF;
+    END IF;
+    instant := floor(extract(epoch FROM clock_timestamp())*1000)::bigint;
+    IF deadline IS NULL OR deadline<=instant OR NEW.expires_at_ms<=instant
+       OR NEW.closes_at_ms<=instant
+       OR NOT workflow_schedule_actor_current(NEW.account_id,NEW.id) THEN
+        RAISE EXCEPTION 'workflow schedule admission is fenced' USING ERRCODE='23514';
+    END IF;
+    RETURN NEW;
+END; $$;
+CREATE CONSTRAINT TRIGGER workflow_schedule_admission_final_guard AFTER UPDATE ON workflow_schedule_occurrences
+    DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION workflow_schedule_admission_final_guard();
