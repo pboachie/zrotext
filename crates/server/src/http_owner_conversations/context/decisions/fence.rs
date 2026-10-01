@@ -1,0 +1,219 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+use super::super::{
+    ConversationError, SessionPrincipal, activation, authorize, fresh_owner, load, lock_current,
+    lock_owner, wire,
+};
+use super::{ActionKey, Descriptor, descriptor::decode_digest};
+use crate::sealed_manifest_store::outbound::CurrentAuthority;
+use sha2::{Digest, Sha256};
+use tokio_postgres::Transaction;
+use uuid::Uuid;
+mod binding;
+
+pub(crate) async fn recheck_descriptor(
+    tx: &Transaction<'_>,
+    owner: &SessionPrincipal,
+    authority: &mut CurrentAuthority<'_, '_>,
+    header: &wire::Header,
+    d: &Descriptor,
+) -> Result<(), ConversationError> {
+    authorize(tx, owner, authority, header, true).await?;
+    contact(tx, d, header).await?;
+    if activation::now(tx).await? >= d.expires_at_ms()? {
+        return Err(ConversationError::Forbidden);
+    }
+    fresh_owner(tx, owner).await
+}
+
+pub(crate) async fn checked_descriptor<'tx, 'connection>(
+    tx: &'tx Transaction<'connection>,
+    owner: &SessionPrincipal,
+    descriptor: &Descriptor,
+) -> Result<(CurrentAuthority<'tx, 'connection>, wire::Header), ConversationError> {
+    let ids = descriptor.identities()?;
+    if descriptor.key()?.account_id != owner.tenant.account_id() {
+        return Err(ConversationError::NotFound);
+    }
+    let mut authority = lock_current(tx, owner.tenant.account_id()).await?;
+    lock_owner(tx, owner).await?;
+    let bytes = load(
+        tx,
+        owner.tenant.account_id(),
+        ids.content,
+        Some(descriptor.content_version),
+    )
+    .await?;
+    let header = wire::parse(&bytes)?;
+    if header.line != ids.line
+        || Sha256::digest(&bytes).as_slice() != decode_digest(&descriptor.content_digest)?
+        || descriptor.expires_at_ms()? > header.expires_ms
+    {
+        return Err(ConversationError::Forbidden);
+    }
+    authorize(tx, owner, &mut authority, &header, true).await?;
+    contact(tx, descriptor, &header).await?;
+    Ok((authority, header))
+}
+
+async fn contact(
+    tx: &Transaction<'_>,
+    descriptor: &Descriptor,
+    header: &wire::Header,
+) -> Result<(), ConversationError> {
+    let ids = descriptor.identities()?;
+    let row = tx
+        .query_opt(
+            "SELECT recipient_e164 FROM contacts WHERE account_id=$1 AND id=$2 FOR SHARE",
+            &[&header.account, &ids.recipient],
+        )
+        .await?
+        .ok_or(ConversationError::NotFound)?;
+    let peer: String = row.get(0);
+    if Sha256::digest(peer.as_bytes()).as_slice() != header.peer_digest {
+        return Err(ConversationError::Forbidden);
+    }
+    let purpose = descriptor.purpose()?;
+    let consent=tx.query_opt("SELECT action,effective_at<=clock_timestamp(),expires_at IS NULL OR expires_at>clock_timestamp() FROM contact_consent_records WHERE account_id=$1 AND contact_id=$2 AND purpose=$3 ORDER BY effective_at DESC,recorded_at DESC,id DESC LIMIT 1 FOR SHARE",
+        &[&header.account,&ids.recipient,&purpose]).await?.ok_or(ConversationError::Forbidden)?;
+    if consent.get::<_, String>(0) != "grant"
+        || !consent.get::<_, bool>(1)
+        || !consent.get::<_, bool>(2)
+    {
+        return Err(ConversationError::Forbidden);
+    }
+    if tx.query_one("SELECT EXISTS(SELECT 1 FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164=$2 AND active) OR EXISTS(SELECT 1 FROM owner_recipient_holds WHERE account_id=$1 AND recipient_e164=$2 AND released_at IS NULL)",
+        &[&header.account,&peer]).await?.get::<_,bool>(0){return Err(ConversationError::Forbidden);}
+    Ok(())
+}
+
+pub(crate) async fn live_routine(
+    tx: &Transaction<'_>,
+    descriptor: &Descriptor,
+    header: &wire::Header,
+) -> Result<(), ConversationError> {
+    let ids = descriptor.identities()?;
+    tx.query_opt("SELECT 1 FROM workflow_context_fences WHERE account_id=$1 AND context_id=$2 AND stopped_at IS NULL FOR UPDATE",
+        &[&header.account,&header.context]).await?.ok_or(ConversationError::Forbidden)?;
+    tx.query_opt("SELECT 1 FROM workflow_routines WHERE account_id=$1 AND id=$2 AND context_id=$3 AND generation=$4 AND stopped_at IS NULL FOR UPDATE",
+        &[&header.account,&ids.routine,&header.context,&descriptor.authority_generation]).await?.ok_or(ConversationError::Forbidden)?;
+    Ok(())
+}
+
+/// Unforgeable transaction-borrowed owner permit. Historical actor IDs cannot create it.
+pub struct LockedAction<'tx, 'connection> {
+    tx: &'tx Transaction<'connection>,
+    owner: &'tx SessionPrincipal,
+    authority: CurrentAuthority<'tx, 'connection>,
+    header: wire::Header,
+    descriptor: Descriptor,
+    key: ActionKey,
+}
+pub async fn lock_approved<'tx, 'connection>(
+    tx: &'tx Transaction<'connection>,
+    owner: &'tx SessionPrincipal,
+    key: ActionKey,
+) -> Result<LockedAction<'tx, 'connection>, ConversationError> {
+    key.validate()?;
+    if key.account_id != owner.tenant.account_id() {
+        return Err(ConversationError::NotFound);
+    }
+    let row=tx.query_opt("SELECT descriptor FROM workflow_action_versions WHERE account_id=$1 AND action_id=$2 AND revision=$3 AND binding_digest=$4",
+        &[&key.account_id,&key.action_id,&key.revision,&&key.binding_digest[..]]).await?.ok_or(ConversationError::NotFound)?;
+    let descriptor: Descriptor = serde_json::from_slice(&row.get::<_, Vec<u8>>(0))
+        .map_err(|_| ConversationError::Unavailable)?;
+    if descriptor.key()? != key {
+        return Err(ConversationError::Unavailable);
+    }
+    let (authority, header) = checked_descriptor(tx, owner, &descriptor).await?;
+    live_routine(tx, &descriptor, &header).await?;
+    tx.query_opt("SELECT 1 FROM workflow_actions WHERE account_id=$1 AND id=$2 AND revision=$3 AND binding_digest=$4 AND phase='approved' FOR UPDATE",
+        &[&key.account_id,&key.action_id,&key.revision,&&key.binding_digest[..]]).await?.ok_or(ConversationError::Conflict)?;
+    let mut permit = LockedAction {
+        tx,
+        owner,
+        authority,
+        header,
+        descriptor,
+        key,
+    };
+    permit.recheck().await?;
+    Ok(permit)
+}
+impl<'tx, 'connection> LockedAction<'tx, 'connection> {
+    pub(crate) fn transaction(&self) -> &'tx Transaction<'connection> {
+        self.tx
+    }
+    pub(crate) fn owner_actor(&self) -> Uuid {
+        self.owner.user_id
+    }
+    pub(crate) fn actor_user_id(&self) -> Uuid {
+        self.owner_actor()
+    }
+    pub fn actor_session_id(&self) -> Uuid {
+        self.owner.session_id
+    }
+    pub fn descriptor(&self) -> &Descriptor {
+        &self.descriptor
+    }
+    pub fn key(&self) -> ActionKey {
+        self.key
+    }
+    pub fn context_id(&self) -> Uuid {
+        self.header.context
+    }
+    pub fn routine_id(&self) -> Uuid {
+        self.descriptor
+            .identities()
+            .expect("checked identity")
+            .routine
+    }
+    pub fn routine_generation(&self) -> i64 {
+        self.descriptor.authority_generation
+    }
+    pub fn expires_at_ms(&self) -> i64 {
+        self.descriptor.expires_at_ms().expect("checked timestamp")
+    }
+    pub async fn recheck(&mut self) -> Result<(), ConversationError> {
+        recheck_descriptor(
+            self.tx,
+            self.owner,
+            &mut self.authority,
+            &self.header,
+            &self.descriptor,
+        )
+        .await?;
+        live_routine(self.tx, &self.descriptor, &self.header).await?;
+        let now = activation::now(self.tx).await?;
+        if now >= self.expires_at_ms() {
+            return Err(ConversationError::Forbidden);
+        }
+        fresh_owner(self.tx, self.owner).await
+    }
+    pub async fn mark_dispatching(
+        &mut self,
+        message: Uuid,
+        dispatch: Uuid,
+    ) -> Result<(), ConversationError> {
+        self.recheck().await?;
+        if activation::now(self.tx).await? < self.descriptor.not_before * 1000 {
+            return Err(ConversationError::Conflict);
+        }
+        self.tx.query_opt("SELECT 1 FROM workflow_message_links WHERE account_id=$1 AND action_id=$2 AND revision=$3 AND binding_digest=$4 AND message_id=$5 AND dispatch_id=$6 FOR SHARE",
+            &[&self.key.account_id,&self.key.action_id,&self.key.revision,&&self.key.binding_digest[..],&message,&dispatch]).await?.ok_or(ConversationError::Forbidden)?;
+        if self.tx.execute("UPDATE workflow_actions SET phase='dispatching',record_version=record_version+1 WHERE account_id=$1 AND id=$2 AND revision=$3 AND binding_digest=$4 AND phase='approved'",
+            &[&self.key.account_id,&self.key.action_id,&self.key.revision,&&self.key.binding_digest[..]]).await?!=1 {return Err(ConversationError::Conflict);}
+        let state = super::store::head(self.tx, self.key.account_id, self.key.action_id).await?;
+        let digest = super::store::request_digest(7, &(self.key, message, dispatch))?;
+        super::store::record(
+            self.tx,
+            self.owner,
+            self.header.context,
+            dispatch,
+            7,
+            &digest,
+            &state,
+        )
+        .await?;
+        self.recheck().await
+    }
+}

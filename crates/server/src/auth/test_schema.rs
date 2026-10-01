@@ -324,6 +324,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "075_workflow_context.sql",
         include_str!("../../../../deploy/compose/migrations/075_workflow_context.sql"),
     ),
+    (
+        "076_workflow_decisions.sql",
+        include_str!("../../../../deploy/compose/migrations/076_workflow_decisions.sql"),
+    ),
 ];
 
 async fn apply_selected(db: &Client, skip_summary: bool) {
