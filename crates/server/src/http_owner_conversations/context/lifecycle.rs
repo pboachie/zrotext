@@ -148,6 +148,7 @@ pub(crate) async fn prune(
                 if !super::decisions::lifecycle::erase_context(&tx, account, id).await? {
                     continue;
                 }
+                crate::workflow_runtime::lifecycle::erase_context(&tx, account, id).await?;
                 for table in [
                     "workflow_context_audit",
                     "workflow_exceptions",
@@ -165,6 +166,7 @@ pub(crate) async fn prune(
                 )
                 .await?;
             } else {
+                crate::workflow_runtime::lifecycle::scrub_context(&tx, account, id).await?;
                 tx.execute("UPDATE workflow_context_versions SET envelope=NULL WHERE account_id=$1 AND context_id=$2",&[&account,&id]).await?;
                 tx.execute("UPDATE workflow_contexts SET purged_at=clock_timestamp() WHERE account_id=$1 AND id=$2",&[&account,&id]).await?;
             }

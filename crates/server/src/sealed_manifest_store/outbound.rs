@@ -166,10 +166,7 @@ impl CurrentAuthority<'_, '_> {
         let now = self.checked_time().await?;
         self.manifest
             .conversation_keys(device.as_bytes(), line.as_bytes(), now)?;
-        if !self
-            .manifest
-            .active_agent_signer(line.as_bytes(), id, now)
-        {
+        if !self.manifest.active_agent_signer(line.as_bytes(), id, now) {
             return Err(AdmissionError::Rejected("workflow signer authority"));
         }
         Ok(())

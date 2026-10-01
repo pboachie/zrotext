@@ -8,6 +8,7 @@ mod authentication;
 #[cfg(test)]
 mod database_tests;
 mod grants;
+pub(crate) mod lifecycle;
 mod reads;
 pub use authentication::{IntegrationPrincipal, authenticate};
 pub use grants::{GrantRequest, IssuedCredential, issue_grant, revoke_grant};

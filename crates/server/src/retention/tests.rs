@@ -251,6 +251,7 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
             conversation_provenance: 0,
             conversation_intervals: 0,
             workflow_contexts: 0,
+            workflow_integrations: 0,
             conversation_confirmations: 0,
             workflow_schedule: 0,
         }

@@ -140,3 +140,19 @@ by 20 envelopes. Existing schema-protected trust history can still block whole
 account erasure; when erasure is authorized, all four tables appear in the
 existing FK-safe deletion plan before conversation intervals. No deletion of
 trust tombstones or replacement of existing erasure gates is introduced.
+
+The integration runtime adds three independent owner takeout cursors:
+`workflow_grants_before`, `workflow_envelopes_before`, and
+`workflow_access_before`. Each page contains at most 20 account-scoped records.
+Grant exports omit credential hashes; plaintext credentials are returned only
+once when the owner issues a grant. Integration envelope bytes are exported as
+hexadecimal ciphertext and become null after scrubbing.
+
+Integration retention scrubs expired or withdrawn grant projections without
+restoring bytes or reusing grant identities. Source-context retention also scrubs
+these projections before deleting its archive; later context erasure deletes the
+bound access records, projections, and grants. Contact erasure removes only the
+integration grants bound to that contact within the owner transaction. Account
+erasure includes all three tables before their source references and preserves
+the existing erasure blockers. These housekeeping and takeout paths do not
+activate integration action, scheduling, or delivery services.

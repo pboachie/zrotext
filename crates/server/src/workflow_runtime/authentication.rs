@@ -94,12 +94,9 @@ mod tests {
     #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; disposable workflow schema"]
     async fn unknown_workflow_credentials_create_no_access_or_action_records() {
         let (fixture, _, _) = crate::http_owner_conversations::activation::tests::pending().await;
-        for sql in [
-            include_str!("../../../../deploy/compose/migrations/068_connector_registration.sql"),
-            include_str!(
-                "../../../../deploy/compose/migrations/078_workflow_integration_authority.sql"
-            ),
-        ] {
+        for sql in [include_str!(
+            "../../../../deploy/compose/migrations/078_workflow_integration_authority.sql"
+        )] {
             fixture.db.batch_execute(sql).await.unwrap();
         }
         let hasher = TokenHasher::new(crate::test_keys::key(89)).unwrap();

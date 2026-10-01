@@ -42,12 +42,9 @@ impl Case {
     async fn new() -> Self {
         let (mut f, owner, s) = pending().await;
         activate(&f, &s).await;
-        for sql in [
-            include_str!("../../../../deploy/compose/migrations/068_connector_registration.sql"),
-            include_str!(
-                "../../../../deploy/compose/migrations/078_workflow_integration_authority.sql"
-            ),
-        ] {
+        for sql in [include_str!(
+            "../../../../deploy/compose/migrations/078_workflow_integration_authority.sql"
+        )] {
             f.db.batch_execute(sql).await.unwrap();
         }
         let now: i64 =
@@ -553,5 +550,158 @@ async fn interval_withdrawal_refuses_content_before_retention_scrubs_either_repr
         .unwrap()
         .get(0);
     assert_eq!(count, 0);
+    case.f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; disposable workflow schema"]
+async fn integration_takeout_pages_access_without_exporting_credentials() {
+    let case = Case::new().await;
+    let issued = case.issue().await.unwrap();
+    let principal = authenticate(&case.f.db, &case.hasher, &issued.token)
+        .await
+        .unwrap();
+    let mut client = case.f.connect().await;
+    for _ in 0..21 {
+        read_context_metadata(&mut client, &principal, Uuid::new_v4(), case.header.context)
+            .await
+            .unwrap();
+    }
+    let first = lifecycle::export(&mut client, &case.owner, [None; 3])
+        .await
+        .unwrap();
+    assert_eq!(first.grants.items.len(), 1);
+    assert!(first.grants.items[0].get("credential_hash").is_none());
+    assert!(
+        !serde_json::to_string(&first)
+            .unwrap()
+            .contains(issued.token.as_str())
+    );
+    assert_eq!(first.access.items.len(), 20);
+    let cursor = first.access.next_cursor.unwrap();
+    let last = lifecycle::export(&mut client, &case.owner, [None, None, Some(cursor)])
+        .await
+        .unwrap();
+    assert_eq!(last.access.items.len(), 1);
+    assert!(last.access.next_cursor.is_none());
+    assert!(matches!(
+        lifecycle::export(&mut client, &case.owner, [Some(Uuid::new_v4()), None, None]).await,
+        Err(crate::http_owner_conversations::ConversationError::NotFound)
+    ));
+    case.f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; disposable workflow schema"]
+async fn withdrawn_projection_is_scrubbed_once_and_erasure_preserves_source_context() {
+    let mut case = Case::new().await;
+    case.request.permissions = Permissions::new(&[Operation::ContextContent]).unwrap();
+    let projection = case.projection().await;
+    case.request.content_envelope = Some(projection.clone());
+    let issued = case.issue().await.unwrap();
+    let principal = authenticate(&case.f.db, &case.hasher, &issued.token)
+        .await
+        .unwrap();
+    let mut client = case.f.connect().await;
+    read_context_content(&mut client, &principal, Uuid::new_v4(), case.header.context)
+        .await
+        .unwrap();
+    revoke_grant(&mut client, &case.owner, issued.grant_id)
+        .await
+        .unwrap();
+    assert_eq!(lifecycle::prune(&mut client, 1).await.unwrap(), 1);
+    assert_eq!(lifecycle::prune(&mut client, 1).await.unwrap(), 0);
+    let exported = lifecycle::export(&mut client, &case.owner, [None; 3])
+        .await
+        .unwrap();
+    assert_eq!(exported.envelopes.items.len(), 1);
+    assert!(exported.envelopes.items[0]["envelope_hex"].is_null());
+    assert!(
+        !serde_json::to_string(&exported).unwrap().contains(
+            &projection
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        )
+    );
+    let tx = client.transaction().await.unwrap();
+    crate::http_owner_conversations::lock_owner(&tx, &case.owner)
+        .await
+        .unwrap();
+    lifecycle::erase_context(&tx, case.owner.tenant.account_id(), case.header.context)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let erased = lifecycle::export(&mut client, &case.owner, [None; 3])
+        .await
+        .unwrap();
+    assert!(
+        erased.grants.items.is_empty()
+            && erased.envelopes.items.is_empty()
+            && erased.access.items.is_empty()
+    );
+    let exists: bool = client
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM workflow_contexts WHERE id=$1)",
+            &[&case.header.context],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(exists);
+    case.f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; disposable workflow schema"]
+async fn contact_erasure_removes_bound_grants_without_touching_other_contacts() {
+    let case = Case::new().await;
+    let issued = case.issue().await.unwrap();
+    let principal = authenticate(&case.f.db, &case.hasher, &issued.token)
+        .await
+        .unwrap();
+    let mut client = case.f.connect().await;
+    read_context_metadata(&mut client, &principal, Uuid::new_v4(), case.header.context)
+        .await
+        .unwrap();
+    let tx = client.transaction().await.unwrap();
+    crate::http_owner_conversations::lock_owner(&tx, &case.owner)
+        .await
+        .unwrap();
+    lifecycle::erase_contact(&tx, case.owner.tenant.account_id(), Uuid::new_v4())
+        .await
+        .unwrap();
+    let retained: i64 = tx
+        .query_one("SELECT count(*) FROM workflow_integration_grants", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(retained, 1);
+    lifecycle::erase_contact(&tx, case.owner.tenant.account_id(), case.request.contact)
+        .await
+        .unwrap();
+    assert_eq!(
+        tx.execute(
+            "DELETE FROM contacts WHERE account_id=$1 AND id=$2",
+            &[&case.owner.tenant.account_id(), &case.request.contact]
+        )
+        .await
+        .unwrap(),
+        1
+    );
+    tx.commit().await.unwrap();
+    assert!(
+        read_context_metadata(&mut client, &principal, Uuid::new_v4(), case.header.context)
+            .await
+            .is_err()
+    );
+    assert!(
+        lifecycle::export(&mut client, &case.owner, [None; 3])
+            .await
+            .unwrap()
+            .grants
+            .items
+            .is_empty()
+    );
     case.f.cleanup().await;
 }

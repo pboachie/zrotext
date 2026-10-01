@@ -25,6 +25,7 @@ CREATE TABLE workflow_integration_grants (
     expires_ms bigint NOT NULL CHECK(expires_ms>created_ms AND expires_ms-created_ms<=86400000),
     revoked_ms bigint CHECK(revoked_ms>0),
     PRIMARY KEY(account_id,grant_id),
+    UNIQUE(account_id,grant_id,context_id,context_revision),
     FOREIGN KEY(account_id,connector_id) REFERENCES connector_registrations(account_id,connector_id),
     FOREIGN KEY(account_id,line_id,device_id,binding_generation)
         REFERENCES device_line_bindings(account_id,line_id,device_id,generation),
@@ -53,6 +54,7 @@ CREATE TRIGGER workflow_integration_grants_before_update
 -- A client must actually encrypt a separate envelope for the selected role-3
 -- reader. The existing archive-reader envelope is never relabeled or returned.
 CREATE TABLE workflow_connector_context_envelopes (
+    id uuid NOT NULL DEFAULT gen_random_uuid(),
     account_id uuid NOT NULL,
     grant_id uuid NOT NULL,
     context_id uuid NOT NULL,
@@ -63,8 +65,11 @@ CREATE TABLE workflow_connector_context_envelopes (
     created_by_user uuid NOT NULL,
     created_ms bigint NOT NULL CHECK(created_ms>0),
     PRIMARY KEY(account_id,grant_id,context_id,context_revision),
+    UNIQUE(account_id,id),
     UNIQUE(account_id,request_id),
     FOREIGN KEY(account_id,grant_id) REFERENCES workflow_integration_grants(account_id,grant_id),
+    FOREIGN KEY(account_id,grant_id,context_id,context_revision)
+        REFERENCES workflow_integration_grants(account_id,grant_id,context_id,context_revision),
     FOREIGN KEY(account_id,context_id,context_revision)
         REFERENCES workflow_context_versions(account_id,context_id,revision),
     FOREIGN KEY(account_id,created_by_user) REFERENCES memberships(account_id,user_id)
@@ -86,6 +91,7 @@ CREATE TRIGGER workflow_connector_envelopes_before_update
 -- Content-free access records. Action idempotency and outcomes remain in the
 -- shared action service, and scheduling remains in the shared scheduler.
 CREATE TABLE workflow_integration_access (
+    id uuid NOT NULL DEFAULT gen_random_uuid(),
     account_id uuid NOT NULL,
     grant_id uuid NOT NULL,
     request_id uuid NOT NULL,
@@ -95,6 +101,7 @@ CREATE TABLE workflow_integration_access (
     outcome text NOT NULL CHECK(outcome IN ('accepted','refused')),
     recorded_ms bigint NOT NULL CHECK(recorded_ms>0),
     PRIMARY KEY(account_id,grant_id,request_id),
+    UNIQUE(account_id,id),
     FOREIGN KEY(account_id,grant_id) REFERENCES workflow_integration_grants(account_id,grant_id)
 );
 CREATE INDEX workflow_integration_access_retention

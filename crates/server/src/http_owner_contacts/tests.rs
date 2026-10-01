@@ -115,6 +115,7 @@ const TEST_MIGRATIONS: [(&str, &str); 77] = [
     migration!("075_workflow_context.sql"),
     migration!("076_workflow_decisions.sql"),
     migration!("077_encrypted_schedule.sql"),
+    migration!("078_workflow_integration_authority.sql"),
 ];
 
 #[test]

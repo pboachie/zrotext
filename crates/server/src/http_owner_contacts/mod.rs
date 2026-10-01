@@ -685,20 +685,43 @@ async fn delete_contact(
     Path(contact_id): Path<Uuid>,
     crate::http_auth::preauth::OwnerMutation(owner, _slot): crate::http_auth::preauth::OwnerMutation,
 ) -> Response {
-    let Ok(client) = crate::runtime_db::connect(&state.database_url).await else {
+    let Ok(mut client) = crate::runtime_db::connect(&state.database_url).await else {
         return unavailable();
     };
     let account_id = owner.tenant.account_id();
     // Deleting a contact cascades its consent history. Suppressions, holds
     // and opt-out records are separate planes and stay exactly as they are.
-    let deleted = client
+    let Ok(tx) = client.transaction().await else {
+        return unavailable();
+    };
+    if let Err(error) = crate::http_owner_conversations::lock_owner(&tx, &owner).await {
+        return error.into_response();
+    }
+    if crate::workflow_runtime::lifecycle::erase_contact(&tx, account_id, contact_id)
+        .await
+        .is_err()
+    {
+        return unavailable();
+    }
+    let deleted = tx
         .query_opt(
             "DELETE FROM contacts WHERE account_id=$1 AND id=$2 RETURNING id",
             &[&account_id, &contact_id],
         )
         .await;
     match deleted {
-        Ok(Some(_)) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Some(_)) => {
+            if crate::auth::require_current_owner(&tx, &owner)
+                .await
+                .is_err()
+            {
+                return error(StatusCode::UNAUTHORIZED, "unauthorized");
+            }
+            if tx.commit().await.is_err() {
+                return unavailable();
+            }
+            StatusCode::NO_CONTENT.into_response()
+        }
         Ok(None) => error(StatusCode::NOT_FOUND, "not_found"),
         Err(_) => unavailable(),
     }
