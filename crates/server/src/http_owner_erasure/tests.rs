@@ -348,6 +348,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         ),
     ),
     (
+        "080_test_exposure_reservations.sql",
+        include_str!("../../../../deploy/compose/migrations/080_test_exposure_reservations.sql"),
+    ),
+    (
         "../migration-candidates/NNN_conversation_execution_records.sql",
         include_str!(
             "../../../../deploy/compose/migration-candidates/NNN_conversation_execution_records.sql"
