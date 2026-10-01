@@ -1,5 +1,8 @@
 # Stripe test-mode billing foundation
 
+The [explicit test/live isolation proposal](BILLING-MODES-PROPOSAL.md) defines
+future mode boundaries and review slices. It does not enable live billing.
+
 The server has an opt-in Stripe test-mode event route at `POST /v1/billing/stripe-events`. Set `STRIPE_BILLING_TEST_ENABLED=true` with `STRIPE_TEST_WEBHOOK_SECRET`, a test API key, and an allowlist of `STRIPE_TEST_PRICE_IDS` to enable it. It accepts test-mode events only. Production billing is disabled.
 
 The test billing worker uses `STRIPE_TEST_RECONCILE_SECRET_KEY` for `GET /v1/subscriptions/{id}`, `GET /v1/charges/{id}`, `GET /v1/invoice_payments` and `GET /v1/invoices/{id}`. When hosted sessions are enabled, `STRIPE_TEST_SESSION_SECRET_KEY` is used for `POST /v1/customers`, `GET /v1/checkout/sessions` (open sessions of the bound customer), `POST /v1/checkout/sessions`, `POST /v1/checkout/sessions/{id}/expire` and `POST /v1/billing_portal/sessions`; Checkout Sessions Write covers the list and expire calls. The opt-in real-provider hosted-session smoke also performs `GET /v1/customers/{id}` with its separate `ZT_STRIPE_TEST_SECRET_KEY` test credential; Customer Read is needed for that smoke, but the deployed hosted-session route does not perform this read. No runtime Events Read permission is required by these paths. Each runtime key can be a separately scoped Stripe TEST restricted key. For existing installations, `STRIPE_TEST_SECRET_KEY` remains a fallback for either missing scoped key. A present but empty or live-mode scoped key fails startup; the signing secret is separate from both API keys. Review the exact Stripe permission grants and repeat the full TEST lifecycle before replacing an existing key.
