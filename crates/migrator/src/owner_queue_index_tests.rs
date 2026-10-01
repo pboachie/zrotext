@@ -40,7 +40,7 @@ async fn summary_index_preparation_preserves_conflicting_shapes_and_rechecks_rea
     prepare_summary_queue_index(&client).await.unwrap();
     let tx = client.transaction().await.unwrap();
     tx.batch_execute(include_str!(
-        "../../../deploy/compose/migrations/072_message_summary_metadata.sql"
+        "../../../deploy/compose/migrations/070_message_summary_metadata.sql"
     ))
     .await
     .unwrap();

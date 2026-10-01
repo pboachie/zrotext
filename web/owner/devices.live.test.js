@@ -78,6 +78,8 @@ async function ownerPage({ eventSource = FakeEventSource } = {}) {
     if (url === "/v1/auth/api-keys" && (!options || options.method === "GET"))
       return response(200, { keys: [], next_cursor: null });
     if (url === "/v1/webhooks") return response(200, { endpoints: [] });
+    // These legacy fleet/history fixtures model a server without summary metadata.
+    if (url.startsWith("/v1/owner/message-summary")) return response(404);
     throw new Error(`Unexpected request: ${url}`);
   };
   globalThis.document = { hidden: false, activeElement: null,

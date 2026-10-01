@@ -40,6 +40,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.graphics.Color
@@ -118,6 +119,7 @@ internal fun GatewayHome(
     heartbeats: Int,
     sim: String,
     pairingStatus: String,
+    power: GatewayPowerObservation = GatewayPowerObservation.unavailable(),
     onSetup: () -> Unit,
     onConnection: () -> Unit,
     onPause: () -> Unit
@@ -138,7 +140,23 @@ internal fun GatewayHome(
                 color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
         }
     }
-    // Pause stays in the main flow, never inside a secondary widget.
+    GatewayEntrance(1, motion) {
+        Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.large,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                GatewaySectionTitle("This phone")
+                GatewayObservationRow("Sending from", sim)
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+                GatewayObservationRow("Power", power.label)
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+                GatewayObservationRow("Connection", mood.title.removeSuffix("."))
+                Text("Heartbeat acknowledgments this session: $heartbeats",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+    // Pause stays beside its disclosure in the main flow, below the observations.
     OutlinedButton(onClick = onPause, modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp),
         colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary),
         shape = MaterialTheme.shapes.medium, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)) {
@@ -146,18 +164,6 @@ internal fun GatewayHome(
     }
     Text("Pause stops connections. SMS receiving access can still process messages locally; revoke it in Android app settings to stop local processing.",
         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    GatewayEntrance(1, motion) {
-        Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.large,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline), modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                GatewaySectionTitle("This phone")
-                Text("Selected SIM: $sim", style = MaterialTheme.typography.bodyMedium)
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
-                Text("Heartbeat acknowledgments this session: $heartbeats",
-                    style = MaterialTheme.typography.bodyMedium)
-            }
-        }
-    }
     GatewayEntrance(2, motion) {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             GatewaySectionTitle("Quick controls")
@@ -197,6 +203,28 @@ internal fun GatewayHome(
                 }
                 Spacer(Modifier.height(16.dp))
             }
+        }
+    }
+}
+
+/** Labels and observations reflow rather than truncating at large text sizes. */
+@Composable
+private fun GatewayObservationRow(label: String, value: String) {
+    val largeType = LocalDensity.current.fontScale > 1.3f
+    val description = Modifier.fillMaxWidth().testTag("home-observation-$label")
+        .semantics(mergeDescendants = true) {}
+    if (largeType) {
+        Column(description, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(label, style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(value, style = MaterialTheme.typography.bodyMedium)
+        }
+    } else {
+        Row(description, horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.Top) {
+            Text(label, modifier = Modifier.weight(0.35f), style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(value, modifier = Modifier.weight(0.65f), style = MaterialTheme.typography.bodyMedium)
         }
     }
 }

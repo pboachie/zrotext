@@ -4,8 +4,8 @@ use tokio_postgres::Client;
 
 pub(super) const OWNER_QUEUE_INDEX_MIGRATION: i64 = 49;
 pub(super) const OWNER_QUEUE_INDEX_FILE: &str = "049_owner_queue_probe_indexes.sql";
-pub(super) const SUMMARY_INDEX_MIGRATION: i64 = 72;
-pub(super) const SUMMARY_INDEX_FILE: &str = "072_message_summary_metadata.sql";
+pub(super) const SUMMARY_INDEX_MIGRATION: i64 = 70;
+pub(super) const SUMMARY_INDEX_FILE: &str = "070_message_summary_metadata.sql";
 
 // Both indexes lead with device_id so the owner queue probes constrain the
 // scan to one device, and their predicates are exactly the probe state sets so

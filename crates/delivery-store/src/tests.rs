@@ -286,8 +286,8 @@ const TEST_MIGRATIONS: [(&str, &str); 70] = [
         include_str!("../../../deploy/compose/migrations/069_sealed_root_custody.sql"),
     ),
     (
-        "072_message_summary_metadata.sql",
-        include_str!("../../../deploy/compose/migrations/072_message_summary_metadata.sql"),
+        "070_message_summary_metadata.sql",
+        include_str!("../../../deploy/compose/migrations/070_message_summary_metadata.sql"),
     ),
 ];
 
@@ -295,7 +295,7 @@ const TEST_MIGRATIONS: [(&str, &str); 70] = [
 /// test modules so each one runs against the complete reviewed schema.
 pub(crate) async fn apply_test_migrations(client: &Client) {
     for (name, migration) in TEST_MIGRATIONS {
-        if name == "072_message_summary_metadata.sql" {
+        if name == "070_message_summary_metadata.sql" {
             client.batch_execute("CREATE INDEX CONCURRENTLY messages_summary_queue ON messages(account_id,state,created_at) WHERE state IN ('accepted','queued','claimed','submitting','submitted')").await.unwrap();
             client.batch_execute("BEGIN").await.unwrap();
             let result = client.batch_execute(migration).await;

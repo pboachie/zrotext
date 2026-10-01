@@ -391,7 +391,7 @@ async fn apply_locked(
         if migration.version == SUMMARY_INDEX_MIGRATION {
             if migration.filename != SUMMARY_INDEX_FILE {
                 return Err(MigrationError::InvalidDirectory(format!(
-                    "migration 072 must be {SUMMARY_INDEX_FILE}"
+                    "migration {SUMMARY_INDEX_MIGRATION:03} must be {SUMMARY_INDEX_FILE}"
                 )));
             }
             prepare_summary_queue_index(client).await?;

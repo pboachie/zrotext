@@ -50,7 +50,7 @@ These totals are independent of paginated message history and local journals.
 
 ## Storage and deployment
 
-Migration `072_message_summary_metadata.sql` stores one immutable first-submit
+Migration `070_message_summary_metadata.sql` stores one immutable first-submit
 receipt per message. A database trigger captures writer evidence in the same
 transaction as the event. Receipt metadata survives event-history retention;
 message or device deletion cascades its removal. Admission, grants, quotas,

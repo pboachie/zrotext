@@ -2,9 +2,9 @@
 
 ## Scope
 
-The gateway currently presents connection diagnostics, heartbeat settings,
-controlled SMS setup and device pairing in one vertically scrolling activity.
-This review covers that screen and its enabled controls. It does not certify
+The gateway presents a Home screen, with connection diagnostics, heartbeat
+settings, controlled SMS setup and device pairing in its Setup and Tools screens.
+This review covers these screens and their enabled controls. It does not certify
 accessibility conformance or establish device, radio or carrier support.
 
 The review follows Android's guidance for
@@ -25,6 +25,19 @@ and [accessible apps](https://developer.android.com/guide/topics/ui/accessibilit
 
 ## Repeatable checks
 
+Home groups the sending line, local power observation and connection state into
+read-only rows. Each row exposes its label and value together, wraps at larger
+font sizes and has no click action. The power row uses the phone's sticky battery
+broadcast while Home is resumed and unregisters when paused or left. Missing or
+malformed observations say unavailable; an actual zero percent remains zero.
+Charging or full is distinct from not charging. These observations do not grant
+permissions, start a service or establish remote fleet freshness. Lifecycle tests
+exercise pause, resume, navigation and unavailable observations without radio
+activity. The adjacent Pause disclosure continues to describe local SMS processing.
+
+There are six shared accessibility checks, including the Home observation rows.
+The historical emulator results below predate that additional check.
+
 The existing Android CI unit-test task discovers `GatewayAccessibilityTest`,
 `GatewayDefaultScaleAccessibilityTest` and `GatewayContrastTest`. They render the
 actual activity through Robolectric on API 34, inspect its Compose semantics and
@@ -34,8 +47,8 @@ Android resources are included so the real Material fields
 are rendered. The shared checks also run through the opt-in
 `GatewayAccessibilityDeviceTest` instrumentation wrapper in the
 [no-radio device smoke workflow](../.github/workflows/android-device-smoke.yml).
-That workflow selects its five accessibility checks alongside one device
-preconditions check on a disposable emulator. The
+That workflow selects its six accessibility checks alongside one device
+preconditions check on a disposable emulator. The earlier five-check version in the
 [merged accessibility change](https://github.com/pboachie/zrotext/pull/313) passed
 the [hosted selection](https://github.com/pboachie/zrotext/actions/runs/36269589242)
 with six actual tests and zero failures or skips.

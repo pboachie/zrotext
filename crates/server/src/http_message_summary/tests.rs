@@ -9,7 +9,7 @@ use tokio_postgres::NoTls;
 use tower::ServiceExt;
 
 const METADATA_MIGRATION: &str =
-    include_str!("../../../../deploy/compose/migrations/072_message_summary_metadata.sql");
+    include_str!("../../../../deploy/compose/migrations/070_message_summary_metadata.sql");
 const QUEUE_INDEX: &str = "CREATE INDEX messages_summary_queue ON messages(account_id,state,created_at) WHERE state IN ('accepted','queued','claimed','submitting','submitted')";
 
 struct Fixture {
