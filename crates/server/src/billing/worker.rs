@@ -364,12 +364,29 @@ impl StripeTestWorker {
         else {
             return Ok(JobOutcome::Empty);
         };
+        let invoice_bound = super::invoice::enabled(&*db, account_id).await?;
         // Release the worker socket for the provider read: a slow or
         // unreachable Stripe must not hold one of the worker slots. The
         // claim's 30-second retry window keeps the row owned meanwhile.
         drop(db);
-        let fetched = match self.fetch_subscription(&subscription_id).await {
-            Ok(snapshot) if snapshot.subscription_id == subscription_id => Ok(snapshot),
+        let provider_result = if invoice_bound {
+            super::invoice::fetch(
+                &self.http,
+                &self.secret_key,
+                &self.api_base,
+                &subscription_id,
+            )
+            .await
+            .map(|proof| (proof.subscription().clone(), Some(proof)))
+        } else {
+            self.fetch_subscription(&subscription_id)
+                .await
+                .map(|snapshot| (snapshot, None))
+        };
+        let fetched = match provider_result {
+            Ok((snapshot, proof)) if snapshot.subscription_id == subscription_id => {
+                Ok((snapshot, proof))
+            }
             Err(BillingError::Provider(ProviderFailure::HttpStatus(404))) => Err(None),
             result => {
                 let error = result
@@ -383,16 +400,17 @@ impl StripeTestWorker {
         };
         let mut db = crate::runtime_db::connect_worker(database_url).await?;
         match fetched {
-            Ok(snapshot) => {
+            Ok((snapshot, proof)) => {
                 self.subscription_authorized.store(true, Ordering::Release);
                 self.provider_recovered(&mut db).await;
-                if let Err(error) = reconcile_snapshot_with_quotas(
+                if let Err(error) = super::reconcile_with_invoice(
                     &mut db,
                     account_id,
                     &snapshot,
                     &self.recognized_prices,
                     &self.quota_plans,
                     generation,
+                    proof.as_ref(),
                 )
                 .await
                 {
@@ -609,6 +627,7 @@ impl StripeTestWorker {
             .http
             .get(url)
             .bearer_auth(&self.secret_key)
+            .header("Stripe-Version", super::risk::STRIPE_API_VERSION)
             .send()
             .await
             .map_err(|_| ProviderFailure::Transport)?;

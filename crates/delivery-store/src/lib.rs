@@ -1423,7 +1423,7 @@ async fn reserve_outbound(
             .is_some(),
     };
     let mut past_due_rows = 0i64;
-    let (limit, source) = if billed {
+    let (limit, source, invoice_bound) = if billed {
         // One statement takes the same FOR SHARE locks the sequential reads
         // took: the account's risk events, every reconciliation row, its
         // past-due subscription rows and the outbound policy row. The
@@ -1439,7 +1439,11 @@ async fn reserve_outbound(
                    (SELECT count(*) FROM (SELECT 1 FROM billing_reconciliations WHERE account_id=$1 AND dirty_generation=processed_generation FOR SHARE) recon_done_lock), \
                    (SELECT count(*) FROM (SELECT 1 FROM billing_subscriptions WHERE account_id=$1 AND stripe_status='past_due' FOR SHARE) past_due_lock), \
                    (SELECT limit_units FROM usage_quota_policies WHERE account_id=$1 AND metric='outbound_message' FOR SHARE), \
-                   (SELECT source FROM usage_quota_policies WHERE account_id=$1 AND metric='outbound_message' FOR SHARE)",
+                   (SELECT source FROM usage_quota_policies WHERE account_id=$1 AND metric='outbound_message' FOR SHARE), \
+                   (SELECT coalesce((to_jsonb(q)->>'invoice_bound_test')::boolean,false) FROM usage_quota_policies q WHERE account_id=$1 AND metric='outbound_message' FOR SHARE), \
+                   to_regprocedure('reserve_billing_invoice_unit(uuid,uuid)') IS NOT NULL AND \
+                   EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='usage_ledger'::regclass AND tgname='billing_invoice_ledger' AND tgenabled IN ('O','A') AND tgfoid=to_regprocedure('apply_billing_invoice_ledger()')) AND \
+                   EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='messages'::regclass AND tgname='billing_invoice_liability' AND tgenabled IN ('O','A') AND tgfoid=to_regprocedure('close_billing_invoice_liability()'))",
                 &[(&account_id, Type::UUID)],
             )
             .await?;
@@ -1452,14 +1456,18 @@ async fn reserve_outbound(
             return Err(StoreError::QuotaNotConfigured);
         }
         past_due_rows = guards.get(3);
+        if guards.get::<_, Option<bool>>(6).unwrap_or(false) && !guards.get::<_, bool>(7) {
+            return Err(StoreError::QuotaNotConfigured);
+        }
         (
             guards.get::<_, Option<i64>>(4),
             guards.get::<_, Option<String>>(5),
+            guards.get::<_, Option<bool>>(6).unwrap_or(false),
         )
     } else {
         let policy = tx
             .query_typed_opt(
-                "SELECT limit_units,source FROM usage_quota_policies \
+                "SELECT limit_units,source,coalesce((to_jsonb(usage_quota_policies)->>'invoice_bound_test')::boolean,false) FROM usage_quota_policies \
                  WHERE account_id=$1 AND metric='outbound_message' FOR SHARE",
                 &[(&account_id, Type::UUID)],
             )
@@ -1468,6 +1476,7 @@ async fn reserve_outbound(
             Some(policy) => (
                 policy.get::<_, Option<i64>>(0),
                 policy.get::<_, Option<String>>(1),
+                policy.get::<_, bool>(2),
             ),
             None => return Err(StoreError::QuotaNotConfigured),
         }
@@ -1484,6 +1493,9 @@ async fn reserve_outbound(
         return Err(StoreError::QuotaExceeded);
     }
     let limit: i64 = limit.ok_or(StoreError::QuotaNotConfigured)?;
+    if invoice_bound && !billed {
+        return Err(StoreError::QuotaNotConfigured);
+    }
     if billed && source.as_deref() != Some("stripe_test") {
         return Err(StoreError::QuotaNotConfigured);
     }
@@ -1505,11 +1517,11 @@ async fn reserve_outbound(
              upsert AS ( \
                INSERT INTO usage_periods(account_id,metric,period_start,period_end,limit_units,reserved_units) \
                SELECT $1,'outbound_message',p,(p + interval '1 month')::date,$3,1 FROM period \
-                 WHERE $3::bigint > 0 OR EXISTS (SELECT 1 FROM usage_periods \
+                 WHERE $5::boolean OR $3::bigint > 0 OR EXISTS (SELECT 1 FROM usage_periods \
                    WHERE account_id=$1 AND metric='outbound_message' AND period_start=p) \
                ON CONFLICT(account_id,metric,period_start) DO UPDATE \
                  SET reserved_units=usage_periods.reserved_units+1 \
-                 WHERE usage_periods.reserved_units-usage_periods.refunded_units < usage_periods.limit_units \
+                 WHERE $5::boolean OR usage_periods.reserved_units-usage_periods.refunded_units < usage_periods.limit_units \
                RETURNING period_start), \
              ledger AS ( \
                INSERT INTO usage_ledger(account_id,message_id,metric,period_start,entry_kind,units) \
@@ -1521,9 +1533,19 @@ async fn reserve_outbound(
                 (&at_unix_ms, Type::INT8),
                 (&limit, Type::INT8),
                 (&message_id, Type::UUID),
+                (&invoice_bound, Type::BOOL),
             ],
         )
-        .await?
+        .await
+        .map_err(|error| {
+            if error.as_db_error().and_then(|db| db.constraint())
+                == Some("billing_invoice_budget_available")
+            {
+                StoreError::QuotaExceeded
+            } else {
+                StoreError::Database(error)
+            }
+        })?
         .get::<_, i64>(0);
     if reserved == 0 {
         return Err(StoreError::QuotaExceeded);
