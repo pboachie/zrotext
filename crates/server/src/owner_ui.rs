@@ -10,6 +10,7 @@ use axum::{
 
 const PAGE: &str = include_str!("../../../web/owner/devices.html");
 const SCRIPT: &str = include_str!("../../../web/owner/devices.js");
+const SHELL_SCRIPT: &str = include_str!("../../../web/owner/owner-shell.js");
 const STYLE: &str = include_str!("../../../web/owner/devices.css");
 const ACCOUNT_PAGE: &str = include_str!("../../../web/owner/account.html");
 const ACCOUNT_SCRIPT: &str = include_str!("../../../web/owner/account.js");
@@ -53,6 +54,7 @@ pub fn router() -> Router {
     Router::new()
         .route("/owner/devices", get(page))
         .route("/owner/devices.js", get(script))
+        .route("/owner/owner-shell.js", get(shell_script))
         .route("/owner/devices.css", get(style))
         .route("/owner/account", get(account_page))
         .route("/owner/account.js", get(account_script))
@@ -183,6 +185,17 @@ async fn style(headers: HeaderMap) -> Response {
     cached_asset(
         STYLE,
         "text/css; charset=utf-8",
+        &ETAG,
+        headers.get(header::IF_NONE_MATCH),
+    )
+}
+
+async fn shell_script(headers: HeaderMap) -> Response {
+    static ETAG: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| asset_etag(SHELL_SCRIPT));
+    cached_asset(
+        SHELL_SCRIPT,
+        "text/javascript; charset=utf-8",
         &ETAG,
         headers.get(header::IF_NONE_MATCH),
     )
@@ -515,6 +528,11 @@ mod tests {
                 "no-cache",
             ),
             ("/owner/devices.css", "text/css; charset=utf-8", "no-cache"),
+            (
+                "/owner/owner-shell.js",
+                "text/javascript; charset=utf-8",
+                "no-cache",
+            ),
             ("/owner/account", "text/html; charset=utf-8", "no-store"),
             (
                 "/owner/account.js",

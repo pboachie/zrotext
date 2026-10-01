@@ -335,4 +335,6 @@ chain/rollback vectors, production key lifecycle, and the Q1–Q11 decisions
 remain separate gates. The candidate profile says vectors must be regenerated
 after those decisions and versioning.
 
+The [local stdio MCP server](../../docs/mcp-local-tools.md) exposes SDK syntax previews and gated tool discovery; live scoped messaging remains unavailable.
+
 The [synthetic agent adapter foundation](../../docs/agent-adapter-simulator.md) adds callable fixture handling and a Python wrapper over this SDK. It cannot activate live messaging or grant agent authority.
