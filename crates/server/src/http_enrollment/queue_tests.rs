@@ -183,7 +183,7 @@ macro_rules! queue_schema {
         [$(($name, include_str!(concat!("../../../../deploy/compose/migrations/", $name)))),+]
     };
 }
-const QUEUE_SCHEMA: [(&str, &str); 68] = queue_schema!(
+const QUEUE_SCHEMA: [(&str, &str); 69] = queue_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -252,6 +252,7 @@ const QUEUE_SCHEMA: [(&str, &str); 68] = queue_schema!(
     "066_conversation_interval_session_index.sql",
     "067_contacts_consent.sql",
     "068_connector_registration.sql",
+    "069_sealed_root_custody.sql",
 );
 #[test]
 fn queue_fixture_includes_every_checked_in_migration() {
