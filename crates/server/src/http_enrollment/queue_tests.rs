@@ -254,7 +254,7 @@ const QUEUE_SCHEMA: [(&str, &str); 71] = queue_schema!(
     "068_connector_registration.sql",
     "069_sealed_root_custody.sql",
     "070_message_summary_metadata.sql",
-    "071_conversation_confirmation_records.sql",
+    "072_conversation_confirmation_records.sql",
 );
 #[test]
 fn queue_fixture_includes_every_checked_in_migration() {

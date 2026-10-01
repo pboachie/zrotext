@@ -285,8 +285,8 @@ const TEST_MIGRATIONS: [(&str, &str); 71] = [
         migration!("070_message_summary_metadata.sql"),
     ),
     (
-        "071_conversation_confirmation_records.sql",
-        migration!("071_conversation_confirmation_records.sql"),
+        "072_conversation_confirmation_records.sql",
+        migration!("072_conversation_confirmation_records.sql"),
     ),
 ];
 

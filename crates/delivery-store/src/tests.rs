@@ -290,9 +290,9 @@ const TEST_MIGRATIONS: [(&str, &str); 71] = [
         include_str!("../../../deploy/compose/migrations/070_message_summary_metadata.sql"),
     ),
     (
-        "071_conversation_confirmation_records.sql",
+        "072_conversation_confirmation_records.sql",
         include_str!(
-            "../../../deploy/compose/migrations/071_conversation_confirmation_records.sql"
+            "../../../deploy/compose/migrations/072_conversation_confirmation_records.sql"
         ),
     ),
 ];

@@ -105,7 +105,7 @@ const TEST_MIGRATIONS: [(&str, &str); 71] = [
     migration!("068_connector_registration.sql"),
     migration!("069_sealed_root_custody.sql"),
     migration!("070_message_summary_metadata.sql"),
-    migration!("071_conversation_confirmation_records.sql"),
+    migration!("072_conversation_confirmation_records.sql"),
 ];
 #[test]
 fn exchange_fixture_tracks_numbered_migrations() {
