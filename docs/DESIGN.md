@@ -86,7 +86,14 @@ recalled. This component does not enable production conversation transfer.
 
 Closing or backgrounding the view closes its owned setup controller and rejects
 late callbacks. Reopening creates a fresh controller and does not restore phone
-approval. File pickers may return public candidates after backgrounding, but
-authority must be reviewed again; reply authority requires a separate explicit
-verification action. A failed close remains visible and prevents another setup
-in that activity. Radio execution remains disabled in this UI composition.
+approval. The initial setup file can be selected before activation. Reply
+authority uses foreground manual input of the paired browser's exact canonical
+base64 export, bounded to 21,900 characters and 16,423 decoded bytes. Nothing is
+read automatically from the clipboard or saved. A separate verification action
+is bound to the original active observation and its remaining lease; expiry,
+changed observations, closing and backgrounding invalidate pending UI actions
+and completions. Opening or cancelling the input does not remount the consent
+pane or renew approval. An external file picker during an active interval still
+closes that interval; returning cannot restore it. A failed close remains visible
+and prevents another setup in that activity. Radio execution remains disabled
+in this UI composition.
