@@ -8,23 +8,23 @@ The first complete experiences are a text receptionist for local service operato
 
 The gateway has restricted send/inbound pilots, signed webhook delivery, account controls, a device dashboard, self-hosting foundations and test-mode billing. Recent merged work adds:
 
-- [MFA-bound SMS approval public-key registration and revocation](../protocol/v1/sms-line-activation-contract.md) ([#240](https://github.com/pboachie/zrotext/pull/240)). The internal activation functions are not connected to a production activation route.
+- [MFA-bound SMS approval public-key registration and revocation](../protocol/v1/sms-line-activation-contract.md) ([#240](https://github.com/pboachie/zrotext/pull/240)), with owner/phone line activation implemented end to end behind default-off gates (#247/#248/#251). Production activation and physical-SIM acceptance remain separate.
 - A [default-off line-bound opt-out stream](../protocol/v1/line-opt-out-contract.md) with durable Android upload/replay identity. It carries STOP/review metadata; it is not general inbound message content.
-- An [owner-only read-only queue](SMS-COMPLIANCE.md#gate-for-general-sending) for ambiguous SMS holds ([#237](https://github.com/pboachie/zrotext/pull/237)). It cannot clear a hold or record an off-channel withdrawal.
+- An [owner review queue](SMS-COMPLIANCE.md#gate-for-general-sending) for ambiguous SMS holds, with merged off-channel holds/review decisions (#242) and dashboard controls/pre-grant queued-message cancellation (#245). A decision does not manually lift suppression; already granted work may finish.
 
-Production line activation, off-channel holds and review decisions, general inbound content, sealed messaging and the stable public API remain open. The [device compatibility record](DEVICE-COMPATIBILITY.md) describes limited controlled evidence, not a supported-device or capacity guarantee. The [sealed decision log](../protocol/drafts/zt-009-decision-log.md) remains authoritative for Q1-Q11; external paid review is not a prerequisite replacing those technical gates.
+General inbound content, enabled sealed execution and the stable general API remain open. Quota-only usage plans and expiring owner-registration invite tokens are implemented default-off prerequisites; they are not live payments or hosted launch readiness. Observer seats/invitations already exist. The [device compatibility record](DEVICE-COMPATIBILITY.md) describes limited controlled evidence, not a supported-device or capacity guarantee. The [sealed decision log](../protocol/drafts/zt-009-decision-log.md) remains authoritative for Q1-Q11; external paid review is not a prerequisite replacing those technical gates.
 
-## Implementation under review
+## Delivered groundwork and remaining gates
 
-The following slices have reviewable implementations. They are pull requests, not merged capability or release evidence; the roadmap's release stages and general-send gates stay unchanged until review and the required runtime verification are complete.
+The following slices are merged groundwork. Their limited scope does not advance the roadmap's release stages or general-send gates. See the [concept/state matrix](CONCEPT-IMPLEMENTATION.md) for owner/Android presentation requirements and #612 integrated visual acceptance.
 
-| Slice | Review | Scope and remaining boundary |
+| Slice | Merged evidence | Scope and remaining boundary |
 |---|---|---|
 | Off-channel holds and review decisions | [#242](https://github.com/pboachie/zrotext/pull/242) | Durable owner API and audit records; neither decision manually lifts suppression. |
-| Owner controls and queued-message cancellation | [#245](https://github.com/pboachie/zrotext/pull/245), stacked on #242 | Dashboard forms, cancellation before a radio grant, usage refunds, and suppression recheck at grant time. Already granted work may finish. |
+| Owner controls and queued-message cancellation | [#245](https://github.com/pboachie/zrotext/pull/245) | Dashboard forms, cancellation before a radio grant, usage refunds, and suppression recheck at grant time. Already granted work may finish. |
 | Synthetic workflow demo | [#244](https://github.com/pboachie/zrotext/pull/244) | Service inquiry, wedding RSVP, and personal reminder simulations with draft approval, handoff, opt-out, and honest delivery states. Scripted drafts only; no SMS or AI provider connected. |
 
-Review #242 before its #245 follow-up. The demo can be reviewed independently. Production line activation, general inbound content, sealed messaging, durable workflow services, and real-device evidence remain the next runtime gates.
+The signed restricted rc.2 Android candidate is published; it is not general release or concept-fidelity acceptance for the next candidate. Native Home/navigation/motion and guided setup are merged (#603/#604/#648); #611 adds remaining observations and #612 verifies the integrated owner/Android tree. TypeScript sealed envelope preparation and shared cross-client/adversarial vectors are merged groundwork, not a complete enabled runtime. `POST /v1/sealed/messages` admission and `POST /v1/sealed/inbound-events` upload are mounted behind the off-by-default sealed-admission flag; dispatch and slice-2 surfaces remain separate tasks. Canonical `/v1/sealed/*` is the existing candidate family; proposed `/v1/messages` is not a competing implemented plaintext route. Conversation consent/read and protected phone-journal groundwork (#613/#650/#651/#652/#655) is merged and dormant, not a complete general conversation product. Durable workflow services, provisioning/key lifecycle and real-device evidence remain runtime gates.
 
 ## Delivery sequence
 

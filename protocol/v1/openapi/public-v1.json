@@ -1371,7 +1371,7 @@
         "operationId": "submitMessage",
         "summary": "Submit one outbound message (planned)",
         "x-implemented": false,
-        "description": "PLANNED: no /v1/messages route exists in crates/server today. Design target from the docs/ARCHITECTURE.md outline: Authorization: Bearer header, required Idempotency-Key, returns 202 and a message identity. The sealed-content proposal that would carry customer-readable text through this plane is pinned separately in openapi/sealed-v1.json (POST /v1/sealed/messages, proposed and unimplemented); public REST does not silently accept plaintext under the sealed promise. The only implemented send plane today is the allowlisted synthetic-alpha test route POST /v1/alpha/messages.",
+        "description": "PLANNED: no /v1/messages route exists in crates/server today. Design target from the docs/ARCHITECTURE.md outline: Authorization: Bearer header, required Idempotency-Key, returns 202 and a message identity. The canonical sealed candidate family is pinned separately in openapi/sealed-v1.json: POST /v1/sealed/messages admission and POST /v1/sealed/inbound-events upload are implemented behind the default-off SEALED_ADMISSION_ENABLED flag. Admission queues exact ciphertext and is not a grant, radio submission, delivery or enabled general sending; sealed dispatch and message lifecycle remain separate tasks. Public REST does not silently accept plaintext under the sealed promise. The implemented synthetic-alpha test plane remains allowlisted at POST /v1/alpha/messages and cannot substitute for sealed execution.",
         "security": [
           {
             "bearerAuth": []

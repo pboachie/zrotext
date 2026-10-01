@@ -1,6 +1,6 @@
 # Sealed API v1 contract
 
-**Contract with one implemented slice.** This document and the companion
+**Contract with two default-off message-plane implementations.** This document and the companion
 [OpenAPI 3.1.0 document](openapi/sealed-v1.json) define the HTTP
 surface for the sealed API, derived from the ZT-009 decisions
 recorded 2026-09-26 ([decision log Q4/Q6/Q8/Q9/Q11](../drafts/zt-009-decision-log.md)).
@@ -13,8 +13,8 @@ and delivery/event surface, and the usage metering query.
 ([#538](https://github.com/pboachie/zrotext/issues/538) slice 1, module
 `crates/server/src/http_sealed`): mounted only when an operator sets
 `SEALED_ADMISSION_ENABLED=true`, off by default. With the flag off, no server
-route is mounted for any endpoint in this document. With it on, the single
-mounted handler accepts only the exact raw-binary content type, verifies the
+route is mounted for any endpoint in this document. With it on, the outbound
+admission handler accepts only the exact raw-binary content type, verifies the
 manifest chain, signer scope and envelope signature, and queues exact bytes
 toward the bound device; acceptance is never carrier evidence and never an
 execution grant, and sealed dispatch to devices remains deliberately
