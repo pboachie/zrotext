@@ -29,11 +29,13 @@ The signed restricted rc.2 Android candidate is published; it is not general rel
 The owner concept foundation now includes the merged shared shell, selected
 fleet details, outbound activity and authoritative writer summaries
 (#683/#685/#690/#695). Android local power is merged in #693. #605 composes
-the summary, hardware and activity hierarchy and keeps missing Android writer
-counts explicitly unavailable. A phone connection credential does not provide
-the independent `messages:read` authority needed to consume those counts.
-The source integration and automated accessibility checks retain the remaining
-authenticated-reader, final human and physical-device acceptance requirements.
+the summary, hardware and activity hierarchy. Android offers an optional manual
+device-scoped summary reader with an independent masked `messages:read` API key,
+explicit HTTPS origin and device UUID. It stores no credential, clears access
+on backgrounding or scope changes, cancels off Home and labels expired counts
+as historical. A phone connection credential cannot provide that authority;
+missing observations remain unavailable. Integrated authenticated network,
+final human and physical-device acceptance remain open.
 
 ## Delivery sequence
 

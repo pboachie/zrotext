@@ -37,7 +37,7 @@ abstract class GatewayAccessibilityChecks {
             "SETUP/ACCESS" -> listOf("Set up this phone", "Review access", "Android access")
             "SETUP/SIM" -> listOf("Set up this phone", "Choose a SIM")
             "SETUP/PAIRING" -> listOf("Set up this phone", "Device pairing")
-            "CONNECTION" -> listOf("Authenticated device heartbeat")
+            "CONNECTION" -> listOf("Authenticated device heartbeat", "Message summary reader")
             "TOOLS" -> listOf("Advanced pilots", "Gateway connection test", "Controlled SMS test") +
                 debugOnly("Controlled MMS spike")
             else -> error("Unknown test screen")
@@ -66,7 +66,7 @@ abstract class GatewayAccessibilityChecks {
     }
 
     @Test fun homeObservationsKeepReadOnlyLabelsAndReadingOrderAtCurrentTextScale() = onScreen { root ->
-        val summaries = listOf("Submitted today", "In queue").map { label ->
+        val summaries = listOf("Submitted today", "In queue", "Awaiting receipt").map { label ->
             nodes(root).single { it.config.getOrNull(SemanticsProperties.TestTag) == "home-observation-$label" }
         }
         assertTrue(summaries.zipWithNext().all { (first, next) -> first.positionInRoot.y < next.positionInRoot.y })
@@ -126,14 +126,14 @@ abstract class GatewayAccessibilityChecks {
         val expected = when (page) {
             "HOME", "SETUP", "SETUP/ACCESS", "SETUP/SIM" -> emptyList()
             "SETUP/PAIRING" -> listOf("HTTPS server origin", "Pairing ID", "One-use pairing token")
-            "CONNECTION" -> listOf("WSS device stream URL", "Approved device UUID")
+            "CONNECTION" -> listOf("WSS device stream URL", "Approved device UUID", "Summary HTTPS origin", "Summary device UUID", "Separate messages-read API key")
             "TOOLS" -> listOf("WSS test endpoint", "Short-lived test token", "Controlled recipient +E.164") +
                 debugOnly("Controlled MMS recipient +E.164", "Optional subject")
             else -> error("Unknown test screen")
         }
         val fields = nodes(root).filter { it.config.contains(SemanticsProperties.EditableText) }
         assertEquals(expected, fields.map(::text))
-        assertEquals(expected.filter { it.contains("token") },
+        assertEquals(expected.filter { it.contains("token") || it == "Separate messages-read API key" },
             fields.filter { it.config.contains(SemanticsProperties.Password) }.map(::text))
     }
 

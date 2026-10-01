@@ -33,7 +33,7 @@ are contracts for every presentation change. No UI can widen authority.
 | Team and observer | `/owner/seats` and `/owner/observer`; device-status-only observer seats | Separate role navigation, seat lifecycle and current status; no decrypted-content/team/root authority for observer | #607/#633; cross-role destinations, removed membership and stale sessions |
 | Plans/usage | `/billing` and existing `/v1/billing` session, capacity and entitlement endpoints; merged #707 usage history and #711 local usage presentation | Link the real owner billing dashboard with used/reserved/refunded units and period bounds. Missing observations remain unavailable; live payments and a fleet percentage are not established | #607/#631/#676; TEST/disabled/pending/hold/over-cap states, no payment-success inference from navigation |
 | Android wordmark and signal | `GatewayCompanion.kt`, `GatewayVisuals.kt`, native theme; merged #603/#604 | Retain connection-state signal, reduced motion and lifecycle suspension, never artwork-derived connectivity | #611/#612; actual debug APK cold launch/resume/rotation and disabled animations |
-| Android Home | `GatewayHome`, session heartbeat acknowledgements, selected SIM, Pause and widgets; merged #693 adds read-only lifecycle-aware local Power | Message activity precedes compact Sending from/Power/Connection rows. Submitted today/In queue remain explicitly unavailable without an authorized summary reader; local counters are not substitutes for the merged #695 source | #611/#605; missing observations, large text, portrait/landscape/keyboard and TalkBack order |
+| Android Home | `GatewayHome`, session heartbeat acknowledgements, selected SIM, Pause and widgets; merged #693 adds read-only lifecycle-aware local Power | Message activity precedes compact Sending from/Power/Connection rows. An optional manual device-scoped reader shows Submitted today/In queue/Awaiting receipt from the merged #695 source using an independent messages:read key; absent, expired or refused observations remain unavailable or explicitly historical | #611/#605; missing observations, large text, portrait/landscape/keyboard and TalkBack order |
 | Android Setup | `GatewaySetupGuide`, merged #648; explicit disclosure from #602 | Preserve steps, permission explanation/decline and fingerprint comparison; navigation itself grants nothing | #611/#612; Back, dismissal, interrupted setup and no permission/service/radio side effects |
 | Android Connection | Existing credential fields, test/authenticated statuses and explicit start/pause controls | Keep masked credentials and precise connecting/authenticated/repair states, reachable from Home | #611/#612; validation errors, revoked credentials, reconnect and resumed stale state |
 | Android Tools | Existing controlled test/diagnostic controls | Keep explicit test-only limitations and diagnostics; no widget or navigation auto-starts tests | #611/#612; opening/dismissing is free of radio/service effects |
@@ -97,10 +97,14 @@ meaningful state changes politely without recurring heartbeat speech.
 #607 common shell/DOM conventions, #609 fleet selection, #610 outbound activity,
 #608 writer summaries and #611 local power are implemented in merged
 #683/#685/#690/#695/#693. #605 composes their information hierarchy; #612
-still owns integrated visual and human accessibility acceptance. Android
-consumption of authenticated writer summaries remains open: a phone connection
-credential is not a `messages:read` API key, and unavailable values must not
-be replaced by local counters or sample numbers. The existing Android foundation
+still owns integrated visual and human accessibility acceptance. Android includes an optional manual authenticated summary reader. Enter its
+HTTPS origin, selected device UUID and separate masked `messages:read` key on
+Connection, then explicitly read on Home. No credential or count is persisted;
+backgrounding, clearing or changing scope invalidates the reader and outstanding
+responses. Leaving Home cancels outstanding work and ages previous observations.
+The reader never borrows phone connection credentials or substitutes local
+counters. Counts are device-scoped UTC writer observations, not delivered SMS.
+Integrated authenticated network, emulator and physical acceptance remain open. The existing Android foundation
 from #602 → #603 → #604 → #648 is retained. #612
 compares the integrated source and debug APK against both reference concepts at
 compact mobile/wide desktop, portrait/landscape, default/200% text and keyboard

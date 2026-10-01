@@ -349,9 +349,10 @@ Make ZROtext practical to run, upgrade and build against.
 - [x] Supported-device list backed by repeatable tests ([compatibility matrix](DEVICE-COMPATIBILITY.md))
 - [x] Native Home/Setup/Connection/Tools and explicit guided setup are merged (#603/#604/#648); navigation does not imply sending authority
 - [x] Read-only lifecycle-aware local Home Power observations are merged (#693); unavailable observations remain explicit
+- [x] Optional manual Android device-scoped writer-summary reader source uses independent messages:read authority, explicit HTTPS/device configuration and lifecycle cancellation; no credential persistence or local-counter fallback
 - [x] Automated landscape/status checks are merged (#701), using actual scrolling and the Compose frame clock to reveal platform-visible status and reachable Pause/disclosure; no spoken TalkBack or physical acceptance is implied
 - [ ] Actual TalkBack/Switch Access, keyboard-open masking/focus return, permission and lifecycle traversal, and physical OEM/motion acceptance remain open (#612)
-- [ ] Android Home consumption of the merged authenticated summary source (#608); local counters cannot substitute
+- [ ] Integrated authenticated network and emulator acceptance of the optional Android summary reader (#608/#605); local counters cannot substitute
 
 </details>
 
