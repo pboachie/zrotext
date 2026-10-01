@@ -3,6 +3,7 @@ package org.zrotext.gateway
 
 import android.content.Intent
 import android.net.Uri
+import android.os.Bundle
 import android.os.Build
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityNodeInfo
@@ -25,10 +26,18 @@ class ConversationEntryOptInDeviceTest {
         val activity = instrumentation.startActivitySync(Intent(context, MainActivity::class.java)
             .putExtra("gateway_screen", "CONNECTION").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as MainActivity
         val candidate = File.createTempFile("public-setup-", ".bin", context.cacheDir)
+        fun matchingText(label: String): List<AccessibilityNodeInfo> {
+            val root = instrumentation.uiAutomation.rootInActiveWindow ?: return emptyList()
+            val matches = mutableListOf<AccessibilityNodeInfo>()
+            fun visit(current: AccessibilityNodeInfo) {
+                if (current.text?.toString() == label) matches.add(current)
+                for (index in 0 until current.childCount) current.getChild(index)?.let(::visit)
+            }
+            visit(root)
+            return matches
+        }
         fun node(label: String): AccessibilityNodeInfo? {
-            val labels = instrumentation.uiAutomation.rootInActiveWindow
-                ?.findAccessibilityNodeInfosByText(label).orEmpty()
-            for (textNode in labels.filter { it.text?.toString() == label }) {
+            for (textNode in matchingText(label)) {
                 // Compose exposes button text as a non-clickable child of the action node.
                 var action: AccessibilityNodeInfo? = textNode
                 while (action != null) {
@@ -38,6 +47,15 @@ class ConversationEntryOptInDeviceTest {
             }
             return null
         }
+        instrumentation.waitForIdleSync()
+        val diagnosticLabel = "Open conversation review"
+        instrumentation.sendStatus(0, Bundle().apply {
+            putString("stream", "Opt-in accessibility lookup: native=" +
+                instrumentation.uiAutomation.rootInActiveWindow
+                    ?.findAccessibilityNodeInfosByText(diagnosticLabel)?.size +
+                "; traversal=" + matchingText(diagnosticLabel).size +
+                "; clickable=" + (node(diagnosticLabel) != null) + "\n")
+        })
         fun click(label: String) {
             val deadline = SystemClock.elapsedRealtime() + 5000
             while (node(label) == null && SystemClock.elapsedRealtime() < deadline) Thread.sleep(25)
@@ -62,10 +80,9 @@ class ConversationEntryOptInDeviceTest {
             val deadline = SystemClock.elapsedRealtime() + 5000
             while (activity.conversationSetupEnabled && SystemClock.elapsedRealtime() < deadline) Thread.sleep(25)
             assertFalse(activity.conversationSetupEnabled)
-            val root = checkNotNull(instrumentation.uiAutomation.rootInActiveWindow)
-            assertTrue(root.findAccessibilityNodeInfosByText("The selected conversation could not be verified.").isNotEmpty())
-            assertTrue(root.findAccessibilityNodeInfosByText("Agree and continue").isEmpty())
-            assertTrue(root.findAccessibilityNodeInfosByText("Content transfer: Confirmed").isEmpty())
+            assertTrue(matchingText("The selected conversation could not be verified. Check pairing, the selected line and the setup file.").isNotEmpty())
+            assertTrue(matchingText("Agree and continue").isEmpty())
+            assertTrue(matchingText("Content transfer: Confirmed for this interval").isEmpty())
             assertFalse(context.getDatabasePath(ConversationJournalStores.CAPTURE_FILE).exists())
             assertFalse(context.getDatabasePath(ConversationJournalStores.SEND_FILE).exists())
             click("Close conversation review")
