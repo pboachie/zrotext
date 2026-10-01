@@ -109,7 +109,7 @@ const TEST_MIGRATIONS: [(&str, &str); 72] = [
     migration!("069_sealed_root_custody.sql"),
     migration!("070_message_summary_metadata.sql"),
     migration!("071_sealed_grant_authority.sql"),
-    migration!("073_agent_authority.sql"),
+    migration!("072_conversation_confirmation_records.sql"),
 ];
 
 #[test]
