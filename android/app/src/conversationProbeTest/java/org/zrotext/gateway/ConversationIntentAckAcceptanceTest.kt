@@ -92,6 +92,48 @@ class ConversationIntentAckAcceptanceTest {
     private fun submit(wire: ConversationSocketWire, owner: ConversationPhoneSession, event: AlphaRadioEvent): Boolean =
         wire.javaClass.getDeclaredMethod("submitIntent", ConversationPhoneSession::class.java, AlphaRadioEvent::class.java)
             .invoke(wire, owner, event) as Boolean
+    private fun queuedIntent(dao: SmsAttemptDao, excluded: List<String>): AlphaRadioEvent? =
+        dao.javaClass.getMethod("nextAlphaEvent", String::class.java, String::class.java,
+            String::class.java, List::class.java)
+            .invoke(dao, identity.accountId, identity.deviceId, identity.originHash, excluded) as AlphaRadioEvent?
+    @Test fun liveSealedIntentDoesNotStarveOrdinaryPumpOrOwnCallbackEvidence() = withDatabase { _, db ->
+        val owned = event(); val ordinary = event()
+        val type = Class.forName("org.zrotext.gateway.ConversationRadioIntentOwnership")
+        val registry = type.getField("INSTANCE").get(null)
+        val lease = type.getDeclaredMethod("register", ConversationPhoneSession::class.java,
+            String::class.java, String::class.java, String::class.java)
+            .invoke(registry, session, owned.eventId, owned.messageId, owned.attemptId) as AutoCloseable
+        try {
+            db.sealedPreparations().reserve(SealedPreparationRecord(identity.accountId, owned.messageId,
+                owned.attemptId, "01".repeat(32), "02".repeat(32))) {}
+            for (intent in listOf(owned, ordinary)) db.attempts().reserveAlpha(intent.attemptId,
+                intent.messageId, 3, 1, intent.eventId, 100, identity = identity)
+            assertEquals(ordinary.eventId, queuedIntent(db.attempts(), listOf(owned.eventId))?.eventId)
+            db.attempts().acknowledgeAlphaEvent(ordinary.eventId, 101)
+            val callback = owned.copy(eventId = id(), evidence = "sent_ok")
+            db.attempts().insertAlphaEvent(callback)
+            assertEquals(callback.eventId, queuedIntent(db.attempts(), listOf(owned.eventId))?.eventId)
+            assertEquals(false, type.getDeclaredMethod("owns", AlphaRadioEvent::class.java).invoke(registry, callback))
+        } finally { lease.close() }
+    }
+    @Test fun durableSealedIntentCannotReenterPumpAfterDatabaseReopenAndRecovery() = withDatabase { name, db ->
+        val intent = event()
+        db.sealedPreparations().reserve(SealedPreparationRecord(identity.accountId, intent.messageId,
+            intent.attemptId, "01".repeat(32), "02".repeat(32))) {}
+        db.attempts().reserveAlpha(intent.attemptId, intent.messageId, 3, 1, intent.eventId, 100, identity = identity)
+        db.close()
+        reopened(name) { reopened ->
+            val dao = reopened.attempts()
+            assertNull(queuedIntent(dao, emptyList()))
+            recoverJournalState(dao, 101)
+            assertEquals(AttemptState.NOT_SUBMITTED, dao.getAttempt(intent.attemptId)!!.state)
+            assertNotNull(dao.getAlphaEvent(intent.eventId)!!.acknowledgedAtMs)
+            assertEquals("proven_no_submit", queuedIntent(dao, emptyList())?.evidence)
+            assertFalse(dao.acknowledgeAlphaIntent(intent.eventId, true, 102))
+            assertEquals(0, dao.consumeRadioStart(intent.attemptId, intent.messageId, 3, 1, 103))
+            assertNotNull(reopened.sealedPreparations().find(identity.accountId, intent.messageId))
+        }
+    }
     @Test fun processOwnershipExcludesOnlyExactLiveIntentAndOldCloseCannotReleaseSuccessor() {
         val type = Class.forName("org.zrotext.gateway.ConversationRadioIntentOwnership")
         val registry = type.getField("INSTANCE").get(null)

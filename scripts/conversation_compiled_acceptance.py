@@ -81,7 +81,7 @@ def main():
     if any(permission in permissions for permission in ("android.permission.SEND_SMS", "android.permission.RECEIVE_SMS")):
         raise ValueError("Installed artifact has radio permissions")
     results = []
-    for name, count in zip(CLASSES, (13, 6)):
+    for name, count in zip(CLASSES, (13, 8)):
         output = run(adb + ["shell", "am", "instrument", "-w", "-r", "-e", "class", name,
                             APP + ".test/androidx.test.runner.AndroidJUnitRunner"])
         if (f"OK ({count} tests)" not in output or "FAILURES!!!" in output or "INSTRUMENTATION_FAILED" in output):
