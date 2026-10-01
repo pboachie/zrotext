@@ -598,6 +598,23 @@ async fn export_paginates_full_history_beyond_the_first_page() {
     let (mut db, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     crate::auth::test_schema::apply(&db).await;
+    for migration in [
+        include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+        include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+        include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+        include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+        include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+        include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+        include_str!("../../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
+        include_str!("../../../../deploy/compose/migrations/043_sealed_candidate_inbound.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
+        include_str!("../../../../deploy/compose/migrations/064_owner_conversation_consent.sql"),
+        include_str!("../../../../deploy/compose/migrations/065_conversation_activation.sql"),
+        include_str!("../../../../deploy/compose/migrations/067_contacts_consent.sql"),
+    ] {
+        db.batch_execute(migration).await.unwrap();
+    }
     let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(19)).unwrap());
     let a = register(
         &mut db,
