@@ -5,6 +5,8 @@ use crate::{
     auth::agent_grants,
 };
 
+mod dispatch;
+
 struct AgentCase {
     base: TestCase,
     token: String,
@@ -91,6 +93,27 @@ async fn exact_agent_action_replay_consumes_one_reservation_and_has_no_normal_ap
         .unwrap()
         .get(0);
     assert_eq!(provenance, case.grant);
+    let limit: i16 = case
+        .base
+        .db
+        .query_one(
+            "SELECT sealed_segment_limit FROM messages WHERE id=$1",
+            &[&action.message],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(limit, 1);
+    assert!(
+        case.base
+            .db
+            .execute(
+                "UPDATE messages SET sealed_segment_limit=6 WHERE id=$1",
+                &[&action.message]
+            )
+            .await
+            .is_err()
+    );
     case.base.cleanup().await;
 }
 
@@ -123,7 +146,19 @@ async fn edited_ciphertext_and_owner_messages_cannot_be_adopted_as_approved_agen
         Err(AdmitError::Forbidden)
     ));
     assert_eq!(case.reservations().await, (0, 0, 0));
-    assert!(case.base.admit(&bytes).await.unwrap().created);
+    assert!(
+        admit_candidate02_with_limit(
+            &mut case.base.connect().await,
+            &case.base.principal,
+            &case.base.hasher,
+            case.base.writer(),
+            &bytes,
+            Some(1)
+        )
+        .await
+        .unwrap()
+        .created
+    );
     assert!(matches!(
         case.send(&bytes, action.action).await,
         Err(AdmitError::Forbidden)

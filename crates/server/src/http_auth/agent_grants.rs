@@ -36,6 +36,7 @@ pub(super) struct Created {
     key_id: Uuid,
     token: String,
     public_prefix: String,
+    segment_limit: u8,
 }
 
 async fn budget(
@@ -87,6 +88,7 @@ pub(super) async fn create(
             key_id: key.id,
             token: key.token,
             public_prefix: key.public_prefix,
+            segment_limit: 1,
         }),
     ))
 }

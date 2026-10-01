@@ -433,6 +433,7 @@ pub(crate) struct GrantView {
     pub turn_limit: i32,
     pub messages_reserved: i32,
     pub turns_consumed: i32,
+    pub segment_limit: u8,
 }
 
 #[derive(serde::Serialize)]
@@ -471,6 +472,7 @@ pub(crate) async fn list(
     let grants = rows
         .into_iter()
         .map(|row| GrantView {
+            segment_limit: 1,
             grant_id: row.get(0),
             api_key_id: row.get(1),
             connector_id: row.get(2),

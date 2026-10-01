@@ -4,6 +4,15 @@ use tokio_postgres::Client;
 /// Apply actual migrations and their required autocommit index preparation.
 /// The caller must provide a connection to a unique disposable schema.
 pub(crate) async fn apply(db: &Client) {
+    apply_selected(db, false).await;
+}
+
+/// Preserve the summary tests' explicit index and migration validation gates.
+pub(crate) async fn apply_without_summary(db: &Client) {
+    apply_selected(db, true).await;
+}
+
+async fn apply_selected(db: &Client, skip_summary: bool) {
     let directory =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
     let mut files = std::fs::read_dir(directory)
@@ -13,6 +22,16 @@ pub(crate) async fn apply(db: &Client) {
         .collect::<Vec<_>>();
     files.sort();
     for file in files {
+        if skip_summary
+            && file
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("070_")
+        {
+            continue;
+        }
         prepare_indexes(db, file.file_name().unwrap().to_str().unwrap()).await;
         let transaction = file
             .file_name()

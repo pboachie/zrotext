@@ -60,6 +60,9 @@ Existing owner-origin queued work cannot be adopted as agent work.
 Distinct admitted actions permanently consume this grant's message and turn
 limits. Cancelling a message can refund its delivery quota without replenishing
 agent authority or permitting a retry to create another effect.
+The self-notification pilot has an immutable one-segment ceiling. The caller
+cannot widen it; the gateway must still validate the decrypted segment count.
+The server does not infer that count from ciphertext.
 
 Admission serializes grant budgets and checks current account, connector,
 manifest, line and suppression authority. Durable agent provenance remains
@@ -67,6 +70,8 @@ attached to the queued message. Independent database guards recheck that
 authority before creating attempts, fences, durable radio intent or entering
 claimed/submitting states. Grant withdrawal and takeover serialize against
 those decisions; elapsed time is checked again after waiting for authority.
+Grant issuance, device envelope fetch and the final durable-intent commit also
+recheck agent authority after their last potential write or lock wait.
 Revocation stops future authorization and cannot retract an already committed
 radio intent, erase ciphertext previously fetched by a reader or remove copies
 retained by a customer application. Historical delivery evidence remains

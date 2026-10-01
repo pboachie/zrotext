@@ -246,6 +246,7 @@ BEGIN
             AND m.agent_grant_id=g.grant_id AND m.device_id=g.device_id
             AND m.sealed_line_id=g.line_id AND m.sealed_binding_generation=g.binding_generation
             AND m.sealed_signer_key_id=g.signer_key_id AND m.transport_mode='sealed_candidate02'
+            AND m.sealed_segment_limit=1
             AND m.recipient_e164 IS NOT NULL AND m.transport_payload IS NOT NULL
             AND l.current_binding_generation=g.binding_generation AND l.state='active'
             AND b.state='active' AND b.purpose='sealed'
