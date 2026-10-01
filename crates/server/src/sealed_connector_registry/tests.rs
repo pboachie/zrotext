@@ -72,7 +72,7 @@ fn build_manifest(
     bytes.extend(version.to_be_bytes());
     // Issue in the past: hosts step the wall clock backwards by seconds under
     // load, and freshness must survive that between fixture setup and use.
-    bytes.extend((now as u64 - 11_000).to_be_bytes());
+    bytes.extend((now as u64 - 121_000).to_be_bytes());
     bytes.extend((now as u64 + 300_000).to_be_bytes());
     bytes.extend(anchor);
     bytes.extend(root_point.as_bytes());
@@ -89,7 +89,7 @@ fn build_manifest(
         bytes.extend(record.device);
         bytes.extend(record.line);
         bytes.extend(record.scope.to_be_bytes());
-        bytes.extend((now as u64 - 12_000).to_be_bytes());
+        bytes.extend((now as u64 - 122_000).to_be_bytes());
         bytes.extend((now as u64 + 400_000).to_be_bytes());
         bytes.push(1);
     }
@@ -306,11 +306,11 @@ impl Fixture {
         db.execute(
             "UPDATE sealed_manifest_authorities SET version=1,semantic_digest=$2,manifest=$3, \
          accepted_at_ms=$4,last_verified_ms=$4 WHERE account_id=$1",
-            // Seed the durable high-water ten seconds in the past: a manifest
+            // Seed the durable high-water two minutes in the past: a manifest
             // admitted slightly ago is realistic, and hosts step the wall
             // clock backwards by seconds under load, which must not trip the
             // fail-closed floor between fixture setup and use.
-            &[&account, &digest, &bytes, &(now - 10_000)],
+            &[&account, &digest, &bytes, &(now - 120_000)],
         )
         .await
         .unwrap();
@@ -470,7 +470,7 @@ impl Fixture {
                     &(version as i64 + 1),
                     &new_digest,
                     &self.bytes,
-                    &(stamp - 10_000),
+                    &(stamp - 120_000),
                 ],
             )
             .await
