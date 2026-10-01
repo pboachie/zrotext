@@ -10,6 +10,7 @@ use zrotext_domain::{Evidence, MessageState};
 
 mod recovery;
 pub use recovery::{RECOVERY_BATCH, RECOVERY_BATCHES_PER_TICK, RecoveryBacklog, RecoveryPass};
+pub mod billable;
 pub mod sealed;
 
 /// See [`DeliveryStore::synthetic_grant_may_be_due`]. Public so plan tests
