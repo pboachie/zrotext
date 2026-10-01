@@ -490,6 +490,11 @@ pub async fn expire_due(
     if account.is_nil() || !(1..=100).contains(&limit) {
         return Err(ConversationError::Invalid);
     }
+    // Negative projections follow account -> occurrence -> audit/FK locks,
+    // avoiding inversion against an approved-action transaction.
+    tx.query_opt("SELECT 1 FROM accounts WHERE id=$1 FOR UPDATE", &[&account])
+        .await?
+        .ok_or(ConversationError::NotFound)?;
     let rows=tx.query("SELECT id FROM workflow_schedule_occurrences WHERE account_id=$1 AND phase IN ('owner_review','waiting_window','waiting_renderer','waiting_phone','claimed') AND expires_at_ms<=floor(extract(epoch FROM clock_timestamp())*1000)::bigint ORDER BY expires_at_ms,id LIMIT $2 FOR UPDATE SKIP LOCKED",&[&account,&i64::from(limit)]).await?;
     let mut changed = 0;
     for row in rows {
@@ -510,6 +515,11 @@ pub async fn reconcile(
     if account.is_nil() || !(1..=100).contains(&limit) {
         return Err(ConversationError::Invalid);
     }
+    // Negative projections follow account -> occurrence -> audit/FK locks,
+    // avoiding inversion against an approved-action transaction.
+    tx.query_opt("SELECT 1 FROM accounts WHERE id=$1 FOR UPDATE", &[&account])
+        .await?
+        .ok_or(ConversationError::NotFound)?;
     let rows=tx.query("SELECT o.id,o.phase,m.state,o.observed_message_state FROM workflow_schedule_occurrences o LEFT JOIN messages m ON (m.account_id,m.id)=(o.account_id,o.message_id) WHERE o.account_id=$1 AND o.phase IN ('dispatching','unknown') ORDER BY o.updated_at,o.id LIMIT $2 FOR UPDATE OF o SKIP LOCKED",&[&account,&i64::from(limit)]).await?;
     let mut changed = 0;
     for row in rows {
