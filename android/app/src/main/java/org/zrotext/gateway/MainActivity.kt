@@ -117,6 +117,7 @@ class MainActivity : ComponentActivity() {
                             AuthenticatedGatewayStatus.heartbeats,
                             sims.firstOrNull { it.first == selectedSim }?.second ?: "Not selected",
                             pairingStatus,
+                            power = rememberGatewayPower(),
                             onSetup = { navigate(GatewayPage.SETUP) },
                             onConnection = { navigate(GatewayPage.CONNECTION) },
                             onPause = {

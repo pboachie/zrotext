@@ -704,37 +704,9 @@ impl<'a> DeliveryStore<'a> {
     /// grant was issued. A claimed job remains cancellable before that grant.
     pub async fn cancel(&mut self, account_id: Uuid, message_id: Uuid) -> Result<bool, StoreError> {
         let tx = self.client.transaction().await?;
-        let job = tx.query_opt(
-            "SELECT grant_issued_at IS NULL FROM dispatch_jobs WHERE account_id=$1 AND message_id=$2 FOR UPDATE",
-            &[&account_id, &message_id],
-        ).await?;
-        let Some(job) = job else {
-            return Ok(false);
-        };
-        if !job.get::<_, bool>(0) {
-            return Err(StoreError::InvalidTransition);
-        }
-        let row = tx
-            .query_one(
-                "SELECT state FROM messages WHERE account_id=$1 AND id=$2 FOR UPDATE",
-                &[&account_id, &message_id],
-            )
-            .await?;
-        let current = state_from_row(&row)?;
-        current
-            .apply(Evidence::Cancel)
-            .map_err(|_| StoreError::InvalidTransition)?;
-        tx.execute(
-            "UPDATE messages SET state='cancelled',state_version=state_version+1,updated_at=now() WHERE account_id=$1 AND id=$2",
-            &[&account_id, &message_id],
-        ).await?;
-        tx.execute(
-            "UPDATE dispatch_jobs SET lease_owner=NULL,lease_until=NULL,finished_at=now() WHERE account_id=$1 AND message_id=$2",
-            &[&account_id, &message_id],
-        ).await?;
-        refund_outbound(&tx, account_id, message_id).await?;
+        let cancelled = cancel_in_transaction(&tx, account_id, message_id).await?;
         tx.commit().await?;
-        Ok(true)
+        Ok(cancelled)
     }
 
     /// Marks expired pre-grant jobs terminal. SKIP LOCKED bounds each sweep
@@ -1640,6 +1612,42 @@ pub async fn cancel_pending_recipient(
         cancel_pre_grant(tx, account_id, row.get(0)).await?;
     }
     Ok(rows.len() as u64)
+}
+
+/// Cancel under a caller-owned transaction so authorization locks remain held.
+/// The job lock serializes against grant issuance; refunds reuse the original
+/// reservation and unique ledger identity. Repeated sealed cancellation is a
+/// no-op; the existing synthetic-alpha transition contract is unchanged.
+pub async fn cancel_in_transaction(
+    tx: &Transaction<'_>,
+    account_id: Uuid,
+    message_id: Uuid,
+) -> Result<bool, StoreError> {
+    let Some(job) = tx.query_opt(
+        "SELECT grant_issued_at IS NULL FROM dispatch_jobs WHERE account_id=$1 AND message_id=$2 FOR UPDATE",
+        &[&account_id, &message_id],
+    ).await? else { return Ok(false); };
+    if !job.get::<_, bool>(0) {
+        return Err(StoreError::InvalidTransition);
+    }
+    let row = tx
+        .query_one(
+            "SELECT state,transport_mode='sealed_candidate02' AND expires_at<=clock_timestamp(),transport_mode='sealed_candidate02' FROM messages WHERE account_id=$1 AND id=$2 FOR UPDATE",
+            &[&account_id, &message_id],
+        )
+        .await?;
+    let current = state_from_row(&row)?;
+    if current == MessageState::Cancelled && row.get::<_, bool>(2) {
+        return Ok(true);
+    }
+    if row.get::<_, bool>(1) {
+        return Err(StoreError::InvalidTransition);
+    }
+    current
+        .apply(Evidence::Cancel)
+        .map_err(|_| StoreError::InvalidTransition)?;
+    cancel_pre_grant(tx, account_id, message_id).await?;
+    Ok(true)
 }
 
 // The caller holds the dispatch job/message locks and has verified no grant.

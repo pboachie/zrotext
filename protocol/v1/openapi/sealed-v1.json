@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "ZROtext sealed API v1 (proposed contract)",
-    "version": "1.1.1",
-    "description": "PROPOSAL PLUS TWO IMPLEMENTED SLICES, derived from the ZT-009 decisions recorded 2026-09-26 in protocol/drafts/zt-009-decision-log.md (rows Q4, Q6, Q8, Q9 and Q11). IMPLEMENTED: POST /v1/sealed/messages (issue #538 slice 1) and POST /v1/sealed/inbound-events (issue #538 inbound slice) — each mounted only when an operator sets SEALED_ADMISSION_ENABLED=true; the sealed runtime remains disabled by default, and with the flag off no relay handler is mounted at any path in this document and no production client may emit or accept a sealed profile-01/02 envelope. With the flag on, those two handlers accept only exact raw-binary envelopes (see each operation description). PROPOSAL ONLY: every other path in this document — the slice-2 read-only devices, webhook and usage surfaces — has no server route implemented in any flag state. Task 21 slice 1 pinned the sealed message plane (POST /v1/sealed/messages and POST /v1/sealed/inbound-events); task 21 slice 2 adds the proposed read-only devices surface, the sealed webhook endpoint-management and delivery/event surface, and the usage metering query, so later slices can implement, review and audit against a pinned contract. The synthetic alpha plane (/v1/alpha/messages, an allowlisted fixed-body test route) and the closed general send plane stay separate: sealed credentials must not be accepted on alpha routes, alpha credentials must not be accepted on sealed routes, and no sealed envelope is ever translated into a synthetic-alpha submission (Q11). Nothing here opens general plaintext sending: the two message-plane operations accept ONLY the exact raw-binary content type application/vnd.zrotext.sealed.v1 (no JSON request body, no plaintext body field, no downgrade flag and no plaintext fallback retry), and the resource operations defined in slice 2 carry only account-scoped metadata, ciphertext references and metering counters — never message content, recipients or plaintext. Sealed envelope status queries and sealed outbound dispatch-status fanout remain deferred to a later slice of task 21 and are intentionally absent here."
+    "version": "1.2.0",
+    "description": "CONTRACT WITH DEFAULT-OFF IMPLEMENTED SLICES, derived from ZT-009 decisions recorded 2026-09-26. IMPLEMENTED: POST /v1/sealed/messages, POST /v1/sealed/inbound-events, metadata-only message list/status/pre-grant cancellation, and the read-only devices, webhook metadata/delivery metadata and usage resource groups. All are mounted only under SEALED_ADMISSION_ENABLED; the runtime is disabled by default. Admission/upload require exact raw binary envelopes; lifecycle operations never expose content or recipient fields. Existing slice-2 resource handlers and tests define their current projections; the prospective resource schemas here are not evidence that every proposed field or error is implemented. PROPOSAL ONLY: webhook mutations and remaining prospective resource behavior; no server route implements those proposals. Ciphertext retrieval, negotiated grants and outbound dispatch-status fanout remain deferred. The synthetic-alpha plane and stable general-send plane stay separate. There is no JSON/plaintext admission, downgrade, fallback translation, implicit reader or carrier-delivery evidence. All implemented responses are no-store."
   },
   "security": [
     {
@@ -13,23 +13,23 @@
   "tags": [
     {
       "name": "sealed-messages",
-      "description": "Proposed sealed outbound submission. Not implemented; the sealed runtime is disabled."
+      "description": "Default-off sealed admission and metadata-only lifecycle; no execution grants or plaintext access."
     },
     {
       "name": "sealed-inbound",
-      "description": "Proposed sealed inbound upload, a separate route and store from the M1 inbound pilot. Not implemented."
+      "description": "Default-off sealed inbound upload, a separate route and store from the M1 inbound pilot."
     },
     {
       "name": "sealed-devices",
-      "description": "Proposed read-only list/status of the account's enrolled devices and their sealed-purpose line bindings. Not implemented; enrollment and revocation stay on the owner-session enrollment routes."
+      "description": "Default-off read-only device projection. Enrollment and revocation stay on owner-session routes; prospective schema details require separate reconciliation."
     },
     {
       "name": "sealed-webhooks",
-      "description": "Proposed sealed-profile webhook endpoint management plus the delivery/event semantics for sealed ciphertext fanout. Not implemented; mirrors the owner-session lifecycle contract in protocol/v1/webhook-endpoints.md."
+      "description": "Default-off webhook and delivery metadata reads; sealed-plane mutations remain proposed. Owner-session lifecycle stays in protocol/v1/webhook-endpoints.md."
     },
     {
       "name": "sealed-usage",
-      "description": "Proposed sealed usage metering query for the current period. Not implemented; mirrors the durable usage_periods/usage_ledger metering core."
+      "description": "Default-off usage projection from the durable usage_periods/usage_ledger core; prospective schema details require separate reconciliation."
     }
   ],
   "paths": {
@@ -223,7 +223,138 @@
             }
           }
         }
-      }
+      },
+        "get": {
+          "tags": [
+            "sealed-messages"
+          ],
+          "operationId": "listSealedMessages",
+          "summary": "listSealedMessages",
+          "description": "messages:read. Twenty newest records ordered by (created_at,id), with one optional exclusive cursor resolved inside the same account/device/transport visibility. Foreign/deleted cursor is indistinguishable from absent. Existing sealed queue identity; no new queue, admission verifier, plaintext alternative or dispatch enablement. Mounted only behind SEALED_ADMISSION_ENABLED, disabled by default. Credentials are revalidated under transaction locks; account/device-bound visibility matches current scopes. Metadata only, no envelope or recipient fields. Cache-Control: no-store.",
+          "security": [
+            {
+              "bearerAuth": []
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Current stored metadata; cancellation is idempotent.",
+              "headers": {
+                "Cache-Control": {
+                  "$ref": "#/components/headers/NoStore"
+                }
+              },
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/SealedMessagePage"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "invalid_request: malformed UUID/query or nonempty cancellation body",
+              "headers": {
+                "Cache-Control": {
+                  "$ref": "#/components/headers/NoStore"
+                }
+              },
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Error"
+                  }
+                }
+              }
+            },
+            "401": {
+              "description": "unauthorized: missing, malformed, expired or revoked bearer",
+              "headers": {
+                "Cache-Control": {
+                  "$ref": "#/components/headers/NoStore"
+                }
+              },
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Error"
+                  }
+                }
+              }
+            },
+            "403": {
+              "description": "forbidden: wrong scope or authority changed after authentication",
+              "headers": {
+                "Cache-Control": {
+                  "$ref": "#/components/headers/NoStore"
+                }
+              },
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Error"
+                  }
+                }
+              }
+            },
+            "404": {
+              "description": "not_found: disabled route, absent, foreign, wrong-device or non-sealed identity/cursor",
+              "headers": {
+                "Cache-Control": {
+                  "$ref": "#/components/headers/NoStore"
+                }
+              },
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Error"
+                  }
+                }
+              }
+            },
+            "429": {
+              "description": "rate_limited: account in-flight budget exhausted",
+              "headers": {
+                "Cache-Control": {
+                  "$ref": "#/components/headers/NoStore"
+                }
+              },
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Error"
+                  }
+                }
+              }
+            },
+            "503": {
+              "description": "unavailable: database/storage failure",
+              "headers": {
+                "Cache-Control": {
+                  "$ref": "#/components/headers/NoStore"
+                }
+              },
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Error"
+                  }
+                }
+              }
+            }
+          },
+          "parameters": [
+            {
+              "name": "cursor",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          ]
+        }
     },
     "/v1/sealed/inbound-events": {
       "post": {
@@ -1769,7 +1900,288 @@
           }
         ]
       }
-    }
+    },
+      "/v1/sealed/messages/{message_id}": {
+        "get": {
+          "tags": [
+            "sealed-messages"
+          ],
+          "operationId": "getSealedMessage",
+          "summary": "getSealedMessage",
+          "description": "messages:read. Return exact stored state/version/timestamps; submitted, delivered, failed and unknown stay distinct. Stale manifest/line never reauthorizes sending; historical metadata remains readable. Existing sealed queue identity; no new queue, admission verifier, plaintext alternative or dispatch enablement. Mounted only behind SEALED_ADMISSION_ENABLED, disabled by default. Credentials are revalidated under transaction locks; account/device-bound visibility matches current scopes. Metadata only, no envelope or recipient fields. Cache-Control: no-store.",
+          "security": [
+            {
+              "bearerAuth": []
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Current stored metadata; cancellation is idempotent.",
+              "headers": {
+                "Cache-Control": {
+                  "$ref": "#/components/headers/NoStore"
+                }
+              },
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/SealedMessageMetadata"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "invalid_request: malformed UUID/query or nonempty cancellation body",
+              "headers": {
+                "Cache-Control": {
+                  "$ref": "#/components/headers/NoStore"
+                }
+              },
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Error"
+                  }
+                }
+              }
+            },
+            "401": {
+              "description": "unauthorized: missing, malformed, expired or revoked bearer",
+              "headers": {
+                "Cache-Control": {
+                  "$ref": "#/components/headers/NoStore"
+                }
+              },
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Error"
+                  }
+                }
+              }
+            },
+            "403": {
+              "description": "forbidden: wrong scope or authority changed after authentication",
+              "headers": {
+                "Cache-Control": {
+                  "$ref": "#/components/headers/NoStore"
+                }
+              },
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Error"
+                  }
+                }
+              }
+            },
+            "404": {
+              "description": "not_found: disabled route, absent, foreign, wrong-device or non-sealed identity/cursor",
+              "headers": {
+                "Cache-Control": {
+                  "$ref": "#/components/headers/NoStore"
+                }
+              },
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Error"
+                  }
+                }
+              }
+            },
+            "429": {
+              "description": "rate_limited: account in-flight budget exhausted",
+              "headers": {
+                "Cache-Control": {
+                  "$ref": "#/components/headers/NoStore"
+                }
+              },
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Error"
+                  }
+                }
+              }
+            },
+            "503": {
+              "description": "unavailable: database/storage failure",
+              "headers": {
+                "Cache-Control": {
+                  "$ref": "#/components/headers/NoStore"
+                }
+              },
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Error"
+                  }
+                }
+              }
+            }
+          },
+          "parameters": [
+            {
+              "name": "message_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          ]
+        }
+      },
+      "/v1/sealed/messages/{message_id}/cancel": {
+        "post": {
+          "tags": [
+            "sealed-messages"
+          ],
+          "operationId": "cancelSealedMessage",
+          "summary": "cancelSealedMessage",
+          "description": "messages:send. Empty body. Serialize on the existing dispatch job then message locks against grant publication, cancel only pre-grant states, close lease and refund original reservation once atomically. Repeated cancelled state is a no-op; expired/granted/unknown work is 409. Historical manifest/line staleness does not prevent removing ungranted work, and never bypasses admission or authorizes a new grant. Existing sealed queue identity; no new queue, admission verifier, plaintext alternative or dispatch enablement. Mounted only behind SEALED_ADMISSION_ENABLED, disabled by default. Credentials are revalidated under transaction locks; account/device-bound visibility matches current scopes. Metadata only, no envelope or recipient fields. Cache-Control: no-store.",
+          "security": [
+            {
+              "bearerAuth": []
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Current stored metadata; cancellation is idempotent.",
+              "headers": {
+                "Cache-Control": {
+                  "$ref": "#/components/headers/NoStore"
+                }
+              },
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/SealedMessageMetadata"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "invalid_request: malformed UUID/query or nonempty cancellation body",
+              "headers": {
+                "Cache-Control": {
+                  "$ref": "#/components/headers/NoStore"
+                }
+              },
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Error"
+                  }
+                }
+              }
+            },
+            "401": {
+              "description": "unauthorized: missing, malformed, expired or revoked bearer",
+              "headers": {
+                "Cache-Control": {
+                  "$ref": "#/components/headers/NoStore"
+                }
+              },
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Error"
+                  }
+                }
+              }
+            },
+            "403": {
+              "description": "forbidden: wrong scope or authority changed after authentication",
+              "headers": {
+                "Cache-Control": {
+                  "$ref": "#/components/headers/NoStore"
+                }
+              },
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Error"
+                  }
+                }
+              }
+            },
+            "404": {
+              "description": "not_found: disabled route, absent, foreign, wrong-device or non-sealed identity/cursor",
+              "headers": {
+                "Cache-Control": {
+                  "$ref": "#/components/headers/NoStore"
+                }
+              },
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Error"
+                  }
+                }
+              }
+            },
+            "429": {
+              "description": "rate_limited: account in-flight budget exhausted",
+              "headers": {
+                "Cache-Control": {
+                  "$ref": "#/components/headers/NoStore"
+                }
+              },
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Error"
+                  }
+                }
+              }
+            },
+            "503": {
+              "description": "unavailable: database/storage failure",
+              "headers": {
+                "Cache-Control": {
+                  "$ref": "#/components/headers/NoStore"
+                }
+              },
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Error"
+                  }
+                }
+              }
+            },
+            "409": {
+              "description": "cancellation_conflict: expired, irreversible grant or other non-cancellable evidence; no refund or radio cancellation inference",
+              "headers": {
+                "Cache-Control": {
+                  "$ref": "#/components/headers/NoStore"
+                }
+              },
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Error"
+                  }
+                }
+              }
+            }
+          },
+          "parameters": [
+            {
+              "name": "message_id",
+              "in": "path",
+              "required": true,
+              "schema": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          ]
+        }
+      }
   },
   "components": {
     "securitySchemes": {
@@ -2385,6 +2797,7 @@
             "type": "string",
             "description": "Lowercase snake_case machine code for the admission or resource failure; the response description defines the taxonomy.",
             "enum": [
+            "cancellation_conflict",
               "invalid_request",
               "invalid_webhook_endpoint",
               "future_manifest",
@@ -2436,7 +2849,87 @@
           }
         },
         "additionalProperties": false
-      }
+      },
+        "SealedMessageMetadata": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "message_id",
+            "device_id",
+            "state",
+            "state_version",
+            "created_at_ms",
+            "updated_at_ms",
+            "expires_at_ms"
+          ],
+          "properties": {
+            "message_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "device_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "accepted",
+                "queued",
+                "claimed",
+                "submitting",
+                "submitted",
+                "delivered",
+                "delivery_unknown",
+                "unknown",
+                "failed",
+                "cancelled",
+                "expired"
+              ]
+            },
+            "state_version": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "created_at_ms": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "updated_at_ms": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "expires_at_ms": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "description": "Stored delivery evidence, never inferred radio success. Existing sealed candidate rows currently admit only queued/cancelled/expired; grant transitions require the separate negotiated execution implementation."
+        },
+        "SealedMessagePage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "messages",
+            "next_cursor"
+          ],
+          "properties": {
+            "messages": {
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "$ref": "#/components/schemas/SealedMessageMetadata"
+              }
+            },
+            "next_cursor": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "uuid"
+            }
+          }
+        }
     }
   }
 }

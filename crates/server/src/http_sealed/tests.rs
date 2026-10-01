@@ -1236,3 +1236,6 @@ async fn webhooks_list_and_deliveries_never_expose_secrets() {
     );
     case.fixture.cleanup().await;
 }
+
+#[path = "lifecycle_tests.rs"]
+mod lifecycle;
