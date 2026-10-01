@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 use tokio_postgres::{Client, Transaction};
 use uuid::Uuid;
 
+pub mod decisions;
 pub mod http;
 pub(crate) mod lifecycle;
 pub mod wire;

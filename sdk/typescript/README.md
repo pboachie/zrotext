@@ -354,3 +354,10 @@ networking, persistence, private-key generation or dispatch activation. The
 server's owner router remains unmounted. See
 [`workflow-context.md`](../../protocol/v1/workflow-context.md) for exact authenticated
 identity, version, ciphertext, exception and retention boundaries.
+
+`workflow-decisions.ts` supplies the complete `workflow-action-01` canonical
+descriptor and SHA-256 binding for customer proposals. It rejects missing or
+unknown fields and snapshots inputs before hashing. TypeScript integers must be
+safe integers. Computing a binding or reading historical action state grants no
+approval, content-reader or dispatch authority. The durable decision service
+remains a separate candidate implementation; this codec performs no networking.
