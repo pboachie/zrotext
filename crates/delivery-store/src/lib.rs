@@ -10,6 +10,7 @@ use zrotext_domain::{Evidence, MessageState};
 
 mod recovery;
 pub use recovery::{RECOVERY_BATCH, RECOVERY_BATCHES_PER_TICK, RecoveryBacklog, RecoveryPass};
+pub mod billable;
 mod usage_projection;
 pub use usage_projection::{USAGE_PAGE_MAX, UsageHistoryPage, UsagePeriodView, usage_history};
 pub mod sealed;

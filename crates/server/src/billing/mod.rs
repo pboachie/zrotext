@@ -17,6 +17,8 @@ pub mod review;
 pub mod risk;
 pub mod sessions;
 pub(crate) mod usage;
+pub mod usage_errors;
+pub mod usage_review;
 pub mod worker;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -79,12 +81,12 @@ pub enum IngestResult {
 
 /// Verify the exact raw request bytes before JSON parsing. The endpoint secret
 /// is used literally as the HMAC key, including its `whsec_` prefix.
-pub fn verify_event(
+fn verify_raw_payload(
     body: &[u8],
     signature_header: &str,
     endpoint_secret: &str,
     now_unix_seconds: i64,
-) -> Result<VerifiedEvent, BillingError> {
+) -> Result<(), BillingError> {
     if body.is_empty()
         || body.len() > MAX_BODY
         || signature_header.len() > MAX_HEADER
@@ -132,6 +134,16 @@ pub fn verify_event(
     {
         return Err(BillingError::InvalidSignature);
     }
+    Ok(())
+}
+
+pub fn verify_event(
+    body: &[u8],
+    signature_header: &str,
+    endpoint_secret: &str,
+    now_unix_seconds: i64,
+) -> Result<VerifiedEvent, BillingError> {
+    verify_raw_payload(body, signature_header, endpoint_secret, now_unix_seconds)?;
     let json: Value = serde_json::from_slice(body).map_err(|_| BillingError::InvalidEvent)?;
     if json["object"] != "event" || json["livemode"] != false {
         return Err(BillingError::InvalidEvent);
