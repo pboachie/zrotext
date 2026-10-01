@@ -218,3 +218,192 @@ impl UsagePeriodView {
         format!("{ey:04}-{em:02}-01")
     }
 }
+
+async fn device_for(client: &Client, account_id: Uuid) -> Uuid {
+    let device_id = Uuid::new_v4();
+    client
+        .execute(
+            "INSERT INTO devices(id,account_id,display_name) \
+             VALUES($1,$2,'usage projection test phone')",
+            &[&device_id, &account_id],
+        )
+        .await
+        .unwrap();
+    device_id
+}
+
+async fn policy(client: &Client, account_id: Uuid, limit: i64) {
+    client
+        .execute(
+            "INSERT INTO usage_quota_policies(account_id,metric,limit_units) \
+             VALUES($1,'outbound_message',$2) \
+             ON CONFLICT(account_id,metric) DO UPDATE SET limit_units=$2",
+            &[&account_id, &limit],
+        )
+        .await
+        .unwrap();
+}
+
+fn metered_message<'a>(
+    account_id: Uuid,
+    device_id: Uuid,
+    message_id: Uuid,
+    key: &'a str,
+    expiry: i64,
+) -> NewMessage<'a> {
+    NewMessage {
+        account_id,
+        client_message_id: message_id,
+        device_id,
+        idempotency_key: key,
+        recipient_e164: "+15551234567",
+        synthetic_payload: b"usage projection test only",
+        expires_at_ms: expiry,
+    }
+}
+
+async fn unix_ms(client: &Client, value: &str) -> i64 {
+    client
+        .query_one(
+            "SELECT (extract(epoch FROM $1::text::timestamptz)*1000)::bigint",
+            &[&value],
+        )
+        .await
+        .unwrap()
+        .get(0)
+}
+
+/// The projection reports the metering core's authoritative semantics, never
+/// its own counters (#631): an idempotent digest replay reserves once even
+/// across a month boundary, a quota boundary rejects admission, a cancelled
+/// message refunds exactly once into its original period, and a rollover
+/// period starts fresh with the then-current policy limit while existing
+/// periods keep their stored limit under a later downgrade.
+#[tokio::test]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn usage_history_exposes_ledger_semantics_across_periods() {
+    let mut db = TestDb::new().await;
+    let account_id = account(&db.client).await;
+    let device_id = device_for(&db.client, account_id).await;
+    let january = unix_ms(&db.client, "2026-01-31 23:59:59+00").await;
+    let february = unix_ms(&db.client, "2026-02-01 00:00:00+00").await;
+    let expiry = now_ms() + 3_600_000;
+    let one = Uuid::new_v4();
+    let two = Uuid::new_v4();
+
+    policy(&db.client, account_id, 1).await;
+    {
+        let mut store = DeliveryStore::new(&mut db.client);
+        assert!(
+            store
+                .accept_metered_at(
+                    metered_message(account_id, device_id, one, "one", expiry),
+                    january
+                )
+                .await
+                .unwrap()
+                .created
+        );
+        // The same digest replays its original reservation - across the month
+        // boundary it must not reserve a second unit in February.
+        assert!(
+            !store
+                .accept_metered_at(
+                    metered_message(account_id, device_id, one, "one", expiry),
+                    february
+                )
+                .await
+                .unwrap()
+                .created
+        );
+        // January's limit of one is exhausted.
+        assert!(matches!(
+            store
+                .accept_metered_at(
+                    metered_message(account_id, device_id, two, "two", expiry),
+                    january
+                )
+                .await,
+            Err(StoreError::QuotaExceeded)
+        ));
+    }
+    // A raised policy reprojects only the period created afterwards.
+    policy(&db.client, account_id, 3).await;
+    {
+        let mut store = DeliveryStore::new(&mut db.client);
+        assert!(
+            store
+                .accept_metered_at(
+                    metered_message(account_id, device_id, two, "two", expiry),
+                    february
+                )
+                .await
+                .unwrap()
+                .created
+        );
+        // Cancellation refunds once; the second attempt is an invalid
+        // transition, so the refund can never count twice.
+        assert!(store.cancel(account_id, one).await.unwrap());
+        assert!(matches!(
+            store.cancel(account_id, one).await,
+            Err(StoreError::InvalidTransition)
+        ));
+    }
+
+    let page = usage_history(&db.client, account_id, None, USAGE_PAGE_MAX)
+        .await
+        .unwrap();
+    assert_eq!(page.next_before, None, "the whole history fits one page");
+    assert_eq!(page.periods.len(), 2, "the month boundary rolled over");
+    let february_period = &page.periods[0];
+    let january_period = &page.periods[1];
+    assert_eq!(
+        (
+            january_period.period_start.as_str(),
+            january_period.period_end.as_str()
+        ),
+        ("2026-01-01", "2026-02-01")
+    );
+    assert_eq!(
+        january_period.limit_units, 1,
+        "a period keeps its stored limit"
+    );
+    assert_eq!(
+        january_period.reserved_units, 1,
+        "the replayed digest reserved exactly one unit"
+    );
+    assert_eq!(january_period.refunded_units, 1, "the refund counted once");
+    assert_eq!(january_period.consumed_units(), 0);
+    assert_eq!(
+        (
+            february_period.period_start.as_str(),
+            february_period.period_end.as_str()
+        ),
+        ("2026-02-01", "2026-03-01")
+    );
+    assert_eq!(
+        february_period.limit_units, 3,
+        "the rollover period carries the then-current limit"
+    );
+    assert_eq!(
+        (
+            february_period.reserved_units,
+            february_period.refunded_units
+        ),
+        (1, 0)
+    );
+    assert_eq!(february_period.consumed_units(), 1);
+
+    // A later downgrade changes the policy, never stored periods: the same
+    // read replays identically.
+    policy(&db.client, account_id, 0).await;
+    let replay = usage_history(&db.client, account_id, None, USAGE_PAGE_MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        replay, page,
+        "reads reflect committed periods, not the policy"
+    );
+
+    db.drop().await;
+}
