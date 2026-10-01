@@ -66,6 +66,7 @@ struct ExportQuery {
     workflow_versions_before: Option<Uuid>,
     workflow_exceptions_before: Option<Uuid>,
     workflow_audit_before: Option<Uuid>,
+    agent_before: Option<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -164,6 +165,7 @@ fn message_view(row: &Row) -> Result<MessageView, tokio_postgres::Error> {
 struct ExportView {
     workflow_context: crate::http_owner_conversations::context::lifecycle::WorkflowExport,
     confirmation_inventory: crate::http_owner_conversations::confirmation_records::ProofInventory,
+    agent_grants: crate::auth::agent_grants::GrantPage,
     conversation_inventory: crate::http_owner_conversations::lifecycle::ConversationInventory,
     generated_at_ms: i64,
     account: AccountView,
@@ -207,6 +209,12 @@ async fn export_account(
         Err(error) => return error.into_response(),
     };
     let account_id = principal.tenant.account_id();
+    let agent_grants =
+        match crate::auth::agent_grants::list(&client, &principal, query.agent_before).await {
+            Ok(Some(page)) => page,
+            Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+            Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        };
     let before_point: Option<(SystemTime, Uuid)> = if let Some(before) = query.before {
         match client
             .query_opt(
@@ -385,6 +393,7 @@ async fn export_account(
                 Ok(view) => view,
                 Err(error) => return error.into_response(),
             },
+        agent_grants,
         conversation_inventory,
         generated_at_ms: SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

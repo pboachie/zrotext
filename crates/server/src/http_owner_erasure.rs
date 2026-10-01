@@ -187,6 +187,14 @@ pub(crate) const DELETE_PLAN: &[(&str, &str)] = &[
     ),
     // Delivery history before its messages, devices and attempts.
     (
+        "agent_authority_actions",
+        "DELETE FROM agent_authority_actions WHERE account_id=$1",
+    ),
+    (
+        "agent_authority_approvals",
+        "DELETE FROM agent_authority_approvals WHERE account_id=$1",
+    ),
+    (
         "message_events",
         "DELETE FROM message_events WHERE account_id=$1",
     ),
@@ -209,6 +217,10 @@ pub(crate) const DELETE_PLAN: &[(&str, &str)] = &[
         "DELETE FROM message_attempts WHERE account_id=$1",
     ),
     ("messages", "DELETE FROM messages WHERE account_id=$1"),
+    (
+        "agent_authority_grants",
+        "DELETE FROM agent_authority_grants WHERE account_id=$1",
+    ),
     // Enrollment before its device keys and devices.
     ("device_keys", "DELETE FROM device_keys WHERE account_id=$1"),
     (

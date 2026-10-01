@@ -99,6 +99,33 @@ impl CurrentAuthority<'_, '_> {
         self.manifest.generation() as i64
     }
 
+    pub(crate) async fn authorize_agent_signer(
+        &mut self,
+        line: Uuid,
+        signer: &[u8; 32],
+    ) -> Result<(), AdmissionError> {
+        let now = self.checked_time().await?;
+        if !self
+            .manifest
+            .active_agent_signer(line.as_bytes(), signer, now)
+        {
+            return Err("current agent signer authority".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn authorize_agent_reader(
+        &mut self,
+        key_id: &[u8; 32],
+        directions: u16,
+    ) -> Result<(), AdmissionError> {
+        let now = self.checked_time().await?;
+        if !self.manifest.active_agent_reader(key_id, directions, now) {
+            return Err("current agent connector authority".into());
+        }
+        Ok(())
+    }
+
     /// Invoke after every potentially blocking storage operation, immediately
     /// before commit. Also detects authority changes made within this transaction.
     pub(crate) async fn context<'a>(

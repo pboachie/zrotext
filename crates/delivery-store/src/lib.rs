@@ -1233,6 +1233,14 @@ impl<'a> DeliveryStore<'a> {
             .await?;
         }
         if sealed_intent {
+            tx.query_typed_one(
+                "SELECT require_live_agent_action($1,$2)",
+                &[
+                    (&event.account_id, Type::UUID),
+                    (&event.message_id, Type::UUID),
+                ],
+            )
+            .await?;
             // A blocked final write can outlive the grant after the insert
             // trigger checked it. Roll back the complete intent in that case.
             let current: bool = tx.query_typed_one(
