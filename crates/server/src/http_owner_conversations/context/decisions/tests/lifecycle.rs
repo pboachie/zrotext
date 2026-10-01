@@ -4,6 +4,91 @@ use crate::http_owner_conversations::ConversationError;
 
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn erasure_plan_deletes_each_populated_decision_table_before_context_and_message_parents() {
+    let mut c = Case::new().await;
+    let a = c.approved().await;
+    c.bind(a).await;
+    let event = c.capture(1).await;
+    correlate_reply(
+        &mut c.base.f.connect().await,
+        &c.base.owner,
+        Uuid::new_v4(),
+        Correlation {
+            context_id: c.base.h.context,
+            context_revision: 1,
+            event_id: event,
+            request_action: None,
+        },
+    )
+    .await
+    .unwrap();
+    let expected = [
+        "workflow_message_links",
+        "workflow_reply_correlations",
+        "workflow_action_mutations",
+        "workflow_action_versions",
+        "workflow_actions",
+        "workflow_routines",
+        "workflow_context_fences",
+    ];
+    let mut db = c.base.f.connect().await;
+    let tx = db.transaction().await.unwrap();
+    let mut seen = Vec::new();
+    for (table, sql) in crate::http_owner_erasure::DELETE_PLAN {
+        if expected.contains(table) {
+            assert!(
+                tx.execute(*sql, &[&c.base.f.account]).await.unwrap() > 0,
+                "{table}"
+            );
+            seen.push(*table);
+        } else if [
+            "workflow_context_audit",
+            "workflow_exceptions",
+            "workflow_context_versions",
+            "workflow_contexts",
+        ]
+        .contains(table)
+        {
+            assert_eq!(
+                seen, expected,
+                "all decision children must precede context parents"
+            );
+            assert!(
+                tx.execute(*sql, &[&c.base.f.account]).await.unwrap() > 0,
+                "{table}"
+            );
+        }
+    }
+    assert_eq!(seen, expected);
+    for table in ["usage_ledger", "dispatch_jobs", "messages"] {
+        assert!(
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE account_id=$1"),
+                &[&c.base.f.account]
+            )
+            .await
+            .unwrap()
+                > 0
+        );
+    }
+    tx.commit().await.unwrap();
+    for table in expected {
+        assert_eq!(
+            db.query_one(
+                &format!("SELECT count(*) FROM {table} WHERE account_id=$1"),
+                &[&c.base.f.account]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+            0
+        );
+    }
+    c.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
 async fn decision_export_is_bounded_account_scoped_and_survives_reader_revocation() {
     let c = Case::new().await;
     for _ in 0..21 {

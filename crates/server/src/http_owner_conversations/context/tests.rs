@@ -571,7 +571,14 @@ async fn erasure_plan_removes_all_introduced_records_before_conversation_parents
     let tx = client.transaction().await.unwrap();
     let mut names = Vec::new();
     for (table, sql) in crate::http_owner_erasure::DELETE_PLAN {
-        if table.starts_with("workflow_") {
+        if [
+            "workflow_context_audit",
+            "workflow_exceptions",
+            "workflow_context_versions",
+            "workflow_contexts",
+        ]
+        .contains(table)
+        {
             assert!(tx.execute(*sql, &[&c.f.account]).await.unwrap() > 0);
             names.push(*table);
         }
