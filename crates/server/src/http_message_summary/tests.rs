@@ -508,7 +508,14 @@ fn assert_bounded_plan(value: &Value) {
                 );
             }
             if node.get("Node Type").and_then(Value::as_str) == Some("Limit") {
-                assert!(node["Actual Rows"].as_u64().unwrap() <= 1001);
+                // PostgreSQL 18 reports EXPLAIN row counts as fractional numbers.
+                let rows = node["Actual Rows"]
+                    .as_f64()
+                    .expect("a measured Limit must report a numeric row count");
+                assert!(
+                    rows.is_finite() && (0.0..=1001.0).contains(&rows),
+                    "a summary probe exceeded its row bound"
+                );
             }
             for child in node.values() {
                 assert_bounded_plan(child);
@@ -520,6 +527,26 @@ fn assert_bounded_plan(value: &Value) {
             }
         }
         _ => {}
+    }
+}
+
+#[test]
+fn bounded_plans_accept_integer_and_fractional_explain_counts() {
+    for rows in ["0", "1001", "0.00", "1000.50", "1001.00"] {
+        let plan: Value =
+            serde_json::from_str(&format!(r#"{{"Node Type":"Limit","Actual Rows":{rows}}}"#))
+                .unwrap();
+        assert_bounded_plan(&plan);
+    }
+}
+
+#[test]
+fn bounded_plans_reject_excessive_negative_and_missing_counts() {
+    for rows in ["1001.01", "1002", "-0.01", "null", "\"1001\""] {
+        let plan: Value =
+            serde_json::from_str(&format!(r#"{{"Node Type":"Limit","Actual Rows":{rows}}}"#))
+                .unwrap();
+        assert!(std::panic::catch_unwind(|| assert_bounded_plan(&plan)).is_err());
     }
 }
 
