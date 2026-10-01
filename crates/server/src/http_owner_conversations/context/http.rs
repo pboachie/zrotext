@@ -61,14 +61,14 @@ fn one<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str, ConversationEr
         .and_then(|v| v.to_str().ok())
         .ok_or(ConversationError::Invalid)
 }
-async fn connection(
+pub(crate) async fn connection(
     state: &OwnerConversationsState,
 ) -> Result<crate::runtime_db::PooledClient, ConversationError> {
     crate::runtime_db::connect(&state.database_url)
         .await
         .map_err(|_| ConversationError::Unavailable)
 }
-async fn reader(
+pub(crate) async fn reader(
     state: &OwnerConversationsState,
     headers: &HeaderMap,
 ) -> Result<(crate::runtime_db::PooledClient, SessionPrincipal), ConversationError> {
