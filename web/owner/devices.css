@@ -125,3 +125,13 @@ code, .eyebrow, .rail-label, .rail-status, .nav-note { font-family: Consolas, "C
 .summary-value { font-size:2rem;font-weight:700;margin:.5rem 0;color:var(--owner-accent); }
 #message-summary[data-stale="true"] .summary-value { color:var(--owner-caution); }
 @media(max-width:55rem) { .summary-cards { grid-template-columns:1fr; } }
+
+/* Overview precedes hardware and activity in both visual and keyboard order. */
+#message-summary .summary-scope { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; margin: 1rem 0; }
+#message-summary .summary-scope select { flex: 1 1 16rem; width: auto; min-height: 2.75rem; }
+#message-summary .summary-cards { gap: 0; border: 1px solid var(--owner-border); border-radius: .5rem; overflow: hidden; }
+#message-summary .summary-cards > div { background: var(--owner-canvas); border: 0; border-radius: 0; padding: 1.25rem; }
+#message-summary .summary-cards > div + div { border-left: 1px solid var(--owner-border); }
+#message-summary .summary-cards h3 { font-size: 1rem; }
+#message-summary .summary-cards p:last-child { color: var(--owner-secondary); margin-bottom: 0; }
+@media(max-width:55rem) { #message-summary .summary-cards > div + div { border-left: 0; border-top: 1px solid var(--owner-border); } }
