@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/zrotext/protocol/v1/message-summary.schema.json",
+  "title": "Scoped writer metadata summary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["scope", "device_id", "timezone", "day_start_ms", "day_end_ms", "observed_at_ms", "max_age_ms", "count_bound", "submitted_today", "pending", "in_flight"],
+  "properties": {
+    "scope": {"enum": ["account", "device"]},
+    "device_id": {"oneOf": [{"type": "null"}, {"type": "string", "format": "uuid"}]},
+    "timezone": {"const": "UTC"},
+    "day_start_ms": {"$ref": "#/$defs/time"},
+    "day_end_ms": {"$ref": "#/$defs/time"},
+    "observed_at_ms": {"$ref": "#/$defs/time"},
+    "max_age_ms": {"const": 30000},
+    "count_bound": {"const": 1000},
+    "submitted_today": {"$ref": "#/$defs/count"},
+    "pending": {"$ref": "#/$defs/count"},
+    "in_flight": {"$ref": "#/$defs/count"}
+  },
+  "allOf": [
+    {"if": {"properties": {"scope": {"const": "account"}}}, "then": {"properties": {"device_id": {"type": "null"}}}},
+    {"if": {"properties": {"scope": {"const": "device"}}}, "then": {"properties": {"device_id": {"type": "string", "format": "uuid"}}}}
+  ],
+  "$defs": {
+    "time": {"type": "integer", "minimum": 0, "maximum": 8640000000000000},
+    "count": {
+      "type": "object", "additionalProperties": false,
+      "required": ["value", "capped"],
+      "properties": {"value": {"type": "integer", "minimum": 0, "maximum": 1000}, "capped": {"type": "boolean"}},
+      "allOf": [{"if": {"properties": {"capped": {"const": true}}}, "then": {"properties": {"value": {"const": 1000}}}}]
+    }
+  }
+}

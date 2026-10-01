@@ -781,6 +781,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .nest("/v1/observer", http_observer::router(observer_state))
             .merge(http_owner_export::router(owner_export_state))
             .merge(http_owner_erasure::router(owner_erasure_state))
+            .merge(zrotext_server::http_message_summary::router(
+                owner_messages_state.clone(),
+            ))
             .merge(http_owner_messages::router(owner_messages_state))
             .merge(http_owner_events::router(owner_events_state))
             .merge(http_owner_review::router(owner_review_state))
