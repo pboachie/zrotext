@@ -5,6 +5,10 @@ outbound-receipt verifier. It has no HTTP route, network sender, database access
 provider account operations or runtime caller. Provider roadmap items remain
 open. This module does not enable another delivery route.
 
+The [explicit transport proposal](../protocol/v1/provider-transport-proposal.md)
+settles the future route, authorized-reader, durable-intent, correlation and
+suppression contract from #643. It adds no runtime caller or provider traffic.
+
 ## Existing delivery semantics
 
 The attempt wrapper uses `zrotext_domain::MessageState` and its existing
