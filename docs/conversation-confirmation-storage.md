@@ -14,7 +14,8 @@ line binding. Updates cannot alter this identity or extend expiry. Original
 confirmation and signature bytes can only be erased together, permanently.
 
 The bounded retention worker erases proof bytes after expiry, interval closure,
-owner-session revocation or loss of owner authority, or message-content erasure.
+owner-session revocation, account disablement or other loss of owner authority,
+or message-content erasure.
 Replay metadata remains. A retained proof prevents interval identity deletion;
 the existing content-retention window still erases the peer-bearing interval
 statement. Missing optional proof storage does not hide failures of mandatory

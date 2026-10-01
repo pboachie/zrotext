@@ -233,3 +233,25 @@ async fn malformed_nullable_inventory_column_returns_error_without_panicking() {
     ));
     c.f.cleanup().await;
 }
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn account_disablement_redacts_proof_without_removing_replay_identity() {
+    let c = Case::new().await;
+    let message = c.record(false).await;
+    c.f.db
+        .execute(
+            "UPDATE accounts SET disabled_at=clock_timestamp() WHERE id=$1",
+            &[&c.f.account],
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        inventory(&mut c.f.connect().await, &c.owner, None).await,
+        Err(ConversationError::Forbidden)
+    ));
+    assert_eq!(redact(&c.f.db, 100).await.unwrap(), 1);
+    assert!(!c.retained(message).await);
+    assert_eq!(redact(&c.f.db, 100).await.unwrap(), 0);
+    c.f.cleanup().await;
+}
