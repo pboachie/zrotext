@@ -49,7 +49,7 @@ class SealedDispatchLaneTest {
             assertTrue(it.attempts().installVerifiedLineBinding(f.binding(), listOf(ActiveSimCard(3, 7))))
         }
 
-    private fun key() = DevicePayloadKeyStore("zrotext.test.unavailable.${UUID.randomUUID()}")
+    private fun key() = DevicePayloadKeyStore(RuntimeEnvironment.getApplication(), "zrotext.test.unavailable.${UUID.randomUUID()}")
 
     /** The trusted anchor: hub sample f.now at elapsed 500_000; the grant expires at f.now + 15_000. */
     private fun clock(epoch: Long = 1L, hubMs: Long = f.now) =
