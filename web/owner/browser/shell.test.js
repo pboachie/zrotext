@@ -94,10 +94,10 @@ for (const width of [320, 390, 1440]) {
     });
   }
 }
-test("fleet comes first and working keyboard navigation reaches security and credentials", async () => {
+test("overview precedes fleet and activity while keyboard navigation reaches security and credentials", async () => {
   const { page } = await pageFor("devices", 1440);
   try {
-    assert.equal(await page.locator("#owner-content > section").first().getAttribute("id"), "approved-devices");
+    assert.deepEqual(await page.locator("#owner-content > section").evaluateAll(nodes => nodes.slice(0, 3).map(node => node.id)), ["message-summary", "approved-devices", "message-activity"]);
     await page.keyboard.press("Tab");
     assert.equal(await page.locator(".skip-link").evaluate(e => e === document.activeElement), true);
     assert.equal(await page.locator(".skip-link").evaluate(e => getComputedStyle(e).outlineStyle), "solid");

@@ -144,6 +144,21 @@ internal fun GatewayHome(
         Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.large,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline), modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                GatewaySectionTitle("Message activity")
+                // Device connection credentials do not authorize the message-summary API.
+                // Keep missing authenticated observations distinct from a measured zero.
+                GatewayObservationRow("Submitted today", "Unavailable")
+                GatewayObservationRow("In queue", "Unavailable")
+                Text("Message counts are unavailable on this phone. An authorized summary reader is not connected.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+    GatewayEntrance(1, motion) {
+        Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.large,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 GatewaySectionTitle("This phone")
                 GatewayObservationRow("Sending from", sim)
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))

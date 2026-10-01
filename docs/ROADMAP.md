@@ -279,7 +279,7 @@ Connect a dedicated Android phone and SIM, send and receive SMS through the serv
 - [x] Authoritative UTC writer summaries are merged (#695), with account/device scope, capped bounds and explicit freshness/unavailability
 - [x] Responsive outbound writer activity is merged (#690), with conservative state labels, device links and preserved paging, expansion and focus; no unified inbound feed or decrypted sealed content is implied
 - [x] Compact navigation readability and automated rendered candidate checks are merged (#701), including narrow and wide views at 200% text; human acceptance remains open
-- [ ] Concept-aligned responsive shared owner navigation and role-safe administration (#607)
+- [x] The integrated overview places authoritative writer summaries before hardware/details and outbound activity, preserving selected scope, history, pending input and keyboard focus (#605)
 - [ ] Complete joint actual-browser/APK visual, state and human accessibility acceptance (#612); merged automated checks do not close this gate
 
 </details>

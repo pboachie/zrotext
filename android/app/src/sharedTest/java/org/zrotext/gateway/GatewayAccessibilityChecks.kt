@@ -32,7 +32,7 @@ abstract class GatewayAccessibilityChecks {
 
     @Test fun sectionsAreHeadingsInReadingOrder() = everyScreen { page, root ->
         val expected = when (page) {
-            "HOME" -> listOf("Gateway home", "This phone", "Quick controls")
+            "HOME" -> listOf("Gateway home", "Message activity", "This phone", "Quick controls")
             "SETUP" -> listOf("Set up this phone")
             "SETUP/ACCESS" -> listOf("Set up this phone", "Review access", "Android access")
             "SETUP/SIM" -> listOf("Set up this phone", "Choose a SIM")
@@ -66,9 +66,20 @@ abstract class GatewayAccessibilityChecks {
     }
 
     @Test fun homeObservationsKeepReadOnlyLabelsAndReadingOrderAtCurrentTextScale() = onScreen { root ->
+        val summaries = listOf("Submitted today", "In queue").map { label ->
+            nodes(root).single { it.config.getOrNull(SemanticsProperties.TestTag) == "home-observation-$label" }
+        }
+        assertTrue(summaries.zipWithNext().all { (first, next) -> first.positionInRoot.y < next.positionInRoot.y })
+        summaries.forEach { summary ->
+            assertTrue("An absent summary reader must not display a measured zero", text(summary).endsWith("Unavailable"))
+            assertFalse("Summary observations must not initiate work", summary.config.contains(SemanticsActions.OnClick))
+            assertFalse("Static unavailable observations are not live announcements", summary.config.contains(SemanticsProperties.LiveRegion))
+        }
+        assertTrue(nodes(root).any { text(it).contains("An authorized summary reader is not connected.") })
         val rows = listOf("Sending from", "Power", "Connection").map { label ->
             nodes(root).single { it.config.getOrNull(SemanticsProperties.TestTag) == "home-observation-$label" }
         }
+        assertTrue("Message observations precede phone observations", summaries.last().positionInRoot.y < rows.first().positionInRoot.y)
         assertTrue(rows.zipWithNext().all { (first, next) -> first.positionInRoot.y < next.positionInRoot.y })
         val pause = nodes(root).single { text(it) == "Pause connections" && it.config.contains(SemanticsActions.OnClick) }
         assertTrue("Observations precede Pause in the Home hierarchy", rows.last().positionInRoot.y < pause.positionInRoot.y)

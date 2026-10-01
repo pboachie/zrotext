@@ -13,6 +13,7 @@ accessibility conformance, or authorize publication or sending.
 | Owner shell and forms | `web/owner/browser/shell.test.js` and `candidate.test.js` render the actual HTML, CSS and controllers in Chromium | Owner/observer session responses are synthetic API fixtures. Compact 320px and wide 1440px at default and 200% text cover visible text contrast, control names, headings, polite status regions, keyboard focus and reflow. Compact navigation also preserves whole words at 320px/390px with default and doubled text. This is not a live server-session or spoken screen-reader test. |
 | Fleet and selected details | `fleet.test.js` and `candidate.test.js` | Empty/multiple/revoked, permission/SIM/network blockers, absent reports, local aging, failed refresh, selected identity, paging, keyboard selection and input/focus preservation. Remote Pause, battery and phone digits are explicitly unavailable in this projection. |
 | Authoritative summaries | `summary.test.js` | Loading, genuine zero, exact/capped counts, selected scope, unavailable responses, offline/historical observations and UTC rollover. A missing source never becomes zero. |
+| Combined fleet overview | `overview.test.js` and `shell.test.js` | Summary precedes hardware/detail and outbound activity at 320px, 390px and 1440px with default/200% text. Combined selected scope, pending input, keyboard focus, failed summaries and refreshed message history preserve their independent states. |
 | Android navigation and Setup | `GatewayCompanionInteractionTest`, `GatewaySetupGuideTest` and shared accessibility checks | Back, step navigation, dismiss/decline, labels, token masking and no permission/service/radio effects. Navigation is not completion or readiness. |
 | Android Home and local power | `GatewayHomePowerLifecycleTest` and shared accessibility checks | Missing/malformed and zero power values, receiver lifecycle, read-only observation order, conservative paused status and adjacent Pause disclosure. No remote fleet or SMS-readiness inference. |
 | Android landscape and large text | `GatewayLandscapeAccessibilityTest` and `GatewayDefaultScaleLandscapeAccessibilityTest` render the actual activity with the Compose frame clock | Actual scrolling reveals the platform-visible polite status node and keeps Pause/disclosure reachable in 640×360dp at default/200% text. Static off-screen bounds are not accepted as visible. |
@@ -24,7 +25,9 @@ background, excluding disabled controls; it is not a complete pixel audit of
 input values, transparency, every focus/selection state or disabled appearance.
 Existing theme contrast tests complement it. Normal CI discovers browser tests
 through `browser/*.test.js` and Android regressions through the JVM suite; the
-existing no-radio class selection also runs the shared APK checks.
+existing no-radio class selection also runs the shared APK checks. The emulator
+runner requires all six named accessibility methods; six arbitrary successes,
+replacements, duplicate names or skipped methods cannot satisfy that selection.
 
 Run owner-controller and rendered suites:
 
