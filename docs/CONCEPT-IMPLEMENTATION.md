@@ -22,9 +22,9 @@ are contracts for every presentation change. No UI can widen authority.
 
 | Component/reference | Current implementation and authoritative source | Required presentation or missing behavior | Owner and acceptance |
 |---|---|---|---|
-| Owner desktop rail/mobile navigation | Separate `/owner/devices`, `/owner/account`, `/owner/sms-lines`, `/owner/seats`, `/owner/observer` pages; utility links, no common concept rail | Use shared tokens/mark, current destination, keyboard focus and responsive navigation; fleet first, administration discoverable | #607; rendered mobile/desktop navigation and every real link, including observer refusal on owner destinations |
-| Fleet overview | `web/owner/devices.*`; `/v1/enrollment/devices`, owner event stream plus bounded fallback snapshots | Prominent account fleet with truthful lease/precondition/queue columns; preserve pairing and input/focus on refresh | #609; synthetic empty/multiple/revoked devices, SSE reconnect, resume and paging |
-| Selected device side panel | Device rows expose metadata and revoke; no concept selection panel | Select by immutable device ID; desktop detail/mobile stacked view; disappearing selection becomes unavailable | #609; keyboard selection, missing/revoked device, pending input and stable focus |
+| Owner desktop rail/mobile navigation | Shared responsive shell on owner devices/account/SMS-lines/seats pages (`owner-shell.js`, merged #683), with fleet-first navigation and current destination; observer page retains separate role navigation | Use shared tokens/mark, current destination, keyboard focus and responsive navigation; fleet first, administration discoverable | #607; rendered mobile/desktop navigation and every real link, including observer refusal on owner destinations |
+| Fleet overview | `web/owner/devices.*`; merged #685 fleet overview and selectable bounded snapshots from `/v1/enrollment/devices`, owner event stream plus fallback snapshots | Prominent account fleet with truthful lease/precondition/queue columns; preserve pairing and input/focus on refresh | #609; synthetic empty/multiple/revoked devices, SSE reconnect, resume and paging |
+| Selected device side panel | Merged #685 selects an immutable device ID into a desktop detail/mobile stacked panel; missing, stale or failed snapshots retain explicit uncertainty | Select by immutable device ID; desktop detail/mobile stacked view; disappearing selection becomes unavailable | #609; keyboard selection, missing/revoked device, pending input and stable focus |
 | Device readiness | `active_socket_lease`, `status_observed_at_ms`, optional `reported_preconditions` from enrollment | Distinguish transport proof, Android local preconditions, report freshness, line authority and unknown carrier readiness | #609; missing SIM, denied SMS permission, airplane/network unknown, quarantined/revoked/stale observations |
 | Activity table | `/v1/owner/messages`, writer event expansion, alpha cancellation; `devices.js` history controls | Responsive time/device/recipient/state table, text-labelled chips, preserve cursor and expansion | #610; pending/granted/submitted/delivered/failed/unknown, paging, active interaction and device link |
 | All/outbound/inbound filter | Inbound history requires an explicit message identity; there is no unified inbox feed | Outbound metadata is available; a unified filter remains unavailable until an actual scoped feed ships | #610; no cosmetic inbound filter or claim of full conversation availability |
@@ -81,8 +81,9 @@ meaningful state changes politely without recurring heartbeat speech.
 
 ## Candidate acceptance and intentional differences
 
-#607 establishes common shell/DOM conventions first; #609 and #610 coordinate
-selection and activity ownership. #608 owns authoritative count contracts;
+#607 common shell/DOM conventions and #609 fleet selection are implemented in
+merged #683/#685. #610 activity presentation remains separately tracked; #612
+still owns their integrated visual and accessibility acceptance. #608 owns authoritative count contracts;
 #611 extends the merged #602 → #603 → #604 → #648 Android foundation. #612
 compares the integrated source and debug APK against both reference concepts at
 compact mobile/wide desktop, portrait/landscape, default/200% text and keyboard
