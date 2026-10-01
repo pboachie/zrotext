@@ -21,6 +21,12 @@ Its bounded query includes second-resolution historical offsets and the
 skipped civil day of a dateline change. The server session timezone does not
 change the result. A real invalid calendar date is rejected.
 
+Occurrence resolution advances local calendar days rather than adding 24 UTC
+hours, preserving the recipient's wall-clock window across DST. The timing
+helper treats expiry as terminal even during owner review, honors not-before
+and pacing, and identifies missed windows. Being inside a window is timing
+metadata only; it never grants execution or authorizes a retry.
+
 A policy includes timezone (or explicit unknown), first local date, opening and
 closing minutes, optional recurrence interval, maximum occurrence count and
 minimum pacing seconds. It allows at most 100 occurrences, recurrence every

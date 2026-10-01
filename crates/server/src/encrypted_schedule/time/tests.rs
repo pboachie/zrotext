@@ -28,6 +28,43 @@ fn duration(value: Resolution) -> i64 {
     }
 }
 
+#[test]
+fn expiry_and_missed_windows_never_become_dispatch_or_automatic_retry_permission() {
+    let window = Resolution::Ready {
+        opens_at_ms: 20,
+        closes_at_ms: 80,
+    };
+    assert_eq!(
+        timing(19, 10, 100, 0, window).unwrap(),
+        Timing::WaitingUntil(20)
+    );
+    assert_eq!(
+        timing(20, 10, 100, 0, window).unwrap(),
+        Timing::WithinWindow
+    );
+    assert_eq!(
+        timing(20, 10, 100, 30, window).unwrap(),
+        Timing::WaitingUntil(30)
+    );
+    assert_eq!(
+        timing(80, 10, 100, 0, window).unwrap(),
+        Timing::MissedWindow
+    );
+    assert_eq!(timing(100, 10, 100, 0, window).unwrap(), Timing::Expired);
+    assert_eq!(
+        timing(20, 10, 100, 80, window).unwrap(),
+        Timing::MissedWindow
+    );
+    let unknown = Resolution::OwnerReview(ReviewReason::UnknownTimezone);
+    assert_eq!(
+        timing(99, 10, 100, 0, unknown).unwrap(),
+        Timing::OwnerReview(ReviewReason::UnknownTimezone)
+    );
+    assert_eq!(timing(100, 10, 100, 0, unknown).unwrap(), Timing::Expired);
+    assert!(timing(-1, 10, 100, 0, window).is_err());
+    assert!(timing(20, 100, 100, 0, window).is_err());
+}
+
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; uses read-only timezone queries"]
 async fn dst_gap_and_overlap_wait_for_review_instead_of_selecting_an_instant() {
@@ -130,4 +167,50 @@ async fn server_session_timezone_never_changes_recipient_window_interpretation()
             .unwrap();
         assert_eq!(resolve(&db, local).await.unwrap(), expected);
     }
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; uses read-only timezone queries"]
+async fn recurrence_stays_at_recipient_local_time_instead_of_adding_twenty_four_hours() {
+    let db = database().await;
+    for (first, spacing) in [
+        ("2027-03-13", 23 * 3_600_000),
+        ("2027-11-06", 25 * 3_600_000),
+    ] {
+        let policy = crate::encrypted_schedule::policy::WindowPolicy {
+            timezone: Some("America/New_York".into()),
+            first_local_date: first.into(),
+            opens_minute: 540,
+            closes_minute: 1020,
+            repeat_every_days: Some(1),
+            max_occurrences: 2,
+            pacing_seconds: 60,
+        };
+        let first = policy.resolve_occurrence(&db, 0).await.unwrap();
+        let second = policy.resolve_occurrence(&db, 1).await.unwrap();
+        match (first, second) {
+            (
+                Resolution::Ready { opens_at_ms: a, .. },
+                Resolution::Ready { opens_at_ms: b, .. },
+            ) => assert_eq!(b - a, spacing),
+            _ => panic!("daytime recurrence must resolve"),
+        }
+        assert!(matches!(
+            policy.resolve_occurrence(&db, 2).await,
+            Err(WindowError::Invalid)
+        ));
+    }
+    let invalid = crate::encrypted_schedule::policy::WindowPolicy {
+        timezone: None,
+        first_local_date: "2027-02-30".into(),
+        opens_minute: 540,
+        closes_minute: 1020,
+        repeat_every_days: None,
+        max_occurrences: 1,
+        pacing_seconds: 60,
+    };
+    assert!(matches!(
+        invalid.resolve_occurrence(&db, 0).await,
+        Err(WindowError::Invalid)
+    ));
 }

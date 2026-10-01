@@ -29,12 +29,72 @@ pub enum Resolution {
     OwnerReview(ReviewReason),
 }
 
+/// Timing only: WithinWindow never grants approval, render, send or radio access.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Timing {
+    Expired,
+    OwnerReview(ReviewReason),
+    WaitingUntil(i64),
+    MissedWindow,
+    WithinWindow,
+}
+
+/// Expiry wins even when timing/rendering cannot otherwise progress. Pacing
+/// does not move a deadline or turn a missed window into a retry instruction.
+pub fn timing(
+    now_ms: i64,
+    not_before_ms: i64,
+    expires_at_ms: i64,
+    pacing_until_ms: i64,
+    resolution: Resolution,
+) -> Result<Timing, WindowError> {
+    if now_ms < 0 || not_before_ms < 0 || expires_at_ms <= not_before_ms || pacing_until_ms < 0 {
+        return Err(WindowError::Invalid);
+    }
+    if now_ms >= expires_at_ms {
+        return Ok(Timing::Expired);
+    }
+    let (opens_at_ms, closes_at_ms) = match resolution {
+        Resolution::Ready {
+            opens_at_ms,
+            closes_at_ms,
+        } => (opens_at_ms, closes_at_ms),
+        Resolution::OwnerReview(reason) => return Ok(Timing::OwnerReview(reason)),
+    };
+    if opens_at_ms < 0 || closes_at_ms <= opens_at_ms {
+        return Err(WindowError::Invalid);
+    }
+    let earliest = opens_at_ms.max(not_before_ms).max(pacing_until_ms);
+    let latest = closes_at_ms.min(expires_at_ms);
+    if now_ms >= latest || earliest >= latest {
+        return Ok(Timing::MissedWindow);
+    }
+    if now_ms < earliest {
+        return Ok(Timing::WaitingUntil(earliest));
+    }
+    Ok(Timing::WithinWindow)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum WindowError {
     #[error("invalid recipient window")]
     Invalid,
     #[error("recipient window storage unavailable")]
     Database(#[from] tokio_postgres::Error),
+}
+
+impl WindowError {
+    pub(crate) fn calendar(error: tokio_postgres::Error) -> Self {
+        match error.code() {
+            Some(code)
+                if code == &tokio_postgres::error::SqlState::INVALID_DATETIME_FORMAT
+                    || code == &tokio_postgres::error::SqlState::DATETIME_FIELD_OVERFLOW =>
+            {
+                Self::Invalid
+            }
+            _ => Self::Database(error),
+        }
+    }
 }
 
 /// Resolve an immutable local window, including a window across midnight.
@@ -89,13 +149,7 @@ pub async fn resolve<C: GenericClient + Sync>(
            (extract(epoch FROM min(v.instant))*1000)::bigint \
          FROM endpoints e LEFT JOIN valid v ON v.label=e.label GROUP BY e.label ORDER BY e.label",
         &[&window.date,&open,&close,&zone,&overnight],
-    ).await.map_err(|error| {
-        match error.code() {
-            Some(code) if code == &tokio_postgres::error::SqlState::INVALID_DATETIME_FORMAT
-                || code == &tokio_postgres::error::SqlState::DATETIME_FIELD_OVERFLOW => WindowError::Invalid,
-            _ => WindowError::Database(error),
-        }
-    })?;
+    ).await.map_err(WindowError::calendar)?;
     if rows.iter().any(|r| r.get::<_, i64>(1) == 0) {
         return Ok(Resolution::OwnerReview(ReviewReason::NonexistentCivilTime));
     }

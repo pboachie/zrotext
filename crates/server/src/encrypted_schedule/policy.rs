@@ -63,6 +63,38 @@ impl WindowPolicy {
                 .collect::<String>()
         ))
     }
+
+    /// Resolve the selected occurrence in local calendar days, not 24-hour
+    /// UTC increments. This calculates timing only; every occurrence still
+    /// needs its own exact approved action and live transaction authority.
+    pub async fn resolve_occurrence<C: tokio_postgres::GenericClient + Sync>(
+        &self,
+        db: &C,
+        ordinal: u16,
+    ) -> Result<time::Resolution, time::WindowError> {
+        if !self.valid_shape() || ordinal >= self.max_occurrences {
+            return Err(time::WindowError::Invalid);
+        }
+        let days = i32::from(self.repeat_every_days.unwrap_or(0)) * i32::from(ordinal);
+        let date: String = db
+            .query_one(
+                "SELECT to_char($1::text::date + $2::integer, 'YYYY-MM-DD')",
+                &[&self.first_local_date, &days],
+            )
+            .await
+            .map_err(time::WindowError::calendar)?
+            .get(0);
+        time::resolve(
+            db,
+            time::LocalWindow {
+                date: &date,
+                timezone: self.timezone.as_deref(),
+                opens_minute: self.opens_minute,
+                closes_minute: self.closes_minute,
+            },
+        )
+        .await
+    }
 }
 use super::time;
 
