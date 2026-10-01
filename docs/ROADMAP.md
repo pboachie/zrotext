@@ -277,8 +277,8 @@ Connect a dedicated Android phone and SIM, send and receive SMS through the serv
 - [x] Shared responsive owner shell is merged (#683), with fleet-first navigation and separate observer roles
 - [x] Fleet overview and selectable bounded device details are merged (#685), preserving live-refresh input and focus
 - [x] Authoritative UTC writer summaries are merged (#695), with account/device scope, capped bounds and explicit freshness/unavailability
+- [x] Responsive outbound writer activity is merged (#690), with conservative state labels, device links and preserved paging, expansion and focus; no unified inbound feed or decrypted sealed content is implied
 - [ ] Concept-aligned responsive shared owner navigation and role-safe administration (#607)
-- [ ] Integrate reviewed #690 responsive message activity, preserving history and conservative delivery evidence (#610); pending merge
 - [ ] Integrate reviewed #701 navigation/rendered checks (pending merge), then complete joint actual-browser/APK visual, state and human accessibility acceptance (#612)
 
 </details>

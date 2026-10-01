@@ -133,11 +133,11 @@
             "SIM, queue depth and radio readiness per device, from Android-reported preconditions and bounded writer counts ([#308](https://github.com/pboachie/zrotext/pull/308), [#317](https://github.com/pboachie/zrotext/pull/317), [#340](https://github.com/pboachie/zrotext/pull/340), [#396](https://github.com/pboachie/zrotext/pull/396))",
             "Shared responsive owner shell is merged (#683), with fleet-first navigation and separate observer roles",
             "Fleet overview and selectable bounded device details are merged (#685), preserving live-refresh input and focus",
-            "Authoritative UTC writer summaries are merged (#695), with account/device scope, capped bounds and explicit freshness/unavailability"
+            "Authoritative UTC writer summaries are merged (#695), with account/device scope, capped bounds and explicit freshness/unavailability",
+            "Responsive outbound writer activity is merged (#690), with conservative state labels, device links and preserved paging, expansion and focus; no unified inbound feed or decrypted sealed content is implied"
           ],
           "todo": [
             "Concept-aligned responsive shared owner navigation and role-safe administration (#607)",
-            "Integrate reviewed #690 responsive message activity, preserving history and conservative delivery evidence (#610); pending merge",
             "Integrate reviewed #701 navigation/rendered checks (pending merge), then complete joint actual-browser/APK visual, state and human accessibility acceptance (#612)"
           ]
         }
