@@ -1,6 +1,6 @@
 # Sealed API v1 contract
 
-**Contract with two default-off message-plane implementations.** This document and the companion
+**Contract with default-off implemented slices.** This document and the companion
 [OpenAPI 3.1.0 document](openapi/sealed-v1.json) define the HTTP
 surface for the sealed API, derived from the ZT-009 decisions
 recorded 2026-09-26 ([decision log Q4/Q6/Q8/Q9/Q11](../drafts/zt-009-decision-log.md)).
@@ -13,19 +13,57 @@ and delivery/event surface, and the usage metering query.
 ([#538](https://github.com/pboachie/zrotext/issues/538) slice 1, module
 `crates/server/src/http_sealed`): mounted only when an operator sets
 `SEALED_ADMISSION_ENABLED=true`, off by default. With the flag off, no server
-route is mounted for any endpoint in this document. With it on, the outbound
+route is mounted for any endpoint in this document. With it on, the single
 admission handler accepts only the exact raw-binary content type, verifies the
 manifest chain, signer scope and envelope signature, and queues exact bytes
 toward the bound device; acceptance is never carrier evidence and never an
 execution grant, and sealed dispatch to devices remains deliberately
 unimplemented. `POST /v1/sealed/inbound-events` is likewise implemented
-behind the same flag (see its section below); all slice-2 surfaces remain
+behind the same flag (see its section below). Read-only device, webhook/delivery
+metadata and usage groups are also implemented behind that flag; their current
+handlers/tests define the actual projections, while prospective slice-2 schema
+fields remain subject to separate reconciliation. Sealed webhook mutations remain
 proposal-only with no route in any flag state. Error mapping in the
 implemented slices is coarser than the contract
 taxonomy: manifest-authority and verification rejections surface as
 `forbidden`/`invalid_request` rather than the proposal's finer
 `future_manifest`, `stale_manifest` and `re_enrollment_required` codes; a
 later slice may refine the mapping without widening acceptance.
+
+**Message lifecycle (#627).** The same default-off router implements
+`GET /v1/sealed/messages`, `GET /v1/sealed/messages/{message_id}`, and
+`POST /v1/sealed/messages/{message_id}/cancel`. These are metadata operations
+over the existing sealed admission queue, not the proposed stable
+`/v1/messages` plane. Reads require `messages:read`; cancellation requires
+`messages:send` and an empty body. Current account/device-scoped API-key
+authority is rechecked under transaction locks. Foreign, absent, alpha, and
+wrong-device identities and cursors all return `404 not_found`.
+
+Lists return at most twenty records ordered by descending `(created_at,id)`.
+The optional `cursor` is the last returned message UUID, resolved within the
+same visible sealed queue; it excludes that row and newer rows. Concurrent
+inserts do not move earlier page boundaries; removal of a cursor returns 404.
+Responses contain only identity, device, stored state/version, and creation,
+update and expiry timestamps in milliseconds. Neither envelope bytes nor
+recipient/content fields are exposed, and all responses are `no-store`.
+See [contract vectors](vectors/sealed-lifecycle.json).
+
+Cancellation locks the existing dispatch job and message in grant order,
+closes its lease, and refunds the original reservation once in one
+transaction. Repeated cancellation returns the same cancelled metadata
+without incrementing its state version. Expired work and any irreversible
+grant return `409 cancellation_conflict`; the relay never reports unknown
+radio work as cancelled. Manifest/line/device staleness does not prevent
+removing ungranted work, but does not bypass current API-key authority or
+admission checks for replay. Existing sealed SQL constraints still allow only
+queued, cancelled and expired states: negotiated grant/fetch/dispatch remains
+separate work (#626). The schema preserves submitted/delivered/failed/unknown
+distinctions for that future evidence without enabling those transitions.
+
+The TypeScript `SealedLifecycleClient` uses these canonical routes, validates
+metadata and page bounds, and never retries cancellation automatically. A
+transport failure can leave cancellation outcome unknown; query status before
+deciding another action. This does not claim stable general API support.
 
 **The sealed runtime remains disabled by default**: no production client may
 emit or accept a profile-01/02 envelope without an explicit operator flag,

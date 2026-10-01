@@ -33,8 +33,10 @@
     </section>
     <section aria-labelledby="output-title">
       <h2 id="output-title">Rendered text</h2>
-      <p>Maximum 8,192 UTF-16 code units. This is not an SMS segment or delivery estimate; it does not check carrier limits.</p>
+      <p>Maximum 8,192 UTF-16 code units. This is not a delivery or billing estimate; it does not check carrier limits.</p>
       <pre id="output" aria-label="Rendered template text" tabindex="0"></pre>
+      <p id="estimate" role="status" aria-live="polite"></p>
+      <p id="estimate-help">The segment estimate follows <a href="/source/protocol/v1/sms-segment-estimate.md">the shared bounded estimate</a> (GSM escapes count double, non-GSM text switches to UCS-2, at most six parts). It is a composition aid only: the device re-checks the real bounds before anything is sent.</p>
     </section>
   </main>
   <footer><a href="/source">Source code for this server</a> · <a href="/about/version">Build version</a></footer>
