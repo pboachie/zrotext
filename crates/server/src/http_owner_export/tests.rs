@@ -114,6 +114,7 @@ const EXPORT_SCHEMA: [(&str, &str); 77] = export_schema!(
     "074_agent_authority.sql",
     "075_workflow_context.sql",
     "076_workflow_decisions.sql",
+    "077_encrypted_schedule.sql",
     "079_test_exposure_reservations.sql",
 );
 #[test]
