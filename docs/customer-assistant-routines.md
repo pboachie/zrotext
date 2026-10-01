@@ -43,6 +43,16 @@ the selected recipient, context, provider, reader, purpose or routine. Owner
 conversation routines accept only independently verified owner-direction events;
 that direction marker by itself does not authenticate an owner.
 
+The configured consent purpose must be `transactional`, `operational` or
+`marketing`, paired respectively with stable descriptor ID
+`00000000-0000-0000-0000-000000000001`,
+`00000000-0000-0000-0000-000000000002` or
+`00000000-0000-0000-0000-000000000003`. Unknown IDs and mismatched pairs refuse.
+The shared service must verify the actual latest #634 account/contact purpose
+grant, expiry, STOP and human hold. This mapping identifies a purpose; it does
+not create consent or a new consent ledger. Synthetic generic #635 codec IDs
+are conformance data, never consent authority.
+
 All model text is classified `sensitive`. The complete canonical action binds
 the tenant, exact encrypted object digest/version, line, recipient, purpose,
 routine generation, UTC timing and resolved window. A quote, booking, payment

@@ -361,6 +361,7 @@ unknown fields and snapshots inputs before hashing. TypeScript integers must be
 safe integers. Computing a binding or reading historical action state grants no
 approval, content-reader or dispatch authority. The durable decision service
 remains a separate candidate implementation; this codec performs no networking.
+
 The [customer assistant routine candidate](../../docs/customer-assistant-routines.md)
 adds a default-off customer-side proposal runner with durable provider budgets,
 selected-reader adapters and crash-safe uncertain outcomes. Live workflow and

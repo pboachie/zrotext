@@ -22,11 +22,17 @@ function object(value, keys) {
 function id(value) { if (typeof value !== 'string' || !uuid.test(value)) fail('invalid_request'); return value; }
 function integer(value, min, max) { if (!Number.isSafeInteger(value) || value < min || value > max) fail('invalid_request'); return value; }
 function digest(value) { if (typeof value !== 'string' || !hex.test(value)) fail('invalid_request'); return value; }
+const purposeIds=Object.freeze({transactional:'00000000-0000-0000-0000-000000000001',
+  operational:'00000000-0000-0000-0000-000000000002',marketing:'00000000-0000-0000-0000-000000000003'});
+function selectedPurpose(p) {
+  if (!Object.hasOwn(purposeIds,p.purpose) || purposeIds[p.purpose]!==p.purposeId) fail('invalid_request');
+}
 const scopeFields = ['accountId','connectorId','lineId','recipientId','purposeId','contextId','routineId','readerId','providerId'];
-const policyFields = [...scopeFields,'generation','readerGeneration','kind','expiresMs','callLimit','unitLimit','callUnits','turnLimit','timeoutMs'];
+const policyFields = [...scopeFields,'purpose','generation','readerGeneration','kind','expiresMs','callLimit','unitLimit','callUnits','turnLimit','timeoutMs'];
 function policy(input) {
   const p = object(input,policyFields);
-  for (const field of scopeFields) id(p[field]);
+  for (const field of scopeFields) if (field!=='purposeId') id(p[field]);
+  selectedPurpose(p);
   for (const field of ['generation','readerGeneration']) integer(p[field],1,Number.MAX_SAFE_INTEGER);
   if (!kinds.includes(p.kind)) fail('invalid_request');
   integer(p.expiresMs,1,Number.MAX_SAFE_INTEGER); integer(p.callLimit,1,100);
@@ -35,8 +41,9 @@ function policy(input) {
   return Object.freeze(p);
 }
 function event(input) {
-  const e = object(input,[...scopeFields.slice(0,6),'eventId','contentRef','contentDigest','issuedMs','expiresMs','direction']);
-  for (const field of [...scopeFields.slice(0,6),'eventId','contentRef']) id(e[field]);
+  const e = object(input,[...scopeFields.slice(0,6),'purpose','eventId','contentRef','contentDigest','issuedMs','expiresMs','direction']);
+  for (const field of [...scopeFields.slice(0,6),'eventId','contentRef']) if (field!=='purposeId') id(e[field]);
+  selectedPurpose(e);
   digest(e.contentDigest); integer(e.issuedMs,1,Number.MAX_SAFE_INTEGER); integer(e.expiresMs,e.issuedMs+1,e.issuedMs+86400000);
   if (!['inbound','owner'].includes(e.direction)) fail('invalid_request');
   return Object.freeze(e);
@@ -77,10 +84,10 @@ export class AssistantRunner {
     const now=this.#now(); this.#journal.check(this.#scope,now);
     if (now<e.issuedMs || now>=e.expiresMs) fail('expired');
     for (const field of scopeFields.slice(0,6)) if (e[field]!==this.#policy[field]) fail('scope_denied');
-    const fields=[...scopeFields,'generation','readerGeneration','expiresMs','active','consent','takeover','suppressed','canRead','canPropose','window'];
+    const fields=[...scopeFields,'purpose','generation','readerGeneration','expiresMs','active','consent','takeover','suppressed','canRead','canPropose','window'];
     const a=object(await this.#service.current(Object.freeze({...e,routineId:this.#policy.routineId}),{signal}),fields);
     for (const field of scopeFields) if (a[field]!==this.#policy[field]) fail('scope_denied');
-    if (a.generation!==this.#policy.generation || a.readerGeneration!==this.#policy.readerGeneration ||
+    if (a.purpose!==this.#policy.purpose || a.generation!==this.#policy.generation || a.readerGeneration!==this.#policy.readerGeneration ||
         a.active!==true || a.consent!==true || a.canRead!==true || a.canPropose!==true ||
         a.takeover!==false || a.suppressed!==false) fail('authority_unavailable');
     integer(a.expiresMs,1,Number.MAX_SAFE_INTEGER);
