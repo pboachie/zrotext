@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Proposed ZTWC01 canonical authenticated header vector",
+  "type": "object", "additionalProperties": false,
+  "required": ["profile", "scope", "aad_hex", "hpke_info_hex"],
+  "properties": {
+    "profile": {"const": "ZTWC01 proposed candidate"},
+    "aad_hex": {"type": "string", "pattern": "^[0-9a-f]{444}$"},
+    "hpke_info_hex": {"type": "string", "pattern": "^[0-9a-f]+$", "minLength": 446},
+    "scope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "account_id", "device_id", "line_id", "interval_id", "context_id", "binding_generation", "revision", "expires_ms", "trust_generation", "manifest_version", "peer_digest", "reader_id", "manifest_digest"],
+      "properties": {
+        "kind": {"enum": [1, 2, 3]},
+        "account_id": {"$ref": "#/$defs/id"}, "device_id": {"$ref": "#/$defs/id"}, "line_id": {"$ref": "#/$defs/id"},
+        "interval_id": {"$ref": "#/$defs/id"}, "context_id": {"$ref": "#/$defs/id"},
+        "binding_generation": {"$ref": "#/$defs/positive"},
+        "revision": {"type": "integer", "minimum": 1, "maximum": 128},
+        "expires_ms": {"$ref": "#/$defs/positive"}, "trust_generation": {"$ref": "#/$defs/positive"}, "manifest_version": {"$ref": "#/$defs/positive"},
+        "peer_digest": {"$ref": "#/$defs/digest"}, "reader_id": {"$ref": "#/$defs/digest"}, "manifest_digest": {"$ref": "#/$defs/digest"}
+      }
+    }
+  },
+  "$defs": {
+    "id": {"type": "string", "format": "uuid", "not": {"const": "00000000-0000-0000-0000-000000000000"}},
+    "positive": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807},
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$", "not": {"const": "0000000000000000000000000000000000000000000000000000000000000000"}}
+  }
+}

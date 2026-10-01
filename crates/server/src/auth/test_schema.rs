@@ -321,6 +321,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../../../../deploy/compose/migrations/074_agent_authority.sql"),
     ),
     (
+        "075_workflow_context.sql",
+        include_str!("../../../../deploy/compose/migrations/075_workflow_context.sql"),
+    ),
+    (
         "079_test_billable_usage.sql",
         include_str!("../../../../deploy/compose/migrations/079_test_billable_usage.sql"),
     ),
