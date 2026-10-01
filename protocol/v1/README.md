@@ -1,5 +1,15 @@
 # Protocol v1 contracts
 
+The authenticated [message-summary schema](message-summary.schema.json) and
+[synthetic vectors](vectors/message-summary.json) define bounded account/device
+metadata counters. [Message summaries](../../docs/message-summary.md) explains
+UTC days, complete callback evidence, role/device fences and unavailable states.
+
+The selected [collaboration-draft schema](collaboration-drafts.schema.json)
+describes default-off ciphertext storage and explicit narrow role grants.
+[Collaboration drafting](../../docs/collaboration-drafts.md) gives the route
+matrix, separate authorities, budgets and revocation/erasure contract.
+
 The [device stream JSON Schema](device-stream.schema.json) defines the exact tagged JSON frames sent by the phone and hub on `/v1/device-stream`. Its examples are checked against the Rust wire types and validated against the schema in CI. [device-stream.md](device-stream.md) explains the authenticated handshake; [synthetic-alpha-stream.md](synthetic-alpha-stream.md) explains the opt-in send extension. The former `execution-grant.schema.json` and `message-event.schema.json` described obsolete metadata shapes and have been replaced by the stream schema. A customer-decryptable sealed-body format is still proposed and is not defined here; see the [sealed-content drafts](../drafts/README.md).
 
 The authenticated socket determines the device identity for `radio_event`; that frame carries `connection_epoch`, message ID and attempt ID, while a `synthetic_grant` also carries device ID and deployment epoch. The phone journals a `submitting` intent before calling the Android radio API. On restart without conclusive callback evidence, it reports `crash_without_callback`; neither hub may issue a replacement grant automatically. A later callback can reconcile the state. A manual resend gets a new message ID and warns of possible duplication.

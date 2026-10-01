@@ -9,7 +9,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use p256::ecdsa::{Signature, signature::Signer};
 use sha2::Sha256;
 
-async fn fresh_session(f: &Fixture, owner: &SessionPrincipal) -> SessionPrincipal {
+pub(crate) async fn fresh_session(f: &Fixture, owner: &SessionPrincipal) -> SessionPrincipal {
     let token = format!("zts_{}", URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>()));
     let mut mac = Hmac::<Sha256>::new_from_slice(&crate::test_keys::key(84)).unwrap();
     mac.update(b"session-v1\0");
@@ -69,7 +69,7 @@ pub(crate) async fn activate(f: &Fixture, s: &Statement) {
     .await
     .unwrap();
 }
-async fn capture(
+pub(crate) async fn capture(
     f: &Fixture,
     s: &Statement,
     event: Uuid,

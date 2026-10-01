@@ -56,6 +56,10 @@ class RuntimeRoleTest(unittest.TestCase):
                 cls.sql("CREATE INDEX CONCURRENTLY messages_owner_in_flight_state "
                         "ON public.messages(device_id,state,created_at) "
                         "WHERE state IN ('submitting','submitted');")
+            if migration.name == "070_message_summary_metadata.sql":
+                cls.sql("CREATE INDEX CONCURRENTLY messages_summary_queue "
+                        "ON public.messages(account_id,state,created_at) "
+                        "WHERE state IN ('accepted','queued','claimed','submitting','submitted');")
             if migration.name == "057_webhook_history_index.sql":
                 cls.sql("CREATE INDEX CONCURRENTLY webhook_deliveries_history "
                         "ON public.webhook_deliveries(endpoint_id,created_at DESC,id DESC);")
@@ -68,6 +72,9 @@ class RuntimeRoleTest(unittest.TestCase):
                         "WHERE source IN ('sms_review','sms_unsolicited_review');")
                 cls.sql("DROP INDEX CONCURRENTLY IF EXISTS "
                         "public.recipient_suppressions_active;")
+            if migration.name == "066_conversation_interval_session_index.sql":
+                cls.sql("CREATE INDEX CONCURRENTLY erasure_fk_conversation_interval_session "
+                        "ON public.conversation_intervals(account_id,initiating_session_id);")
             if migration.name == "062_pending_recipient_index.sql":
                 cls.sql("CREATE INDEX CONCURRENTLY messages_pending_recipient "
                         "ON public.messages(recipient_e164,account_id) "

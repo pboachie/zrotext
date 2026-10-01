@@ -28,6 +28,25 @@ export type ManifestTrust02 = Readonly<{
 
 type VerifiedSnapshot = Readonly<{ before: ManifestTrust02; after: ManifestTrust02; authority: Manifest02 }>;
 const verifiedSnapshots = new WeakMap<Manifest02, VerifiedSnapshot>();
+
+/** Proposed owner-entered workflow authority, independent of SMS dispatch.
+ * Only the exact just-verified object authorizes the one role-2 archive reader;
+ * caller mutations and integration-reader roles confer no additional access. */
+export function authorizeWorkflowContext02(manifest: Manifest02, claims: {
+  accountId: Uint8Array; deviceId: Uint8Array; lineId: Uint8Array; readerId: Uint8Array;
+  generation: bigint; version: bigint; digest: Uint8Array;
+}, nowMs: bigint): Uint8Array {
+  const bound = verifiedSnapshots.get(manifest)?.authority;
+  if (!bound) fail("workflow requires a just-verified manifest");
+  timeWindow(bound.issuedMs, bound.expiresMs, nowMs);
+  if (!same(claims.accountId, bound.accountId) || claims.generation !== bound.generation
+      || claims.version !== bound.version || !same(claims.digest, bound.digest)) fail("workflow manifest binding");
+  const active = (key: ManifestKey02): boolean => key.state === 1 && key.fromMs <= nowMs && nowMs < key.untilMs;
+  const reader = bound.keys.find((key) => key.role === 2 && same(key.keyId, claims.readerId));
+  const signer = bound.keys.find((key) => key.role === 4 && active(key) && same(key.deviceId, claims.deviceId) && same(key.lineId, claims.lineId));
+  if (!reader || !active(reader) || !(reader.scope & 8) || !signer || !active(signer) || signer.scope !== 2) fail("workflow reader and line authority");
+  return Uint8Array.from(reader.point);
+}
 function copyTrust(pin: ManifestTrust02): ManifestTrust02 {
   return { accountId: Uint8Array.from(pin.accountId), generation: pin.generation,
     rootPoint: Uint8Array.from(pin.rootPoint), version: pin.version,

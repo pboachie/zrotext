@@ -9,14 +9,21 @@
 //! decision round.
 
 use super::*;
+use crate::anchor::MemoryEpochAnchor;
 use crate::decision::{
     DEFAULT_OBSERVATION_FRESHNESS_MS, Decision, FailoverConfig, FailoverController, MemberReport,
     Round, SiteFenceState, WriterObservation,
 };
 use crate::executor::{FailoverExecutor, WriterAuthority};
 use crate::executor_tests::MemoryAuthority;
+use crate::fence::{ExternalFencing, MemoryFenceAuthority};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+/// The corpus's default external adapters (see `executor_tests`).
+fn confirming_fencing() -> ExternalFencing {
+    ExternalFencing::new(MemoryFenceAuthority::default(), MemoryEpochAnchor::new())
+}
 
 pub(super) const MEMBERS: [&str; 3] = ["workload-a", "workload-b", "witness"];
 
@@ -737,6 +744,7 @@ fn store_backed_source_drives_a_full_failover_unchanged() {
         test_config(),
         StoreObservationSource::new(store),
         MemoryAuthority::new(5),
+        confirming_fencing(),
     );
 
     // Steady: all three members observe the writer healthy at epoch 5.
@@ -801,8 +809,12 @@ fn store_backed_source_drives_a_full_failover_unchanged() {
     for member in MEMBERS {
         reopened.record(&evidence(member, 47_000)).unwrap();
     }
-    let mut executor =
-        FailoverExecutor::new(config, StoreObservationSource::new(reopened), authority);
+    let mut executor = FailoverExecutor::new(
+        config,
+        StoreObservationSource::new(reopened),
+        authority,
+        confirming_fencing(),
+    );
     let report = executor.tick(47_000);
     assert_eq!(report.decision, Some(Decision::KeepDispatchPaused));
     assert_eq!(report.application, crate::executor::Application::None);
@@ -839,6 +851,7 @@ fn corrupted_store_source_holds_fail_closed() {
         test_config(),
         StoreObservationSource::new(store),
         MemoryAuthority::new(5),
+        confirming_fencing(),
     );
     for at_ms in [1_000_u64, 2_000, 3_000, 4_000] {
         let report = executor.tick(at_ms);
@@ -924,6 +937,7 @@ fn issue_512_one_stored_report_per_member_must_not_satisfy_three_failed_checks()
         test_config(),
         StoreObservationSource::new(store),
         MemoryAuthority::new(5),
+        confirming_fencing(),
     );
     let mut decisions = Vec::new();
     for now in [10_000_u64, 15_000, 20_000] {
@@ -959,6 +973,7 @@ fn issue_512_three_distinct_successive_reports_per_member_still_fence() {
         test_config(),
         StoreObservationSource::new(store),
         MemoryAuthority::new(5),
+        confirming_fencing(),
     );
     let decisions: Vec<_> = checks
         .into_iter()

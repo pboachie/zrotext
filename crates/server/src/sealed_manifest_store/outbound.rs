@@ -26,6 +26,14 @@ pub(crate) struct PublicCandidate {
     pub snapshot: ManifestSnapshot,
 }
 
+pub(crate) struct ManifestSnapshot {
+    pub generation: i64,
+    pub version: i64,
+    pub digest: [u8; 32],
+    pub bytes: Vec<u8>,
+    pub accepted_ms: i64,
+}
+
 pub(crate) struct CurrentAuthority<'tx, 'connection> {
     tx: &'tx Transaction<'connection>,
     account: Uuid,
@@ -168,6 +176,33 @@ impl CurrentAuthority<'_, '_> {
             .conversation_keys(device.as_bytes(), line.as_bytes(), now)?)
     }
 
+    pub(crate) async fn authorize_agent_signer(
+        &mut self,
+        line: Uuid,
+        signer: &[u8; 32],
+    ) -> Result<(), AdmissionError> {
+        let now = self.checked_time().await?;
+        if !self
+            .manifest
+            .active_agent_signer(line.as_bytes(), signer, now)
+        {
+            return Err("current agent signer authority".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn authorize_agent_reader(
+        &mut self,
+        key_id: &[u8; 32],
+        directions: u16,
+    ) -> Result<(), AdmissionError> {
+        let now = self.checked_time().await?;
+        if !self.manifest.active_agent_reader(key_id, directions, now) {
+            return Err("current agent connector authority".into());
+        }
+        Ok(())
+    }
+
     /// Invoke after every potentially blocking storage operation, immediately
     /// before commit. Also detects authority changes made within this transaction.
     pub(crate) async fn context<'a>(
@@ -240,9 +275,7 @@ impl CurrentAuthority<'_, '_> {
         Ok(self.manifest.admission_deadline(wanted, now)? as i64)
     }
 
-    /// The confirmed execution producer uses the same verified role deadlines
-    /// with an exact outbound context; inbound callers keep their own boundary.
-    pub(crate) async fn outbound_admission_deadline(
+    pub(crate) async fn outbound_deadline(
         &mut self,
         wanted: &EnvelopeAuthority<'_>,
     ) -> Result<i64, AdmissionError> {
@@ -253,6 +286,13 @@ impl CurrentAuthority<'_, '_> {
         Ok(self.manifest.admission_deadline(wanted, now)? as i64)
     }
 
+    /// Delegate to the same fresh outbound authority and deadline fences.
+    pub(crate) async fn outbound_admission_deadline(
+        &mut self,
+        wanted: &EnvelopeAuthority<'_>,
+    ) -> Result<i64, AdmissionError> {
+        self.outbound_deadline(wanted).await
+    }
     /// Re-prove the original signature without rewriting its authenticated epoch.
     /// Snapshot came from the immutable verified-ingest provenance table, not
     /// from untrusted envelope claims. Current reader AND signer remain required.

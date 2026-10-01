@@ -96,6 +96,8 @@ limits! {
     SmsLineActivation,
     SeatInvite,
     SeatAccept,
+    CollaborationGrant,
+    CollaborationDraft,
 }
 
 impl Limit {
@@ -119,7 +121,10 @@ impl Limit {
     /// subject; the per-account policy plus billing quotas and device caps
     /// remain the per-tenant bounds.
     fn subject_only(self) -> bool {
-        matches!(self, Self::OutboundAccept)
+        matches!(
+            self,
+            Self::OutboundAccept | Self::CollaborationGrant | Self::CollaborationDraft
+        )
     }
 
     /// The per-subject policy `lane` charges. It is the table's subject
@@ -190,6 +195,8 @@ impl Limit {
             // Invitation acceptance; a live token probes through
             // `consume_or_verify` like email verification.
             Self::SeatAccept => ("seat_accept", 60, 60, None),
+            Self::CollaborationGrant => ("collaboration_grant", 30, 3600, Some((30, 3600))),
+            Self::CollaborationDraft => ("collaboration_draft", 60, 60, Some((60, 60))),
         }
     }
 }

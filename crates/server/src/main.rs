@@ -53,6 +53,7 @@ use zrotext_server::{
     http_enrollment::{self, EnrollmentHttpState},
     http_messages::{self, MessagesHttpState},
     http_observer::{self, ObserverState},
+    http_owner_contacts::{self, OwnerContactsState, vault::ContactFieldVault},
     http_owner_erasure::{self, OwnerErasureState},
     http_owner_events::{self, OwnerEventsState, OwnerStreamLimits},
     http_owner_export::{self, OwnerExportState},
@@ -84,9 +85,11 @@ struct Config {
     m0_test_token: Option<String>,
     alpha_policy: Arc<AlphaPolicy>,
     dispatch_runtime_enabled: bool,
+    sealed_dispatch_enabled: bool,
     mfa_recovery_only: bool,
     mfa_enrollment_enabled: bool,
     sms_line_activation_enabled: bool,
+    collaboration_drafts_enabled: bool,
     mms_spike_policy: Arc<device_socket::MmsSpikePolicy>,
     sealed_admission_enabled: bool,
     retention: RetentionPolicy,
@@ -298,9 +301,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mfa_recovery_only = optional_bool("MFA_RECOVERY_ONLY")?;
     let mfa_enrollment_enabled = optional_bool("MFA_ENROLLMENT_ENABLED")?;
     let sms_line_activation_enabled = optional_bool("SMS_LINE_ACTIVATION_ENABLED")?;
+    let collaboration_drafts_enabled = optional_bool("COLLABORATION_DRAFTS_ENABLED")?;
     // Sealed v1 message admission. Disabled by default; off leaves the
     // route unmounted so no sealed code path runs.
     let sealed_admission_enabled = optional_bool("SEALED_ADMISSION_ENABLED")?;
+    let sealed_dispatch_enabled = optional_bool("SEALED_DISPATCH_ENABLED")?;
     // Independent-quorum failover executor and member-side reporting loop.
     // Disabled by default; when off (or absent) nothing further is read and
     // no thread, database or store access exists. When on, the validated
@@ -351,9 +356,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .filter(|token| token.len() >= 32),
         alpha_policy,
         dispatch_runtime_enabled,
+        sealed_dispatch_enabled,
         mfa_recovery_only,
         mfa_enrollment_enabled,
         sms_line_activation_enabled,
+        collaboration_drafts_enabled,
         mms_spike_policy,
         sealed_admission_enabled,
         retention: RetentionPolicy::from_env()?,
@@ -737,6 +744,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             auth_hasher: auth_state.hasher.clone(),
             alpha_policy: config.alpha_policy.clone(),
             dispatch_runtime_enabled: config.dispatch_runtime_enabled,
+            sealed_dispatch_enabled: config.sealed_dispatch_enabled,
             inbound_pilot_enabled,
             line_opt_out_enabled,
             sms_line_activation_enabled: config.sms_line_activation_enabled,
@@ -758,10 +766,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             device_socket::router_with_account_share(socket_state, device_sockets_per_account)
         };
+        let contacts_vault = contacts_vault().map(Arc::new);
         let owner_export_state = OwnerExportState {
             database_url: config.database_url.clone(),
             auth_hasher: auth_state.hasher.clone(),
             canonical_origin: auth_state.canonical_origin.clone(),
+            contacts_vault: contacts_vault.clone(),
         };
         let owner_erasure_state = OwnerErasureState {
             database_url: config.database_url.clone(),
@@ -785,6 +795,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             auth_hasher: auth_state.hasher.clone(),
             canonical_origin: auth_state.canonical_origin.clone(),
         };
+        let owner_contacts_state = OwnerContactsState {
+            database_url: config.database_url.clone(),
+            auth_hasher: auth_state.hasher.clone(),
+            canonical_origin: auth_state.canonical_origin.clone(),
+            vault: contacts_vault,
+        };
         let observer_state = ObserverState {
             database_url: config.database_url.clone(),
             auth_hasher: auth_state.hasher.clone(),
@@ -795,9 +811,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .nest("/v1/observer", http_observer::router(observer_state))
             .merge(http_owner_export::router(owner_export_state))
             .merge(http_owner_erasure::router(owner_erasure_state))
+            .merge(zrotext_server::http_message_summary::router(
+                owner_messages_state.clone(),
+            ))
             .merge(http_owner_messages::router(owner_messages_state))
             .merge(http_owner_events::router(owner_events_state))
             .merge(http_owner_review::router(owner_review_state))
+            .merge(http_owner_contacts::router(owner_contacts_state))
             .merge(owner_ui::router())
             .merge(device_router);
         if config.alpha_policy.enabled() {
@@ -820,12 +840,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
             app = app.nest("/v1/sealed", http_sealed::router(sealed_state));
         }
+        if config.sealed_dispatch_enabled {
+            if !config.dispatch_runtime_enabled || !config.alpha_policy.enabled() {
+                return Err("sealed dispatch requires enabled dispatch and alpha policy".into());
+            }
+            app = app.merge(zrotext_server::sealed_dispatch::http::router(
+                config.database_url.clone(),
+                config.site_id.clone(),
+                config.deployment_epoch,
+                config.alpha_policy.clone(),
+            ));
+        }
     } else if conversation_enabled
         || config.alpha_policy.enabled()
         || inbound_pilot_enabled
         || line_opt_out_enabled
         || config.sms_line_activation_enabled
         || config.sealed_admission_enabled
+        || config.sealed_dispatch_enabled
         || webhook_delivery_enabled
         || webhook_management_configured
         || usage_limits_enabled
@@ -966,6 +998,38 @@ fn webhook_config() -> Result<(Option<WebhookSecretVault>, bool), Box<dyn std::e
     Ok((vault, delivery_enabled))
 }
 
+/// Optional contacts key-encryption key for display names and notes. Set
+/// version and 32-byte base64 key together; during rotation set both
+/// secondary values together, exactly like the webhook KEK. Without it the
+/// contacts routes still work but accept and serve no encrypted fields.
+fn contacts_vault() -> Option<ContactFieldVault> {
+    let secondary = match (
+        env::var("CONTACTS_KEK_SECONDARY_VERSION"),
+        env::var("CONTACTS_KEK_SECONDARY_B64"),
+    ) {
+        (Err(env::VarError::NotPresent), Err(env::VarError::NotPresent)) => None,
+        (Ok(version), Ok(encoded)) => {
+            let version: i32 = version.parse().ok()?;
+            let decoded = Zeroizing::new(STANDARD.decode(encoded.as_bytes()).ok()?);
+            Some((version, decoded))
+        }
+        _ => return None,
+    };
+    match (
+        env::var("CONTACTS_KEK_VERSION"),
+        env::var("CONTACTS_KEK_B64"),
+    ) {
+        (Ok(version), Ok(encoded)) => {
+            let version: i32 = version.parse().ok()?;
+            let decoded = Zeroizing::new(STANDARD.decode(encoded.as_bytes()).ok()?);
+            ContactFieldVault::with_secondary(version, decoded, secondary).ok()
+        }
+        _ if secondary.is_none() => None,
+        // A secondary key without the active pair cannot seal anything.
+        _ => None,
+    }
+}
+
 async fn account_routes(
     config: &Config,
 ) -> Result<Option<(AuthHttpState, EnrollmentHttpState)>, Box<dyn std::error::Error>> {
@@ -1060,6 +1124,9 @@ async fn account_routes(
     }
     if config.sms_line_activation_enabled {
         auth_state = auth_state.with_sms_line_activation_enabled();
+    }
+    if config.collaboration_drafts_enabled {
+        auth_state = auth_state.with_collaboration_drafts_enabled();
     }
     let reset_trusted_cidrs = smtp_env_option("RESET_TRUSTED_CIDRS")?;
     let trusted_proxy_cidrs = smtp_env_option("TRUSTED_PROXY_CIDRS")?;
@@ -1503,9 +1570,11 @@ mod tests {
             m0_test_token: None,
             alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
             dispatch_runtime_enabled: false,
+            sealed_dispatch_enabled: false,
             mfa_recovery_only: false,
             mfa_enrollment_enabled: false,
             sms_line_activation_enabled: false,
+            collaboration_drafts_enabled: false,
             mms_spike_policy: Arc::new(device_socket::MmsSpikePolicy::disabled()),
             sealed_admission_enabled: false,
             retention: RetentionPolicy::default(),
@@ -1670,9 +1739,11 @@ mod tests {
             m0_test_token: None,
             alpha_policy: Arc::new(AlphaPolicy::parse(None, None, None).unwrap()),
             dispatch_runtime_enabled: false,
+            sealed_dispatch_enabled: false,
             mfa_recovery_only: false,
             mfa_enrollment_enabled: false,
             sms_line_activation_enabled: false,
+            collaboration_drafts_enabled: false,
             mms_spike_policy: Arc::new(device_socket::MmsSpikePolicy::disabled()),
             sealed_admission_enabled: false,
             retention: RetentionPolicy::default(),

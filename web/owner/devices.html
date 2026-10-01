@@ -4,14 +4,30 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex">
-  <title>Devices · ZROtext</title>
+  <title>Devices Â· ZROtext</title>
   <link rel="stylesheet" href="/owner/devices.css">
+  <script defer src="/owner/owner-shell.js"></script>
   <script defer src="/owner/devices.js"></script>
 </head>
-<body>
-  <main>
+<body class="owner-shell" data-owner-page="devices">
+  <a class="skip-link" href="#owner-main">Skip to content</a>
+  <aside class="owner-rail" aria-label="ZROtext workspace">
+    <a class="owner-brand" href="/owner/devices"><svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><rect width="48" height="48" rx="11" fill="#b6f36a"/><path d="M12 14h24L15 33h21M13 24h9" fill="none" stroke="#0b100b" stroke-width="4" stroke-linecap="square" stroke-linejoin="miter"/></svg><span><strong>ZRO</strong>text</span></a>
+    <p class="rail-label">Owner workspace</p>
+    <nav class="owner-nav" aria-label="Owner navigation"><a href="/owner/devices" aria-current="page" data-owner-only hidden>Fleet overview</a>
+<a href="/owner/devices#message-activity" data-owner-only hidden>Message activity</a>
+<a href="/owner/devices#connection-details" data-owner-only hidden>Connection details</a>
+<a href="/owner/sms-lines" data-owner-only hidden>SMS lines</a>
+<a href="/owner/seats" data-owner-only hidden>Team seats</a>
+<a href="/owner/devices#account-security" data-owner-only hidden>Security & sessions</a>
+<a href="/owner/account">Account setup</a>
+<a id="owner-billing-link" href="/billing" data-owner-only hidden>Plans & usage <span class="nav-note">Test mode</span></a>
+<a id="owner-observer-link" href="/owner/observer" hidden>Observer device status</a></nav>
+    <p class="rail-status" id="owner-nav-status">Sign in to open owner controls. Real sending remains gated.</p>
+  </aside>
+  <main id="owner-main" tabindex="-1">
     <header>
-      <div><p class="eyebrow">ZROtext owner account</p><h1>Devices</h1></div>
+      <div><p class="eyebrow">ZROtext owner account</p><h1>Your fleet, at a glance.</h1></div>
       <button id="logout" type="button" hidden>Sign out</button>
     </header>
     <p id="global-status" role="status" aria-live="polite"></p>
@@ -63,7 +79,65 @@
     </section>
 
     <div id="owner-content" hidden>
-      <section aria-labelledby="account-security-title">
+      <div class="owner-entry-actions"><a class="action-link" href="#pair-phone">Pair a phone</a><a href="#account-security">Security & sessions</a></div>
+      <section id="approved-devices" aria-labelledby="devices-title">
+        <div class="section-head"><h2 id="devices-title">Approved devices</h2><button id="refresh-devices" type="button" class="quiet">Refresh</button></div>
+        <label class="check"><input id="auto-refresh" type="checkbox" checked> Refresh devices and recent messages automatically</label>
+        <p id="device-cap-prompt" role="status" aria-live="polite" hidden></p>
+        <p id="device-status" role="status" aria-live="polite"></p>
+        <p id="fleet-summary" class="fleet-summary" role="status" aria-live="polite">Fleet observations are loading.</p>
+        <div class="fleet-workspace">
+          <div class="fleet-table">
+            <ul id="device-list" aria-label="Approved device snapshots"></ul>
+            <button id="more-devices" type="button" class="quiet" hidden>Load more devices</button>
+          </div>
+          <aside id="device-detail" class="device-detail" aria-labelledby="device-detail-title">
+            <h3 id="device-detail-title">Device details</h3>
+            <p id="device-detail-status" role="status" aria-live="polite">Choose a device to inspect its latest loaded snapshot.</p>
+            <div id="device-detail-content" hidden>
+              <p><strong id="device-detail-name"></strong><code id="device-detail-id"></code></p>
+              <p id="device-detail-connectivity"></p>
+              <p id="device-detail-queue"></p>
+              <p id="device-detail-preconditions"></p>
+              <p>Default SMS role, battery, charging and exact heartbeat age: not reported by this contract.</p>
+              <p>SIM phone digits are unavailable. Select the SIM in the gateway app and use <a href="/owner/sms-lines">SMS line activation</a> for line authority.</p>
+              <p>Remote Pause is unavailable. Revoke removes authorization; it is not a pause.</p>
+              <p>Private pilot sending remains gated. These observations do not establish carrier readiness or delivery.</p>
+            </div>
+          </aside>
+        </div>
+        <details class="fleet-help">
+          <summary>How to interpret freshness, queues and readiness</summary>
+        <p>While this tab is visible, device and message updates arrive over a live same-origin event stream and lists refresh within a few seconds of a server-side change. If that stream cannot connect, updates fall back to a 15-second snapshot refresh. A list pauses while you browse older entries, focus a row, or open message events. Use Refresh to return to its latest entries.</p>
+        <p>Approval permits a phone to connect. A displayed authenticated socket lease is a server observation that can lag a dropped connection by up to 90 seconds. It does not prove SMS permission, SIM service, or dispatch readiness. Check the gateway app on the phone before a controlled test.</p>
+        <p>Pending counts accepted, queued and claimed messages; in flight counts submitting and submitted messages. These server states can include work awaiting expiry reconciliation. Counts stop at 1,000+ per category. Check the snapshot time and message timeline for unknown or final outcomes.</p>
+        <p>Android reports describe selected SIM availability, SMS permission and airplane mode at the shown receipt time. Fresh reports explain local blockers to check on the phone. Saved reports become historical after the freshness window, even with automatic refresh paused. No reported blockers does not prove carrier readiness or delivery. Check the message timeline for actual callback evidence.</p>
+        </details>
+      </section>
+
+
+      <section id="message-summary" aria-labelledby="summary-title">
+        <div class="section-head"><h2 id="summary-title">Writer summary</h2><button id="refresh-summary" type="button" class="quiet">Refresh summary</button></div>
+        <label for="summary-device">Summary scope</label>
+        <select id="summary-device"><option value="">All devices in this account</option></select>
+        <p id="summary-status" role="status" aria-live="polite">Loading authoritative metadata…</p>
+        <div class="summary-cards">
+          <div role="group" aria-labelledby="summary-submitted-label"><h3 id="summary-submitted-label">Submitted today (UTC)</h3><p class="summary-value" id="summary-submitted">Loading…</p><p>First complete successful sent-callback evidence received by the writer. Delivery is not established.</p></div>
+          <div role="group" aria-labelledby="summary-pending-label"><h3 id="summary-pending-label">Waiting or claimed</h3><p class="summary-value" id="summary-pending">Loading…</p><p>Accepted, queued and claimed writer states. Claimed work may already hold a grant; this is not ungranted queue depth.</p></div>
+          <div role="group" aria-labelledby="summary-flight-label"><h3 id="summary-flight-label">Submitting / awaiting receipt</h3><p class="summary-value" id="summary-flight">Loading…</p><p>Submitting and submitted writer states. Unknown and final outcomes are separate; connectivity does not prove sending.</p></div>
+        </div>
+      </section>
+      <section id="message-activity" aria-labelledby="messages-title">
+        <div class="section-head"><h2 id="messages-title">Message activity</h2><button id="refresh-messages" type="button" class="quiet">Refresh</button></div>
+        <p>Message history shows server states and device events from controlled tests. A delivery callback does not prove the recipient read a message.</p>
+        <p class="activity-scope">Outbound writer metadata only. Recipient values are unavailable in this feed. All/Inbound filters require a scoped unified feed and are unavailable; inbound UUID history and webhook replay remain below. Sealed conversation content is not available here.</p>
+        <p id="message-status" role="status" aria-live="polite"></p>
+        <div class="activity-head" aria-hidden="true"><span>Time</span><span>Direction</span><span>Device</span><span>Recipient</span><span>State</span></div>
+        <ul id="message-list"></ul>
+        <button id="more-messages" type="button" class="quiet" hidden>Load more messages</button>
+      </section>
+
+      <section id="account-security" aria-labelledby="account-security-title">
         <h2 id="account-security-title">Account security</h2>
         <p>Manage your authenticator and recovery codes on the <a href="/owner/account">account setup page</a>.</p>
         <p>Create your SMS approval key and activate phone lines on the <a href="/owner/sms-lines">SMS lines page</a>.</p>
@@ -95,7 +169,8 @@
           <button id="revoke-other-sessions" type="submit" class="quiet">Sign out other sessions</button>
         </form>
       </section>
-      <section aria-labelledby="pair-title">
+
+      <section id="pair-phone" aria-labelledby="pair-title">
         <h2 id="pair-title">Pair a phone</h2>
         <p>Create a five-minute, one-use ticket. Enter the server origin, ID and token in the gateway app. The token is shown only now and stays on this page until you finish or leave.</p>
         <form id="create-form">
@@ -134,27 +209,6 @@
         <p id="approved-result" role="status" aria-live="polite"></p>
       </section>
 
-      <section id="approved-devices" aria-labelledby="devices-title">
-        <div class="section-head"><h2 id="devices-title">Approved devices</h2><button id="refresh-devices" type="button" class="quiet">Refresh</button></div>
-        <label class="check"><input id="auto-refresh" type="checkbox" checked> Refresh devices and recent messages automatically</label>
-        <p>While this tab is visible, device and message updates arrive over a live same-origin event stream and lists refresh within a few seconds of a server-side change. If that stream cannot connect, updates fall back to a 15-second snapshot refresh. A list pauses while you browse older entries, focus a row, or open message events. Use Refresh to return to its latest entries.</p>
-        <p>Approval permits a phone to connect. A displayed authenticated socket lease is a server observation that can lag a dropped connection by up to 90 seconds. It does not prove SMS permission, SIM service, or dispatch readiness. Check the gateway app on the phone before a controlled test.</p>
-        <p>Pending counts accepted, queued and claimed messages; in flight counts submitting and submitted messages. These server states can include work awaiting expiry reconciliation. Counts stop at 1,000+ per category. Check the snapshot time and message timeline for unknown or final outcomes.</p>
-        <p id="device-cap-prompt" role="status" aria-live="polite" hidden></p>
-        <p id="device-status" role="status" aria-live="polite"></p>
-        <p>Android reports describe selected SIM availability, SMS permission and airplane mode at the shown receipt time. Fresh reports explain local blockers to check on the phone. Saved reports become historical after the freshness window, even with automatic refresh paused. No reported blockers does not prove carrier readiness or delivery. Check the message timeline for actual callback evidence.</p>
-        <ul id="device-list"></ul>
-        <button id="more-devices" type="button" class="quiet" hidden>Load more devices</button>
-      </section>
-
-      <section aria-labelledby="messages-title">
-        <div class="section-head"><h2 id="messages-title">Message timeline</h2><button id="refresh-messages" type="button" class="quiet">Refresh</button></div>
-        <p>Message history shows server states and device events from controlled tests. A delivery callback does not prove the recipient read a message.</p>
-        <p id="message-status" role="status" aria-live="polite"></p>
-        <ul id="message-list"></ul>
-        <button id="more-messages" type="button" class="quiet" hidden>Load more messages</button>
-      </section>
-
       <section aria-labelledby="opt-out-review-title">
         <div class="section-head"><h2 id="opt-out-review-title">Opt-out review</h2><button id="refresh-opt-out-review" type="button" class="quiet">Refresh holds</button></div>
         <p>Record your decision after reviewing a possible SMS withdrawal through your consent process. Both decisions leave the recipient blocked; neither establishes consent or resumes sending. Decisions are permanent. Only recipient metadata is shown, never SMS content.</p>
@@ -188,7 +242,7 @@
         <button id="more-owner-holds" type="button" class="quiet" hidden>Load more requests</button>
       </section>
 
-      <section aria-labelledby="keys-title">
+      <section id="connection-details" aria-labelledby="keys-title">
         <div class="section-head"><h2 id="keys-title">API keys</h2><button id="refresh-keys" type="button" class="quiet">Refresh</button></div>
         <p>Create a key for the current pilot API. <code>messages:read</code> reads message status; <code>messages:send</code> is limited to the private synthetic alpha route and its account and recipient allowlists. Other product APIs do not accept these keys yet.</p>
         <form id="key-create-form">
@@ -239,6 +293,6 @@
       </section>
     </div>
   </main>
-  <footer><a href="/source">Source code for this server</a> · <a href="/about/version">Build version</a></footer>
+  <footer><a href="/source">Source code for this server</a> Â· <a href="/about/version">Build version</a></footer>
 </body>
 </html>

@@ -286,10 +286,48 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../../../../deploy/compose/migrations/065_conversation_activation.sql"),
     ),
     (
-        "../migration-candidates/NNN_conversation_confirmation_records.sql",
+        "066_conversation_interval_session_index.sql",
         include_str!(
-            "../../../../deploy/compose/migration-candidates/NNN_conversation_confirmation_records.sql"
+            "../../../../deploy/compose/migrations/066_conversation_interval_session_index.sql"
         ),
+    ),
+    (
+        "067_contacts_consent.sql",
+        include_str!("../../../../deploy/compose/migrations/067_contacts_consent.sql"),
+    ),
+    (
+        "068_connector_registration.sql",
+        include_str!("../../../../deploy/compose/migrations/068_connector_registration.sql"),
+    ),
+    (
+        "069_sealed_root_custody.sql",
+        include_str!("../../../../deploy/compose/migrations/069_sealed_root_custody.sql"),
+    ),
+    (
+        "070_message_summary_metadata.sql",
+        include_str!("../../../../deploy/compose/migrations/070_message_summary_metadata.sql"),
+    ),
+    (
+        "071_sealed_grant_authority.sql",
+        include_str!("../../../../deploy/compose/migrations/071_sealed_grant_authority.sql"),
+    ),
+    (
+        "072_conversation_confirmation_records.sql",
+        include_str!(
+            "../../../../deploy/compose/migrations/072_conversation_confirmation_records.sql"
+        ),
+    ),
+    (
+        "073_collaboration_drafts.sql",
+        include_str!("../../../../deploy/compose/migrations/073_collaboration_drafts.sql"),
+    ),
+    (
+        "074_agent_authority.sql",
+        include_str!("../../../../deploy/compose/migrations/074_agent_authority.sql"),
+    ),
+    (
+        "075_workflow_context.sql",
+        include_str!("../../../../deploy/compose/migrations/075_workflow_context.sql"),
     ),
     (
         "../migration-candidates/NNN_conversation_execution_records.sql",
@@ -300,7 +338,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in
-/// autocommit mode before the numbered 034, 040, 049, 050, 052, 059, 060 and 061 files record
+/// autocommit mode before the numbered 034, 040, 049, 050, 052, 059, 060, 061, 062 and 066 files record
 /// their checksum gates (deploy/compose/README.md, "Migration 034 is a narrow
 /// online-index exception"). The gate SQL validates the exact index
 /// definition; a fresh fixture schema builds the identical index with a
@@ -353,6 +391,10 @@ const PREPARED_INDEXES: &[(&str, &str)] = &[
     (
         "062_pending_recipient_index.sql",
         "CREATE INDEX messages_pending_recipient ON messages(recipient_e164,account_id) WHERE state IN ('queued','claimed') AND recipient_e164 IS NOT NULL",
+    ),
+    (
+        "066_conversation_interval_session_index.sql",
+        "CREATE INDEX erasure_fk_conversation_interval_session ON conversation_intervals(account_id,initiating_session_id)",
     ),
 ];
 
@@ -438,6 +480,16 @@ async fn migrated_schema(
     let (db, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     for (file, migration) in MIGRATIONS {
+        if *file == "070_message_summary_metadata.sql" {
+            db.batch_execute("CREATE INDEX CONCURRENTLY messages_summary_queue ON messages(account_id,state,created_at) WHERE state IN ('accepted','queued','claimed','submitting','submitted')").await.unwrap();
+            db.batch_execute("BEGIN").await.unwrap();
+            let result = db.batch_execute(migration).await;
+            db.batch_execute(if result.is_ok() { "COMMIT" } else { "ROLLBACK" })
+                .await
+                .unwrap();
+            result.unwrap();
+            continue;
+        }
         if let Some((_, index)) = PREPARED_INDEXES.iter().find(|(gate, _)| gate == file) {
             db.batch_execute(index).await.unwrap();
         }
@@ -2888,6 +2940,41 @@ async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeo
         let count: i64 = db.query_one(sql, &[&a.account_id]).await.unwrap().get(0);
         assert_eq!(count, rows + 1);
     }
+    // Conversation intervals require a line binding, and the registry
+    // forbids deleting bindings, so an account owning intervals can never be
+    // erased. Seed them for the OTHER fixture account: erasing this account
+    // still deletes its sessions, and every deleted session runs the
+    // referential-integrity probe against the cross-tenant table (#660) -
+    // an unindexed probe would sequentially scan it per deleted session.
+    let conversation_line = Uuid::new_v4();
+    db.execute(
+        "INSERT INTO phone_lines(id,account_id) VALUES($1,$2)",
+        &[&conversation_line, &_b.account_id],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO device_line_bindings(account_id,line_id,device_id,generation)          SELECT $1,$2,d.id,1 FROM devices d WHERE d.account_id=$1",
+        &[&_b.account_id, &conversation_line],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO conversation_intervals(account_id,id,receipt_id,device_id,line_id, \
+         binding_generation,initiating_session_id,statement,statement_digest,manifest, \
+         trust_generation,activation_version,activation_digest,expires_at_ms,phase, \
+         accepted_at_ms,approval_signature,installation_signature,closed_at) \
+         SELECT $1,gen_random_uuid(),gen_random_uuid(),d.id,$2,1,s.id, \
+                convert_to(repeat('c',400),'UTF8'),sha256(convert_to('conv','UTF8')), \
+                convert_to(repeat('m',400),'UTF8'),1,2,sha256(convert_to('conv','UTF8')), \
+                9999999999999,'history',1,convert_to(repeat('s',64),'UTF8'), \
+                convert_to(repeat('t',64),'UTF8'),now() \
+         FROM sessions s JOIN devices d ON d.account_id=s.account_id \
+         WHERE s.account_id=$1",
+        &[&_b.account_id, &conversation_line],
+    )
+    .await
+    .unwrap();
     // Production tables carry planner statistics (autovacuum analyzes them
     // after bulk writes), and the foreign-key trigger probes run as generic
     // plans, so a fresh unanalyzed fixture can pick a different shape than
@@ -3003,6 +3090,18 @@ async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeo
     // that can be erased never has any, and step (1) already pins their
     // probes to the account-scoped index.
     {
+        let erased_sessions: i64 = db
+            .query_one(
+                "SELECT count(*) FROM sessions WHERE account_id=$1",
+                &[&a.account_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert!(
+            erased_sessions > 0,
+            "the erased account must own sessions for the probe to fire"
+        );
         let tx = db.transaction().await.unwrap();
         let started = std::time::Instant::now();
         for &(_, sql) in DELETE_PLAN {
@@ -3012,6 +3111,25 @@ async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeo
             "DELETE_PLAN over {rows} referenced rows took {:?}",
             started.elapsed()
         );
+        // Every deleted session row probes the conversation-interval
+        // foreign key once, whatever account owns the intervals.
+        {
+            let index = "erasure_fk_conversation_interval_session";
+            let row = tx
+                .query_one(
+                    "SELECT to_regclass($1) IS NOT NULL, \
+                            coalesce(pg_stat_get_xact_numscans(to_regclass($1)), 0)",
+                    &[&index],
+                )
+                .await
+                .unwrap();
+            assert!(row.get::<_, bool>(0), "index {index} must exist");
+            let scans: i64 = row.get(1);
+            assert!(
+                scans >= erased_sessions,
+                "every deleted session must probe {index}: {scans} scans for {erased_sessions} sessions"
+            );
+        }
         for index in [
             "erasure_fk_webhook_deliveries_event",
             "erasure_fk_suppressions_event",
@@ -3039,6 +3157,7 @@ async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeo
             "webhook_deliveries",
             "recipient_suppressions",
             "inbound_events",
+            "conversation_intervals",
         ] {
             let seq_scans: i64 = tx
                 .query_one(
@@ -3092,6 +3211,93 @@ async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeo
         .unwrap();
 }
 
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn erasure_deletes_contacts_and_their_consent_history() {
+    let (admin, mut db, database_url, schema) = migrated_schema("contacts").await;
+    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(51)).unwrap());
+    let (a, session_a, b, _session_b, app) = fixture(&mut db, &hasher, &database_url, None).await;
+    // Account a keeps two contacts, one with encrypted fields and a full
+    // consent history; account b keeps one contact that must survive.
+    let contact = Uuid::new_v4();
+    db.execute(
+        "INSERT INTO contacts(id,account_id,recipient_e164,display_name_ciphertext,notes_ciphertext) \
+         VALUES($1,$2,'+15550100001',$3,$4)",
+        &[&contact, &a.account_id, &vec![1_u8; 64], &vec![2_u8; 80]],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO contacts(id,account_id,recipient_e164) VALUES($1,$2,'+15550100002')",
+        &[&Uuid::new_v4(), &a.account_id],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO contacts(id,account_id,recipient_e164) VALUES($1,$2,'+15550100001')",
+        &[&Uuid::new_v4(), &b.account_id],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO contact_consent_records \
+         (id,account_id,contact_id,purpose,action,source,effective_at,expires_at,recorded_by) \
+         SELECT $1::uuid,$2::uuid,$3::uuid,'marketing','grant','manual_entry', \
+         now()-interval '1 hour',now()+interval '30 days',$4::uuid \
+         UNION ALL SELECT $5::uuid,$2::uuid,$3::uuid,'marketing','withdraw', \
+         'off_channel_record',now()-interval '30 minutes',NULL,$4::uuid \
+         UNION ALL SELECT $6::uuid,$2::uuid,$3::uuid,'transactional','grant', \
+         'manual_entry',now()-interval '2 hours',NULL,$4::uuid",
+        &[
+            &Uuid::new_v4(),
+            &a.account_id,
+            &contact,
+            &a.user_id,
+            &Uuid::new_v4(),
+            &Uuid::new_v4(),
+        ],
+    )
+    .await
+    .unwrap();
+    let response = app
+        .clone()
+        .oneshot(erasure_post(
+            Some(&session_a.token),
+            Some(&session_a.csrf_token),
+            Some(ORIGIN),
+            &crate::test_keys::password(1),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let report = body(response).await;
+    assert_eq!(deleted_count(&report, "contacts"), 2);
+    assert_eq!(deleted_count(&report, "contact_consent_records"), 3);
+    let remaining = db
+        .query_one(
+            "SELECT (SELECT count(*) FROM contacts),(SELECT count(*) FROM contact_consent_records)",
+            &[],
+        )
+        .await
+        .unwrap();
+    let (contacts_left, consent_left): (i64, i64) = (remaining.get(0), remaining.get(1));
+    assert_eq!(
+        (contacts_left, consent_left),
+        (1, 0),
+        "only the other account's contact survives, without its own history"
+    );
+    let survivor: String = db
+        .query_one("SELECT recipient_e164 FROM contacts", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(survivor, "+15550100001");
+    admin
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
 #[test]
 fn confirmed_proof_delete_precedes_every_referenced_parent() {
     let execution = DELETE_PLAN
@@ -3246,8 +3452,8 @@ async fn execution_schema_wait_expired_owner_rolls_back_disable_and_all_deletes(
         .unwrap()
     });
     wait_until_handler_is_blocked_by(&admin, "zt_execution_erase_expiry", pid).await;
-    // The lock is on the installed execution table after the authenticated
-    // owner fence, rather than on an earlier password/session read.
+    // The lock is on the installed execution table before the final authenticated
+    // final owner fence, rather than on an earlier password/session read.
     let waiting:String=admin.query_one("SELECT query FROM pg_stat_activity WHERE application_name='zt_execution_erase_expiry' AND $1=ANY(pg_blocking_pids(pid))",&[&pid]).await.unwrap().get(0);
     assert!(waiting.contains("conversation_execution_records"));
     tokio::time::timeout(std::time::Duration::from_secs(4), async {

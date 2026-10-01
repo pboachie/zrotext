@@ -70,8 +70,8 @@ android {
         applicationId = "org.zrotext.gateway"
         minSdk = 28
         targetSdk = 36
-        versionCode = 8
-        versionName = "0.1.6-rc.2"
+        versionCode = 9
+        versionName = "0.1.6-rc.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         if (isolatedConversationProbe) {
             applicationId = "org.zrotext.gateway.conversationprobe"
@@ -181,7 +181,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.19.1")
     implementation("androidx.room:room-runtime:2.8.5")
     ksp("androidx.room:room-compiler:2.8.5")
-    // Exercises dormant conversation presentation, lifecycle and explicit-choice semantics.
+    // Drives Compose frames reliably for navigation and permission-dialog regression tests.
     testDebugImplementation("androidx.compose.ui:ui-test-junit4")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.17")

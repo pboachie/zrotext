@@ -255,6 +255,7 @@ pub struct DeviceSocketState {
     pub auth_hasher: Arc<TokenHasher>,
     pub alpha_policy: Arc<AlphaPolicy>,
     pub dispatch_runtime_enabled: bool,
+    pub sealed_dispatch_enabled: bool,
     pub inbound_pilot_enabled: bool,
     pub line_opt_out_enabled: bool,
     /// Dormant SMS line activation frames; off unless explicitly configured.
@@ -284,6 +285,15 @@ enum ClientFrame {
     },
     #[serde(skip)]
     ConversationBinary(Vec<u8>),
+    #[serde(rename = "sealed_ready")]
+    SealedReady {
+        v: u8,
+        grant_version: u8,
+        connection_epoch: i64,
+        line_id: Uuid,
+        binding_generation: i64,
+        reader_key_id: String,
+    },
     #[serde(rename = "hello")]
     Hello { v: u8, device_id: Uuid },
     #[serde(rename = "proof")]
@@ -640,9 +650,13 @@ async fn upgrade(
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     let deadline = tokio::time::Instant::now() + admission.handshake_deadline;
+    let mut protocols = vec![preconditions::PROTOCOL_V2, preconditions::PROTOCOL];
+    if state.sealed_dispatch_enabled && state.dispatch_runtime_enabled {
+        protocols.insert(0, crate::sealed_dispatch::wire::PROTOCOL);
+    }
     let frame_limit = socket_frame_limit(conversation.is_some());
     websocket
-        .protocols([preconditions::PROTOCOL_V2, preconditions::PROTOCOL])
+        .protocols(protocols)
         .max_message_size(frame_limit)
         .max_frame_size(frame_limit)
         .on_upgrade(move |socket| {
@@ -1014,9 +1028,15 @@ async fn run_socket(
     deadline: tokio::time::Instant,
     conversation_policy: Option<conversation::Policy>,
 ) {
-    let status_protocol = socket
+    let mut status_protocol = socket
         .protocol()
         .map(|value| value.to_str().unwrap_or_default().to_owned());
+    let sealed_negotiated = state.sealed_dispatch_enabled
+        && state.dispatch_runtime_enabled
+        && status_protocol.as_deref() == Some(crate::sealed_dispatch::wire::PROTOCOL);
+    if sealed_negotiated {
+        status_protocol = Some(preconditions::PROTOCOL_V2.to_owned());
+    }
     let mut status_budget = preconditions::ReportBudget::default();
     let mut frame_budget = FrameBudget::new(Instant::now());
     let authenticated = timeout_at(
@@ -1100,6 +1120,8 @@ async fn run_socket(
     let mut last_grant_at: Option<Instant> = None;
     let mut alpha_ready: Option<([u8; 32], Instant)> = None;
     let mut alpha_ready_used = false;
+    let mut sealed_ready: Option<(crate::sealed_dispatch::wire::Ready, Instant)> = None;
+    let mut sealed_ready_used = false;
     let mut mms_spike_ready_used = false;
     // Enabled only for controlled local liveness probes. Emit bounded,
     // content-free timing and exit markers, never frames or device IDs.
@@ -1132,6 +1154,18 @@ async fn run_socket(
                             Ok(reply)=> {if socket.send(Message::Binary(reply.into())).await.is_err(){break;}}
                             Err(_)=>{close_with_code=Some(close_code::POLICY);break;}
                         }
+                    }
+                    Some(ClientFrame::SealedReady { v: 1, grant_version, connection_epoch, line_id, binding_generation, reader_key_id })
+                        if sealed_negotiated && !sealed_ready_used => {
+                        let ready = crate::sealed_dispatch::wire::Ready {
+                            grant_version, connection_epoch, line_id, binding_generation, reader_key_id,
+                        };
+                        if ready.validate(session.connection_epoch).is_err() {
+                            close_with_code = Some(close_code::POLICY);
+                            break;
+                        }
+                        sealed_ready = Some((ready, Instant::now()));
+                        sealed_ready_used = true;
                     }
                     Some(frame @ (ClientFrame::DeviceStatus { v: 1, .. } | ClientFrame::DeviceStatusV2 { v: 1, .. })) => {
                         let (protocol, connection_epoch, report) = match frame {
@@ -1497,7 +1531,30 @@ async fn run_socket(
                 }
                 session_checks.verified(verified_at);
             }
-            _ = dispatch_checks.tick(), if alpha_ready.is_some() => {
+            _ = dispatch_checks.tick(), if alpha_ready.is_some() || sealed_ready.is_some() => {
+                if let Some((ready, armed_at)) = &sealed_ready {
+                    if armed_at.elapsed() > Duration::from_secs(ALPHA_READY_SECONDS) {
+                        sealed_ready = None;
+                        continue;
+                    }
+                    if last_grant_at.is_some_and(|at| at.elapsed() < Duration::from_secs(MIN_SECONDS_BETWEEN_GRANTS)) {
+                        continue;
+                    }
+                    let Ok(mut client) = runtime_db::connect_device(&state.database_url).await else { break; };
+                    let result = crate::sealed_dispatch::grant(&mut client, &store_session(session, &state), ready, &state.alpha_policy).await;
+                    drop(client);
+                    match result {
+                        Ok(Some(grant)) => {
+                            sealed_ready = None;
+                            let Ok(json) = serde_json::to_string(&grant) else { break; };
+                            if json.len() > MAX_FRAME_BYTES || socket.send(Message::Text(json.into())).await.is_err() { break; }
+                            last_grant_at = Some(Instant::now());
+                        }
+                        Ok(None) => {},
+                        Err(_) => break,
+                    }
+                    continue;
+                }
                 let Some((recipient_digest, armed_at)) = alpha_ready else { continue; };
                 if armed_at.elapsed() > Duration::from_secs(ALPHA_READY_SECONDS) {
                     alpha_ready = None;

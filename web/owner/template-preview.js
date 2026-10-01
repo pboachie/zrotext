@@ -16,6 +16,7 @@
     byId("template").value = "";
     byId("substitutions").value = "";
     say("output", "");
+    say("estimate", "");
     say("preview-status", "");
   }
   function conceal(hidden) {
@@ -77,10 +78,14 @@
     const identity = owner, proof = ownerCookie, edit = revision;
     say("output", "");
     say("preview-status", "");
+    say("estimate", "");
     if (!identity || !await checkSession() || identity !== owner || proof !== ownerCookie || edit !== revision) return;
     try {
-      const result = core.render(byId("template").value, core.parseValues(byId("substitutions").value));
+      const values = core.parseValues(byId("substitutions").value);
+      const result = core.render(byId("template").value, values);
       say("output", result);
+      const estimate = core.estimateSegments(result);
+      say("estimate", `Estimate: ${estimate.parts} ${estimate.parts === 1 ? "part" : "parts"}, ${estimate.encoding === "gsm" ? `GSM, ${estimate.length} septets` : `UCS-2, ${estimate.length} code units`}. Estimate only.`);
       say("preview-status", "Preview ready. Nothing was sent or saved.");
     } catch (error) {
       say("preview-status", error.message);

@@ -248,6 +248,13 @@ an authenticated freshness checkpoint; see the
 
 ## Test-only message-plane client (task 21 slice 3)
 
+`src/sealed-lifecycle-client.ts` provides metadata-only list/status and empty-body
+pre-grant cancellation for the default-off sealed queue. `SealedLifecycleClient`
+requires an HTTPS origin and scoped bearer, bounds response bytes/pages, rejects
+extra content fields, and never retries an uncertain cancellation automatically.
+It provides no ciphertext fetch or execution grant. See the current
+[lifecycle contract](../../protocol/v1/sealed-api-v1.md).
+
 `src/msgplane-client.ts` binds to the slice-1 sealed message-plane contract
 ([protocol/v1/sealed-api-v1.md](../../protocol/v1/sealed-api-v1.md) and its
 [OpenAPI document](../../protocol/v1/openapi/sealed-v1.json)). It is
@@ -374,3 +381,21 @@ mount those assets on the disabled conversation router at
 after the session-custody choice and setup click. `ZtConversationOwnerSetup` supplies
 `custodyOptions()`, `transportOptions` and an optional `onClose` notification hook.
 There is no default root provider, endpoint configuration or production mount.
+
+The [local stdio MCP server](../../docs/mcp-local-tools.md) exposes SDK syntax previews and gated tool discovery; live scoped messaging remains unavailable.
+
+The [synthetic agent adapter foundation](../../docs/agent-adapter-simulator.md) adds callable fixture handling and a Python wrapper over this SDK. It cannot activate live messaging or grant agent authority.
+
+## Workflow context candidate
+
+`workflow-context.ts` seals and opens proposed ZTWC01 contexts using the existing
+HPKE implementation and a just-verified role-2 archive reader. It performs no
+networking, persistence, private-key generation or dispatch activation. The
+server's owner router remains unmounted. See
+[`workflow-context.md`](../../protocol/v1/workflow-context.md) for exact authenticated
+identity, version, ciphertext, exception and retention boundaries.
+[Importable agent recipe previews](../../docs/agent-recipes.md) add a disabled n8n
+workflow and callable example using `agent-recipe`, the shared fixture adapter and
+a local customer-controlled reader. They exercise durable synthetic identities,
+owner review and bounded reply routing; production grants and activation remain
+unavailable.

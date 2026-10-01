@@ -216,12 +216,144 @@ fn lease_expiry_reconnect() -> Value {
     )
 }
 
+/// Synthetic agent journey for docs/AGENT-QUICKSTART.md. The "agent" is a
+/// scripted fixture: a job-completion notification, a fixture owner reply that
+/// grants nothing, and a next action that waits for authenticated approval.
+/// Radio calls remain counters; nothing here is device I/O or a model call.
+fn agent_journey() -> Value {
+    let mut writer = Authority::new(1);
+    let mut phone = ModelPhone::default();
+    // The agent finishes a fictional job and queues one notification. A lost
+    // acceptance ACK replays to the same synthetic message identity.
+    let note = writer
+        .accept(id(1), "agent-note-1", "note-v1", id(2))
+        .unwrap();
+    assert_eq!(
+        writer.accept(id(1), "agent-note-1", "note-v1", id(99)),
+        Ok(note)
+    );
+    let hub = writer.connect(id(3), "owner-hub", "hub-1", 1, 50).unwrap();
+    writer.grant(&hub, note, id(4), 1, "owner", 1, 40).unwrap();
+    assert!(phone.submit(&mut writer, note));
+    // Submitted is not delivered; the receipt stays a separate honest step.
+    assert_eq!(
+        writer.event(note, Evidence::SentCallbackOk),
+        Ok(MessageState::Submitted)
+    );
+
+    // The owner's fixture reply is conversation input. It grants no authority:
+    // the next action queues under its own identity and waits for approval.
+    let action = writer
+        .accept(id(1), "agent-follow-up", "action-v1", id(5))
+        .unwrap();
+    assert_eq!(writer.state(action), Some(MessageState::Queued));
+    assert_eq!(phone.calls(action), 0);
+    // Editing the draft after approval invalidates it: the approved identity
+    // refuses different content, so approval restarts under a fresh identity.
+    assert_eq!(
+        writer.accept(id(1), "agent-follow-up", "action-v2", id(50)),
+        Err(Rejection::DuplicateKeyDifferentRequest)
+    );
+    let edited = writer
+        .accept(id(1), "agent-follow-up-v2", "action-v2", id(6))
+        .unwrap();
+
+    // The owner opts out before approving: the pending action cancels and can
+    // never be re-granted. A message already submitted is not recalled.
+    assert_eq!(
+        writer.event(edited, Evidence::Cancel),
+        Ok(MessageState::Cancelled)
+    );
+    assert_eq!(
+        writer.grant(&hub, edited, id(9), 1, "owner", 10, 40),
+        Err(Rejection::InvalidState)
+    );
+    assert_eq!(phone.calls(edited), 0);
+
+    // The owner later approves a renewed follow-up. Its result callback is
+    // lost: unknown, never auto-resent, at most one modeled radio call.
+    let renewed = writer
+        .accept(id(1), "agent-follow-up-v3", "action-v3", id(7))
+        .unwrap();
+    writer
+        .grant(&hub, renewed, id(8), 1, "owner", 11, 40)
+        .unwrap();
+    assert!(phone.submit(&mut writer, renewed));
+    assert_eq!(
+        writer.event(renewed, Evidence::SentCallbackTimeout),
+        Ok(MessageState::Unknown)
+    );
+    assert_eq!(
+        writer.grant(&hub, renewed, id(10), 2, "owner", 12, 40),
+        Err(Rejection::GrantAlreadyIssued)
+    );
+    assert!(!phone.submit(&mut writer, renewed));
+
+    // The owner revokes the agent connector: reconnecting fences the old hub
+    // session and its grant is refused.
+    let hub_two = writer.connect(id(3), "owner-hub", "hub-2", 20, 10).unwrap();
+    assert_eq!(
+        writer.grant(&hub, action, id(11), 2, "owner", 20, 40),
+        Err(Rejection::SessionStale)
+    );
+
+    // The connector goes offline past its lease: the grant is refused and,
+    // without durable proof of non-submission, reconnecting never retries.
+    assert_eq!(
+        writer.grant(&hub_two, action, id(11), 2, "owner", 30, 40),
+        Err(Rejection::LeaseExpired)
+    );
+    let hub_three = writer.connect(id(3), "owner-hub", "hub-3", 31, 50).unwrap();
+    assert_eq!(
+        writer.grant(&hub_three, renewed, id(12), 2, "owner", 31, 80),
+        Err(Rejection::GrantAlreadyIssued)
+    );
+
+    // A fenced writer refuses new requests instead of buffering them, and
+    // recovery starts dispatch-paused.
+    writer.writer_available = false;
+    assert_eq!(
+        writer.accept(id(1), "agent-note-2", "note-v2", id(13)),
+        Err(Rejection::WriterUnavailable)
+    );
+    assert_eq!(
+        writer.event(note, Evidence::DeliveryCallbackOk),
+        Err(Rejection::WriterUnavailable)
+    );
+    writer.writer_available = true;
+    writer.dispatch_enabled = false;
+    assert_eq!(
+        writer.grant(&hub_three, action, id(14), 2, "owner", 40, 80),
+        Err(Rejection::DispatchDisabled)
+    );
+    report(
+        "agent_journey",
+        &writer,
+        note,
+        phone.calls(note),
+        vec![
+            json!({"t_ms": 1, "event": "job_completed_fixture_and_notification_accepted", "replay": "same_message"}),
+            json!({"t_ms": 2, "event": "notification_single_radio_call", "outcome": "submitted_not_delivered"}),
+            json!({"t_ms": 3, "event": "owner_fixture_reply", "authority_granted": "none"}),
+            json!({"t_ms": 4, "event": "next_action_queued", "awaiting": "authenticated_owner_approval", "radio_calls": 0}),
+            json!({"t_ms": 5, "event": "edited_draft_refused", "prior_approval": "invalidated"}),
+            json!({"t_ms": 10, "event": "opt_out_cancelled_pending_action", "regrant": "rejected"}),
+            json!({"t_ms": 11, "event": "approved_followup_submission_unknown", "resubmit": "rejected", "radio_calls": 1}),
+            json!({"t_ms": 20, "event": "agent_access_revoked", "revoked_session_grant": "rejected"}),
+            json!({"t_ms": 30, "event": "offline_lease_expired", "grant": "rejected"}),
+            json!({"t_ms": 31, "event": "reconnect_after_expiry", "retry": "rejected"}),
+            json!({"t_ms": 40, "event": "writer_refusal", "recovery": "dispatch_paused"}),
+        ],
+    )
+}
+
 fn matrix() -> Vec<Value> {
     vec![
         dropped_ack(),
         writer_loss(),
         stale_hub(),
         lease_expiry_reconnect(),
+        agent_journey(),
     ]
 }
 

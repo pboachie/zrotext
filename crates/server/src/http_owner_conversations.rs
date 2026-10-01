@@ -44,6 +44,8 @@ pub fn router_with_browser_sdk(
 ) -> Router {
     router(state).merge(assets.router())
 }
+pub(crate) mod confirmation_records;
+pub mod context;
 
 pub const DISCLOSURE_VERSION: &str = "conversation-content-v1";
 const CONTENT_TYPE: &str = "application/vnd.zrotext.sealed.v1";

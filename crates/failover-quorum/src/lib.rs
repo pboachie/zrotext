@@ -32,6 +32,15 @@
 //!   a future external authority (monotonic, refuses backward promotions).
 //!   It is an interface only: this build ships a test implementation and no
 //!   external anchoring.
+//! * [`fence`] defines the external writer-fencing and epoch-authority
+//!   adapter interfaces of issue #647: a [`fence::FenceAuthority`] for
+//!   external host fencing (idempotent under a [`fence::FenceToken`],
+//!   refusal-only, no unfence) and a [`fence::ExternalEpochAnchor`]
+//!   extending the anchor contract with the confirmation concept. The only
+//!   shipped fence implementation is the fail-closed
+//!   [`fence::NoopFenceAuthority`]; the executor's promote path requires a
+//!   confirmed external fence and anchor before the epoch compare-and-set,
+//!   and its restore reconciles the authority against the anchored epoch.
 //! * [`observe`] forms one member's quorum report per round from raw probe
 //!   outcomes — the reporter half of the member-reporting transport — with
 //!   fail-closed rules for member-local probe faults.
@@ -50,8 +59,8 @@
 //! (the deterministic probe implementations in this build abstain), so in
 //! production the store stays empty and every round fails closed — it
 //! observes no database itself, it does not stop or reseed PostgreSQL hosts
-//! (external watchdog integration), the epoch anchor
-//! has no real implementation, and the store journals are never rotated
+//! (external watchdog integration), the external host-fencing backend is
+//! still the refusing default, and the store journals are never rotated
 //! beyond the open-time checkpointed compaction (see [`store`]); later increments per the implementation-status notes in
 
 //! `docs/MULTI-LOCATION.md`.
@@ -59,6 +68,7 @@
 pub mod anchor;
 pub mod decision;
 pub mod executor;
+pub mod fence;
 pub mod observe;
 pub mod policy;
 pub mod report;
@@ -66,5 +76,7 @@ pub mod store;
 
 #[cfg(test)]
 mod executor_tests;
+#[cfg(test)]
+mod fence_tests;
 #[cfg(test)]
 mod tests;

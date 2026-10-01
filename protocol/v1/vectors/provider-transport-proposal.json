@@ -1,0 +1,13 @@
+{
+  "status": "proposal_only",
+  "binding": {"account": "account_sample", "route": "provider_sample", "revision": 1, "sender": "sender_commitment", "recipient": "recipient_commitment", "content": "content_commitment", "reader": "reader_sample", "purpose": "notification", "expiry": 20},
+  "cases": [
+    {"name": "response_loss_survives_restart", "steps": [["intent", {}, "intent"], ["restart", {}, "unknown"], ["intent", {}, "refused"], ["response", {"message": "message_sample"}, "accepted"], ["receipt", {"event": "event_sample", "digest": "fact_submitted", "message": "message_sample", "fact": "submitted"}, "applied"]], "state": "submitted", "sends": 1},
+    {"name": "callback_before_response_never_guesses", "steps": [["intent", {}, "intent"], ["receipt", {"event": "event_sample", "digest": "fact_delivered", "message": "message_sample", "fact": "delivered"}, "awaiting_correlation"], ["response", {"message": "message_sample"}, "accepted"], ["receipt", {"event": "event_sample", "digest": "fact_delivered", "message": "message_sample", "fact": "delivered"}, "applied"], ["restart", {}, "delivered"]], "state": "delivered", "sends": 1},
+    {"name": "conflicting_fact_cannot_erase_delivery", "steps": [["intent", {}, "intent"], ["response", {"message": "message_sample"}, "accepted"], ["receipt", {"event": "event_sample", "digest": "fact_delivered", "message": "message_sample", "fact": "delivered"}, "applied"], ["receipt", {"event": "event_sample", "digest": "changed_fact", "message": "message_sample", "fact": "failed"}, "conflict"], ["receipt", {"event": "other_event", "digest": "fact_failed", "message": "message_sample", "fact": "failed"}, "conflict"]], "state": "delivered", "sends": 1},
+    {"name": "stop_wins_before_intent", "steps": [["stop", {"sequence": 2}, "held"], ["intent", {}, "refused"], ["start", {"sequence": 1}, "stale"], ["start", {"sequence": 3}, "released"], ["intent", {}, "refused"]], "state": "cancelled", "sends": 0},
+    {"name": "intent_wins_stop_race", "steps": [["intent", {}, "intent"], ["stop", {"sequence": 2}, "held"], ["restart", {}, "unknown"], ["intent", {}, "refused"]], "state": "unknown", "sends": 1},
+    {"name": "expiry_has_no_network_effect", "steps": [["intent", {"now": 20}, "refused"]], "state": "queued", "sends": 0},
+    {"name": "duplicate_receipt_survives_restart", "steps": [["intent", {}, "intent"], ["response", {"message": "message_sample"}, "accepted"], ["receipt", {"event": "event_sample", "digest": "fact_submitted", "message": "message_sample", "fact": "submitted"}, "applied"], ["restart", {}, "submitted"], ["receipt", {"event": "event_sample", "digest": "fact_submitted", "message": "message_sample", "fact": "submitted"}, "duplicate"]], "state": "submitted", "sends": 1}
+  ]
+}

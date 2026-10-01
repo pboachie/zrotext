@@ -68,24 +68,25 @@ Only send messages to recipients for whom you have an appropriate basis to send 
 
 The [roadmap](docs/ROADMAP.md) covers gateway messaging, self-hosting, account tools, workflows and AI, and multi-location support. It shows each capability's stage, what blocks general sending, and where to help. It has no promised release dates.
 
-The proposed product direction is **your number, connected to your business, your automations, and your AI**. Start with these two experiences through a dashboard and integrations; both remain unavailable today.
+The proposed product direction is **your number, connected to your business, your automations, and your AI**. Start with these experiences through a dashboard and integrations; all remain unavailable today. The proposed [agent messaging tools](docs/PRODUCT-PLAN.md#agent-messaging-tools) add MCP, SDK adapters and guided setup for an existing customer-controlled agent using an owner-provided Android phone and SIM.
 
 <!-- roadmap:usecases -->
 | Priority | Experience | Example | Availability |
 |---|---|---|---|
 | First | [Text receptionist](docs/USE-CASES.md#receptionist) | Gather job details by text, draft a reply, and ask the owner to approve a quote. | Proposed; unavailable |
 | First | [Personal AI by SMS](docs/USE-CASES.md#personalai) | Text your assistant a note or reminder; let approved routines communicate with selected contacts. | Proposed; unavailable |
+| First | [Agent task notifications and replies](docs/USE-CASES.md#agenttexts) | Receive a task-completion text from your agent, reply with context, and review its proposed next action. | Proposed; unavailable |
 <!-- /roadmap:usecases -->
 
 Explore [all proposed use cases](docs/USE-CASES.md), including event invitations and RSVPs, repair updates, appointment waitlists and volunteer coordination. The [product implementation plan](docs/PRODUCT-PLAN.md) connects them to ordered development work and acceptance criteria.
 
 <!-- roadmap:overview -->
-<p align="center"><a href="docs/ROADMAP.md"><img src="docs/assets/roadmap-overview.svg" alt="Roadmap at a glance: 22 capabilities in five tracks. Four are in a restricted pilot, eight are being built, three are in design and seven are planned. None has reached general release." width="820"></a></p>
+<p align="center"><a href="docs/ROADMAP.md"><img src="docs/assets/roadmap-overview.svg" alt="Roadmap at a glance: 25 capabilities in five tracks. Four are in a restricted pilot, nine are being built, three are in design and nine are planned. None has reached general release." width="820"></a></p>
 <!-- /roadmap:overview -->
 
 ## Design preview
 
-Try the [interactive text receptionist simulation](docs/RECEPTIONIST-DEMO.md): review a service inquiry, wedding RSVP, or personal assistant request, then approve a scripted reply. It uses synthetic data and sends no SMS.
+Try the [interactive text receptionist simulation](docs/RECEPTIONIST-DEMO.md): review a service inquiry, wedding RSVP, or personal assistant request, then approve a scripted reply. It uses synthetic data and sends no SMS. For a terminal-only walkthrough of the planned agent experience, run the [agent texting quickstart](docs/AGENT-QUICKSTART.md) over the delivery simulator; it is equally synthetic.
 
 These interface studies use synthetic devices, messages and traffic. Click an image to inspect it at full size.
 

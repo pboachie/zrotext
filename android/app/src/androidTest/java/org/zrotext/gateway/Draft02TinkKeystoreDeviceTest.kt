@@ -34,7 +34,8 @@ class Draft02TinkKeystoreDeviceTest {
         DevicePayloadKeyStore.requireSupportedSdk(Build.VERSION.SDK_INT)
         val store = openStore()
         if (store.containsAlias(alias)) store.deleteEntry(alias)
-        val recipient = DevicePayloadKeyStore(alias).getOrCreateForEnrollment()
+        clearPayloadLifecycleFixture(InstrumentationRegistry.getInstrumentation().targetContext, alias)
+        val recipient = DevicePayloadKeyStore(InstrumentationRegistry.getInstrumentation().targetContext, alias).getOrCreateForEnrollment()
         assertEquals(65, recipient.point.size)
         assertNull(store.getKey(alias, null)?.encoded)
         InstrumentationRegistry.getInstrumentation().sendStatus(0, Bundle().apply {
@@ -51,7 +52,7 @@ class Draft02TinkKeystoreDeviceTest {
             val enc = decodeHex(requireNotNull(args.getString("m2_draft02_enc_hex")))
             val ct = decodeHex(requireNotNull(args.getString("m2_draft02_ct_hex")))
             val expectedCek = decodeHex(requireNotNull(args.getString("m2_draft02_cek_hex")))
-            val keyStore = DevicePayloadKeyStore(alias)
+            val keyStore = DevicePayloadKeyStore(InstrumentationRegistry.getInstrumentation().targetContext, alias)
             val recipient = keyStore.existingPublic()
             // Public draft-01 outbound Protected fixture, carried under a profile-02 header.
             val protected = decodeHex(
@@ -96,6 +97,7 @@ class Draft02TinkKeystoreDeviceTest {
             expectedCek.fill(0)
         } finally {
             if (store.containsAlias(alias)) store.deleteEntry(alias)
+            clearPayloadLifecycleFixture(InstrumentationRegistry.getInstrumentation().targetContext, alias)
             assertFalse(store.containsAlias(alias))
         }
     }
@@ -104,6 +106,7 @@ class Draft02TinkKeystoreDeviceTest {
         requireHarness()
         val store = openStore()
         if (store.containsAlias(alias)) store.deleteEntry(alias)
+        clearPayloadLifecycleFixture(InstrumentationRegistry.getInstrumentation().targetContext, alias)
         assertFalse(store.containsAlias(alias))
         InstrumentationRegistry.getInstrumentation().sendStatus(0, Bundle().apply {
             putString("m2_draft02_alias_removed", "PASSED")

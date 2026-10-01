@@ -44,18 +44,20 @@ fn token_digest(pepper: &[u8], domain: &[u8], token: &str) -> [u8; 32] {
 
 const ORIGIN: &str = "https://owner.example.test";
 
-struct Owner {
-    f: Fixture,
-    principal: SessionPrincipal,
-    hasher: TokenHasher,
-    cipher: mfa::MfaCipher,
-    root: SigningKey,
-    pin: [u8; 94],
-    recovery: String,
+pub(crate) struct Owner {
+    pub(crate) f: Fixture,
+    pub(crate) principal: SessionPrincipal,
+    pub(crate) hasher: TokenHasher,
+    pub(crate) cipher: mfa::MfaCipher,
+    pub(crate) root: SigningKey,
+    pub(crate) pin: [u8; 94],
+    pub(crate) recovery: String,
+    pub(crate) token: String,
+    pub(crate) csrf: String,
     secret: [u8; 20],
 }
 impl Owner {
-    async fn new() -> Self {
+    pub(crate) async fn new() -> Self {
         let f = Fixture::without_authority().await;
         // Separate account without protected phone tombstones permits an exact
         // account-erasure cascade exercise alongside the complete parent schema.
@@ -66,6 +68,8 @@ impl Owner {
         let hasher = TokenHasher::new(pepper.to_vec()).unwrap();
         let token = format!("zts_{}", URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>()));
         let token_hash = token_digest(&pepper, b"session-v1", &token);
+        let csrf = format!("ztc_{}", URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>()));
+        let csrf_hash = token_digest(&pepper, b"csrf-v1", &csrf);
         f.db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
             .await
             .unwrap();
@@ -78,7 +82,7 @@ impl Owner {
         .await
         .unwrap();
         f.db.execute("INSERT INTO sessions(id,account_id,user_id,token_hash,csrf_hash,expires_at) VALUES($1,$2,$3,$4,$5,clock_timestamp()+interval '1 hour')",
-            &[&session, &account, &user, &&token_hash[..], &vec![0u8; 32]]).await.unwrap();
+            &[&session, &account, &user, &&token_hash[..], &&csrf_hash[..]]).await.unwrap();
         let key = rand::random::<[u8; 32]>();
         let nonce = rand::random::<[u8; 12]>();
         let secret = rand::random::<[u8; 20]>();
@@ -133,10 +137,12 @@ impl Owner {
             root,
             pin,
             recovery,
+            token,
+            csrf,
             secret,
         }
     }
-    async fn challenge(&self) -> IssuedChallenge {
+    pub(crate) async fn challenge(&self) -> IssuedChallenge {
         issue_challenge(
             &mut self.f.connect().await,
             &self.hasher,
@@ -147,7 +153,7 @@ impl Owner {
         .await
         .unwrap()
     }
-    fn sign(&self, c: &IssuedChallenge) -> Vec<u8> {
+    pub(crate) fn sign(&self, c: &IssuedChallenge) -> Vec<u8> {
         // Construct the specified transcript independently of the verifier's
         // helper, so a domain or length-prefix regression cannot mirror itself.
         let transcript = [
@@ -174,7 +180,7 @@ impl Owner {
         )
         .await
     }
-    async fn empty_authority(&self) {
+    pub(crate) async fn empty_authority(&self) {
         for table in [
             "sealed_manifest_authorities",
             "sealed_root_enrollments",

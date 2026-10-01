@@ -1,0 +1,352 @@
+{
+  "status": "proposed_unavailable",
+  "base_configuration": {
+    "mode": "live",
+    "both_enabled": false,
+    "schema_ready": true,
+    "database_mode": "live",
+    "caps_enabled": true,
+    "caps_configured": true,
+    "provider_available": true,
+    "provider_account": "provider_fixture",
+    "session": [
+      "live",
+      "provider_fixture"
+    ],
+    "reconcile": [
+      "live",
+      "provider_fixture"
+    ],
+    "webhook": [
+      "live",
+      "provider_fixture"
+    ]
+  },
+  "base_state": {
+    "namespace": [
+      "live",
+      "provider_fixture"
+    ],
+    "owner": "owner_fixture",
+    "customer": "customer_fixture",
+    "inbox": {},
+    "pending": false,
+    "risk": false,
+    "reservations": {},
+    "nonterminal_subscriptions": 1,
+    "recognized_price": true,
+    "status": "active",
+    "grace_deadline": null,
+    "quota": 2
+  },
+  "base_event": {
+    "signature_valid": true,
+    "fresh": true,
+    "mode": "live",
+    "object_mode": "live",
+    "provider_account": "provider_fixture",
+    "owner": "owner_fixture",
+    "customer": "customer_fixture",
+    "id": "event_fixture",
+    "digest": "content_fixture",
+    "risk": false
+  },
+  "base_request": {
+    "id": "action_fixture",
+    "digest": "content_fixture",
+    "required_mode": "live",
+    "now": 10
+  },
+  "configuration": [
+    {
+      "name": "valid_live",
+      "changes": {},
+      "expected": "ready"
+    },
+    {
+      "name": "valid_test",
+      "changes": {
+        "session": [
+          "test",
+          "provider_fixture"
+        ],
+        "reconcile": [
+          "test",
+          "provider_fixture"
+        ],
+        "webhook": [
+          "test",
+          "provider_fixture"
+        ],
+        "mode": "test",
+        "database_mode": "test"
+      },
+      "expected": "ready"
+    },
+    {
+      "name": "disabled",
+      "changes": {
+        "mode": "disabled"
+      },
+      "expected": "disabled"
+    },
+    {
+      "name": "both_modes",
+      "changes": {
+        "both_enabled": true
+      },
+      "expected": "configuration_refused"
+    },
+    {
+      "name": "test_database",
+      "changes": {
+        "database_mode": "test"
+      },
+      "expected": "configuration_refused"
+    },
+    {
+      "name": "empty_session",
+      "changes": {
+        "session": null
+      },
+      "expected": "configuration_refused"
+    },
+    {
+      "name": "test_reconcile",
+      "changes": {
+        "reconcile": [
+          "test",
+          "provider_fixture"
+        ]
+      },
+      "expected": "configuration_refused"
+    },
+    {
+      "name": "foreign_webhook",
+      "changes": {
+        "webhook": [
+          "live",
+          "provider_foreign"
+        ]
+      },
+      "expected": "configuration_refused"
+    },
+    {
+      "name": "partial_migration",
+      "changes": {
+        "schema_ready": false
+      },
+      "expected": "configuration_refused"
+    },
+    {
+      "name": "removed_cap",
+      "changes": {
+        "caps_configured": false
+      },
+      "expected": "configuration_refused"
+    },
+    {
+      "name": "startup_outage",
+      "changes": {
+        "provider_available": false
+      },
+      "expected": "unready"
+    }
+  ],
+  "events": [
+    {
+      "name": "queued_live",
+      "changes": {},
+      "expected": "queued"
+    },
+    {
+      "name": "test_event",
+      "changes": {
+        "mode": "test"
+      },
+      "expected": "namespace_refused"
+    },
+    {
+      "name": "mixed_object",
+      "changes": {
+        "object_mode": "test"
+      },
+      "expected": "namespace_refused"
+    },
+    {
+      "name": "foreign_provider",
+      "changes": {
+        "provider_account": "provider_foreign"
+      },
+      "expected": "namespace_refused"
+    },
+    {
+      "name": "foreign_owner",
+      "changes": {
+        "owner": "owner_foreign"
+      },
+      "expected": "binding_refused"
+    },
+    {
+      "name": "unbound_customer",
+      "changes": {
+        "customer": null
+      },
+      "expected": "binding_refused"
+    },
+    {
+      "name": "stale",
+      "changes": {
+        "fresh": false
+      },
+      "expected": "verification_refused"
+    },
+    {
+      "name": "bad_signature",
+      "changes": {
+        "signature_valid": false
+      },
+      "expected": "verification_refused"
+    },
+    {
+      "name": "duplicate",
+      "changes": {},
+      "expected": "duplicate",
+      "state_changes": {
+        "inbox": {
+          "event_fixture": "content_fixture"
+        }
+      }
+    },
+    {
+      "name": "changed_bytes",
+      "changes": {
+        "digest": "content_changed"
+      },
+      "expected": "conflict",
+      "state_changes": {
+        "inbox": {
+          "event_fixture": "content_fixture"
+        }
+      }
+    },
+    {
+      "name": "refund_or_dispute",
+      "changes": {
+        "risk": true
+      },
+      "expected": "queued"
+    }
+  ],
+  "admission": [
+    {
+      "name": "live_active",
+      "state_changes": {},
+      "expected": "accepted"
+    },
+    {
+      "name": "test_not_live_paid",
+      "state_changes": {
+        "namespace": [
+          "test",
+          "provider_fixture"
+        ]
+      },
+      "expected": "namespace_refused"
+    },
+    {
+      "name": "pending_outage_or_reconciliation",
+      "state_changes": {
+        "pending": true
+      },
+      "expected": "billing_pending"
+    },
+    {
+      "name": "risk_queue_review_or_hold",
+      "state_changes": {
+        "risk": true
+      },
+      "expected": "payment_hold"
+    },
+    {
+      "name": "multiple_nonterminal",
+      "state_changes": {
+        "nonterminal_subscriptions": 2
+      },
+      "expected": "quota_exceeded"
+    },
+    {
+      "name": "no_subscription",
+      "state_changes": {
+        "nonterminal_subscriptions": 0
+      },
+      "expected": "quota_exceeded"
+    },
+    {
+      "name": "unknown_price",
+      "state_changes": {
+        "recognized_price": false
+      },
+      "expected": "quota_exceeded"
+    },
+    {
+      "name": "cancelled",
+      "state_changes": {
+        "status": "canceled"
+      },
+      "expected": "quota_exceeded"
+    },
+    {
+      "name": "grace_before_deadline",
+      "state_changes": {
+        "status": "past_due",
+        "grace_deadline": 11
+      },
+      "expected": "accepted"
+    },
+    {
+      "name": "grace_at_deadline",
+      "state_changes": {
+        "status": "past_due",
+        "grace_deadline": 10
+      },
+      "expected": "quota_exceeded"
+    },
+    {
+      "name": "missing_failure_time",
+      "state_changes": {
+        "status": "past_due"
+      },
+      "expected": "quota_exceeded"
+    },
+    {
+      "name": "downgrade_preserves_reservation",
+      "state_changes": {
+        "quota": 1,
+        "reservations": {
+          "action_previous": "content_previous"
+        }
+      },
+      "expected": "quota_exceeded"
+    },
+    {
+      "name": "replay_during_hold",
+      "state_changes": {
+        "risk": true,
+        "reservations": {
+          "action_fixture": "content_fixture"
+        }
+      },
+      "expected": "replay"
+    },
+    {
+      "name": "replay_conflict",
+      "state_changes": {
+        "reservations": {
+          "action_fixture": "content_previous"
+        }
+      },
+      "expected": "conflict"
+    }
+  ]
+}

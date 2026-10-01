@@ -32,9 +32,13 @@ class PreparationProbeDeviceTest {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null, null) }
         check(!store.containsAlias(alias))
         try {
-            val key = DevicePayloadKeyStore(alias)
+            val key = DevicePayloadKeyStore(InstrumentationRegistry.getInstrumentation().targetContext, alias)
             block(key, key.getOrCreateForEnrollment()) { store.deleteEntry(alias) }
-        } finally { if (store.containsAlias(alias)) store.deleteEntry(alias) }
+        } finally {
+            if (store.containsAlias(alias)) store.deleteEntry(alias)
+            val file = PayloadKeyLifecycleFileStore.recordFile(InstrumentationRegistry.getInstrumentation().targetContext, alias)
+            for (suffix in listOf("", ".new", ".bak", ".lock")) java.io.File(file.path + suffix).delete()
+        }
         check(!store.containsAlias(alias))
     }
 
@@ -54,6 +58,7 @@ class PreparationProbeDeviceTest {
         lose()
         assertThrows(Exception::class.java) { open() }
         assertThrows(Exception::class.java) { key.existingPublic() }
+        assertThrows(Exception::class.java) { key.getOrCreateForEnrollment() }
     }
 
     @Test fun preparationRequiresActualReportedHardwareAndNeverProducesAlphaState() = withKey { key, public, _ ->

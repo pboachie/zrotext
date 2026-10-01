@@ -17,11 +17,15 @@ use zrotext_delivery_store::{Claim, DeliveryStore, NewMessage, SessionRecord};
 #[cfg(feature = "sealed-interop-tests")]
 mod cross_client_interop;
 
-struct TestCase {
-    fixture: Fixture,
-    principal: ApiPrincipal,
-    hasher: TokenHasher,
-    user: Uuid,
+mod agent_authority;
+#[cfg(feature = "sealed-interop-tests")]
+mod sealed_boundary_acceptance;
+
+pub(crate) struct TestCase {
+    pub(crate) fixture: Fixture,
+    pub(crate) principal: ApiPrincipal,
+    pub(crate) hasher: TokenHasher,
+    pub(crate) user: Uuid,
     /// The bearer token text; the cross-client interop lane posts through the
     /// real HTTP route, which authenticates from headers, not from a principal.
     #[cfg(feature = "sealed-interop-tests")]
@@ -34,11 +38,17 @@ impl Deref for TestCase {
     }
 }
 impl TestCase {
-    async fn new() -> Self {
+    pub(crate) async fn new() -> Self {
         Self::with_manifest_lifetime(120_000).await
     }
     async fn with_manifest_lifetime(lifetime: i64) -> Self {
         let mut f = Fixture::new().await;
+        for sql in [
+            include_str!("../../../../deploy/compose/migrations/068_connector_registration.sql"),
+            include_str!("../../../../deploy/compose/migrations/074_agent_authority.sql"),
+        ] {
+            f.db.batch_execute(sql).await.unwrap();
+        }
         let now = now(&f.db).await;
         f.bytes.truncate(150); // Existing exact manifest header, through root point.
         f.bytes[37..45].copy_from_slice(&((now - 1000) as u64).to_be_bytes());
@@ -119,7 +129,7 @@ impl TestCase {
             token,
         }
     }
-    fn writer(&self) -> WriterContext<'static> {
+    pub(crate) fn writer(&self) -> WriterContext<'static> {
         WriterContext {
             site_id: "manifest-test",
             deployment_epoch: 1,
@@ -136,11 +146,65 @@ impl TestCase {
         )
         .await
     }
-    async fn envelope(&self, id: Uuid) -> Vec<u8> {
+    pub(crate) async fn envelope(&self, id: Uuid) -> Vec<u8> {
         envelope(self, id, now(&self.db).await, 60_000)
     }
-    async fn cleanup(self) {
+    pub(crate) async fn cleanup(self) {
         self.fixture.cleanup().await;
+    }
+
+    /// Real signed role-3 registration, kept separate from role-5 signing.
+    /// This fixture still makes no provider/decryption or carrier claim.
+    pub(crate) async fn with_agent_connector() -> (Self, Uuid, [u8; 32]) {
+        let mut case = Self::new().await;
+        let current = now(&case.db).await;
+        let reader = SigningKey::generate_from_rng(&mut rand::rng());
+        let point = reader.verifying_key().to_sec1_point(false);
+        let key: [u8; 32] =
+            Sha256::digest([b"ZTSE/key/v1\0".as_slice(), &[0, 16], point.as_bytes()].concat())
+                .into();
+        let mut record = vec![3];
+        record.extend(key);
+        record.extend(point.as_bytes());
+        record.extend([0; 32]);
+        record.extend(4u16.to_be_bytes());
+        record.extend(((current - 1000) as u64).to_be_bytes());
+        record.extend(((current + 240_000) as u64).to_be_bytes());
+        record.push(1);
+        assert_eq!(record.len(), 149);
+        case.fixture
+            .bytes
+            .splice(151 + 2 * 149..151 + 2 * 149, record);
+        case.fixture.bytes[150] += 1;
+        let previous: Vec<u8> = case
+            .db
+            .query_one(
+                "SELECT semantic_digest FROM sealed_manifest_authorities WHERE account_id=$1",
+                &[&case.account],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        case.fixture.bytes[29..37].copy_from_slice(&2u64.to_be_bytes());
+        case.fixture.bytes[53..85].copy_from_slice(&previous);
+        case.fixture.resign();
+        let digest = Sha256::digest(&case.bytes[..case.bytes.len() - 64]);
+        let mut db = case.connect().await;
+        let tx = db.transaction().await.unwrap();
+        let mut authority = outbound::lock_current(&tx, case.account).await.unwrap();
+        let snapshot = authority.next_snapshot(&case.bytes).await.unwrap();
+        tx.execute("UPDATE sealed_manifest_authorities SET version=$2,semantic_digest=$3,manifest=$4,accepted_at_ms=$5,last_verified_ms=$5 WHERE account_id=$1",&[&case.account,&snapshot.version,&snapshot.digest.as_slice(),&snapshot.bytes,&snapshot.accepted_ms]).await.unwrap();
+        drop(authority);
+        tx.commit().await.unwrap();
+        let connector = Uuid::new_v4();
+        let proposer = Uuid::new_v4();
+        let approver = Uuid::new_v4();
+        case.db.execute("INSERT INTO connector_registrations(account_id,connector_id,display_name,state,key_point,key_id,manifest_generation,manifest_version,manifest_digest,proposed_by_user,proposed_session,proposed_ms,expires_ms,approved_by_user,approved_session,approved_ms) VALUES($1,$2,'synthetic agent','active',$3,$4,1,2,$5,$6,$7,$8,$9,$6,$10,$8)",&[&case.account,&connector,&point.as_bytes(),&key.as_slice(),&digest.as_slice(),&case.user,&proposer,&current,&(current+240_000),&approver]).await.unwrap();
+        case.db.execute("INSERT INTO connector_keys(account_id,connector_id,key_id,key_point,valid_from_ms,valid_until_ms) VALUES($1,$2,$3,$4,$5,$6)",&[&case.account,&connector,&key.as_slice(),&point.as_bytes(),&(current-1000),&(current+240_000)]).await.unwrap();
+        for (kind, directions) in [("send", 0i16), ("read", 4i16)] {
+            case.db.execute("INSERT INTO connector_grants(account_id,connector_id,grant_id,kind,read_directions,line_id,created_by_user,created_ms,expires_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",&[&case.account,&connector,&Uuid::new_v4(),&kind,&directions,&case.line,&case.user,&current,&(current+240_000)]).await.unwrap();
+        }
+        (case, connector, key)
     }
 }
 async fn now(db: &Client) -> i64 {
@@ -182,7 +246,7 @@ fn envelope(f: &Fixture, id: Uuid, observed: i64, lifetime: i64) -> Vec<u8> {
     b.extend(id.as_bytes());
     b.extend(f.device.as_bytes());
     b.extend(f.line.as_bytes());
-    b.extend(1u64.to_be_bytes());
+    b.extend(&f.bytes[29..37]);
     b.extend(Sha256::digest(&f.bytes[..f.bytes.len() - 64]));
     b.extend(f.signer);
     b.extend((observed as u64).to_be_bytes());
@@ -256,12 +320,42 @@ async fn candidate_queue_replays_without_spending_or_rehydration_and_refunds_onc
             .await
             .unwrap()
     );
+    let snapshot_sql = "SELECT state,state_version,updated_at,transport_payload, \
+        (SELECT count(*) FROM usage_ledger WHERE message_id=$1 AND entry_kind='refund'), \
+        (SELECT coalesce(sum(units),0)::bigint FROM usage_ledger WHERE message_id=$1), \
+        (SELECT coalesce(sum(refunded_units),0)::bigint FROM usage_periods WHERE account_id=$2) \
+        FROM messages WHERE id=$1";
+    let before =
+        f.db.query_one(snapshot_sql, &[&id, &f.account])
+            .await
+            .unwrap();
+    assert_eq!(before.get::<_, String>(0), "cancelled");
+    assert_eq!(before.get::<_, i64>(4), 1);
+    assert_eq!(before.get::<_, i64>(5), 0);
+    assert_eq!(before.get::<_, i64>(6), 1);
     assert!(
         DeliveryStore::new(&mut db)
             .cancel(f.account, id)
             .await
-            .is_err()
+            .unwrap()
     );
+    assert!(!f.admit(&bytes).await.unwrap().created);
+    let after =
+        f.db.query_one(snapshot_sql, &[&id, &f.account])
+            .await
+            .unwrap();
+    assert_eq!(after.get::<_, String>(0), before.get::<_, String>(0));
+    assert_eq!(after.get::<_, i64>(1), before.get::<_, i64>(1));
+    assert_eq!(
+        after.get::<_, std::time::SystemTime>(2),
+        before.get::<_, std::time::SystemTime>(2)
+    );
+    assert_eq!(after.get::<_, Vec<u8>>(3), before.get::<_, Vec<u8>>(3));
+    for index in 4..=6 {
+        assert_eq!(after.get::<_, i64>(index), before.get::<_, i64>(index));
+    }
+    assert_eq!(counts(&f).await, (1, 1, 1));
+
     f.db.execute(
         "UPDATE messages SET updated_at=now()-interval '2 days' WHERE id=$1",
         &[&id],
@@ -283,7 +377,7 @@ async fn candidate_queue_replays_without_spending_or_rehydration_and_refunds_onc
     .await
     .unwrap();
     db.batch_execute(include_str!(
-        "../../../../deploy/compose/migration-candidates/NNN_conversation_confirmation_records.sql"
+        "../../../../deploy/compose/migrations/072_conversation_confirmation_records.sql"
     ))
     .await
     .unwrap();

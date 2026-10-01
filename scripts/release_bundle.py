@@ -29,6 +29,7 @@ ENVIRONMENTS = {"test", "staging", "production", "self-hosted"}
 WEB_FILES = (
     "web/owner/devices.html",
     "web/owner/devices.js",
+    "web/owner/owner-shell.js",
     "web/owner/devices.css",
     "web/owner/account.html",
     "web/owner/account.js",

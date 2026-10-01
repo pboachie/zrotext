@@ -19,6 +19,11 @@ Changing an accepted wire choice requires a new profile byte and regenerated vec
 
 ## Decisions still required
 
+The [root recovery state contract](root-recovery-state-contract.md) proposes
+the remaining Q3/Q10 identity/history choices and supplies synthetic state drills
+for #624. Its new-account lost-all choice is pending review, not a founder
+acceptance or evidence that runtime rotation/recovery gates have closed.
+
 | Gate | Decision owner and required choice | Evidence for closure | Acceptance |
 |---|---|---|---|
 | Q1 root bootstrap | Product/security: choose an authenticated out-of-band owner-root comparison and recovery ceremony for browser, SDK and phone. | Reproducible enrollment and phishing/key-substitution tests, browser-code limitation stated. | Decision recorded 2026-09-26; RootPin02 comparison bytes and test-only TypeScript/Android verifiers exist; independent owner client, recovery-card UX and phishing drills open |

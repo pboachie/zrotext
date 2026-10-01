@@ -307,6 +307,42 @@ impl VerifiedManifest {
         self.version
     }
 
+    /// The single role-3 (integration) reader record for this exact public
+    /// point when it is currently active: `(key_id, scope, until)`. Connector
+    /// registration and authorization bind to exactly this record; no other
+    /// role, wildcard or implicit reader can be selected through it.
+    pub(crate) fn active_integration_reader(
+        &self,
+        point: &[u8],
+        now: u64,
+    ) -> Option<([u8; 32], u16, u64)> {
+        self.roles
+            .iter()
+            .filter(|k| k.role == 3 && k.point.as_slice() == point && k.active(now))
+            .map(|k| (k.id, k.scope, k.until))
+            .next()
+    }
+
+    pub(crate) fn active_agent_signer(&self, line: &[u8; 16], signer: &[u8; 32], now: u64) -> bool {
+        self.roles.iter().any(|key| {
+            key.role == 5
+                && key.scope == 1
+                && key.line == *line
+                && key.id == *signer
+                && key.active(now)
+        })
+    }
+
+    pub(crate) fn active_agent_reader(&self, key_id: &[u8; 32], directions: u16, now: u64) -> bool {
+        [0, 4, 8, 12].contains(&directions)
+            && self.roles.iter().any(|key| {
+                key.role == 3
+                    && key.id == *key_id
+                    && key.scope & directions == directions
+                    && key.active(now)
+            })
+    }
+
     pub(crate) fn conversation_keys(
         &self,
         device: &[u8; 16],

@@ -30,6 +30,16 @@ let availableWebhookEndpointIds = new Set();
 let sessionLoadGeneration = 0;
 let deviceLoadGeneration = 0;
 let messageLoadGeneration = 0;
+let summaryGeneration = 0;
+let summaryBusy = false;
+let summaryActiveRequest = null;
+let summaryLastAttempt = 0;
+let summaryLastStarted = 0;
+let summaryRetryable = false;
+let summaryQueued = false;
+let summarySnapshot = null;
+let summaryTimer = null;
+const summaryDevices = new Map();
 let keyLoadGeneration = 0;
 const requestTimeoutMs = 30_000;
 const dashboardRefreshMs = 15_000;
@@ -76,6 +86,10 @@ let browsingOlderMessages = false;
 const preconditionFreshMs = 90_000;
 let preconditionTimer = null;
 let preconditionRows = [];
+const fleetRows = new Map();
+let selectedDeviceId = null;
+const activityRows = new Map();
+let fleetSnapshotFailed = false;
 
 function stopPreconditionAging() {
   if (preconditionTimer !== null) window.clearTimeout(preconditionTimer);
@@ -95,7 +109,7 @@ function agePreconditions() {
     // Include request latency and time spent suspended. Once expired, a clock
     // adjustment cannot make a saved observation fresh again.
     const elapsed = Math.max(0, performance.now() - entry.started, Date.now() - entry.wallStarted);
-    entry.expired ||= elapsed >= entry.remaining;
+    entry.expired ||= elapsed >= entry.remaining || fleetSnapshotFailed;
     const text = devicePreconditionsText(entry.device, entry.expired);
     if (entry.element.textContent !== text) entry.element.textContent = text;
     if (!entry.expired) nextExpiry = Math.min(nextExpiry, entry.remaining - elapsed);
@@ -359,9 +373,11 @@ async function api(path, method = "GET", body = undefined) {
       signal: typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(requestTimeoutMs) : undefined,
     });
   } catch (error) {
-    throw new Error(error && error.name === "TimeoutError"
+    const failure = new Error(error && error.name === "TimeoutError"
       ? "The server did not respond in time. Try again."
       : "Could not reach the server. Check your connection and try again.");
+    failure.retryable = true;
+    throw failure;
   }
   if (requestEpoch !== ownerEpoch) {
     throw new Error("Your sign-in expired. Sign in again.");
@@ -395,6 +411,9 @@ function showSignedIn(signedIn) {
   byId("sign-in").hidden = signedIn;
   byId("owner-content").hidden = !signedIn;
   byId("logout").hidden = !signedIn;
+  if (typeof document.dispatchEvent === "function" && typeof CustomEvent === "function") {
+    document.dispatchEvent(new CustomEvent("zrotext-owner-session", { detail: { signedIn } }));
+  }
 }
 
 function clearMfaChallenge() {
@@ -420,7 +439,7 @@ async function completeSignIn() {
 function loadOwnerData() {
   // The above-the-fold sections load first and alone; the below-the-fold
   // panels wait for them so a sign-in never occupies half the request pool.
-  return Promise.all([loadDevices(), loadMessages()]).finally(() => loadBelowFoldSections());
+  return Promise.all([loadDevices(), loadMessages()]).then(() => loadSummary()).finally(() => loadBelowFoldSections());
 }
 
 function loadBelowFoldSections() {
@@ -494,6 +513,20 @@ function clearWebhookEndpoints() {
 }
 
 function clearOwnerState() {
+  summaryBusy = false;
+  summaryActiveRequest = null;
+  summaryLastAttempt = 0;
+  summaryLastStarted = 0;
+  summaryRetryable = false;
+  summaryGeneration += 1;
+  summaryQueued = false;
+  summarySnapshot = null;
+  if (summaryTimer !== null) window.clearTimeout(summaryTimer);
+  summaryTimer = null;
+  summaryDevices.clear();
+  byId("summary-device").value = "";
+  updateSummaryDevices([], true);
+  renderSummary("Sign in to load authoritative metadata.");
   ownerEpoch += 1;
   browsingOlderDevices = false;
   browsingOlderMessages = false;
@@ -509,12 +542,20 @@ function clearOwnerState() {
   clearInboundHistory();
   clearWebhookEndpoints();
   byId("device-list").replaceChildren();
+  fleetRows.clear();
+  selectedDeviceId = null;
+  fleetSnapshotFailed = false;
+  renderSelectedDevice();
+  byId("device-detail-content").hidden = true;
+  message("device-detail-status", "Sign in to inspect device snapshots.");
+  message("fleet-summary", "Sign in to load fleet observations.");
   byId("device-cap-prompt").hidden = true;
   message("device-cap-prompt", "");
   byId("more-devices").hidden = true;
   nextDeviceCursor = null;
   shownDeviceCount = 0;
   byId("message-list").replaceChildren();
+  activityRows.clear();
   byId("more-messages").hidden = true;
   nextMessageCursor = null;
   shownMessageCount = 0;
@@ -922,6 +963,99 @@ function devicePreconditionsText(device, expired = false) {
   return `${observations} ${explanation}${blockers.length && unknown ? " Other local preconditions are unavailable." : ""} Carrier readiness unknown.`;
 }
 
+function deviceConnectivityText(device) {
+  return device.revoked ? "Revoked · gateway authorization removed" :
+    device.active_socket_lease === true
+      ? "Approved · authenticated socket lease observed (may lag up to 90 seconds) · SMS readiness unknown"
+      : device.active_socket_lease === false
+        ? "Approved · no current authenticated socket lease · SMS readiness unknown"
+        : "Approved for connection · live status unavailable";
+}
+
+function renderSelectedDevice() {
+  for (const row of activityRows.values()) updateActivityDeviceContext(row);
+  const entry = fleetRows.get(selectedDeviceId);
+  for (const [id, row] of fleetRows) row.select.setAttribute("aria-pressed", String(id === selectedDeviceId));
+  const content = byId("device-detail-content");
+  preconditionRows = preconditionRows.filter(row => row.element !== byId("device-detail-preconditions"));
+  content.hidden = !entry;
+  if (!entry) {
+    message("device-detail-status", selectedDeviceId
+      ? "The selected device is absent from this loaded page. It may have been removed or moved to an older page. Choose another device or load more."
+      : "Choose a device to inspect its latest loaded snapshot.");
+    for (const id of ["device-detail-name", "device-detail-id", "device-detail-connectivity", "device-detail-queue", "device-detail-preconditions"]) byId(id).textContent = "";
+    return;
+  }
+  const device = entry.device;
+  byId("device-detail-name").textContent = device.display_name || "Unnamed gateway";
+  byId("device-detail-id").textContent = device.device_id;
+  byId("device-detail-connectivity").textContent = deviceConnectivityText(device);
+  byId("device-detail-queue").textContent = deviceQueueText(device);
+  byId("device-detail-preconditions").textContent = devicePreconditionsText(device, entry.observation.expired);
+  message("device-detail-status", fleetSnapshotFailed
+    ? "Refresh failed. Showing an older loaded snapshot; current connectivity and queue counts are unknown."
+    : `Loaded observation: ${dateText(device.status_observed_at_ms)}. This is not an exact heartbeat time.`);
+  preconditionRows.push({ ...entry.observation, element: byId("device-detail-preconditions") });
+  agePreconditions();
+}
+
+function updateFleetRow(device, started, wallStarted) {
+  let entry = fleetRows.get(device.device_id);
+  if (!entry) {
+    const row = document.createElement("li");
+    const detail = document.createElement("div");
+    const name = document.createElement("strong");
+    const id = document.createElement("code");
+    const state = document.createElement("span");
+    const queue = document.createElement("span");
+    const preconditions = document.createElement("span");
+    preconditions.setAttribute("aria-live", "off");
+    detail.append(name, id, state, queue, preconditions);
+    const revoke = document.createElement("button");
+    revoke.type = "button";
+    revoke.className = "quiet";
+    revoke.textContent = "Revoke";
+    const select = document.createElement("button");
+    select.type = "button";
+    select.className = "fleet-select";
+    select.textContent = "View details";
+    row.append(detail, revoke, select);
+    entry = { row, name, id, state, queue, preconditions, revoke, select, device };
+    fleetRows.set(device.device_id, entry);
+    select.addEventListener("click", () => { selectedDeviceId = entry.device.device_id; renderSelectedDevice(); });
+    revoke.addEventListener("click", async () => {
+      const current = entry.device;
+      if (current.revoked || !window.confirm(`Revoke ${current.display_name}? Its gateway connection will lose authorization.`)) return;
+      entry.revoking = true;
+      revoke.disabled = true;
+      try {
+        await api(`/v1/enrollment/devices/${encodeURIComponent(current.device_id)}`, "DELETE");
+        await Promise.all([loadDevices(), loadDeviceCapacity()]);
+      } catch (error) {
+        message("device-status", error.message);
+      } finally {
+        entry.revoking = false;
+        revoke.disabled = false;
+      }
+    });
+  }
+  entry.device = device;
+  entry.name.textContent = device.display_name || "Unnamed gateway";
+  entry.id.textContent = device.device_id;
+  entry.state.textContent = deviceConnectivityText(device);
+  entry.queue.textContent = deviceQueueText(device);
+  entry.preconditions.textContent = devicePreconditionsText(device);
+  entry.revoke.hidden = !!device.revoked;
+  entry.revoke.disabled = !!entry.revoking;
+  entry.revoke.setAttribute("aria-label", `Revoke ${device.display_name}`);
+  entry.select.setAttribute("aria-label", `View details for ${device.display_name || "unnamed gateway"}`);
+  entry.select.setAttribute("aria-controls", "device-detail");
+  entry.row.setAttribute("data-device-id", device.device_id);
+  entry.observation = { device, element: entry.preconditions, started, wallStarted,
+    remaining: preconditionRemaining(device), expired: false };
+  return entry;
+}
+
 async function loadDevices(reset = true, automatic = false) {
   if (!reset && !nextDeviceCursor) return;
   deviceLoads += 1;
@@ -935,12 +1069,8 @@ async function loadDevices(reset = true, automatic = false) {
   const moreButton = byId("more-devices");
   moreButton.disabled = true;
   if (!automatic) message("device-status", "Loading devices…");
-  if (reset && !automatic) {
-    clearPreconditionRows();
-    byId("device-list").replaceChildren();
-    moreButton.hidden = true;
-    nextDeviceCursor = null;
-    shownDeviceCount = 0;
+  if (reset) {
+    message("fleet-summary", fleetRows.size ? "Refreshing loaded observations; previous snapshots remain visible." : "Fleet observations are loading.");
   }
   try {
     const path = cursor
@@ -951,73 +1081,37 @@ async function loadDevices(reset = true, automatic = false) {
     if (automatic && (!canRefreshDashboard() || viewingList("device-list"))) return;
     if (!page || !Array.isArray(page.devices)) throw new Error("The device response was invalid.");
     const devices = page.devices;
-    if (automatic) {
+    if (devices.some(device => !device || typeof device.device_id !== "string" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(device.device_id)) ||
+        new Set(devices.map(device => device.device_id)).size !== devices.length) throw new Error("The device response contained ambiguous identities.");
+    updateSummaryDevices(devices, reset);
+    const focused = document.activeElement;
+    if (reset) {
       clearPreconditionRows();
-      byId("device-list").replaceChildren();
-      moreButton.hidden = true;
-      nextDeviceCursor = null;
-      shownDeviceCount = 0;
+      const ids = new Set(devices.map(device => device.device_id));
+      for (const id of fleetRows.keys()) if (!ids.has(id)) fleetRows.delete(id);
     }
-    moreButton.disabled = false;
-    if (reset && devices.length === 0) {
-      message("device-status", "No approved devices yet.");
-      return;
-    }
+    fleetSnapshotFailed = false;
+    for (const device of devices) updateFleetRow(device, started, wallStarted);
+    preconditionRows = [...fleetRows.values()].map(entry => entry.observation);
+    byId("device-list").replaceChildren(...[...fleetRows.values()].map(entry => entry.row));
+    if (focused && byId("device-list").contains(focused) && !focused.hidden && typeof focused.focus === "function") focused.focus({ preventScroll: true });
     nextDeviceCursor = page.next_cursor || null;
-    shownDeviceCount += devices.length;
+    shownDeviceCount = fleetRows.size;
     moreButton.hidden = !nextDeviceCursor;
-    message("device-status", `${shownDeviceCount} device${shownDeviceCount === 1 ? "" : "s"} shown${nextDeviceCursor ? "; more available" : ""}. Revoked devices stay visible.`);
-    const rows = [];
-    for (const device of devices) {
-      const row = document.createElement("li");
-      const detail = document.createElement("div");
-      const name = document.createElement("strong");
-      const id = document.createElement("code");
-      const state = document.createElement("span");
-      name.textContent = device.display_name;
-      id.textContent = device.device_id;
-      state.textContent = device.revoked
-        ? "Revoked"
-        : device.active_socket_lease === true
-          ? "Approved · authenticated socket lease observed (may lag up to 90 seconds) · SMS readiness unknown"
-          : device.active_socket_lease === false
-            ? "Approved · no current authenticated socket lease · SMS readiness unknown"
-            : "Approved for connection · live status unavailable";
-      const queue = document.createElement("span");
-      queue.textContent = deviceQueueText(device);
-      const preconditions = document.createElement("span");
-      preconditions.setAttribute("aria-live", "off");
-      preconditions.textContent = devicePreconditionsText(device);
-      preconditionRows.push({ device, element: preconditions, started, wallStarted,
-        remaining: preconditionRemaining(device), expired: false });
-      detail.append(name, id, state, queue, preconditions);
-      row.append(detail);
-      if (!device.revoked) {
-        const revoke = document.createElement("button");
-        revoke.type = "button";
-        revoke.textContent = "Revoke";
-        revoke.setAttribute("aria-label", `Revoke ${device.display_name}`);
-        revoke.addEventListener("click", async () => {
-          if (!window.confirm(`Revoke ${device.display_name}? Its gateway connection will lose authorization.`)) return;
-          revoke.disabled = true;
-          try {
-            await api(`/v1/enrollment/devices/${encodeURIComponent(device.device_id)}`, "DELETE");
-            await Promise.all([loadDevices(), loadDeviceCapacity()]);
-          } catch (error) {
-            message("device-status", error.message);
-            revoke.disabled = false;
-          }
-        });
-        row.append(revoke);
-      }
-      rows.push(row);
-    }
-    byId("device-list").append(...rows);
+    const observed = [...fleetRows.values()].filter(entry => !entry.device.revoked && entry.device.active_socket_lease === true).length;
+    message("fleet-summary", `${shownDeviceCount} loaded device${shownDeviceCount === 1 ? "" : "s"} · ${observed} authenticated socket lease${observed === 1 ? "" : "s"} observed. Counts cover loaded pages only; carrier readiness remains unknown.`);
+    message("device-status", shownDeviceCount === 0 ? "No approved devices yet." : `${shownDeviceCount} device${shownDeviceCount === 1 ? "" : "s"} shown${nextDeviceCursor ? "; more available" : ""}. Revoked devices stay visible.`);
+    renderSelectedDevice();
     agePreconditions();
   } catch (error) {
     if (stale()) return;
     moreButton.disabled = false;
-    message("device-status", `Could not load devices. ${automatic ? "Showing the previous snapshot; counts may be stale. " : ""}${error.message}`);
+    fleetSnapshotFailed = true;
+    message("fleet-summary", fleetRows.size ? "Refresh failed. Loaded page observations and counts may be stale." : "Fleet observations unavailable. Retry Refresh.");
+    renderSelectedDevice();
+    agePreconditions();
+    message("device-status", `Could not load devices. ${fleetRows.size ? "Showing the previous snapshot; counts may be stale. " : ""}${error.message}`);
   } finally {
     deviceLoads -= 1;
     if (deviceLoads === 0 && devicesSignalDuringLoad) {
@@ -1029,8 +1123,141 @@ async function loadDevices(reset = true, automatic = false) {
   }
 }
 
+function updateSummaryDevices(devices, reset) {
+  const select = byId("summary-device");
+  const selected = select.value;
+  if (reset) summaryDevices.clear();
+  for (const device of devices) if (device && uuidPattern.test(device.device_id)) summaryDevices.set(device.device_id, device.display_name || "Unnamed gateway");
+  const all = document.createElement("option");
+  all.value = ""; all.textContent = "All devices in this account";
+  const options = [all];
+  for (const [id, name] of summaryDevices) {
+    const option = document.createElement("option"); option.value = id; option.textContent = name; options.push(option);
+  }
+  if (selected && !summaryDevices.has(selected)) {
+    const option = document.createElement("option"); option.value = selected;
+    option.textContent = "Selected device (absent from loaded fleet pages)"; options.push(option);
+  }
+  select.replaceChildren(...options);
+  select.value = selected;
+}
+
+function validSummary(value, device) {
+  const count = item => item && Number.isSafeInteger(item.value) && item.value >= 0 && item.value <= value.count_bound &&
+    typeof item.capped === "boolean" && (!item.capped || item.value === value.count_bound);
+  return value && value.scope === (device ? "device" : "account") && value.device_id === (device || null) && value.timezone === "UTC" &&
+    Number.isSafeInteger(value.day_start_ms) && Number.isSafeInteger(value.day_end_ms) &&
+    value.day_end_ms - value.day_start_ms === 86_400_000 &&
+    Number.isSafeInteger(value.observed_at_ms) && value.observed_at_ms >= value.day_start_ms && value.observed_at_ms < value.day_end_ms &&
+    value.count_bound === 1000 && value.max_age_ms === 30000 &&
+    count(value.submitted_today) && count(value.pending) && count(value.in_flight);
+}
+
+function renderSummary(status = "") {
+  const snapshot = summarySnapshot;
+  byId("message-summary").setAttribute("data-stale", String(Boolean(snapshot && snapshot.expired)));
+  for (const [id, field] of [["summary-submitted", "submitted_today"], ["summary-pending", "pending"], ["summary-flight", "in_flight"]]) {
+    byId(id).textContent = snapshot ? `${snapshot.value[field].value}${snapshot.value[field].capped ? "+ (capped)" : ""}${snapshot.expired ? " (stale)" : ""}` :
+      summaryBusy ? "Loading…" : "Unavailable";
+  }
+  if (status) message("summary-status", status);
+  else if (snapshot) message("summary-status", `${snapshot.error ? snapshot.error + ". " : ""}${snapshot.value.scope === "account" ? "Account" : "Selected device"} observation: ${dateText(snapshot.value.observed_at_ms)}. UTC day; capped values are lower bounds. ${snapshot.expired ? "Historical metadata; current counts are unknown." : "These writer states do not establish delivery."}`);
+}
+
+function ageSummary() {
+  if (summaryTimer !== null) window.clearTimeout(summaryTimer);
+  summaryTimer = null;
+  if (!summarySnapshot || !dashboardSignedIn) { scheduleSummaryRetry(); return; }
+  const elapsed = Math.max(0, performance.now() - summarySnapshot.started, Date.now() - summarySnapshot.wallStarted);
+  summarySnapshot.expired ||= elapsed >= summarySnapshot.remaining || (typeof navigator !== "undefined" && navigator.onLine === false);
+  renderSummary();
+  if (!dashboardPageActive || document.hidden) return;
+  const automatic = byId("auto-refresh").checked;
+  const delay = summarySnapshot.expired ? 15000 : Math.min(15000, Math.max(1, Math.ceil(summarySnapshot.remaining - elapsed)));
+  if (!automatic && summarySnapshot.expired) return;
+  summaryTimer = window.setTimeout(() => {
+    summaryTimer = null;
+    if (automatic && summaryRefreshDue() && canRefreshDashboard() && (typeof navigator === "undefined" || navigator.onLine !== false)) loadSummary(true);
+    else ageSummary();
+  }, delay);
+}
+
+function summaryRefreshDue() {
+  return Math.max(Date.now() - summaryLastAttempt, performance.now() - summaryLastStarted) >= 15000;
+}
+
+function resumeSummary() {
+  ageSummary();
+  if (summarySnapshot && summarySnapshot.expired && summaryRefreshDue() && canRefreshDashboard()) loadSummary(true);
+}
+
+function scheduleSummaryRetry() {
+  if (!summaryRetryable || !dashboardSignedIn || !dashboardPageActive || document.hidden || !byId("auto-refresh").checked) return;
+  if (summaryTimer !== null) window.clearTimeout(summaryTimer);
+  summaryTimer = window.setTimeout(() => {
+    summaryTimer = null;
+    if (canRefreshDashboard() && (typeof navigator === "undefined" || navigator.onLine !== false)) loadSummary(true);
+    else scheduleSummaryRetry();
+  }, 15000);
+}
+
+async function loadSummary(automatic = false, scopeChanged = false) {
+  if (!dashboardSignedIn || !dashboardPageActive) return;
+  if (scopeChanged) {
+    summaryGeneration += 1;
+    summarySnapshot = null;
+    if (summaryTimer !== null) window.clearTimeout(summaryTimer);
+    summaryTimer = null;
+  }
+  if (summaryBusy) { if (scopeChanged) summaryQueued = true; return; }
+  summaryBusy = true;
+  const requestToken = {};
+  summaryActiveRequest = requestToken;
+  const generation = ++summaryGeneration, epoch = ownerEpoch, device = byId("summary-device").value;
+  const started = performance.now(), wallStarted = Date.now();
+  summaryLastAttempt = wallStarted;
+  summaryLastStarted = started;
+  const stale = () => epoch !== ownerEpoch || generation !== summaryGeneration || device !== byId("summary-device").value;
+  byId("refresh-summary").disabled = true;
+  renderSummary(automatic && summarySnapshot ? "Refreshing authoritative metadata…" : "Loading authoritative metadata…");
+  try {
+    const value = await api(`/v1/owner/message-summary${device ? `?device_id=${encodeURIComponent(device)}` : ""}`);
+    if (stale()) return;
+    if (!validSummary(value, device)) throw new Error("The summary response was invalid.");
+    summarySnapshot = { value, started, wallStarted, expired: false, remaining: Math.min(value.max_age_ms, value.day_end_ms - value.observed_at_ms) };
+    summaryRetryable = false;
+    ageSummary();
+  } catch (error) {
+    if (stale()) return;
+    if (summarySnapshot) { summarySnapshot.expired = true; summarySnapshot.error = "Refresh failed"; }
+    summaryRetryable = error.status >= 500 || error.retryable === true;
+    renderSummary(`Summary unavailable. ${summarySnapshot ? "Showing historical metadata; current counts are unknown. " : ""}${error.message}`);
+    if (summarySnapshot) ageSummary(); else scheduleSummaryRetry();
+  } finally {
+    if (summaryActiveRequest === requestToken) {
+      summaryBusy = false;
+      summaryActiveRequest = null;
+      if (!stale()) { byId("refresh-summary").disabled = false; renderSummary(); }
+      if (summaryQueued && dashboardSignedIn) { summaryQueued = false; loadSummary(false, true); }
+    }
+  }
+}
+
+byId("refresh-summary").addEventListener("click", () => loadSummary());
+byId("summary-device").addEventListener("change", () => { loadSummary(false, true); renderSummary("Loading selected scope…"); });
+window.addEventListener("offline", () => { if (summarySnapshot) { summarySnapshot.expired = true; summarySnapshot.error = "Offline"; } ageSummary(); });
+window.addEventListener("online", () => { if (canRefreshDashboard()) loadSummary(true); });
+
 function localTime(milliseconds) {
   return formatTime(milliseconds, "Time unavailable");
+}
+
+function updateActivityDeviceContext(row) {
+  const gateway = fleetRows.get(row.activityDeviceId);
+  row.activityDeviceLink.hidden = !gateway;
+  row.activityDeviceUnavailable.hidden = Boolean(gateway);
+  row.activityDeviceLink.textContent = gateway ? `View device ${gateway.device.display_name || row.activityDeviceId}` : "Device context unavailable";
+  row.activityDeviceUnavailable.textContent = `Device: ${row.activityDeviceId} · absent from loaded fleet pages`;
 }
 
 async function loadMessages(reset = true, automatic = false) {
@@ -1044,12 +1271,6 @@ async function loadMessages(reset = true, automatic = false) {
   const moreButton = byId("more-messages");
   moreButton.disabled = true;
   if (!automatic) message("message-status", "Loading message states…");
-  if (reset && !automatic) {
-    byId("message-list").replaceChildren();
-    moreButton.hidden = true;
-    nextMessageCursor = null;
-    shownMessageCount = 0;
-  }
   try {
     const path = cursor
       ? `/v1/owner/messages?before=${encodeURIComponent(cursor)}`
@@ -1057,12 +1278,18 @@ async function loadMessages(reset = true, automatic = false) {
     const page = await api(path);
     if (stale()) return;
     if (automatic && (!canRefreshDashboard() || viewingList("message-list"))) return;
-    if (!page || !Array.isArray(page.messages) ||
-        !page.messages.every((item) => item && typeof item.state === "string" && Array.isArray(item.events))) {
+    if (!page || !Array.isArray(page.messages) || page.messages.length > 20 ||
+        new Set(page.messages.map(item => item && item.message_id)).size !== page.messages.length ||
+        !page.messages.every((item) => item && typeof item.message_id === "string" && typeof item.device_id === "string" &&
+          typeof item.state === "string" && Array.isArray(item.events) && item.events.length <= 32 &&
+          item.events.every(event => event && typeof event.evidence === "string" && typeof event.resulting_state === "string"))) {
       throw new Error("The message response was invalid.");
     }
-    if (automatic) {
-      byId("message-list").replaceChildren();
+    if (reset) {
+      const present = new Set(page.messages.map(item => item.message_id));
+      for (const [id, row] of activityRows) {
+        if (!present.has(id)) { row.remove(); activityRows.delete(id); }
+      }
       moreButton.hidden = true;
       nextMessageCursor = null;
       shownMessageCount = 0;
@@ -1073,30 +1300,67 @@ async function loadMessages(reset = true, automatic = false) {
       return;
     }
     nextMessageCursor = page.next_cursor || null;
-    shownMessageCount += page.messages.length;
+    shownMessageCount = new Set([...activityRows.keys(), ...page.messages.map(item => item.message_id)]).size;
     moreButton.hidden = !nextMessageCursor;
     message("message-status", `${shownMessageCount} message${shownMessageCount === 1 ? "" : "s"} shown${nextMessageCursor ? "; more available" : ""}.`);
     const rows = [];
     for (const item of page.messages) {
-      const row = document.createElement("li");
+      const previous = activityRows.get(item.message_id);
+      const row = previous || document.createElement("li");
+      const wasOpen = previous && previous.activityDetails.open;
+      const focused = previous && row.contains(document.activeElement) ? document.activeElement : null;
+      row.className = "activity-row";
       const state = document.createElement("strong");
       const id = document.createElement("code");
       const device = document.createElement("span");
       const created = document.createElement("time");
-      state.textContent = item.state.replaceAll("_", " ");
+      const states = { accepted: "Accepted · not sent", queued: "Queued · not sent", claimed: "Claimed · not sent",
+        submitting: "Submitting · radio attempt unconfirmed", submitted: "Sent callback · delivery unconfirmed",
+        delivered: "Delivered callback · unread status unknown", delivery_unknown: "Delivery unknown",
+        unknown: "Outcome unknown", failed: "Failed", cancelled: "Cancelled", expired: "Expired" };
+      state.textContent = Object.hasOwn(states, item.state) ? states[item.state] : "Unrecognized state · outcome unknown";
+      state.className = "activity-state";
+      state.setAttribute("data-state", Object.hasOwn(states, item.state) ? item.state : "unknown");
       id.textContent = item.message_id;
-      device.textContent = `Gateway ${item.device_id}`;
-      created.textContent = ` · Created ${localTime(item.created_at_ms)}`;
+      {
+        const link = document.createElement("button");
+        link.type = "button";
+        link.className = "quiet activity-device";
+        link.setAttribute("aria-controls", "device-detail-content");
+        link.addEventListener("click", () => {
+          if (requestEpoch !== ownerEpoch) return;
+          if (!fleetRows.has(item.device_id)) return;
+          selectedDeviceId = item.device_id;
+          renderSelectedDevice();
+          if (typeof byId("device-detail-title").scrollIntoView === "function") byId("device-detail-title").scrollIntoView({ block: "nearest" });
+          message("message-status", "Selected device context in the fleet panel. Message paging and history are unchanged.");
+        });
+        const unavailable = document.createElement("span");
+        device.append(link, unavailable);
+        row.activityDeviceId = item.device_id;
+        row.activityDeviceLink = link;
+        row.activityDeviceUnavailable = unavailable;
+        updateActivityDeviceContext(row);
+      }
+      created.textContent = `Time: ${localTime(item.created_at_ms)}`;
       const createdDate = new Date(item.created_at_ms);
       if (!Number.isNaN(createdDate.getTime())) created.dateTime = createdDate.toISOString();
-      row.append(state, id, device, created);
-      if (item.state === "unknown") {
+      const direction = document.createElement("span");
+      direction.textContent = "Direction: Outbound";
+      const recipient = document.createElement("span");
+      recipient.textContent = "Recipient: unavailable";
+      const cells = document.createElement("div");
+      cells.className = "activity-cells";
+      cells.append(created, direction, device, recipient, state);
+      row.replaceChildren(cells, id);
+      if (item.state === "unknown" || item.state === "delivery_unknown" || !Object.hasOwn(states, item.state)) {
         const warning = document.createElement("p");
         warning.className = "message-uncertain";
         warning.textContent = "Outcome unknown. The phone may have sent this SMS. Sending a new message could duplicate it.";
         row.append(warning);
       }
       const details = document.createElement("details");
+      details.open = Boolean(wasOpen);
       const summary = document.createElement("summary");
       summary.textContent = `Writer events (${item.events.length}${item.events_truncated ? " most recent" : ""})`;
       details.append(summary);
@@ -1110,19 +1374,27 @@ async function loadMessages(reset = true, automatic = false) {
           const entry = document.createElement("li");
           const segment = event.segment_index === null || event.segment_count === null
             ? "" : ` · segment ${event.segment_index + 1}/${event.segment_count}`;
-          entry.textContent = `${localTime(event.received_at_ms)} · ${event.evidence.replaceAll("_", " ")} → ${event.resulting_state.replaceAll("_", " ")}${segment}`;
+          const result = Object.hasOwn(states, event.resulting_state) ? states[event.resulting_state] : "Unrecognized state · outcome unknown";
+          entry.textContent = `${localTime(event.received_at_ms)} · ${event.evidence.replaceAll("_", " ")} → ${result}${segment}`;
           list.append(entry);
         }
         details.append(list);
       }
       row.append(details);
+      row.activityDetails = details;
+      activityRows.set(item.message_id, row);
+      if (focused) row.activityRestoreFocus = focused.tagName === "SUMMARY" ? summary : device.children[0];
       rows.push(row);
     }
     byId("message-list").append(...rows);
+    for (const row of rows) {
+      if (row.activityRestoreFocus && typeof row.activityRestoreFocus.focus === "function") row.activityRestoreFocus.focus();
+      row.activityRestoreFocus = null;
+    }
   } catch (error) {
     if (stale()) return;
     moreButton.disabled = false;
-    message("message-status", `Could not load messages. ${error.message}`);
+    message("message-status", `Could not load messages. ${activityRows.size ? "Showing older metadata; current states are unknown. " : ""}${error.message}`);
   } finally {
     messageLoads -= 1;
     if (messageLoads === 0 && messagesSignalDuringLoad) {
@@ -1592,15 +1864,19 @@ byId("refresh-keys").addEventListener("click", () => loadKeys());
 byId("more-keys").addEventListener("click", () => loadKeys(false));
 byId("dismiss-key-secret").addEventListener("click", clearKeySecret);
 byId("auto-refresh").addEventListener("change", () => {
+  ageSummary();
   syncLiveUpdates();
   scheduleDashboardRefresh();
 });
 document.addEventListener("visibilitychange", () => {
+  resumeSummary();
   syncLiveUpdates();
   scheduleDashboardRefresh();
   agePreconditions();
 });
 window.addEventListener("pagehide", () => {
+  if (summaryTimer !== null) window.clearTimeout(summaryTimer);
+  summaryTimer = null;
   dashboardPageActive = false;
   stopDashboardRefresh();
   stopLiveUpdates();
@@ -1609,6 +1885,7 @@ window.addEventListener("pagehide", () => {
 });
 window.addEventListener("pageshow", () => {
   dashboardPageActive = true;
+  resumeSummary();
   agePreconditions();
   scheduleDashboardRefresh();
   startLiveUpdates();

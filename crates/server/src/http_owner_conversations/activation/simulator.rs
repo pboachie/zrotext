@@ -325,7 +325,7 @@ async fn loopback_journal_bridge() {
         .unwrap()
     {
         f.db.batch_execute(include_str!(
-            "../../../../../deploy/compose/migration-candidates/NNN_conversation_confirmation_records.sql"
+            "../../../../../deploy/compose/migrations/072_conversation_confirmation_records.sql"
         ))
         .await
         .unwrap();

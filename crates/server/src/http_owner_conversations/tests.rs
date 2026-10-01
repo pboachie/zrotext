@@ -485,7 +485,12 @@ pub(super) async fn prepared() -> (Fixture, SessionPrincipal) {
     .await
     .unwrap();
     f.db.batch_execute(include_str!(
-        "../../../../deploy/compose/migration-candidates/NNN_conversation_confirmation_records.sql"
+        "../../../../deploy/compose/migrations/072_conversation_confirmation_records.sql"
+    ))
+    .await
+    .unwrap();
+    f.db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/075_workflow_context.sql"
     ))
     .await
     .unwrap();

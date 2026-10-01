@@ -183,7 +183,7 @@ macro_rules! queue_schema {
         [$(($name, include_str!(concat!("../../../../deploy/compose/migrations/", $name)))),+]
     };
 }
-const QUEUE_SCHEMA: [(&str, &str); 66] = queue_schema!(
+const QUEUE_SCHEMA: [(&str, &str); 75] = queue_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -249,7 +249,16 @@ const QUEUE_SCHEMA: [(&str, &str); 66] = queue_schema!(
     "063_retention_blocked_stamp.sql",
     "064_owner_conversation_consent.sql",
     "065_conversation_activation.sql",
-    "../migration-candidates/NNN_conversation_confirmation_records.sql",
+    "066_conversation_interval_session_index.sql",
+    "067_contacts_consent.sql",
+    "068_connector_registration.sql",
+    "069_sealed_root_custody.sql",
+    "070_message_summary_metadata.sql",
+    "071_sealed_grant_authority.sql",
+    "072_conversation_confirmation_records.sql",
+    "073_collaboration_drafts.sql",
+    "074_agent_authority.sql",
+    "075_workflow_context.sql",
 );
 #[test]
 fn queue_fixture_includes_every_checked_in_migration() {
@@ -275,6 +284,16 @@ fn queue_fixture_includes_every_checked_in_migration() {
 // Exercise production index choices, including online preparation.
 async fn apply_queue_schema(db: &Client) {
     for (name, sql) in QUEUE_SCHEMA {
+        if name == "070_message_summary_metadata.sql" {
+            db.batch_execute("CREATE INDEX CONCURRENTLY messages_summary_queue ON messages(account_id,state,created_at) WHERE state IN ('accepted','queued','claimed','submitting','submitted')").await.unwrap();
+            db.batch_execute("BEGIN").await.unwrap();
+            let result = db.batch_execute(sql).await;
+            db.batch_execute(if result.is_ok() { "COMMIT" } else { "ROLLBACK" })
+                .await
+                .unwrap();
+            result.unwrap();
+            continue;
+        }
         match name {
             "034_delivery_sweep_index.sql" => {
                 db.batch_execute("CREATE INDEX messages_in_flight_updated ON messages(updated_at,id) WHERE state IN ('claimed','submitting','submitted')").await.unwrap();
@@ -312,6 +331,9 @@ async fn apply_queue_schema(db: &Client) {
             }
             "062_pending_recipient_index.sql" => {
                 db.batch_execute("CREATE INDEX CONCURRENTLY messages_pending_recipient ON messages(recipient_e164,account_id) WHERE state IN ('queued','claimed') AND recipient_e164 IS NOT NULL").await.unwrap();
+            }
+            "066_conversation_interval_session_index.sql" => {
+                db.batch_execute("CREATE INDEX CONCURRENTLY erasure_fk_conversation_interval_session ON conversation_intervals(account_id,initiating_session_id)").await.unwrap();
             }
             "050_message_attempts_recent_index.sql" => {
                 db.batch_execute("CREATE INDEX message_attempts_device_created ON message_attempts(account_id,device_id,created_at)").await.unwrap();

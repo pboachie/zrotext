@@ -134,9 +134,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../../deploy/compose/migrations/063_retention_blocked_stamp.sql"),
     include_str!("../../../../deploy/compose/migrations/064_owner_conversation_consent.sql"),
     include_str!("../../../../deploy/compose/migrations/065_conversation_activation.sql"),
-    include_str!(
-        "../../../../deploy/compose/migration-candidates/NNN_conversation_confirmation_records.sql"
-    ),
+    include_str!("../../../../deploy/compose/migrations/072_conversation_confirmation_records.sql"),
+    include_str!("../../../../deploy/compose/migrations/075_workflow_context.sql"),
 ];
 
 async fn migrated(db: &Client) -> String {
@@ -300,6 +299,7 @@ async fn retention_respects_each_cutoff_and_replay_fences() {
             conversation_admissions_closed: 0,
             conversation_provenance: 0,
             conversation_intervals: 0,
+            workflow_contexts: 0,
             conversation_confirmations: 0,
         }
     );
@@ -773,7 +773,6 @@ async fn retention_candidates_scan_the_due_index_instead_of_the_table() {
     .await
     .unwrap();
 }
-
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn absent_optional_confirmation_table_cannot_mask_unavailable_mandatory_retention() {

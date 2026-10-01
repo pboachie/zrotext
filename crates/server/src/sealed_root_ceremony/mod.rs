@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Dormant owned transactions for generation-one enrollment. No route calls this.
+//! Owned transactions for generation-one enrollment. The shipped server leaves
+//! their optional library HTTP adapter disabled.
 //!
-//! The future authenticated adapter supplies a principal and configured origin,
+//! An authenticated adapter supplies a principal and configured origin,
 //! enforces request authentication/CSRF, and independently establishes owner root
 //! custody and comparison. Possession alone cannot establish those properties.
 //! All database identity and time fences are checked again here. An enrollment
@@ -52,7 +53,7 @@ pub struct Receipt {
     pub completed_ms: i64,
 }
 
-async fn begin(client: &mut Client) -> Result<Transaction<'_>, CeremonyError> {
+pub(crate) async fn begin(client: &mut Client) -> Result<Transaction<'_>, CeremonyError> {
     let tx = client
         .build_transaction()
         .isolation_level(IsolationLevel::ReadCommitted)
@@ -79,7 +80,7 @@ async fn clock(tx: &Transaction<'_>, previous: u64) -> Result<u64, CeremonyError
 
 /// Never acquire an existing authority lock after the account lock. Admission
 /// uses authority -> account; absent genesis rejects existing history by SELECT.
-async fn owner_locks(
+pub(crate) async fn owner_locks(
     tx: &Transaction<'_>,
     p: &SessionPrincipal,
     genesis: bool,
@@ -105,7 +106,7 @@ async fn owner_locks(
     }
     tx.query_opt("SELECT id FROM users WHERE id=$1 AND email_verified_at IS NOT NULL AND mfa_enabled FOR UPDATE",
         &[&p.user_id]).await?.ok_or(CeremonyError::Rejected("verified MFA owner required"))?;
-    tx.query_opt("SELECT user_id FROM memberships WHERE account_id=$1 AND user_id=$2 AND role='owner' FOR SHARE",
+    tx.query_opt("SELECT user_id FROM memberships WHERE account_id=$1 AND user_id=$2 AND role='owner' AND revoked_at IS NULL FOR SHARE",
         &[&account, &p.user_id]).await?.ok_or(CeremonyError::Rejected("owner membership"))?;
     tx.query_opt(
         "SELECT id FROM sessions WHERE id=$1 AND account_id=$2 AND user_id=$3 FOR UPDATE",
@@ -118,13 +119,13 @@ async fn owner_locks(
     live(tx, p).await
 }
 
-async fn live(tx: &Transaction<'_>, p: &SessionPrincipal) -> Result<(), CeremonyError> {
+pub(crate) async fn live(tx: &Transaction<'_>, p: &SessionPrincipal) -> Result<(), CeremonyError> {
     if !tx
         .query_one(
             "SELECT EXISTS(SELECT 1 FROM accounts a JOIN memberships m ON m.account_id=a.id \
          JOIN users u ON u.id=m.user_id JOIN sessions s ON s.account_id=a.id AND s.user_id=u.id \
          JOIN owner_mfa f ON f.account_id=a.id AND f.user_id=u.id \
-         WHERE a.id=$1 AND u.id=$2 AND s.id=$3 AND a.disabled_at IS NULL AND m.role='owner' \
+         WHERE a.id=$1 AND u.id=$2 AND s.id=$3 AND a.disabled_at IS NULL AND m.role='owner' AND m.revoked_at IS NULL \
          AND u.email_verified_at IS NOT NULL AND u.mfa_enabled AND f.enabled_at IS NOT NULL \
          AND s.revoked_at IS NULL AND s.expires_at>clock_timestamp() \
          AND COALESCE(s.last_used_at,s.created_at)>clock_timestamp()-make_interval(hours=>$4))",
@@ -225,6 +226,51 @@ pub async fn complete_genesis(
     configured_origin: &str,
     completion: Completion<'_>,
 ) -> Result<Receipt, CeremonyError> {
+    complete(
+        client,
+        hasher,
+        cipher,
+        principal,
+        configured_origin,
+        completion,
+        None,
+    )
+    .await
+}
+
+/// Authenticate possession of both the exact enrollment and encrypted bundle,
+/// then atomically enroll and publish. A failed bundle write consumes no factor
+/// or challenge and leaves no authority. No normal server mounts this adapter.
+pub async fn complete_with_custody(
+    client: &mut Client,
+    hasher: &TokenHasher,
+    cipher: &mfa::MfaCipher,
+    principal: &SessionPrincipal,
+    configured_origin: &str,
+    completion: Completion<'_>,
+    publication: crate::sealed_root_custody::Publication<'_>,
+) -> Result<Receipt, CeremonyError> {
+    complete(
+        client,
+        hasher,
+        cipher,
+        principal,
+        configured_origin,
+        completion,
+        Some(publication),
+    )
+    .await
+}
+
+async fn complete(
+    client: &mut Client,
+    hasher: &TokenHasher,
+    cipher: &mfa::MfaCipher,
+    principal: &SessionPrincipal,
+    configured_origin: &str,
+    completion: Completion<'_>,
+    publication: Option<crate::sealed_root_custody::Publication<'_>>,
+) -> Result<Receipt, CeremonyError> {
     let Completion {
         unsigned,
         signature,
@@ -273,6 +319,11 @@ pub async fn complete_genesis(
     };
     let now = clock(&tx, issued as u64).await?;
     proof::verify(&root_pin, unsigned, signature, &expected, now)?;
+    let bundle = publication
+        .map(|p| {
+            crate::sealed_root_custody::validate(p, &root_pin, account, configured_origin, unsigned)
+        })
+        .transpose()?;
     live(&tx, principal).await?;
     let factor_now = clock(&tx, now).await?;
     let Some(consumed) =
@@ -301,6 +352,9 @@ pub async fn complete_genesis(
     tx.execute("INSERT INTO sealed_root_receipts(account_id,user_id,session_id,challenge_id,root_pin,root_fingerprint,completed_ms) \
         VALUES($1,$2,$3,$4,$5,$6,$7)", &[&account, &receipt.user_id, &receipt.session_id, &receipt.challenge_id,
         &receipt.root_pin, &receipt.root_fingerprint, &receipt.completed_ms]).await?;
+    if let Some(bundle) = bundle {
+        crate::sealed_root_custody::insert(&tx, &receipt, bundle).await?;
+    }
     live(&tx, principal).await?;
     let final_time = clock(&tx, completed).await?;
     proof::verify(
@@ -343,4 +397,4 @@ pub async fn read_receipt(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

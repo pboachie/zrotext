@@ -24,14 +24,7 @@ async fn postgres_operator_bootstrap_creates_one_verified_owner_under_concurrenc
         .await
         .unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
-    for sql in [
-        include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
-        include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
-        include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
-        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
-    ] {
-        first.batch_execute(sql).await.unwrap();
-    }
+    super::test_schema::apply(&first).await;
     let first_password = Uuid::new_v4().to_string();
     let second_password = Uuid::new_v4().to_string();
     let third_password = Uuid::new_v4().to_string();
@@ -213,36 +206,7 @@ async fn postgres_tenant_revocation_and_scope_contract() {
         ))
         .await
         .unwrap();
-    client
-        .batch_execute(include_str!(
-            "../../../../deploy/compose/migrations/002_auth.sql"
-        ))
-        .await
-        .unwrap();
-    client
-        .batch_execute(include_str!(
-            "../../../../deploy/compose/migrations/048_observer_memberships.sql"
-        ))
-        .await
-        .unwrap();
-    client
-        .batch_execute(include_str!(
-            "../../../../deploy/compose/migrations/005_verification_outbox.sql"
-        ))
-        .await
-        .unwrap();
-    client
-        .batch_execute(include_str!(
-            "../../../../deploy/compose/migrations/013_owner_mfa.sql"
-        ))
-        .await
-        .unwrap();
-    client
-        .batch_execute(include_str!(
-            "../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"
-        ))
-        .await
-        .unwrap();
+    super::test_schema::apply(&client).await;
     let hasher = TokenHasher::new(crate::test_keys::key(11)).unwrap();
     let a_password = Uuid::new_v4().to_string();
     let b_password = Uuid::new_v4().to_string();
@@ -307,6 +271,13 @@ async fn postgres_tenant_revocation_and_scope_contract() {
     assert!(pa.tenant.require_account(b.account_id).is_err());
     assert!(!revoke_session(&client, &pb, sa.id).await.unwrap());
     let bound_device = Uuid::new_v4();
+    client
+        .execute(
+            "INSERT INTO devices(id,account_id,display_name) VALUES($1,$2,'synthetic')",
+            &[&bound_device, &a.account_id],
+        )
+        .await
+        .unwrap();
     let key = create_api_key(
         &mut client,
         &hasher,
@@ -391,17 +362,7 @@ async fn pending_signup_schema(base_url: &str, schema: &str) -> (Client, Client,
         .await
         .unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
-    for migration in [
-        include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
-        include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
-        include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
-        include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
-        include_str!("../../../../deploy/compose/migrations/022_pending_owner_expiry.sql"),
-        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
-        include_str!("../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"),
-    ] {
-        client.batch_execute(migration).await.unwrap();
-    }
+    super::test_schema::apply(&client).await;
     (setup, client, url)
 }
 

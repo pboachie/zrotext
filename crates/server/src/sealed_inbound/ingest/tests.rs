@@ -458,7 +458,7 @@ async fn candidate_ingest_preserves_legacy_profile_constraints_and_prune_tombsto
     .await
     .unwrap();
     db.batch_execute(include_str!(
-        "../../../../../deploy/compose/migration-candidates/NNN_conversation_confirmation_records.sql"
+        "../../../../../deploy/compose/migrations/072_conversation_confirmation_records.sql"
     ))
     .await
     .unwrap();

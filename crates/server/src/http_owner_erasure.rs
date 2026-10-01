@@ -101,7 +101,23 @@ const BLOCKED_TABLES: &[&str] = &[
 /// rows with a NULL account_id. Tables that the schema cascades from the
 /// account row are deleted explicitly anyway, so the reported per-table
 /// counts stay honest.
-const DELETE_PLAN: &[(&str, &str)] = &[
+pub(crate) const DELETE_PLAN: &[(&str, &str)] = &[
+    (
+        "workflow_context_audit",
+        "DELETE FROM workflow_context_audit WHERE account_id=$1",
+    ),
+    (
+        "workflow_exceptions",
+        "DELETE FROM workflow_exceptions WHERE account_id=$1",
+    ),
+    (
+        "workflow_context_versions",
+        "DELETE FROM workflow_context_versions WHERE account_id=$1",
+    ),
+    (
+        "workflow_contexts",
+        "DELETE FROM workflow_contexts WHERE account_id=$1",
+    ),
     (
         "conversation_execution_records",
         "DELETE FROM conversation_execution_records WHERE account_id=$1",
@@ -110,6 +126,14 @@ const DELETE_PLAN: &[(&str, &str)] = &[
         "conversation_confirmation_records",
         "DELETE FROM conversation_confirmation_records WHERE account_id=$1",
     ),
+    // Contacts and their append-only consent history: erasable account
+    // records (unlike the schema-protected opt-out planes), deleted before
+    // the memberships their recorder foreign keys point at.
+    (
+        "contact_consent_records",
+        "DELETE FROM contact_consent_records WHERE account_id=$1",
+    ),
+    ("contacts", "DELETE FROM contacts WHERE account_id=$1"),
     (
         "conversation_inbound_provenance",
         "DELETE FROM conversation_inbound_provenance WHERE account_id=$1",
@@ -167,6 +191,14 @@ const DELETE_PLAN: &[(&str, &str)] = &[
     ),
     // Delivery history before its messages, devices and attempts.
     (
+        "agent_authority_actions",
+        "DELETE FROM agent_authority_actions WHERE account_id=$1",
+    ),
+    (
+        "agent_authority_approvals",
+        "DELETE FROM agent_authority_approvals WHERE account_id=$1",
+    ),
+    (
         "message_events",
         "DELETE FROM message_events WHERE account_id=$1",
     ),
@@ -189,6 +221,10 @@ const DELETE_PLAN: &[(&str, &str)] = &[
         "DELETE FROM message_attempts WHERE account_id=$1",
     ),
     ("messages", "DELETE FROM messages WHERE account_id=$1"),
+    (
+        "agent_authority_grants",
+        "DELETE FROM agent_authority_grants WHERE account_id=$1",
+    ),
     // Enrollment before its device keys and devices.
     ("device_keys", "DELETE FROM device_keys WHERE account_id=$1"),
     (
@@ -610,6 +646,37 @@ async fn erase_account(
     {
         return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
     }
+    // Inspect proof storage before the final fence: schema preparation can wait.
+    let confirmation_installed =
+        match crate::http_owner_conversations::confirmation_records::installed(&tx).await {
+            Ok(value) => value,
+            Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+        };
+    if confirmation_installed
+        && !crate::http_owner_conversations::confirmation_records::validate(&tx)
+            .await
+            .unwrap_or(false)
+    {
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+    }
+    let execution_installed =
+        match crate::http_owner_conversations::channel::execution::lifecycle::installed(&tx).await {
+            Ok(value) => value,
+            Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+        };
+    if execution_installed {
+        if !crate::http_owner_conversations::channel::execution::lifecycle::validate(&tx)
+            .await
+            .unwrap_or(false)
+        {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+        }
+        // Account-before-record matches execution admission. These locks may
+        // wait, so repeat the live owner check before staging any disable/delete.
+        if tx.query("SELECT message_id FROM conversation_execution_records WHERE account_id=$1 ORDER BY message_id FOR UPDATE",&[&account_id]).await.is_err() {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE,"unavailable");
+        }
+    }
     // FINAL AUTH FENCE. Ordering inside this transaction is deliberate:
     // every read that can wait on a row lock — all the blocked-table
     // preflight counts above — has already run, and this fence is the last
@@ -645,35 +712,7 @@ async fn erase_account(
     // erasure back, never leaving a half-erased account.
     // The proof table is absent only before its allocated migration. No proof
     // can be accepted then. Once installed it participates in the guarded plan.
-    let confirmation_installed =
-        match crate::http_owner_conversations::send::queue::lifecycle::installed(&tx).await {
-            Ok(value) => value,
-            Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
-        };
-    if confirmation_installed
-        && !crate::http_owner_conversations::send::queue::lifecycle::validate(&tx)
-            .await
-            .unwrap_or(false)
-    {
-        return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
-    }
-    let execution_installed =
-        match crate::http_owner_conversations::channel::execution::lifecycle::installed(&tx).await {
-            Ok(value) => value,
-            Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
-        };
     if execution_installed {
-        if !crate::http_owner_conversations::channel::execution::lifecycle::validate(&tx)
-            .await
-            .unwrap_or(false)
-        {
-            return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
-        }
-        // Account-before-record matches execution admission. These locks may
-        // wait, so repeat the live owner check before staging any disable/delete.
-        if tx.query("SELECT message_id FROM conversation_execution_records WHERE account_id=$1 ORDER BY message_id FOR UPDATE",&[&account_id]).await.is_err() {
-            return error_response(StatusCode::SERVICE_UNAVAILABLE,"unavailable");
-        }
         let still_live=tx.query_one("SELECT EXISTS(SELECT 1 FROM sessions s JOIN memberships m ON (m.account_id,m.user_id)=(s.account_id,s.user_id) JOIN accounts a ON a.id=s.account_id JOIN users u ON u.id=s.user_id WHERE s.id=$1 AND s.account_id=$2 AND s.user_id=$3 AND s.revoked_at IS NULL AND s.expires_at>clock_timestamp() AND m.role='owner' AND m.revoked_at IS NULL AND u.email_verified_at IS NOT NULL AND a.disabled_at IS NULL)",&[&principal.session_id,&account_id,&principal.user_id]).await;
         match still_live {
             Ok(row) if row.get::<_, bool>(0) => {}

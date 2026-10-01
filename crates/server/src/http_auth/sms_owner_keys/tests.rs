@@ -18,7 +18,7 @@ macro_rules! migration {
 
 // The ceremony runs on the complete schema. SQL is embedded at build time so
 // the test never executes files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 66] = [
+const TEST_MIGRATIONS: [(&str, &str); 75] = [
     ("001_foundation.sql", migration!("001_foundation.sql")),
     ("002_auth.sql", migration!("002_auth.sql")),
     ("003_delivery.sql", migration!("003_delivery.sql")),
@@ -265,8 +265,44 @@ const TEST_MIGRATIONS: [(&str, &str); 66] = [
         migration!("065_conversation_activation.sql"),
     ),
     (
-        "../migration-candidates/NNN_conversation_confirmation_records.sql",
-        migration!("../migration-candidates/NNN_conversation_confirmation_records.sql"),
+        "066_conversation_interval_session_index.sql",
+        migration!("066_conversation_interval_session_index.sql"),
+    ),
+    (
+        "067_contacts_consent.sql",
+        migration!("067_contacts_consent.sql"),
+    ),
+    (
+        "068_connector_registration.sql",
+        migration!("068_connector_registration.sql"),
+    ),
+    (
+        "069_sealed_root_custody.sql",
+        migration!("069_sealed_root_custody.sql"),
+    ),
+    (
+        "070_message_summary_metadata.sql",
+        migration!("070_message_summary_metadata.sql"),
+    ),
+    (
+        "071_sealed_grant_authority.sql",
+        migration!("071_sealed_grant_authority.sql"),
+    ),
+    (
+        "072_conversation_confirmation_records.sql",
+        migration!("072_conversation_confirmation_records.sql"),
+    ),
+    (
+        "073_collaboration_drafts.sql",
+        migration!("073_collaboration_drafts.sql"),
+    ),
+    (
+        "074_agent_authority.sql",
+        migration!("074_agent_authority.sql"),
+    ),
+    (
+        "075_workflow_context.sql",
+        migration!("075_workflow_context.sql"),
     ),
 ];
 
@@ -421,6 +457,16 @@ async fn postgres_owner_key_ceremony_requires_possession_mfa_and_revokes_only_sm
     let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     for (name, migration) in TEST_MIGRATIONS {
+        if name == "070_message_summary_metadata.sql" {
+            db.batch_execute("CREATE INDEX CONCURRENTLY messages_summary_queue ON messages(account_id,state,created_at) WHERE state IN ('accepted','queued','claimed','submitting','submitted')").await.unwrap();
+            db.batch_execute("BEGIN").await.unwrap();
+            let result = db.batch_execute(migration).await;
+            db.batch_execute(if result.is_ok() { "COMMIT" } else { "ROLLBACK" })
+                .await
+                .unwrap();
+            result.unwrap();
+            continue;
+        }
         if name == "052_admission_pending_index.sql" {
             db.batch_execute(
                 "CREATE INDEX CONCURRENTLY messages_admission_pending \
@@ -487,6 +533,11 @@ async fn postgres_owner_key_ceremony_requires_possession_mfa_and_revokes_only_sm
             )
             .await
             .unwrap();
+        }
+        if name == "066_conversation_interval_session_index.sql" {
+            db.batch_execute("CREATE INDEX erasure_fk_conversation_interval_session ON conversation_intervals(account_id,initiating_session_id)")
+                .await
+                .unwrap();
         }
         if name == "049_owner_queue_probe_indexes.sql" {
             db.batch_execute(

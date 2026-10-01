@@ -9,6 +9,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.Shapes
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -24,12 +26,19 @@ internal val GatewayColors = darkColorScheme(
     background = Color(0xFF0B0F0C),
     surface = Color(0xFF111712),
     onBackground = Color(0xFFF0F3E9),
-    onSurface = Color(0xFFF0F3E9)
+    onSurface = Color(0xFFF0F3E9),
+    surfaceVariant = Color(0xFF161E17),
+    onSurfaceVariant = Color(0xFF99A696),
+    outline = Color(0xFF677363)
 )
 
 @Composable
 internal fun GatewayTheme(content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = GatewayColors) {
+    MaterialTheme(colorScheme = GatewayColors, shapes = Shapes(
+        small = RoundedCornerShape(8.dp),
+        medium = RoundedCornerShape(12.dp),
+        large = RoundedCornerShape(16.dp)
+    )) {
         // The platform window uses a light theme. Paint the background and
         // provide its matching foreground instead of inheriting either one.
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background,
@@ -54,6 +63,7 @@ internal fun GatewayStatusText(label: String, value: String) {
 internal fun GatewayButton(onClick: () -> Unit, modifier: Modifier = Modifier,
     content: @Composable RowScope.() -> Unit) {
     // Keep visible and semantic bounds at least 48 dp, not just expanded hit slop.
-    Button(onClick = onClick, modifier = modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
+    Button(onClick = onClick, shape = MaterialTheme.shapes.medium,
+        modifier = modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
         content = content)
 }
