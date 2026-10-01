@@ -603,7 +603,7 @@ where
     connector.unwrap();
     assert!(
         account_lock.is_ok(),
-        "connector held the account while waiting for manifest authority: {account_lock:?}"
+        "connector held the account while waiting for manifest authority"
     );
 }
 
