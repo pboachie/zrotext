@@ -455,9 +455,10 @@
           "stage": "planned",
           "evidence": [
             ["product proposal", "PRODUCT-PLAN.md#business-inbox"],
-            ["synthetic demo PR #244", "https://github.com/pboachie/zrotext/pull/244"]
+            ["synthetic demo PR #244", "https://github.com/pboachie/zrotext/pull/244"],
+            ["exact action contract", "../protocol/v1/workflow-action-contract.md"]
           ],
-          "evidence_note": "proposal only; scripted approval and handoff simulation in #244; no runtime implementation",
+          "evidence_note": "exact-action authority/state contract and synthetic conformance vectors; scripted demo in #244; no runtime implementation",
           "done": [],
           "todo": [
             "Durable owner decisions tied to the exact recipient and proposed action",
@@ -517,7 +518,8 @@
     ["api", "contacts"],
     ["dashboard", "contacts"],
     ["contacts", "scheduling"],
-    ["scheduling", "approvals"],
+    ["contacts", "approvals"],
+    ["approvals", "scheduling"],
     ["approvals", "integrations"],
     ["integrations", "assistant"],
     ["assistant", "managedai"],
