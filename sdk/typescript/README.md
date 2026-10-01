@@ -354,3 +354,8 @@ networking, persistence, private-key generation or dispatch activation. The
 server's owner router remains unmounted. See
 [`workflow-context.md`](../../protocol/v1/workflow-context.md) for exact authenticated
 identity, version, ciphertext, exception and retention boundaries.
+[Importable agent recipe previews](../../docs/agent-recipes.md) add a disabled n8n
+workflow and callable example using `agent-recipe`, the shared fixture adapter and
+a local customer-controlled reader. They exercise durable synthetic identities,
+owner review and bounded reply routing; production grants and activation remain
+unavailable.

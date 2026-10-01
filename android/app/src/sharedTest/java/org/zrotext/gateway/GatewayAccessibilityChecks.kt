@@ -18,7 +18,8 @@ import org.junit.Test
 /** Same rendered-screen assertions in JVM CI and the opt-in emulator harness. */
 @OptIn(ExperimentalComposeUiApi::class)
 abstract class GatewayAccessibilityChecks {
-    protected abstract fun onScreen(page: String = "HOME", check: (RootForTest) -> Unit)
+    protected abstract fun onScreen(page: String = "HOME", revealStatus: Boolean = false,
+        check: (RootForTest) -> Unit)
 
     /** The MMS spike section (#438) exists only in debug builds. */
     private fun debugOnly(vararg labels: String): List<String> =
@@ -77,24 +78,36 @@ abstract class GatewayAccessibilityChecks {
             text(rows[2]).contains("network") || text(rows[2]).contains("connection") || text(rows[2]).contains("Proving"))
     }
 
-    @Test fun platformNodesExposeHeadingsAndVisibleStatusRegions() = onScreen { root ->
-        root.forceAccessibilityForTesting(true)
-        try {
-            val view = (root as ViewRootForTest).view
-            val provider = requireNotNull(view.accessibilityNodeProvider)
-            val title = nodes(root).single { text(it) == "ZROtext" }
-            val titleInfo = requireNotNull(provider.createAccessibilityNodeInfo(title.id))
-            assertTrue("The platform node must expose the heading: $titleInfo", titleInfo.isHeading)
-            val visibleStatuses = nodes(root).filter {
-                it.config.contains(SemanticsProperties.LiveRegion) && !it.boundsInRoot.isEmpty
-            }
-            assertTrue("At least the connection status is visible", visibleStatuses.isNotEmpty())
-            for (status in visibleStatuses) {
-                val info = requireNotNull(provider.createAccessibilityNodeInfo(status.id))
-                assertEquals(View.ACCESSIBILITY_LIVE_REGION_POLITE, info.liveRegion)
-            }
-        } finally {
-            root.forceAccessibilityForTesting(false)
+    @Test fun platformNodesExposeHeadingsAndVisibleStatusRegions() {
+        onScreen { root ->
+          root.forceAccessibilityForTesting(true)
+          try {
+              val view = (root as ViewRootForTest).view
+              val provider = requireNotNull(view.accessibilityNodeProvider)
+              val title = nodes(root).single { text(it) == "ZROtext" }
+              val titleInfo = requireNotNull(provider.createAccessibilityNodeInfo(title.id))
+              assertTrue("The platform node must expose the heading: $titleInfo", titleInfo.isHeading)
+          } finally {
+              root.forceAccessibilityForTesting(false)
+          }
+        }
+        onScreen(revealStatus = true) { root ->
+          root.forceAccessibilityForTesting(true)
+          try {
+              val view = (root as ViewRootForTest).view
+              val provider = requireNotNull(view.accessibilityNodeProvider)
+              val visibleStatuses = nodes(root).filter {
+                  it.config.contains(SemanticsProperties.LiveRegion) && !it.boundsInRoot.isEmpty
+              }
+              assertTrue("The Home connection status must be visible after scrolling", homeStatusIsVisible(root))
+              assertTrue("At least the connection status is visible", visibleStatuses.isNotEmpty())
+              for (status in visibleStatuses) {
+                  val info = requireNotNull(provider.createAccessibilityNodeInfo(status.id))
+                  assertEquals(View.ACCESSIBILITY_LIVE_REGION_POLITE, info.liveRegion)
+              }
+          } finally {
+              root.forceAccessibilityForTesting(false)
+          }
         }
     }
 
@@ -132,6 +145,21 @@ abstract class GatewayAccessibilityChecks {
 
     protected fun text(node: SemanticsNode): String =
         node.config.getOrNull(SemanticsProperties.Text)?.joinToString(" ") { it.text }.orEmpty()
+
+    /** Large text/landscape can place status below the initial viewport. */
+    protected fun homeStatusIsVisible(root: RootForTest): Boolean = nodes(root).any {
+        it.config.contains(SemanticsProperties.LiveRegion) &&
+            text(it).startsWith("Device status:") && !it.boundsInRoot.isEmpty
+    }
+
+    protected fun scrollTowardHomeStatus(root: RootForTest) {
+        val scroll = nodes(root).first { it.config.contains(SemanticsActions.ScrollBy) }
+        val view = (root as ViewRootForTest).view
+        val height = maxOf(view.height, root.semanticsOwner.rootSemanticsNode.size.height)
+        assertTrue("The rendered viewport must have a positive height", height > 0)
+        assertTrue("The actual screen must accept scrolling to its status",
+            requireNotNull(scroll.config[SemanticsActions.ScrollBy].action).invoke(0f, height * 0.25f))
+    }
 
     protected fun findRoot(view: View): RootForTest? {
         if (view is ViewRootForTest) return view

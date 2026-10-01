@@ -20,7 +20,23 @@ pub(crate) async fn prune(
     // Workflow dependencies retain interval identity, never its peer-bearing
     // statement beyond the existing sealed-content retention cutoff.
     tx.execute("WITH due AS (SELECT i.account_id,i.id FROM conversation_intervals i WHERE i.phase='history' AND i.statement IS NOT NULL AND i.closed_at<=clock_timestamp()-$1::int*interval '1 day' AND EXISTS (SELECT 1 FROM workflow_contexts c WHERE (c.account_id,c.interval_id)=(i.account_id,i.id)) ORDER BY i.closed_at,i.account_id,i.id FOR UPDATE OF i SKIP LOCKED LIMIT $2) UPDATE conversation_intervals i SET phase='withdrawn',statement=NULL FROM due WHERE (i.account_id,i.id)=(due.account_id,due.id)", &[&days,&limit]).await?;
-    let intervals=tx.execute("WITH due AS (SELECT i.account_id,i.id FROM conversation_intervals i WHERE i.closed_at<=clock_timestamp()-$1::int*interval '1 day' AND NOT EXISTS (SELECT 1 FROM conversation_inbound_provenance p WHERE (p.account_id,p.interval_id)=(i.account_id,i.id)) AND NOT EXISTS (SELECT 1 FROM workflow_contexts c WHERE (c.account_id,c.interval_id)=(i.account_id,i.id)) ORDER BY i.closed_at,i.account_id,i.id FOR UPDATE OF i SKIP LOCKED LIMIT $2) DELETE FROM conversation_intervals i USING due WHERE (i.account_id,i.id)=(due.account_id,due.id)", &[&days,&limit]).await?;
+    let proof_guard = if crate::http_owner_conversations::confirmation_records::installed(&tx)
+        .await?
+    {
+        " AND NOT EXISTS (SELECT 1 FROM conversation_confirmation_records c WHERE (c.account_id,c.interval_id)=(i.account_id,i.id)) "
+    } else {
+        ""
+    };
+    if !proof_guard.is_empty() {
+        // A proof FK retains interval identity, never its original peer-bearing
+        // statement beyond the configured content window. This is the existing
+        // irreversible history-to-withdrawn transition, preserving closed_at.
+        tx.execute("WITH due AS (SELECT i.account_id,i.id FROM conversation_intervals i WHERE i.phase='history' AND i.statement IS NOT NULL AND i.closed_at<=clock_timestamp()-$1::int*interval '1 day' AND EXISTS (SELECT 1 FROM conversation_confirmation_records c WHERE (c.account_id,c.interval_id)=(i.account_id,i.id)) ORDER BY i.closed_at,i.account_id,i.id FOR UPDATE OF i SKIP LOCKED LIMIT $2) UPDATE conversation_intervals i SET phase='withdrawn',statement=NULL FROM due WHERE (i.account_id,i.id)=(due.account_id,due.id)", &[&days,&limit]).await?;
+    }
+    let interval_sql = format!(
+        "WITH due AS (SELECT i.account_id,i.id FROM conversation_intervals i WHERE i.closed_at<=clock_timestamp()-$1::int*interval '1 day' AND NOT EXISTS (SELECT 1 FROM conversation_inbound_provenance p WHERE (p.account_id,p.interval_id)=(i.account_id,i.id)) AND NOT EXISTS (SELECT 1 FROM workflow_contexts c WHERE (c.account_id,c.interval_id)=(i.account_id,i.id)) {proof_guard} ORDER BY i.closed_at,i.account_id,i.id FOR UPDATE OF i SKIP LOCKED LIMIT $2) DELETE FROM conversation_intervals i USING due WHERE (i.account_id,i.id)=(due.account_id,due.id)"
+    );
+    let intervals = tx.execute(&interval_sql, &[&days, &limit]).await?;
     tx.commit().await?;
     Ok((closed, provenance, intervals))
 }

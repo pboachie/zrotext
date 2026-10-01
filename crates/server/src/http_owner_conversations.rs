@@ -29,6 +29,7 @@ use uuid::Uuid;
 
 pub mod activation;
 pub mod context;
+pub(crate) mod confirmation_records;
 pub(crate) mod lifecycle;
 
 pub const DISCLOSURE_VERSION: &str = "conversation-content-v1";

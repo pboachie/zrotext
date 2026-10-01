@@ -294,8 +294,10 @@ const TEST_MIGRATIONS: [(&str, &str); 72] = [
         include_str!("../../../deploy/compose/migrations/071_sealed_grant_authority.sql"),
     ),
     (
-        "075_workflow_context.sql",
-        include_str!("../../../deploy/compose/migrations/075_workflow_context.sql"),
+        "072_conversation_confirmation_records.sql",
+        include_str!(
+            "../../../deploy/compose/migrations/072_conversation_confirmation_records.sql"
+        ),
     ),
 ];
 
