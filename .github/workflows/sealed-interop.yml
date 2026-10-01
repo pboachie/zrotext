@@ -55,10 +55,13 @@ jobs:
     steps:
       - name: Select temporary fixture paths
         run: |
-          # The Rust test writes to this fixed, Git-ignored directory in the checkout.
+          # The Rust tests write to these fixed, Git-ignored directories in the checkout.
           dir="$GITHUB_WORKSPACE/target/zrotext-sealed-interop"
           echo "ZT_INTEROP_TEST_FIXTURE=$dir/persisted-fixture.json" >> "$GITHUB_ENV"
           echo "ZT_INTEROP_TEST_CONTEXT=$dir/expected-context.json" >> "$GITHUB_ENV"
+          boundary="$GITHUB_WORKSPACE/target/zrotext-sealed-boundary"
+          echo "ZT_INTEROP_CANARY_FIXTURE=$boundary/canary-fixture.json" >> "$GITHUB_ENV"
+          echo "ZT_INTEROP_CANARY_CONTEXT=$boundary/canary-context.json" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -86,10 +89,11 @@ jobs:
           shared-key: linux-cargo-deps
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Remove a fixture directory restored from the cache
-        # The shared Rust cache can restore target/zrotext-sealed-interop from an
-        # earlier run. The test refuses an existing directory so it never hands a
-        # stale fixture to Android, so clear it here and let every run make a new one.
-        run: rm -rf "$GITHUB_WORKSPACE/target/zrotext-sealed-interop"
+        # The shared Rust cache can restore target/zrotext-sealed-interop or
+        # target/zrotext-sealed-boundary from an earlier run. Both tests refuse
+        # an existing directory so they never hand a stale fixture to Android,
+        # so clear them here and let every run make new ones.
+        run: rm -rf "$GITHUB_WORKSPACE/target/zrotext-sealed-interop" "$GITHUB_WORKSPACE/target/zrotext-sealed-boundary"
       - name: Build and test the SDK
         working-directory: sdk/typescript
         run: npm ci --ignore-scripts && npm test
@@ -100,19 +104,23 @@ jobs:
       - name: Generate ciphertext and exercise PostgreSQL admission
         run: |
           cargo test --locked -p zrotext-server --lib --features sealed-interop-tests cross_client_interop:: -- --ignored --nocapture
+          cargo test --locked -p zrotext-server --lib --features sealed-interop-tests sealed_boundary_acceptance:: -- --ignored --nocapture
       - name: Verify and decrypt the database-returned ciphertext
         working-directory: android
-        run: ./gradlew --init-script sealed-interop.init.gradle :app:testDebugUnitTest --tests org.zrotext.gateway.SealedSdkPostgresInteropTest --no-configuration-cache --no-daemon --max-workers=2
-      - name: Require all twenty-four Android cases without skips
+        run: ./gradlew --init-script sealed-interop.init.gradle :app:testDebugUnitTest --tests org.zrotext.gateway.SealedSdkPostgresInteropTest --tests org.zrotext.gateway.SealedBoundaryCanaryTest --no-configuration-cache --no-daemon --max-workers=2
+      - name: Require every Android case without skips
         run: |
           python3 - <<'PY'
           import pathlib
           import xml.etree.ElementTree as ET
-          path = pathlib.Path('android/app/build/test-results/testDebugUnitTest/TEST-org.zrotext.gateway.SealedSdkPostgresInteropTest.xml')
-          result = ET.parse(path).getroot()
-          expected = {'tests': '24', 'failures': '0', 'errors': '0', 'skipped': '0'}
-          for key, value in expected.items():
-              if result.get(key) != value:
-                  raise SystemExit(f'Unexpected {key}: {result.get(key)}')
-          print('All twenty-four cross-client Android cases passed without skips')
+          expected = {
+              'android/app/build/test-results/testDebugUnitTest/TEST-org.zrotext.gateway.SealedSdkPostgresInteropTest.xml': ('24', 'cross-client'),
+              'android/app/build/test-results/testDebugUnitTest/TEST-org.zrotext.gateway.SealedBoundaryCanaryTest.xml': ('5', 'boundary canary'),
+          }
+          for path, (count, label) in expected.items():
+              result = ET.parse(path).getroot()
+              for key, value in {'tests': count, 'failures': '0', 'errors': '0', 'skipped': '0'}.items():
+                  if result.get(key) != value:
+                      raise SystemExit(f'Unexpected {key} in {label}: {result.get(key)}')
+              print(f'All {count} {label} Android cases passed without skips')
           PY
