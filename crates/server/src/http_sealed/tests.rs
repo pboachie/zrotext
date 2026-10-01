@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
+mod resource_pagination;
 use crate::sealed_envelope::ExpectedRecipient;
 use crate::sealed_manifest_store::tests::Fixture;
 use axum::{
@@ -78,6 +79,7 @@ async fn disabled_state_answers_not_found_before_any_other_check() {
         hasher(),
     ));
     let response = app
+        .clone()
         .oneshot(sealed_request(
             Some("ztk_example"),
             Some(SEALED_CONTENT_TYPE),
@@ -100,6 +102,7 @@ async fn disabled_state_answers_not_found_before_any_other_check() {
 async fn missing_content_type_is_refused_before_authentication() {
     let app = router(enabled_state());
     let response = app
+        .clone()
         .oneshot(sealed_request(
             Some("ztk_example"),
             None,
@@ -123,6 +126,7 @@ async fn missing_content_type_is_refused_before_authentication() {
 async fn json_content_type_is_refused_before_authentication() {
     let app = router(enabled_state());
     let response = app
+        .clone()
         .oneshot(sealed_request(
             Some("ztk_example"),
             Some("application/json"),
@@ -146,6 +150,7 @@ async fn json_content_type_is_refused_before_authentication() {
 async fn parameterized_sealed_content_type_is_refused() {
     let app = router(enabled_state());
     let response = app
+        .clone()
         .oneshot(sealed_request(
             Some("ztk_example"),
             Some("application/vnd.zrotext.sealed.v1; charset=binary"),
@@ -169,6 +174,7 @@ async fn parameterized_sealed_content_type_is_refused() {
 async fn duplicate_content_type_headers_are_refused() {
     let app = router(enabled_state());
     let response = app
+        .clone()
         .oneshot(sealed_request(
             Some("ztk_example"),
             Some(SEALED_CONTENT_TYPE),
@@ -192,6 +198,7 @@ async fn duplicate_content_type_headers_are_refused() {
 async fn caller_idempotency_key_is_refused() {
     let app = router(enabled_state());
     let response = app
+        .clone()
         .oneshot(sealed_request(
             Some("ztk_example"),
             Some(SEALED_CONTENT_TYPE),
@@ -212,6 +219,7 @@ async fn caller_idempotency_key_is_refused() {
 async fn duplicate_authorization_headers_are_refused() {
     let app = router(enabled_state());
     let response = app
+        .clone()
         .oneshot(sealed_request(
             Some("ztk_example"),
             Some(SEALED_CONTENT_TYPE),
@@ -368,7 +376,7 @@ impl RouteCase {
         let end = b.len() - 64;
         let signature: Signature = f.event_signer.sign(
             &[
-                b"ZTSE/sign/v2 ".as_slice(),
+                b"ZTSE/sign/v2\x00".as_slice(),
                 &(end as u32).to_be_bytes(),
                 &b[..end],
             ]
@@ -486,6 +494,7 @@ async fn tampered_signature_is_invalid_request() {
     let last = envelope.len() - 1;
     envelope[last] ^= 0xff;
     let response = app
+        .clone()
         .oneshot(case.submit(&case.token, envelope))
         .await
         .unwrap();
@@ -502,6 +511,7 @@ async fn undersized_body_is_invalid_request() {
     let case = RouteCase::new().await;
     let app = router(case.state());
     let response = app
+        .clone()
         .oneshot(case.submit(&case.token, vec![7; 100]))
         .await
         .unwrap();
@@ -518,6 +528,7 @@ async fn oversized_body_hits_the_request_limit() {
     let case = RouteCase::new().await;
     let app = router(case.state());
     let response = app
+        .clone()
         .oneshot(case.submit(&case.token, vec![7; 36_885]))
         .await
         .unwrap();
@@ -535,6 +546,7 @@ async fn read_only_scope_cannot_submit_sealed_messages() {
     let now = route_now(&case.fixture.db).await;
     let envelope = case.envelope(Uuid::new_v4(), now, 60_000).await;
     let response = app
+        .clone()
         .oneshot(case.submit(&read_token, envelope))
         .await
         .unwrap();
@@ -553,6 +565,7 @@ async fn disabled_state_refuses_valid_credentials() {
     let now = route_now(&case.fixture.db).await;
     let envelope = case.envelope(Uuid::new_v4(), now, 60_000).await;
     let response = app
+        .clone()
         .oneshot(case.submit(&case.token, envelope))
         .await
         .unwrap();
@@ -610,7 +623,7 @@ impl InboundCase {
         body_length: usize,
     ) -> Vec<u8> {
         let f = &self.fixture;
-        let mut bytes = b"ZTSE  ".to_vec();
+        let mut bytes = b"ZTSE\x00\x00".to_vec();
         bytes.extend(172u16.to_be_bytes());
         bytes.extend(f.account.as_bytes());
         bytes.extend(event.as_bytes());
@@ -636,7 +649,7 @@ impl InboundCase {
         let end = bytes.len() - 64;
         let signature: Signature = f.event_signer.sign(
             &[
-                b"ZTSE/sign/v2 ".as_slice(),
+                b"ZTSE/sign/v2\x00".as_slice(),
                 &(end as u32).to_be_bytes(),
                 &bytes[..end],
             ]
@@ -797,6 +810,7 @@ async fn inbound_upload_rejects_a_tampered_signature_without_storing() {
     let end = envelope.len() - 64;
     envelope[end] ^= 1;
     let response = app
+        .clone()
         .oneshot(inbound_post(&case.token, envelope))
         .await
         .unwrap();
@@ -837,6 +851,7 @@ async fn inbound_upload_refuses_an_oversized_envelope_before_any_work() {
     // Body 33_000 exceeds the kind-02 envelope bound of 34_082 total bytes.
     let oversized = case.envelope(Uuid::new_v4(), 1, now - 1_000, 33_000).await;
     let response = app
+        .clone()
         .oneshot(inbound_post(&case.token, oversized))
         .await
         .unwrap();
@@ -845,5 +860,267 @@ async fn inbound_upload_refuses_an_oversized_envelope_before_any_work() {
         (StatusCode::BAD_REQUEST, "invalid_request".into())
     );
     assert_eq!(case.count().await, 0);
+    case.fixture.cleanup().await;
+}
+
+// ---------------------------------------------------------------------------
+// Slice-2 read-only resource groups (#538): devices, webhooks and usage on
+// the API-key plane behind the same default-off flag.
+// ---------------------------------------------------------------------------
+
+async fn resource_case(scope: &str) -> (InboundCase, String) {
+    let case = InboundCase::new().await;
+    let token = format!("ztk_{}", URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>()));
+    // Resource groups are account-level reads: an unbound key. A device-bound
+    // key stays confined to its device by `require`, including for reads.
+    let key = Uuid::new_v4();
+    let pepper = crate::test_keys::key(76);
+    let mut mac = Hmac::<Sha256>::new_from_slice(&pepper).unwrap();
+    mac.update(b"api-key-v1\x00");
+    mac.update(token.as_bytes());
+    let token_hash = mac.finalize().into_bytes().to_vec();
+    case.fixture
+        .db
+        .execute(
+            "INSERT INTO api_keys(id,account_id,created_by_user_id,public_prefix,token_hash,scopes,bound_device_id) VALUES($1,$2,$3,$4,$5,ARRAY[$6],NULL)",
+            &[&key, &case.fixture.account, &case.user, &&token[4..16], &token_hash, &scope],
+        )
+        .await
+        .unwrap();
+    (case, token)
+}
+
+fn get_request(token: &str, path: &str) -> Request<Body> {
+    Request::builder()
+        .method("GET")
+        .uri(path)
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn devices_list_returns_sealed_bindings_and_404s_foreign_ids() {
+    let (case, token) = resource_case("devices:read").await;
+    let app = router(case.state());
+    let response = app
+        .clone()
+        .oneshot(get_request(&token, "/devices"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    #[derive(serde::Deserialize)]
+    struct Line {
+        line_id: Uuid,
+        binding_generation: i64,
+        state: String,
+    }
+    #[derive(serde::Deserialize)]
+    #[expect(
+        dead_code,
+        reason = "projection contract fields are asserted selectively"
+    )]
+    struct Device {
+        device_id: Uuid,
+        display_name: String,
+        revoked: bool,
+        active_socket_lease: bool,
+        lines: Vec<Line>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Page {
+        devices: Vec<Device>,
+        next_cursor: Option<Uuid>,
+    }
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let page: Page = serde_json::from_slice(&body).unwrap();
+    assert_eq!(page.devices.len(), 1);
+    let device = &page.devices[0];
+    assert_eq!(device.device_id, case.fixture.device);
+    assert_eq!(device.display_name, "synthetic");
+    assert!(!device.revoked);
+    assert_eq!(device.lines.len(), 1);
+    assert_eq!(device.lines[0].line_id, case.fixture.line);
+    assert_eq!(device.lines[0].binding_generation, 1);
+    assert_eq!(device.lines[0].state, "active");
+    assert!(page.next_cursor.is_none());
+    // The fixture's own device resolves; a foreign id is a bare 404.
+    let response = app
+        .clone()
+        .oneshot(get_request(
+            &token,
+            &format!("/devices/{}", case.fixture.device),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = app
+        .clone()
+        .oneshot(get_request(
+            &token,
+            "/devices/00000000-0000-0000-0000-000000000000",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        code(response).await,
+        (StatusCode::NOT_FOUND, "not_found".into())
+    );
+    case.fixture.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn resource_groups_require_their_scopes() {
+    let (case, token) = resource_case("messages:send").await;
+    let app = router(case.state());
+    for path in ["/devices", "/webhooks", "/usage"] {
+        let response = app
+            .clone()
+            .oneshot(get_request(&token, path))
+            .await
+            .unwrap();
+        assert_eq!(
+            code(response).await,
+            (StatusCode::FORBIDDEN, "forbidden".into()),
+            "{path} must require its read scope"
+        );
+    }
+    case.fixture.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn disabled_state_hides_the_resource_groups_before_any_check() {
+    let (case, token) = resource_case("devices:read").await;
+    let app = router(SealedHttpState::disabled(case.url.clone(), hasher()));
+    for path in ["/devices", "/webhooks", "/usage"] {
+        let response = app
+            .clone()
+            .oneshot(get_request(&token, path))
+            .await
+            .unwrap();
+        assert_eq!(
+            code(response).await,
+            (StatusCode::NOT_FOUND, "not_found".into()),
+            "{path} must be absent while disabled"
+        );
+    }
+    case.fixture.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn usage_reports_the_current_period_without_currency() {
+    let (case, token) = resource_case("billing:read").await;
+    let f = &case.fixture;
+    f.db.execute(
+        "INSERT INTO usage_periods(account_id,metric,period_start,period_end,limit_units,reserved_units,refunded_units)          VALUES($1,'outbound_message',date_trunc('month',current_date AT TIME ZONE 'UTC')::date,(date_trunc('month',current_date AT TIME ZONE 'UTC')+interval '1 month')::date,100,7,2)",
+        &[&f.account],
+    ).await.unwrap();
+    let app = router(case.state());
+    let response = app.oneshot(get_request(&token, "/usage")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    #[derive(serde::Deserialize)]
+    #[expect(
+        dead_code,
+        reason = "projection contract fields are asserted selectively"
+    )]
+    struct Usage {
+        metric: String,
+        period_start: String,
+        period_end: String,
+        limit_units: i64,
+        reserved_units: i64,
+        refunded_units: i64,
+        used_units: i64,
+    }
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let usage: Usage = serde_json::from_slice(&body).unwrap();
+    assert_eq!(usage.metric, "outbound_message");
+    assert_eq!(usage.limit_units, 100);
+    assert_eq!(usage.reserved_units, 7);
+    assert_eq!(usage.refunded_units, 2);
+    assert_eq!(usage.used_units, 5);
+    assert!(usage.period_start.ends_with("-01"));
+    case.fixture.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn usage_without_a_period_row_is_not_found() {
+    let (case, token) = resource_case("billing:read").await;
+    let app = router(case.state());
+    let response = app.oneshot(get_request(&token, "/usage")).await.unwrap();
+    assert_eq!(
+        code(response).await,
+        (StatusCode::NOT_FOUND, "not_found".into())
+    );
+    case.fixture.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn webhooks_list_and_deliveries_never_expose_secrets() {
+    let (case, token) = resource_case("webhooks:read").await;
+    let f = &case.fixture;
+    let endpoint = Uuid::new_v4();
+    f.db.execute(
+        "INSERT INTO webhook_endpoints(id,account_id,callback_url,signing_secret_ciphertext,signing_secret_key_version,enabled)          VALUES($1,$2,'https://hooks.example.test/seo',$3,1,true)",
+        &[&endpoint, &f.account, &vec![6u8; 32]],
+    ).await.unwrap();
+    let app = router(case.state());
+    let response = app
+        .clone()
+        .oneshot(get_request(&token, "/webhooks"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let text = String::from_utf8_lossy(&body).to_string();
+    assert!(!text.contains("signing_secret"), "no secret fields");
+    assert!(text.contains(&endpoint.to_string()));
+    // Deliveries for a foreign endpoint are a bare 404.
+    let response = app
+        .clone()
+        .oneshot(get_request(
+            &token,
+            "/webhooks/00000000-0000-0000-0000-000000000000/deliveries",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        code(response).await,
+        (StatusCode::NOT_FOUND, "not_found".into())
+    );
+    // Owned endpoint: empty page, valid bound.
+    let response = app
+        .clone()
+        .oneshot(get_request(
+            &token,
+            &format!("/webhooks/{endpoint}/deliveries?limit=20"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let text = String::from_utf8_lossy(&body).to_string();
+    assert!(text.contains("\"deliveries\": []") || text.contains("\"deliveries\":[]"));
+    // Out-of-range limit is invalid_request.
+    let response = app
+        .clone()
+        .oneshot(get_request(
+            &token,
+            &format!("/webhooks/{endpoint}/deliveries?limit=21"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        code(response).await,
+        (StatusCode::BAD_REQUEST, "invalid_request".into())
+    );
     case.fixture.cleanup().await;
 }
