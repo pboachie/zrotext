@@ -58,6 +58,7 @@
 use crate::decision::{
     Decision, FailoverConfig, FailoverController, Phase, RestorablePhase, Round, SiteFenceState,
 };
+use crate::fence::{AnchorReading, ExternalFencing, FenceStatus, FenceToken, HostFenceOutcome};
 use std::collections::VecDeque;
 use std::fmt;
 
@@ -283,6 +284,16 @@ pub enum ExecutorStatus {
         promotion_epoch: u64,
         authority_epoch: u64,
     },
+    /// The externally anchored epoch is ahead of the authority row: the
+    /// database serves an epoch the external authority already superseded —
+    /// a database restored from an older backup (or rolled back), which the
+    /// journal alone cannot detect when the journal was restored with it.
+    /// The anchor is the independent second witness; the executor fails
+    /// closed permanently until an operator reconciles them.
+    EpochAnchorAhead {
+        anchored_epoch: u64,
+        authority_epoch: u64,
+    },
 }
 
 /// Error returned by [`FailoverExecutor::reconcile_complete`].
@@ -318,10 +329,17 @@ impl fmt::Display for ReconcileError {
 /// The controller loop: gathers observations from `source`, decides through a
 /// [`FailoverController`], and applies decisions to `authority`. One `tick`
 /// is one check round plus the retry of any still-pending application.
+///
+/// `fencing` carries the external adapters of [`crate::fence`]: every
+/// promotion additionally requires a confirmed external host fence under the
+/// promotion's own [`FenceToken`] and a confirmed external epoch anchor, and
+/// every restore reconciles the authority against the anchored epoch (the
+/// independent second witness of a database restored from an older backup).
 pub struct FailoverExecutor<S: ObservationSource, A: WriterAuthority> {
     config: FailoverConfig,
     source: S,
     authority: A,
+    fencing: ExternalFencing,
     controller: Option<FailoverController>,
     journal: Option<ControllerJournal>,
     /// The journal most recently confirmed durable: loaded from the
@@ -331,6 +349,11 @@ pub struct FailoverExecutor<S: ObservationSource, A: WriterAuthority> {
     /// retry re-attempts a failed intent save instead of promoting on an
     /// intent that exists only in memory.
     durable_journal: Option<ControllerJournal>,
+    /// The authority epoch as of the last restore. The external-fencing gate
+    /// uses it to tell the one promotion epoch the authority may legitimately
+    /// serve again (the idempotent completion replay) from a recycled epoch
+    /// the external anchor already witnessed.
+    authority_epoch_at_restore: u64,
     /// Decisions whose application failed and are retried unchanged, in
     /// decision order.
     pending: Vec<PendingAction>,
@@ -338,16 +361,23 @@ pub struct FailoverExecutor<S: ObservationSource, A: WriterAuthority> {
 }
 
 impl<S: ObservationSource, A: WriterAuthority> FailoverExecutor<S, A> {
-    /// Build an executor. Nothing is read from the authority until the first
-    /// [`Self::tick`].
-    pub fn new(config: FailoverConfig, source: S, authority: A) -> Self {
+    /// Build an executor. Nothing is read from the authority or the external
+    /// adapters until the first [`Self::tick`]. The fencing adapters are a
+    /// required argument, never a default: an executor cannot be constructed
+    /// without the external gate, and the shipped production combination
+    /// pairs a real epoch anchor with the refusing
+    /// [`crate::fence::NoopFenceAuthority`] so no promotion passes until a
+    /// real fence backend exists.
+    pub fn new(config: FailoverConfig, source: S, authority: A, fencing: ExternalFencing) -> Self {
         Self {
             config,
             source,
             authority,
+            fencing,
             controller: None,
             journal: None,
             durable_journal: None,
+            authority_epoch_at_restore: 0,
             pending: Vec::new(),
             status: ExecutorStatus::WaitingForAuthority,
         }
@@ -422,7 +452,9 @@ impl<S: ObservationSource, A: WriterAuthority> FailoverExecutor<S, A> {
     pub fn tick(&mut self, now_ms: u64) -> TickReport {
         if matches!(
             self.status,
-            ExecutorStatus::JournalInconsistent { .. } | ExecutorStatus::PromotionSuperseded { .. }
+            ExecutorStatus::JournalInconsistent { .. }
+                | ExecutorStatus::PromotionSuperseded { .. }
+                | ExecutorStatus::EpochAnchorAhead { .. }
         ) {
             return TickReport {
                 decision: None,
@@ -553,7 +585,30 @@ impl<S: ObservationSource, A: WriterAuthority> FailoverExecutor<S, A> {
             }
             Decision::RejoinFormerWriterAsReplica { site_id } => {
                 // The physical reseed stays external; only the one-time
-                // emission is recorded so a restart never re-emits it.
+                // emission is recorded so a restart never re-emits it. The
+                // record additionally requires the confirmed external anchor
+                // at the promoted epoch — the rejoin is bound to the
+                // independently anchored epoch exactly like the promotion,
+                // so a former writer never rejoins on the word of a database
+                // the external authority cannot back. Without the witness
+                // the decision is emitted but not journaled: nothing is
+                // recorded, a later incarnation re-derives and records it.
+                let promoted_epoch =
+                    self.journal
+                        .as_ref()
+                        .and_then(|journal| match &journal.phase {
+                            RestorablePhase::Promoted { new_epoch, .. } => Some(*new_epoch),
+                            _ => None,
+                        });
+                let anchor_confirms = promoted_epoch.is_some_and(|promoted| {
+                    matches!(
+                        self.fencing.confirmed_epoch(),
+                        AnchorReading::Confirmed { epoch } if epoch >= promoted
+                    )
+                });
+                if !anchor_confirms {
+                    return Application::None;
+                }
                 let mut recorded = false;
                 if let Some(journal) = &mut self.journal
                     && let RestorablePhase::Promoted { rejoin_emitted, .. } = &mut journal.phase
@@ -667,12 +722,68 @@ impl<S: ObservationSource, A: WriterAuthority> FailoverExecutor<S, A> {
                 if !intent_durable {
                     return AttemptOutcome::Pending;
                 }
+                // External host fencing is a precondition of the epoch
+                // compare-and-set, not a replacement for it: the site-row
+                // fence the decision model observed lives in the same
+                // database being failed over, so an independent authority
+                // must also hold the old writer's host, under the token of
+                // exactly this promotion. The token derives from the
+                // promotion epoch, so retries and restart replays re-fence
+                // idempotently while a different promotion can never
+                // silently take over the fence. Refusal is fail-closed and
+                // pending: uncertain fencing never proceeds, and a competing
+                // fence clears only through an operator on the external
+                // authority.
+                let fence_token = FenceToken::for_promotion(*new_epoch);
+                let fence_confirmed = match self.fencing.fence_status(self.config.writer_site_id())
+                {
+                    FenceStatus::Fenced { token } => token == fence_token,
+                    FenceStatus::Unfenced => {
+                        matches!(
+                            self.fencing
+                                .fence_host(self.config.writer_site_id(), fence_token),
+                            HostFenceOutcome::Fenced { token }
+                                | HostFenceOutcome::AlreadyFenced { token }
+                                if token == fence_token
+                        )
+                    }
+                    FenceStatus::Unconfirmed => false,
+                };
+                if !fence_confirmed {
+                    return AttemptOutcome::Pending;
+                }
+                // The externally anchored epoch: a fresh promotion must name
+                // an epoch strictly above the anchored one (never a recycled
+                // epoch the external authority already witnessed), except
+                // the idempotent completion replay, which the authority must
+                // already serve — judged from the restore-time authority
+                // epoch, so the replay only ever converges through the
+                // compare-and-set and never bumps. An unconfirmed anchor
+                // holds the promotion like an unreachable authority holds a
+                // round.
+                match self.fencing.confirmed_epoch() {
+                    AnchorReading::Confirmed { epoch: anchored } => {
+                        if anchored >= *new_epoch && self.authority_epoch_at_restore < *new_epoch {
+                            return AttemptOutcome::Pending;
+                        }
+                    }
+                    AnchorReading::Unconfirmed => return AttemptOutcome::Pending,
+                }
                 match self.authority.promote_standby(
                     site_id,
                     self.config.writer_site_id(),
                     *new_epoch,
                 ) {
                     Ok(outcome @ (PromoteOutcome::Promoted | PromoteOutcome::AlreadyAtEpoch)) => {
+                        // Witness the applied promotion in the external
+                        // anchor AFTER the compare-and-set succeeded. The
+                        // order is deliberate: an anchor that lags can only
+                        // force later refusals (fail-closed), while an anchor
+                        // that led could mask a restored database during the
+                        // promotion window. A refused or lost witness is
+                        // therefore non-blocking — the anchor is a witness,
+                        // not a gate that leads.
+                        let _ = self.fencing.record_promotion(*new_epoch);
                         self.advance_journal_promoted(*new_epoch);
                         if self.save_journal() {
                             *journal_saved = true;
@@ -702,8 +813,25 @@ impl<S: ObservationSource, A: WriterAuthority> FailoverExecutor<S, A> {
 
     /// Restore the controller from the authority and journal. Returns false
     /// when the executor must wait (authority unreachable) or has failed
-    /// closed (journal and authority disagree irreconcilably).
+    /// closed (journal and authority — or the external epoch anchor and the
+    /// authority — disagree irreconcilably).
     fn restore(&mut self) -> bool {
+        // The external anchor is read FIRST, before the authority snapshot.
+        // The anchored epoch only moves forward, so an anchor read before the
+        // snapshot can never exceed the epoch the snapshot reads afterwards —
+        // a concurrent promotion either commits before both reads (both see
+        // it) or between them (only the snapshot sees it, anchoring stays
+        // behind: legitimate). Reversing the order could read an anchor that
+        // raced ahead of an older snapshot and brick the executor on a false
+        // EpochAnchorAhead. An unconfirmed anchor holds the executor before
+        // anything else is read: without the witness nothing may act.
+        let anchored = match self.fencing.confirmed_epoch() {
+            AnchorReading::Confirmed { epoch } => epoch,
+            AnchorReading::Unconfirmed => {
+                self.status = ExecutorStatus::WaitingForAuthority;
+                return false;
+            }
+        };
         let snapshot = match self
             .authority
             .load_state(self.config.writer_site_id(), self.config.standby_site_id())
@@ -714,6 +842,20 @@ impl<S: ObservationSource, A: WriterAuthority> FailoverExecutor<S, A> {
                 return false;
             }
         };
+        self.authority_epoch_at_restore = snapshot.epoch;
+        // The independent second witness: an anchored epoch beyond the
+        // authority row means the deployment already granted an epoch this
+        // database does not serve — a restore from an older backup or a
+        // rolled-back authority. The journal cannot catch this when it was
+        // restored with the database; the anchor can (and for a truly
+        // external anchor does). Fail closed permanently.
+        if anchored > snapshot.epoch {
+            self.status = ExecutorStatus::EpochAnchorAhead {
+                anchored_epoch: anchored,
+                authority_epoch: snapshot.epoch,
+            };
+            return false;
+        }
         let encoded = match self.authority.load_controller_state() {
             Ok(encoded) => encoded,
             Err(_) => {
