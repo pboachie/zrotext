@@ -1,7 +1,7 @@
 # Exact workflow decisions
 
-The workflow decision service is a dormant candidate library. Its owner HTTP
-service, scheduling, integration credentials, and production activation are
+The workflow decision service is a dormant candidate library and unmounted owner
+HTTP router. Scheduling, integration credentials, and production activation are
 separate work. No model output, receipt, silence, or caller-supplied authority
 flag approves an action.
 
@@ -46,5 +46,29 @@ followups without marking the request completed. Ambiguous or late responses
 enter the bounded exception queue. A peer match alone is insufficient. Reusing
 an event with a different selected request conflicts.
 
-Metadata and replay storage are bounded. Full lifecycle export, erasure, and
-retention integration must be completed before this candidate is activated.
+The router accepts JSON POST requests under `/v1/owner/workflow/`: `actions`
+proposes a descriptor; `actions/status` reads a key; `actions/decide` records an
+explicit `approve` or `cancel`; `actions/edit` replaces the revision;
+`actions/bind` confirms rendered ciphertext; `responses/correlate` selects a
+signed response; and `takeover` stops a context. Every endpoint requires the
+existing live owner session and CSRF mutation proof, including the read-only
+status POST. Responses are no-store and nosniff. The request schema is
+[`workflow-decisions.schema.json`](../protocol/v1/vectors/workflow-decisions.schema.json).
+Database authority checks also enforce relationships and current time; schema
+validation alone grants nothing.
+
+Metadata and replay storage are bounded. Owner export includes independent
+20-row pages for actions, versions, mutations, correlations, message links,
+routines, and context fences. The query cursors are `workflow_actions_before`,
+`workflow_action_versions_before`, `workflow_action_mutations_before`,
+`workflow_correlations_before`, `workflow_message_links_before`,
+`workflow_routines_before`, and `workflow_context_fences_before`. Each opaque
+cursor belongs to its account and ledger. Export of historical metadata does
+not restore a revoked reader or permission.
+
+Account erasure deletes these records before context and message parents in the
+same transaction, preserving existing erasure blockers. Context retention
+purges encrypted bytes at the existing deadline. Later metadata pruning waits
+for linked messages to disappear before deleting action authority, so a
+surviving message cannot lose its workflow fence. A stopped routine or context
+cannot be reopened by clearing its stop timestamp.
