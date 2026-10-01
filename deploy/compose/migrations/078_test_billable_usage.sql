@@ -1,5 +1,5 @@
 -- SPDX-License-Identifier: AGPL-3.0-only
--- Provisional serial reservation 079. Source-only TEST candidate: no rows,
+-- Serial migration 078. Source-only TEST candidate: no rows,
 -- worker registration, provider calls, products, prices or launch activation.
 -- Existing reserve/refund usage tables remain the admission authority.
 

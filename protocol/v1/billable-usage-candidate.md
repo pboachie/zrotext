@@ -117,6 +117,7 @@ there are no message bodies, routing numbers or model output in these tables.
 
 Tests use disposable schemas, synthetic delivery callbacks and injected
 transports. They do not send SMS, call Stripe, issue credit, retrieve invoices
-or prove physical-device acceptance. The numbered migration is provisional
-079 and must follow the coordinated 072–078 predecessors; incomplete trains
+or prove physical-device acceptance. Candidate migration 078 follows reviewed
+scheduling migration 077. Publication and application require that predecessor
+on canonical main and the complete contiguous 001–078 train; incomplete trains
 must continue failing the existing contiguous-migration checks.
