@@ -1,8 +1,10 @@
 # Dormant root enrollment transactions
 
 The server's `sealed_root_ceremony` module composes the [candidate possession
-transcript](root-enrollment-01.md) with database state. No HTTP route, CLI, or
-runtime sealed gate calls it. It does not generate or receive a private root key.
+transcript](root-enrollment-01.md) with database state. The opt-in library
+[custody adapter](root-custody-01.md) can call it and commit an immutable encrypted
+bundle in the same completion transaction. The standard binary exposes no such
+route and no sealed runtime gate calls it. It receives no private root key.
 
 The future request adapter must authenticate the owner request, enforce CSRF
 and the configured canonical origin, and establish independent owner software,
