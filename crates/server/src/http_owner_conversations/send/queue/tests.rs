@@ -894,6 +894,13 @@ async fn confirmed_proof_retention_session_revocation_and_schema_absence_are_exp
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
 async fn confirmed_queue_without_segment_authority_cannot_issue_an_ordinary_sealed_grant() {
     let case = Case::new().await;
+    // Keep dispatch otherwise live so this probes the missing authenticated
+    // segment ceiling, rather than the deployment's default-disabled gate.
+    case.f
+        .db
+        .execute("UPDATE deployment_authority SET dispatch_enabled=TRUE", &[])
+        .await
+        .unwrap();
     let (bytes, confirmation, signature) = case.packet(Uuid::new_v4(), 30_000).await;
     case.enqueue(&bytes, &confirmation, &signature)
         .await
