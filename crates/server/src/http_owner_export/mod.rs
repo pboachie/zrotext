@@ -62,6 +62,10 @@ struct ExportQuery {
     interval_before: Option<Uuid>,
     confirmation_before: Option<Uuid>,
     contacts_before: Option<Uuid>,
+    workflow_contexts_before: Option<Uuid>,
+    workflow_versions_before: Option<Uuid>,
+    workflow_exceptions_before: Option<Uuid>,
+    workflow_audit_before: Option<Uuid>,
     agent_before: Option<Uuid>,
 }
 
@@ -159,6 +163,7 @@ fn message_view(row: &Row) -> Result<MessageView, tokio_postgres::Error> {
 
 #[derive(Serialize)]
 struct ExportView {
+    workflow_context: crate::http_owner_conversations::context::lifecycle::WorkflowExport,
     confirmation_inventory: crate::http_owner_conversations::confirmation_records::ProofInventory,
     agent_grants: crate::auth::agent_grants::GrantPage,
     conversation_inventory: crate::http_owner_conversations::lifecycle::ConversationInventory,
@@ -360,7 +365,23 @@ async fn export_account(
         truncated: contacts_truncated,
         next_cursor: contacts_next_cursor,
     } = contacts;
+    let workflow_context = match crate::http_owner_conversations::context::lifecycle::export(
+        &mut client,
+        &principal,
+        [
+            query.workflow_contexts_before,
+            query.workflow_versions_before,
+            query.workflow_exceptions_before,
+            query.workflow_audit_before,
+        ],
+    )
+    .await
+    {
+        Ok(view) => view,
+        Err(error) => return error.into_response(),
+    };
     Json(ExportView {
+        workflow_context,
         confirmation_inventory:
             match crate::http_owner_conversations::confirmation_records::inventory(
                 &mut client,
