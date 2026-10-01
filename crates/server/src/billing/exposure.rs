@@ -207,7 +207,7 @@ impl TestExposure {
         let mut permit = decisions::lock_approved(&tx, owner, action).await?;
         store::entitlement(&tx, action.account_id).await?;
         let row = tx.query_opt(
-            "SELECT action_id,revision,binding_digest,route_policy_id,state FROM exposure_reservations WHERE account_id=$1 AND id=$2 FOR UPDATE",
+            "SELECT action_id,revision,binding_digest,route_policy_id,state FROM exposure_reservations WHERE account_id=$1 AND id=$2 AND live_action_id=action_id AND live_revision=revision AND live_binding_digest=binding_digest FOR UPDATE",
             &[&action.account_id,&reservation]).await?.ok_or(Error::Unavailable)?;
         if row.get::<_, Uuid>(0) != action.action_id
             || row.get::<_, i64>(1) != action.revision
@@ -233,10 +233,14 @@ impl TestExposure {
             return Err(Error::Unavailable);
         }
         let nonce = Uuid::new_v4();
-        let until = now
+        let mut until = now
             .checked_add(15_000)
             .ok_or(Error::Unavailable)?
             .min(permit.expires_at_ms());
+        until = until.min(deployment.end);
+        for budget in &budgets {
+            until = until.min(budget.end);
+        }
         if until <= now {
             return Err(Error::Unavailable);
         }
@@ -245,7 +249,12 @@ impl TestExposure {
         permit.recheck().await?;
         store::require_live_policies(&tx, action.account_id, route, &deployment, &budgets).await?;
         permit.recheck().await?;
-        if store::now(&tx).await? >= until {
+        let final_now = store::now(&tx).await?;
+        deployment.require_period(final_now)?;
+        for budget in &budgets {
+            budget.require_period(final_now)?;
+        }
+        if final_now >= until {
             return Err(Error::Unavailable);
         }
         drop(permit);

@@ -135,10 +135,10 @@
             "Fleet overview and selectable bounded device details are merged (#685), preserving live-refresh input and focus",
             "Authoritative UTC writer summaries are merged (#695), with account/device scope, capped bounds and explicit freshness/unavailability",
             "Responsive outbound writer activity is merged (#690), with conservative state labels, device links and preserved paging, expansion and focus; no unified inbound feed or decrypted sealed content is implied",
-            "Compact navigation readability and automated rendered candidate checks are merged (#701), including narrow and wide views at 200% text; human acceptance remains open"
+            "Compact navigation readability and automated rendered candidate checks are merged (#701), including narrow and wide views at 200% text; human acceptance remains open",
+            "The integrated overview places authoritative writer summaries before hardware/details and outbound activity, preserving selected scope, history, pending input and keyboard focus (#605)"
           ],
           "todo": [
-            "Concept-aligned responsive shared owner navigation and role-safe administration (#607)",
             "Complete joint actual-browser/APK visual, state and human accessibility acceptance (#612); merged automated checks do not close this gate"
           ]
         }
@@ -205,7 +205,8 @@
             ["API outline", "ARCHITECTURE.md#planned-api-v1-outline"],
             ["sealed SDK preparation", "../sdk/typescript/README.md"],
             ["#569", "https://github.com/pboachie/zrotext/pull/569"],
-            ["TypeScript SDK #537", "https://github.com/pboachie/zrotext/issues/537"]
+            ["TypeScript SDK #537", "https://github.com/pboachie/zrotext/issues/537"],
+            ["non-UI implementation boundaries", "non-ui-implementation.md"]
           ],
           "done": [
             "Route outline and sealed send shape ([outline](ARCHITECTURE.md#planned-api-v1-outline))",
@@ -242,11 +243,12 @@
             "Supported-device list backed by repeatable tests ([compatibility matrix](DEVICE-COMPATIBILITY.md))",
             "Native Home/Setup/Connection/Tools and explicit guided setup are merged (#603/#604/#648); navigation does not imply sending authority",
             "Read-only lifecycle-aware local Home Power observations are merged (#693); unavailable observations remain explicit",
+            "Optional manual Android device-scoped writer-summary reader source uses independent messages:read authority, explicit HTTPS/device configuration and lifecycle cancellation; no credential persistence or local-counter fallback",
             "Automated landscape/status checks are merged (#701), using actual scrolling and the Compose frame clock to reveal platform-visible status and reachable Pause/disclosure; no spoken TalkBack or physical acceptance is implied"
           ],
           "todo": [
             "Actual TalkBack/Switch Access, keyboard-open masking/focus return, permission and lifecycle traversal, and physical OEM/motion acceptance remain open (#612)",
-            "Android Home consumption of the merged authenticated summary source (#608); local counters cannot substitute"
+            "Integrated authenticated network and emulator acceptance of the optional Android summary reader (#608/#605); local counters cannot substitute"
           ]
         },
         {
@@ -350,7 +352,8 @@
             ["#162", "https://github.com/pboachie/zrotext/pull/162"],
             ["#260", "https://github.com/pboachie/zrotext/pull/260"],
             ["#464", "https://github.com/pboachie/zrotext/pull/464"],
-            ["#525", "https://github.com/pboachie/zrotext/pull/525"]
+            ["#525", "https://github.com/pboachie/zrotext/pull/525"],
+            ["non-UI implementation boundaries", "non-ui-implementation.md"]
           ],
           "done": [
             "Draft protocol and validation gates",
@@ -554,7 +557,8 @@
           "short": "Workflow integrations",
           "stage": "planned",
           "evidence": [
-            ["product proposal", "PRODUCT-PLAN.md#customer-controlled-assistant"]
+            ["product proposal", "PRODUCT-PLAN.md#customer-controlled-assistant"],
+            ["non-UI implementation boundaries", "non-ui-implementation.md"]
           ],
           "evidence_note": "product proposal; dormant connector registration/key-lifecycle contract in crates/server/src/sealed_connector_registry (line-scoped read/send grants, independent approval, rotation, revocation, audit) with no runtime route enabled",
           "done": [],

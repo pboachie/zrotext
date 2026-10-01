@@ -4,6 +4,7 @@ use crate::http_owner_conversations::context::decisions::{model::Decision, tests
 mod entitlement;
 mod invoice;
 mod resilience;
+mod retention;
 
 struct Fixture {
     case: Case,

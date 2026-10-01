@@ -47,23 +47,25 @@ async fn current_connector_grants(
     connector: Uuid,
     header: &wire::Header,
     permissions: Permissions,
-) -> Result<(), AuthError> {
+) -> Result<i64, AuthError> {
     let read = permissions.bits() & 6 != 0;
     let send = permissions.allows(Operation::Send) || permissions.allows(Operation::Schedule);
+    let mut deadline = i64::MAX;
     for kind in ["read", "send"] {
         if (kind == "read" && !read) || (kind == "send" && !send) {
             continue;
         }
-        tx.query_opt(
-            "SELECT grant_id FROM connector_grants WHERE account_id=$1 AND connector_id=$2 \
+        let selected = tx.query_opt(
+            "SELECT expires_ms FROM connector_grants WHERE account_id=$1 AND connector_id=$2 \
              AND line_id=$3 AND kind=$4 AND revoked_ms IS NULL \
              AND expires_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint \
              AND ($4='send' OR (read_directions & 8)=8) \
              AND (cardinality(conversation_restriction)=0 OR $5=ANY(conversation_restriction)) FOR SHARE",
             &[&account,&connector,&header.line,&kind,&header.interval]
         ).await?.ok_or(AuthError::Forbidden)?;
+        deadline = deadline.min(selected.get(0));
     }
-    Ok(())
+    Ok(deadline)
 }
 
 /// An actual current owner password and MFA ceremony narrows the existing
@@ -125,6 +127,9 @@ pub async fn issue_grant(
     {
         return Err(AuthError::Forbidden);
     }
+    activation::origin(&tx, &s)
+        .await
+        .map_err(|_| AuthError::Forbidden)?;
     let peer: String = tx
         .query_opt(
             "SELECT recipient_e164 FROM contacts WHERE account_id=$1 AND id=$2 FOR SHARE",
@@ -285,7 +290,7 @@ pub async fn issue_grant(
             .await
             .map_err(|_| AuthError::Forbidden)?;
     }
-    current_connector_grants(
+    let connector_grant_deadline = current_connector_grants(
         &tx,
         account,
         request.connector,
@@ -294,6 +299,9 @@ pub async fn issue_grant(
     )
     .await?;
     owner_fence(&tx, owner).await.map_err(registry_error)?;
+    let origin_deadline = activation::origin(&tx, &s)
+        .await
+        .map_err(|_| AuthError::Forbidden)?;
     // Recheck the ceremony window and every expiring authority after all waits.
     let (final_snapshot, _, _) = authority
         .integration_snapshot(header.device, header.line, &point)
@@ -311,12 +319,32 @@ pub async fn issue_grant(
             .await
             .map_err(|_| AuthError::Forbidden)?;
     }
-    tx.query_opt("SELECT 1 FROM connector_registrations r JOIN connector_keys k \
+    let connector_deadline = tx.query_opt("SELECT LEAST(r.expires_ms,k.valid_until_ms, \
+        floor(extract(epoch FROM creator.expires_at)*1000)::bigint) \
+        FROM connector_registrations r JOIN connector_keys k \
         ON (k.account_id,k.connector_id,k.key_id)=(r.account_id,r.connector_id,r.key_id) \
+        JOIN sessions creator ON creator.account_id=r.account_id AND creator.id=$3 \
         WHERE r.account_id=$1 AND r.connector_id=$2 AND r.expires_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint \
         AND k.valid_from_ms<=floor(extract(epoch FROM clock_timestamp())*1000)::bigint \
         AND k.valid_until_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
-        &[&account,&request.connector]).await?.ok_or(AuthError::Forbidden)?;
+        &[&account,&request.connector,&owner.session_id]).await?.ok_or(AuthError::Forbidden)?.get::<_,i64>(0);
+    // The final signer and connector queries can wait after the snapshot's
+    // clock. Compare locked authority and ceremony deadlines against a fresh
+    // database clock after those queries, before returning a credential.
+    let final_now = activation::now(&tx)
+        .await
+        .map_err(|_| AuthError::Forbidden)?;
+    if final_now < final_snapshot.accepted_ms
+        || final_now >= request.expires_ms
+        || final_now >= s.expires_ms
+        || final_now
+            >= origin_deadline
+                .min(connector_deadline)
+                .min(connector_grant_deadline)
+        || !factor.current_at(final_now as u64)
+    {
+        return Err(AuthError::Forbidden);
+    }
     drop(authority);
     tx.commit().await?;
     Ok(IssuedCredential {
