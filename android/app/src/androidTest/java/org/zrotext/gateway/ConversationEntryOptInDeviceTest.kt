@@ -47,24 +47,25 @@ class ConversationEntryOptInDeviceTest {
             return null
         }
         instrumentation.waitForIdleSync()
-        fun awaitNode(label: String): AccessibilityNodeInfo {
+        fun awaitNode(label: String, enabled: Boolean): AccessibilityNodeInfo {
             val deadline = SystemClock.elapsedRealtime() + 5000
             var action = node(label)
-            while (action == null && SystemClock.elapsedRealtime() < deadline) {
+            while ((action == null || action.isEnabled != enabled) && SystemClock.elapsedRealtime() < deadline) {
                 Thread.sleep(25)
                 action = node(label)
             }
             return checkNotNull(action) { "Missing control: $label" }
         }
         fun click(label: String) {
-            val action = awaitNode(label)
-            assertTrue(action.isEnabled); assertTrue(action.performAction(AccessibilityNodeInfo.ACTION_CLICK))
+            val action = awaitNode(label, enabled = true)
+            assertTrue("Control is not enabled: $label", action.isEnabled)
+            assertTrue("Control did not accept click: $label", action.performAction(AccessibilityNodeInfo.ACTION_CLICK))
             instrumentation.waitForIdleSync()
         }
         try {
             click("Open conversation review")
             assertFalse(activity.conversationSetupEnabled)
-            assertFalse(awaitNode("Enable review for this session").isEnabled)
+            assertFalse(awaitNode("Enable review for this session", enabled = false).isEnabled)
             candidate.writeBytes(byteArrayOf(1))
             // Simulate the public picker result only; the actual provider/controller entry is unchanged.
             instrumentation.runOnMainSync { activity.acceptConversationSetupFile(Uri.fromFile(candidate)) }
@@ -88,7 +89,7 @@ class ConversationEntryOptInDeviceTest {
             assertFalse(context.getDatabasePath(ConversationJournalStores.SEND_FILE).exists())
             click("Close conversation review")
             click("Open conversation review")
-            assertFalse(awaitNode("Enable review for this session").isEnabled)
+            assertFalse(awaitNode("Enable review for this session", enabled = false).isEnabled)
         } finally {
             instrumentation.runOnMainSync { activity.finish() }
             instrumentation.waitForIdleSync()
