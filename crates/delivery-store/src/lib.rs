@@ -1047,7 +1047,7 @@ impl<'a> DeliveryStore<'a> {
                 // guard and commit. Reconnect/line/device/writer changes must
                 // serialize, while historical exact receipt replays remain
                 // eligible even when the locked identity is already revoked.
-                tx.query_typed_opt(
+                let generic_identity = tx.query_typed_opt(
                     "SELECT g.attempt_id FROM sealed_grant_authorizations g \
                      JOIN device_sessions ds ON (ds.account_id,ds.device_id)=(g.account_id,g.device_id) \
                      JOIN devices d ON (d.account_id,d.id)=(g.account_id,g.device_id) \
@@ -1061,6 +1061,33 @@ impl<'a> DeliveryStore<'a> {
                     &[(&event.account_id, Type::UUID),(&event.message_id, Type::UUID),
                       (&event.device_id, Type::UUID),(&event.attempt_id, Type::UUID)],
                 ).await?;
+                if generic_identity.is_none() {
+                    let installed: bool = tx.query_typed_one(
+                        "SELECT to_regprocedure('conversation_execution_lock_intent(uuid,uuid,uuid,uuid)') IS NOT NULL",
+                        &[],
+                    ).await?.get(0);
+                    if !installed {
+                        return Err(StoreError::StaleFence);
+                    }
+                    if installed {
+                        let locked: bool = tx
+                            .query_typed_one(
+                                "SELECT conversation_execution_lock_intent($1,$2,$3,$4)",
+                                &[
+                                    (&event.account_id, Type::UUID),
+                                    (&event.message_id, Type::UUID),
+                                    (&event.device_id, Type::UUID),
+                                    (&event.attempt_id, Type::UUID),
+                                ],
+                            )
+                            .await?
+                            .try_get::<_, Option<bool>>(0)?
+                            .unwrap_or(false);
+                        if !locked {
+                            return Err(StoreError::StaleFence);
+                        }
+                    }
+                }
             }
         }
         let row = tx

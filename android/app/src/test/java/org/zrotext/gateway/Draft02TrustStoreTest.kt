@@ -53,6 +53,20 @@ class Draft02TrustStoreTest {
         denied { Draft02RootStateCipher.seal(key, aad, ByteArray(16384)) }
     }
 
+    @Test fun currentAuthorityRequiresExistingAcceptedStateAndFreshAuthenticatedTime() {
+        val memory=Memory();val store=Draft02TrustStore(memory)
+        denied {store.currentAuthority {now}};assertEquals(0,memory.creations)
+        val enrolled=store.enroll(receipt());denied {store.currentAuthority {now}}
+        store.acceptManifest(enrolled.snapshot!!,manifest){now}
+        val revision=store.inspect().snapshot!!.revision
+        assertEquals(1L,store.currentAuthority {now}.version)
+        assertEquals(revision,store.inspect().snapshot!!.revision);assertEquals(1,memory.creations)
+        denied {store.currentAuthority {now-1}}
+        var calls=0;denied {store.currentAuthority {if(calls++==0)now else now-1}}
+        memory.key=Draft02TrustStore.KeyState.ABSENT;denied {store.currentAuthority {now}}
+        assertEquals(1,memory.creations)
+    }
+
     @Test fun fullDeliberateAccountBoundComparisonIsRequiredAndOneUse() {
         val controller = Draft02RootComparison()
         denied { controller.begin(pin, ByteArray(16)) }

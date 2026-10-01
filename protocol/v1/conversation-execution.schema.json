@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Dormant confirmed conversation execution response candidate",
+  "properties": {
+    "v": {
+      "const": 1
+    },
+    "type": {
+      "const": "sealed_execution_grant"
+    },
+    "grant_version": {
+      "const": 1
+    },
+    "account_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "device_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "line_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "message_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "attempt_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "connection_epoch": {
+      "$ref": "#/$defs/positive"
+    },
+    "deployment_epoch": {
+      "$ref": "#/$defs/positive"
+    },
+    "binding_generation": {
+      "$ref": "#/$defs/positive"
+    },
+    "attempt_generation": {
+      "const": 1
+    },
+    "reader_role": {
+      "const": 1
+    },
+    "reader_key_id": {
+      "$ref": "#/$defs/sha256"
+    },
+    "envelope_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "unsigned_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "expires_at_ms": {
+      "$ref": "#/$defs/positive"
+    },
+    "segment_count": {
+      "maximum": 6,
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    "positive": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "sha256": {
+      "type": "string",
+      "description": "Base64url without padding of exactly 32 bytes.",
+      "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+    }
+  },
+  "type": "object",
+  "required": [
+    "v",
+    "type",
+    "grant_version",
+    "account_id",
+    "device_id",
+    "line_id",
+    "message_id",
+    "attempt_id",
+    "connection_epoch",
+    "deployment_epoch",
+    "binding_generation",
+    "attempt_generation",
+    "reader_role",
+    "reader_key_id",
+    "envelope_sha256",
+    "unsigned_sha256",
+    "expires_at_ms",
+    "segment_count"
+  ]
+}

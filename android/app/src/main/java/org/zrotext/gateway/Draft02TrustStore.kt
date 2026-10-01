@@ -36,6 +36,20 @@ internal class Draft02TrustStore(private val storage: Storage) {
 
     fun inspect(): Result = guarded { storage.locked { readState() } }
 
+    /** Reverify existing accepted bytes against independently authenticated current UTC.
+     * Creates no key and does not promote stored time into live authority.
+     */
+    fun currentAuthority(trustedNow: () -> Long): Draft02ManifestAuthority = storage.locked {
+        val current=readState();val saved=checkNotNull(current.snapshot)
+        check(current.status==Status.NEEDS_FRESHNESS && saved.version>0)
+        val decoded=decode(saved.bytes());val now=trustedNow();check(now>0 && now>=decoded.time)
+        val trust=Draft02ManifestAuthority.Trust(decoded.pin.copyOfRange(5,21),Draft02RootComparison.fingerprint(decoded.pin),1,
+            Draft02ManifestAuthority.Position.current(decoded.version,digest(decoded.manifest)))
+        val result=Draft02ManifestAuthority.verify(decoded.pin,decoded.manifest,trust,now)
+        val finalNow=trustedNow();check(finalNow>=now);Draft02ManifestAuthority.verify(decoded.pin,decoded.manifest,trust,finalNow)
+        result
+    }
+
     fun enroll(receipt: Draft02RootComparison.Receipt): Result = guarded {
         // Consume even on conflict/failure: retry requires a new deliberate comparison.
         val pin = receipt.consume()

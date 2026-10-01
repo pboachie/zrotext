@@ -1,0 +1,6 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+textarea { width: 100%; min-height: 8rem; }
+pre, #messages p { white-space: pre-wrap; overflow-wrap: anywhere; }
+#confirmation { border: 1px solid var(--border, #777); padding: 1rem; }
+button { min-height: 2.75rem; margin: .4rem .4rem .4rem 0; }
+[hidden] { display: none !important; }

@@ -376,6 +376,11 @@ async fn candidate_queue_replays_without_spending_or_rehydration_and_refunds_onc
     ))
     .await
     .unwrap();
+    db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/072_conversation_confirmation_records.sql"
+    ))
+    .await
+    .unwrap();
     assert_eq!(
         crate::retention::prune(&mut db, policy, 100)
             .await

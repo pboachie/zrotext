@@ -131,7 +131,7 @@ internal object SmsAttemptAdapter {
         }
     }
 
-    private fun hasSelectedSim(context: Context, subscriptionId: Int): Boolean {
+    internal fun hasSelectedSim(context: Context, subscriptionId: Int): Boolean {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED ||
             ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) return false
         if (context.getSharedPreferences("gateway_selection", Context.MODE_PRIVATE)
@@ -145,7 +145,7 @@ internal object SmsAttemptAdapter {
         }
     }
 
-    private fun callbackIntent(context: Context, attemptId: String, index: Int, action: String): PendingIntent {
+    internal fun callbackIntent(context: Context, attemptId: String, index: Int, action: String): PendingIntent {
         val intent = Intent(context, SmsCallbackReceiver::class.java).apply {
             this.action = action
             data = Uri.Builder().scheme("zrotext").authority("sms-callback")

@@ -59,3 +59,41 @@ Setup presents an overview and separate access, SIM and pairing steps. Steps are
 - [Two-location concept](assets/two-location-concept.png): sample routing and database-authority view.
 
 These are design references with sample data, not Android hardware captures. When adding screenshots, remove personal numbers, email addresses, device identifiers, and tokens.
+
+## Conversation review presentation
+
+MainActivity exposes **Open conversation review** on Connection. Setup remains
+disabled by default. Opening the view does not start capture, approve a request,
+or start a service. An explicitly selected public setup file is bounded before
+decoding and resolves existing pairing, line bindings and hardware enrollment;
+the screen never creates a missing key. `FutureConversationPane` shows the
+owner-provided port only after setup accepts the selected request. Approval
+requires a verified label for the exact line generation and
+binds the request identity and observed version. Decline and Back close the
+review without granting approval. Choices remain vertically stacked and
+scrollable at large text sizes.
+
+Pending and recovery states do not claim confirmed activity. Observations expire
+against monotonic receipt time, including delayed UI delivery; actions check
+that budget again. Duplicate or older observations cannot renew it. Lifecycle
+stops detach observation and clear displayed authority. A restart requires a new
+interval and fresh phone approval from the domain.
+
+Stop remains a request until durable closure is observed. A failed durable close
+is described as capture disabled locally with closure unconfirmed. Retained
+encrypted content is deleted separately, and submitted messages cannot be
+recalled. This component does not enable production conversation transfer.
+
+Closing or backgrounding the view closes its owned setup controller and rejects
+late callbacks. Reopening creates a fresh controller and does not restore phone
+approval. The initial setup file can be selected before activation. Reply
+authority uses foreground manual input of the paired browser's exact canonical
+base64 export, bounded to 21,900 characters and 16,423 decoded bytes. Nothing is
+read automatically from the clipboard or saved. A separate verification action
+is bound to the original active observation and its remaining lease; expiry,
+changed observations, closing and backgrounding invalidate pending UI actions
+and completions. Opening or cancelling the input does not remount the consent
+pane or renew approval. An external file picker during an active interval still
+closes that interval; returning cannot restore it. A failed close remains visible
+and prevents another setup in that activity. Radio execution remains disabled
+in this UI composition.

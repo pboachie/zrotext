@@ -276,7 +276,14 @@ fn queue_fixture_includes_every_checked_in_migration() {
         .map(|path| path.file_name().unwrap().to_str().unwrap().to_owned())
         .collect::<Vec<_>>();
     names.sort();
-    assert_eq!(names, QUEUE_SCHEMA.map(|(name, _)| name));
+    assert_eq!(
+        names,
+        QUEUE_SCHEMA
+            .into_iter()
+            .filter(|(name, _)| !name.starts_with("../migration-candidates/"))
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>()
+    );
 }
 
 // Exercise production index choices, including online preparation.

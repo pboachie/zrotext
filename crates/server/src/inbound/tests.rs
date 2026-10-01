@@ -1997,6 +1997,11 @@ async fn signed_stop_after_content_retention_still_suppresses_recipient() {
     ))
     .await
     .unwrap();
+    db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/072_conversation_confirmation_records.sql"
+    ))
+    .await
+    .unwrap();
     let pruned = crate::retention::prune(
         &mut db,
         crate::retention::RetentionPolicy::default(),

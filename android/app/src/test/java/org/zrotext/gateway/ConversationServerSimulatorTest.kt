@@ -84,6 +84,60 @@ class ConversationServerSimulatorTest {
             assertEquals(captured.captureId, admission.retry(token)!!.captureId)
             assertEquals(captured.firstObservedAtMs, admission.retry(token)!!.firstObservedAtMs)
             assertEquals(ConversationObservation.DUPLICATE, observe())
+            assertTrue(admission.captureEligible()) // Same simulated phone admission gate is active.
+            val browser = fixture.browser(event, body)
+            assertEquals(1, browser.getInt("signed"))
+            val sendClosed = browser.getBoolean("closedDuringDecrypt")
+            if (sendClosed) enabled = false
+            // Record synthetic phone acceptance under the exact same monitor/gate
+            // as receiver observation and Pause, only after verified decryption.
+            var simulatedPhoneAcceptances = 0
+            val sent = browser.getJSONObject("packet")
+            val proof = java.util.Base64.getDecoder().decode(sent.getString("confirmation"))
+            val deadline = java.nio.ByteBuffer.wrap(proof, 125, 8).long
+            if (browser.getInt("verified") == 1) {
+                assertTrue(admission.captureEligible())
+                assertEquals(scope, fixture.parsed.scope)
+                // A verified result handed off after the 30s intent deadline is
+                // refused even though the conversation's 60s lease remains live.
+                assertFalse(fixture.recordVerifiedAcceptance(admission, deadline, { deadline }) { simulatedPhoneAcceptances++ })
+                val sendName = "conversation-server-send-test.db"
+                context.deleteDatabase(sendName)
+                var sendDb = Room.databaseBuilder(context, ConversationSendDatabase::class.java, sendName).allowMainThreadQueries().build()
+                try {
+                    var verificationCount = 0
+                    val verifier = object : ConversationSendVerifier {
+                        override fun verify(evidence: ByteArray): VerifiedConversationSend {
+                            verificationCount++
+                            return fixture.verifiedSend(evidence, System.getenv("ZT_CONVERSATION_SIM_MODE") == "send_verify_close" && verificationCount == 3)
+                        }
+                    }
+                    // Fixture time only; production requires refreshed authenticated monotonic time.
+                    fun sender() = ConversationConfirmedSend(sendDb.sends(), admission, verifier, fixture.protection,
+                        System::currentTimeMillis, object : ConversationSendTransport {
+                            override fun submit(message: String, attempt: String, scope: ConversationCaptureScope, body: String): ConversationSubmission {
+                                assertEquals("claimed", sendDb.sends().receipt(message)!!.state)
+                                assertEquals(attempt, sendDb.sends().receipt(message)!!.attempt)
+                                assertEquals("Synthetic browser reply \u03A9\nExact trailing spaces  ", body)
+                                simulatedPhoneAcceptances++
+                                return ConversationSubmission.SUBMITTED
+                            }
+                        })
+                    val durable = sender()
+                    durable.receiveConfirmed(sent.toString().toByteArray(Charsets.UTF_8))
+                    assertEquals("confirmed", sendDb.sends().receipt(sent.getString("message"))!!.state)
+                    if (System.getenv("ZT_CONVERSATION_SIM_MODE") == "send_verify_close") {
+                        assertThrows(IllegalStateException::class.java) { durable.submitConfirmed(sent.getString("message")) }
+                        assertEquals("claimed", sendDb.sends().receipt(sent.getString("message"))!!.state)
+                        assertEquals(0, simulatedPhoneAcceptances)
+                    } else assertEquals(ConversationSubmission.SUBMITTED, durable.submitConfirmed(sent.getString("message")))
+                    sendDb.close()
+                    sendDb = Room.databaseBuilder(context, ConversationSendDatabase::class.java, sendName).allowMainThreadQueries().build()
+                    assertEquals(if (System.getenv("ZT_CONVERSATION_SIM_MODE") == "send_verify_close") "claimed" else "submitted", sendDb.sends().receipt(sent.getString("message"))!!.state)
+                    assertThrows(IllegalStateException::class.java) { sender().submitConfirmed(sent.getString("message")) }
+                } finally { sendDb.close(); context.deleteDatabase(sendName) }
+            }
+            assertEquals(if (sendClosed || System.getenv("ZT_CONVERSATION_SIM_MODE") == "send_verify_close") 0 else 1, simulatedPhoneAcceptances)
 
             // All receiver / close actions use this same admission instance. Never infer Closed on failure.
             val mode = System.getenv("ZT_CONVERSATION_SIM_MODE") ?: "pause"
@@ -96,6 +150,8 @@ class ConversationServerSimulatorTest {
             assertEquals(if (mode == "close_failure") "capture_disabled_closure_failed" else "closed", closeStatus)
             assertFalse(fixture.command("lease", challenge = UUID.randomUUID()).getBoolean("ok"))
             assertFalse(fixture.command("capture", data = envelope.getString("envelope")).getBoolean("ok"))
+            assertFalse(fixture.command("browser_authority").getBoolean("ok"))
+            assertFalse(fixture.command("send", data = sent.getString("envelope"), confirmation = sent.getString("confirmation"), signature = sent.getString("signature")).getBoolean("ok"))
             if (mode == "close_failure") {
                 db.close()
                 db = Room.databaseBuilder(context, ConversationCaptureDatabase::class.java, name).allowMainThreadQueries().build()

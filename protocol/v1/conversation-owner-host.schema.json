@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Dormant owner conversation request bodies",
+  "oneOf": [{"$ref":"#/$defs/activation"},{"$ref":"#/$defs/enrollment"},{"$ref":"#/$defs/selection"}],
+  "$defs": {
+    "uuid": {"type":"string","pattern":"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$","not":{"const":"00000000-0000-0000-0000-000000000000"}},
+    "generation": {"type":"integer","minimum":1,"maximum":9223372036854775807},
+    "peer": {"type":"string","pattern":"^\\+[1-9][0-9]{1,14}$"},
+    "id": {"type":"string","minLength":44,"maxLength":44,"pattern":"^[A-Za-z0-9+/]{43}=$"},
+    "point": {"type":"string","minLength":88,"maxLength":88,"pattern":"^[A-Za-z0-9+/]{87}=$"},
+    "manifest": {"type":"string","minLength":488,"maxLength":13004,"pattern":"^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"},
+    "selection": {
+      "type":"object","additionalProperties":false,
+      "required":["device_id","line_id","binding_generation","peer"],
+      "properties":{"device_id":{"$ref":"#/$defs/uuid"},"line_id":{"$ref":"#/$defs/uuid"},"binding_generation":{"$ref":"#/$defs/generation"},"peer":{"$ref":"#/$defs/peer"}}
+    },
+    "consent": {
+      "type":"object","additionalProperties":false,
+      "required":["device_id","line_id","binding_generation","peer","disclosure_version","content_transfer_confirmed"],
+      "properties":{"device_id":{"$ref":"#/$defs/uuid"},"line_id":{"$ref":"#/$defs/uuid"},"binding_generation":{"$ref":"#/$defs/generation"},"peer":{"$ref":"#/$defs/peer"},"disclosure_version":{"const":"conversation-content-v1"},"content_transfer_confirmed":{"const":true}}
+    },
+    "activation": {
+      "type":"object","additionalProperties":false,"required":["consent","next_manifest"],
+      "properties":{"consent":{"$ref":"#/$defs/consent"},"next_manifest":{"$ref":"#/$defs/manifest"}}
+    },
+    "enrollment": {
+      "type":"object","additionalProperties":false,
+      "required":["device_id","line_id","binding_generation","peer","phone_reader","archive_reader","signer","public_point","predecessor","signed_successor"],
+      "properties":{"device_id":{"$ref":"#/$defs/uuid"},"line_id":{"$ref":"#/$defs/uuid"},"binding_generation":{"$ref":"#/$defs/generation"},"peer":{"$ref":"#/$defs/peer"},"phone_reader":{"$ref":"#/$defs/id"},"archive_reader":{"$ref":"#/$defs/id"},"signer":{"$ref":"#/$defs/id"},"public_point":{"$ref":"#/$defs/point"},"predecessor":{"$ref":"#/$defs/id"},"signed_successor":{"$ref":"#/$defs/manifest"}}
+    }
+  }
+}

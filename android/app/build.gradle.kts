@@ -36,7 +36,13 @@ plugins {
 }
 
 // Explicit, isolated debug packaging only. Never install it over the gateway.
+val isolatedConversationProbe = providers.gradleProperty("isolatedConversationProbe").orNull == "true"
 val isolatedPreparationProbe = providers.gradleProperty("isolatedPreparationProbe").orNull == "true"
+require(!(isolatedConversationProbe && isolatedPreparationProbe)) { "Only one isolated probe may be selected" }
+val conversationProbeFixtures = if (isolatedConversationProbe) tasks.register<Sync>("conversationProbeFixtures") {
+    from("src/test/java") { include("**/ConversationSimulatorFixture.kt") }
+    into(layout.buildDirectory.dir("generated/conversationProbeFixtures"))
+} else null
 val preparationProbeFixtures = if (isolatedPreparationProbe) tasks.register<Sync>("preparationProbeFixtures") {
     from("src/androidTest/java") { include("**/SealedPreparationDeviceSample.kt") }
     from("src/sharedTest/java") { include("**/PreparationFixture.kt") }
@@ -67,6 +73,10 @@ android {
         versionCode = 9
         versionName = "0.1.6-rc.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        if (isolatedConversationProbe) {
+            applicationId = "org.zrotext.gateway.conversationprobe"
+            testApplicationId = "org.zrotext.gateway.conversationprobe.test"
+        }
         if (isolatedPreparationProbe) {
             applicationId = "org.zrotext.gateway.preparationprobe"
             testApplicationId = "org.zrotext.gateway.preparationprobe.test"
@@ -113,6 +123,17 @@ android {
             resources.srcDir("../../sdk/typescript/test/vectors")
         }
     }
+    if (isolatedConversationProbe) {
+        sourceSets.getByName("main") {
+            manifest.srcFile("src/conversationProbe/AndroidManifest.xml")
+            java.srcDir("src/conversationProbe/java")
+        }
+        sourceSets.getByName("debug").manifest.srcFile("src/conversationProbe/DebugAndroidManifest.xml")
+        sourceSets.getByName("androidTest") {
+            manifest.srcFile("src/conversationProbeTest/AndroidManifest.xml")
+            java.setSrcDirs(listOf("src/conversationProbeTest/java", layout.buildDirectory.dir("generated/conversationProbeFixtures")))
+        }
+    }
     if (isolatedPreparationProbe) {
         sourceSets.getByName("main").manifest.srcFile("src/preparationProbe/AndroidManifest.xml")
         // The probe APK must declare no components, so it skips the debug MMS spike manifest.
@@ -128,8 +149,12 @@ if (isolatedPreparationProbe) tasks.matching { it.name == "preDebugAndroidTestBu
     dependsOn(checkNotNull(preparationProbeFixtures))
 }
 
+if (isolatedConversationProbe) tasks.matching { it.name == "preDebugAndroidTestBuild" }.configureEach {
+    dependsOn(checkNotNull(conversationProbeFixtures))
+}
+
 androidComponents {
-    beforeVariants { if (isolatedPreparationProbe && it.buildType != "debug") it.enable = false }
+    beforeVariants { if ((isolatedPreparationProbe || isolatedConversationProbe) && it.buildType != "debug") it.enable = false }
     onVariants(selector().withBuildType("release")) { variant ->
         variant.sources.assets?.addGeneratedSourceDirectory(
             writeReleaseSourceCommit, WriteReleaseSourceCommit::outputDir

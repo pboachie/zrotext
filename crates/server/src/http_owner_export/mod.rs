@@ -61,6 +61,7 @@ struct ExportQuery {
     sealed_before: Option<Uuid>,
     interval_before: Option<Uuid>,
     confirmation_before: Option<Uuid>,
+    execution_before: Option<Uuid>,
     contacts_before: Option<Uuid>,
     workflow_grants_before: Option<Uuid>,
     workflow_envelopes_before: Option<Uuid>,
@@ -177,6 +178,8 @@ fn message_view(row: &Row) -> Result<MessageView, tokio_postgres::Error> {
 
 #[derive(Serialize)]
 struct ExportView {
+    execution_inventory:
+        crate::http_owner_conversations::channel::execution::lifecycle::ExecutionInventory,
     workflow_schedule: crate::encrypted_schedule::lifecycle::ScheduleExport,
     workflow_integrations: crate::workflow_runtime::lifecycle::Export,
     workflow_context: crate::http_owner_conversations::context::lifecycle::WorkflowExport,
@@ -377,6 +380,17 @@ async fn export_account(
         Ok(view) => view,
         Err(error) => return error.into_response(),
     };
+    let execution_inventory =
+        match crate::http_owner_conversations::channel::execution::lifecycle::inventory(
+            &mut client,
+            &principal,
+            query.execution_before,
+        )
+        .await
+        {
+            Ok(view) => view,
+            Err(error) => return error.into_response(),
+        };
     let ContactsPage::Ready {
         contacts,
         truncated: contacts_truncated,
@@ -446,6 +460,7 @@ async fn export_account(
         Err(error) => return error.into_response(),
     };
     Json(ExportView {
+        execution_inventory,
         workflow_integrations,
         workflow_decisions,
         workflow_schedule,

@@ -9,6 +9,14 @@ use crate::{
 };
 use tokio_postgres::Transaction;
 use uuid::Uuid;
+mod enrollment;
+
+/// Public directory candidate only; a client must retain its independent root pin/history.
+pub(crate) struct PublicCandidate {
+    pub pin: Vec<u8>,
+    pub fingerprint: [u8; 32],
+    pub snapshot: ManifestSnapshot,
+}
 
 pub(crate) struct ManifestSnapshot {
     pub generation: i64,
@@ -97,6 +105,67 @@ impl CurrentAuthority<'_, '_> {
     }
     pub(crate) fn generation(&self) -> i64 {
         self.manifest.generation() as i64
+    }
+
+    /// Read-only pending proposal check under the already owned current-root lock.
+    /// A valid successor signature alone does not authorize its selected inbound keys.
+    pub(crate) async fn next_inbound_snapshot(
+        &mut self,
+        bytes: &[u8],
+        wanted: &EnvelopeAuthority<'_>,
+    ) -> Result<ManifestSnapshot, AdmissionError> {
+        if wanted.kind != Kind::Inbound || wanted.account_id != *self.account.as_bytes() {
+            return Err("pending inbound identity".into());
+        }
+        let now = self.rechecked_time(false).await?;
+        let mut trust = self.trust.clone();
+        trust.position = ChainPosition::After {
+            version: self.manifest.version(),
+            digest: *self.manifest.digest(),
+        };
+        let successor = sealed_manifest::verify(&self.pin, bytes, &trust, now)?;
+        successor.envelope_context(wanted, now)?;
+        Ok(ManifestSnapshot {
+            generation: successor.generation() as i64,
+            version: successor.version() as i64,
+            digest: *successor.digest(),
+            bytes: bytes.to_vec(),
+            accepted_ms: now as i64,
+        })
+    }
+
+    /// Read-only public projection using the same current-root/clock/key proof.
+    pub(crate) async fn public_candidate(
+        &mut self,
+        wanted: &EnvelopeAuthority<'_>,
+    ) -> Result<PublicCandidate, AdmissionError> {
+        if wanted.kind != Kind::Inbound || wanted.account_id != *self.account.as_bytes() {
+            return Err("public candidate identity".into());
+        }
+        let now = self.rechecked_time(false).await?;
+        self.manifest.envelope_context(wanted, now)?;
+        Ok(PublicCandidate {
+            pin: self.pin.clone(),
+            fingerprint: self.trust.root_fingerprint,
+            snapshot: ManifestSnapshot {
+                generation: self.generation(),
+                version: self.manifest.version() as i64,
+                digest: *self.manifest.digest(),
+                bytes: self.bytes.clone(),
+                accepted_ms: now as i64,
+            },
+        })
+    }
+
+    pub(crate) async fn public_conversation_keys(
+        &mut self,
+        device: Uuid,
+        line: Uuid,
+    ) -> Result<([u8; 32], [u8; 32]), AdmissionError> {
+        let now = self.rechecked_time(false).await?;
+        Ok(self
+            .manifest
+            .conversation_keys(device.as_bytes(), line.as_bytes(), now)?)
     }
 
     pub(crate) async fn authorize_agent_signer(
@@ -283,6 +352,13 @@ impl CurrentAuthority<'_, '_> {
         Ok(self.manifest.admission_deadline(wanted, now)? as i64)
     }
 
+    /// Delegate to the same fresh outbound authority and deadline fences.
+    pub(crate) async fn outbound_admission_deadline(
+        &mut self,
+        wanted: &EnvelopeAuthority<'_>,
+    ) -> Result<i64, AdmissionError> {
+        self.outbound_deadline(wanted).await
+    }
     /// Re-prove the original signature without rewriting its authenticated epoch.
     /// Snapshot came from the immutable verified-ingest provenance table, not
     /// from untrusted envelope claims. Current reader AND signer remain required.
@@ -321,6 +397,10 @@ impl CurrentAuthority<'_, '_> {
     }
 
     async fn checked_time(&mut self) -> Result<u64, AdmissionError> {
+        self.rechecked_time(true).await
+    }
+
+    async fn rechecked_time(&mut self, write_high_water: bool) -> Result<u64, AdmissionError> {
         let row = self.tx.query_opt(
             "SELECT root_pin,root_fingerprint,generation,version,semantic_digest,manifest,last_verified_ms \
              FROM sealed_manifest_authorities WHERE account_id=$1 AND revoked_at IS NULL",
@@ -341,7 +421,7 @@ impl CurrentAuthority<'_, '_> {
         // chain position under this transaction's FOR UPDATE lock, so the
         // signature and role proofs from lock_current cannot have changed;
         // only freshness can, and envelope_context rechecks that here.
-        if !self.verified_write {
+        if write_high_water && !self.verified_write {
             self.tx
                 .execute(
                     "UPDATE sealed_manifest_authorities SET last_verified_ms=$2 WHERE account_id=$1",
