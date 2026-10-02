@@ -62,9 +62,20 @@ These are design references with sample data, not Android hardware captures. Whe
 
 ## Conversation review presentation
 
-MainActivity exposes **Open conversation review** on Connection. Setup remains
-disabled by default. Opening the view does not start capture, approve a request,
-or start a service. An explicitly selected public setup file is bounded before
+MainActivity exposes **Open conversation review** on Connection. Review remains
+off by default. Opening the view or selecting a public file does not start setup,
+capture, approve a request, or start a service. After selecting a public file,
+**Enable review for this session** provides a foreground-only opt-in. A separate
+**Review selected conversation** action uses the actual setup provider/controller;
+it still requires current pairing, exact line binding and an existing enrolled
+hardware reader. Software-only emulator custody is not accepted as hardware
+enrollment. The opt-in is not saved or restored from intents or preferences, and
+closing, backgrounding or recreating the activity turns it off.
+Pausing a still-visible activity also revokes review and closes its setup;
+visibility alone does not preserve foreground authority. Returning from
+the initial picker requires a fresh opt-in. This review control does not grant
+SMS permissions or replace the separate selected-conversation phone agreement.
+An explicitly selected public setup file is bounded before
 decoding and resolves existing pairing, line bindings and hardware enrollment;
 the screen never creates a missing key. `FutureConversationPane` shows the
 owner-provided port only after setup accepts the selected request. Approval

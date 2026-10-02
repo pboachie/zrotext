@@ -27,7 +27,8 @@ internal fun FutureConversationPane(
     port: ConversationPresentationPort,
     lineLabel: (String, Long) -> String?,
     modifier: Modifier = Modifier,
-    onDismiss: () -> Unit = {}
+    onDismiss: () -> Unit = {},
+    onStopRequested: () -> Unit = {}
 ) {
     var snapshot by remember(port) { mutableStateOf<ConversationPresentationSnapshot?>(null) }
     var receivedAt by remember(port) { mutableLongStateOf(0) }
@@ -169,7 +170,10 @@ internal fun FutureConversationPane(
         if (pending && !actionFailed) Text("Request sent. Awaiting updated status.")
         if (actionFailed || observationFailed) Text("The request could not be completed. Refresh to check the current state.")
         if (current?.canStop == true && current.intervalId != null && !expired)
-            Button(onClick = { submit { port.requestStop(current.intervalId, current.version) } }, enabled = !pending,
+            Button(onClick = { submit {
+                onStopRequested()
+                port.requestStop(current.intervalId, current.version)
+            } }, enabled = !pending,
                 modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Stop content transfer") }
         OutlinedButton(onClick = {
             if (observationFailed) { observationFailed = false; subscriptionRetry++ }
