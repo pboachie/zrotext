@@ -13,7 +13,8 @@ internal class ConversationEnrollmentSession(
     private val createReader: () -> DevicePayloadPublic,
     storage: Draft02TrustStore.Storage,
     private val prepareProtection: () -> Unit,
-    private val release: () -> Unit = {}
+    private val release: () -> Unit = {},
+    private val exportPublic: (DevicePayloadPublic) -> ConversationPhonePublicExport = { error("Public export unavailable") }
 ) : AutoCloseable {
     private val closed = AtomicBoolean(false)
     private val comparison = Draft02RootComparison()
@@ -51,6 +52,12 @@ internal class ConversationEnrollmentSession(
         val display = comparison.begin(pin, uuid(accountId))
         current()
         return display
+    }
+
+    fun enrollReaderPublicExport(): ConversationPhonePublicExport {
+        val reader = enrollReader()
+        current()
+        return exportPublic(reader).also { current(); it.requireCurrent() }
     }
 
     fun enrollComparedRoot(fingerprint: String, independentlyCompared: Boolean): Draft02TrustStore.Result {

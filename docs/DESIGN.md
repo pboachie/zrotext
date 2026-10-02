@@ -122,7 +122,12 @@ ceremony. It requires the current proof-authenticated host, an owner-approved
 line, selected SIM continuity, SMS permissions and Android API 31 or later.
 Creating a reader explicitly provisions a hardware ECDH key through the existing
 enrollment lifecycle and initializes local journal protection when there is no
-retained state needing recovery. Only public reader ID/point values are exposed.
+retained state needing recovery. The existing paired signing key is read without
+creation or signing and must have StrongBox or TEE custody. Only public values
+are exposed. The 223-byte `ZTPK01` packet binds account, device, line, paired
+signing-point SHA256, big-endian binding generation, reader point and signing
+point. Its independently compared fingerprint is SHA256 of
+`ZTSE/phone-keys/v1` followed by a zero byte and the complete packet.
 Software or unknown reader custody is refused. Lost protection with retained
 conversation, inbound or suppression state is never silently recreated.
 
@@ -133,6 +138,18 @@ existing comparison receipt and persists an unfresh root pin. Cancellation,
 backgrounding, host/line/SIM or permission loss fence storage precommit.
 Completed enrollment remains durable; closing does not delete keys or reset trust.
 Enrollment never grants capture, content transfer or sending.
+
+**Save public phone key export** explicitly selects a public binary-file
+destination. Only the requested public packet survives that destination picker;
+review, reply permission and pending enrollment still withdraw on pause.
+Saving resumes in the foreground and rechecks the original authenticated host,
+line, SIM, permissions and both existing hardware keys. Its elapsed lifetime is
+five minutes; changed or lost keys are never replaced. Cancel, explicit close or
+destruction discards pending export. Pause fences a write already in progress.
+The completion presents the exact saved packet fingerprint for independent
+comparison directly on the phone; a failed write may leave an incomplete public
+file, which must be discarded. Files and fingerprints alone grant no authority;
+the owner flow must match the export against current paired scope and keys.
 
 First review accepts at most 64 public root-signed manifest predecessor links,
 one canonical base64 manifest per line. Verification and every trust CAS use the

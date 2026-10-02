@@ -135,6 +135,23 @@ class MainActivity : ComponentActivity() {
     private var conversationEnrollmentBusy by mutableStateOf(false)
     private var conversationEnrollmentStatus by mutableStateOf("")
     private var conversationReaderExport by mutableStateOf("")
+    private var conversationPhoneExport: ConversationPhonePublicExport? = null
+    private var pendingConversationPhoneExport: ConversationPhonePublicExport? = null
+    private var pendingConversationExportUri: Uri? = null
+    private var conversationExportWriteToken: AtomicBoolean? = null
+    private val conversationExportPicker = registerForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
+        acceptConversationPublicExportDestination(uri)
+    }
+    internal fun acceptConversationPublicExportDestination(uri: Uri?) {
+        if (pendingConversationPhoneExport == null) return
+        if (uri == null) {
+            pendingConversationPhoneExport = null
+            pendingConversationExportUri = null
+        } else {
+            pendingConversationExportUri = uri
+            finishConversationPublicExport()
+        }
+    }
     private var conversationRootPin by mutableStateOf("")
     private var conversationRootFingerprint by mutableStateOf("")
     private var conversationRootCompared by mutableStateOf(false)
@@ -416,6 +433,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        pendingConversationPhoneExport = null
+        pendingConversationExportUri = null
         closeConversationEntry()
         conversationWorker.shutdownNow()
         clearSummaryReader(clearKey = true)
@@ -430,9 +449,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun revokeConversationForeground() {
+        conversationExportWriteToken?.set(false)
         conversationSetupEnabled = false
         withdrawConversationReplyChoice()
-        closeConversationEnrollment()
+        closeConversationEnrollment(preservePendingPublicFile = true)
         // A file picker may return a public candidate, but never preserves phone authority.
         conversationEntry?.close()
         conversationEntry = null
@@ -442,7 +462,7 @@ class MainActivity : ComponentActivity() {
         conversationVerifiedLineLabel = null
         conversationReplyPending = false
         cancelConversationReplyImport()
-        if (conversationPickEpoch == null && conversationEntryOpen) closeConversationEntry()
+        if (conversationPickEpoch == null && conversationEntryOpen) closeConversationEntry(preservePendingPublicFile = true)
     }
 
     internal fun acceptConversationSetupFile(uri: Uri?) {
@@ -453,10 +473,10 @@ class MainActivity : ComponentActivity() {
         conversationEntryStatus = if (uri == null) "File selection cancelled." else "Public setup selected. Phone approval is still required."
     }
 
-    private fun closeConversationEntry() {
+    private fun closeConversationEntry(preservePendingPublicFile: Boolean = false) {
         conversationSetupEnabled = false
         withdrawConversationReplyChoice()
-        closeConversationEnrollment()
+        closeConversationEnrollment(preservePendingPublicFile)
         // Capture CLOSE_FAILED while this exact view generation is still observable.
         conversationEntry?.close()
         ++conversationUiEpoch
@@ -494,11 +514,11 @@ class MainActivity : ComponentActivity() {
                             }, { value -> if (value.length <= 64) conversationRootFingerprint = value },
                             { conversationRootCompared = it },
                             { value -> if (value.length <= ConversationEnrollmentSession.MAX_CHAIN_TEXT) conversationInitialChain = value },
-                            { runConversationEnrollment({ session ->
-                                val reader = session.enrollReader()
-                                val encode = java.util.Base64.getEncoder()
-                                "reader_id_b64=" + encode.encodeToString(reader.keyId) + "\npublic_point_b64=" + encode.encodeToString(reader.point)
-                            }) { result -> conversationReaderExport = result; conversationEnrollmentStatus = "Hardware reader enrolled. Export only these public values to your owner enrollment." } },
+                            { runConversationEnrollment({ session -> session.enrollReaderPublicExport() }) { result ->
+                                conversationPhoneExport = result
+                                conversationReaderExport = java.util.Base64.getEncoder().encodeToString(result.publicBytes())
+                                conversationEnrollmentStatus = "Public phone export fingerprint: ${result.fingerprintHex}. Compare all 64 characters directly on this phone before owner import."
+                            } },
                             {
                                 val pin = conversationRootPin
                                 runConversationEnrollment({ session ->
@@ -512,6 +532,16 @@ class MainActivity : ComponentActivity() {
                                     check(result.status == Draft02TrustStore.Status.NEEDS_FRESHNESS)
                                     "Compared root enrolled. Import its complete signed predecessor chain before your first review. No content transfer or sending is approved."
                                 }) { result -> conversationRootReviewed = false; conversationRootCompared = false; conversationEnrollmentStatus = result }
+                            }, {
+                                val packet = conversationPhoneExport
+                                if (packet != null && conversationEnrollmentOpen && !conversationEnrollmentBusy &&
+                                    lifecycle.currentState == Lifecycle.State.RESUMED && pendingConversationPhoneExport == null) {
+                                    runCatching { packet.requireCurrent() }.onSuccess {
+                                        // Only this public packet survives the destination picker. All review/reply authority still withdraws on pause.
+                                        pendingConversationPhoneExport = packet
+                                        conversationExportPicker.launch("zrotext-phone-public-keys.bin")
+                                    }.onFailure { conversationEnrollmentStatus = "Public export expired or pairing/line/key changed. Enroll and review its current public values again." }
+                                }
                             })
                     }
                 }
@@ -792,13 +822,25 @@ class MainActivity : ComponentActivity() {
         conversationRootCompared = false
     }
 
-    private fun closeConversationEnrollment() {
+    private fun closeConversationEnrollment(preservePendingPublicFile: Boolean = false) {
+        conversationExportWriteToken?.set(false)
+        if (!preservePendingPublicFile) {
+            pendingConversationPhoneExport = null
+            pendingConversationExportUri = null
+        }
         closeConversationEnrollmentSession()
         conversationEnrollmentOpen = false
         conversationRootFingerprint = ""
+        conversationPhoneExport = null
+        conversationReaderExport = ""
     }
 
-    private fun runConversationEnrollment(action: (ConversationEnrollmentSession) -> String, completed: (String) -> Unit) {
+    override fun onPostResume() {
+        super.onPostResume()
+        Handler(Looper.getMainLooper()).post { finishConversationPublicExport() }
+    }
+
+    private fun <T> runConversationEnrollment(action: (ConversationEnrollmentSession) -> T, completed: (T) -> Unit) {
         if (!conversationEnrollmentOpen || conversationEnrollmentBusy) return
         val token = conversationEnrollmentToken ?: AtomicBoolean(true).also { conversationEnrollmentToken = it }
         conversationEnrollmentBusy = true
@@ -819,6 +861,35 @@ class MainActivity : ComponentActivity() {
                         conversationRootReviewed = false
                         conversationEnrollmentStatus = "Enrollment refused. Check the current paired connection, selected approved line, hardware eligibility and independent root comparison. Existing protected state may require recovery."
                     }
+                }
+            }
+        }
+    }
+
+    private fun finishConversationPublicExport() {
+        if (lifecycle.currentState != Lifecycle.State.RESUMED) return
+        val packet = pendingConversationPhoneExport ?: return
+        val uri = pendingConversationExportUri ?: return
+        pendingConversationPhoneExport = null
+        pendingConversationExportUri = null
+        val token = AtomicBoolean(true)
+        conversationExportWriteToken = token
+        conversationWorker.execute {
+            val saved = runCatching {
+                check(token.get())
+                packet.requireCurrent()
+                packet.write({ check(token.get()) }) {
+                    check(token.get())
+                    checkNotNull(contentResolver.openOutputStream(uri, "w"))
+                }
+                check(token.get())
+            }.isSuccess
+            runOnUiThread {
+                if (conversationExportWriteToken === token) {
+                    conversationExportWriteToken = null
+                    conversationEntryStatus = if (saved && token.get()) "Public phone key file saved. Full export fingerprint: ${packet.fingerprintHex}. Independently compare all 64 characters directly on this phone before owner import. No content transfer or replies were approved."
+                        else "Public phone export could not be completed. Check pairing, the selected line and its current keys; discard any incomplete public file."
+                    if (token.get() && lifecycle.currentState == Lifecycle.State.RESUMED) conversationEntryOpen = true
                 }
             }
         }

@@ -15,8 +15,8 @@ internal object ConversationAndroidEnrollment {
         val app = checkNotNull(context.applicationContext)
         val host = checkNotNull(ConversationSocketComposition.currentAuthenticatedIdentity())
         val binding = checkNotNull(database.attempts().currentLineBinding())
-        fun current() {
-            check(foreground.get() && Build.VERSION.SDK_INT >= 31)
+        fun boundCurrent() {
+            check(Build.VERSION.SDK_INT >= 31)
             host.requireCurrent()
             check(binding.accountId == host.identity.accountId && binding.deviceId == host.identity.deviceId &&
                 binding.generation > 0 && binding.cardId != null && database.attempts().currentLineBinding() == binding)
@@ -27,8 +27,12 @@ internal object ConversationAndroidEnrollment {
                 .getInt("subscription_id", SubscriptionManager.INVALID_SUBSCRIPTION_ID)
             check(selected == binding.subscriptionId && SimCardContinuity.matches(
                 ActivatedSimCard(binding.subscriptionId, checkNotNull(binding.cardId)), SimCardContinuity.observe(app)))
-            host.requireCurrent(); check(foreground.get())
+            host.requireCurrent()
         }
+        fun current() { check(foreground.get()); boundCurrent(); check(foreground.get()) }
+        current()
+        val signing = DeviceSigningKeyStore(app)
+        val signerPoint = signing.existingConversationPublicPoint()
         current()
         // A stable exact account/device/line alias cannot replace another enrolled reader.
         val alias = "org.zrotext.conversation-reader.${binding.accountId}.${binding.deviceId}.${binding.lineId}.${binding.generation}"
@@ -65,6 +69,18 @@ internal object ConversationAndroidEnrollment {
                         ConversationExistingSuppressionTokens().requireAvailable()
                     }, ::current)
                 }
-            }, { java.util.concurrent.ForkJoinPool.commonPool().execute { storage.close() } })
+            }, { java.util.concurrent.ForkJoinPool.commonPool().execute { storage.close() } }, { reader ->
+                current()
+                ConversationPhonePublicExport(binding.accountId, binding.deviceId, binding.lineId,
+                    binding.generation, reader.point, signerPoint, {
+                        boundCurrent()
+                        check(java.security.MessageDigest.isEqual(signing.existingConversationPublicPoint(), signerPoint))
+                        val existing = DevicePayloadKeyStore(app, alias).existingPublic()
+                        check(existing.security in setOf(PayloadKeySecurity.STRONGBOX, PayloadKeySecurity.TRUSTED_ENVIRONMENT))
+                        check(java.security.MessageDigest.isEqual(existing.keyId, reader.keyId) &&
+                            java.security.MessageDigest.isEqual(existing.point, reader.point))
+                        boundCurrent()
+                    }, android.os.SystemClock::elapsedRealtime)
+            })
     }
 }

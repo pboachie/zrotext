@@ -20,14 +20,17 @@ import androidx.compose.ui.semantics.contentDescription
     pin: String, fingerprint: String, compared: Boolean, reviewed: Boolean, busy: Boolean,
     status: String, export: String, chain: String,
     changePin: (String) -> Unit, changeFingerprint: (String) -> Unit, changeCompared: (Boolean) -> Unit,
-    changeChain: (String) -> Unit, createReader: () -> Unit, reviewRoot: () -> Unit, confirmRoot: () -> Unit
+    changeChain: (String) -> Unit, createReader: () -> Unit, reviewRoot: () -> Unit, confirmRoot: () -> Unit,
+    savePublicExport: () -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Enrollment is separate from pairing and content consent. Creating a reader keeps a private hardware key and local journal keys on this phone. Closing this screen stops pending work; it does not delete completed enrollment. No message is sent here.")
         Button(onClick = createReader, enabled = !busy,
             modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Enroll hardware reader and journal protection") }
         if (export.isNotEmpty()) OutlinedTextField(value = export, onValueChange = {}, readOnly = true,
-            label = { Text("Public reader for the owner enrollment") }, modifier = Modifier.fillMaxWidth())
+            label = { Text("Public phone key export (base64)") }, modifier = Modifier.fillMaxWidth())
+        Button(onClick = savePublicExport, enabled = !busy && export.isNotEmpty(),
+            modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Save public phone key export") }
         Text("Obtain your existing account's public root pin from the offline custodian. Compare its full fingerprint through an independent channel. Never enter a private root or recovery token here.")
         OutlinedTextField(value = pin, onValueChange = changePin, enabled = !busy,
             label = { Text("Public root pin (base64, 94 bytes)") }, maxLines = 3, modifier = Modifier.fillMaxWidth())
