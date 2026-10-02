@@ -1287,43 +1287,45 @@ pub async fn list_registrations(
     let tx = begin(client, &account).await?;
     owner_fence(&tx, principal).await?;
     let mut views = Vec::new();
-    for row in tx
+    let registrations = tx
         .query(
-            "SELECT connector_id,display_name,state,key_id,manifest_generation,manifest_version, \
-         proposed_ms,approved_ms,expires_ms,revoked_ms FROM connector_registrations \
-         WHERE account_id=$1 ORDER BY proposed_ms,connector_id",
+            "SELECT connector_id,display_name,state,key_id,manifest_generation,manifest_version,              proposed_ms,approved_ms,expires_ms,revoked_ms FROM connector_registrations              WHERE account_id=$1 ORDER BY proposed_ms,connector_id",
             &[&account],
         )
-        .await?
-    {
+        .await?;
+
+    let all_grants = tx
+        .query(
+            "SELECT connector_id,grant_id,kind,read_directions,line_id,conversation_restriction,              created_ms,expires_ms,revoked_ms FROM connector_grants              WHERE account_id=$1 ORDER BY created_ms,grant_id",
+            &[&account],
+        )
+        .await?;
+
+    for row in registrations {
         let connector: Uuid = row.get(0);
         let mut grants = Vec::new();
-        for grant in tx
-            .query(
-                "SELECT grant_id,kind,read_directions,line_id,conversation_restriction, \
-             created_ms,expires_ms,revoked_ms FROM connector_grants \
-             WHERE account_id=$1 AND connector_id=$2 ORDER BY created_ms,grant_id",
-                &[&account, &connector],
-            )
-            .await?
-        {
-            let kind_wire: String = grant.get(1);
-            let directions: i16 = grant.get(2);
-            grants.push(GrantView {
-                grant_id: grant.get(0),
-                kind: if kind_wire == "read" {
-                    GrantKind::Read {
-                        directions: directions as u16,
-                    }
-                } else {
-                    GrantKind::Send
-                },
-                line_id: grant.get(3),
-                conversation_restriction: grant.get(4),
-                created_ms: grant.get(5),
-                expires_ms: grant.get(6),
-                revoked_ms: grant.get(7),
-            });
+
+        for grant in &all_grants {
+            let grant_connector: Uuid = grant.get(0);
+            if grant_connector == connector {
+                let kind_wire: String = grant.get(2);
+                let directions: i16 = grant.get(3);
+                grants.push(GrantView {
+                    grant_id: grant.get(1),
+                    kind: if kind_wire == "read" {
+                        GrantKind::Read {
+                            directions: directions as u16,
+                        }
+                    } else {
+                        GrantKind::Send
+                    },
+                    line_id: grant.get(4),
+                    conversation_restriction: grant.get(5),
+                    created_ms: grant.get(6),
+                    expires_ms: grant.get(7),
+                    revoked_ms: grant.get(8),
+                });
+            }
         }
         views.push(RegistrationView {
             connector_id: connector,
