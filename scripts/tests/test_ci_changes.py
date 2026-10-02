@@ -28,6 +28,12 @@ class SuitesTest(unittest.TestCase):
             {"rust": False, "android": False},
         )
 
+    def test_quickstart_examples_read_by_rust_run_rust_only(self):
+        self.assertEqual(
+            ci_changes.suites(["docs/AGENT-QUICKSTART.md"]),
+            {"rust": True, "android": False},
+        )
+
     def test_android_only_skips_rust(self):
         self.assertEqual(
             ci_changes.suites(["android/app/src/main/java/A.kt", "docs/ANDROID.md"]),
