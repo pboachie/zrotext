@@ -189,7 +189,7 @@ pub(crate) async fn fresh_owner(
         })
 }
 
-async fn lock_line(
+pub(crate) async fn lock_line(
     tx: &Transaction<'_>,
     account: Uuid,
     device: Uuid,
