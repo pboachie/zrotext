@@ -14,15 +14,12 @@ Computed ratios for that implemented palette and the rendered-contrast
 enforcement live in the candidate gate; the light-theme values below apply
 only to files that have not adopted the shell. Of the findings below, M1
 (receptionist-demo at-rest control borders below 3:1) remains open in that
-unserved local demo page. Re-checked against the current sources during the
-#612 acceptance pass, the advisories A1 (focus falls to `body` after
+unserved local demo page. The source-review advisories A1 (focus falls to `body` after
 sign-in/password-change view switches), A2 (capacity text set while its status
 region is still hidden), A4 (repeated "Use this line" names), A5 (generic
 validation text without field linkage), A6 (`.check` rows below a 44px target)
 and A3's `cursor: wait` on disabled buttons also remain open; A7's light-theme
-border values are superseded by the passing dark-palette borders. None is a
-blocker for the authenticated console; they stand as the remediation
-shortlist below.
+border values are superseded by the passing dark-palette borders. These remain the remediation shortlist below and are not a conformance claim.
 
 The separate [Android gateway review](ANDROID-ACCESSIBILITY.md) covers the app's
 Compose screen and records the limits of its automated and emulator checks.

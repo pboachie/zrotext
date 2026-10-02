@@ -88,10 +88,13 @@ async function matrix(width, options = {}) {
   return { page, state };
 }
 
-test("fleet rows render every readiness branch distinctly without success styling for unknowns", async () => {
+test("fleet rows render every readiness branch distinctly without connected wording for unknowns", async () => {
   const { page } = await matrix(390);
   try {
     await page.waitForFunction(() => !document.getElementById("device-status").textContent.startsWith("Loading"));
+    for (const id of [leased, idle, troubled, bare, offline, retired]) {
+      assert.equal(await page.locator(`#device-list li[data-device-id="${id}"]`).isVisible(), true);
+    }
     const row = id => page.locator(`#device-list li[data-device-id="${id}"]`).textContent();
     // Authenticated: transport lease is proven and still separated from SMS readiness.
     assert.match(await row(leased), /authenticated socket lease observed/);
@@ -121,6 +124,10 @@ test("writer activity states never present unknown or unconfirmed work as delive
   const { page } = await matrix(1440);
   try {
     await page.waitForFunction(() => document.querySelectorAll("#message-list li").length === 5);
+    assert.equal(await page.locator("#message-list").isVisible(), true);
+    for (const node of await page.locator("#message-list .activity-state").all()) {
+      assert.equal(await node.isVisible(), true);
+    }
     const states = await page.locator("#message-list .activity-state").evaluateAll(nodes => nodes.map(node => ({
       state: node.getAttribute("data-state"), text: node.textContent })));
     assert.equal(states.length, 5);
@@ -137,6 +144,13 @@ test("writer activity states never present unknown or unconfirmed work as delive
       if (entry.state === "unknown") assert.match(entry.text, /unknown/i);
     }
     assert.equal(await page.locator("#message-list .message-uncertain").count(), 2);
+    for (const node of await page.locator('#message-list .activity-state[data-state="unknown"]').all()) {
+      assert.equal(await node.isVisible(), true);
+      const colors = await node.evaluate(el => ({ border: getComputedStyle(el).borderTopColor,
+        caution: getComputedStyle(document.querySelector(".message-uncertain")).borderLeftColor }));
+      assert.equal(colors.border, colors.caution);
+      assert.match(await node.locator("..").locator("..").textContent(), /Sending a new message could duplicate it/);
+    }
     assert.doesNotMatch(await page.locator("#message-list").textContent(), /synthetic-body-never-rendered/);
   } finally { await page.close(); }
 });
@@ -172,6 +186,7 @@ test("unavailable and offline summary sources never become zero", async () => {
   try {
     await page.waitForFunction(() => document.getElementById("summary-submitted").textContent === "Unavailable");
     for (const id of ["summary-submitted", "summary-pending", "summary-flight"]) {
+      assert.equal(await page.locator("#" + id).isVisible(), true);
       const text = await page.locator("#" + id).textContent();
       assert.equal(text, "Unavailable");
       assert.doesNotMatch(text, /0/);

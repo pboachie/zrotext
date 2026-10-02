@@ -12,7 +12,7 @@ accessibility conformance, or authorize publication or sending.
 |---|---|---|
 | Owner shell and forms | `web/owner/browser/shell.test.js` and `candidate.test.js` render the actual HTML, CSS and controllers in Chromium | Owner/observer session responses are synthetic API fixtures. Compact 320px and wide 1440px at default and 200% text cover visible text contrast, control names, headings, polite status regions, keyboard focus and reflow. Compact navigation also preserves whole words at 320px/390px with default and doubled text. This is not a live server-session or spoken screen-reader test. |
 | Fleet and selected details | `fleet.test.js` and `candidate.test.js` | Empty/multiple/revoked, permission/SIM/network blockers, absent reports, local aging, failed refresh, selected identity, paging, keyboard selection and input/focus preservation. Remote Pause, battery and phone digits are explicitly unavailable in this projection. |
-| Integrated state matrix | `browser/statematrix.test.js` | One deterministic rendered pass over the #612 state grammar: authenticated lease, unknown lease, no lease, changed (inactive) SIM with named blockers, denied SMS permission, absent precondition report, revoked authority, pilot-gated note, writer state wording (`queued`/`submitted`/`delivered` always carry their evidence and limit, `unknown`/unrecognized carry the duplication caution), loading, empty true zero, failed refresh with retained stale snapshot, paused automatic refresh (no polling), and an unavailable summary that never renders a zero. Asserts directly that no branch styles or words unknown work as connected or delivered. |
+| Integrated state matrix | `browser/statematrix.test.js` | Deterministic rendered checks of selected #612 state branches: authenticated lease, unknown lease, no lease, changed (inactive) SIM with named blockers, denied SMS permission, absent precondition report, revoked authority, pilot-gated note, writer state wording (`queued`/`submitted`/`delivered` always carry their evidence and limit, `unknown`/unrecognized carry the duplication caution), loading, empty true zero, failed refresh with retained stale snapshot, paused automatic refresh (no polling), and an unavailable summary that never renders a zero. Checks visible labels and caution styling for the included unknown states; this is not exhaustive state coverage. |
 | Authoritative summaries | `summary.test.js` | Loading, genuine zero, exact/capped counts, selected scope, unavailable responses, offline/historical observations and UTC rollover. A missing source never becomes zero. |
 | Combined fleet overview | `overview.test.js` and `shell.test.js` | Summary precedes hardware/detail and outbound activity at 320px, 390px and 1440px with default/200% text. Combined selected scope, pending input, keyboard focus, failed summaries and refreshed message history preserve their independent states. |
 | Android navigation and Setup | `GatewayCompanionInteractionTest`, `GatewaySetupGuideTest` and shared accessibility checks | Back, step navigation, dismiss/decline, labels, token masking and no permission/service/radio effects. Navigation is not completion or readiness. |
@@ -54,18 +54,12 @@ Git source revision and APK SHA-256 in the PR or private test record. Screenshot
 device logs and recordings belong in temporary/private storage; optional browser
 captures use `ZT_OWNER_SCREENSHOTS=1` and a fresh OS temporary directory.
 
-## Executed #612 acceptance method and durable findings
+## State coverage and palette limits
 
-The integrated candidate was verified by rendering the authenticated owner
-fleet overview in Chromium from the served HTML/CSS/controllers with synthetic
-owner-session fixtures at 375px and 1440px, default and 200% text, and with a
-pairing input focused; and by installing the actual `assembleDebug` APK on a
-disposable emulator and capturing Home in portrait and landscape at default and
-200% text with animations disabled, plus the Setup and Connection screens in
-portrait. Concept comparison used the DOM/semantics inventory of those renders
-against `docs/assets/fleet-console-concept.png` and
-`docs/assets/android-app-concept.png` via the #606 matrix. Captures stay in
-temporary/private storage; nothing dated belongs in this repository.
+The rendered state-matrix regression uses the actual owner HTML, CSS and
+controllers in Chromium with synthetic API responses. It covers the named
+branches below at compact and wide viewports; it does not establish completion
+of the full concept acceptance matrix or Android hardware acceptance.
 
 Computed WCAG 2.1 contrast for the implemented token palette (web and Android
 share it): text `#f0f3e9` on `#0b0f0c`/`#111712`/`#161e17` = 17.19/16.19/15.18;
@@ -79,9 +73,9 @@ AA 4.5:1. Non-text: the accent focus outline (13.87+) and input borders
 own passing border or fill, so no required indicator relies on it. The
 rendered `candidate.test.js` traversal enforces the text ratios at 320/1440px
 and 100/200% on the served owner pages, and `GatewayContrastTest` enforces the
-Android pairs in the rendered Compose tree.
+Android token pairs in JVM tests, rather than a rendered Compose traversal.
 
-Verified state honesty on the integrated build: an unknown
+The regression pins these owner state labels: an unknown
 `active_socket_lease` renders "live status unavailable" and never lease
 wording; writer `delivered` always reads "Delivered callback · unread status
 unknown" and `submitted` "Sent callback · delivery unconfirmed"; unknown and
@@ -94,7 +88,7 @@ status line; freshness stays visible per row through snapshot timestamps and
 the fleet summary, and the behavior is documented on the page's own
 freshness help text.
 
-Open items found by this matrix: the local receptionist-demo page's secondary
+Remaining coverage limits: the local receptionist-demo page's secondary
 control borders remain below the 3:1 non-text minimum (the historical M1
 finding; that page is not served by the server, and the recommended fix is a
 `#99a696`-class at-rest border). The conversation simulator page inherits the
