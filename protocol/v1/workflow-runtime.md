@@ -1,7 +1,8 @@
 # Dormant shared workflow service contracts
 
-This is a client-neutral library candidate for #641, not a mounted HTTP/MCP
-service or a production sending capability. Its seven methods share the existing
+This is a client-neutral library candidate for #641 with an independently
+opted-in HTTP transport for #616; it is not a production sending capability.
+Its seven methods share the existing
 workflow context, exact-action decision and recipient-local scheduling stores.
 It adds no queue, approval ledger, crypto implementation or background worker.
 The executable DTOs are `workflow_runtime::contracts`; the library dispatcher
@@ -35,12 +36,39 @@ or audit payloads. No owner-cookie/API-key/agent-key fallback is implied.
 | `workflow.action.send` | `Send` | `request_id`, exact `key`, optional `occurrence_id` | Durable typed `SendOutcome` through the checked integration permit |
 
 All seven library operations exist with checked transaction-bound service
-permits; their catalog state is `library_candidate`. The transport is unmounted
-and no activation or noninteractive background worker is implied. The dispatcher
+permits; their catalog state is `library_candidate`. The transport is disabled
+by default and no activation or noninteractive background worker is implied. The dispatcher
 requires a real authenticated `IntegrationPrincipal`; it does not authenticate
 caller fields or serialize raw database/provider diagnostics.
 No approve, cancel, edit, bind, reply-correlation or takeover method is exposed
 to an integration. Those remain independently authenticated owner operations.
+
+## Opt-in authenticated HTTP transport
+
+`WORKFLOW_TOOLS_ENABLED=true` mounts `GET` and `POST /v1/workflow/tools`
+when server authentication is enabled. With the flag off the route is absent.
+This flag does not enable sealed sending, device dispatch, or a background worker.
+Both methods require exactly one `Authorization: Bearer` header containing the
+dedicated workflow credential. Cookies, Origin headers, duplicate credentials,
+owner sessions and ordinary API/device/agent keys are refused. Credentials never
+appear in the DTO or caller-selected actor fields.
+
+GET rechecks the authenticated grant's current context scope and returns exactly
+`available`, `methods`, `scope`, and `send_semantics`. `available` is true for a
+successful response; scope contains `context_id`, `device_id`, and `line_id`.
+The seven method entries retain the catalog fields and add `permission_granted`;
+`transport_mounted` is true. Permission hints do not replace each operation's
+fresh checks. `send_semantics` is `owner_bound_prepared_only`.
+
+POST accepts the closed request above and returns the existing `{kind,result}`
+response. Requests are limited to 65,536 bytes, responses to 131,072 bytes, and
+transport handling to ten seconds. Responses carry `Cache-Control: no-store`.
+Errors contain only `{error:{code}}`: `invalid_request` (400), `unauthorized`
+(401), `forbidden` (403), `conflict` (409), `rate_limited` (429), or
+`unavailable` (503). Raw database
+and provider diagnostics are excluded. A timeout or unavailable response after a
+mutation is ambiguous: it does not prove rollback and must not trigger an
+automatic new-identity retry. Reconcile or explicitly replay the exact request.
 
 Catalog hints describe domain behavior only. Reads may still consume bounded
 access/audit records. An idempotent hint means exact semantic request replay,

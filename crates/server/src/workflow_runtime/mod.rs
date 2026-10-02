@@ -23,7 +23,9 @@ mod database_tests;
 #[cfg(test)]
 mod execution_tests;
 mod grants;
+pub mod http;
 pub(crate) mod lifecycle;
+mod readiness;
 mod reads;
 mod scope;
 pub use authentication::{IntegrationPrincipal, authenticate};
