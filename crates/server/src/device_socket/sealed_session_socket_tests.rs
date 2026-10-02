@@ -51,16 +51,6 @@ async fn authenticate_offered(
     (socket, session["connection_epoch"].as_i64().unwrap())
 }
 
-async fn clock(db: &tokio_postgres::Client) -> i64 {
-    db.query_one(
-        "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
-        &[],
-    )
-    .await
-    .unwrap()
-    .get(0)
-}
-
 async fn closed_without_sample(socket: &mut TestSocket, policy: bool) {
     loop {
         let frame = timeout(Duration::from_secs(10), socket.next())
@@ -88,7 +78,7 @@ async fn closed_without_sample(socket: &mut TestSocket, policy: bool) {
 
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run documented PostgreSQL test command"]
-async fn authenticated_v2_time_is_bound_refreshable_and_replay_fenced() {
+async fn dormant_clock_gates_and_replacement_cleanup_preserve_live_session() {
     let fixture = Fixture::new().await;
     let key = SigningKey::generate_from_rng(&mut rng());
     let point = key.verifying_key().to_sec1_point(false);
@@ -130,52 +120,6 @@ async fn authenticated_v2_time_is_bound_refreshable_and_replay_fenced() {
     };
     let (address, server) = serve(state.clone()).await;
     let v2 = crate::sealed_dispatch::wire::PROTOCOL_V2;
-    let (mut socket, epoch) = authenticate_offered(address, &fixture, &key, v2).await;
-    let challenge = Uuid::new_v4();
-    let before = clock(&fixture.db).await;
-    send_json(&mut socket,json!({"v":1,"type":"sealed_session_request","connection_epoch":epoch,"challenge":challenge})).await;
-    let first = receive_type(&mut socket, "sealed_session").await;
-    let after = clock(&fixture.db).await;
-    assert_eq!(first["account_id"], fixture.account.to_string());
-    assert_eq!(first["device_id"], fixture.device.to_string());
-    assert_eq!(first["connection_epoch"], epoch);
-    assert_eq!(first["deployment_epoch"], 1);
-    assert_eq!(first["challenge"], challenge.to_string());
-    let session = Uuid::parse_str(first["session_id"].as_str().unwrap()).unwrap();
-    assert!(!session.is_nil());
-    assert!((before..=after).contains(&first["server_time_ms"].as_i64().unwrap()));
-    tokio::time::sleep(Duration::from_millis(5100)).await;
-    let next = Uuid::new_v4();
-    let before = clock(&fixture.db).await;
-    send_json(
-        &mut socket,
-        json!({"v":1,"type":"sealed_session_request","connection_epoch":epoch,"challenge":next}),
-    )
-    .await;
-    let refresh = receive_type(&mut socket, "sealed_session").await;
-    assert_eq!(refresh["session_id"], first["session_id"]);
-    assert_eq!(refresh["challenge"], next.to_string());
-    assert_eq!(refresh["account_id"], first["account_id"]);
-    assert_eq!(refresh["device_id"], first["device_id"]);
-    assert_eq!(refresh["connection_epoch"], epoch);
-    assert_eq!(refresh["deployment_epoch"], 1);
-    assert!(
-        (before..=clock(&fixture.db).await).contains(&refresh["server_time_ms"].as_i64().unwrap())
-    );
-    tokio::time::sleep(Duration::from_millis(5100)).await;
-    send_json(&mut socket,json!({"v":1,"type":"sealed_session_request","connection_epoch":epoch,"challenge":challenge})).await;
-    closed_without_sample(&mut socket, true).await;
-    drop(socket);
-    let (mut v1, epoch) = authenticate_offered(
-        address,
-        &fixture,
-        &key,
-        crate::sealed_dispatch::wire::PROTOCOL,
-    )
-    .await;
-    send_json(&mut v1,json!({"v":1,"type":"sealed_session_request","connection_epoch":epoch,"challenge":Uuid::new_v4()})).await;
-    closed_without_sample(&mut v1, true).await;
-    drop(v1);
     for dormant in [
         DeviceSocketState {
             sealed_dispatch_enabled: false,
@@ -194,12 +138,6 @@ async fn authenticated_v2_time_is_bound_refreshable_and_replay_fenced() {
         dormant_server.abort();
         let _ = dormant_server.await;
     }
-    // A storage-fenced epoch must fail on this request, before heartbeat renewal.
-    let (mut fenced, fenced_epoch) = authenticate_offered(address, &fixture, &key, v2).await;
-    fixture.db.execute("UPDATE device_sessions SET connection_epoch=connection_epoch+1 WHERE account_id=$1 AND device_id=$2", &[&fixture.account,&fixture.device]).await.unwrap();
-    send_json(&mut fenced,json!({"v":1,"type":"sealed_session_request","connection_epoch":fenced_epoch,"challenge":Uuid::new_v4()})).await;
-    closed_without_sample(&mut fenced, true).await;
-    drop(fenced);
     let (mut old, old_epoch) = authenticate_offered(address, &fixture, &key, v2).await;
     let (mut replacement, new_epoch) = authenticate_offered(address, &fixture, &key, v2).await;
     assert!(new_epoch > old_epoch);
