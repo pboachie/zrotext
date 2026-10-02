@@ -1,5 +1,6 @@
 import { createHash, webcrypto } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
+import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { parseDraftEnvelope } from '../typescript/dist/draft01.js';
 import { WorkflowToolClient, WorkflowToolError, workflowTools, workflowReadinessSchema } from '../typescript/dist/workflow-tool-client.js';
@@ -164,7 +165,7 @@ export async function configuredClient(env = process.env) {
   const file = env.ZROTEXT_WORKFLOW_CREDENTIAL_FILE;
   if (!origin && !file) return undefined;
   if (!origin || !file) throw new Error('invalid_configuration');
-  const handle = await open(file, 'r');
+  const handle = await open(file, constants.O_RDONLY | constants.O_NONBLOCK);
   try {
     const info = await handle.stat();
     if (!info.isFile() || info.size > 128 || (process.platform !== 'win32' && (info.mode & 0o077) !== 0)) throw new Error('invalid_configuration');

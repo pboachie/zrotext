@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, writeFile, rm, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -75,4 +76,28 @@ test('startup configuration consumes only a bounded private workflow credential 
       await assert.rejects(configuredClient({ ZROTEXT_WORKFLOW_ORIGIN: 'https://example.test', ZROTEXT_WORKFLOW_CREDENTIAL_FILE: file }));
     }
   } finally { await rm(folder, { recursive: true }); }
+});
+
+
+test('startup refuses a FIFO credential path without waiting for a writer', { skip: process.platform === 'win32' }, async () => {
+  const folder = await mkdtemp(join(tmpdir(), 'zrotext-mcp-fifo-'));
+  const fifo = join(folder, 'credential');
+  let child;
+  try {
+    const created = spawnSync('mkfifo', [fifo], { encoding: 'utf8' });
+    assert.equal(created.status, 0, 'the POSIX fixture must create its owned FIFO');
+    const source = `const { configuredClient } = await import(process.argv[1]);
+      try { await configuredClient({ ZROTEXT_WORKFLOW_ORIGIN: 'https://example.test', ZROTEXT_WORKFLOW_CREDENTIAL_FILE: process.argv[2] }); process.exitCode = 3; }
+      catch (error) { process.exitCode = error.message === 'invalid_configuration' ? 0 : 2; }`;
+    child = spawn(process.execPath, ['--input-type=module', '-e', source, new URL('../../mcp/server.mjs', import.meta.url).href, fifo], { stdio: 'ignore' });
+    const code = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('credential startup waited for a FIFO writer')); }, 5000);
+      child.once('error', error => { clearTimeout(timer); reject(error); });
+      child.once('exit', code => { clearTimeout(timer); resolve(code); });
+    });
+    assert.equal(code, 0, 'non-regular credentials must be refused before reading');
+  } finally {
+    if (child && child.exitCode === null) child.kill('SIGKILL');
+    await rm(folder, { recursive: true });
+  }
 });
