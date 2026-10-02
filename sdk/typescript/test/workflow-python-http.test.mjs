@@ -57,6 +57,7 @@ try:
  if r['op']=='readiness': out=c.readiness()
  elif r['op']=='preview': out=c.preview(r['request_id'],r['descriptor'])
  elif r['op']=='status': out=c.status(r['request_id'],r['context_id'],r['action_id'])
+ elif r['op']=='cancel': out=c.cancel(r['request_id'],r['key'])
  elif r['op']=='submit': out=c.submit(r['request_id'],r['key'])
  else: out=c.call(r['method'],r['params'],r.get('max_attempts',1))
  print(json.dumps({'ok':True,'result':out}))
@@ -113,7 +114,7 @@ async function fixture(t, handler) {
 test('Python uses the shared TLS transport for readiness, proposal, status and owner-bound send metadata', { timeout: 30000 }, async t => {
   const { origin, requests } = await fixture(t, (request, body, reply) => {
     if (request.method === 'GET') return reply(200, { available: true,
-      methods: workflowTools.map(tool => ({ method: tool.name, operation: tool.name.replace('workflow.', '').replace('action.', '').replaceAll('.', '_'),
+      methods: workflowTools.map(tool => ({ method: tool.name, operation: tool.name === 'workflow.action.cancel' ? 'send' : tool.name.replace('workflow.', '').replace('action.', '').replaceAll('.', '_'),
         read_only_hint: tool.annotations.readOnlyHint, destructive_hint: tool.annotations.destructiveHint,
         idempotent_hint: true, implementation: 'library_candidate', transport_mounted: true, permission_granted: false })),
       scope: { context_id: id(5), device_id: id(7), line_id: id(3) }, send_semantics: 'owner_bound_prepared_only' });
@@ -121,7 +122,7 @@ test('Python uses the shared TLS transport for readiness, proposal, status and o
     reply(200, { kind: 'action', result: { key, record_version: 1, phase: 'proposed' } });
   });
   const ready = await invoke(origin, { op: 'readiness' });
-  assert.equal(ready.ok, true); assert.equal(ready.result.methods.length, 7);
+  assert.equal(ready.ok, true); assert.equal(ready.result.methods.length, 8);
   assert.equal(ready.result.methods.every(method => !method.permission_granted), true);
   const preview = await invoke(origin, { op: 'preview', request_id: id(8), descriptor });
   assert.deepEqual(preview.result.result.key, key);
@@ -169,4 +170,10 @@ test('untrusted TLS and malformed caller scope fail without an HTTP effect', { t
   const invalid = await invoke(origin, { op: 'submit', request_id: id(8), key: { ...key, account_id: 'foreign-account' } });
   assert.deepEqual(invalid.error, { code: 'invalid_request', state: 'refused', attempts: 0 });
   assert.equal(requests.length, 0);
+});
+
+test('Python cancel uses exact key and rejects mismatched response identity', {timeout:30000}, async t=>{
+ const {origin,requests}=await fixture(t,(_request,body,reply)=>{const actual=structuredClone(key);if(body.params.request_id===id(12))actual.binding_digest='ef'.repeat(32);reply(200,{kind:'cancel',result:{key:actual,message_id:id(11),state:'cancelled'}});});
+ const out=await invoke(origin,{op:'cancel',request_id:id(10),key});assert.equal(out.ok,true);assert.equal(out.result.result.state,'cancelled');assert.deepEqual(requests[0].body,{method:'workflow.action.cancel',params:{request_id:id(10),key}});
+ const wrong=await invoke(origin,{op:'cancel',request_id:id(12),key});assert.equal(wrong.ok,false);assert.equal(wrong.error.state,'unknown');
 });

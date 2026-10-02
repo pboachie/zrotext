@@ -216,12 +216,32 @@ async fn postgres_enforces_assigned_plan_limits_with_honest_errors() {
             .is_ok()
     );
     let first = message(account, device, "plan-key-2");
+    // Replay every request field exactly; sampling another expiry can cross a
+    // millisecond boundary and correctly produce an idempotency conflict.
     let replay = NewMessage {
+        account_id: first.account_id,
         client_message_id: first.client_message_id,
-        ..message(account, device, "plan-key-2")
+        device_id: first.device_id,
+        idempotency_key: first.idempotency_key,
+        recipient_e164: first.recipient_e164,
+        synthetic_payload: first.synthetic_payload,
+        expires_at_ms: first.expires_at_ms,
+    };
+    let changed_expiry = NewMessage {
+        account_id: first.account_id,
+        client_message_id: first.client_message_id,
+        device_id: first.device_id,
+        idempotency_key: first.idempotency_key,
+        recipient_e164: first.recipient_e164,
+        synthetic_payload: first.synthetic_payload,
+        expires_at_ms: first.expires_at_ms + 1,
     };
     assert!(store.accept_alpha(first, true).await.is_ok());
     assert!(!store.accept_alpha(replay, true).await.unwrap().created);
+    assert!(matches!(
+        store.accept_alpha(changed_expiry, true).await,
+        Err(StoreError::IdempotencyConflict)
+    ));
     assert!(matches!(
         store
             .accept_alpha(message(account, device, "plan-key-3"), true)

@@ -94,3 +94,7 @@ class WorkflowClient:
     def submit(self, request_id, key, occurrence_id=None):
         """Prepare an independently owner-bound action; never plaintext SMS."""
         return self.call("workflow.action.send", {"request_id": request_id, "key": key, "occurrence_id": occurrence_id})
+
+    def cancel(self, request_id, key):
+        """Withdraw this grant's exact prepared action before the phone grant."""
+        return self.call("workflow.action.cancel", {"request_id": request_id, "key": key})
