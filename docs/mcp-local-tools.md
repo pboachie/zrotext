@@ -87,7 +87,19 @@ For live scoped calls, configure the subprocess environment with
 `ZROTEXT_WORKFLOW_ORIGIN` (an HTTPS gateway origin) and
 `ZROTEXT_WORKFLOW_CREDENTIAL_FILE` (a customer-controlled file containing only the
 dedicated workflow credential, optionally followed by one newline). Neither is a
-tool argument. Both must be present together. The file must be regular and at most
+tool argument. Both must be present together. `ZROTEXT_WORKFLOW_CREDENTIAL_ROOT`
+is an independently chosen absolute private directory, defaulting to
+`~/.config/zrotext/credentials`. The credential filename may be relative inside
+that directory or an absolute path inside it. Normalized paths and resolved
+symlinks must remain inside the canonical directory; sibling-prefix and traversal
+paths are refused. Custom deployments set the root explicitly; it is never
+inferred from the credential filename. For example, configure
+`ZROTEXT_WORKFLOW_CREDENTIAL_ROOT=/private/customer/credentials` and
+`ZROTEXT_WORKFLOW_CREDENTIAL_FILE=workflow-token` in the subprocess environment.
+The root and its ancestors are trusted operator configuration. This wrapper does
+not protect against a privileged process concurrently replacing directory paths.
+Windows network/device paths are refused; local ACL protection remains the
+operator's responsibility. The file must be regular and at most
 128 bytes; POSIX group/other permissions are refused. Windows ACL protection is
 the customer's responsibility and is not verified by this wrapper. No owner,
 ordinary API, device, or agent credential fallback exists. Keep credentials out

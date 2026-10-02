@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, writeFile, rm, chmod } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, chmod, mkdir, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSession, configuredClient, tools } from '../../mcp/server.mjs';
@@ -64,16 +64,16 @@ test('startup configuration consumes only a bounded private workflow credential 
     assert.equal(await configuredClient({}), undefined);
     await assert.rejects(configuredClient({ ZROTEXT_WORKFLOW_ORIGIN: 'https://example.test' }));
     await writeFile(file, 'ztw_' + Buffer.alloc(32, 9).toString('base64url') + '\n', { mode: 0o600 });
-    const configured = await configuredClient({ ZROTEXT_WORKFLOW_ORIGIN: 'https://example.test', ZROTEXT_WORKFLOW_CREDENTIAL_FILE: file });
+    const configured = await configuredClient({ ZROTEXT_WORKFLOW_ORIGIN: 'https://example.test', ZROTEXT_WORKFLOW_CREDENTIAL_ROOT: folder, ZROTEXT_WORKFLOW_CREDENTIAL_FILE: file });
     assert.equal(typeof configured.call, 'function');
     await writeFile(file, 'ztk_' + Buffer.alloc(32, 9).toString('base64url'));
-    await assert.rejects(configuredClient({ ZROTEXT_WORKFLOW_ORIGIN: 'https://example.test', ZROTEXT_WORKFLOW_CREDENTIAL_FILE: file }));
+    await assert.rejects(configuredClient({ ZROTEXT_WORKFLOW_ORIGIN: 'https://example.test', ZROTEXT_WORKFLOW_CREDENTIAL_ROOT: folder, ZROTEXT_WORKFLOW_CREDENTIAL_FILE: file }));
     await writeFile(file, 'x'.repeat(129));
-    await assert.rejects(configuredClient({ ZROTEXT_WORKFLOW_ORIGIN: 'https://example.test', ZROTEXT_WORKFLOW_CREDENTIAL_FILE: file }));
+    await assert.rejects(configuredClient({ ZROTEXT_WORKFLOW_ORIGIN: 'https://example.test', ZROTEXT_WORKFLOW_CREDENTIAL_ROOT: folder, ZROTEXT_WORKFLOW_CREDENTIAL_FILE: file }));
     if (process.platform !== 'win32') {
       await writeFile(file, 'ztw_' + Buffer.alloc(32, 9).toString('base64url'));
       await chmod(file, 0o644);
-      await assert.rejects(configuredClient({ ZROTEXT_WORKFLOW_ORIGIN: 'https://example.test', ZROTEXT_WORKFLOW_CREDENTIAL_FILE: file }));
+      await assert.rejects(configuredClient({ ZROTEXT_WORKFLOW_ORIGIN: 'https://example.test', ZROTEXT_WORKFLOW_CREDENTIAL_ROOT: folder, ZROTEXT_WORKFLOW_CREDENTIAL_FILE: file }));
     }
   } finally { await rm(folder, { recursive: true }); }
 });
@@ -87,9 +87,9 @@ test('startup refuses a FIFO credential path without waiting for a writer', { sk
     const created = spawnSync('mkfifo', [fifo], { encoding: 'utf8' });
     assert.equal(created.status, 0, 'the POSIX fixture must create its owned FIFO');
     const source = `const { configuredClient } = await import(process.argv[1]);
-      try { await configuredClient({ ZROTEXT_WORKFLOW_ORIGIN: 'https://example.test', ZROTEXT_WORKFLOW_CREDENTIAL_FILE: process.argv[2] }); process.exitCode = 3; }
+      try { await configuredClient({ ZROTEXT_WORKFLOW_ORIGIN: 'https://example.test', ZROTEXT_WORKFLOW_CREDENTIAL_ROOT: process.argv[3], ZROTEXT_WORKFLOW_CREDENTIAL_FILE: process.argv[2] }); process.exitCode = 3; }
       catch (error) { process.exitCode = error.message === 'invalid_configuration' ? 0 : 2; }`;
-    child = spawn(process.execPath, ['--input-type=module', '-e', source, new URL('../../mcp/server.mjs', import.meta.url).href, fifo], { stdio: 'ignore' });
+    child = spawn(process.execPath, ['--input-type=module', '-e', source, new URL('../../mcp/server.mjs', import.meta.url).href, fifo, folder], { stdio: 'ignore' });
     const code = await new Promise((resolve, reject) => {
       const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('credential startup waited for a FIFO writer')); }, 5000);
       child.once('error', error => { clearTimeout(timer); reject(error); });
@@ -109,4 +109,43 @@ test('MCP cancel preserves action identity and denies caller message identifiers
  const actual=await call(rpc('tools/call',{name:'workflow.action.cancel',arguments:input}));assert.deepEqual(actual.result.structuredContent,output);
  for(const field of ['message_id','dispatch_id','actor']) {const denied=await call(rpc('tools/call',{name:'workflow.action.cancel',arguments:{...input,[field]:uuid('e')}}));assert.ok(denied.error||denied.result?.isError);}
  assert.equal(calls,1);
+});
+
+
+test('startup credential paths stay within an independent operator root', async () => {
+ const folder=await mkdtemp(join(tmpdir(),'zrotext-mcp-boundary-'));
+ const root=join(folder,'private'),sibling=join(folder,'private-sibling');
+ await mkdir(root);await mkdir(sibling);
+ const value='ztw_'+Buffer.alloc(32,9).toString('base64url');
+ const inside=join(root,'credential'),outside=join(sibling,'credential');
+ await writeFile(inside,value,{mode:0o600});await writeFile(outside,value,{mode:0o600});
+ const configure=file=>configuredClient({ZROTEXT_WORKFLOW_ORIGIN:'https://example.test',ZROTEXT_WORKFLOW_CREDENTIAL_ROOT:root,ZROTEXT_WORKFLOW_CREDENTIAL_FILE:file});
+ try {
+  assert.equal(typeof (await configure(inside)).call,'function');
+  assert.equal(typeof (await configure('credential')).call,'function');
+  for(const file of [outside,join(root,'..','private-sibling','credential'),'../private-sibling/credential',root,'credential\0']) await assert.rejects(configure(file),{message:'invalid_configuration'});
+  await assert.rejects(configuredClient({ZROTEXT_WORKFLOW_ORIGIN:'https://example.test',ZROTEXT_WORKFLOW_CREDENTIAL_ROOT:'relative',ZROTEXT_WORKFLOW_CREDENTIAL_FILE:inside}),{message:'invalid_configuration'});
+  await assert.rejects(configuredClient({ZROTEXT_WORKFLOW_CREDENTIAL_ROOT:root}),{message:'invalid_configuration'});
+ } finally {await rm(folder,{recursive:true});}
+});
+
+test('startup rejects intermediate directory symlinks escaping the credential root', async () => {
+ const folder=await mkdtemp(join(tmpdir(),'zrotext-mcp-dirlink-'));
+ const root=join(folder,'private'),outside=join(folder,'outside');await mkdir(root);await mkdir(outside);
+ await writeFile(join(outside,'credential'),'ztw_'+Buffer.alloc(32,9).toString('base64url'),{mode:0o600});
+ try {
+  await symlink(outside,join(root,'intermediate'),process.platform==='win32'?'junction':'dir');
+  await assert.rejects(configuredClient({ZROTEXT_WORKFLOW_ORIGIN:'https://example.test',ZROTEXT_WORKFLOW_CREDENTIAL_ROOT:root,ZROTEXT_WORKFLOW_CREDENTIAL_FILE:'intermediate/credential'}),{message:'invalid_configuration'});
+ } finally {await rm(folder,{recursive:true});}
+});
+
+test('startup rejects final file symlinks escaping the credential root', async t=>{
+ const folder=await mkdtemp(join(tmpdir(),'zrotext-mcp-filelink-'));
+ const root=join(folder,'private'),outside=join(folder,'outside');await mkdir(root);await mkdir(outside);
+ const credential=join(outside,'credential');await writeFile(credential,'ztw_'+Buffer.alloc(32,9).toString('base64url'),{mode:0o600});
+ try {
+  try {await symlink(credential,join(root,'final'),'file');}
+  catch(error){if(process.platform==='win32'&&['EPERM','EACCES'].includes(error.code)){t.skip('Windows account cannot create synthetic file symlinks');return;}throw error;}
+  await assert.rejects(configuredClient({ZROTEXT_WORKFLOW_ORIGIN:'https://example.test',ZROTEXT_WORKFLOW_CREDENTIAL_ROOT:root,ZROTEXT_WORKFLOW_CREDENTIAL_FILE:'final'}),{message:'invalid_configuration'});
+ } finally {await rm(folder,{recursive:true});}
 });
