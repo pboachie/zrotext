@@ -1,11 +1,12 @@
 # Generation-one owner root enrollment: candidate possession transcript
 
-**Proposed, dormant contract.** This defines a possession transcript for the
+**Candidate possession contract.** This defines a possession transcript for the
 existing [RootPin02 candidate](zt-sealed-draft-02-manifest-candidate.md).
 It does not enroll a root, establish trust, enable a route, or close Q1, Q3 or
-Q10 in the [decision log](zt-009-decision-log.md). There is no HTTP endpoint,
-database write or sealed runtime caller. The only signer is the candidate
-offline owner CLI's `unlock` command, which a non-default cargo feature keeps
+Q10 in the [decision log](zt-009-decision-log.md). The separate default-off
+custody adapter supplies authenticated HTTP and database integration; this
+transcript alone supplies neither a caller nor sealed-runtime authority. The
+only signer is the candidate offline owner CLI's `unlock` command, which a non-default cargo feature keeps
 out of every standard build; no client custody implementation exists beyond
 that offline ceremony.
 
@@ -13,8 +14,9 @@ that offline ceremony.
 
 The [default-off custody adapter](root-custody-01.md) composes this unchanged
 possession transcript with a separate bundle signature and atomic persistence.
-It does not supply an independently distributed owner client or enable a route
-in the standard server binary.
+It does not supply an independently distributed owner client. The standard
+server exposes the adapter only through the explicit operator opt-in and its
+account/MFA prerequisites; the default remains off.
 
 The exact 94-byte pin remains `ZTRP[4] || 02[u8] || account_id[16] ||
 generation[u64be] || root_public_point[65]`. This ceremony accepts **generation
