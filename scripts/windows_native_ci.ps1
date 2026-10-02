@@ -102,7 +102,7 @@ function Test-ReducedOutput([string[]]$Lines) {
 # The unlock candidate is a non-default cargo feature: the default owner binary
 # must keep refusing the command (its suite above stays at 4), while the feature
 # build exercises the reviewed owner ceremonies and pure codec/crypto suites.
-$unlockSuites=@(@{Package='zrotext-owner';Passed=@(18)},@{Package='zrotext-root-material';Passed=@(59,8)})
+$unlockSuites=@(@{Package='zrotext-owner';Passed=@(19)},@{Package='zrotext-root-material';Passed=@(59,8)})
 function Test-UnlockOutput([string[]]$Lines) {
     foreach($line in $Lines) {
         if($line -match '^test result: ' -and $line -notmatch '^test result: ok\. \d+ passed; 0 failed; 0 ignored;'){return $false}
@@ -136,7 +136,7 @@ function Test-UnlockOutput([string[]]$Lines) {
     foreach($bad in @(@($good[0]),($good+'test result: FAILED. 3 passed; 1 failed; 0 ignored;'),($good+'test result: ok. 1 passed; 0 failed; 2 ignored;'),($good+$good[1]))) {
         if(Test-ReducedOutput $bad){throw 'Reduced-rights summary refusal regression.'}
     }
-    $unlockGood=@('test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 59 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured')
+    $unlockGood=@('test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 59 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured')
     if(-not (Test-UnlockOutput $unlockGood)){throw 'Unlock summary acceptance regression.'}
     $unlockLegacy=@('test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 48 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured')
     if(Test-UnlockOutput $unlockLegacy){throw 'Obsolete unlock suite registration regression.'}

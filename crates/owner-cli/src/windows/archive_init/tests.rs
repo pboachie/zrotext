@@ -393,3 +393,16 @@ fn send_after(prompt: &str, text: &[u8]) {
         }
     }
 }
+
+#[test]
+fn fixture_permission_mutation_refuses_null_undersized_and_wrong_type_aces() {
+    assert!(storage::fixture_readonly_ace_rejected(None));
+    for (kind, size) in [(0u8, 4u16), (1, 16), (0, 8)] {
+        let mut bytes = [0u8; 16];
+        bytes[0] = kind;
+        bytes[2..4].copy_from_slice(&size.to_ne_bytes());
+        let before = bytes;
+        assert!(storage::fixture_readonly_ace_rejected(Some(&mut bytes)));
+        assert_eq!(bytes, before, "rejected fixture ACE must not be mutated");
+    }
+}

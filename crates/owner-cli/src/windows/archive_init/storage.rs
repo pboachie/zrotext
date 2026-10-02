@@ -600,7 +600,12 @@ pub(super) fn fixture_directory_permissions(path: &Path, writable: bool) {
         if !writable {
             let mut ace = null_mut();
             assert_ne!(GetAce(acl, 0, &mut ace), 0);
-            (*(ace.cast::<ACCESS_ALLOWED_ACE>())).Mask = DIRECTORY_READ;
+            let mut owner = null_mut();
+            assert_ne!(
+                GetSecurityDescriptorOwner(security.0.0, &mut owner, &mut defaulted),
+                0
+            );
+            fixture_readonly_owner_ace(ace, owner).unwrap();
         }
         assert_eq!(
             SetSecurityInfo(
@@ -614,5 +619,53 @@ pub(super) fn fixture_directory_permissions(path: &Path, writable: bool) {
             ),
             0
         );
+    }
+}
+
+/// Fixture-only mutation of the exact generated current-owner ACE. Reject the
+/// pointer/header/type/size/SID before touching its bounded permission mask.
+#[cfg(test)]
+unsafe fn fixture_readonly_owner_ace(ace: *mut c_void, owner: PSID) -> Result<()> {
+    let ace = std::ptr::NonNull::new(ace.cast::<u8>()).ok_or(Error::UnsafeStore)?;
+    if owner.is_null() {
+        return Err(Error::UnsafeStore);
+    }
+    const MASK: usize = std::mem::offset_of!(ACCESS_ALLOWED_ACE, Mask);
+    // SAFETY: GetAce supplies a readable header; malformed regression inputs
+    // also own at least that header. No mask write occurs until its size and
+    // the complete generated current-owner allowed ACE have been verified.
+    unsafe {
+        let header = ace
+            .cast::<windows_sys::Win32::Security::ACE_HEADER>()
+            .as_ptr()
+            .read_unaligned();
+        if usize::from(header.AceSize) < MASK + size_of::<u32>() || !allowed_owner_ace(ace, owner) {
+            return Err(Error::UnsafeStore);
+        }
+        ace.add(MASK)
+            .cast::<u32>()
+            .as_ptr()
+            .write_unaligned(DIRECTORY_READ);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(super) fn fixture_readonly_ace_rejected(bytes: Option<&mut [u8]>) -> bool {
+    let security = Security::current().unwrap();
+    let mut owner = null_mut();
+    let mut defaulted = 0;
+    // SAFETY: descriptor owns the valid expected SID until the checked mutation
+    // returns. Test input owns a full readable header and its advertised bytes.
+    unsafe {
+        assert_ne!(
+            GetSecurityDescriptorOwner(security.0.0, &mut owner, &mut defaulted),
+            0
+        );
+        let pointer = bytes.map_or(null_mut(), |bytes| {
+            assert!(bytes.len() >= size_of::<windows_sys::Win32::Security::ACE_HEADER>());
+            bytes.as_mut_ptr().cast()
+        });
+        fixture_readonly_owner_ace(pointer, owner).is_err()
     }
 }
