@@ -49,6 +49,7 @@ def runtime_reads(source: str, relative_path: str) -> set[str]:
     """Exclude fixture markers only in their isolated cfg(test) source modules."""
     reads = set(READ.findall(source))
     fixture_reads = {
+        "crates/owner-cli/src/windows/line_key_registration/tests.rs": {"TEMP", "ZT_LINE_REGISTRATION_NATIVE_CASE"},
         "crates/owner-cli/src/windows/archive_init/tests.rs": {"TEMP", "ZT_ARCHIVE_INIT_NATIVE_CASE"},
         "crates/owner-cli/src/windows/custody_sign/tests.rs": {
             "TEMP", "ZT_CUSTODY_NATIVE_CASE",

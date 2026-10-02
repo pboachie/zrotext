@@ -20,6 +20,19 @@ class RuntimeReadsTest(unittest.TestCase):
         module = Path(env.ROOT, "crates/owner-cli/src/windows/archive_init.rs").read_text(encoding="utf-8")
         self.assertRegex(module, r'#\[cfg\(test\)\]\s*mod tests;')
 
+    def test_line_key_registration_markers_are_excluded_only_in_the_test_module(self):
+        flags = {"TEMP", "ZT_LINE_REGISTRATION_NATIVE_CASE"}
+        source = ";".join(f'std::env::var("{flag}")' for flag in flags)
+        fixture = "crates/owner-cli/src/windows/line_key_registration/tests.rs"
+        self.assertEqual(env.runtime_reads(source, fixture), set())
+        for runtime in ["crates/owner-cli/src/windows/line_key_registration.rs",
+                        "crates/owner-cli/src/windows/line_key_registration/native_tests.rs",
+                        "crates/root-material/src/line_key_registration.rs",
+                        "crates/server/src/main.rs"]:
+            self.assertEqual(env.runtime_reads(source, runtime), flags)
+        module = Path(env.ROOT, "crates/owner-cli/src/windows/line_key_registration.rs").read_text(encoding="utf-8")
+        self.assertRegex(module, r'#\[cfg\(test\)\]\s*mod tests;')
+
     def test_genesis_markers_are_excluded_only_in_the_test_module(self):
         flags = {"TEMP", "ZT_GENESIS_NATIVE_CASE"}
         source = ";".join(f'std::env::var("{flag}")' for flag in flags)
