@@ -223,19 +223,11 @@ async fn ordinary_setup_server_browser_fixture() {
     let assets =
         super::super::browser_assets::BrowserAssets::load(std::path::Path::new(&package)).unwrap();
     assets.require_owner_setup().unwrap();
-    let c = Case::new().await;
+    let mut c = Case::without_root().await;
     let p = &c.owner.principal;
     let account = p.tenant.account_id();
-    // Require a real first root completion through the ordinary HTTP adapter.
-    c.owner
-        .f
-        .db
-        .execute(
-            "DELETE FROM sealed_manifest_authorities WHERE account_id=$1",
-            &[&account],
-        )
-        .await
-        .unwrap();
+    // Start genuinely unenrolled. Never erase protected enrollment history to
+    // manufacture eligibility for another first-root ceremony.
     c.owner
         .f
         .db
@@ -247,6 +239,10 @@ async fn ordinary_setup_server_browser_fixture() {
     let root_factor = c.factor().await;
     let line_factor = c.factor().await;
     let mut setup = c.state();
+    setup.mfa_cipher = Arc::new(std::mem::replace(
+        &mut c.owner.cipher,
+        MfaCipher::new(crate::test_keys::key(92)).unwrap(),
+    ));
     setup.owner.canonical_origin = origin.clone();
     let auth = crate::http_auth::AuthHttpState::new(
         setup.owner.database_url.clone(),
