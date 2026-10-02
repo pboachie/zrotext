@@ -137,6 +137,7 @@ test('startup credential paths stay within an independent operator root', async 
 test('startup refuses credentials in a root writable by other users',
  { skip: process.platform === 'win32' }, async () => {
  const root = await mkdtemp(join(tmpdir(), 'zrotext-mcp-root-mode-'));
+ const previousCwd = process.cwd(); process.chdir(root);
  const file = join(root, 'credential');
  const options = { ZROTEXT_WORKFLOW_ORIGIN: 'https://example.test',
    ZROTEXT_WORKFLOW_CREDENTIAL_ROOT: root, ZROTEXT_WORKFLOW_CREDENTIAL_FILE: file };

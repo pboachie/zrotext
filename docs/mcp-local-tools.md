@@ -101,6 +101,16 @@ root resolution must stay inside the selected canonical anchor. The root is neve
 inferred from the credential filename. For example, configure
 `ZROTEXT_WORKFLOW_CREDENTIAL_ROOT=/private/customer/credentials` and
 `ZROTEXT_WORKFLOW_CREDENTIAL_FILE=workflow-token` in the subprocess environment.
+For a custom root, resolve the server's absolute path before changing directories,
+then launch it from that private root. On PowerShell, use
+`$Server = (Resolve-Path -LiteralPath 'sdk/mcp/server.mjs').Path`,
+`Set-Location -LiteralPath $env:ZROTEXT_WORKFLOW_CREDENTIAL_ROOT`, then
+`node $Server`. On a POSIX shell, set an absolute server path first, then use
+`cd "$ZROTEXT_WORKFLOW_CREDENTIAL_ROOT" && node "$Server"`.
+Client launchers that cannot select a working directory can use the default home
+credential directory; do not assume a client's configuration supports a `cwd`
+field. A custom root outside the selected working directory is refused even if
+the credential file itself is private.
 The launch working directory, root and their ancestors are trusted operator configuration. This wrapper does
 not protect against a privileged process concurrently replacing directory paths.
 The root must resolve to a directory with available file identity. On POSIX it
