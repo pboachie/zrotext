@@ -14,11 +14,14 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.getOrNull
 import org.junit.Assert.*
 import org.junit.Test
+import kotlin.math.abs
 
 /** Same rendered-screen assertions in JVM CI and the opt-in emulator harness. */
 @OptIn(ExperimentalComposeUiApi::class)
 abstract class GatewayAccessibilityChecks {
+    protected abstract val primaryMetricsSideBySide: Boolean
     protected abstract fun onScreen(page: String = "HOME", revealStatus: Boolean = false,
+        revealObservations: Boolean = false,
         check: (RootForTest) -> Unit)
 
     /** The MMS spike section (#438) exists only in debug builds. */
@@ -66,10 +69,33 @@ abstract class GatewayAccessibilityChecks {
     }
 
     @Test fun homeObservationsKeepReadOnlyLabelsAndReadingOrderAtCurrentTextScale() = onScreen { root ->
-        val summaries = listOf("Submitted today", "In queue", "Awaiting receipt").map { label ->
-            nodes(root).single { it.config.getOrNull(SemanticsProperties.TestTag) == "home-observation-$label" }
+        val tags = listOf("Submitted today", "In queue", "Awaiting receipt").map { "home-observation-$it" }
+        val summaries = nodes(root).filter { it.config.getOrNull(SemanticsProperties.TestTag) in tags }
+        assertEquals("The semantics tree keeps the logical observation order", tags,
+            summaries.map { it.config[SemanticsProperties.TestTag] })
+        val primary = summaries.take(2)
+        val first = primary[0]
+        val second = primary[1]
+        if (primaryMetricsSideBySide) {
+            assertEquals("Normal-width metrics share a row", first.positionInRoot.y, second.positionInRoot.y, 1f)
+            assertEquals("Both metrics have equal space", first.size.width, second.size.width)
+            assertTrue("Metric columns have positive widths", first.size.width > 0)
+            val rtl = (root as ViewRootForTest).view.layoutDirection == View.LAYOUT_DIRECTION_RTL
+            if (rtl) {
+                assertTrue("The first metric occupies the RTL start column: ${first.positionInRoot}, ${second.positionInRoot}", second.positionInRoot.x + second.size.width <= first.positionInRoot.x)
+            } else {
+                assertTrue("The first metric occupies the LTR start column", first.positionInRoot.x + first.size.width <= second.positionInRoot.x)
+            }
+        } else {
+            assertTrue("Compact or large-text metrics stack without overlap", first.positionInRoot.y + first.size.height <= second.positionInRoot.y)
+            assertEquals("Stacked metrics align", first.positionInRoot.x, second.positionInRoot.x, 1f)
         }
-        assertTrue(summaries.zipWithNext().all { (first, next) -> first.positionInRoot.y < next.positionInRoot.y })
+        assertTrue("Awaiting receipt follows both primary metrics", primary.all {
+            it.positionInRoot.y + it.size.height <= summaries.last().positionInRoot.y
+        })
+        val group = nodes(root).single { it.config.getOrNull(SemanticsProperties.TestTag) == "home-primary-metrics" }
+        assertTrue("The primary metrics form a traversal group", group.config[SemanticsProperties.IsTraversalGroup])
+        assertEquals(listOf(0f, 1f), primary.map { it.config[SemanticsProperties.TraversalIndex] })
         summaries.forEach { summary ->
             assertTrue("An absent summary reader must not display a measured zero", text(summary).endsWith("Unavailable"))
             assertFalse("Summary observations must not initiate work", summary.config.contains(SemanticsActions.OnClick))
@@ -87,6 +113,37 @@ abstract class GatewayAccessibilityChecks {
         assertTrue(text(rows[1]).contains("Unavailable") || text(rows[1]).contains("%"))
         assertTrue(text(rows[2]).contains("paused") || text(rows[2]).contains("authenticated") ||
             text(rows[2]).contains("network") || text(rows[2]).contains("connection") || text(rows[2]).contains("Proving"))
+    }
+
+    private fun platformObservationsRetainFullTextAndLogicalTraversal() = onScreen(revealObservations = true) { root ->
+        root.forceAccessibilityForTesting(true)
+        try {
+            val view = (root as ViewRootForTest).view
+            val provider = requireNotNull(view.accessibilityNodeProvider)
+            val observations = listOf("Submitted today", "In queue", "Awaiting receipt").map { label ->
+                nodes(root).single { it.config.getOrNull(SemanticsProperties.TestTag) == "home-observation-$label" }
+            }
+            assertTrue("All observations must be visible after actual scrolling", homeObservationsAreVisible(root))
+            val platformNodes = observations.map { requireNotNull(provider.createAccessibilityNodeInfo(it.id)) }
+            platformNodes.take(2).zip(observations.take(2)).forEach { (info, node) ->
+                assertEquals("Each observation exposes its full label and value once", text(node),
+                    requireNotNull(info.text).toString().replace(Regex("\\s+"), " ").trim())
+            }
+            platformNodes.forEach { info ->
+                assertFalse("Static observations must not expose an action", info.isClickable)
+                assertEquals(View.ACCESSIBILITY_LIVE_REGION_NONE, info.liveRegion)
+            }
+            val beforeKey = "android.view.accessibility.extra.EXTRA_DATA_TEST_TRAVERSALBEFORE_VAL"
+            platformNodes.zip(observations).forEach { (info, node) ->
+                provider.addExtraDataToAccessibilityNodeInfo(node.id, info, beforeKey, null)
+            }
+            assertEquals("Submitted precedes In queue in platform traversal", observations[1].id,
+                platformNodes[0].extras.getInt(beforeKey, -1))
+            assertEquals("In queue precedes Awaiting receipt in platform traversal", observations[2].id,
+                platformNodes[1].extras.getInt(beforeKey, -1))
+        } finally {
+            root.forceAccessibilityForTesting(false)
+        }
     }
 
     @Test fun platformNodesExposeHeadingsAndVisibleStatusRegions() {
@@ -120,6 +177,7 @@ abstract class GatewayAccessibilityChecks {
               root.forceAccessibilityForTesting(false)
           }
         }
+        platformObservationsRetainFullTextAndLogicalTraversal()
     }
 
     @Test fun fieldsKeepLabelsAndTokensRemainPasswordFields() = everyScreen { page, root ->
@@ -161,6 +219,21 @@ abstract class GatewayAccessibilityChecks {
     protected fun homeStatusIsVisible(root: RootForTest): Boolean = nodes(root).any {
         it.config.contains(SemanticsProperties.LiveRegion) &&
             text(it).startsWith("Device status:") && !it.boundsInRoot.isEmpty
+    }
+
+    protected fun homeObservationsAreVisible(root: RootForTest): Boolean {
+        val tags = listOf("Submitted today", "In queue", "Awaiting receipt").map { "home-observation-$it" }
+        val observations = nodes(root).filter { it.config.getOrNull(SemanticsProperties.TestTag) in tags }
+        val coordinates = root.semanticsOwner.rootSemanticsNode.layoutInfo.coordinates
+        return observations.size == tags.size && observations.all {
+            val complete = coordinates.localBoundingBoxOf(it.layoutInfo.coordinates, clipBounds = false)
+            val clipped = coordinates.localBoundingBoxOf(it.layoutInfo.coordinates, clipBounds = true)
+            !complete.isEmpty && !clipped.isEmpty &&
+                abs(complete.left - clipped.left) <= 1f && abs(complete.top - clipped.top) <= 1f &&
+                abs(complete.right - clipped.right) <= 1f && abs(complete.bottom - clipped.bottom) <= 1f &&
+                complete.left >= -1f && complete.top >= -1f &&
+                complete.right <= coordinates.size.width + 1f && complete.bottom <= coordinates.size.height + 1f
+        }
     }
 
     protected fun scrollTowardHomeStatus(root: RootForTest) {

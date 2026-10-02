@@ -48,9 +48,14 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.isTraversalGroup
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.traversalIndex
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 
@@ -161,8 +166,7 @@ internal fun GatewayHome(
                 GatewaySummaryState.Phase.FRESH -> count?.label() ?: "Unavailable"
             }
             val prominent = summary.snapshot != null && summary.phase != GatewaySummaryState.Phase.UNAVAILABLE
-            GatewayObservationRow("Submitted today", label(summary.snapshot?.submittedToday), prominent)
-            GatewayObservationRow("In queue", label(summary.snapshot?.pending), prominent)
+            GatewayPrimaryMetrics(label(summary.snapshot?.submittedToday), label(summary.snapshot?.pending), prominent)
             GatewayObservationRow("Awaiting receipt", label(summary.snapshot?.inFlight))
             Text(summaryStatus, style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -225,6 +229,40 @@ internal fun GatewayHome(
                 Spacer(Modifier.height(16.dp))
             }
         }
+    }
+}
+
+/** Match the concept at ordinary width; compact windows and enlarged type keep a readable stack. */
+@Composable
+private fun GatewayPrimaryMetrics(submitted: String, pending: String, prominent: Boolean) {
+    BoxWithConstraints(Modifier.fillMaxWidth().testTag("home-primary-metrics")
+        .semantics { isTraversalGroup = true }) {
+        if (maxWidth < 312.dp || LocalDensity.current.fontScale > 1.3f) {
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                GatewayPrimaryMetric("Submitted today", submitted, prominent, 0f, Modifier.fillMaxWidth())
+                GatewayPrimaryMetric("In queue", pending, prominent, 1f, Modifier.fillMaxWidth())
+            }
+        } else {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                GatewayPrimaryMetric("Submitted today", submitted, prominent, 0f, Modifier.weight(1f))
+                GatewayPrimaryMetric("In queue", pending, prominent, 1f, Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+/** Each static metric reads label first once, even though its visual value is above the label. */
+@Composable
+private fun GatewayPrimaryMetric(label: String, value: String, prominent: Boolean, order: Float, modifier: Modifier) {
+    Column(modifier.clearAndSetSemantics {
+        this[SemanticsProperties.TestTag] = "home-observation-$label"
+        this[SemanticsProperties.Text] = listOf(AnnotatedString("$label $value"))
+        traversalIndex = order
+    }, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(value, style = if (prominent) MaterialTheme.typography.titleLarge else MaterialTheme.typography.bodyMedium,
+            textAlign = TextAlign.Center)
+        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center)
     }
 }
 

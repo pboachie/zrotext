@@ -79,14 +79,16 @@ class GatewaySummaryUiTest {
                     summaryStatus = "Synthetic checked metadata", onSetup = {}, onConnection = {}, onPause = {})
             } } }
         }
-        compose.onNodeWithTag("home-observation-Submitted today").assertTextContains("0")
-        compose.onNodeWithTag("home-observation-In queue").assertTextContains("1000+ (capped)")
+        compose.onNodeWithTag("home-observation-Submitted today").assertTextEquals("Submitted today 0")
+        compose.onNodeWithTag("home-observation-In queue").assertTextEquals("In queue 1000+ (capped)")
         compose.onNodeWithTag("home-observation-Awaiting receipt").assertTextContains("1")
         assertFalse(compose.onNodeWithTag("home-observation-In queue").fetchSemanticsNode().config.contains(SemanticsActions.OnClick))
+        compose.runOnIdle { view.value = GatewaySummaryState.View(GatewaySummaryState.Phase.LOADING, snapshot) }
+        compose.onNodeWithTag("home-observation-In queue").assertTextEquals("In queue 1000+ (capped) (refreshing)")
         compose.runOnIdle { view.value = GatewaySummaryState.View(GatewaySummaryState.Phase.STALE, snapshot) }
-        compose.onNodeWithTag("home-observation-In queue").assertTextContains("1000+ (capped) (stale)")
+        compose.onNodeWithTag("home-observation-In queue").assertTextEquals("In queue 1000+ (capped) (stale)")
         compose.runOnIdle { view.value = GatewaySummaryState.View(GatewaySummaryState.Phase.UNAVAILABLE, null) }
-        compose.onNodeWithTag("home-observation-Submitted today").assertTextContains("Unavailable")
+        compose.onNodeWithTag("home-observation-Submitted today").assertTextEquals("Submitted today Unavailable")
         noEffects()
     }
     @Test fun largeTextReaderControlsAndClearActionRemainReachable() {
