@@ -24,6 +24,8 @@ pub enum Method {
     Schedule,
     #[serde(rename = "workflow.action.send")]
     Send,
+    #[serde(rename = "workflow.action.cancel")]
+    Cancel,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -43,7 +45,7 @@ pub struct MethodInfo {
     pub transport_mounted: bool,
 }
 impl Method {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::ContactRead,
         Self::ContextMetadata,
         Self::ContextContent,
@@ -51,6 +53,7 @@ impl Method {
         Self::Status,
         Self::Schedule,
         Self::Send,
+        Self::Cancel,
     ];
     pub fn operation(self) -> Operation {
         match self {
@@ -60,7 +63,7 @@ impl Method {
             Self::Propose => Operation::Propose,
             Self::Status => Operation::Status,
             Self::Schedule => Operation::Schedule,
-            Self::Send => Operation::Send,
+            Self::Send | Self::Cancel => Operation::Send,
         }
     }
     pub fn info(self) -> MethodInfo {
@@ -71,7 +74,7 @@ impl Method {
                 self,
                 Self::ContactRead | Self::ContextMetadata | Self::ContextContent | Self::Status
             ),
-            destructive_hint: self == Self::Send,
+            destructive_hint: matches!(self, Self::Send | Self::Cancel),
             idempotent_hint: true,
             implementation: Implementation::LibraryCandidate,
             transport_mounted: false,
@@ -115,6 +118,12 @@ pub struct SendRequest {
     pub key: ActionKey,
     pub occurrence_id: Option<Uuid>,
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancelRequest {
+    pub request_id: Uuid,
+    pub key: ActionKey,
+}
 /// Clients cannot select an actor, substitute permission bits, approve a draft,
 /// or supply a queue/message/dispatch marker through this closed vocabulary.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -134,6 +143,8 @@ pub enum Request {
     Schedule(ScheduleRequest),
     #[serde(rename = "workflow.action.send")]
     Send(SendRequest),
+    #[serde(rename = "workflow.action.cancel")]
+    Cancel(CancelRequest),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("invalid workflow request")]
@@ -148,6 +159,7 @@ impl Request {
             Self::Status(_) => Method::Status,
             Self::Schedule(_) => Method::Schedule,
             Self::Send(_) => Method::Send,
+            Self::Cancel(_) => Method::Cancel,
         }
     }
     /// Pure shape validation only. Every operation still authenticates and
@@ -172,6 +184,7 @@ impl Request {
                     && v.policy.valid_shape()
                     && v.ordinal < v.policy.max_occurrences
             }
+            Self::Cancel(v) => !v.request_id.is_nil() && v.key.validate().is_ok(),
             Self::Send(v) => {
                 !v.request_id.is_nil()
                     && !v.occurrence_id.is_some_and(|id| id.is_nil())
@@ -244,6 +257,8 @@ pub enum Response {
     Occurrence(OccurrenceResponse),
     #[serde(rename = "send")]
     Send(super::SendOutcome),
+    #[serde(rename = "cancel")]
+    Cancel(super::CancelOutcome),
     #[serde(rename = "unavailable")]
     Unavailable(UnavailableReason),
 }
@@ -257,7 +272,7 @@ mod tests {
         json!({"request_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","context_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"})
     }
     #[test]
-    fn seven_methods_map_independent_operations_and_exclude_owner_decisions() {
+    fn eight_methods_keep_send_authorized_cancellation_and_exclude_owner_decisions() {
         let expected = [
             Operation::ContactRead,
             Operation::ContextMetadata,
@@ -266,23 +281,19 @@ mod tests {
             Operation::Status,
             Operation::Schedule,
             Operation::Send,
+            Operation::Send,
         ];
         for (method, operation) in Method::ALL.into_iter().zip(expected) {
             assert_eq!(method.operation(), operation);
             assert!(!method.info().transport_mounted);
-            if matches!(method, Method::Schedule | Method::Send) {
+            if matches!(method, Method::Schedule | Method::Send | Method::Cancel) {
                 assert_eq!(
                     method.info().implementation,
                     Implementation::LibraryCandidate
                 );
             }
         }
-        for method in [
-            "workflow.action.approve",
-            "workflow.takeover",
-            "send",
-            "workflow.action.cancel",
-        ] {
+        for method in ["workflow.action.approve", "workflow.takeover", "send"] {
             assert!(
                 serde_json::from_value::<Request>(json!({"method":method,"params":scope()}))
                     .is_err()
