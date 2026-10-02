@@ -82,7 +82,10 @@ prove submission or delivery. An unavailable snapshot does not prove that no
 message was sent. Unknown work must be reconciled through authenticated gateway
 state; do not resend it with a new identity. Protocol errors use JSON-RPC codes; tool validation errors return
 `invalid_request` and `isError: true`. A readiness result is informational;
-unavailable action/status results carry `isError: true`.
+legacy unavailable action/status tool results carry `isError: true`. An
+authenticated workflow status response with `delivery.availability` set to
+`not_bound` or `unavailable` remains a valid metadata result; permission and
+scope refusals remain errors.
 
 ## Credentials, remote mode and compatibility
 
