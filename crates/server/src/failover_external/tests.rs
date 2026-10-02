@@ -71,12 +71,23 @@ fn certificate() -> (Vec<u8>, Vec<u8>) {
 struct Scratch(PathBuf);
 impl Scratch {
     fn new() -> Self {
+        // Linux security fixtures use the operating system's scratch root,
+        // independent of caller-selected TMPDIR/TMP/TEMP paths.
+        #[cfg(target_os = "linux")]
+        let root = Path::new("/tmp").canonicalize().unwrap();
+        #[cfg(not(target_os = "linux"))]
         let root = std::env::temp_dir().canonicalize().unwrap();
         let root = root.to_str().unwrap();
         if root.contains("../") || root.contains("..\\") {
             panic!("canonical fixture root contains parent traversal syntax");
         }
         let path = Path::new(root).join(format!("external-authority-{}", Uuid::new_v4()));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
+        }
+        #[cfg(not(unix))]
         fs::create_dir(&path).unwrap();
         assert!(path.canonicalize().unwrap().starts_with(root));
         Self(path)
@@ -85,6 +96,58 @@ impl Scratch {
 impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_fixture_root_is_independent_of_caller_temp_paths_and_private() {
+    use std::os::unix::fs::PermissionsExt;
+    const CHILD: &str = "ZT_EXTERNAL_FIXTURE_ROOT_TEST";
+    if std::env::var_os(CHILD).is_some() {
+        let scratch = Scratch::new();
+        assert!(
+            scratch
+                .0
+                .starts_with(Path::new("/tmp").canonicalize().unwrap())
+        );
+        assert_eq!(
+            fs::metadata(&scratch.0).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        return;
+    }
+    let scratch = Scratch::new();
+    let uncreated = scratch.0.join("uncreated-temp-root");
+    assert!(!uncreated.exists());
+    let mut child = std::process::Command::new("/proc/self/exe")
+        .args([
+            "--exact",
+            "failover_external::tests::linux_fixture_root_is_independent_of_caller_temp_paths_and_private",
+        ])
+        .env(CHILD, "1")
+        .env("TMPDIR", &uncreated)
+        .env("TMP", &uncreated)
+        .env("TEMP", &uncreated)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(
+                status.success(),
+                "caller temp paths must not select the Linux fixture root"
+            );
+            return;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("private fixture root probe exceeded its deadline");
+        }
+        thread::sleep(Duration::from_millis(10));
     }
 }
 fn signed(request: Request, reply: Reply) -> Receipt {
