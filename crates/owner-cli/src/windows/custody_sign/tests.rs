@@ -77,6 +77,49 @@ fn child(stage: &'static str, parent: PathBuf) {
     let unsigned = zrotext_root_material::sealed_root_enrollment::encode(&challenge).unwrap();
     let path = parent.join("challenge.bin");
     std::fs::write(&path, &unsigned).unwrap();
+    if matches!(stage, "cancel-output" | "expired-output") {
+        let reviewed = zrotext_root_material::root_unlock::custody::ReviewedCustody::inspect(
+            &unsigned, &backup, &card, &identity, &id, now,
+        )
+        .unwrap();
+        // Exercise the actual public publication boundary with the same held
+        // console as signing; never inject events into a user-owned console.
+        let output_session = Session::acquire().unwrap();
+        let signatures = reviewed.sign(&root, now).unwrap();
+        drop(root);
+        drop(recovery);
+        if stage == "cancel-output" {
+            // SAFETY: this exclusively owned hidden child's console contains
+            // only this process, checked above; the active Session handles it.
+            assert_ne!(unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0) }, 0);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let publish_now = if stage == "expired-output" {
+            challenge.expires_ms
+        } else {
+            now
+        };
+        assert!(
+            publish_signatures(
+                output_session,
+                &signatures,
+                &unsigned,
+                &identity,
+                publish_now
+            )
+            .is_err()
+        );
+        assert!(!screen().contains("Enrollment signature:"));
+        assert!(!screen().contains("Custody signature:"));
+        assert_eq!(
+            store
+                .read_bundle(&id, &identity)
+                .unwrap()
+                .encrypted_backup(),
+            backup
+        );
+        return;
+    }
     drop(root);
     drop(recovery);
     let fingerprint = display_hex(&identity.root_fingerprint);
@@ -206,6 +249,8 @@ fn native_console_custody_signs_only_reviewed_bundle() {
                 "decline" => "decline",
                 "token" => "token",
                 "expiry" => "expiry",
+                "cancel-output" => "cancel-output",
+                "expired-output" => "expired-output",
                 _ => panic!("unknown fixture stage"),
             };
             let supplied = PathBuf::from(std::env::var_os("TEMP").unwrap());
@@ -222,7 +267,15 @@ fn native_console_custody_signs_only_reviewed_bundle() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&parent).unwrap();
-    for stage in ["success", "scope", "decline", "token", "expiry"] {
+    for stage in [
+        "success",
+        "scope",
+        "decline",
+        "token",
+        "expiry",
+        "cancel-output",
+        "expired-output",
+    ] {
         let stage_parent = parent.join(stage);
         std::fs::create_dir_all(&stage_parent).unwrap();
         launch(stage, &validated_parent(&stage_parent, stage));

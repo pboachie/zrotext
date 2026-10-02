@@ -101,28 +101,53 @@ fn run_custody(
     let secret = recovery_kit::decode_token(token.expose_ascii(), &kit).map_err(|_| ())?;
     drop(token);
     verify_process_eligibility().map_err(|_| ())?;
+    // Hold the same eligible console through recovery, signing and publication:
+    // reacquiring afterward could discard a cancellation raised during signing.
+    let mut output_session = Session::acquire().map_err(|_| ())?;
     let root = root_backup::open(bundle.encrypted_backup(), &secret, &expected).map_err(|_| ())?;
     drop(secret);
     if pin(&root, &expected.account_id)? != *card.root_pin() {
         return Err(());
     }
+    verify_process_eligibility().map_err(|_| ())?;
+    output_session.write_public_prompt("").map_err(|_| ())?;
     // Fresh signing time: expiry is rechecked after interactive token entry.
     let signatures = reviewed.sign(&root, now_millis()?).map_err(|_| ())?;
     drop(root);
-    let mut session = Session::acquire().map_err(|_| ())?;
-    session
+    publish_signatures(
+        output_session,
+        &signatures,
+        &unsigned,
+        &expected,
+        now_millis()?,
+    )
+}
+
+fn publish_signatures(
+    mut output_session: Session,
+    signatures: &zrotext_root_material::root_unlock::custody::Signatures,
+    unsigned: &[u8],
+    expected: &ExpectedIdentity,
+    now: u64,
+) -> Result<()> {
+    // A delayed/cancelled output must not publish after the challenge expires.
+    verify_process_eligibility().map_err(|_| ())?;
+    zrotext_root_material::root_unlock::inspect_challenge(unsigned, expected, now)
+        .map_err(|_| ())?;
+    output_session.write_public_prompt("").map_err(|_| ())?;
+    output_session
         .write_public_prompt(&format!(
             "Enrollment signature: {}\r\nCustody signature: {}\r\n",
             display_hex(&signatures.enrollment),
             display_hex(&signatures.custody)
         ))
         .map_err(|_| ())?;
-    session
+    output_session
         .write_public_prompt(
             "Enrollment and exact encrypted custody publication signed. Submit only with the reviewed challenge and local bundle. No enrollment, unlock state or file was created.\r\n",
         )
         .map_err(|_| ())?;
-    session.finish().map_err(|_| ())
+    output_session.finish().map_err(|_| ())
 }
 
 #[cfg(test)]
