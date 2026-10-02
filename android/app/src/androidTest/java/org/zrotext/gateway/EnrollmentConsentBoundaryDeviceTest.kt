@@ -12,6 +12,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import java.security.KeyStore
 import java.security.MessageDigest
+import java.util.concurrent.TimeUnit
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -155,6 +156,12 @@ class EnrollmentConsentBoundaryDeviceTest {
                 ConversationSocketComposition.currentAuthenticatedIdentity())
             click("Open conversation review")
             assertChoicesOff()
+            // AndroidX writes profileInstalled after the first frame. Observe its
+            // bounded completion before the baseline; retain equality for every file.
+            // This verifier is supplied by the target APK, not the test compile classpath.
+            val verifier = Class.forName("androidx.profileinstaller.ProfileVerifier", true, context.classLoader)
+            val profileReady = verifier.getMethod("getCompilationStatusAsync").invoke(null) as java.util.concurrent.Future<*>
+            profileReady.get(15, TimeUnit.SECONDS)
             val keysBefore = keyInventory()
             val filesBefore = fileInventory()
             click("Enroll conversation keys and compared root")
