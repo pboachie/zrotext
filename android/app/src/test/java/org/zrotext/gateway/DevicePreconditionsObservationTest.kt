@@ -13,8 +13,7 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [28, 35])
-class DevicePreconditionsObservationTest {
+abstract class DevicePreconditionsObservationTest {
     @Test fun missingPhonePermissionIsUnavailableAndAirplaneModeIsNotAReadyClaim() {
         val app = RuntimeEnvironment.getApplication()
         shadowOf(app).denyPermissions(Manifest.permission.READ_PHONE_STATE, Manifest.permission.SEND_SMS)
@@ -40,3 +39,10 @@ class DevicePreconditionsObservationTest {
         assertEquals(DevicePreconditions.AirplaneMode.UNAVAILABLE, status.airplaneMode)
     }
 }
+
+// Each SDK keeps the identical observations in its own native-runtime worker.
+@Config(sdk = [28])
+class DevicePreconditionsObservationApi28Test : DevicePreconditionsObservationTest()
+
+@Config(sdk = [35])
+class DevicePreconditionsObservationApi35Test : DevicePreconditionsObservationTest()
