@@ -7,7 +7,7 @@ import java.nio.ByteBuffer
 import java.security.MessageDigest
 import java.util.UUID
 
-/** Internal candidate only. No live grant/freshness adapter or service calls this preparation flow. */
+/** Internal candidate preparation, used only behind explicit authenticated execution admission. */
 internal object Draft02OutboundPreparation {
     /** Local authenticated adapter contract, not a wire frame or authority inferred from an envelope. */
     data class Grant(
@@ -53,6 +53,17 @@ internal object Draft02OutboundPreparation {
         val segmentCount: Int
         fun consume(consumer: (CharArray) -> Unit)
     }
+    /** Relays the executor's existing guarded consume closure; never manufactures plaintext. */
+    internal fun relayPrepared(segments: Int, consume: ((CharArray) -> Unit) -> Unit): Prepared =
+        RelayPrepared(segments, consume)
+    private class RelayPrepared(override val segmentCount: Int,
+        private val action: ((CharArray) -> Unit) -> Unit) : Prepared {
+            private var used = false
+            override fun consume(consumer: (CharArray) -> Unit) {
+                check(!used); used = true; action(consumer)
+            }
+            override fun close() { used = true }
+        }
     private class OwnedPrepared(private var chars: CharArray?, override val segmentCount: Int,
                                 private val recheck: () -> Unit) : Prepared {
         @Synchronized override fun consume(consumer: (CharArray) -> Unit) {

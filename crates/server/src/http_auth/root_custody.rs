@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Opt-in library adapter; the shipped server never enables these routes.
+//! Authenticated custody ceremony; shipping routes require explicit operator opt-in.
 
 use super::{AuthHttpError, AuthHttpState, connect, map_auth, require_owner};
 use crate::{api_json::ApiJson, sealed_root_ceremony as ceremony, sealed_root_custody as custody};

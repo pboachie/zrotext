@@ -68,7 +68,7 @@ class SealedDispatchLaneTest {
         submit: (SealedExecutionGrantValidator.Fields, Int, ((CharArray) -> Unit) -> Unit) -> SealedDispatchLane.Submission =
             { _, _, _ -> SealedDispatchLane.Submission.SUBMITTED },
     ) = SealedDispatchLane(
-        session, clock, fetch, localTruth, db, key(), elapsed, current,
+        session, clock, { grant -> fetch(grant.envelopeDigest) }, localTruth, db, key(), elapsed, current,
         suppressed, cards, sessionCurrent, submit,
     )
 
@@ -99,6 +99,28 @@ class SealedDispatchLaneTest {
 
     private fun rowState(db: SmsJournalDatabase): String? =
         db.sealedPreparations().find(fields.accountId.toString(), fields.messageId.toString())?.state
+
+    @Test
+    fun foreignGrantHeadersNeverReachEnvelopeSigningOrJournal() {
+        val db = db()
+        try {
+            val patches = listOf(
+                mapOf("account_id" to "99999999-9999-4999-8999-999999999999"),
+                mapOf("device_id" to "99999999-9999-4999-8999-999999999999"),
+                mapOf("line_id" to "99999999-9999-4999-8999-999999999999"),
+                mapOf("connection_epoch" to 2), mapOf("deployment_epoch" to 2),
+                mapOf("binding_generation" to 2), mapOf("reader_role" to 2),
+                mapOf("segment_count" to 7), mapOf("expires_at_ms" to f.now + 35_011),
+            )
+            var fetched = 0
+            for (patch in patches) {
+                assertTrue(lane(db, fetch = { fetched++; f.envelope() }).onGrant(frame(patch))
+                    is SealedDispatchLane.Outcome.Refused)
+            }
+            assertEquals(0, fetched)
+            assertEquals(0, db.sealedPreparations().count())
+        } finally { db.close() }
+    }
 
     @Test
     fun unusableOrExpiredTrustedTimeRefusesBeforeFetching() {
