@@ -78,12 +78,15 @@ retry. They do not establish carrier delivery, customer deployment, provider
 profile approval or production activation. General unsolicited upload consent
 remains unavailable.
 
-The supplied reply SDK currently decodes legacy inbound events only. A sealed
-receiver adapter and assistant plaintext access are unavailable. A future
-receiver must verify raw-body HMAC, recompute the envelope unsigned digest, match
-event/account/device/observed claims, and independently verify the accepted
-manifest and selected reader scope before opening content. HMAC and digest
-metadata do not grant reader authority. These events carry no legacy message,
+The reply adapter remains specific to legacy inbound events. The separate
+customer-local `sdk/replies/sealed-events.mjs` receiver accepts the exact sealed
+wire contract and exposes opaque metadata only. See
+[customer sealed events](../../docs/customer-sealed-events.md). It verifies
+raw-body HMAC, recomputes the unsigned envelope digest and matches the selected
+account/device/line plus event/observed claims using the existing bounded
+profile-02 parser. Neither the parser nor webhook HMAC verifies device origin,
+an accepted manifest, current reader authority or AEAD content. Assistant
+plaintext access remains unavailable. These events carry no legacy message,
 attempt or classification fields; receivers must not fabricate them.
 
 Worker lane preference alternates per caller, including batches of one, with
