@@ -1,7 +1,7 @@
 name: Isolated conversation emulator
 on:
   pull_request:
-    paths: ['android/**', 'crates/**', 'sdk/typescript/**', 'web/owner/**', 'deploy/compose/migrations/**', 'scripts/conversation_emulator.py', 'scripts/test_conversation_emulator.py', 'scripts/conversation_compiled_acceptance.py', 'scripts/test_conversation_compiled_acceptance.py', '.github/workflows/conversation-emulator.yml']
+    paths: ['android/**', 'crates/**', 'sdk/typescript/**', 'web/owner/**', 'deploy/compose/migrations/**', 'scripts/conversation_emulator.py', 'scripts/test_conversation_emulator.py', 'scripts/conversation_compiled_acceptance.py', 'scripts/test_conversation_compiled_acceptance.py', 'scripts/wait_android_boot.py', 'scripts/test_wait_android_boot.py', '.github/workflows/conversation-emulator.yml']
   push:
     branches: [main]
 permissions:
@@ -46,6 +46,7 @@ jobs:
           echo "ZT_CONVERSATION_BROWSER_TOOLS=$RUNNER_TEMP/conversation-browser-tools" >> "$GITHUB_ENV"
       - name: Build only synthetic emulator artifacts
         run: |
+          python3 -m unittest discover -s scripts -p test_wait_android_boot.py
           python3 -m unittest discover -s scripts -p test_conversation_emulator.py
           python3 -m unittest discover -s scripts -p test_conversation_compiled_acceptance.py
           (cd sdk/typescript && npm ci --ignore-scripts && npm run build)
@@ -109,19 +110,11 @@ jobs:
           fi
           wait_pid=''
           phase='android-boot'
-          boot_completed=''
-          boot_deadline=$((SECONDS + 120))
-          while [ "$SECONDS" -lt "$boot_deadline" ]; do
-            require_emulator_process
-            remaining=$((boot_deadline - SECONDS))
-            if [ "$remaining" -le 0 ]; then break; fi
-            probe_timeout=5
-            if [ "$remaining" -lt "$probe_timeout" ]; then probe_timeout="$remaining"; fi
-            boot_completed="$(timeout "$probe_timeout" adb -s emulator-5596 shell getprop sys.boot_completed | tr -d '\r')" || boot_completed=''
-            if [ "$boot_completed" = 1 ]; then break; fi
-            sleep 1
-          done
-          test "$boot_completed" = 1
+          python3 scripts/wait_android_boot.py \
+            --pid "$emulator_pid" --serial emulator-5596 \
+            --adb "$ANDROID_HOME/platform-tools/adb" --budget 300 \
+            --receipt "$diagnostics/boot-readiness.json"
+          require_emulator_process
           phase='compiled-roundtrip'
           python3 scripts/conversation_emulator.py --serial emulator-5596 --adb "$ANDROID_HOME/platform-tools/adb" --aapt "$ANDROID_HOME/build-tools/37.0.0/aapt" --toolchain 1.97.1 --skip-build
           python3 scripts/conversation_compiled_acceptance.py \
