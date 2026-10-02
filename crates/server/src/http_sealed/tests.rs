@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
+mod device_projection_contract;
 mod resource_pagination;
 use crate::sealed_envelope::ExpectedRecipient;
 

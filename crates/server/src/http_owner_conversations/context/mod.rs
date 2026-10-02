@@ -15,11 +15,55 @@ const ACCOUNT_BYTES: i64 = 8 * 1024 * 1024;
 const EXCEPTION_LIMIT: i64 = 32;
 const AUDIT_LIMIT: i64 = 8192;
 
+#[derive(Clone)]
+pub(crate) struct SelectedReaderScope {
+    pub account: Uuid,
+    pub device: Uuid,
+    pub line: Uuid,
+    pub interval: Uuid,
+    pub context: Uuid,
+    pub binding_generation: i64,
+    pub expires_ms: i64,
+    pub trust_generation: i64,
+    pub manifest_version: i64,
+    pub peer_digest: [u8; 32],
+    pub reader: [u8; 32],
+    pub manifest_digest: [u8; 32],
+}
 async fn authorize(
     tx: &Transaction<'_>,
     owner: &SessionPrincipal,
     authority: &mut CurrentAuthority<'_, '_>,
     h: &wire::Header,
+    writing: bool,
+) -> Result<(), ConversationError> {
+    authorize_selected_reader(
+        tx,
+        owner,
+        authority,
+        &SelectedReaderScope {
+            account: h.account,
+            device: h.device,
+            line: h.line,
+            interval: h.interval,
+            context: h.context,
+            binding_generation: h.binding_generation,
+            expires_ms: h.expires_ms,
+            trust_generation: h.trust_generation,
+            manifest_version: h.manifest_version,
+            peer_digest: h.peer_digest,
+            reader: h.reader,
+            manifest_digest: h.manifest_digest,
+        },
+        writing,
+    )
+    .await
+}
+pub(crate) async fn authorize_selected_reader(
+    tx: &Transaction<'_>,
+    owner: &SessionPrincipal,
+    authority: &mut CurrentAuthority<'_, '_>,
+    h: &SelectedReaderScope,
     writing: bool,
 ) -> Result<(), ConversationError> {
     if h.account != owner.tenant.account_id() {
@@ -378,4 +422,4 @@ pub async fn resolve(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

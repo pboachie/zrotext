@@ -93,6 +93,7 @@ struct Config {
     collaboration_drafts_enabled: bool,
     mms_spike_policy: Arc<device_socket::MmsSpikePolicy>,
     sealed_admission_enabled: bool,
+    workflow_tools_enabled: bool,
     retention: RetentionPolicy,
     draining: Arc<AtomicBool>,
     drain_notify: Arc<Notify>,
@@ -308,6 +309,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // route unmounted so no sealed code path runs.
     let sealed_admission_enabled = optional_bool("SEALED_ADMISSION_ENABLED")?;
     let sealed_dispatch_enabled = optional_bool("SEALED_DISPATCH_ENABLED")?;
+    let workflow_tools_enabled = optional_bool("WORKFLOW_TOOLS_ENABLED")?;
     // Independent-quorum failover executor and member-side reporting loop.
     // Disabled by default; when off (or absent) nothing further is read and
     // no thread, database or store access exists. When on, the validated
@@ -366,6 +368,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         collaboration_drafts_enabled,
         mms_spike_policy,
         sealed_admission_enabled,
+        workflow_tools_enabled,
         retention: RetentionPolicy::from_env()?,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
@@ -825,6 +828,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             database_url: config.database_url.clone(),
             auth_hasher: auth_state.hasher.clone(),
         };
+        let workflow_state = zrotext_server::workflow_runtime::http::WorkflowHttpState {
+            database_url: config.database_url.clone(),
+            hasher: auth_state.hasher.clone(),
+        };
         app = app
             .nest("/v1/auth", http_auth::router(auth_state))
             .nest("/v1/enrollment", http_enrollment::router(enrollment_state))
@@ -840,6 +847,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .merge(http_owner_contacts::router(owner_contacts_state))
             .merge(owner_ui::router())
             .merge(device_router);
+        app = app.merge(zrotext_server::workflow_runtime::http::router(
+            workflow_state,
+            config.workflow_tools_enabled,
+        ));
         if config.alpha_policy.enabled() {
             let message_state = MessagesHttpState::new(
                 config.database_url.clone(),
@@ -878,6 +889,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         || config.sms_line_activation_enabled
         || config.sealed_admission_enabled
         || config.sealed_dispatch_enabled
+        || config.workflow_tools_enabled
         || webhook_delivery_enabled
         || webhook_management_configured
         || usage_limits_enabled
@@ -1607,6 +1619,7 @@ mod tests {
             collaboration_drafts_enabled: false,
             mms_spike_policy: Arc::new(device_socket::MmsSpikePolicy::disabled()),
             sealed_admission_enabled: false,
+            workflow_tools_enabled: false,
             retention: RetentionPolicy::default(),
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),
@@ -1791,6 +1804,7 @@ mod tests {
             collaboration_drafts_enabled: false,
             mms_spike_policy: Arc::new(device_socket::MmsSpikePolicy::disabled()),
             sealed_admission_enabled: false,
+            workflow_tools_enabled: false,
             retention: RetentionPolicy::default(),
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),

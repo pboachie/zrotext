@@ -7,8 +7,8 @@ import java.util.UUID
 
 /**
  * PROPOSED optional device-stream frame `sealed_execution_grant`, grant version 1
- * (roadmap #539; `protocol/v1/device-stream.md`). No hub emits it and this client
- * never negotiates it, so the live stream only ever reaches [dispositionWithoutNegotiation].
+ * (roadmap #539; `protocol/v1/device-stream.md`). Ordinary startup never negotiates
+ * it; an explicit owner-provisioned candidate lease permits the v2 stream path.
  *
  * [parse] is the strict wire parser used by [SealedDispatchExecutor] and the shared
  * vector corpus: exact key set, integer-typed numbers, canonical UUIDs and unpadded
@@ -21,7 +21,7 @@ internal object SealedExecutionGrantFrame {
     const val REFUSAL_TYPE = "sealed_execution_refusal"
     const val GRANT_VERSION = 1L
 
-    /** The combined subprotocol token a sealed-capable phone would offer; this client never offers it. */
+    /** Legacy v1 token; the candidate service uses v2 authenticated time sampling instead. */
     const val NEGOTIATION_PROTOCOL = "zrotext-device-status-v2+sealed-dispatch-v1"
 
     enum class Disposition { IGNORED_NOT_NEGOTIATED }

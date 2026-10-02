@@ -1959,3 +1959,189 @@ async fn grants_survive_as_history_after_revocation_and_stop_authorizing() {
     .unwrap();
     f.cleanup().await;
 }
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn listing_groups_bulk_grants_and_preserves_order_and_revoked_history() {
+    let f = Fixture::new().await;
+    let proposer = f.proposer().await;
+    let mut db = f.connect().await;
+    assert!(
+        list_registrations(&mut db, &proposer)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let first = registered_connector(&f, 0).await;
+    let mut request = default_request(&f, f.integration_point(1));
+    request.display_name = "synthetic-second-connector".into();
+    request.grants[0].line_id = f.other_line;
+    request.grants[0].conversation_restriction = vec![Uuid::new_v4()];
+    request.grants[1].line_id = f.other_line;
+    let second = registered_connector_with(&f, 1, request).await;
+    revoke(
+        &mut db,
+        &f.hasher,
+        &f.approver().await,
+        first.connector_id,
+        "synthetic",
+    )
+    .await
+    .unwrap();
+
+    let views = list_registrations(&mut db, &proposer).await.unwrap();
+    let expected_ids: Vec<Uuid> = f.db.query(
+        "SELECT connector_id FROM connector_registrations WHERE account_id=$1 ORDER BY proposed_ms,connector_id",
+        &[&f.account],
+    ).await.unwrap().into_iter().map(|row| row.get(0)).collect();
+    assert_eq!(
+        views
+            .iter()
+            .map(|view| view.connector_id)
+            .collect::<Vec<_>>(),
+        expected_ids
+    );
+    assert_eq!(views.len(), 2);
+    for view in views {
+        let expected = f.db.query(
+            "SELECT grant_id,kind,read_directions,line_id,conversation_restriction,created_ms,expires_ms,revoked_ms \
+             FROM connector_grants WHERE account_id=$1 AND connector_id=$2 ORDER BY created_ms,grant_id",
+            &[&f.account, &view.connector_id],
+        ).await.unwrap();
+        assert_eq!(view.grants.len(), 2);
+        for (grant, row) in view.grants.iter().zip(expected) {
+            assert_eq!(grant.grant_id, row.get::<_, Uuid>(0));
+            let kind: String = row.get(1);
+            let expected_kind = if kind == "read" {
+                GrantKind::Read {
+                    directions: row.get::<_, i16>(2) as u16,
+                }
+            } else {
+                GrantKind::Send
+            };
+            assert_eq!(grant.kind, expected_kind);
+            assert_eq!(grant.line_id, row.get::<_, Uuid>(3));
+            assert_eq!(grant.conversation_restriction, row.get::<_, Vec<Uuid>>(4));
+            assert_eq!(grant.created_ms, row.get::<_, i64>(5));
+            assert_eq!(grant.expires_ms, row.get::<_, i64>(6));
+            assert_eq!(grant.revoked_ms, row.get::<_, Option<i64>>(7));
+            if view.connector_id == first.connector_id {
+                assert_eq!(view.state, RegistrationState::Revoked);
+                assert!(grant.revoked_ms.is_some());
+                assert_eq!(grant.line_id, f.line);
+            } else {
+                assert_eq!(view.connector_id, second.connector_id);
+                assert_eq!(view.state, RegistrationState::Active);
+                assert!(grant.revoked_ms.is_none());
+                assert_eq!(grant.line_id, f.other_line);
+            }
+        }
+    }
+    f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; disposable PostgreSQL"]
+async fn registry_snapshot_uses_one_grant_query_and_preserves_tenant_order_and_empty_rows() {
+    let f = Fixture::new().await;
+    let owner = f.proposer().await;
+    let mut tickets = Vec::new();
+    for index in 0..3 {
+        let mut request = default_request(&f, f.integration_point(index));
+        request.grants[0].kind = GrantKind::Read {
+            directions: READ_OUTBOUND,
+        };
+        request.grants[0].conversation_restriction = vec![Uuid::new_v4()];
+        tickets.push(
+            propose(&mut f.connect().await, &f.hasher, &owner, request)
+                .await
+                .unwrap(),
+        );
+    }
+    let empty = tickets[2].connector_id;
+    f.db.execute(
+        "DELETE FROM connector_grants WHERE account_id=$1 AND connector_id=$2",
+        &[&f.account, &empty],
+    )
+    .await
+    .unwrap();
+    let other = Uuid::new_v4();
+    let foreign_grant = Uuid::new_v4();
+    f.db.execute("INSERT INTO accounts(id) VALUES($1)", &[&other])
+        .await
+        .unwrap();
+    // Reuse a connector UUID in another tenant: grouping must never widen the account query.
+    f.db.execute("INSERT INTO connector_registrations SELECT (jsonb_populate_record(NULL::connector_registrations,to_jsonb(r)||jsonb_build_object('account_id',$1::uuid))).* FROM connector_registrations r WHERE account_id=$2 AND connector_id=$3", &[&other,&f.account,&tickets[0].connector_id]).await.unwrap();
+    f.db.execute("INSERT INTO connector_grants SELECT (jsonb_populate_record(NULL::connector_grants,to_jsonb(g)||jsonb_build_object('account_id',$1::uuid,'grant_id',$2::uuid))).* FROM connector_grants g WHERE account_id=$3 AND connector_id=$4 LIMIT 1", &[&other,&foreign_grant,&f.account,&tickets[0].connector_id]).await.unwrap();
+    let expected_registrations: Vec<Uuid> = f.db.query("SELECT connector_id FROM connector_registrations WHERE account_id=$1 ORDER BY proposed_ms,connector_id", &[&f.account]).await.unwrap().iter().map(|r|r.get(0)).collect();
+    let expected_grants = f.db.query("SELECT connector_id,grant_id,kind,read_directions,line_id,conversation_restriction,created_ms,expires_ms,revoked_ms FROM connector_grants WHERE account_id=$1 ORDER BY created_ms,grant_id", &[&f.account]).await.unwrap();
+    // A materialized, volatile CTE runs once per SELECT, not once per returned row.
+    f.db.batch_execute("ALTER TABLE connector_grants RENAME TO snapshot_grants; CREATE SEQUENCE snapshot_grant_reads; CREATE FUNCTION snapshot_count_read() RETURNS boolean LANGUAGE sql VOLATILE AS $$ SELECT nextval('snapshot_grant_reads')>0 $$; CREATE VIEW connector_grants AS WITH counted AS MATERIALIZED(SELECT snapshot_count_read() AS counted) SELECT g.* FROM snapshot_grants g CROSS JOIN counted WHERE counted.counted").await.unwrap();
+    let mut db = f.connect().await;
+    let views = list_registrations(&mut db, &owner).await.unwrap();
+    let queries: i64 =
+        f.db.query_one("SELECT last_value FROM snapshot_grant_reads", &[])
+            .await
+            .unwrap()
+            .get(0);
+    assert_eq!(
+        queries, 1,
+        "grant SELECT count must be constant across three registrations"
+    );
+    assert_eq!(
+        views.iter().map(|v| v.connector_id).collect::<Vec<_>>(),
+        expected_registrations
+    );
+    for view in &views {
+        let expected: Vec<_> = expected_grants
+            .iter()
+            .filter(|r| r.get::<_, Uuid>(0) == view.connector_id)
+            .collect();
+        assert_eq!(
+            view.grants.iter().map(|g| g.grant_id).collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|r| r.get::<_, Uuid>(1))
+                .collect::<Vec<_>>()
+        );
+        for (grant, row) in view.grants.iter().zip(expected) {
+            let kind: String = row.get(2);
+            assert_eq!(
+                grant.kind,
+                if kind == "read" {
+                    GrantKind::Read {
+                        directions: row.get::<_, i16>(3) as u16,
+                    }
+                } else {
+                    GrantKind::Send
+                }
+            );
+            assert_eq!(grant.line_id, row.get::<_, Uuid>(4));
+            assert_eq!(grant.conversation_restriction, row.get::<_, Vec<Uuid>>(5));
+            assert_eq!(grant.created_ms, row.get::<_, i64>(6));
+            assert_eq!(grant.expires_ms, row.get::<_, i64>(7));
+            assert_eq!(grant.revoked_ms, row.get::<_, Option<i64>>(8));
+            assert_ne!(grant.grant_id, foreign_grant);
+        }
+    }
+    assert!(
+        views
+            .iter()
+            .find(|v| v.connector_id == empty)
+            .unwrap()
+            .grants
+            .is_empty()
+    );
+    f.db.execute(
+        "DELETE FROM snapshot_grants WHERE account_id=$1",
+        &[&f.account],
+    )
+    .await
+    .unwrap();
+    let views = list_registrations(&mut db, &owner).await.unwrap();
+    assert_eq!(views.len(), 3);
+    assert!(views.iter().all(|v| v.grants.is_empty()));
+    f.db.batch_execute("DROP VIEW connector_grants; DROP FUNCTION snapshot_count_read(); DROP SEQUENCE snapshot_grant_reads; ALTER TABLE snapshot_grants RENAME TO connector_grants").await.unwrap();
+    f.cleanup().await;
+}

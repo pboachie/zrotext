@@ -77,6 +77,7 @@ class AuthenticatedGatewayService : Service() {
     /** Computed once per authenticated session; the inputs cannot change within it. */
     @Volatile private var sessionIdentity: EvidenceIdentity? = null
     @Volatile private var conversationConnection: ConversationSocketNegotiation? = null
+    @Volatile private var sealedConnection: SealedExecutionConnection? = null
     private var conversationHost: AutoCloseable? = null
     @Volatile private var awaitingEventId: String? = null
     @Volatile private var awaitingEventSentAtNanos = 0L
@@ -265,11 +266,17 @@ class AuthenticatedGatewayService : Service() {
         }
         var grantSeen = false
         val statusPublisher = DeviceStatusPublisher()
+        val sealedLease = SealedExecutionMount.capture()
+        var sealedSelected = false
+        val offered = if (sealedLease != null) SealedSocketTime.PROTOCOL + ", " + DeviceStatusPublisher.OFFER
+            else DeviceStatusPublisher.OFFER
         socket = client.newWebSocket(Request.Builder().url(url)
-            .header("Sec-WebSocket-Protocol", DeviceStatusPublisher.OFFER).build(), object : WebSocketListener() {
+            .header("Sec-WebSocket-Protocol", offered).build(), object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 if (generation != currentGeneration) return
-                statusPublisher.selectProtocol(response.header("Sec-WebSocket-Protocol"))
+                val selected = response.header("Sec-WebSocket-Protocol")
+                sealedSelected = sealedLease != null && selected == SealedSocketTime.PROTOCOL
+                statusPublisher.selectProtocol(if (sealedSelected) "zrotext-device-status-v2" else selected)
                 val hello = JSONObject().put("v", 1).put("type", "hello")
                     .put("device_id", machine.helloDeviceId().toString())
                 if (!webSocket.send(hello.toString()))
@@ -287,6 +294,7 @@ class AuthenticatedGatewayService : Service() {
                     check(frame.opt("type") is String)
                     when (frame.getString("type")) {
                         "conversation_session" -> checkNotNull(conversationConnection).accept(frame)
+                        "sealed_session" -> checkNotNull(sealedConnection).accept(frame)
                         "challenge" -> {
                             requireFields(frame, setOf("v", "type", "challenge_id", "account_id", "device_id", "nonce"))
                             val proof = machine.challenge(
@@ -318,6 +326,15 @@ class AuthenticatedGatewayService : Service() {
                                 reconnect.authenticated(SystemClock.elapsedRealtime())
                             }
                             handshakeDeadline?.cancel(false)
+                            if (sealedSelected) {
+                                val connection = SealedExecutionConnection(checkNotNull(sealedLease),
+                                    machine.activeAccountId(), deviceId, epoch, url, client, webSocket, keys) {
+                                    generation == currentGeneration && machine.phase == DeviceStreamMachine.Phase.ACTIVE &&
+                                        runCatching { machine.heartbeatEpoch() == epoch }.getOrDefault(false)
+                                }
+                                sealedConnection = connection
+                                if (!connection.start()) return disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
+                            }
                             if (armRequested) {
                                 val digest = encode(MessageDigest.getInstance("SHA-256")
                                     .digest(armRecipient.toByteArray(Charsets.UTF_8)))
@@ -349,6 +366,8 @@ class AuthenticatedGatewayService : Service() {
                                 if (generation == currentGeneration) {
                                     try {
                                         val heartbeatEpoch = machine.heartbeatEpoch()
+                                        if (sealedConnection?.tick() == false)
+                                            return@scheduleAtFixedRate disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
                                         timingTrace.mark(HeartbeatTraceEvent.SEND_CALL, heartbeatEpoch)
                                         val queued = webSocket.send("{\"v\":1,\"type\":\"heartbeat\"}")
                                         timingTrace.mark(if (queued) HeartbeatTraceEvent.SEND_QUEUED
@@ -502,8 +521,11 @@ class AuthenticatedGatewayService : Service() {
                             val event = uuid(frame, "event_id").toString()
                             val state = frame.getString("state")
                             val permitted = frame.getBoolean("submit_permitted")
-                            val route = conversationConnection?.radioAck(event, state, permitted)
+                            val sealedRoute = sealedConnection?.radioAck(event, state, permitted)
                                 ?: ConversationRadioAckRoute.NOT_OURS
+                            val route = if (sealedRoute != ConversationRadioAckRoute.NOT_OURS) sealedRoute
+                                else conversationConnection?.radioAck(event, state, permitted)
+                                    ?: ConversationRadioAckRoute.NOT_OURS
                             // Known late/duplicate conversation ACKs never enter the alpha radio path.
                             if (route == ConversationRadioAckRoute.NOT_OURS)
                                 handleAlphaAck(webSocket, machine, url, currentGeneration, event, state, permitted)
@@ -549,10 +571,8 @@ class AuthenticatedGatewayService : Service() {
                                 LineOptOutUploadFrame.ackEventId(frame))
                         }
                         SealedExecutionGrantFrame.TYPE -> {
-                            // PROPOSED optional frame (#539). This build never offers the
-                            // sealed-dispatch negotiation, so it drops the frame unparsed:
-                            // no Keystore use, no journal row and no session teardown.
-                            SealedExecutionGrantFrame.dispositionWithoutNegotiation()
+                            if (sealedSelected) checkNotNull(sealedConnection).grant(frame)
+                            else SealedExecutionGrantFrame.dispositionWithoutNegotiation()
                         }
                         else -> error("Unexpected device frame")
                     }
@@ -1128,11 +1148,14 @@ class AuthenticatedGatewayService : Service() {
     }
 
     private fun closeConversationConnection() {
+        val sealed = sealedConnection; sealedConnection = null
+        sealed?.close()
         val host=conversationHost;conversationHost=null
         val old=conversationConnection;conversationConnection=null
         try {host?.close()} finally {old?.close()}
     }
     private fun halt() {
+        SealedExecutionMount.pause()
         generation += 1 // Fence listener callbacks before admission/storage closure can wait.
         closeConversationConnection()
         ConversationProcessMount.runtime.pause(ConversationStopReason.PHONE_SESSION_LOST)

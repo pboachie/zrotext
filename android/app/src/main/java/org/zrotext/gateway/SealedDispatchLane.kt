@@ -2,15 +2,17 @@
 package org.zrotext.gateway
 
 import org.json.JSONObject
+import org.zrotext.gateway.SealedExecutionGrantValidator.Verdict.Refused as GrantRefusal
 
 /**
  * Grant-driven caller that wires sealed execution to trusted session time and
  * journaled submission (roadmap #628).
  *
- * DORMANT BY DESIGN: this build never offers the sealed-dispatch negotiation
- * ([DeviceStatusPublisher.OFFER] carries no sealed token) and no live stream
- * handler constructs this lane; the live `sealed_execution_grant` arm still
- * drops the frame unparsed. The lane fixes and tests the post-negotiation
+ * Disabled on ordinary startup: the default build never offers sealed dispatch
+ * ([DeviceStatusPublisher.OFFER] carries no sealed token). An explicitly installed
+ * owner-provisioned process lease lets [SealedExecutionConnection] construct this
+ * lane after authenticated v2 time/session sampling. Unnegotiated grants remain
+ * unparsed. The lane enforces the post-negotiation
  * behavior before any enabling slice exists: given one grant frame from the
  * authenticated session it fetches only the grant-bound envelope by digest,
  * refuses without vouched trusted time, runs the existing executor fences
@@ -37,7 +39,8 @@ import org.json.JSONObject
  * [SealedDispatchExecutor.settle], because the JVM has no Android Keystore
  * and tests must drive this stage without one). Production wiring would run
  * every radio read and at most one SmsManager call inside `consumeText`; no
- * such wiring exists in this change and tests inject a no-radio fake. A
+ * [SealedExecutionConnection] uses the shared durable intent/ACK/radio path; tests
+ * inject a no-radio fake. A
  * return is not a delivery acknowledgment, a throwing seam is an ambiguous
  * outcome that stays [Submission.UNKNOWN], and nothing here ever retries:
  * [SealedExecutionGrantFrame.refusal] reporting and later grant decisions
@@ -53,8 +56,8 @@ internal class SealedDispatchLane(
     private val session: SealedDispatchExecutor.Session,
     /** Trusted time anchored to this session's connection epoch. */
     private val clock: SealedSessionClock,
-    /** Fetches the exact envelope bytes for one SHA-256 digest over the authenticated API; null = unavailable. */
-    private val fetchEnvelopeByDigest: (digest: ByteArray) -> ByteArray?,
+    /** Fetches exactly this device-signed grant's envelope over the authenticated API; null = unavailable. */
+    private val fetchEnvelope: (grant: SealedExecutionGrantValidator.Fields) -> ByteArray?,
     /** Current device-local truth; null (no binding, no pinned key, no authority) is a refusal. */
     private val localTruth: () -> SealedDispatchExecutor.Local?,
     private val db: SmsJournalDatabase,
@@ -125,10 +128,11 @@ internal class SealedDispatchLane(
         if (!clock.isCurrentSession(session.connectionEpoch)) return Outcome.Unavailable
         val now = runCatching { clock.nowMs(elapsedRealtime()) }.getOrNull() ?: return Outcome.Unavailable
         if (now >= fields.expiresAtMs) return Outcome.Refused(SealedExecutionGrantValidator.Verdict.Refused.EXPIRED)
+        val local = localTruth() ?: return Outcome.Unavailable
+        headerRefusal(fields, local, now)?.let { return Outcome.Refused(it) }
         // Fetch only the grant-bound envelope; the executor still binds the
         // grant to the SHA-256 of exactly these bytes (digest mismatch refuses).
-        val envelope = fetchEnvelopeByDigest(fields.envelopeDigest) ?: return Outcome.Unavailable
-        val local = localTruth() ?: return Outcome.Unavailable
+        val envelope = fetchEnvelope(SealedEnvelopeFetch.snapshot(fields)) ?: return Outcome.Unavailable
         return when (val outcome = SealedDispatchExecutor.execute(
             fields, envelope, session, local, db, keyStore,
             { clock.nowMs(elapsedRealtime()) },
@@ -203,6 +207,25 @@ internal class SealedDispatchLane(
     /** Permanent lane teardown: further grants are unavailable, never executed. */
     fun teardown() {
         tornDown = true
+    }
+
+    /** Refuse known foreign identities before using the enrollment signing key for retrieval. */
+    private fun headerRefusal(fields: SealedExecutionGrantValidator.Fields,
+        local: SealedDispatchExecutor.Local, now: Long): SealedExecutionGrantValidator.Verdict.Refused? {
+        return when {
+            fields.accountId != session.accountId -> GrantRefusal.ACCOUNT_MISMATCH
+            fields.deviceId != session.deviceId -> GrantRefusal.DEVICE_MISMATCH
+            fields.lineId.toString() != local.binding.lineId -> GrantRefusal.LINE_MISMATCH
+            fields.connectionEpoch != session.connectionEpoch -> GrantRefusal.SESSION_MISMATCH
+            fields.deploymentEpoch != session.deploymentEpoch -> GrantRefusal.DEPLOYMENT_MISMATCH
+            fields.bindingGeneration != local.binding.generation -> GrantRefusal.BINDING_GENERATION_MISMATCH
+            fields.readerRole != 1 -> GrantRefusal.READER_ROLE_MISMATCH
+            !java.security.MessageDigest.isEqual(fields.readerKeyId, local.pinnedReaderKeyId) -> GrantRefusal.READER_KEY_MISMATCH
+            fields.messageId == java.util.UUID(0, 0) || fields.attemptId == java.util.UUID(0, 0) -> GrantRefusal.MESSAGE_OR_ATTEMPT_MISMATCH
+            fields.segmentCount !in 1..6 -> GrantRefusal.SEGMENT_COUNT_OUT_OF_RANGE
+            fields.expiresAtMs - now > SealedExecutionGrantValidator.MAX_GRANT_FUTURE_MS -> GrantRefusal.IMPLAUSIBLE_EXPIRY
+            else -> null
+        }
     }
 
     /** The recipient peer under the current authority, or null when it cannot be established. */
