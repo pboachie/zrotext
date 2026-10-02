@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityNodeInfo
+import androidx.compose.runtime.State
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
@@ -90,25 +91,19 @@ class ConversationEntryOptInDeviceTest {
             assertTrue("Control did not accept click: $label", action.performAction(AccessibilityNodeInfo.ACTION_CLICK))
             instrumentation.waitForIdleSync()
         }
-        fun assertNoApprovalAcrossReview() {
-            fun assertAbsent() {
-                assertTrue(matchingText("Agree and continue").isEmpty())
-                assertTrue(matchingText("Content transfer: Confirmed for this interval").isEmpty())
+        fun assertNoConversationAuthority() {
+            // Viewport checks alone cannot exclude an offscreen pane. Read the actual
+            // activity's state without replacing its factory, port or controller.
+            instrumentation.runOnMainSync {
+                val port = MainActivity::class.java.getDeclaredField("conversationPort\$delegate")
+                    .apply { isAccessible = true }.get(activity) as State<*>
+                val controller = MainActivity::class.java.getDeclaredField("conversationController")
+                    .apply { isAccessible = true }.get(activity)
+                assertNull("A rejected setup must not mount a presentation port", port.value)
+                assertNull("A rejected setup must not install a controller", controller)
             }
-            fun search(direction: Int) {
-                repeat(20) {
-                    assertAbsent()
-                    val scroller = accessibilityNodes().firstOrNull { it.isScrollable && it.isVisibleToUser }
-                    if (scroller == null || scroller.actionList.none { it.id == direction }) return
-                    assertTrue("Advertised review scroll action did not execute", scroller.performAction(direction))
-                    instrumentation.waitForIdleSync()
-                    Thread.sleep(200)
-                }
-                assertAbsent()
-                fail("Could not search the full review within the scroll bound")
-            }
-            search(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
-            search(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+            assertTrue(matchingText("Agree and continue").isEmpty())
+            assertTrue(matchingText("Content transfer: Confirmed for this interval").isEmpty())
         }
         try {
             click("Open conversation review")
@@ -130,7 +125,7 @@ class ConversationEntryOptInDeviceTest {
             val rejection = "The selected conversation could not be verified. Check pairing, the selected line and the setup file."
             awaitVisible(rejection) { matchingText(rejection).firstOrNull() }
             assertTrue(matchingText(rejection).isNotEmpty())
-            assertNoApprovalAcrossReview()
+            assertNoConversationAuthority()
             assertFalse(context.getDatabasePath(ConversationJournalStores.CAPTURE_FILE).exists())
             assertFalse(context.getDatabasePath(ConversationJournalStores.SEND_FILE).exists())
             click("Close conversation review")
