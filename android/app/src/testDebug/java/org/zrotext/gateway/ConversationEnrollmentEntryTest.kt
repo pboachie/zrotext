@@ -5,6 +5,8 @@ import android.net.Uri
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.lifecycle.Lifecycle
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.input.key.Key
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -36,6 +38,12 @@ class ConversationEnrollmentEntryTest {
         click("Open conversation review")
     }
     private fun replies(): Boolean = compose.activity.conversationRepliesEnabled
+    private fun invokeRetainedChoice(action: () -> Boolean) {
+        try { action() } catch (failure: IllegalStateException) {
+            assertEquals("Cannot read CompositionLocal because the Modifier node is not currently attached.", failure.message)
+        }
+        assertFalse(replies())
+    }
     @Test fun reviewOptInDoesNotEnableRepliesAndCandidateReplacementWithdrawsBothChoices() {
         open()
         compose.runOnIdle { compose.activity.acceptConversationSetupFile(Uri.EMPTY) }
@@ -70,5 +78,77 @@ class ConversationEnrollmentEntryTest {
             assertFalse(compose.activity.conversationSetupEnabled); assertFalse(replies())
             assertFalse(compose.activity.getDatabasePath(ConversationJournalStores.CAPTURE_FILE).exists())
         }
+    }
+    @Test fun rootComparisonControlHasAnExplicitNameAndDoesNotEnrollOnToggle() {
+        open(); click("Enroll conversation keys and compared root")
+        val comparison = compose.onNodeWithContentDescription("Independent account and root fingerprint comparison")
+        if (!comparison.isDisplayed()) comparison.performScrollTo()
+        comparison.assertIsOff().performClick().assertIsOn()
+        compose.onNodeWithText("Enroll independently compared root").assertIsNotEnabled()
+        compose.runOnIdle {
+            assertFalse(compose.activity.conversationSetupEnabled); assertFalse(replies())
+            assertFalse(compose.activity.getDatabasePath(ConversationJournalStores.CAPTURE_FILE).exists())
+            assertFalse(compose.activity.getDatabasePath(ConversationJournalStores.SEND_FILE).exists())
+        }
+    }
+    @Test fun delayedReplyChoiceFromBeforePauseCannotRestoreConsentAfterFreshReviewOptIn() {
+        open(); compose.runOnIdle { compose.activity.acceptConversationSetupFile(Uri.EMPTY) }
+        click("Enable review for this session")
+        val delayed = compose.onNodeWithText("Allow approved replies for this session")
+            .fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+        compose.activityRule.scenario.moveToState(Lifecycle.State.STARTED)
+        compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+        click("Open conversation review"); click("Enable review for this session")
+        compose.runOnIdle { invokeRetainedChoice(delayed) }
+    }
+    @Test fun delayedReplyChoiceCannotApplyToAReselectedCandidateEvenWithTheSameUri() {
+        open(); compose.runOnIdle { compose.activity.acceptConversationSetupFile(Uri.EMPTY) }
+        click("Enable review for this session")
+        val delayed = compose.onNodeWithText("Allow approved replies for this session")
+            .fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+        compose.runOnIdle { compose.activity.acceptConversationSetupFile(Uri.EMPTY) }
+        click("Enable review for this session")
+        compose.runOnIdle { invokeRetainedChoice(delayed) }
+        click("Allow approved replies for this session")
+        compose.runOnIdle { assertTrue(replies()) }
+    }
+    @Test fun withdrawnReplyChoiceCannotBeReenabledByAnEarlierControlAction() {
+        open(); compose.runOnIdle { compose.activity.acceptConversationSetupFile(Uri.EMPTY) }
+        click("Enable review for this session")
+        val delayed = compose.onNodeWithText("Allow approved replies for this session")
+            .fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+        click("Allow approved replies for this session"); click("Turn replies off")
+        compose.runOnIdle { invokeRetainedChoice(delayed) }
+        click("Allow approved replies for this session")
+        compose.runOnIdle { assertTrue(replies()) }
+    }
+    @Test fun keyboardFocusStaysOnTheReplyControlWhenTheChoiceChanges() {
+        open(); compose.runOnIdle { compose.activity.acceptConversationSetupFile(Uri.EMPTY) }
+        click("Enable review for this session")
+        val choice = compose.onNodeWithText("Allow approved replies for this session")
+        if (!choice.isDisplayed()) choice.performScrollTo()
+        // Robolectric dialogs begin in touch mode; focus the real dialog host in keyboard mode.
+        compose.runOnIdle {
+            val global = Class.forName("android.view.WindowManagerGlobal")
+            val instance = global.getMethod("getInstance").invoke(null)
+            val windows = global.getMethod("getWindowViews").invoke(instance) as List<*>
+            fun composeView(view: android.view.View): android.view.View? {
+                if (view.javaClass.simpleName == "AndroidComposeView") return view
+                if (view is android.view.ViewGroup) for (i in 0 until view.childCount) {
+                    composeView(view.getChildAt(i))?.let { return it }
+                }
+                return null
+            }
+            val view = requireNotNull(composeView(windows.last() as android.view.View))
+            val manager = view.javaClass.getMethod("getInputModeManager").invoke(view)
+            val request = manager.javaClass.methods.single { it.name.startsWith("requestInputMode") }
+            assertEquals(true, request.invoke(manager, 2))
+            view.requestFocus()
+        }
+        choice.performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+        choice.assertIsFocused().performKeyInput { pressKey(Key.Enter) }
+        compose.onNodeWithText("Turn replies off").assertIsFocused().performKeyInput { pressKey(Key.Enter) }
+        compose.onNodeWithText("Allow approved replies for this session").assertIsFocused()
+        compose.runOnIdle { assertFalse(replies()) }
     }
 }

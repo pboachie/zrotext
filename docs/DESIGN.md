@@ -114,6 +114,8 @@ guarded execution composition for that setup only. It cannot grant content
 consent, import reply authority, create an execution grant or bypass policy.
 Candidate replacement, pause, stop, closing and recreation withdraw this choice;
 the owned runtime closes before later callbacks can restore authority.
+Each reply control belongs to its exact local choice generation. Earlier control
+actions cannot re-enable a withdrawn choice or apply to a reselected candidate.
 
 **Enroll conversation keys and compared root** opens a separate foreground
 ceremony. It requires the current proof-authenticated host, an owner-approved

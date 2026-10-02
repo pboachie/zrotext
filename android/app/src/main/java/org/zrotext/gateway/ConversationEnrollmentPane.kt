@@ -12,6 +12,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.Checkbox
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 
 /** Public bytes only. Fingerprint is entered separately; a downloaded value never fills it. */
 @Composable internal fun ConversationEnrollmentPane(
@@ -35,7 +37,8 @@ import androidx.compose.ui.unit.dp
             label = { Text("Independent full root fingerprint (64 hex characters)") }, maxLines = 2,
             modifier = Modifier.fillMaxWidth())
         Text("I independently compared this account and full fingerprint with my offline custodian.")
-        Checkbox(checked = compared, onCheckedChange = changeCompared, enabled = !busy)
+        Checkbox(checked = compared, onCheckedChange = changeCompared, enabled = !busy,
+            modifier = Modifier.semantics { contentDescription = "Independent account and root fingerprint comparison" })
         Button(onClick = confirmRoot, enabled = !busy && reviewed && compared && fingerprint.length == 64,
             modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Enroll independently compared root") }
         Text("For the first review, paste the complete root-signed manifest chain from genesis through the setup predecessor, one canonical base64 manifest per line. Every newly accepted link must still be unexpired. These public bytes are checked using authenticated server time when you explicitly start review. This flow cannot restore expired history or replace a lost key. Existing enrolled phones can leave this blank.")

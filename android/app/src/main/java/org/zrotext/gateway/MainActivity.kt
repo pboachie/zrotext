@@ -15,6 +15,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
+import androidx.compose.runtime.remember
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.lifecycle.Lifecycle
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.safeDrawingPadding
@@ -124,6 +130,7 @@ class MainActivity : ComponentActivity() {
     private var conversationReplyPending by mutableStateOf(false)
     internal var conversationRepliesEnabled by mutableStateOf(false)
         private set
+    private var conversationReplyChoiceGeneration by mutableStateOf(0L)
     private var conversationEnrollmentOpen by mutableStateOf(false)
     private var conversationEnrollmentBusy by mutableStateOf(false)
     private var conversationEnrollmentStatus by mutableStateOf("")
@@ -424,7 +431,7 @@ class MainActivity : ComponentActivity() {
 
     private fun revokeConversationForeground() {
         conversationSetupEnabled = false
-        conversationRepliesEnabled = false
+        withdrawConversationReplyChoice()
         closeConversationEnrollment()
         // A file picker may return a public candidate, but never preserves phone authority.
         conversationEntry?.close()
@@ -441,14 +448,14 @@ class MainActivity : ComponentActivity() {
     internal fun acceptConversationSetupFile(uri: Uri?) {
         if (!conversationEntryOpen) return
         conversationSetupEnabled = false
-        conversationRepliesEnabled = false
+        withdrawConversationReplyChoice()
         conversationSetupFile = uri
         conversationEntryStatus = if (uri == null) "File selection cancelled." else "Public setup selected. Phone approval is still required."
     }
 
     private fun closeConversationEntry() {
         conversationSetupEnabled = false
-        conversationRepliesEnabled = false
+        withdrawConversationReplyChoice()
         closeConversationEnrollment()
         // Capture CLOSE_FAILED while this exact view generation is still observable.
         conversationEntry?.close()
@@ -512,6 +519,20 @@ class MainActivity : ComponentActivity() {
             return
         }
         val observedPort = conversationPort
+        val replyChoiceGeneration = conversationReplyChoiceGeneration
+        val replyChoiceView = conversationUiEpoch
+        val replyChoiceFocus = remember { FocusRequester() }
+        var replyChoiceFocused by remember { mutableStateOf(false) }
+        var restoreReplyChoiceFocus by remember { mutableStateOf<Long?>(null) }
+        LaunchedEffect(replyChoiceGeneration) {
+            if (restoreReplyChoiceFocus == replyChoiceGeneration) {
+                restoreReplyChoiceFocus = null
+                if (replyChoiceGeneration == conversationReplyChoiceGeneration &&
+                    replyChoiceView == conversationUiEpoch && conversationEntryOpen &&
+                    conversationSetupEnabled && conversationPort == null &&
+                    lifecycle.currentState == Lifecycle.State.RESUMED) replyChoiceFocus.requestFocus()
+            }
+        }
         DisposableEffect(observedPort) {
             conversationReplyObservation = null
             conversationReplyExpired = false
@@ -557,7 +578,7 @@ class MainActivity : ComponentActivity() {
                             conversationVerifiedLineLabel?.takeIf { conversationSelectedLine == (line to generation) }
                         }, Modifier.weight(1f), onDismiss = { closeConversationEntry() }, onStopRequested = {
                             conversationSetupEnabled = false
-                            conversationRepliesEnabled = false
+                            withdrawConversationReplyChoice()
                             cancelConversationReplyImport()
                         })
                     } else {
@@ -565,7 +586,7 @@ class MainActivity : ComponentActivity() {
                             verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp)) {
                             Text("Select the public phone setup file from the paired browser. The existing paired device, selected line and enrolled hardware key must match. No key is created here.")
                             OutlinedButton(onClick = {
-                                conversationSetupEnabled = false; conversationRepliesEnabled = false
+                                conversationSetupEnabled = false; withdrawConversationReplyChoice()
                                 conversationEnrollmentOpen = true
                             }, enabled = conversationEntryState != ConversationSetupEntrySession.State.OPENING &&
                                 conversationEntryState != ConversationSetupEntrySession.State.CLOSE_FAILED,
@@ -593,11 +614,28 @@ class MainActivity : ComponentActivity() {
                                 modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Enable review for this session") }
                             Text(if (conversationRepliesEnabled) "Approved replies are enabled for this foreground review."
                                 else "Replies are off. Review can continue without sending.")
-                            OutlinedButton(onClick = { conversationRepliesEnabled = !conversationRepliesEnabled },
-                                enabled = conversationSetupEnabled && conversationEntryState != ConversationSetupEntrySession.State.OPENING &&
+                            key(replyChoiceGeneration) {
+                                OutlinedButton(onClick = {
+                                    if (replyChoiceGeneration == conversationReplyChoiceGeneration &&
+                                        replyChoiceView == conversationUiEpoch && conversationEntryOpen &&
+                                        conversationSetupEnabled && lifecycle.currentState == Lifecycle.State.RESUMED &&
+                                        conversationEntryState != ConversationSetupEntrySession.State.OPENING &&
+                                        conversationEntryState != ConversationSetupEntrySession.State.CLOSE_FAILED) {
+                                        if (conversationRepliesEnabled) {
+                                            val restoreFocus = replyChoiceFocused
+                                            withdrawConversationReplyChoice()
+                                            if (restoreFocus) restoreReplyChoiceFocus = conversationReplyChoiceGeneration
+                                        } else {
+                                            conversationRepliesEnabled = true
+                                        }
+                                    }
+                                }, enabled = conversationSetupEnabled &&
+                                    conversationEntryState != ConversationSetupEntrySession.State.OPENING &&
                                     conversationEntryState != ConversationSetupEntrySession.State.CLOSE_FAILED,
-                                modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) {
-                                Text(if (conversationRepliesEnabled) "Turn replies off" else "Allow approved replies for this session")
+                                    modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)
+                                        .focusRequester(replyChoiceFocus).onFocusChanged { replyChoiceFocused = it.isFocused }) {
+                                    Text(if (conversationRepliesEnabled) "Turn replies off" else "Allow approved replies for this session")
+                                }
                             }
                             Text("Allowing replies authorizes this phone to send only individually confirmed replies for the selected conversation after phone content approval and reply-authority verification. SMS carrier charges may apply. Leaving the app withdraws this permission.")
                             Button(onClick = { beginConversationEntry() }, enabled = conversationSetupEnabled && conversationSetupFile != null &&
@@ -738,6 +776,11 @@ class MainActivity : ComponentActivity() {
         conversationReplyText = ""
         conversationReplyEditorOpen = false
         conversationReplyPending = false
+    }
+
+    private fun withdrawConversationReplyChoice() {
+        conversationReplyChoiceGeneration++
+        conversationRepliesEnabled = false
     }
 
     private fun closeConversationEnrollmentSession() {
