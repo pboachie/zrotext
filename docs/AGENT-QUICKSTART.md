@@ -19,6 +19,55 @@ personal numbers or production credentials.
 
 ## Launch
 
+For a guided exchange through the existing shared synthetic SDK adapter and
+customer recipe, build the SDK once, then run the fixed local journey:
+
+```sh
+cd sdk/typescript
+npm ci --ignore-scripts
+npm run build
+cd ../..
+python scripts/agent_setup.py journey
+```
+
+This command needs Node.js 22 or later and Python 3.12 or later. It takes no
+client configuration, endpoint, credential or provider argument. It uses a
+unique temporary checkpoint for this invocation and removes it on completion
+or failure. Inherited integration credentials and Node startup options are not
+passed to the fixture process. No HTTP server or network transport is started.
+
+The output carries `synthetic: true`, `available: false` and the actual Node and
+Python versions. Its measured elapsed time covers only the local fixture
+process, not installation, pairing or real delivery. All steps remain synthetic:
+
+- Task notification uses `AgentRecipe.taskCompletion` and the shared
+  `simulateSubmission` adapter. Its exact restart replay keeps one notification
+  identity and one simulated submission attempt.
+- The reply is decrypted and signature-checked by the existing fixture reader
+  against the independently pinned public test vector. It is routed for review,
+  not granted authority. Restart replay consumes no second reply turn.
+- The follow-up remains `awaiting_authenticated_exact_approval`. This command
+  implements no owner approval, scheduling or radio call.
+- Changed notification bytes under the same action identity are refused. This
+  proves an identity conflict; it does not prove production approval invalidation.
+- Foreign and tampered replies, unavailable content, ambiguous review, fixture
+  opt-out, revoked fixture access, offline expiry and unknown submission are
+  exercised. Unknown restart replay remains unknown with one simulated attempt.
+
+Fixture opt-out and revocation are local checkpoint controls, not evidence of
+an authenticated live STOP or production grant withdrawal. The pinned fixture
+reader does not establish a current #617 inbound content-reader service. Saving
+this result or rerunning the command creates no real permission.
+
+The SDK's discovered `guided-journey.test.mjs` runs the actual Python command,
+checks all steps and once-only accounting, verifies temporary cleanup, and
+checks that inherited credentials cannot turn it into a live invocation.
+The Python tests reject missing, duplicate or extra steps and unsupported
+authority claims. This completes a bounded guided fixture composition, not
+the full guided activation or controlled-device acceptance.
+
+For the separate pure decision model and its approval-invalidation scenarios:
+
 ```sh
 cargo run --locked -p zrotext-device-sim
 ```
@@ -104,7 +153,8 @@ This simulator models decisions, not delivery. It does not prove:
 
 - carrier delivery or delivery receipts from any network;
 - behavior on a real Android phone or SIM (reboots, signal, battery, radio firmware);
-- any production tool adapter, MCP server or AI integration — none exists yet;
+- production activation or an integrated live AI/reply service; dormant scoped
+  adapters and MCP tools exist, but this model does not invoke them;
 - emergency readiness. Emergency numbers and safety-critical promises are outside the proposed agent workflows.
 
 A later controlled-device pilot (tracked under #614) must verify revocation, suppression, offline expiry, event replay and honest delivery states on a controlled device with the maintainer present before any availability claim. A green simulator run is the entry ticket to that pilot, not a substitute for it.
