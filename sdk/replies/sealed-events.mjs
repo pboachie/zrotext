@@ -116,7 +116,8 @@ export class SealedEventReceiver {
         if (previous.digest !== digest || previous.envelope_digest !== envelopeDigest || previous.observed !== event.observed_at_ms)
           fail('identity_conflict');
         if (previous.revision !== live.revision) fail('revoked');
-        this.current(this.now()); return { eventId: event.event_id, created: false };
+        if (this.current(this.now()).revision !== live.revision) fail('revoked');
+        return { eventId: event.event_id, created: false };
       }
       if (this.db.prepare('SELECT count(*) AS total FROM sealed_events').get().total >= this.capacity) fail('retention_full');
       this.db.prepare('INSERT INTO sealed_events(event,digest,envelope_digest,observed,received,revision) VALUES(?,?,?,?,?,?)')
@@ -161,7 +162,12 @@ export class SealedEventReceiver {
       return { accountId: this.accountId, deviceId: this.deviceId, lineId: this.lineId, events: rows };
     });
   }
-  expire() { this.transaction(() => { this.current(this.now()); this.prune(this.now()); }); }
+  expire() {
+    this.transaction(() => {
+      const live = this.current(this.now()); this.prune(this.now());
+      if (this.current(this.now()).revision !== live.revision) fail('revoked');
+    });
+  }
   deny() { this.db.prepare('UPDATE sealed_scope SET denied=1 WHERE id=1').run(); }
   erase() { this.transaction(() => { this.db.exec('UPDATE sealed_scope SET denied=1 WHERE id=1; DELETE FROM sealed_events;'); }); }
   close() { this.db.close(); this.webhookSecret.fill(0); this.cursorSecret.fill(0); }

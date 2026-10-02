@@ -144,6 +144,21 @@ test('clock rollback and independently expired selection refuse all retained met
   }, { authority: () => ({ active: true, revision: 'selected_1', accountId: account,
     deviceId: device, lineId: line, expiresAtMs: initial }) });
 });
+test('duplicate replay and retention pruning reject authority revision changes at their final fence', async () => {
+  let changing = false, calls = 0;
+  await fixture(async f => {
+    f.ingest(event(10)); changing = true; calls = 0;
+    reject(() => f.ingest(event(10)), 'revoked');
+    assert.equal(calls, 2);
+    assert.equal(f.receiver.db.prepare('SELECT count(*) AS count FROM sealed_events').get().count, 1);
+    f.time(initial + 8 * day + 1); calls = 0;
+    reject(() => f.receiver.expire(), 'revoked');
+    assert.equal(calls, 2);
+    assert.equal(f.receiver.db.prepare('SELECT count(*) AS count FROM sealed_events').get().count, 1);
+    assert.equal(f.receiver.db.prepare('SELECT floor FROM sealed_scope WHERE id=1').get().floor, 0);
+  }, { authority: () => ({ active: true, revision: changing && ++calls === 2 ? 'selected_2' : 'selected_1',
+    accountId: account, deviceId: device, lineId: line, expiresAtMs: initial + 9 * day }) });
+});
 test('capacity refuses rather than evicts live dedupe fences; eight-day expiry cannot reaccept old captures', async () => {
   await fixture(async f => {
     f.ingest(event(10)); reject(() => f.ingest(event(11)), 'retention_full');
