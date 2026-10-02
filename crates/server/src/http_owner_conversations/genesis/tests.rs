@@ -49,6 +49,7 @@ async fn case() -> (Fixture, SessionPrincipal, InstallRequest) {
     .unwrap();
     let r = |i: usize| STANDARD.encode(&f.bytes[151 + i * 149 + 33..151 + i * 149 + 98]);
     let request = InstallRequest {
+        expected_session_id: owner.session_id,
         device_id: f.device,
         line_id: f.line,
         binding_generation: 1,
@@ -508,4 +509,164 @@ async fn genesis_http_requires_matching_origin_and_csrf_before_body() {
         }
     }
     f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn genesis_final_write_wait_cannot_outlive_owner_or_phone_authority() {
+    for expire_owner in [true, false] {
+        let (f, owner, request) = case().await;
+        bootstrap_manifest(&mut f.connect().await, &owner, &selected(&f))
+            .await
+            .unwrap();
+        f.db.batch_execute(
+            "CREATE FUNCTION genesis_final_write_wait() RETURNS trigger LANGUAGE plpgsql AS $$
+             BEGIN PERFORM pg_advisory_xact_lock(737, 1); RETURN NEW; END $$;
+             CREATE TRIGGER genesis_final_write_wait BEFORE UPDATE ON sealed_manifest_authorities
+             FOR EACH ROW WHEN (NEW.version=OLD.version)
+             EXECUTE FUNCTION genesis_final_write_wait();",
+        )
+        .await
+        .unwrap();
+        let mut blocker = f.connect().await;
+        let held = blocker.transaction().await.unwrap();
+        held.query_one("SELECT pg_advisory_xact_lock(737, 1)", &[])
+            .await
+            .unwrap();
+        let blocker_pid: i32 = held
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        let sql = if expire_owner {
+            "UPDATE sessions SET expires_at=clock_timestamp()+interval '4 seconds' WHERE id=$1 RETURNING expires_at>clock_timestamp()"
+        } else {
+            "UPDATE device_sessions SET lease_until=clock_timestamp()+interval '4 seconds' WHERE device_id=$1 RETURNING lease_until>clock_timestamp()"
+        };
+        let identity = if expire_owner {
+            owner.session_id
+        } else {
+            f.device
+        };
+        assert!(
+            f.db.query_one(sql, &[&identity])
+                .await
+                .unwrap()
+                .get::<_, bool>(0)
+        );
+        let mut db = f.connect().await;
+        let writer_pid: i32 = db
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        let pending =
+            tokio::spawn(async move { install_manifest(&mut db, &owner, &request).await });
+        let observed = tokio::time::timeout(std::time::Duration::from_secs(6), async {
+            loop {
+                if f.db
+                    .query_one(
+                        "SELECT $1=ANY(pg_blocking_pids($2))",
+                        &[&blocker_pid, &writer_pid],
+                    )
+                    .await
+                    .unwrap()
+                    .get::<_, bool>(0)
+                {
+                    break;
+                }
+                assert!(
+                    !pending.is_finished(),
+                    "installation ended before its final-write wait"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            observed.is_ok(),
+            "installation never reached its final-write barrier"
+        );
+        let expiry_query = if expire_owner {
+            "SELECT expires_at<=clock_timestamp() FROM sessions WHERE id=$1"
+        } else {
+            "SELECT lease_until<=clock_timestamp() FROM device_sessions WHERE device_id=$1"
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(6), async {
+            while !f
+                .db
+                .query_one(expiry_query, &[&identity])
+                .await
+                .unwrap()
+                .get::<_, bool>(0)
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        held.commit().await.unwrap();
+        let result = pending.await.unwrap();
+        let row = f.db.query_one(
+            "SELECT version,manifest IS NULL,accepted_at_ms IS NULL,last_verified_ms FROM sealed_manifest_authorities", &[]
+        ).await.unwrap();
+        let state = (
+            row.get::<_, i64>(0),
+            row.get::<_, bool>(1),
+            row.get::<_, bool>(2),
+            row.get::<_, i64>(3),
+        );
+        f.db.batch_execute("DROP TRIGGER genesis_final_write_wait ON sealed_manifest_authorities; DROP FUNCTION genesis_final_write_wait();").await.unwrap();
+        f.cleanup().await;
+        assert!(
+            matches!(result, Err(ConversationError::Forbidden)),
+            "expired authority committed after final write: {result:?}"
+        );
+        assert_eq!(state, (0, true, true, 0));
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn genesis_install_rejects_a_different_live_owner_session_before_mutation() {
+    let (f, owner, request) = case().await;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use hmac::{Hmac, KeyInit, Mac};
+    let token = format!("zts_{}", URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>()));
+    let hasher = crate::auth::TokenHasher::new(crate::test_keys::key(84)).unwrap();
+    let mut mac = Hmac::<Sha256>::new_from_slice(&crate::test_keys::key(84)).unwrap();
+    mac.update(b"session-v1\0");
+    mac.update(token.as_bytes());
+    let hash = mac.finalize().into_bytes().to_vec();
+    f.db.execute(
+        "INSERT INTO sessions(id,account_id,user_id,token_hash,csrf_hash,expires_at) VALUES($1,$2,$3,$4,$5,clock_timestamp()+interval '1 hour')",
+        &[&Uuid::new_v4(), &f.account, &owner.user_id, &hash, &vec![4u8;32]],
+    ).await.unwrap();
+    let replacement = crate::auth::authenticate_session(&f.db, &hasher, &token)
+        .await
+        .unwrap();
+    bootstrap_manifest(&mut f.connect().await, &replacement, &selected(&f))
+        .await
+        .unwrap();
+    let result = install_manifest(&mut f.connect().await, &replacement, &request).await;
+    let row = f.db.query_one(
+        "SELECT version,manifest IS NULL,accepted_at_ms IS NULL,last_verified_ms FROM sealed_manifest_authorities", &[]
+    ).await.unwrap();
+    let state = (
+        row.get::<_, i64>(0),
+        row.get::<_, bool>(1),
+        row.get::<_, bool>(2),
+        row.get::<_, i64>(3),
+    );
+    if matches!(result, Err(ConversationError::Forbidden)) {
+        install_manifest(&mut f.connect().await, &owner, &request)
+            .await
+            .unwrap();
+    }
+    f.cleanup().await;
+    assert!(
+        matches!(result, Err(ConversationError::Forbidden)),
+        "another live session installed the original ceremony: {result:?}"
+    );
+    assert_eq!(state, (0, true, true, 0));
 }
