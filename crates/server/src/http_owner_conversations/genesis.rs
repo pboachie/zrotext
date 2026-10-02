@@ -37,6 +37,7 @@ impl Selection {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InstallRequest {
+    pub expected_session_id: Uuid,
     pub device_id: Uuid,
     pub line_id: Uuid,
     pub binding_generation: i64,
@@ -256,6 +257,9 @@ pub async fn install_manifest(
     owner: &SessionPrincipal,
     request: &InstallRequest,
 ) -> Result<(), ConversationError> {
+    if request.expected_session_id != owner.session_id {
+        return Err(ConversationError::Forbidden);
+    }
     let selected = Selection {
         device_id: request.device_id,
         line_id: request.line_id,
@@ -316,7 +320,7 @@ pub async fn install_manifest(
         }
     }
     super::fresh_owner(&tx, owner).await?;
-    // The UPDATE can wait for role reservation triggers. Freshness, owner and
+    // A database write can wait. Freshness, owner and
     // paired device-session expiry must still hold at the final database wall time.
     if key(&tx, owner.tenant.account_id(), &selected).await?
         != (points[2].clone(), device_fingerprint.clone())
@@ -338,6 +342,24 @@ pub async fn install_manifest(
         &[&owner.tenant.account_id(), &final_now],
     )
     .await?;
+    // The final write can itself wait. Revalidate after it, without another
+    // mutation that could move acceptance beyond these authority checks.
+    super::fresh_owner(&tx, owner).await?;
+    if key(&tx, owner.tenant.account_id(), &selected).await?
+        != (points[2].clone(), device_fingerprint.clone())
+    {
+        return Err(ConversationError::Forbidden);
+    }
+    super::fresh_owner(&tx, owner).await?;
+    let commit_now = clock(&tx, final_now).await?;
+    sealed_manifest::verify(
+        &root.pin,
+        &bytes,
+        &trust(owner.tenant.account_id(), &root),
+        commit_now as u64,
+    )
+    .map_err(|_| ConversationError::Forbidden)?;
+    exact_roles(&bytes, &selected, &points, commit_now)?;
     tx.commit().await?;
     Ok(())
 }
