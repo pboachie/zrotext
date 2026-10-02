@@ -38,6 +38,22 @@ class SealedSocketTimeTest {
         assertEquals(2, sent.size)
     }
 
+    @Test fun lowerRoundTripResampleKeepsConservativeTimeWithoutRenewingExpiry() {
+        val clock = clock()
+        assertTrue(clock.request()); elapsed += 100; clock.accept(reply())
+        elapsed = 25_200; assertTrue(clock.request())
+        elapsed += 50
+        clock.accept(reply(125_050))
+        assertEquals(identity, clock.currentSession()!!.sessionId)
+        elapsed++ // The established session clock refuses the anchor instant itself.
+        assertEquals(125_151L, clock.trustedNow())
+        // The raw new upper bound is 125100. Keeping the prior bound expires
+        // the original operation conservatively rather than adding lifetime.
+        assertTrue(clock.trustedNow()!! >= 125_125L)
+        elapsed++
+        assertEquals(125_152L, clock.trustedNow())
+    }
+
     @Test fun foreignReplayUnexpectedAndSlowSamplesPermanentlyClose() {
         for (mutate in listOf<(JSONObject) -> Unit>(
             { it.put("account_id", device.toString()) },

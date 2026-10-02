@@ -16,6 +16,7 @@ internal class SealedSocketTime(private val account: UUID, private val device: U
     private var lastElapsed = -1L
     private var lastUtc = 0L
     private var previousUpper = 0L
+    private var previousSent = 0L
     private var previousReceived = 0L
     private var samples = 0
     private var lastRequest = -1L
@@ -68,14 +69,20 @@ internal class SealedSocketTime(private val account: UUID, private val device: U
             check(rtt in 0..MAX_RTT_MS && sent > 0 && sent <= Long.MAX_VALUE - rtt - SealedSessionClock.MAX_ANCHOR_AGE_MS)
             val prior = session
             check(prior == null || prior.sessionId == identity && prior.deploymentEpoch == deployment)
-            val upper = sent + rtt // Network uncertainty can only expire an operation early.
+            val sampledUpper = sent + rtt
             val floor = if (prior == null) lastUtc else maxOf(lastUtc,
                 Math.addExact(previousUpper, now - previousReceived))
-            check(upper >= floor)
+            // A shorter round trip can reduce uncertainty without server rollback.
+            // The prior server-send time plus elapsed time remains a lower bound
+            // on a valid new upper estimate.
+            if (prior != null) check(sampledUpper >= Math.addExact(previousSent, now - previousReceived))
+            // Keep the earlier conservative bound so resampling never restores
+            // lifetime to an operation that the prior estimate already expired.
+            val upper = maxOf(sampledUpper, floor)
             val next = prior ?: SealedDispatchExecutor.Session(account, device, epoch, deployment, identity, originHash)
             anchor = checkNotNull(SealedSessionClock.establish(epoch, upper, now))
             session = next
-            previousUpper = upper; previousReceived = now; lastUtc = upper
+            previousUpper = upper; previousSent = sent; previousReceived = now; lastUtc = upper
             samples++
         } catch (error: Exception) { close(); throw error }
     }
