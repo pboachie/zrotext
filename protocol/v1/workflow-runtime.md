@@ -34,6 +34,7 @@ or audit payloads. No owner-cookie/API-key/agent-key fallback is implied.
 | `workflow.action.status` | `Status` | `request_id`, `context_id`, `action_id` | Latest durable action key, record version and phase |
 | `workflow.action.schedule` | `Schedule` | `request_id`, exact `key`, `policy`, `series_id`, `ordinal` | Existing scheduler occurrence through the checked integration permit |
 | `workflow.action.send` | `Send` | `request_id`, exact `key`, optional `occurrence_id` | Durable typed `SendOutcome` through the checked integration permit |
+| `workflow.action.cancel` | `Send` | `request_id`, exact `key` | Withdraw this same grant's prepared message before its irreversible grant; preserve the historical owner decision |
 
 All eight library operations exist with checked transaction-bound service
 permits; their catalog state is `library_candidate`. The transport is disabled

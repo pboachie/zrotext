@@ -6,6 +6,8 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
 
+mod log_canaries;
+
 fn state(case: &Case) -> WorkflowHttpState {
     let separator = if case.f.url.contains('?') { '&' } else { '?' };
     WorkflowHttpState {
