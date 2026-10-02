@@ -30,11 +30,12 @@ async function fixture(run) {
       '-addext','subjectAltName=DNS:localhost','-keyout','key.pem','-out','cert.pem'],{cwd:directory,stdio:'pipe',timeout:15000});
     const cert = await readFile(join(directory,'cert.pem'));
     const key = { account_id:id(1), action_id:id(2), revision:1, binding_digest:await workflowActionDigest(descriptor) };
-    let permission=true, sendPermission=true, active=true, approved=false, disconnect=false, calls=[], time=1_700_000_000_000;
+    let permission=true, sendPermission=true, active=true, approved=false, disconnect=false, calls=[], time=1_700_000_000_000, readinessWait;
     server=createServer({key:await readFile(join(directory,'key.pem')),cert},async(req,res)=>{
       res.setHeader('content-type','application/json');
       if(!active || req.headers.authorization!==`Bearer ${credential}`){res.statusCode=401;res.end(JSON.stringify({error:{code:'unauthorized'}}));return;}
       if(req.method==='GET'){
+        if(readinessWait) await readinessWait;
         res.end(JSON.stringify({available:true,methods:workflowTools.map(tool=>({method:tool.name,
           operation:tool.name==='workflow.action.cancel'?'send':tool.name.replace('workflow.','').replace('action.','').replaceAll('.','_'),
           read_only_hint:tool.annotations.readOnlyHint,destructive_hint:tool.annotations.destructiveHint,
@@ -68,7 +69,8 @@ async function fixture(run) {
       const raw=Buffer.from(JSON.stringify(event)),timestamp=String(time/1000);
       return [raw,{'x-zrotext-timestamp':timestamp,'x-zrotext-signature':'v1='+createHmac('sha256',eventKey).update(timestamp).update('.').update(raw).digest('hex')}];
     };
-    await run({recipe,key,signed,adapter,calls,revoke:()=>{active=false;},deny:()=>{permission=false;},denySend:()=>{sendPermission=false;},approve:()=>{approved=true;},disconnect:()=>{disconnect=true;},advance:ms=>{time+=ms;}});
+    await run({recipe,key,signed,adapter,calls,holdReadiness:()=>{let release;readinessWait=new Promise(done=>release=done);return ()=>{readinessWait=undefined;release();};},revoke:()=>{active=false;},deny:()=>{permission=false;},denySend:()=>{sendPermission=false;},approve:()=>{approved=true;},disconnect:()=>{disconnect=true;},advance:ms=>{time+=ms;}});
+
   }finally{
     if(server){server.closeAllConnections();await new Promise(done=>server.close(done));}
     adapter?.close();assert.equal(dirname(resolve(directory)),resolve(tmpdir()));await rm(directory,{recursive:true,force:true});
@@ -145,6 +147,48 @@ test('proposal-only grants can activate without send authority and cannot prepar
   await assert.rejects(()=>f.recipe.prepare({request_id:id(35),key:f.key}),e=>e.code==='forbidden');
 }));
 
+test('disable cancels pending activation without allowing later requests',()=>fixture(async f=>{
+  const release=f.holdReadiness();
+  const enabling=f.recipe.enable();
+  f.recipe.disable(); release();
+  await assert.rejects(()=>enabling,e=>e.code==='disabled');
+  await assert.rejects(()=>f.recipe.call({operation:'status',request_id:id(40)}),e=>e.code==='disabled');
+  assert.equal(f.calls.length,0);
+}));
+
+test('disable fences preparation and proposal digest awaits without a POST',()=>fixture(async f=>{
+  await f.recipe.enable();
+  const preparing=f.recipe.prepare({request_id:id(41),key:f.key});
+  f.recipe.disable();
+  await assert.rejects(()=>preparing,e=>e.code==='disabled' || e.code==='forbidden');
+  await f.recipe.enable();
+  const proposal=f.recipe.call({operation:'owner_proposal',request_id:id(42)});
+  f.recipe.disable();
+  const refused=assert.rejects(()=>proposal,e=>e.code==='disabled' || e.code==='forbidden');
+  await f.recipe.enable(); await refused;
+  assert.equal(f.calls.length,0);
+}));
+
+test('disable during reply consumption preserves a nonreplayable unknown reservation without proposing',()=>fixture(async f=>{
+  await f.recipe.enable();f.recipe.ingestReply(...f.signed());
+  const input={event_id:id(14),request_id:id(43)};
+  const pending=f.recipe.routeReply(input);
+  f.recipe.disable();
+  assert.equal((await pending).state,'unknown');
+  await f.recipe.enable();
+  assert.equal((await f.recipe.routeReply(input)).state,'unknown');
+  assert.equal(f.calls.length,0);
+  assert.equal(f.adapter.exportMetadata().actions.length,1);
+}));
+test('preparation snapshots the exact owner key before digest awaits',()=>fixture(async f=>{
+  await f.recipe.enable();
+  const key={...f.key};
+  const pending=f.recipe.prepare({request_id:id(44),key});
+  key.action_id=id(45);
+  await pending;
+  assert.equal(f.calls.length,1);
+  assert.equal(f.calls[0].params.key.action_id,f.key.action_id);
+}));
 test('reply turn cap routes a second distinct signed event to owner review without another proposal',()=>fixture(async f=>{
   await f.recipe.enable();f.recipe.ingestReply(...f.signed());
   assert.equal((await f.recipe.routeReply({event_id:id(14),request_id:id(36)})).disposition,'reply_notice');

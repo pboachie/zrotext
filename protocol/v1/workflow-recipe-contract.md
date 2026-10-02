@@ -40,7 +40,8 @@ descriptor and a dedicated `WorkflowToolClient`. Its source preview uses the
 actual HTTPS metadata operation and compares the returned version/digest.
 Task completion and owner proposal persist an exact proposal. Status reads
 current durable metadata. Preparation calls the real send tool with the exact
-action key and optional actual occurrence; waiting owner binding/window and
+copy-owned action key and optional actual occurrence; caller mutation during
+digest calculation cannot select another action. Waiting owner binding/window and
 Prepared remain distinct. Prepared is not carrier submission or delivery.
 
 One import installs an inactive manual n8n recipe. The credential reference in
@@ -51,6 +52,11 @@ read-only preview against a controlled test recipient/context, and separately
 enables the local recipe. Readiness hints are not effect permits: every remote
 operation still authenticates and checks current authority. Local activation
 does not change any server or release gate.
+
+Local disable invalidates pending activation and work before transport, including
+digest calculation and reply consumption. A later activation cannot revive that
+work. It does not retract a request already submitted. A reply reserved before
+withdrawal remains unknown and is not automatically replayed.
 
 The unstarted local bridge has `GET /recipe` for setup and `POST /recipe` with
 exact `operation` and `params`. Operations are `preview`, `task_completion`,
