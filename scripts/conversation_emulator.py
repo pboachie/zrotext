@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from conversation_simulator import read_ready
+from conversation_simulator import MAX_STARTUP_LOG_BYTES, READY_MARKER, read_ready
 
 APP = "org.zrotext.gateway.conversationprobe"
 TEST = "org.zrotext.gateway.ConversationProbeDeviceTest"
@@ -21,6 +21,31 @@ TEST = "org.zrotext.gateway.ConversationProbeDeviceTest"
 
 def run(command, **kwargs):
     return subprocess.run(command, check=True, capture_output=True, text=True, encoding="utf-8", timeout=210, **kwargs)
+
+
+def fixture_failure_details(log, ready=None):
+    """Keep bounded child failure output without exporting fixture credentials."""
+    with log.open("rb") as stream:
+        captured = stream.read(MAX_STARTUP_LOG_BYTES + 1)
+    if len(captured) > MAX_STARTUP_LOG_BYTES:
+        return "Fixture log exceeded the diagnostic capture bound"
+    # The readiness record carries ephemeral fixture tokens and private keys.
+    # Remove the entire record before bounding the tail, even if it is huge.
+    lines = [line for line in captured.splitlines() if READY_MARKER not in line]
+    details = b"\n".join(lines).decode("utf-8", errors="replace")
+    for key, value in (ready or {}).items():
+        if isinstance(value, str) and value and (key == "token" or key.endswith("Scalar")):
+            details = details.replace(value, "[redacted fixture credential]")
+    return details.encode("utf-8")[-4096:].decode("utf-8", errors="replace")
+
+
+def require_fixture_exit(server, log, ready):
+    exit_code = server.wait(timeout=20)
+    if exit_code != 0:
+        raise RuntimeError(
+            f"Fixture server assertions failed (exit {exit_code}):\n"
+            + fixture_failure_details(log, ready)
+        )
 
 
 def main():
@@ -79,7 +104,7 @@ def main():
                     if server_ready is not None:
                         break
                     if server.poll() is not None or time.monotonic() > deadline:
-                        raise RuntimeError("Fixture server did not become ready")
+                        raise RuntimeError("Fixture server did not become ready:\n" + fixture_failure_details(folder / "server.log"))
                     time.sleep(0.1)
                 ready = dict(server_ready)
                 ready["browserTool"] = str(root / "sdk/typescript/test/conversation-browser-emulator.mjs")
@@ -126,8 +151,7 @@ def main():
                     APP + ".test/androidx.test.runner.AndroidJUnitRunner"])
                 if "OK (1 test)" not in result.stdout or "FAILURES!!!" in result.stdout or "INSTRUMENTATION_FAILED" in result.stdout:
                     raise RuntimeError("Emulator probe failed:\n" + result.stdout[-6000:])
-                if server.wait(timeout=20) != 0:
-                    raise RuntimeError("Fixture server assertions failed")
+                require_fixture_exit(server, folder / "server.log", server_ready)
                 if read_ready(folder / "server.log") != server_ready:
                     raise RuntimeError("Fixture readiness changed")
             finally:
