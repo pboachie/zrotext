@@ -28,6 +28,8 @@ OUTBOUND_ENVELOPE = PACKAGE + "OutboundEnvelopeDeviceTest"
 ROOT_STORAGE = PACKAGE + "Draft02RootStorageDeviceTest"
 SEALED_BODY = PACKAGE + "SealedBodyDeviceTest"
 SEALED_PREPARATION = PACKAGE + "SealedPreparationDeviceTest"
+ENTRY_OPT_IN = PACKAGE + "ConversationEntryOptInDeviceTest"
+ENTRY_OPT_IN_METHOD = "explicitOptInReachesOrdinarySetupAndRejectsMissingCustodyWithoutApproval"
 SERIAL = "emulator-5562"
 
 
@@ -54,7 +56,18 @@ def selected_tests(root=ROOT):
     for name, count in [("SealedBodyDeviceTest", 5), ("SealedPreparationDeviceTest", 2)]:
         if (root / f"android/app/src/androidTest/java/org/zrotext/gateway/{name}.kt").is_file():
             expected[PACKAGE + name] = count
+    if (root / "android/app/src/androidTest/java/org/zrotext/gateway/ConversationEntryOptInDeviceTest.kt").is_file():
+        expected[ENTRY_OPT_IN] = 1
     return expected
+
+
+def instrumentation_arguments(expected):
+    args = ["shell", "am", "instrument", "-w", "-r", "-e", "class", ",".join(expected),
+            "-e", "a11yIsolatedEmulator", "true",
+            "-e", "networkServiceIsolatedEmulator", "true"]
+    if ENTRY_OPT_IN in expected:
+        args.extend(["-e", "entryOptInIsolatedEmulator", "true"])
+    return [*args, "org.zrotext.gateway.test/androidx.test.runner.AndroidJUnitRunner"]
 
 
 MAX_PRIVATE_EVIDENCE_BYTES = 256 * 1024
@@ -131,6 +144,10 @@ def verify_results(output, expected):
         observed = {name for cls, name in completed if cls == ACCESSIBILITY}
         if observed != ACCESSIBILITY_METHODS:
             raise ValueError("Accessibility did not exercise the exact Home acceptance corpus")
+    if ENTRY_OPT_IN in expected:
+        observed = {name for cls, name in completed if cls == ENTRY_OPT_IN}
+        if observed != {ENTRY_OPT_IN_METHOD}:
+            raise ValueError("Conversation entry did not exercise the exact opt-in acceptance test")
     if SEALED_PREPARATION in expected:
         custody = re.findall(r"^INSTRUMENTATION_RESULT: preparationCustody=(.*)$", output, re.MULTILINE)
         if len(custody) != 1 or custody[0].strip() not in ("unsupported", "platform-reported-hardware"):
@@ -164,10 +181,7 @@ def main():
     # Never grant location or SMS permission. No stored gateway selection is changed.
     if NETWORK_SERVICE in expected:
         command("shell", "pm", "grant", "org.zrotext.gateway", "android.permission.READ_PHONE_STATE")
-    output = command("shell", "am", "instrument", "-w", "-r", "-e", "class", ",".join(expected),
-                     "-e", "a11yIsolatedEmulator", "true",
-                     "-e", "networkServiceIsolatedEmulator", "true",
-                     "org.zrotext.gateway.test/androidx.test.runner.AndroidJUnitRunner", timeout=420)
+    output = command(*instrumentation_arguments(expected), timeout=420)
     custody = verify_with_private_evidence(output, expected)
     print(f"Selected no-radio device tests passed: {sum(expected.values())}; zero failures or skips")
     if custody:
