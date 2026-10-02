@@ -267,3 +267,11 @@ Process-tree, account, optional profile and owned-directory cleanup must
 succeed. Forced VM termination may prevent cleanup; the disposable VM is the
 final containment boundary. Neither path changes UAC, machine policy,
 repository permissions or production eligibility checks.The production `init` command is not executed with real owner material by tests.
+
+## Explicit archive candidate creation (Windows, `unlock` feature)
+
+`archive-init --account <canonical-uuid> --origin <canonical-https-origin> --bundle <root-backup-id-hex> --archive-output <absolute-new-path> --receipt-output <absolute-new-path> --recovery-output <absolute-new-path>` creates one new, unregistered account-wide archive candidate after independent root fingerprint comparison and authenticated root recovery. It requires both `CREATE-ARCHIVE` and `SAVE-RECOVERY` consent in the eligible private console. This is separate from root initialization and does not enroll or replace registered archive authority.
+
+The encrypted archive uses the existing ZTAB01 format. The public receipt supplies the archive key ID, SEC1 point, root identity and ciphertext digest for independent comparison in initial conversation setup. The separate recovery file contains exactly 32 raw private bytes, compatible with the browser archive recovery input; it is never a root recovery token and is never printed. Preserve that file separately from public artifacts. Each output is created once on a fixed local NTFS volume, with a protected current-user-only ACL; existing destinations, reparse points and unsafe ancestors are refused before archive material generation. Memory recovery and protected-file readback recovery are authenticated before publication is confirmed.
+
+Cancellation and errors attempt to remove only newly created files through their held handles. Three files are not a power-loss-atomic transaction: an interrupted process or cleanup failure may leave partial output, including a protected private recovery file. Inspect the selected destinations before retrying. No root bundle is rewritten. Tests use synthetic fixture scalars and isolated hidden consoles; no actual user provisioning is performed by repository tests.

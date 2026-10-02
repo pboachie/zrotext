@@ -16,6 +16,8 @@ use zrotext_root_material::{
 use zrotext_root_terminal::{Session, verify_process_eligibility};
 
 #[cfg(feature = "unlock")]
+mod archive_init;
+#[cfg(feature = "unlock")]
 mod conversation_activation;
 #[cfg(feature = "unlock")]
 mod conversation_genesis;
@@ -523,6 +525,10 @@ fn run_unlock(
 }
 
 pub(super) fn run(args: &[String]) -> Result<()> {
+    #[cfg(feature = "unlock")]
+    if args.first().map(String::as_str) == Some("archive-init") {
+        return archive_init::run(args, local_store_parent()?);
+    }
     #[cfg(feature = "unlock")]
     if args.first().map(String::as_str) == Some("conversation-genesis") {
         return conversation_genesis::run(args, local_store_parent()?);

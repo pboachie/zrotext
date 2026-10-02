@@ -7,6 +7,9 @@
 /// Existing-archive-only encrypted codec, default-off with offline custody.
 #[cfg(feature = "unlock")]
 pub mod archive_backup;
+/// Explicit archive creation snapshot; the caller supplies separate material.
+#[cfg(feature = "unlock")]
+pub use archive_backup::creation as archive_init;
 /// Typed offline conversation refresh; compiled only in the explicit unlock build.
 #[cfg(feature = "unlock")]
 pub mod conversation_refresh;
