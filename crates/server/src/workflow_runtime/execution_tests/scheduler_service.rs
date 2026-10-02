@@ -20,6 +20,16 @@ fn owned_component(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+fn os_scratch_root() -> std::io::Result<PathBuf> {
+    // Every Linux fixture, including helper regressions, uses the same OS root
+    // rather than a caller-controlled TMPDIR/TMP/TEMP selection.
+    #[cfg(target_os = "linux")]
+    let configured = Path::new("/tmp").to_path_buf();
+    #[cfg(not(target_os = "linux"))]
+    let configured = std::env::temp_dir();
+    configured.canonicalize()
+}
+
 fn scratch_anchor(configured: &Path) -> std::io::Result<PathBuf> {
     let root = configured.canonicalize()?;
     let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -91,7 +101,7 @@ fn scheduler_scratch_refuses_public_anchor_foreign_target_and_non_directory() {
         .canonicalize()
         .unwrap();
     assert!(scratch_anchor(&repository).is_err());
-    let root = scratch_anchor(&std::env::temp_dir()).unwrap();
+    let root = scratch_anchor(&os_scratch_root().unwrap()).unwrap();
     let directory = create_scratch(&root).unwrap();
     let foreign = repository.join("Cargo.toml");
     let before = std::fs::read(&foreign).unwrap();
@@ -132,7 +142,7 @@ fn scheduler_scratch_refuses_public_anchor_foreign_target_and_non_directory() {
 #[cfg(unix)]
 #[test]
 fn scheduler_scratch_refuses_a_symlink_replacement_without_removing_its_target() {
-    let root = scratch_anchor(&std::env::temp_dir()).unwrap();
+    let root = scratch_anchor(&os_scratch_root().unwrap()).unwrap();
     let link = create_scratch(&root).unwrap();
     let target = create_scratch(&root).unwrap();
     if !link.starts_with(&root) || link.parent() != Some(root.as_path()) {
@@ -310,10 +320,7 @@ impl Scratch {
     fn new() -> Self {
         // Linux fixtures use the OS scratch root, independent of caller-selected
         // TMPDIR/TMP/TEMP. Windows retains its native operator-controlled root.
-        #[cfg(target_os = "linux")]
-        let root = std::path::Path::new("/tmp").canonicalize().unwrap();
-        #[cfg(not(target_os = "linux"))]
-        let root = std::env::temp_dir().canonicalize().unwrap();
+        let root = os_scratch_root().unwrap();
         let root = scratch_anchor(&root).unwrap();
         let text = root.to_str().unwrap();
         assert!(!text.contains("../") && !text.contains("..\\"));
@@ -344,6 +351,10 @@ fn scheduler_fixture_root_ignores_untrusted_temp_paths_and_is_private() {
     use std::os::unix::fs::PermissionsExt;
     const CHILD: &str = "ZT_SCHEDULER_FIXTURE_ROOT_TEST";
     if std::env::var_os(CHILD).is_some() {
+        let root = scratch_anchor(&os_scratch_root().unwrap()).unwrap();
+        let child = create_scratch(&root).unwrap();
+        remove_scratch(&root, &child).unwrap();
+        assert!(!child.exists());
         let scratch = Scratch::new();
         assert_eq!(
             scratch.root,

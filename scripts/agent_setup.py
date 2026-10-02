@@ -32,13 +32,13 @@ def checked_artifact(server: Path, expected: str) -> Path:
         raise SetupError("artifact_changed")
     return server.resolve()
 
-def node_runtime() -> tuple[str, str]:
+def node_runtime(environment=None) -> tuple[str, str]:
     node = shutil.which("node")
     if not node:
         raise SetupError("node_missing")
     try:
         version = subprocess.run([node, "--version"], capture_output=True, text=True,
-                                 timeout=5, check=True).stdout.strip()
+                                 timeout=5, check=True, env=environment).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         raise SetupError("node_unavailable") from None
     if not re.fullmatch(r"v\d+\.\d+\.\d+", version) or int(version.split(".")[0][1:]) < 22:
@@ -192,24 +192,90 @@ def demo(server: Path, expected: str) -> dict:
             "firstExchange": "SDK fixture preview", "manualCommands": 1,
             "elapsedSeconds": round(time.monotonic() - started, 3), "carrierDelivery": "unverified"}
 
+JOURNEY_STATES = {
+    "task_notification": "accepted", "notification_replay": "accepted",
+    "verified_fixture_reply": "reply_routed_for_review", "reply_replay_after_restart": "replayed",
+    "next_action_owner_review": "awaiting_authenticated_exact_approval",
+    "edited_notification_identity": "action_identity_conflict", "foreign_reply": "unverified_or_foreign_event",
+    "tampered_reply": "signature_refused", "unavailable_content": "content_unavailable",
+    "ambiguous_reply": "owner_review", "opt_out": "metadata_only_stop",
+    "notification_after_opt_out": "opted_out", "revoked_access": "revoked", "offline_expiry": "expired",
+    "unknown_submission": "unknown", "unknown_replay_after_restart": "unknown",
+}
+
+def checked_journey(value: dict) -> dict:
+    expected = {"synthetic": True, "version": 1, "mode": "guided-local-fixture", "available": False,
+                "transport": "shared-synthetic-adapter", "replyTrust": "pinned-public-test-vector-only",
+                "ownerApproval": "unavailable", "radioSubmission": "unavailable", "carrierDelivery": "unverified",
+                "modelProviderAccess": "none", "checkpointLifetime": "one-command"}
+    if not isinstance(value, dict) or set(value) != set(expected) | {"steps", "accounting"}:
+        raise SetupError("unexpected_journey_response")
+    if any(type(value[key]) is not type(item) or value[key] != item for key, item in expected.items()):
+        raise SetupError("unexpected_journey_response")
+    steps = value["steps"]
+    if not isinstance(steps, list) or len(steps) != len(JOURNEY_STATES):
+        raise SetupError("unexpected_journey_response")
+    for row, (step, state) in zip(steps, JOURNEY_STATES.items()):
+        if not isinstance(row, dict) or set(row) - {"step", "synthetic", "available", "state", "actionId", "content", "modelProviderAccess"}:
+            raise SetupError("unexpected_journey_response")
+        if (row.get("step") != step or row.get("state") != state or row.get("synthetic") is not True
+                or row.get("available") is not False or row.get("modelProviderAccess") != "none"
+                or row.get("content") not in ("unavailable", "selected-reader")
+                or ("actionId" in row and not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", row["actionId"]))):
+            raise SetupError("unexpected_journey_response")
+    expected_counts = {"notificationIdentities": 1, "notificationAttempts": 1, "replyIdentities": 2,
+                       "replyTurns": 1, "unknownIdentities": 1, "unknownAttempts": 1}
+    if value["accounting"] != expected_counts or any(type(item) is not int for item in value["accounting"].values()):
+        raise SetupError("unexpected_journey_response")
+    return value
+
+def journey() -> dict:
+    entry = Path(__file__).resolve().parents[1] / "sdk/typescript/examples/guided-journey.mjs"
+    # This command runs only the source-controlled fixture composition. Inherited
+    # credentials, NODE_OPTIONS and integration activation variables are absent.
+    environment = {key: value for key, value in os.environ.items()
+                   if key.upper() in ("PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR")}
+    node, version = node_runtime(environment)
+    started = time.monotonic()
+    try:
+        # The parent also owns the temporary lifetime: subprocess.run kills and
+        # waits for a timed-out child before this context removes its checkpoint.
+        with tempfile.TemporaryDirectory(prefix="zrotext-guided-command-") as temporary:
+            environment.update(TEMP=temporary, TMP=temporary, TMPDIR=temporary)
+            run = subprocess.run([node, str(entry)], cwd=entry.parent, env=environment,
+                                 capture_output=True, text=True, encoding="utf-8", timeout=30, check=True)
+        if len(run.stdout.encode("utf-8")) > 16384 or run.stderr:
+            raise SetupError("unexpected_journey_response")
+        result = checked_journey(json.loads(run.stdout, object_pairs_hook=unique_object, parse_constant=invalid_constant))
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError, AttributeError, SetupError):
+        raise SetupError("synthetic_journey_unavailable") from None
+    return {**result, "nodeVersion": version, "pythonVersion": sys.version.split()[0],
+            "elapsedSeconds": round(time.monotonic() - started, 3)}
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("doctor", "demo", "install", "disconnect", "stdio"))
-    parser.add_argument("--server", type=Path, required=True)
-    parser.add_argument("--sha256", required=True, help="Fingerprint reviewed from a trusted source checkout/artifact")
+    parser.add_argument("operation", choices=("doctor", "demo", "journey", "install", "disconnect", "stdio"))
+    parser.add_argument("--server", type=Path)
+    parser.add_argument("--sha256", help="Fingerprint reviewed from a trusted source checkout/artifact")
     parser.add_argument("--client", default="mcp-json")
     parser.add_argument("--config", type=Path)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--review-digest")
     args = parser.parse_args(argv)
     try:
-        if args.operation == "stdio":
+        if args.operation == "journey":
+            if args.server is not None or args.sha256 is not None or args.config is not None or args.apply or args.review_digest or args.client != "mcp-json":
+                raise SetupError("journey_configuration_unavailable")
+            output = journey()
+        elif args.server is None or args.sha256 is None:
+            raise SetupError("reviewed_artifact_required")
+        elif args.operation == "stdio":
             server = checked_artifact(args.server, args.sha256)
             node, _ = node_runtime()
             # Stdout must contain only the selected server's MCP protocol.
             os.execv(node, [node, str(server)])
             return 0
-        if args.operation == "demo":
+        elif args.operation == "demo":
             output = demo(args.server, args.sha256)
         elif args.operation == "doctor":
             output = doctor(args.server, args.sha256, args.client)
