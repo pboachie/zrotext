@@ -434,8 +434,11 @@ pub async fn confirm_ack(
 
 /// Expired unactivated exchanges lose public nonces. Activated ACK evidence is
 /// retained until exact phone confirmation, bounded by first-activation limits.
-pub async fn cleanup(client: &Client, limit: i64) -> Result<u64, tokio_postgres::Error> {
-    client.execute("UPDATE sealed_line_activation_exchanges e SET nonce=NULL WHERE challenge_id IN (SELECT e.challenge_id FROM sealed_line_activation_exchanges e JOIN line_activation_challenges c ON c.id=e.challenge_id JOIN sealed_line_key_receipts r ON (r.account_id,r.registration_id)=(e.account_id,e.registration_id) WHERE e.nonce IS NOT NULL AND r.activated_ms IS NULL AND (c.expires_at<=clock_timestamp() OR r.retired_ms IS NOT NULL) ORDER BY e.created_at LIMIT $1)",&[&limit.clamp(1,100)]).await
+pub async fn cleanup<C: tokio_postgres::GenericClient + Sync>(
+    client: &C,
+    limit: i64,
+) -> Result<u64, tokio_postgres::Error> {
+    client.execute("WITH pending AS MATERIALIZED (SELECT r.account_id,r.registration_id,r.retired_ms FROM sealed_line_key_receipts r WHERE r.activated_ms IS NULL AND EXISTS(SELECT 1 FROM sealed_line_activation_exchanges e JOIN line_activation_challenges c ON c.id=e.challenge_id WHERE (e.account_id,e.registration_id)=(r.account_id,r.registration_id) AND e.nonce IS NOT NULL AND (c.expires_at<=clock_timestamp() OR r.retired_ms IS NOT NULL)) ORDER BY r.completed_ms LIMIT $1 FOR UPDATE OF r SKIP LOCKED), expired AS MATERIALIZED (SELECT e.challenge_id FROM sealed_line_activation_exchanges e JOIN pending r ON (r.account_id,r.registration_id)=(e.account_id,e.registration_id) JOIN line_activation_challenges c ON c.id=e.challenge_id WHERE e.nonce IS NOT NULL AND (c.expires_at<=clock_timestamp() OR r.retired_ms IS NOT NULL) ORDER BY e.created_at LIMIT $1 FOR UPDATE OF e SKIP LOCKED) UPDATE sealed_line_activation_exchanges e SET nonce=NULL FROM expired x WHERE e.challenge_id=x.challenge_id AND e.nonce IS NOT NULL AND EXISTS(SELECT 1 FROM sealed_line_key_receipts r JOIN line_activation_challenges c ON c.id=e.challenge_id WHERE (r.account_id,r.registration_id)=(e.account_id,e.registration_id) AND r.activated_ms IS NULL AND (c.expires_at<=clock_timestamp() OR r.retired_ms IS NOT NULL))",&[&limit.clamp(1,100)]).await
 }
 #[cfg(test)]
 mod tests;

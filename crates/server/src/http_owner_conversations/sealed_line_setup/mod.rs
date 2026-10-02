@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Explicit local-only setup adapter. Ordinary/default conversation composition
-//! never merges this router; schema proposal is not an applied migration.
+//! Explicit setup adapter. The default startup never mounts it. The separate
+//! opt-in composition validates the installed schema and returns an unspawned
+//! retention lane; the local schema proposal is not an applied migration.
 pub mod lifecycle;
 pub mod registration;
+mod retention;
 use super::OwnerConversationsState;
 use crate::sealed_inbound::line_activation::sealed_exchange as exchange;
 use crate::{
@@ -19,6 +21,7 @@ use axum::{
     routing::post,
 };
 use base64::{Engine, engine::general_purpose::STANDARD as B};
+pub use retention::Retention;
 use serde::Deserialize;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -332,3 +335,6 @@ async fn approve(
 }
 #[cfg(test)]
 pub(crate) mod tests;
+
+#[cfg(test)]
+mod server_browser_fixture;

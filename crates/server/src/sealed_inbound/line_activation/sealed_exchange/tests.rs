@@ -572,6 +572,8 @@ async fn registration_absolute_expiry_is_not_reset_by_line_issuance_or_retry() {
     .await
     .unwrap();
     assert!(expires <= short.scope().expires_ms as i64);
+    let retained_proof = proof(&c, &ch).await;
+    let retained_digest: Vec<u8> = c.owner.f.db.query_one("SELECT device_statement_digest FROM sealed_line_activation_exchanges WHERE challenge_id=$1", &[&ch.id]).await.unwrap().get(0);
     tokio::time::sleep(std::time::Duration::from_millis(1250)).await;
     assert!(
         open(
@@ -604,11 +606,137 @@ async fn registration_absolute_expiry_is_not_reset_by_line_issuance_or_retry() {
     );
     assert_eq!(cleanup(&c.owner.f.db, 100).await.unwrap(), 1);
     assert_eq!(registration::cleanup(&c.owner.f.db, 100).await.unwrap(), 1);
+    let retained=c.owner.f.db.query_one("SELECT nonce IS NULL,device_signature_der,device_statement_digest FROM sealed_line_activation_exchanges WHERE challenge_id=$1", &[&ch.id]).await.unwrap();
+    assert!(retained.get::<_, bool>(0));
+    assert_eq!(retained.get::<_, Vec<u8>>(1), retained_proof);
+    assert_eq!(retained.get::<_, Vec<u8>>(2), retained_digest);
+
     assert!(
         registration::receipt(&mut c.owner.f.connect().await, &c.owner.principal, id)
             .await
             .unwrap()
             .is_some()
+    );
+    c.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn cleanup_stale_snapshot_cannot_clear_committed_activation_ack_nonce() {
+    let c = Case::new().await;
+    let initial = c.issue(1).await;
+    let mut scope = initial.scope().clone();
+    scope.expires_ms = scope.issued_ms + 10000;
+    let bounded = zrotext_root_material::line_key_registration::Statement::new(
+        scope,
+        *initial.root_pin(),
+        *initial.root_fingerprint(),
+        *initial.approval_point(),
+    )
+    .unwrap();
+    let (bytes, root, approval) = c.signatures(&bounded);
+    let id = Uuid::from_bytes(bounded.scope().challenge);
+    c.owner
+        .f
+        .db
+        .execute(
+            "UPDATE sealed_line_key_challenges SET transcript=$2,expires_ms=$3 WHERE account_id=$1",
+            &[
+                &c.owner.principal.tenant.account_id(),
+                &bytes,
+                &(bounded.scope().expires_ms as i64),
+            ],
+        )
+        .await
+        .unwrap();
+    let factor = c.factor().await;
+    registration::complete(
+        &mut c.owner.f.connect().await,
+        &c.owner.principal,
+        ORIGIN,
+        &c.owner.hasher,
+        &c.owner.cipher,
+        id,
+        registration::Completion {
+            unsigned: &bytes,
+            root_signature: &root,
+            approval_signature: &approval,
+            factor: &factor,
+        },
+    )
+    .await
+    .unwrap();
+    let (ch, expiry) = open(
+        &mut c.owner.f.connect().await,
+        &c.owner.principal,
+        c.line,
+        c.device,
+        id,
+    )
+    .await
+    .unwrap();
+    let sig = proof(&c, &ch).await;
+    let owner_bytes =
+        owner_line_statement(&device_line_statement(&ch, observation()).unwrap(), &sig);
+    let owner_sig: Signature = c.approval.sign(&owner_bytes);
+    let mut cleaning = c.owner.f.connect().await;
+    let stale = cleaning
+        .build_transaction()
+        .isolation_level(tokio_postgres::IsolationLevel::RepeatableRead)
+        .start()
+        .await
+        .unwrap();
+    assert!(stale.query_one("SELECT activated_ms IS NULL FROM sealed_line_key_receipts WHERE registration_id=$1", &[&id]).await.unwrap().get::<_,bool>(0));
+    // The real activation commits while the cleanup transaction still sees its
+    // original pending receipt. The public nonce is still needed for ACK retry.
+    approve(
+        &mut c.owner.f.connect().await,
+        &c.owner.principal,
+        c.line,
+        ch.id,
+        owner_sig.to_der().as_bytes(),
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(11), async {
+        loop {
+            if c.owner
+                .f
+                .db
+                .query_one(
+                    "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint >= $1",
+                    &[&expiry],
+                )
+                .await
+                .unwrap()
+                .get::<_, bool>(0)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap();
+    match cleanup(&stale, 100).await {
+        Ok(count) => assert_eq!(count, 0),
+        Err(e) => assert_eq!(
+            e.code(),
+            Some(&tokio_postgres::error::SqlState::T_R_SERIALIZATION_FAILURE)
+        ),
+    }
+    stale.rollback().await.unwrap();
+    assert_eq!(cleanup(&c.owner.f.db, 100).await.unwrap(), 0);
+    assert!(c.owner.f.db.query_one("SELECT nonce IS NOT NULL FROM sealed_line_activation_exchanges WHERE challenge_id=$1", &[&ch.id]).await.unwrap().get::<_,bool>(0));
+    assert!(
+        next_ack(
+            &mut c.owner.f.connect().await,
+            c.session(),
+            &std::collections::HashSet::new()
+        )
+        .await
+        .unwrap()
+        .is_some()
     );
     c.cleanup().await;
 }

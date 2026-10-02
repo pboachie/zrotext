@@ -140,3 +140,123 @@ pub async fn inventory(
     tx.commit().await?;
     Ok(serde_json::json!({"installed":true,"registrations":registrations,"exchanges":exchanges}))
 }
+
+/// Startup accepts only the complete installed proposal. Ordinary migration
+/// ownership remains authoritative; this read-only gate checks required
+/// key/FK shapes, validated CHECK presence, indexes and exact immutable guards.
+pub(crate) async fn require_installed<C: GenericClient + Sync>(
+    db: &C,
+) -> Result<(), CeremonyError> {
+    if !validate(db).await? {
+        return Err(invalid());
+    }
+    for (table, counts, required) in [
+        (
+            "sealed_line_key_challenges",
+            [5i64, 1, 1, 1],
+            &[
+                "p:account_id:::",
+                "u:challenge_id:::",
+                "f:account_id:accounts:id:c",
+            ][..],
+        ),
+        (
+            "sealed_line_key_receipts",
+            [11, 1, 1, 3],
+            &[
+                "p:account_id,registration_id:::",
+                "u:account_id,approval_fingerprint:::",
+                "f:account_id:accounts:id:c",
+                "f:assigned_challenge_id:line_activation_challenges:id:a",
+                "f:account_id,approval_fingerprint:line_owner_approval_keys:account_id,fingerprint:a",
+            ][..],
+        ),
+        (
+            "sealed_line_activation_exchanges",
+            [15, 1, 0, 3],
+            &[
+                "p:challenge_id:::",
+                "f:challenge_id:line_activation_challenges:id:a",
+                "f:account_id,registration_id:sealed_line_key_receipts:account_id,registration_id:a",
+                "f:account_id,line_id,device_id,generation:device_line_bindings:account_id,line_id,device_id,generation:a",
+            ][..],
+        ),
+    ] {
+        let row=db.query_one("SELECT count(*) FILTER(WHERE contype='c'),count(*) FILTER(WHERE contype='p'),count(*) FILTER(WHERE contype='u'),count(*) FILTER(WHERE contype='f'),bool_and(convalidated) FROM pg_constraint WHERE conrelid=to_regclass($1)",&[&table]).await?;
+        for (n, expected) in counts.iter().enumerate() {
+            if row.try_get::<_, i64>(n)? != *expected {
+                return Err(invalid());
+            }
+        }
+        if row.try_get::<_, Option<bool>>(4)? != Some(true) {
+            return Err(invalid());
+        }
+        let rows=db.query("SELECT c.contype::text,ARRAY(SELECT a.attname::text FROM unnest(c.conkey) WITH ORDINALITY k(n,pos) JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.n ORDER BY k.pos),CASE WHEN c.contype='f' THEN c.confrelid::regclass::text ELSE '' END,ARRAY(SELECT a.attname::text FROM unnest(c.confkey) WITH ORDINALITY k(n,pos) JOIN pg_attribute a ON a.attrelid=c.confrelid AND a.attnum=k.n ORDER BY k.pos),CASE WHEN c.contype='f' THEN c.confdeltype::text ELSE '' END FROM pg_constraint c WHERE c.conrelid=to_regclass($1) AND c.contype IN ('p','u','f')",&[&table]).await?;
+        let actual = rows
+            .into_iter()
+            .map(|r| {
+                Ok::<_, tokio_postgres::Error>(format!(
+                    "{}:{}:{}:{}:{}",
+                    r.try_get::<_, String>(0)?,
+                    r.try_get::<_, Vec<String>>(1)?.join(","),
+                    r.try_get::<_, String>(2)?,
+                    r.try_get::<_, Vec<String>>(3)?.join(","),
+                    r.try_get::<_, String>(4)?
+                ))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if required.iter().any(|r| !actual.iter().any(|a| a == r)) {
+            return Err(invalid());
+        }
+    }
+    for name in [
+        "sealed_line_key_challenges_expiry",
+        "sealed_line_key_receipts_challenge",
+        "sealed_line_key_receipts_pending",
+        "sealed_line_activation_exchanges_device",
+        "sealed_line_activation_exchanges_registration",
+        "sealed_line_activation_exchanges_binding",
+    ] {
+        let row=db.query_one("SELECT EXISTS(SELECT 1 FROM pg_index WHERE indexrelid=to_regclass($1) AND indisvalid AND indisready)",&[&name]).await?;
+        if !row.try_get::<_, bool>(0)? {
+            return Err(invalid());
+        }
+    }
+    for (table, trigger, function, events, source) in [
+        (
+            "sealed_line_key_receipts",
+            "sealed_line_key_receipt_before_update",
+            "sealed_line_key_receipt_guard",
+            19i16,
+            include_str!("registration.sql"),
+        ),
+        (
+            "sealed_line_activation_exchanges",
+            "sealed_line_activation_exchange_before_update",
+            "sealed_line_activation_exchange_guard",
+            19i16,
+            include_str!("schema.sql"),
+        ),
+        (
+            "sealed_line_activation_exchanges",
+            "sealed_line_activation_exchange_before_delete",
+            "sealed_line_activation_exchange_guard",
+            11i16,
+            include_str!("schema.sql"),
+        ),
+    ] {
+        let body = source
+            .split("AS $$")
+            .nth(1)
+            .and_then(|s| s.split("$$;").next())
+            .ok_or_else(invalid)?;
+        let row=db.query_opt("SELECT p.prosrc,p.prosecdef,l.lanname FROM pg_trigger t JOIN pg_proc p ON p.oid=t.tgfoid JOIN pg_language l ON l.oid=p.prolang WHERE t.tgrelid=to_regclass($1) AND t.tgname=$2 AND t.tgtype=$3 AND t.tgenabled IN ('O','A') AND NOT t.tgisinternal AND p.proname=$4 AND p.pronargs=0 AND p.prorettype='trigger'::regtype",&[&table,&trigger,&events,&function]).await?.ok_or_else(invalid)?;
+        if row.try_get::<_, String>(0)?.replace("\r\n", "\n") != body.replace("\r\n", "\n")
+            || row.try_get::<_, bool>(1)?
+            || row.try_get::<_, String>(2)? != "plpgsql"
+        {
+            return Err(invalid());
+        }
+    }
+    Ok(())
+}

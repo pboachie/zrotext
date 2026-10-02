@@ -6,7 +6,7 @@ use crate::{
     sealed_root_ceremony::{self as owner, CeremonyError},
 };
 use sha2::{Digest, Sha256};
-use tokio_postgres::{Client, Transaction};
+use tokio_postgres::{Client, GenericClient, Transaction};
 use uuid::Uuid;
 use zrotext_root_material::line_key_registration::{self as codec, Scope, Statement};
 type Result<T> = std::result::Result<T, CeremonyError>;
@@ -69,11 +69,11 @@ pub async fn receipt(
 }
 /// Challenge cleanup has no authority effect: absent nonce/challenge rejects
 /// completion. Immutable receipts/key and generation tombstones remain bounded.
-pub async fn cleanup(
-    client: &Client,
+pub async fn cleanup<C: GenericClient + Sync>(
+    client: &C,
     limit: i64,
 ) -> std::result::Result<u64, tokio_postgres::Error> {
-    client.execute("DELETE FROM sealed_line_key_challenges WHERE account_id IN (SELECT account_id FROM sealed_line_key_challenges WHERE expires_ms<=floor(extract(epoch FROM clock_timestamp())*1000)::bigint ORDER BY expires_ms LIMIT $1)",&[&limit.clamp(1,100)]).await
+    client.execute("WITH expired AS MATERIALIZED (SELECT account_id,challenge_id FROM sealed_line_key_challenges WHERE expires_ms<=floor(extract(epoch FROM clock_timestamp())*1000)::bigint ORDER BY expires_ms LIMIT $1 FOR UPDATE SKIP LOCKED) DELETE FROM sealed_line_key_challenges c USING expired x WHERE (c.account_id,c.challenge_id)=(x.account_id,x.challenge_id) AND c.expires_ms<=floor(extract(epoch FROM clock_timestamp())*1000)::bigint",&[&limit.clamp(1,100)]).await
 }
 pub(crate) async fn now(tx: &Transaction<'_>, previous: u64) -> Result<u64> {
     let n: i64 = tx

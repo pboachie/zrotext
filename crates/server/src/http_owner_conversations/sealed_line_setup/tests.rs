@@ -197,7 +197,7 @@ impl Case {
     pub(crate) async fn cleanup(self) {
         self.owner.f.cleanup().await
     }
-    fn state(&self) -> SetupState {
+    pub(crate) fn state(&self) -> SetupState {
         let sep = if self.owner.f.url.contains('?') {
             '&'
         } else {
@@ -689,6 +689,83 @@ async fn registration_retry_history_is_bounded_and_replaced_keys_remain_tombston
             .unwrap()
             .get::<_, i64>(0),
         1
+    );
+    c.cleanup().await;
+}
+
+#[tokio::test]
+async fn setup_retention_drains_before_any_database_work() {
+    use std::{
+        sync::atomic::{AtomicBool, Ordering},
+        time::Duration,
+    };
+    let draining = Arc::new(AtomicBool::new(true));
+    let notify = Arc::new(tokio::sync::Notify::new());
+    tokio::time::timeout(
+        Duration::from_millis(100),
+        Retention::new("invalid".into()).run(draining, notify),
+    )
+    .await
+    .unwrap();
+    let draining = Arc::new(AtomicBool::new(false));
+    let notify = Arc::new(tokio::sync::Notify::new());
+    let task = tokio::spawn(Retention::new("invalid".into()).run(draining.clone(), notify.clone()));
+    tokio::task::yield_now().await;
+    draining.store(true, Ordering::Release);
+    notify.notify_waiters();
+    tokio::time::timeout(Duration::from_millis(100), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn setup_startup_schema_rejects_absent_guard_constraint_and_partial_install() {
+    let c = Case::new().await;
+    lifecycle::require_installed(&c.owner.f.db).await.unwrap();
+    c.owner.f.db.batch_execute("ALTER TABLE sealed_line_key_receipts DISABLE TRIGGER sealed_line_key_receipt_before_update").await.unwrap();
+    assert!(lifecycle::require_installed(&c.owner.f.db).await.is_err());
+    c.owner.f.db.batch_execute("ALTER TABLE sealed_line_key_receipts ENABLE TRIGGER sealed_line_key_receipt_before_update; ALTER TABLE sealed_line_key_challenges DROP CONSTRAINT sealed_line_key_challenges_generation_check").await.unwrap();
+    assert!(lifecycle::require_installed(&c.owner.f.db).await.is_err());
+    c.owner.f.db.batch_execute("ALTER TABLE sealed_line_key_challenges ADD CONSTRAINT sealed_line_key_challenges_generation_check CHECK(generation>0); ALTER TABLE sealed_line_activation_exchanges RENAME TO incomplete_exchange").await.unwrap();
+    assert!(lifecycle::require_installed(&c.owner.f.db).await.is_err());
+    c.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn setup_cleanup_skips_locked_challenge_and_preserves_renewed_exact_identity() {
+    let c = Case::new().await;
+    let statement = c.issue(1).await;
+    let id = Uuid::from_bytes(statement.scope().challenge);
+    // The challenge is public and not yet signed/consumed. Model an expired
+    // row and a concurrently renewed user request under its real row lock.
+    let old = statement.scope().issued_ms as i64 - 600000;
+    c.owner.f.db.execute("UPDATE sealed_line_key_challenges SET issued_ms=$2,expires_ms=$3 WHERE challenge_id=$1", &[&id,&old,&(old+300000)]).await.unwrap();
+    let mut renewing = c.owner.f.connect().await;
+    let tx = renewing.transaction().await.unwrap();
+    tx.query_one(
+        "SELECT challenge_id FROM sealed_line_key_challenges WHERE challenge_id=$1 FOR UPDATE",
+        &[&id],
+    )
+    .await
+    .unwrap();
+    assert_eq!(registration::cleanup(&c.owner.f.db, 1000).await.unwrap(), 0);
+    let renewed = Uuid::new_v4();
+    let now = statement.scope().issued_ms as i64;
+    tx.execute("UPDATE sealed_line_key_challenges SET challenge_id=$2,issued_ms=$3,expires_ms=$4 WHERE challenge_id=$1", &[&id,&renewed,&now,&(now+300000)]).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(registration::cleanup(&c.owner.f.db, 100).await.unwrap(), 0);
+    assert_eq!(
+        c.owner
+            .f
+            .db
+            .query_one("SELECT challenge_id FROM sealed_line_key_challenges", &[])
+            .await
+            .unwrap()
+            .get::<_, Uuid>(0),
+        renewed
     );
     c.cleanup().await;
 }
