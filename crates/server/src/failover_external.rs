@@ -79,10 +79,34 @@ fn transcript(request: &Request, reply: &Reply) -> Result<Vec<u8>, ()> {
     Ok(bytes)
 }
 fn bounded_file(path: &Path, max: usize) -> Result<Vec<u8>, &'static str> {
-    let mut bytes = Vec::new();
-    fs::File::open(path)
+    let resolved = path
+        .canonicalize()
+        .map_err(|_| "external authority file unavailable")?;
+    let path = resolved
+        .to_str()
+        .ok_or("external authority file unavailable")?;
+    if path.contains("../") || path.contains("..\\") {
+        return Err("external authority file unavailable");
+    }
+    // Operator-controlled paths must remain regular files while loading.
+    // Check before opening so an ordinary FIFO cannot wait for a writer.
+    // This is not protection against a privileged concurrent path replacement.
+    if !fs::metadata(path)
         .map_err(|_| "external authority file unavailable")?
-        .take(max as u64 + 1)
+        .is_file()
+    {
+        return Err("external authority file unavailable");
+    }
+    let file = fs::File::open(path).map_err(|_| "external authority file unavailable")?;
+    if !file
+        .metadata()
+        .map_err(|_| "external authority file unavailable")?
+        .is_file()
+    {
+        return Err("external authority file unavailable");
+    }
+    let mut bytes = Vec::new();
+    file.take(max as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| "external authority file unavailable")?;
     if bytes.len() > max {

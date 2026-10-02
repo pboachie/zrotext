@@ -71,8 +71,12 @@ fn certificate() -> (Vec<u8>, Vec<u8>) {
 struct Scratch(PathBuf);
 impl Scratch {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!("external-authority-{}", Uuid::new_v4()));
+        let root = std::env::temp_dir().canonicalize().unwrap();
+        let root = root.to_str().unwrap();
+        assert!(!root.contains("../") && !root.contains("..\\"));
+        let path = Path::new(root).join(format!("external-authority-{}", Uuid::new_v4()));
         fs::create_dir(&path).unwrap();
+        assert!(path.canonicalize().unwrap().starts_with(root));
         Self(path)
     }
 }
@@ -514,4 +518,64 @@ fn private_configuration_refuses_missing_unknown_insecure_and_unbounded_values()
     assert!(Authority::load(&config).is_ok());
     fs::remove_file(&bearer).unwrap();
     assert!(Authority::load(&config).is_err());
+}
+
+#[test]
+fn bounded_configuration_files_require_regular_files_and_preserve_byte_limits() {
+    let scratch = Scratch::new();
+    assert!(bounded_file(&scratch.0, 4).is_err());
+    let file = scratch.0.join("bounded");
+    fs::write(&file, b"four").unwrap();
+    assert_eq!(bounded_file(&file, 4).unwrap(), b"four");
+    assert!(bounded_file(&file, 3).is_err());
+    fs::write(&file, []).unwrap();
+    assert!(bounded_file(&file, 0).unwrap().is_empty());
+    let nested = scratch.0.join("nested");
+    fs::create_dir(&nested).unwrap();
+    assert!(
+        bounded_file(&nested.join("..").join("bounded"), 0)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn bounded_configuration_file_refuses_fifo_without_waiting_for_a_writer() {
+    const CHILD_PATH: &str = "ZT_EXTERNAL_AUTHORITY_FIFO_TEST_PATH";
+    if let Some(path) = std::env::var_os(CHILD_PATH) {
+        assert!(bounded_file(Path::new(&path), 4).is_err());
+        return;
+    }
+    let scratch = Scratch::new();
+    let fifo = scratch.0.join("credential");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "failover_external::tests::bounded_configuration_file_refuses_fifo_without_waiting_for_a_writer",
+            "--nocapture",
+        ])
+        .env(CHILD_PATH, &fifo)
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(status.success());
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("configuration loader waited for a FIFO writer");
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
 }

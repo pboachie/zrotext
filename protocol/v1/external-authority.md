@@ -19,6 +19,12 @@ transport retries are disabled. Timeout is 1–5000 milliseconds for the entire
 request and response. The initial epoch floor is positive and must match the
 independent deployment authority; it is not a replacement for durable state.
 No authority endpoint, credential or production configuration belongs here.
+Configuration, bearer and CA paths must be regular files that remain under
+operator control throughout startup. Existing paths are resolved canonically
+and must have UTF-8 spellings without residual parent-directory syntax.
+Non-regular paths are refused before opening and the opened handle is checked
+again; this does not defend against
+privileged concurrent path replacement or bound filesystem I/O latency.
 
 Selecting this candidate authority configuration forces a durable global dispatch
 hold before server workers or the HTTP listener start; failure aborts startup.
