@@ -97,3 +97,50 @@ test('local failure after the durable Send checkpoint remains unknown and polls 
     assert.equal(f.calls.filter(entry=>entry.method==='workflow.action.send').length,1);
   }finally{runner?.close();await rm(directory,{recursive:true,force:true});}
 });
+
+test('disable during a pending status read prevents a new Send checkpoint or request',async()=>{
+  const directory=await mkdtemp(join(tmpdir(),'zrotext-scheduler-'));let runner;
+  try{
+    const f=fixture();runner=new ScheduledRunner({client:f.client,filename:join(directory,'journal.sqlite'),enabled:true});await runner.enqueue(f.params);
+    let entered,release;
+    const reached=new Promise(resolve=>{entered=resolve;});const held=new Promise(resolve=>{release=resolve;});
+    const call=f.client.call.bind(f.client);
+    f.client.call=async(method,params)=>{const response=await call(method,params);if(method==='workflow.action.status'){entered();await held;}return response;};
+    const pending=runner.advance(key.action_id);await reached;runner.disable();release();
+    await assert.rejects(pending,error=>error.code==='disabled');
+    assert.equal(f.calls.filter(entry=>entry.method==='workflow.action.send').length,0);
+    assert.equal(runner.inspect(key.action_id).request_id,null);
+  }finally{runner?.close();await rm(directory,{recursive:true,force:true});}
+});
+
+test('disable while readiness is pending prevents Schedule and Cancel',async()=>{
+  for(const operation of ['enqueue','cancel']){
+    const directory=await mkdtemp(join(tmpdir(),'zrotext-scheduler-'));let runner;
+    try{
+      const f=fixture();runner=new ScheduledRunner({client:f.client,filename:join(directory,'journal.sqlite'),enabled:true});
+      if(operation==='cancel')await runner.enqueue(f.params);
+      let entered,release;const reached=new Promise(resolve=>{entered=resolve;});const held=new Promise(resolve=>{release=resolve;});
+      const ready=f.client.readiness.bind(f.client);f.client.readiness=async()=>{const result=await ready();entered();await held;return result;};
+      const before=f.calls.length;const pending=operation==='enqueue'?runner.enqueue(f.params):runner.cancel(key.action_id);
+      await reached;runner.disable();release();await assert.rejects(pending,error=>error.code==='disabled');assert.equal(f.calls.length,before);
+    }finally{runner?.close();await rm(directory,{recursive:true,force:true});}
+  }
+});
+
+test('disable releases its waiting lease and preserves unknown identity for a restarted runner',async()=>{
+  for(const unknown of [false,true]){
+    const directory=await mkdtemp(join(tmpdir(),'zrotext-scheduler-'));let runner;
+    try{
+      const f=fixture(),filename=join(directory,'journal.sqlite');runner=new ScheduledRunner({client:f.client,filename,enabled:true});await runner.enqueue(f.params);
+      if(unknown){f.set({unknown:true});await assert.rejects(runner.advance(key.action_id));await due();}
+      const original=runner.inspect(key.action_id);let entered,release;
+      const reached=new Promise(resolve=>{entered=resolve;});const held=new Promise(resolve=>{release=resolve;});const call=f.client.call.bind(f.client);
+      f.client.call=async(method,params)=>{const result=await call(method,params);if(method==='workflow.action.status'){entered();await held;}return result;};
+      const pending=runner.advance(key.action_id);await reached;runner.disable();release();await assert.rejects(pending,error=>error.code==='disabled');
+      assert.deepEqual(runner.inspect(key.action_id),original);runner.close();f.client.call=call;f.set({unknown:false,state:'prepared'});
+      runner=new ScheduledRunner({client:f.client,filename,enabled:true});await runner.advance(key.action_id);
+      assert.equal(runner.inspect(key.action_id).state,unknown?'unknown':'prepared');assert.equal(f.calls.filter(c=>c.method==='workflow.action.send').length,1);
+      if(unknown)assert.equal(runner.inspect(key.action_id).request_id,original.request_id);
+    }finally{runner?.close();await rm(directory,{recursive:true,force:true});}
+  }
+});

@@ -19,7 +19,7 @@ const terminal = new Set(['prepared', 'cancelled', 'expired', 'blocked']);
 
 /** Explicitly installed customer timer; never a relay actor or renderer. */
 export class ScheduledRunner {
-  #client; #db; #active = false; #running = false;
+  #client; #db; #active = false; #running = false; #epoch = 0;
   constructor({ client, filename, enabled = false }) {
     if (!(client instanceof WorkflowToolClient) || typeof filename !== 'string' || !isAbsolute(filename)) fail('invalid_configuration');
     // The enclosing directory is trusted customer startup configuration. Never
@@ -37,6 +37,8 @@ export class ScheduledRunner {
       );`);
     this.#active = enabled === true;
   }
+  #operation() { if (!this.#active) fail('disabled'); return this.#epoch; }
+  #check(epoch) { if (!this.#active || this.#epoch !== epoch) fail('disabled'); }
   async #ready(context) {
     const ready = await this.#client.readiness();
     for (const method of ['workflow.action.status', 'workflow.action.schedule', 'workflow.action.send']) {
@@ -47,10 +49,11 @@ export class ScheduledRunner {
   }
   /** Reserve the real server occurrence; never invent a local approved action. */
   async enqueue(params) {
-    if (!this.#active) fail('disabled');
+    const epoch = this.#operation();
     validateWorkflowRequest('workflow.action.schedule', params);
     params = snapshot(params);
     const context = await this.#ready();
+    this.#check(epoch);
     const pending = { context_id: context, key: params.key, occurrence: null, schedule_request: params.request_id, params };
     this.#db.exec('BEGIN IMMEDIATE');
     try {
@@ -67,6 +70,7 @@ export class ScheduledRunner {
       }
       this.#db.exec('COMMIT');
     } catch (error) { this.#db.exec('ROLLBACK'); throw error; }
+    this.#check(epoch);
     const result = await this.#client.call('workflow.action.schedule', params);
     const occurrence = result.result;
     const identity = encode({ context_id: context, key: params.key, occurrence,
@@ -107,13 +111,15 @@ export class ScheduledRunner {
     if (changed !== 1) fail('lease_lost');
   }
   async advance(action) {
-    if (!this.#active) fail('disabled');
+    const epoch = this.#operation();
     const row = this.#claim(action);
     if (!row) return this.inspect(action);
     try {
       const { key, context_id: context, occurrence } = row.identity;
       await this.#ready(context);
+      this.#check(epoch);
       const status = (await this.#client.call('workflow.action.status', { request_id: randomUUID(), context_id: context, action_id: key.action_id })).result;
+      this.#check(epoch);
       if (['account_id','action_id','revision','binding_digest'].some(field => status.key[field] !== key[field])) fail('action_changed');
       if (status.phase === 'dispatching' && status.delivery.availability === 'available') {
         // The public occurrence DTO intentionally contains no dispatch ID.
@@ -134,6 +140,7 @@ export class ScheduledRunner {
         // and current authority remain the effect predicates on every call.
         this.#finish(row, 'expired', null);
       } else {
+        this.#check(epoch);
         const request = randomUUID();
         const changed = this.#db.prepare("UPDATE scheduled_actions SET state='unknown',request_id=?,result=NULL WHERE action_id=? AND lease_id=? AND lease_until>?")
           .run(request, action, row.lease, Date.now()).changes;
@@ -144,7 +151,10 @@ export class ScheduledRunner {
         this.#finish(row, sent.state === 'prepared' ? 'prepared' : 'waiting', sent, request);
       }
     } catch (error) {
-      if (row.state === 'unknown' || (error instanceof WorkflowToolError && error.state === 'unknown')) this.#finish(row, 'unknown', null);
+      if (error instanceof SchedulerError && error.code === 'disabled') {
+        // Stop pending work without changing its durable waiting/unknown truth.
+        this.#db.prepare('UPDATE scheduled_actions SET lease_id=NULL,lease_until=0 WHERE action_id=? AND lease_id=?').run(action, row.lease);
+      } else if (row.state === 'unknown' || (error instanceof WorkflowToolError && error.state === 'unknown')) this.#finish(row, 'unknown', null);
       else this.#finish(row, 'blocked', null);
       throw error;
     }
@@ -152,11 +162,12 @@ export class ScheduledRunner {
   }
   /** Explicit own-prepared withdrawal; server owns identity/grant/refund CAS. */
   async cancel(action, request = randomUUID()) {
-    if (!this.#active) fail('disabled');
+    const epoch = this.#operation();
     const row = this.#db.prepare('SELECT identity FROM scheduled_actions WHERE action_id=?').get(action);
     if (!row) fail('not_found');
     const { key, context_id: context } = JSON.parse(row.identity);
     await this.#ready(context);
+    this.#check(epoch);
     const response = (await this.#client.call('workflow.action.cancel', { request_id: request, key })).result;
     this.#db.prepare("UPDATE scheduled_actions SET state='cancelled',result=?,lease_id=NULL,lease_until=0 WHERE action_id=?")
       .run(encode(response), action);
@@ -182,6 +193,6 @@ export class ScheduledRunner {
       }
     } finally { this.#running = false; }
   }
-  disable() { this.#active = false; }
-  close() { if (this.#running) fail('runner_active'); this.#active = false; this.#db.close(); }
+  disable() { this.#active = false; this.#epoch += 1; }
+  close() { if (this.#running) fail('runner_active'); this.#active = false; this.#epoch += 1; this.#db.close(); }
 }

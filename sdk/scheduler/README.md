@@ -28,7 +28,11 @@ existing metadata; unknown or unavailable evidence does not imply delivery.
 `cancel(action_id)` invokes the actual own-prepared cancellation tool and its
 pre-grant refund CAS. It does not approve, render, revoke an owner decision,
 cancel another grant's message, or cancel future recurrence. Disabling the local
-runner stops local polling; it is not a remote grant withdrawal. Owner grant
+runner stops local polling and invalidates pending reads before a new Schedule,
+Send or Cancel request. Its own lease is released without replacing waiting or
+unknown journal state, so a newly enabled instance can resume safely. A request
+already dispatched may still complete and its actual result is recorded; disable
+is not a remote grant withdrawal. Owner grant
 withdrawal and independently authenticated owner decisions remain necessary for
 broader cancellation. No credential is reconstructed from a stored actor ID.
 
