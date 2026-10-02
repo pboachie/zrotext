@@ -46,11 +46,33 @@ class ConversationEntryOptInDeviceTest {
             }
             return null
         }
+        fun scrollToControl(label: String): Boolean {
+            val direction = if (label == "Open conversation review") AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+                else AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+            val root = instrumentation.uiAutomation.rootInActiveWindow ?: return false
+            fun scroll(current: AccessibilityNodeInfo): Boolean {
+                if (current.isScrollable && current.performAction(direction)) return true
+                for (index in 0 until current.childCount) {
+                    if (current.getChild(index)?.let(::scroll) == true) return true
+                }
+                return false
+            }
+            return scroll(root)
+        }
         instrumentation.waitForIdleSync()
         fun awaitNode(label: String, enabled: Boolean): AccessibilityNodeInfo {
             val deadline = SystemClock.elapsedRealtime() + 5000
             var action = node(label)
+            var scrolls = 0
             while ((action == null || action.isEnabled != enabled) && SystemClock.elapsedRealtime() < deadline) {
+                // File-selection status can shrink the real scroll viewport. Discover the
+                // exact control through accessibility scrolling, without changing app state.
+                if (action == null && label in setOf("Open conversation review", "Enable review for this session", "Review selected conversation") &&
+                    scrolls < 6 && scrollToControl(label)) {
+                    scrolls++
+                    instrumentation.waitForIdleSync()
+                    Thread.sleep(250) // Allow the accessibility scroll animation to expose its new nodes.
+                }
                 Thread.sleep(25)
                 action = node(label)
             }
