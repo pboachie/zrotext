@@ -224,10 +224,8 @@ async fn actual_customer_scheduler_restart_resolves_lost_send_and_cancels_withou
         true,
     );
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    // TEMP is trusted test startup configuration. Resolve its selected anchor
-    // once and permit only one freshly generated child, never the anchor itself.
-    let scratch_root = scratch_anchor(&std::env::temp_dir()).unwrap();
-    let directory = create_scratch(&scratch_root).unwrap();
+    let scratch = Scratch::new();
+    let directory = &scratch.path;
     let input = request();
     let mut fixture = json!({"upstream":format!("http://{address}"),"credential":flow.credential.as_str(),"journal":directory.join("journal.sqlite"),"phase":"enqueue","expected_state":"waiting","action_id":flow.action.key.action_id,"params":{"request_id":input.request_id,"key":flow.action.key,"policy":flow.policy,"series_id":input.series_id,"ordinal":0}});
     driver(fixture.clone()).await;
@@ -294,5 +292,74 @@ async fn actual_customer_scheduler_restart_resolves_lost_send_and_cancels_withou
     server.abort();
     let _ = server.await;
     flow.case.f.cleanup().await;
-    remove_scratch(&scratch_root, &directory).unwrap();
+
+    drop(scratch);
+}
+
+struct Scratch {
+    root: PathBuf,
+    path: PathBuf,
+}
+impl Scratch {
+    fn new() -> Self {
+        // Linux fixtures use the OS scratch root, independent of caller-selected
+        // TMPDIR/TMP/TEMP. Windows retains its native operator-controlled root.
+        #[cfg(target_os = "linux")]
+        let root = std::path::Path::new("/tmp").canonicalize().unwrap();
+        #[cfg(not(target_os = "linux"))]
+        let root = std::env::temp_dir().canonicalize().unwrap();
+        let root = scratch_anchor(&root).unwrap();
+        let text = root.to_str().unwrap();
+        assert!(!text.contains("../") && !text.contains("..\\"));
+        let path = root.join(format!("zrotext-scheduler-{}", Uuid::new_v4()));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create(&path)
+                .unwrap();
+        }
+        #[cfg(not(unix))]
+        std::fs::create_dir(&path).unwrap();
+        assert_eq!(path.canonicalize().unwrap().parent(), Some(root.as_path()));
+        Self { root, path }
+    }
+}
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        remove_scratch(&self.root, &self.path).unwrap();
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn scheduler_fixture_root_ignores_untrusted_temp_paths_and_is_private() {
+    use std::os::unix::fs::PermissionsExt;
+    const CHILD: &str = "ZT_SCHEDULER_FIXTURE_ROOT_TEST";
+    if std::env::var_os(CHILD).is_some() {
+        let scratch = Scratch::new();
+        assert_eq!(
+            scratch.root,
+            std::path::Path::new("/tmp").canonicalize().unwrap()
+        );
+        assert_eq!(
+            std::fs::metadata(&scratch.path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        return;
+    }
+    let scratch = Scratch::new();
+    let uncreated = scratch.path.join("uncreated-temp-root");
+    assert!(!uncreated.exists());
+    let status = Command::new("/proc/self/exe")
+        .args(["--exact", "workflow_runtime::execution_tests::scheduler_service::scheduler_fixture_root_ignores_untrusted_temp_paths_and_is_private"])
+        .env(CHILD, "1").env("TMPDIR", &uncreated).env("TMP", &uncreated).env("TEMP", &uncreated)
+        .status().unwrap();
+    assert!(status.success());
+    assert!(!uncreated.exists());
 }
