@@ -52,6 +52,9 @@ def runtime_reads(source: str, relative_path: str) -> set[str]:
         "crates/owner-cli/src/windows/custody_sign/tests.rs": {
             "TEMP", "ZT_CUSTODY_NATIVE_CASE",
         },
+        "crates/owner-cli/src/windows/conversation_genesis/tests.rs": {
+            "TEMP", "ZT_GENESIS_NATIVE_CASE",
+        },
         "crates/owner-cli/src/windows/conversation_refresh/native_tests.rs": {"TEMP"},
         "crates/root-material/src/archive_backup/tests.rs": {"ZT_ARCHIVE_INTEROP"},
         "crates/owner-cli/src/windows/conversation_activation/native_tests.rs": {

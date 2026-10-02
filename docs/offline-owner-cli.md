@@ -177,6 +177,56 @@ input and expiry. Hidden limited-token console tests exercise success, pre-secre
 context rejection, decline, wrong token and expiry during token entry, checking
 that rejected operations emit neither signature and do not modify the bundle.
 
+## Candidate first conversation manifest (disabled by default)
+
+The explicit `unlock` build also accepts `conversation-genesis`. Supply these
+flags in order: `--account`, `--origin`, `--bundle`, `--proposal`, `--output`,
+`--session`, `--device`, `--line`, `--device-signing-fingerprint`, `--generation`,
+`--peer`, `--phone-reader-point`, `--archive-reader-point`,
+`--phone-signer-point`, `--issued`, `--expires`. UUIDs use canonical lowercase
+hyphenation; fingerprints are full lowercase 32-byte hex, points are full
+uncompressed 65-byte SEC1 hex, and times are epoch milliseconds. Proposal and
+output paths use the existing absolute ASCII drive-path restrictions.
+
+This command requires independently intended account/session/device/line,
+paired signing fingerprint, binding generation, peer and time window. Compare
+the actual phone reader and signing points through an independent phone export
+comparison and the existing archive reader point against its independent
+receipt. Supply those compared points explicitly. Copying them from a downloaded
+proposal, or accepting a matching API identifier, cannot establish phone-key
+provenance. If independent comparison is unavailable, decline the operation.
+The signing fingerprint is SHA256 of the canonical uncompressed signing point,
+matching the existing device-pairing store; it is not an API credential ID.
+
+The bounded `ZTCG01` proposal contains public scope, the paired signing
+fingerprint, root pin, times and an unsigned manifest. Before asking for a
+recovery token, the command validates the local root bundle against its
+independent kit fingerprint and reconstructs the only accepted manifest from
+the supplied scope and points: generation one, version one, zero predecessor,
+and exactly four active records in role order 1/2/4/6 with scopes 4/12/2/0.
+All record validity windows equal the intended manifest window, at most one day.
+The reader, archive reader, signer and root revoker points must be distinct,
+and the revoker must match the root pin. Every proposed unsigned byte must match
+this reconstruction. A generic manifest, replacement archive, changed scope
+or substituted phone point is refused before secret entry.
+
+Review the displayed scope and all three points, then type `APPROVE-GENESIS`
+or `DECLINE`. Only approval proceeds to ordinary authenticated root recovery.
+The fresh clock after token entry must remain within the intended window.
+The root must match the reviewed pin. The command signs the existing manifest
+transcript in canonical low-s form and writes one public signed manifest with
+create-new semantics; it never overwrites existing output. Recovery and root
+material are dropped before writing. Cancellation or failure creates no durable
+unlock or recovery marker; an I/O failure may leave a partial public output.
+
+The manifest signature does not encode session, peer, origin, paired signing
+fingerprint or binding generation. Those are contextual owner review, requiring
+authenticated server installation, current pairing/lease validation and separate
+phone approval. This offline operation establishes none of them and generates
+no phone, archive, recovery or root credentials. Fixture tests pin the shared
+public proposal/manifest digests and exercise changed framing, points, scopes,
+wrong roots, expiry during token entry and output overwrite refusal.
+
 ## Automated verification
 
 Native tests use hidden, exclusively owned child consoles, unique temporary

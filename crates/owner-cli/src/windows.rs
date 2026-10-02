@@ -18,6 +18,8 @@ use zrotext_root_terminal::{Session, verify_process_eligibility};
 #[cfg(feature = "unlock")]
 mod conversation_activation;
 #[cfg(feature = "unlock")]
+mod conversation_genesis;
+#[cfg(feature = "unlock")]
 mod conversation_refresh;
 #[cfg(feature = "unlock")]
 mod custody_sign;
@@ -521,6 +523,10 @@ fn run_unlock(
 }
 
 pub(super) fn run(args: &[String]) -> Result<()> {
+    #[cfg(feature = "unlock")]
+    if args.first().map(String::as_str) == Some("conversation-genesis") {
+        return conversation_genesis::run(args, local_store_parent()?);
+    }
     #[cfg(feature = "unlock")]
     if args.first().map(String::as_str) == Some("custody-sign") {
         return custody_sign::run(args, local_store_parent()?);

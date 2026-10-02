@@ -9,6 +9,17 @@ except ImportError:
 
 
 class RuntimeReadsTest(unittest.TestCase):
+    def test_genesis_markers_are_excluded_only_in_the_test_module(self):
+        flags = {"TEMP", "ZT_GENESIS_NATIVE_CASE"}
+        source = ";".join(f'std::env::var("{flag}")' for flag in flags)
+        fixture = "crates/owner-cli/src/windows/conversation_genesis/tests.rs"
+        self.assertEqual(env.runtime_reads(source, fixture), set())
+        for runtime in ["crates/owner-cli/src/windows/conversation_genesis.rs",
+                        "crates/server/src/main.rs"]:
+            self.assertEqual(env.runtime_reads(source, runtime), flags)
+        module = Path(env.ROOT, "crates/owner-cli/src/windows/conversation_genesis.rs").read_text(encoding="utf-8")
+        self.assertRegex(module, r'#\[cfg\(test\)\]\s*mod tests;')
+
     def test_custody_markers_are_excluded_only_in_the_test_module(self):
         flags = {"TEMP", "ZT_CUSTODY_NATIVE_CASE"}
         source = ";".join(f'std::env::var("{flag}")' for flag in flags)
