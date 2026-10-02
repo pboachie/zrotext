@@ -36,6 +36,7 @@ pub mod enrollment;
 pub mod genesis;
 pub(crate) mod lifecycle;
 pub mod owner_host;
+pub mod sealed_line_setup;
 pub mod send;
 
 /// Startup supplies a checked SDK package only after explicit default-off configuration.

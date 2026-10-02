@@ -289,6 +289,13 @@ pub async fn install_manifest(
     {
         return Err(ConversationError::Forbidden);
     }
+    // Historical line approval keys remain reserved after revocation and
+    // replacement. v0 registration cannot know future ECDH reader points.
+    for point in &points {
+        if tx.query_opt("SELECT 1 FROM line_owner_approval_keys WHERE account_id=$1 AND signing_key_sec1=$2 LIMIT 1", &[&owner.tenant.account_id(),point]).await?.is_some() {
+            return Err(ConversationError::Forbidden);
+        }
+    }
     super::fresh_owner(&tx, owner).await?;
     let now = clock(&tx, root.high_water).await?;
     let verified = sealed_manifest::verify(

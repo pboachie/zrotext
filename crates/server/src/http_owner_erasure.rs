@@ -83,6 +83,7 @@ const BLOCKED_TABLES: &[&str] = &[
     "line_owner_approval_keys",
     "line_activation_challenges",
     "sms_line_activation_exchanges",
+    "sealed_line_activation_exchanges",
     "sms_line_owner_approval_keys",
     "sms_owner_key_audit",
     "owner_recipient_holds",
@@ -607,6 +608,21 @@ async fn erase_account(
     // partial erasure must not be committed.
     let mut blocked = Vec::new();
     for table in BLOCKED_TABLES {
+        if *table == "sealed_line_activation_exchanges" {
+            let installed = match tx
+                .query_one(
+                    "SELECT to_regclass('sealed_line_activation_exchanges') IS NOT NULL",
+                    &[],
+                )
+                .await
+            {
+                Ok(r) => r.get::<_, bool>(0),
+                Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+            };
+            if !installed {
+                continue;
+            }
+        }
         let rows = match count(
             &tx,
             &format!("SELECT count(*) FROM {table} WHERE account_id=$1"),
