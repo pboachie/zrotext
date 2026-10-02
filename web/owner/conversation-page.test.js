@@ -4,7 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { randomUUID } = require("node:crypto");
 const core = require("./conversation-core.js");
-async function page({ expireReview = false, adapterAvailable = true, ownerSetup, ownerFactory, resultStatus = "simulator_accepted", closeError, acceptedError } = {}) {
+async function page({ expireReview = false, adapterAvailable = true, ownerSetup, ownerFactory, rootFactory, resultStatus = "simulator_accepted", closeError, acceptedError } = {}) {
   const previous = new Map(), elements = new Map(), events = {}, writes = [];
   let time = 0, accepted = 0;
   const scope = {account:randomUUID(),session:randomUUID(),interval:randomUUID(),device:randomUUID(),line:randomUUID(),generation:"1",peer:"+12",reader:"fixture",manifest:"fixture"};
@@ -26,7 +26,7 @@ async function page({ expireReview = false, adapterAvailable = true, ownerSetup,
     window:{addEventListener(event,fn){events[event]=fn;}},setInterval(fn){events.timer=fn;return 1;},
     ZtConversation:{create(a){const c=core.create(a,()=>time);return {...c,prepare:async()=>{const review=await c.prepare();if(expireReview)time=60000;return review;}};}},
     ZtConversationSimulatorAdapter:adapterAvailable?adapter:undefined,
-    ZtConversationOwnerSetup:ownerSetup,ZtConversationOwnerSetupFactory:ownerFactory };
+    ZtConversationOwnerSetup:ownerSetup,ZtConversationOwnerSetupFactory:ownerFactory,ZtConversationRootEnrollment:rootFactory };
   for (const [name,value] of Object.entries(values)) {previous.set(name,Object.getOwnPropertyDescriptor(globalThis,name));Object.defineProperty(globalThis,name,{value,writable:true,configurable:true});}
   delete require.cache[require.resolve("./conversation.js")];require("./conversation.js");
   return {element,events,writes,literal,accepted:()=>accepted,async click(id){await element(id).listeners.click();},input(value){element("body").value=value;element("body").listeners.input();},
@@ -76,3 +76,19 @@ test("lost accepted response clears plaintext and displays identity with no new 
  await p.click("clear");assert.ok(p.element("status").textContent.includes(messageId));await p.click("connect");await p.click("confirm");assert.equal(p.accepted(),1);
  }finally{p.cleanup();}
 });
+
+test("ordinary page includes concrete root enrollment controls and no recovery input",()=>{const html=require("node:fs").readFileSync(require("node:path").join(__dirname,"conversation.html"),"utf8");assert.ok(html.includes('src="conversation-root-enrollment.js"'));for(const id of ["root-begin","root-complete","root-backup-file","root-card-file","root-signatures-file","root-mfa"])assert.ok(html.includes(`id="${id}"`),id);assert.ok(!html.includes('id="root-recovery"'));});
+
+for(const phase of ["begin","complete"])test("root page Clear fences held "+phase+" and clears local factor",async()=>{
+ let release,closed=0,signal;
+ const root={close(){closed++;},begin:async(_b,_c,options)=>{signal=options.signal;if(phase==="begin")await new Promise(r=>release=r);},complete:async()=>{await new Promise(r=>release=r);}};
+ const p=await page({adapterAvailable:false,ownerFactory:{create:()=>({close(){}})},rootFactory:{create:()=>root}});
+ try{p.element("root-backup-file").files=[{}];p.element("root-card-file").files=[{}];p.element("root-signatures-file").files=[{}];
+ if(phase==="complete")await p.click("root-begin");p.element("root-mfa").value="fixture-factor";
+ const pending=p.click(phase==="begin"?"root-begin":"root-complete");await Promise.resolve();await p.click("clear");assert.equal(signal.aborted,true);assert.equal(p.element("root-mfa").value,"");assert.ok(closed>=1);release();await pending;assert.ok(!p.element("status").textContent.startsWith("Existing root custody enrolled"));assert.ok(!p.element("status").textContent.startsWith("Public root challenge prepared"));assert.equal(p.element("composer").disabled,true);
+ }finally{p.cleanup();}
+});
+test("root completion reports only custody and clears MFA without changing manifest checkpoint",async()=>{const p=await page({adapterAvailable:false,ownerFactory:{create:()=>({close(){}})},rootFactory:{create:()=>({begin:async()=>{},complete:async()=>({rootEnrolled:true}),close(){}})}});try{p.element("root-backup-file").files=[{}];p.element("root-card-file").files=[{}];await p.click("root-begin");p.element("root-signatures-file").files=[{}];p.element("root-mfa").value="fixture-factor";p.element("owner-version").value="independent";await p.click("root-complete");assert.match(p.element("status").textContent,/content consent remain separate/);assert.equal(p.element("owner-version").value,"independent");assert.equal(p.element("root-mfa").value,"");assert.equal(p.element("composer").disabled,true);}finally{p.cleanup();}});
+
+for(const field of ["owner-account","owner-fingerprint"])test("prepared root identity edit closes candidate and clears factor: "+field,async()=>{let closed=0;const p=await page({adapterAvailable:false,ownerFactory:{create:()=>({close(){}})},rootFactory:{create:()=>({begin:async()=>{},close(){closed++;}})}});try{p.element("root-backup-file").files=[{}];p.element("root-card-file").files=[{}];await p.click("root-begin");p.element("root-mfa").value="fixture-factor";p.element("owner-setup").listeners.input({target:{id:field,closest:()=>false}});assert.ok(closed>0);assert.equal(p.element("root-mfa").value,"");}finally{p.cleanup();}});
+test("competing public setup fences a held root begin and closes its candidate",async()=>{let release,closed=0;const p=await page({adapterAvailable:false,ownerFactory:{create:()=>({close(){},provisionInitial:async()=>({manifestVersion:"1",manifestDigest:"fixture"})})},rootFactory:{create:()=>({begin:async()=>new Promise(r=>release=r),close(){closed++;}})}});try{p.element("root-backup-file").files=[{}];p.element("root-card-file").files=[{}];const pending=p.click("root-begin");await Promise.resolve();p.element("genesis-phone-file").files=[{}];p.element("genesis-archive-file").files=[{}];await p.click("provision-initial");release();await pending;assert.ok(closed>0);assert.ok(!p.element("status").textContent.startsWith("Public root challenge prepared"));}finally{p.cleanup();}});

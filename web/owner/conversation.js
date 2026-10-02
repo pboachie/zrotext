@@ -8,7 +8,7 @@
   if (!adapter && !setup) return; // No implicit credentials, network or activation.
   let controller = adapter ? ZtConversation.create(adapter) : null;
   let setupPending = false, setupRevision = 0;
-  let custodyLifetime = null;
+  let custodyLifetime = null, rootEnrollment = null, rootLifetime = null;
   let hadScope = false;
   function render() {
     const s = controller ? controller.state() : { scope: null, draft: "", review: null, canConfirm: false, busy: setupPending, messages: [] };
@@ -71,17 +71,40 @@
   el("cancel").addEventListener("click", () => { try { controller.edit(controller.state().draft); } catch { controller.clear(); } render(); el("body").focus(); });
   const clear = () => {
     setupRevision++;
+    rootLifetime?.abort(); rootEnrollment?.close(); rootEnrollment = null; el("root-mfa").value = "";
     try { try { custodyLifetime?.abort(); } finally { try { if(ordinary)setup.close(); } finally { adapter?.close?.(); } } }
     finally {
       try { controller?.clear(); }
       finally { hadScope = false; el("status").textContent = "Conversation cleared. Check authorization again."; render(); }
     }
   };
+  if (ordinary && globalThis.ZtConversationRootEnrollment) {
+    const rootIdentity = () => ({enabled:el("owner-enabled").checked,publicationConsent:el("root-publication-consent").checked,account_id:el("owner-account").value,backup_id:el("root-backup-id").value,rootFingerprint:el("owner-fingerprint").value,origin:el("root-origin").value});
+    el("root-begin").addEventListener("click",()=>action(async()=>{
+      if(setupPending)throw Error("Setup in progress");
+      setupPending=true; const ticket=++setupRevision;
+      try {
+        rootLifetime?.abort(); rootEnrollment?.close(); rootLifetime=new AbortController();
+        if(el("root-backup-file").files.length!==1||el("root-card-file").files.length!==1)throw Error("Existing root artifacts required");
+        rootEnrollment=ZtConversationRootEnrollment.create({enabled:true,host:el("root-artifacts"),readIdentity:rootIdentity});
+        await rootEnrollment.begin(el("root-backup-file").files[0],el("root-card-file").files[0],{signal:rootLifetime.signal});
+        if(ticket!==setupRevision)throw Error("Root setup closed");
+        el("status").textContent="Public root challenge prepared. Existing offline custody approval is required; no root enrollment or content consent has occurred.";
+      } catch(error) {rootLifetime?.abort();rootEnrollment?.close();throw error;} finally {setupPending=false;el("root-mfa").value="";}
+    }));
+    el("root-complete").addEventListener("click",()=>action(async()=>{
+      if(setupPending||!rootEnrollment||el("root-signatures-file").files.length!==1)throw Error("Existing root challenge and public signatures required");
+      setupPending=true; const ticket=setupRevision, factor=el("root-mfa").value; el("root-mfa").value="";
+      try {await rootEnrollment.complete(el("root-signatures-file").files[0],factor);if(ticket!==setupRevision)throw Error("Root setup closed");el("root-signatures-file").value="";el("status").textContent="Existing root custody enrolled and independently reread for this owner session. Initial manifest setup, conversation activation and content consent remain separate.";}
+      finally {setupPending=false;el("root-mfa").value="";}
+    }));
+    el("root-enrollment").addEventListener("input",event=>{if(["root-mfa","root-signatures-file"].includes(event.target.id))return;if(rootEnrollment)clear();});
+  }
   if (ordinary) {
     el("provision-initial").addEventListener("click",()=>action(async()=>{if(el("genesis-phone-file").files.length!==1||el("genesis-archive-file").files.length!==1)throw Error("Existing public phone and archive files required");const ticket=++setupRevision;custodyLifetime?.abort();custodyLifetime=new AbortController();const checkpoint=await setup.provisionInitial(el("genesis-phone-file").files[0],el("genesis-archive-file").files[0],{signal:custodyLifetime.signal});if(ticket!==setupRevision)throw Error("Genesis closed");el("owner-version").value=checkpoint.manifestVersion;el("owner-digest").value=checkpoint.manifestDigest;el("genesis-phone-file").value="";el("genesis-archive-file").value="";el("status").textContent="Initial public manifest installed and independently verified. Record the accepted checkpoint shown above. Separate activation and explicit phone approval remain required.";}));
     el("prepare-activation").addEventListener("click",()=>action(async()=>{const ticket=++setupRevision;custodyLifetime?.abort();custodyLifetime=new AbortController();await setup.activate(undefined,{signal:custodyLifetime.signal});if(ticket!==setupRevision)throw Error("Activation closed");el("status").textContent="Activation submitted. Download the public phone setup candidate below; explicit phone approval and installation are still required before checking authorization.";}));
     el("activate-conversation").addEventListener("click",()=>action(async()=>{if(el("activation-file").files.length!==1)throw Error("Existing root-signed activation successor required");const ticket=++setupRevision;custodyLifetime?.abort();custodyLifetime=new AbortController();await setup.activate(el("activation-file").files[0],{signal:custodyLifetime.signal});if(ticket!==setupRevision)throw Error("Activation closed");el("activation-file").value="";el("status").textContent="Activation submitted. Download the public phone setup candidate below; explicit phone approval and installation are still required before checking authorization.";}));
-    el("owner-setup").addEventListener("input",event=>{if(event.target.closest("#custody-artifacts")||event.target.id==="activation-file")return;if(custodyLifetime||setupPending){setup.close();clear();}});
+    el("owner-setup").addEventListener("input",event=>{if(event.target.closest("#custody-artifacts")||event.target.id==="activation-file"||event.target.closest("#root-enrollment"))return;if(custodyLifetime||setupPending||rootEnrollment){setup.close();clear();}});
     el("session-custody").addEventListener("change",()=>{if(custodyLifetime||setupPending){setup.close();clear();}});
   }
   el("clear").addEventListener("click", clear);

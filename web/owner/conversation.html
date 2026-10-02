@@ -4,7 +4,7 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex"><title>Conversation simulator · ZROtext</title>
   <link rel="stylesheet" href="devices.css"><link rel="stylesheet" href="conversation.css">
-  <script defer src="conversation-core.js"></script><script defer src="conversation-owner-adapter.js"></script><script defer src="conversation-bootstrap.js"></script><script defer src="conversation-owner-setup.js"></script><script defer src="conversation.js"></script>
+  <script defer src="conversation-core.js"></script><script defer src="conversation-owner-adapter.js"></script><script defer src="conversation-bootstrap.js"></script><script defer src="conversation-owner-setup.js"></script><script defer src="conversation-root-enrollment.js"></script><script defer src="conversation.js"></script>
 </head>
 <body><main>
   <header><div><p class="eyebrow">ZROtext</p><h1>One conversation</h1></div></header>
@@ -37,6 +37,20 @@
     <button id="prepare-activation" type="button">Review activation with existing offline custodian</button>
     <button id="activate-conversation" type="button">Submit activation for phone approval</button>
     <p>Download the typed public activation proposal and approve it with the existing offline conversation-activation command. Select the returned signed public manifest. Every current key record stays exact. Missing signer output stays unavailable. Download the public phone setup candidate, then explicitly approve and install it on the phone before checking authorization. After session signer enrollment, download the public reply-authority candidate, or manually select and copy its public base64 text into the phone reply-authority prompt, and explicitly install it on the phone to enable replies. These public files grant no authority by themselves. Historical messages whose manifests this session has not verified stay unavailable.</p>
+    <fieldset id="root-enrollment"><legend>Enroll existing encrypted root custody</legend>
+      <p>Compare account, owner origin, root fingerprint and backup identity independently with your existing custodian receipt. Use only an existing encrypted root backup and public card. Never enter root recovery material here. Enrollment grants no manifest or content authority.</p>
+      <label>Independently compared HTTPS owner origin <input id="root-origin" type="text" autocomplete="off"></label>
+      <label>Existing backup ID <input id="root-backup-id" type="text" autocomplete="off"></label>
+      <label>Existing encrypted root backup <input id="root-backup-file" type="file"></label>
+      <label>Existing public root card <input id="root-card-file" type="file"></label>
+      <label><input id="root-publication-consent" type="checkbox"> I approve publication of this exact encrypted backup and public card under the independently compared root.</label>
+      <button id="root-begin" type="button">Prepare existing root enrollment</button>
+      <div id="root-artifacts"></div>
+      <p>Use the downloaded public challenge with the existing offline custody-sign command and your local custodian kit. Save exactly its Enrollment signature and Custody signature lines in a public UTF-8 file. No offline signing command runs in this browser.</p>
+      <label>Saved public signature lines <input id="root-signatures-file" type="file"></label>
+      <label>Current owner MFA code <input id="root-mfa" type="password" autocomplete="off"></label>
+      <button id="root-complete" type="button">Review and complete root enrollment</button>
+    </fieldset>
     <div id="custody-artifacts"></div>
   </fieldset>
   <label><input id="session-custody" type="checkbox"> Use a session-only signing key for this exact conversation. Leaving, logging out or expiry closes it; setup requires my existing owner-root approval.</label>
