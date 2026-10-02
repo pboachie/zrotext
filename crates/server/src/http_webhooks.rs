@@ -31,6 +31,7 @@ const MAX_ENDPOINTS_PER_ACCOUNT: i64 = 8;
 const MAX_HISTORY_PAGE: u8 = 20;
 
 pub struct WebhookHttpState {
+    pub sealed_delivery_enabled: bool,
     pub database_url: String,
     pub auth_hasher: Arc<TokenHasher>,
     pub canonical_origin: String,
@@ -53,7 +54,7 @@ impl crate::http_auth::preauth::OwnerAuthState for WebhookHttpState {
 }
 
 pub fn router(state: WebhookHttpState) -> Router {
-    Router::new()
+    let mut app = Router::new()
         .route("/v1/webhooks", get(list_endpoints).post(create_endpoint))
         .route(
             "/v1/inbound/messages/{message_id}/events",
@@ -69,8 +70,14 @@ pub fn router(state: WebhookHttpState) -> Router {
         )
         .route("/v1/webhooks/{endpoint_id}/enable", post(enable_endpoint))
         .route("/v1/webhooks/{endpoint_id}/disable", post(disable_endpoint))
-        .route("/v1/webhooks/{endpoint_id}/rotate", post(rotate_endpoint))
-        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .route("/v1/webhooks/{endpoint_id}/rotate", post(rotate_endpoint));
+    if state.sealed_delivery_enabled {
+        app = app.route(
+            "/v1/webhooks/{endpoint_id}/sealed-events",
+            post(select_sealed_events),
+        );
+    }
+    app.layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(middleware::from_fn(no_store))
         .with_state(Arc::new(state))
 }
@@ -86,6 +93,7 @@ async fn no_store(request: Request, next: Next) -> Response {
 
 #[derive(Debug)]
 enum EndpointError {
+    Unauthorized,
     BadRequest,
     NotFound,
     Limit,
@@ -97,6 +105,7 @@ enum EndpointError {
 impl IntoResponse for EndpointError {
     fn into_response(self) -> Response {
         let (status, code) = match self {
+            Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
             Self::BadRequest => (StatusCode::BAD_REQUEST, "invalid_webhook_endpoint"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             Self::Limit => (StatusCode::CONFLICT, "endpoint_limit"),
@@ -149,6 +158,78 @@ async fn owner_read(
 #[serde(deny_unknown_fields)]
 struct CreateBody {
     callback_url: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SealedSelection {
+    enabled: bool,
+    encrypted_transfer_confirmed: bool,
+    disclosure_version: String,
+}
+
+async fn select_sealed_events(
+    State(state): State<Arc<WebhookHttpState>>,
+    Path(endpoint): Path<Uuid>,
+    crate::http_auth::preauth::OwnerMutation(principal,_slot):crate::http_auth::preauth::OwnerMutation,
+    crate::api_json::ApiJson(selection): crate::api_json::ApiJson<SealedSelection>,
+) -> Response {
+    if endpoint.is_nil()
+        || selection.disclosure_version != "sealed-events-v1"
+        || (selection.enabled && !selection.encrypted_transfer_confirmed)
+    {
+        return EndpointError::BadRequest.into_response();
+    }
+    let Ok(mut client) = connect(&state).await else {
+        return EndpointError::Unavailable.into_response();
+    };
+    match set_sealed_selection(&mut client, &principal, endpoint, selection.enabled).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => error.into_response(),
+    }
+}
+
+async fn set_sealed_selection(
+    client: &mut Client,
+    owner: &SessionPrincipal,
+    endpoint: Uuid,
+    enabled: bool,
+) -> Result<(), EndpointError> {
+    let tx = client
+        .transaction()
+        .await
+        .map_err(|_| EndpointError::Unavailable)?;
+    crate::http_owner_conversations::lock_owner(&tx, owner)
+        .await
+        .map_err(|_| EndpointError::Unauthorized)?;
+    let row = tx
+        .query_opt(
+            "SELECT enabled FROM webhook_endpoints WHERE account_id=$1 AND id=$2 FOR UPDATE",
+            &[&owner.tenant.account_id(), &endpoint],
+        )
+        .await
+        .map_err(|_| EndpointError::Unavailable)?
+        .ok_or(EndpointError::NotFound)?;
+    if enabled && !row.get::<_, bool>(0) {
+        return Err(EndpointError::BadRequest);
+    }
+    if enabled {
+        let selected:i64=tx.query_one("SELECT count(*) FROM webhook_endpoints WHERE account_id=$1 AND enabled AND sealed_events_enabled AND id<>$2",&[&owner.tenant.account_id(),&endpoint]).await.map_err(|_|EndpointError::Unavailable)?.get(0);
+        if selected >= 5 {
+            return Err(EndpointError::Limit);
+        }
+    }
+    tx.execute(
+        "UPDATE webhook_endpoints SET sealed_events_enabled=$3 WHERE account_id=$1 AND id=$2",
+        &[&owner.tenant.account_id(), &endpoint, &enabled],
+    )
+    .await
+    .map_err(|_| EndpointError::Unavailable)?;
+    crate::http_owner_conversations::fresh_owner(&tx, owner)
+        .await
+        .map_err(|_| EndpointError::Unauthorized)?;
+    tx.commit().await.map_err(|_| EndpointError::Unavailable)?;
+    Ok(())
 }
 
 #[derive(Serialize)]

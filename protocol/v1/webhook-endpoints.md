@@ -11,6 +11,7 @@ active owner session and the session's double-submit CSRF cookie and
 
 | Route | Result |
 | --- | --- |
+| `POST /v1/webhooks/{id}/sealed-events` | Explicit owner-confirmed opt-in for future authenticated opaque conversation events; defaults false. See [selected sealed delivery](sealed-event-delivery.md). Legacy history/replay routes do not expose this separate outbox. |
 | `POST /v1/webhooks` with `{"callback_url":"https://..."}` | Creates a disabled endpoint. Returns its ID, URL, `enabled:false`, and `signing_secret_b64url` once. |
 | `GET /v1/webhooks` | Lists this account's IDs, URLs, enabled states, nullable `paused_at_ms` and `failure_started_at_ms`, and creation times. Never includes signing secrets or encrypted secret bytes. |
 | `GET /v1/webhooks/{id}/deliveries` | Pages recent delivery and attempt metadata for this account's endpoint. No payload, callback URL, signing secret, response body, recipient, or inbound content is returned. |
