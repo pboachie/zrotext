@@ -46,41 +46,4 @@ impl Samples {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn request_parser_rejects_unknown_authority_fields_and_missing_challenge() {
-        let base = serde_json::json!({"v":1,"type":"sealed_session_request","connection_epoch":1,"challenge":Uuid::new_v4()});
-        assert!(matches!(
-            serde_json::from_value::<super::super::ClientFrame>(base.clone()),
-            Ok(super::super::ClientFrame::SealedSessionRequest { v: 1, .. })
-        ));
-        let mut extra = base.clone();
-        extra["authorized"] = serde_json::json!(true);
-        assert!(serde_json::from_value::<super::super::ClientFrame>(extra).is_err());
-        let mut missing = base;
-        missing.as_object_mut().unwrap().remove("challenge");
-        assert!(serde_json::from_value::<super::super::ClientFrame>(missing).is_err());
-    }
-    #[test]
-    fn replay_rate_and_lifetime_budget_fail_closed_without_evicting_nonces() {
-        let mut samples = Samples::new();
-        let start = Instant::now();
-        let first = Uuid::new_v4();
-        let session = samples.session_id();
-        assert!(!samples.is_sampled());
-        assert!(!samples.admit(Uuid::nil(), start));
-        assert!(samples.admit(first, start));
-        assert!(!samples.admit(Uuid::new_v4(), start + Duration::from_secs(4)));
-        assert!(!samples.admit(first, start + Duration::from_secs(5)));
-        samples.sampled();
-        for index in 1..64 {
-            assert!(samples.admit(Uuid::new_v4(), start + Duration::from_secs(index * 5)));
-        }
-        assert!(!samples.admit(Uuid::new_v4(), start + Duration::from_secs(320)));
-        assert!(!samples.admit(first, start + Duration::from_secs(325)));
-        assert_eq!(samples.session_id(), session);
-        assert!(samples.is_sampled());
-        assert_ne!(Samples::new().session_id(), session);
-    }
-}
+mod tests;
