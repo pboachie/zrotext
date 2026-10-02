@@ -134,9 +134,24 @@ async fn next(tx: &Transaction<'_>, account: Uuid, line: Uuid) -> Result<i64> {
     }
 }
 async fn distinct(tx: &Transaction<'_>, account: Uuid, point: &[u8], pin: &[u8]) -> Result<()> {
-    if point==&pin[29..] || tx.query_one("SELECT EXISTS(SELECT 1 FROM device_keys WHERE account_id=$1 AND signing_key_sec1=$2) OR EXISTS(SELECT 1 FROM sms_line_owner_approval_keys WHERE account_id=$1 AND signing_key_sec1=$2) OR EXISTS(SELECT 1 FROM line_owner_approval_keys WHERE account_id=$1 AND signing_key_sec1=$2)",&[&account,&point]).await?.get::<_,bool>(0) {return Err(reject());}
+    if point==&pin[29..] || tx.query_one("SELECT EXISTS(SELECT 1 FROM device_keys WHERE account_id=$1 AND signing_key_sec1=$2) OR EXISTS(SELECT 1 FROM sms_line_owner_approval_keys WHERE account_id=$1 AND signing_key_sec1=$2) OR EXISTS(SELECT 1 FROM line_owner_approval_keys WHERE account_id=$1 AND signing_key_sec1=$2) OR EXISTS(SELECT 1 FROM known_signing_role_claims WHERE account_id=$1 AND signing_key_sec1=$2)",&[&account,&point]).await?.get::<_,bool>(0) {return Err(reject());}
     // v0 has no reader directory. Future genesis separately fences every
     // historical approval point, so later reader enrollment cannot alias it.
+    Ok(())
+}
+/// Replacement is restricted to the same owner's selected phone/line. A live
+/// key provisioned through another trust path is never silently revoked.
+async fn replacement_allowed(
+    tx: &Transaction<'_>,
+    p: &SessionPrincipal,
+    device: Uuid,
+    line: Uuid,
+) -> Result<()> {
+    let account = p.tenant.account_id();
+    if let Some(key)=tx.query_opt("SELECT fingerprint FROM line_owner_approval_keys WHERE account_id=$1 AND revoked_at IS NULL FOR UPDATE",&[&account]).await? {
+  let fp:Vec<u8>=key.try_get(0)?;
+  if tx.query_opt("SELECT registration_id FROM sealed_line_key_receipts WHERE account_id=$1 AND approval_fingerprint=$2 AND user_id=$3 AND device_id=$4 AND line_id=$5 AND retired_ms IS NULL AND activated_ms IS NULL FOR UPDATE",&[&account,&fp,&p.user_id,&device,&line]).await?.is_none(){return Err(reject());}
+ }
     Ok(())
 }
 pub async fn issue(
@@ -153,6 +168,7 @@ pub async fn issue(
     let (pin, fp) = root(&tx, account).await?;
     owner::owner_locks(&tx, p, false).await?;
     first(&tx, account).await?;
+    replacement_allowed(&tx, p, selection.device, selection.line).await?;
     if fp != selection.root_fingerprint
         || next(&tx, account, selection.line).await? != selection.generation
     {
@@ -260,16 +276,15 @@ async fn fresh_bound(
     {
         return Err(reject());
     }
-    if let Some(socket) = socket {
-        if socket.account_id != account
+    if let Some(socket) = socket
+        && (socket.account_id != account
             || socket.device_id.as_bytes() != &s.device
             || socket.site_id != s.site_id
             || socket.instance_id != s.instance_id
             || socket.connection_epoch as u64 != s.connection_epoch
-            || socket.deployment_epoch as u64 != s.deployment_epoch
-        {
-            return Err(reject());
-        }
+            || socket.deployment_epoch as u64 != s.deployment_epoch)
+    {
+        return Err(reject());
     }
     let n = now(tx, s.issued_ms).await?;
     if n >= s.expires_ms {
@@ -282,15 +297,15 @@ async fn fresh_bound(
 /// manufacture a cookie principal or infer a phone session from request JSON.
 pub(crate) async fn lock_phone_scope(
     tx: &Transaction<'_>,
-    account: Uuid,
     user: Uuid,
     session_id: Uuid,
     id: Uuid,
     line: Uuid,
-    device: Uuid,
     challenge: Uuid,
     socket: InboundSession<'_>,
 ) -> Result<Statement> {
+    let account = socket.account_id;
+    let device = socket.device_id;
     let (pin, fp) = root(tx, account).await?;
     tx.query_opt(
         "SELECT id FROM accounts WHERE id=$1 AND disabled_at IS NULL FOR UPDATE",
@@ -360,6 +375,7 @@ pub async fn complete(
     let (pin, fp) = root(&tx, account).await?;
     owner::owner_locks(&tx, p, false).await?;
     first(&tx, account).await?;
+    replacement_allowed(&tx, p, Uuid::from_bytes(s.device), Uuid::from_bytes(s.line)).await?;
     if pin != *statement.root_pin()
         || fp != *statement.root_fingerprint()
         || next(&tx, account, Uuid::from_bytes(s.line)).await? != s.next_generation as i64
@@ -389,10 +405,18 @@ pub async fn complete(
         tx.commit().await?;
         return Err(crate::auth::AuthError::InvalidCredentials.into());
     };
-    // Retire all prior unactivated scope and its pending generation atomically.
-    tx.execute("UPDATE device_line_bindings b SET state='revoked' FROM sealed_line_key_receipts r WHERE r.account_id=$1 AND r.activated_ms IS NULL AND r.retired_ms IS NULL AND r.assigned_challenge_id IS NOT NULL AND (b.account_id,b.line_id,b.device_id,b.generation)=(r.account_id,r.line_id,r.device_id,r.generation) AND b.state='pending'",&[&account]).await?;
-    tx.execute("UPDATE sealed_line_key_receipts SET retired_ms=$2 WHERE account_id=$1 AND activated_ms IS NULL AND retired_ms IS NULL",&[&account,&(factor_now as i64)]).await?;
-    tx.execute("UPDATE line_owner_approval_keys SET revoked_at=clock_timestamp() WHERE account_id=$1 AND revoked_at IS NULL",&[&account]).await?;
+    // Retire only this selected scope's prior unactivated receipts/keys and
+    // assigned pending generations. Independently provisioned keys are fenced
+    // by replacement_allowed before factor consumption.
+    let device = Uuid::from_bytes(s.device);
+    let line = Uuid::from_bytes(s.line);
+    let prior=tx.query("SELECT approval_fingerprint FROM sealed_line_key_receipts WHERE account_id=$1 AND user_id=$2 AND device_id=$3 AND line_id=$4 AND activated_ms IS NULL AND retired_ms IS NULL FOR UPDATE",&[&account,&p.user_id,&device,&line]).await?;
+    tx.execute("UPDATE device_line_bindings b SET state='revoked' FROM sealed_line_key_receipts r WHERE r.account_id=$1 AND r.user_id=$2 AND r.device_id=$3 AND r.line_id=$4 AND r.activated_ms IS NULL AND r.retired_ms IS NULL AND r.assigned_challenge_id IS NOT NULL AND (b.account_id,b.line_id,b.device_id,b.generation)=(r.account_id,r.line_id,r.device_id,r.generation) AND b.state='pending'",&[&account,&p.user_id,&device,&line]).await?;
+    tx.execute("UPDATE sealed_line_key_receipts SET retired_ms=$5 WHERE account_id=$1 AND user_id=$2 AND device_id=$3 AND line_id=$4 AND activated_ms IS NULL AND retired_ms IS NULL",&[&account,&p.user_id,&device,&line,&(factor_now as i64)]).await?;
+    for row in prior {
+        let fp: Vec<u8> = row.try_get(0)?;
+        tx.execute("UPDATE line_owner_approval_keys SET revoked_at=clock_timestamp() WHERE account_id=$1 AND fingerprint=$2 AND revoked_at IS NULL",&[&account,&fp]).await?;
+    }
     tx.execute("INSERT INTO line_owner_approval_keys(account_id,fingerprint,signing_key_sec1) VALUES($1,$2,$3)",&[&account,&s.approval_fingerprint.as_slice(),&statement.approval_point().as_slice()]).await?;
     let completed = now(&tx, factor_now).await?;
     tx.execute("INSERT INTO sealed_line_key_receipts(account_id,registration_id,user_id,session_id,device_id,line_id,generation,transcript,root_signature,approval_signature,approval_point,approval_fingerprint,paired_fingerprint,issued_ms,expires_ms,completed_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)",&[&account,&id,&p.user_id,&p.session_id,&Uuid::from_bytes(s.device),&Uuid::from_bytes(s.line),&(s.next_generation as i64),&c.unsigned,&c.root_signature,&c.approval_signature,&statement.approval_point().as_slice(),&s.approval_fingerprint.as_slice(),&s.paired_signing_fingerprint.as_slice(),&(s.issued_ms as i64),&(s.expires_ms as i64),&(completed as i64)]).await?;

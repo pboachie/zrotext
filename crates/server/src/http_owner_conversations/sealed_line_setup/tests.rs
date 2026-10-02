@@ -410,7 +410,7 @@ async fn registration_requires_root_and_new_key_possession_exact_session_and_one
 }
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
-async fn registration_rejects_same_device_uuid_changed_key_and_revoked_membership() {
+async fn registration_rejects_same_device_uuid_changed_key_and_removed_owner_membership() {
     let c = Case::new().await;
     let statement = c.issue(1).await;
     let id = Uuid::from_bytes(statement.scope().challenge);
@@ -453,7 +453,7 @@ async fn registration_rejects_same_device_uuid_changed_key_and_revoked_membershi
         .f
         .db
         .execute(
-            "UPDATE memberships SET role='observer',revoked_at=clock_timestamp() WHERE account_id=$1",
+            "DELETE FROM memberships WHERE account_id=$1",
             &[&c.owner.principal.tenant.account_id()],
         )
         .await
@@ -595,6 +595,58 @@ async fn registration_rejects_wrong_comparison_alias_scope_and_frozen_lease_with
                 "SELECT count(*) FROM phone_lines WHERE account_id=$1",
                 &[&c.owner.principal.tenant.account_id()]
             )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+    // An independently trusted, unscoped live key must survive both issue and completion.
+    let pending = c.issue(1).await;
+    let unrelated = SigningKey::generate_from_rng(&mut rand::rng());
+    let point = unrelated
+        .verifying_key()
+        .to_sec1_point(false)
+        .as_bytes()
+        .to_vec();
+    let fingerprint: [u8; 32] = Sha256::digest(&point).into();
+    c.owner.f.db.execute("INSERT INTO line_owner_approval_keys(account_id,fingerprint,signing_key_sec1) VALUES($1,$2,$3)", &[&c.owner.principal.tenant.account_id(), &fingerprint.as_slice(), &point]).await.unwrap();
+    let (bytes, root, approval) = c.signatures(&pending);
+    let factor = c.factor().await;
+    assert!(
+        registration::complete(
+            &mut c.owner.f.connect().await,
+            &c.owner.principal,
+            ORIGIN,
+            &c.owner.hasher,
+            &c.owner.cipher,
+            Uuid::from_bytes(pending.scope().challenge),
+            registration::Completion {
+                unsigned: &bytes,
+                root_signature: &root,
+                approval_signature: &approval,
+                factor: &factor
+            }
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        registration::issue(
+            &mut c.owner.f.connect().await,
+            &c.owner.principal,
+            ORIGIN,
+            c.selection(1)
+        )
+        .await
+        .is_err()
+    );
+    let retained=c.owner.f.db.query_one("SELECT revoked_at IS NULL FROM line_owner_approval_keys WHERE account_id=$1 AND fingerprint=$2", &[&c.owner.principal.tenant.account_id(), &fingerprint.as_slice()]).await.unwrap();
+    assert!(retained.get::<_, bool>(0));
+    assert_eq!(
+        c.owner
+            .f
+            .db
+            .query_one("SELECT count(*) FROM sealed_line_key_receipts", &[])
             .await
             .unwrap()
             .get::<_, i64>(0),

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
-use crate::http_owner_conversations::sealed_line_setup::{self, tests::Case};
+use crate::http_owner_conversations::sealed_line_setup::{
+    self,
+    tests::{Case, ORIGIN},
+};
 use p256::{
     ecdsa::{Signature, SigningKey, signature::Signer},
     elliptic_curve::Generate,
@@ -258,6 +261,30 @@ async fn sealed_setup_commits_once_reconciles_restart_and_requires_exact_phone_a
     assert_eq!(inventory["registrations"].as_array().unwrap().len(), 1);
     assert_eq!(inventory["exchanges"][0]["phone_acknowledged"], true);
     assert!(inventory["exchanges"][0].get("nonce").is_none());
+    // Optional absence is different from a broken installed schema.
+    c.owner
+        .f
+        .db
+        .batch_execute("ALTER TABLE sealed_line_activation_exchanges RENAME TO missing_exchange")
+        .await
+        .unwrap();
+    assert!(
+        sealed_line_setup::lifecycle::inventory(&mut c.owner.f.connect().await, &c.owner.principal)
+            .await
+            .is_err()
+    );
+    c.owner.f.db.batch_execute("ALTER TABLE missing_exchange RENAME TO sealed_line_activation_exchanges; ALTER TABLE sealed_line_key_receipts ALTER COLUMN completed_ms DROP NOT NULL").await.unwrap();
+    assert!(
+        sealed_line_setup::lifecycle::inventory(&mut c.owner.f.connect().await, &c.owner.principal)
+            .await
+            .is_err()
+    );
+    c.owner.f.db.batch_execute("ALTER TABLE sealed_line_key_receipts ALTER COLUMN completed_ms SET NOT NULL; ALTER TABLE sealed_line_activation_exchanges RENAME COLUMN device_statement_digest TO hidden_digest; ALTER TABLE sealed_line_activation_exchanges ADD device_statement_digest text").await.unwrap();
+    assert!(
+        sealed_line_setup::lifecycle::inventory(&mut c.owner.f.connect().await, &c.owner.principal)
+            .await
+            .is_err()
+    );
     c.cleanup().await;
 }
 #[tokio::test]
@@ -421,6 +448,23 @@ async fn replacement_retires_old_pending_binding_and_burns_generation_without_re
     .await
     .unwrap();
     assert_eq!(new.generation, 2);
+    // A different line cannot revoke this ceremony's still-live key/receipt.
+    let selected_line = c.line;
+    c.line = Uuid::new_v4();
+    c.approval = SigningKey::generate_from_rng(&mut rand::rng());
+    assert!(
+        sealed_line_setup::registration::issue(
+            &mut c.owner.f.connect().await,
+            &c.owner.principal,
+            ORIGIN,
+            c.selection(1)
+        )
+        .await
+        .is_err()
+    );
+    let retained=c.owner.f.db.query_one("SELECT r.retired_ms IS NULL,k.revoked_at IS NULL FROM sealed_line_key_receipts r JOIN line_owner_approval_keys k ON (k.account_id,k.fingerprint)=(r.account_id,r.approval_fingerprint) WHERE registration_id=$1", &[&second]).await.unwrap();
+    assert!(retained.get::<_, bool>(0) && retained.get::<_, bool>(1));
+    c.line = selected_line;
     assert_ne!(new.nonce, ch.nonce);
     assert_eq!(cleanup(&c.owner.f.db, 100).await.unwrap(), 1);
     assert!(

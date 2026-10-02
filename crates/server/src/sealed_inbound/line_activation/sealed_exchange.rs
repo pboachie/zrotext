@@ -140,12 +140,10 @@ pub async fn next_challenge(
         let tx = client.transaction().await?;
         if registration::lock_phone_scope(
             &tx,
-            session.account_id,
             r.get(6),
             r.get(7),
             r.get(0),
             r.get(2),
-            session.device_id,
             r.get(1),
             session,
         )
@@ -181,12 +179,10 @@ pub async fn record_device_proof(
     let tx = client.transaction().await?;
     let statement = match registration::lock_phone_scope(
         &tx,
-        session.account_id,
         r.get(4),
         r.get(5),
         r.get(0),
         r.get(1),
-        session.device_id,
         proof.challenge_id,
         session,
     )

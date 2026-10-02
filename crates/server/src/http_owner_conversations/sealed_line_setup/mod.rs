@@ -94,29 +94,24 @@ fn xerror(e: exchange::ExchangeError) -> Response {
         _ => fail(),
     }
 }
-fn decode<const N: usize>(s: &str) -> Result<[u8; N], Response> {
+fn decode<const N: usize>(s: &str) -> Result<[u8; N], StatusCode> {
     let b = decode_bytes(s, N)?;
-    b.try_into()
-        .map_err(|_| StatusCode::BAD_REQUEST.into_response())
+    b.try_into().map_err(|_| StatusCode::BAD_REQUEST)
 }
-fn decode_bytes(s: &str, max: usize) -> Result<Vec<u8>, Response> {
+fn decode_bytes(s: &str, max: usize) -> Result<Vec<u8>, StatusCode> {
     if s.len() > max.div_ceil(3) * 4 {
-        return Err(StatusCode::BAD_REQUEST.into_response());
+        return Err(StatusCode::BAD_REQUEST);
     }
-    let b = B
-        .decode(s)
-        .map_err(|_| StatusCode::BAD_REQUEST.into_response())?;
+    let b = B.decode(s).map_err(|_| StatusCode::BAD_REQUEST)?;
     if b.len() > max || B.encode(&b) != s {
-        return Err(StatusCode::BAD_REQUEST.into_response());
+        return Err(StatusCode::BAD_REQUEST);
     }
     Ok(b)
 }
-fn number(s: &str) -> Result<i64, Response> {
-    let n = s
-        .parse::<i64>()
-        .map_err(|_| StatusCode::BAD_REQUEST.into_response())?;
+fn number(s: &str) -> Result<i64, StatusCode> {
+    let n = s.parse::<i64>().map_err(|_| StatusCode::BAD_REQUEST)?;
     if n <= 0 || n.to_string() != s {
-        return Err(StatusCode::BAD_REQUEST.into_response());
+        return Err(StatusCode::BAD_REQUEST);
     }
     Ok(n)
 }
@@ -172,7 +167,7 @@ async fn challenge(
         return fail();
     }
     let selection = (|| {
-        Ok::<_, Response>(registration::Selection {
+        Ok::<_, StatusCode>(registration::Selection {
             device: b.device_id,
             line: b.line_id,
             generation: number(&b.expected_next_binding_generation)?,
@@ -187,7 +182,7 @@ async fn challenge(
     })();
     let selection = match selection {
         Ok(x) => x,
-        Err(e) => return e,
+        Err(e) => return e.into_response(),
     };
     let Ok(mut db) = crate::runtime_db::connect(&s.owner.database_url).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
@@ -220,7 +215,7 @@ async fn complete(
     }
     let bytes = match decode_bytes(&b.unsigned_statement, 1024) {
         Ok(v) => v,
-        Err(e) => return e,
+        Err(e) => return e.into_response(),
     };
     let signatures = (
         decode::<64>(&b.root_signature),
@@ -325,7 +320,7 @@ async fn approve(
     }
     let signature = match decode_bytes(&b.owner_signature_der, 80) {
         Ok(s) => s,
-        Err(e) => return e,
+        Err(e) => return e.into_response(),
     };
     let Ok(mut db) = crate::runtime_db::connect(&s.owner.database_url).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();

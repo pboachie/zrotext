@@ -410,10 +410,10 @@ async fn issue_challenge_for_purpose(
     let generation = issued
         .checked_add(1)
         .ok_or(LineActivationError::Unavailable)?;
-    if let Some(statement) = &scoped {
-        if statement.scope().next_generation != generation as u64 {
-            return Err(LineActivationError::Unavailable);
-        }
+    if let Some(statement) = &scoped
+        && statement.scope().next_generation != generation as u64
+    {
+        return Err(LineActivationError::Unavailable);
     }
     // A superseded pending challenge can never later activate. Preserve its
     // revoked binding and challenge rows as generation/replay tombstones.
@@ -518,8 +518,10 @@ pub async fn activate_line_binding(
         line_id,
         generation,
         proof,
-        LinePurpose::Sealed,
-        None,
+        ActivationScope {
+            purpose: LinePurpose::Sealed,
+            registration: None,
+        },
     )
     .await
 }
@@ -539,12 +541,18 @@ pub async fn activate_sms_line_binding(
         line_id,
         generation,
         proof,
-        LinePurpose::Sms,
-        None,
+        ActivationScope {
+            purpose: LinePurpose::Sms,
+            registration: None,
+        },
     )
     .await
 }
 
+struct ActivationScope {
+    purpose: LinePurpose,
+    registration: Option<Uuid>,
+}
 async fn activate_for_purpose(
     client: &mut Client,
     principal: &SessionPrincipal,
@@ -552,9 +560,12 @@ async fn activate_for_purpose(
     line_id: Uuid,
     generation: i64,
     proof: LineActivationProof<'_>,
-    purpose: LinePurpose,
-    registration: Option<Uuid>,
+    scope: ActivationScope,
 ) -> Result<(), LineActivationError> {
+    let ActivationScope {
+        purpose,
+        registration,
+    } = scope;
     let account_id = principal.tenant.account_id();
     if account_id != session.account_id {
         return Err(LineActivationError::Unavailable);
@@ -857,8 +868,10 @@ pub async fn activate_registered_line_binding(
         line,
         generation,
         proof,
-        LinePurpose::Sealed,
-        Some(registration),
+        ActivationScope {
+            purpose: LinePurpose::Sealed,
+            registration: Some(registration),
+        },
     )
     .await
 }
