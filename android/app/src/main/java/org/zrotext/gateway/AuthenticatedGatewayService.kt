@@ -91,6 +91,8 @@ class AuthenticatedGatewayService : Service() {
     @Volatile private var smsLineActivation: PreparedSmsLineActivation? = null
     /** The hub repeats sms_line_activated on later connections; this one is already installed. */
     @Volatile private var installedSmsLineChallenge: UUID? = null
+    /** Optional, explicitly accepted SEALED line setup. No content worker or body consent. */
+    @Volatile private var sealedLineActivation: SealedLineActivationProvider? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -105,6 +107,7 @@ class AuthenticatedGatewayService : Service() {
     @Synchronized
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_PAUSE) {
+            SealedLineActivationMount.disable()
             ConversationProcessMount.runtime.pause(ConversationStopReason.USER_STOP)
             val rebootResumeCleared = HeartbeatResumeStore.clear(this)
             halt()
@@ -391,6 +394,13 @@ class AuthenticatedGatewayService : Service() {
                                 if (generation != currentGeneration || socket !== webSocket) return
                                 val identity = EvidenceIdentity.fromStream(machine.activeAccountId(), machine.activeDeviceId(), url)
                                 sessionIdentity = identity
+                                sealedLineActivation?.close()
+                                sealedLineActivation = SealedLineActivationMount.open(applicationContext, keys,
+                                    machine.activeAccountId(), machine.activeDeviceId(), epoch, {
+                                        generation == currentGeneration && socket === webSocket && sessionIdentity == identity &&
+                                            machine.phase == DeviceStreamMachine.Phase.ACTIVE &&
+                                            runCatching { machine.heartbeatEpoch() == epoch }.getOrDefault(false)
+                                    })
                                 conversationHost = ConversationSocketComposition.registerAuthenticatedHost(webSocket, identity, epoch,
                                     scheduler, {
                                         check(generation == currentGeneration && socket === webSocket && sessionIdentity == identity &&
@@ -525,6 +535,11 @@ class AuthenticatedGatewayService : Service() {
                             check(machine.phase == DeviceStreamMachine.Phase.ACTIVE)
                             handleSmsLineChallenge(webSocket, machine, keys, currentGeneration,
                                 SmsLineActivationFrames.challenge(frame))
+                        }
+                        "sealed_line_challenge", "sealed_line_proof_ack", "sealed_line_activated", "sealed_line_install_ack" -> {
+                            check(machine.phase == DeviceStreamMachine.Phase.ACTIVE)
+                            handleSealedLineFrame(webSocket, machine, keys, currentGeneration,
+                                SealedLineActivationFrames.incoming(frame))
                         }
                         "sms_line_proof_ack" -> {
                             check(machine.phase == DeviceStreamMachine.Phase.ACTIVE)
@@ -852,6 +867,39 @@ class AuthenticatedGatewayService : Service() {
             a.deviceId == b.deviceId && a.generation == b.generation &&
             a.expiresAtMs == b.expiresAtMs && a.nonce.contentEquals(b.nonce)
 
+    private fun handleSealedLineFrame(webSocket: WebSocket, machine: DeviceStreamMachine, keys: DeviceSigningKeyStore,
+                                      currentGeneration: Int, input: SealedLineActivationFrames.Incoming) {
+        val epoch = machine.heartbeatEpoch()
+        val provider = synchronized(this) {
+            if (generation != currentGeneration || socket !== webSocket) return
+            val existing = sealedLineActivation
+            if (existing != null && existing.sessionIsCurrent()) existing
+            else {
+                existing?.close()
+                sealedLineActivation = null
+                SealedLineActivationMount.open(applicationContext, keys, machine.activeAccountId(),
+                    machine.activeDeviceId(), epoch, {
+                        generation == currentGeneration && socket === webSocket &&
+                            machine.phase == DeviceStreamMachine.Phase.ACTIVE &&
+                            runCatching { machine.heartbeatEpoch() == epoch }.getOrDefault(false)
+                    }).also { sealedLineActivation = it }
+            }
+        } ?: return // Explicit local acceptance may be supplied after authentication; disabled resolution is inert.
+        JournalRuntime.io.execute {
+            fun current() = generation == currentGeneration && socket === webSocket &&
+                sealedLineActivation === provider && machine.phase == DeviceStreamMachine.Phase.ACTIVE &&
+                runCatching { machine.heartbeatEpoch() == epoch }.getOrDefault(false)
+            if (!current()) return@execute
+            try {
+                val reply = provider.accept(input)
+                if (reply != null && current() && !webSocket.send(reply))
+                    disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
+            } catch (_: Exception) {
+                if (current()) disconnect(currentGeneration, DeviceReconnectPolicy.Loss.PROTOCOL_REJECTED)
+            }
+        }
+    }
+
     /** Installs the local line binding only for the exact proof this process sent. */
     private fun handleSmsLineActivated(keys: DeviceSigningKeyStore, accountId: UUID,
                                        deviceId: UUID, ack: AuthenticatedSmsLineActivationAck) {
@@ -1128,6 +1176,8 @@ class AuthenticatedGatewayService : Service() {
     }
 
     private fun closeConversationConnection() {
+        val sealed = sealedLineActivation; sealedLineActivation = null
+        sealed?.close()
         val host=conversationHost;conversationHost=null
         val old=conversationConnection;conversationConnection=null
         try {host?.close()} finally {old?.close()}
@@ -1164,6 +1214,7 @@ class AuthenticatedGatewayService : Service() {
 
     @Synchronized
     override fun onDestroy() {
+        SealedLineActivationMount.disable()
         ConversationProcessMount.runtime.pause(ConversationStopReason.WORKER_SHUTDOWN)
         processActive = false
         halt()
