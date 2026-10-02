@@ -252,6 +252,14 @@ jobs:
           done
           docker exec "$POSTGRES_SERVICE_ID" pg_isready -U postgres
           test "$(docker exec "$POSTGRES_SERVICE_ID" psql -U postgres -d postgres -Atc 'SHOW max_locks_per_transaction')" = '256'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: env.RUN_RUST == 'true'
+        with:
+          node-version: "22.16.0"
+      - name: Build SDK for authenticated recipe service fixtures
+        if: env.RUN_RUST == 'true'
+        working-directory: sdk/typescript
+        run: npm ci --ignore-scripts && npm run build
       - name: Test against PostgreSQL
         if: env.RUN_RUST == 'true'
         run: cargo test --locked --workspace -- --ignored --skip real_stripe_ --test-threads=4

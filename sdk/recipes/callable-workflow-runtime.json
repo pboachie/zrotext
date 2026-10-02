@@ -1,0 +1,217 @@
+{
+  "name": "zrotext_workflow_recipe",
+  "description": "Customer-local exact-scope recipe. Installation is disabled; preview is read-only, proposals require independent owner review, prepare requires an exact owner-bound action. No provider access or plaintext input.",
+  "installed_state": "disabled",
+  "inputSchema": {
+    "oneOf": [
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operation",
+          "params"
+        ],
+        "properties": {
+          "operation": {
+            "const": "preview"
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "request_id"
+            ],
+            "properties": {
+              "request_id": {
+                "type": "string",
+                "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+              }
+            }
+          }
+        }
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operation",
+          "params"
+        ],
+        "properties": {
+          "operation": {
+            "const": "task_completion"
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "request_id"
+            ],
+            "properties": {
+              "request_id": {
+                "type": "string",
+                "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+              }
+            }
+          }
+        }
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operation",
+          "params"
+        ],
+        "properties": {
+          "operation": {
+            "const": "owner_proposal"
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "request_id"
+            ],
+            "properties": {
+              "request_id": {
+                "type": "string",
+                "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+              }
+            }
+          }
+        }
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operation",
+          "params"
+        ],
+        "properties": {
+          "operation": {
+            "const": "status"
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "request_id"
+            ],
+            "properties": {
+              "request_id": {
+                "type": "string",
+                "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+              }
+            }
+          }
+        }
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operation",
+          "params"
+        ],
+        "properties": {
+          "operation": {
+            "const": "prepare"
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "request_id",
+              "key"
+            ],
+            "properties": {
+              "request_id": {
+                "type": "string",
+                "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+              },
+              "key": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "account_id",
+                  "action_id",
+                  "revision",
+                  "binding_digest"
+                ],
+                "properties": {
+                  "account_id": {
+                    "type": "string",
+                    "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  },
+                  "action_id": {
+                    "type": "string",
+                    "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  },
+                  "revision": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 128
+                  },
+                  "binding_digest": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  }
+                }
+              },
+              "occurrence_id": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operation",
+          "params"
+        ],
+        "properties": {
+          "operation": {
+            "const": "verified_reply"
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "request_id",
+              "event_id"
+            ],
+            "properties": {
+              "request_id": {
+                "type": "string",
+                "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+              },
+              "event_id": {
+                "type": "string",
+                "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  "transport": {
+    "method": "POST",
+    "path": "/recipe",
+    "credential_location": "customer_secret_store"
+  },
+  "model_provider_access": "none"
+}
