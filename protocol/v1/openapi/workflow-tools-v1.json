@@ -1172,6 +1172,167 @@
             "properties": {
               "kind": {
                 "enum": [
+                  "action"
+                ]
+              },
+              "result": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "object",
+                    "properties": {
+                      "account_id": {
+                        "type": "string",
+                        "minLength": 36,
+                        "maxLength": 36,
+                        "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                      },
+                      "action_id": {
+                        "type": "string",
+                        "minLength": 36,
+                        "maxLength": 36,
+                        "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                      },
+                      "revision": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 128
+                      },
+                      "binding_digest": {
+                        "type": "string",
+                        "minLength": 64,
+                        "maxLength": 64,
+                        "pattern": "^[0-9a-f]{64}$"
+                      }
+                    },
+                    "required": [
+                      "account_id",
+                      "action_id",
+                      "revision",
+                      "binding_digest"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "record_version": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "phase": {
+                    "enum": [
+                      "proposed",
+                      "approved",
+                      "invalidated",
+                      "cancelled",
+                      "expired",
+                      "dispatching",
+                      "unknown",
+                      "succeeded",
+                      "failed"
+                    ]
+                  },
+                  "delivery": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "availability": {
+                            "enum": [
+                              "not_bound",
+                              "unavailable"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "availability"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "availability": {
+                            "enum": [
+                              "available"
+                            ]
+                          },
+                          "message_id": {
+                            "type": "string",
+                            "minLength": 36,
+                            "maxLength": 36,
+                            "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                          },
+                          "dispatch_id": {
+                            "type": "string",
+                            "minLength": 36,
+                            "maxLength": 36,
+                            "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                          },
+                          "state": {
+                            "enum": [
+                              "accepted",
+                              "queued",
+                              "claimed",
+                              "submitting",
+                              "submitted",
+                              "delivered",
+                              "delivery_unknown",
+                              "unknown",
+                              "failed",
+                              "cancelled",
+                              "expired"
+                            ]
+                          },
+                          "state_version": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 9007199254740991
+                          },
+                          "accepted_at_ms": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "updated_at_ms": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": [
+                          "availability",
+                          "message_id",
+                          "dispatch_id",
+                          "state",
+                          "state_version",
+                          "accepted_at_ms",
+                          "updated_at_ms"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "key",
+                  "record_version",
+                  "phase",
+                  "delivery"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "kind",
+              "result"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "enum": [
                   "occurrence"
                 ]
               },
