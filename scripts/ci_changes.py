@@ -10,13 +10,15 @@ import os
 import subprocess
 import sys
 
-# Documentation and repository metadata that no build or test reads.
+# Documentation and repository metadata, except explicit test inputs below.
 DOCS_PREFIXES = ("docs/", ".github/ISSUE_TEMPLATE/")
 DOCS_FILES = {"LICENSE", "DCO", ".github/CODEOWNERS", ".github/PULL_REQUEST_TEMPLATE.md"}
 DOCS_SUFFIXES = (".md",)
 
 # Paths the Rust workspace, its tests and the rust job's scripts never read.
 NOT_RUST_PREFIXES = ("android/",)
+# The quickstart integration test includes these examples at compile time.
+RUST_DOCUMENT_INPUTS = {"docs/AGENT-QUICKSTART.md"}
 # Paths the Android build and its JVM tests never read. Android test resources
 # come from protocol/v1/vectors and sdk/typescript/test/vectors, so those stay.
 NOT_ANDROID_PREFIXES = ("crates/", "deploy/", "web/")
@@ -31,7 +33,8 @@ def suites(paths: list[str]) -> dict[str, bool]:
     """Return which suites must run for these changed repository paths."""
     if not paths:
         return {"rust": True, "android": True}
-    rust = any(not (is_docs(p) or p.startswith(NOT_RUST_PREFIXES)) for p in paths)
+    rust = any(p in RUST_DOCUMENT_INPUTS or not (is_docs(p) or p.startswith(NOT_RUST_PREFIXES))
+               for p in paths)
     android = any(
         not (is_docs(p) or p.startswith(NOT_ANDROID_PREFIXES) or p in NOT_ANDROID_FILES)
         for p in paths
