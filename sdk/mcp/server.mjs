@@ -172,7 +172,7 @@ export async function configuredClient(env = process.env) {
   let credentialPath;
   try {
     const configuredRoot = env.ZROTEXT_WORKFLOW_CREDENTIAL_ROOT ?? join(homedir(), '.config', 'zrotext', 'credentials');
-    if (typeof configuredRoot !== 'string' || !isAbsolute(configuredRoot) || configuredRoot.includes('\0') ||
+    if (typeof configuredRoot !== 'string' || configuredRoot.length > 32768 || !isAbsolute(configuredRoot) || /[\u0000-\u001f\u007f]/.test(configuredRoot) ||
         typeof file !== 'string' || file.length > 32768 || /[\u0000-\u001f\u007f]/.test(file) ||
         (process.platform === 'win32' && (configuredRoot.startsWith('\\\\') || file.startsWith('\\\\')))) throw new Error();
     // Arbitrary environment paths cannot select a filesystem root. The launcher
@@ -191,6 +191,11 @@ export async function configuredClient(env = process.env) {
     const root = resolve(await fs.realpath(requestedRoot));
     if (root === parse(root).root ||
         (root !== canonicalAnchor && !root.startsWith(canonicalAnchor + sep))) throw new Error();
+    const rootInfo = await fs.stat(root, { bigint: true });
+    if (!rootInfo.isDirectory() || rootInfo.ino <= 0n ||
+        (process.platform !== 'win32' &&
+         (typeof process.getuid !== 'function' || rootInfo.uid !== BigInt(process.getuid()) ||
+          (rootInfo.mode & 0o077n) !== 0n))) throw new Error();
     const normalized = resolve(root, file);
     if (!normalized.startsWith(root + sep)) throw new Error();
     credentialPath = resolve(await fs.realpath(normalized));

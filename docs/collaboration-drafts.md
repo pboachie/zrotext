@@ -37,6 +37,35 @@ cannot substitute for a browser session.
 | `DELETE /drafts/{draft_id}` | Live encrypted-drafter grant | Delete own bytes and retain an idempotency tombstone; repeated delete is harmless |
 | `GET /export?before=<draft-uuid>:<author-uuid>` | Current owner | Account grant metadata and a capped page of ciphertext/tombstones |
 
+## Cross-role authority matrix
+
+The seven authority classes the collaboration design separates, across every
+principal type that exists today. "Own" means scoped to the caller's own
+account and own artifacts. No cell inherits from another: a drafting grant
+never widens any other column, and no non-owner principal ever reaches the
+root-operation column. Unselected future roles are intentionally absent and
+must not be presented as available.
+
+| Principal | Status read | Decrypted content | Draft ciphertext | Approve | Send | Team management | Root operations |
+|---|---|---|---|---|---|---|---|
+| Owner (live membership, password/MFA where noted) | Yes | Retained legacy/contact content through account takeout; sealed content requires separate client custody | Only with a separate live drafting grant | Yes (owner confirmations) | Yes, via existing send paths | Yes (seats, invitations, grants, API keys) | Owner-only operations with their own MFA, custody and configuration prerequisites |
+| Device-status observer (live seat) | Yes (own account device status) | No | No (grant required) | No | No | No | No |
+| Observer additionally holding `encrypted_drafter` | Yes (unchanged) | No | Own artifacts only | No | No | No | No |
+| Agent / API key | Per its own independent scopes; a drafting grant neither broadens nor satisfies them | No implicit content or decryption authority | No (browser-session projection only) | No owner confirmation authority; there is no approval API-key scope | Per independent send scope and applicable scoped grants | No | No |
+| Device credential | Device-stream status only | No | No | No | No (radio requires the grant machinery) | No | No |
+| Independent workflow credential (candidate, server routes unmounted by default) | Only independently granted resources | No implicit decryption; separate selected-reader custody is required | Separately authorized workflow proposals only, not browser-draft CRUD | No owner confirmation authority | Only separately granted operations with their required owner confirmation | No | No |
+
+This matrix describes authenticated access, not possession of decryption keys.
+Account takeout returns sealed message envelopes as ciphertext. An owner role,
+API key or device credential does not supply the separately provisioned reader
+keys or replace signed operation authority.
+
+Revocation is per half and propagates immediately: revoking a drafting grant
+leaves the observer seat reading status; removing the observer seat ends the
+membership, scrubs the introduced grants and ciphertext, and kills the
+session's reads and drafts together. The mixed-role lifecycle is pinned by
+`mixed_observer_drafter_role_adds_only_drafting_and_each_half_revokes_independently`.
+
 An owner needs a separate live drafting grant for the draft CRUD routes. The
 owner's account takeout and grant-management authority come from the existing
 owner role, not from encrypted_drafter. An observer with the drafting grant
