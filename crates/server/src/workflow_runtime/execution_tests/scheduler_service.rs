@@ -174,6 +174,17 @@ async fn driver(input: Value) -> Value {
             .write_all(&serde_json::to_vec(&input).unwrap())
             .unwrap();
         let output = child.wait_with_output().unwrap();
+        if !output.status.success() {
+            // The driver emits only fixed phase/method/status and bounded codes.
+            // Never print private stdin, credentials, request/response bodies.
+            let diagnostic = String::from_utf8_lossy(&output.stderr);
+            for line in diagnostic
+                .lines()
+                .filter(|line| line.starts_with("scheduler fixture "))
+            {
+                eprintln!("{line}");
+            }
+        }
         assert!(
             output.status.success(),
             "actual scheduler HTTPS driver refused"

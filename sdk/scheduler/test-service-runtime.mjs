@@ -12,6 +12,7 @@ import { ScheduledRunner } from './runner.mjs';
 import { fixtureRequest } from './service-fixture-route.mjs';
 let input='';for await(const chunk of process.stdin){input+=chunk;if(Buffer.byteLength(input)>65536)throw new Error('fixture too large');}
 const fixture=JSON.parse(input),directory=await mkdtemp(join(tmpdir(),'zrotext-scheduler-tls-'));
+const diagnosticPhase=['enqueue','advance','cancel'].includes(fixture.phase)?fixture.phase:'invalid';
 let server,runner;
 try{
   const upstream=new URL(fixture.upstream);
@@ -30,8 +31,9 @@ try{
     });forwarded.on('error',()=>res.destroy());forwarded.end(body);
   });
   await new Promise(resolve=>server.listen(0,'localhost',resolve));
-  const fetchImpl=(url,options)=>new Promise((resolve,reject)=>{
+    const fetchImpl=(url,options)=>new Promise((resolve,reject)=>{
     const req=tlsRequest(url,{method:options.method,headers:options.headers,ca:cert,signal:options.signal},res=>{
+      if(res.statusCode>=400)process.stderr.write(`scheduler fixture phase=${diagnosticPhase} method=${options.method==='GET'?'GET':'POST'} status=${res.statusCode}\n`);
       const chunks=[];res.on('data',chunk=>chunks.push(chunk));res.on('end',()=>resolve(new Response(Buffer.concat(chunks),{status:res.statusCode,headers:res.headers})));
     });req.on('error',reject);req.end(options.body);
   });
@@ -45,7 +47,10 @@ try{
   assert.equal(result.state,fixture.expected_state);
   if(fixture.expected_message)assert.equal(result.result.message_id,fixture.expected_message);
   process.stdout.write(JSON.stringify(result));
-}catch{process.stderr.write('scheduler service fixture refused\n');process.exitCode=1;}
+}catch(error){
+  const code=typeof error?.code==='string'&&/^[A-Za-z_]{1,48}$/.test(error.code)?error.code:'refused';
+  process.stderr.write(`scheduler fixture phase=${diagnosticPhase} code=${code}\n`);process.exitCode=1;
+}
 finally{
   runner?.close();if(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
   await rm(directory,{recursive:true,force:true});
