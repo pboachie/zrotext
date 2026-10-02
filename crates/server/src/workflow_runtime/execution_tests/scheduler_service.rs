@@ -25,7 +25,7 @@ fn scratch_anchor(configured: &Path) -> std::io::Result<PathBuf> {
     let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()?;
-    if root.starts_with(repository) || !root.is_dir() {
+    if root.starts_with(repository) {
         return Err(std::io::Error::other("public scratch anchor refused"));
     }
     Ok(root)
@@ -113,6 +113,12 @@ fn scheduler_scratch_refuses_public_anchor_foreign_target_and_non_directory() {
         .unwrap();
     assert!(remove_scratch(&root, &directory).is_err());
     assert!(directory.is_file());
+    let before = std::fs::read(&directory).unwrap();
+    // Canonicalization alone can accept a file. Exclusive child creation must
+    // refuse that anchor without modifying or adopting the foreign entry.
+    let file_anchor = scratch_anchor(&directory).unwrap();
+    assert!(create_scratch(&file_anchor).is_err());
+    assert_eq!(std::fs::read(&directory).unwrap(), before);
     let resolved = directory.canonicalize().unwrap();
     if !resolved.starts_with(&root)
         || resolved.parent() != Some(root.as_path())
