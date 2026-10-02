@@ -69,9 +69,17 @@ async fn foreign_dependency(db: &Client, schema: &str) -> Result<bool, String> {
             Err(error) => {
                 let transient = error.as_db_error().is_some_and(|error| {
                     error.code() == &tokio_postgres::error::SqlState::INTERNAL_ERROR
-                        && error
+                        && (error
                             .message()
                             .starts_with("cache lookup failed for attribute ")
+                            || error
+                                .message()
+                                .strip_prefix("cache lookup failed for relation ")
+                                .is_some_and(|relation| {
+                                    !relation.is_empty()
+                                        && relation.bytes().all(|byte| byte.is_ascii_digit())
+                                        && relation.parse::<u32>().is_ok()
+                                }))
                 });
                 if !transient || attempt == 2 {
                     return Err(error.to_string());
