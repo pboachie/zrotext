@@ -18,6 +18,9 @@ fn main() -> std::process::ExitCode {
             help.push_str(
                 "unlock --account UUID --origin HTTPS_ORIGIN --bundle PUBLIC_ID --challenge FILE\nSigns one enrollment challenge after verified recovery (candidate).\n",
             );
+            help.push_str("custody-sign --account UUID --origin HTTPS_ORIGIN --bundle PUBLIC_ID --challenge FILE\nExplicitly authorizes the exact local encrypted custody publication after independent fingerprint comparison and recovery; outputs enrollment and custody signatures only.\n");
+            help.push_str("archive-init --account UUID --origin HTTPS_ORIGIN --bundle PUBLIC_ID --archive-output FILE --receipt-output FILE --recovery-output FILE\nExplicit archive creation with authenticated root recovery, separate protected raw32 recovery-file consent and verified create-new publication.\n");
+            help.push_str("conversation-genesis (explicit unlock build only): independently expected --account --origin --bundle --proposal --output --session --device --line --device-signing-fingerprint --generation --peer --phone-reader-point --archive-reader-point --phone-signer-point --issued --expires, in that order. First four-role manifest only; requires independent public point comparison.\n");
             help.push_str("conversation-activation (explicit unlock build only): --account --origin --bundle --proposal --output --session --device --line --generation --peer --manifest-version --manifest-digest --phone-reader --archive-reader --phone-signer --issued, in that order. Preserved-record successor only; no root-signed peer/session consent or network activation.\n");
             help.push_str("conversation-refresh (explicit unlock build only): independently expected --account --origin --bundle --proposal --output --session --interval --device --line --generation --peer --manifest-version --manifest-digest --phone-reader --archive-reader --signer --signer-point --until, in that order. One typed role-5 manifest refresh; archive records remain exact.\n");
             help
@@ -37,6 +40,13 @@ fn main() -> std::process::ExitCode {
     }
     // Fixed diagnostics only. Never format arguments, context, errors or secrets.
     #[cfg(feature = "unlock")]
+    if args.first().map(String::as_str) == Some("archive-init") {
+        eprintln!(
+            "Operation failed. No completed archive publication is confirmed; selected outputs may remain, including a protected private recovery file. Inspect them separately before retrying. The root bundle is unchanged."
+        );
+        return std::process::ExitCode::FAILURE;
+    }
+    #[cfg(feature = "unlock")]
     if args.first().map(String::as_str) == Some("unlock") {
         eprintln!(
             "Operation failed. No signature was produced; the stored bundle and recovery state are unchanged."
@@ -46,7 +56,12 @@ fn main() -> std::process::ExitCode {
     #[cfg(feature = "unlock")]
     if matches!(
         args.first().map(String::as_str),
-        Some("conversation-refresh" | "conversation-activation")
+        Some(
+            "conversation-refresh"
+                | "conversation-activation"
+                | "custody-sign"
+                | "conversation-genesis"
+        )
     ) {
         eprintln!(
             "Operation failed. No usable signed result is confirmed; the stored bundle and recovery state are unchanged. A partial public output may need separate inspection."

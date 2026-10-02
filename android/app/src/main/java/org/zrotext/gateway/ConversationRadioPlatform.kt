@@ -68,25 +68,30 @@ internal class ConversationRadioPlatform internal constructor(
         }
     }
     fun submit(context:ConversationPreparedSubmissionContext, prepared:Draft02OutboundPreparation.Prepared,
-               eventId:String, dao:SmsAttemptDao, requireCurrent:(ConversationPreparedSubmissionContext)->Long):ConversationSubmission {
+               eventId:String, dao:SmsAttemptDao, requireCurrent:(ConversationPreparedSubmissionContext)->Long):ConversationSubmission =
+        submitJournaled(context, prepared, eventId, dao) { requireCurrent(context) }
+
+    /** The ordinary sealed stream uses the same ACK, selected-card, suppression and one-use CAS path. */
+    internal fun submitJournaled(context:JournaledRadioContext, prepared:Draft02OutboundPreparation.Prepared,
+               eventId:String, dao:SmsAttemptDao, requireCurrent:()->Long):ConversationSubmission {
         if(!enabled)return ConversationSubmission.UNKNOWN
         var started=false
         var invoked=false
         var lastNow=0L
         fun fresh():Long {
-            val now=requireCurrent(context)
+            val now=requireCurrent()
             check(now>0 && now>=lastNow && now<context.deadlineMs)
             lastNow=now
             val grant=context.grant
             check(context.deadlineMs<=grant.expiresAtMs && grant.expiresAtMs<=context.originalDeadlineMs &&
                 grant.attemptId.toString()==context.attempt && grant.messageId.toString()==context.message &&
-                grant.accountId.toString()==context.scope.accountId && grant.deviceId.toString()==context.scope.deviceId &&
+                grant.accountId.toString()==context.accountId && grant.deviceId.toString()==context.deviceId &&
                 grant.lineId.toString()==binding.lineId && grant.bindingGeneration==binding.generation &&
-                context.local.binding==binding && context.scope.peer.matches(Regex("\\+[1-9][0-9]{1,14}")))
+                context.local.binding==binding && context.peer.matches(Regex("\\+[1-9][0-9]{1,14}")))
             selected()
             suppression.requireAvailable()
             // Selected-card and Keystore providers may block. Time is sampled after them.
-            val completed=requireCurrent(context)
+            val completed=requireCurrent()
             check(completed>=now && completed>=lastNow && completed<context.deadlineMs)
             lastNow=completed
             return completed
@@ -97,10 +102,10 @@ internal class ConversationRadioPlatform internal constructor(
             val attempt=checkNotNull(dao.getAttempt(context.attempt))
             check(event.evidence=="durable_submit_intent" && event.acknowledgedAtMs!=null &&
                 event.quarantinedAtMs==null && event.messageId==context.message && event.attemptId==context.attempt &&
-                event.accountId==context.scope.accountId && event.deviceId==context.scope.deviceId &&
+                event.accountId==context.accountId && event.deviceId==context.deviceId &&
                 event.originHash==context.session.originHash && attempt.state==AttemptState.SUBMITTING &&
-                attempt.messageId==context.message && attempt.accountId==context.scope.accountId &&
-                attempt.deviceId==context.scope.deviceId && attempt.originHash==context.session.originHash &&
+                attempt.messageId==context.message && attempt.accountId==context.accountId &&
+                attempt.deviceId==context.deviceId && attempt.originHash==context.session.originHash &&
                 attempt.subscriptionId==binding.subscriptionId && attempt.segmentCount==prepared.segmentCount)
             prepared.consume { chars ->
                 fresh()
@@ -121,11 +126,11 @@ internal class ConversationRadioPlatform internal constructor(
                     }
                 } },2,java.util.concurrent.TimeUnit.MINUTES)
                 synchronized(LocalSuppressionGate.lock) {
-                    val token=suppression.sender(context.scope.peer)
+                    val token=suppression.sender(context.peer)
                     check(!dao.isRecipientSuppressed(token))
                     fresh() // The durable CAS and suppression lookup may wait.
                     invoked=true // A throw after invocation can represent a partial carrier action.
-                    driver.send(context.scope.peer,context.attempt,parts)
+                    driver.send(context.peer,context.attempt,parts)
                 }
             }
             ConversationSubmission.SUBMITTED

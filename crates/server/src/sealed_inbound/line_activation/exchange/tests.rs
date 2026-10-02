@@ -34,7 +34,7 @@ macro_rules! migration {
 }
 
 // Complete reviewed schema, embedded at build time.
-const TEST_MIGRATIONS: [(&str, &str); 82] = [
+const TEST_MIGRATIONS: [(&str, &str); 83] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -117,6 +117,7 @@ const TEST_MIGRATIONS: [(&str, &str); 82] = [
     migration!("080_test_exposure_reservations.sql"),
     migration!("081_invoice_bound_test_billing.sql"),
     migration!("082_conversation_execution_records.sql"),
+    migration!("083_encrypted_template_versions.sql"),
 ];
 #[test]
 fn exchange_fixture_tracks_numbered_migrations() {

@@ -9,6 +9,7 @@ pub mod encrypted_schedule;
 pub mod enrollment;
 pub mod failover_adapters;
 pub mod failover_executor;
+mod failover_external;
 pub mod http_auth;
 pub mod http_enrollment;
 pub mod http_message_summary;
@@ -186,3 +187,5 @@ pub(crate) mod outbox_test_support {
 
 #[cfg(test)]
 mod sealed_root_roles_tests;
+
+pub mod workflow_templates;

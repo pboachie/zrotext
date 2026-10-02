@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { WorkflowToolClient, WorkflowToolError, workflowTools, workflowFunctions } from '../dist/workflow-tool-client.js';
-import { validateWorkflowRequest } from '../dist/workflow-tools.js';
+import { validateWorkflowRequest, validateWorkflowResponse } from '../dist/workflow-tools.js';
 import { workflowActionDigest } from '../dist/workflow-decisions.js';
 import { webcrypto } from 'node:crypto';
 globalThis.crypto ??= webcrypto;
@@ -15,9 +15,23 @@ const credential = 'ztw_' + Buffer.alloc(32, 7).toString('base64url');
 const contact = { kind: 'contact', result: { contact_id: uuid(3), purpose: 'transactional', peer_digest: 'ab'.repeat(32) } };
 const reply = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } });
 const client = fetchImpl => new WorkflowToolClient({ origin: 'https://gateway.example', credential, fetchImpl });
+test('status distinguishes exact delivery lifecycle from action phase and unavailable metadata', () => {
+  const action = { key: { account_id: uuid(1), action_id: uuid(2), revision: 1, binding_digest: 'ab'.repeat(32) }, record_version: 1, phase: 'approved' };
+  for (const state of ['accepted', 'queued', 'claimed', 'submitting', 'submitted', 'delivered', 'delivery_unknown', 'unknown', 'failed', 'cancelled', 'expired']) {
+    validateWorkflowResponse('workflow.action.status', { kind: 'action', result: { ...action, delivery: {
+      availability: 'available', message_id: uuid(3), dispatch_id: uuid(4), state, state_version: 1, accepted_at_ms: 1, updated_at_ms: 2,
+    } } });
+  }
+  for (const availability of ['not_bound', 'unavailable']) {
+    validateWorkflowResponse('workflow.action.status', { kind: 'action', result: { ...action, delivery: { availability } } });
+  }
+  assert.throws(() => validateWorkflowResponse('workflow.action.status', { kind: 'action', result: action }), /unexpected_response/);
+  assert.throws(() => validateWorkflowResponse('workflow.action.status', { kind: 'action', result: { ...action, delivery: { availability: 'delivered' } } }), /unexpected_response/);
+  validateWorkflowResponse('workflow.action.propose', { kind: 'action', result: action });
+});
 function readiness() {
   return { available: true, methods: workflowTools.map(tool => ({ method: tool.name,
-    operation: tool.name.replace('workflow.', '').replace('action.', '').replaceAll('.', '_'),
+    operation: tool.name === 'workflow.action.cancel' ? 'send' : tool.name.replace('workflow.', '').replace('action.', '').replaceAll('.', '_'),
     read_only_hint: tool.annotations.readOnlyHint, destructive_hint: tool.annotations.destructiveHint,
     idempotent_hint: true, implementation: 'library_candidate', transport_mounted: true, permission_granted: false })),
   scope: { context_id: uuid(2), device_id: uuid(3), line_id: uuid(4) }, send_semantics: 'owner_bound_prepared_only' };
@@ -48,7 +62,7 @@ test('all unknown caller authority and plaintext fields are refused before HTTP'
   }
   assert.equal(calls, 0);
 });
-test('operation schemas match the actual seven Rust methods and provider functions', async () => {
+test('operation schemas match the actual eight Rust methods and provider functions', async () => {
   const rust = await readFile(new URL('../../../crates/server/src/workflow_runtime/contracts.rs', import.meta.url), 'utf8');
   const methods = Array.from(rust.slice(0, rust.indexOf('pub enum Implementation')).matchAll(/rename = "(workflow\.[^"]+)"/g), match => match[1]);
   assert.deepEqual(workflowTools.map(tool => tool.name), methods);
@@ -123,7 +137,7 @@ sys.path.insert(0,sys.argv[1])
 from workflow_client import workflow_functions,action_digest,WorkflowClient,WorkflowError
 v=json.load(sys.stdin)
 assert action_digest(v["action"])==v["binding_digest"]
-assert len(workflow_functions())==7
+assert len(workflow_functions())==8
 c=WorkflowClient("https://gateway.example", "secret-not-a-valid-credential")
 assert "secret" not in repr(c)
 try:
@@ -186,4 +200,14 @@ test('scheduling accepts current service phases but unknown phases never succeed
   }
   const schema = workflowTools.find(tool => tool.name === 'workflow.action.schedule').outputSchema;
   assert.deepEqual(schema.properties.result.properties.phase.enum, phases);
+});
+
+test('cancel rejects caller queue identity and binds all returned key fields', async () => {
+ const key = {account_id:uuid(1),action_id:uuid(2),revision:1,binding_digest:'ab'.repeat(32)};
+ const out={kind:'cancel',result:{key,message_id:uuid(3),state:'cancelled'}};
+ let calls=0; const c=client(async (_url,init)=>{calls++;assert.deepEqual(JSON.parse(init.body),{method:'workflow.action.cancel',params:{request_id:uuid(4),key}});return reply(out);});
+ assert.deepEqual(await c.cancel(uuid(4),key),out);
+ for(const field of ['message_id','dispatch_id','actor','occurrence_id']) await assert.rejects(c.call('workflow.action.cancel',{request_id:uuid(4),key,[field]:uuid(5)}),e=>e.code==='invalid_request'&&e.attempts===0);
+ assert.equal(calls,1);
+ for(const field of ['account_id','action_id','revision','binding_digest']) {const wrong=structuredClone(out);wrong.result.key[field]=field==='revision'?2:field==='binding_digest'?'cd'.repeat(32):uuid(6);await assert.rejects(client(async()=>reply(wrong)).cancel(uuid(4),key),e=>e.state==='unknown');}
 });

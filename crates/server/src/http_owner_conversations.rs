@@ -33,6 +33,7 @@ pub mod channel;
 pub mod composition;
 pub mod confirmed_http;
 pub mod enrollment;
+pub mod genesis;
 pub(crate) mod lifecycle;
 pub mod owner_host;
 pub mod send;
@@ -189,7 +190,7 @@ pub(crate) async fn fresh_owner(
         })
 }
 
-async fn lock_line(
+pub(crate) async fn lock_line(
     tx: &Transaction<'_>,
     account: Uuid,
     device: Uuid,

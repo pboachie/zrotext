@@ -31,6 +31,7 @@ const definitions = [
   ['workflow.action.status', 'Read current durable action metadata; historical state is not a send permit.', object({ request_id: uuid, context_id: uuid, action_id: uuid }), true],
   ['workflow.action.schedule', 'Record an approved bounded occurrence through the shared service.', object({ request_id: uuid, key, policy, series_id: uuid, ordinal: integer(0, 99) }), false],
   ['workflow.action.send', 'Prepare an independently owner-bound action; never claim carrier submission.', object({ request_id: uuid, key, occurrence_id: nullable(uuid) }, ['request_id', 'key']), false],
+  ['workflow.action.cancel', 'Withdraw this exact grant’s prepared action before a phone grant; never claim cancellation after dispatch.', object({ request_id: uuid, key }), false],
 ] as const;
 export type WorkflowMethod = typeof definitions[number][0];
 
@@ -65,6 +66,13 @@ export function validateWorkflowRequest(method: string, params: unknown): assert
 
 const action = object({ key, record_version: integer(1), phase: { enum: ['proposed', 'approved', 'invalidated',
   'cancelled', 'expired', 'dispatching', 'unknown', 'succeeded', 'failed'] } });
+const actionStatus = object({ ...action.properties, delivery: { anyOf: [
+  object({ availability: { enum: ['not_bound', 'unavailable'] } }),
+  object({ availability: { enum: ['available'] }, message_id: uuid, dispatch_id: uuid,
+    state: { enum: ['accepted', 'queued', 'claimed', 'submitting', 'submitted', 'delivered',
+      'delivery_unknown', 'unknown', 'failed', 'cancelled', 'expired'] },
+    state_version: integer(1), accepted_at_ms: integer(), updated_at_ms: integer() }),
+] } });
 const responses: Record<string, Schema> = {
   contact: object({ contact_id: uuid, purpose: { enum: ['transactional', 'operational', 'marketing'] }, peer_digest: digest }),
   context_metadata: object({ context_id: uuid, source_content_digest: digest, revision: integer(1), kind: integer(0, 255),
@@ -79,7 +87,10 @@ const responses: Record<string, Schema> = {
   send: { anyOf: [object({ state: { enum: ['waiting_owner_binding', 'waiting_window'] } }),
     object({ state: { enum: ['prepared'] }, message_id: uuid, dispatch_id: uuid })] },
 };
-const responseKinds = ['contact', 'context_metadata', 'context_content', 'action', 'action', 'occurrence', 'send'];
+responses.cancel = object({ key, message_id: uuid, state: { enum: ['cancelled'] } });
+const responseKinds = ['contact', 'context_metadata', 'context_content', 'action', 'action', 'occurrence', 'send', 'cancel'];
+const responseSchema = (method: string, kind: string): Schema =>
+  method === 'workflow.action.status' ? actionStatus : responses[kind];
 function freeze<T>(value: T): T {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
     for (const child of Object.values(value)) freeze(child);
@@ -89,15 +100,15 @@ function freeze<T>(value: T): T {
 }
 export const workflowTools = freeze(definitions.map(([name, description, inputSchema, readOnlyHint], index) => ({
   name, description, inputSchema,
-  outputSchema: object({ kind: { enum: [responseKinds[index]] }, result: responses[responseKinds[index]] }),
-  annotations: { readOnlyHint, destructiveHint: name === 'workflow.action.send', idempotentHint: true, openWorldHint: false },
+  outputSchema: object({ kind: { enum: [responseKinds[index]] }, result: responseSchema(name, responseKinds[index]) }),
+  annotations: { readOnlyHint, destructiveHint: ['workflow.action.send', 'workflow.action.cancel'].includes(name), idempotentHint: true, openWorldHint: false },
 })));
 /** Provider-neutral functions and MCP use exactly the same parameter schemas. */
 export const workflowFunctions = freeze(workflowTools.map(tool => ({ name: tool.name, description: tool.description, parameters: tool.inputSchema })));
 export type WorkflowResponse = Readonly<{ kind: string; result: Readonly<Record<string, unknown>> }>;
 export function validateWorkflowResponse(method: WorkflowMethod, value: unknown): asserts value is WorkflowResponse {
   const kind = responseKinds[workflowTools.findIndex(tool => tool.name === method)];
-  if (!matchesSchema(object({ kind: { enum: [kind] }, result: responses[kind] }), value)) throw new Error('unexpected_response');
+  if (!matchesSchema(object({ kind: { enum: [kind] }, result: responseSchema(method, kind) }), value)) throw new Error('unexpected_response');
   if (kind === 'context_content') {
     const encoded = (value as WorkflowResponse).result.envelope_base64url as string;
     if (encoded.length % 4 === 1 || btoa(atob(encoded.replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4 - encoded.length % 4) % 4)))
@@ -112,10 +123,10 @@ export interface WorkflowReadiness {
   scope: Readonly<{ context_id: string; device_id: string; line_id: string }>;
   send_semantics: 'owner_bound_prepared_only';
 }
-// Array element identity and exact seven-method inventory are checked below.
+// Array element identity and exact eight-method inventory are checked below.
 export const workflowReadinessSchema = freeze({ type: 'object', additionalProperties: false,
   required: ['available', 'methods', 'scope', 'send_semantics'], properties: {
-    available: { const: true }, methods: { type: 'array', minItems: 7, maxItems: 7, items: { type: 'object',
+    available: { const: true }, methods: { type: 'array', minItems: 8, maxItems: 8, items: { type: 'object',
       additionalProperties: false, required: ['method', 'operation', 'read_only_hint', 'destructive_hint', 'idempotent_hint',
         'implementation', 'transport_mounted', 'permission_granted'], properties: {
         method: { enum: workflowTools.map(tool => tool.name) }, operation: { enum: ['contact_read', 'context_metadata', 'context_content', 'propose', 'status', 'schedule', 'send'] },
@@ -128,14 +139,14 @@ export function validateWorkflowReadiness(value: unknown): asserts value is Work
     send_semantics: { enum: ['owner_bound_prepared_only'] } });
   // Validate array elements against their exact operation; no permission bit is a reusable permit.
   const record = value as WorkflowReadiness;
-  if (!value || typeof value !== 'object' || Array.isArray(value) || !Array.isArray(record.methods) || record.methods.length !== 7) throw new Error('unexpected_response');
+  if (!value || typeof value !== 'object' || Array.isArray(value) || !Array.isArray(record.methods) || record.methods.length !== 8) throw new Error('unexpected_response');
   const withoutMethods = { ...record, methods: null };
   if (!matchesSchema(outer, withoutMethods)) throw new Error('unexpected_response');
   const seen = new Set<string>();
   for (const item of record.methods) {
     const tool = workflowTools.find(tool => tool.name === item.method);
     if (!tool || seen.has(item.method) || !matchesSchema(object({ method: { enum: [item.method] },
-      operation: { enum: [item.method.replace('workflow.', '').replace('action.', '').replaceAll('.', '_')] },
+      operation: { enum: [item.method === 'workflow.action.cancel' ? 'send' : item.method.replace('workflow.', '').replace('action.', '').replaceAll('.', '_')] },
       read_only_hint: { enum: [tool.annotations.readOnlyHint] }, destructive_hint: { enum: [tool.annotations.destructiveHint] },
       idempotent_hint: { enum: [true] }, implementation: { enum: ['library_candidate'] }, transport_mounted: { enum: [true] },
       permission_granted: { type: 'boolean' } }), item)) throw new Error('unexpected_response');

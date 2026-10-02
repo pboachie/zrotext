@@ -6,9 +6,11 @@ use uuid::Uuid;
 
 mod action;
 mod authentication;
+mod cancellation;
 pub mod contracts;
 mod dispatch;
 mod execution;
+pub use cancellation::{CancelOutcome, CancelState, cancel_action};
 mod scheduling;
 pub use dispatch::call;
 pub use execution::{IMMEDIATE_WINDOW_ID, SendOutcome, send_action};
@@ -18,12 +20,15 @@ mod proposals;
 mod status;
 pub use proposals::propose_action;
 pub use status::read_action_status;
+pub use status::{ActionStatus, DeliveryStatus, read_action_delivery_status};
 #[cfg(test)]
 mod database_tests;
 #[cfg(test)]
 mod execution_tests;
 mod grants;
+pub mod http;
 pub(crate) mod lifecycle;
+mod readiness;
 mod reads;
 mod scope;
 pub use authentication::{IntegrationPrincipal, authenticate};

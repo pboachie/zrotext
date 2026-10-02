@@ -26,12 +26,12 @@ credential. Origins with embedded credentials, paths, queries or fragments,
 redirects and responses larger than the bounded contract are refused.
 
 `readiness()` returns current context, device and line scope plus method hints.
-Those hints are not reusable effect permits. `call(method, params)` uses the seven
-shared contact/context/proposal/status/schedule/send methods. The Python
+Those hints are not reusable effect permits. `call(method, params)` uses the eight
+shared contact/context/proposal/status/schedule/send/cancel methods. The Python
 `preview`, `status` and `submit` convenience methods invoke proposal, action
 status and owner-bound preparation respectively. Proposal persistence is not
 approval. A `prepared` result is durable preparation metadata, not a submitted
-or delivered SMS. Approval, cancellation, takeover, enrollment and arbitrary
+or delivered SMS. Cancellation withdraws only the same Send grant's own prepared output before execution grant; it does not cancel the owner decision or series. Approval, takeover, enrollment and arbitrary
 plaintext sending are absent from the callable model.
 
 The caller selects the exact request UUID before invoking an operation. The
