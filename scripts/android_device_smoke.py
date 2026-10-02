@@ -30,6 +30,8 @@ SEALED_BODY = PACKAGE + "SealedBodyDeviceTest"
 SEALED_PREPARATION = PACKAGE + "SealedPreparationDeviceTest"
 ENTRY_OPT_IN = PACKAGE + "ConversationEntryOptInDeviceTest"
 ENTRY_OPT_IN_METHOD = "explicitOptInReachesOrdinarySetupAndRejectsMissingCustodyWithoutApproval"
+ENROLLMENT_CONSENT = PACKAGE + "EnrollmentConsentBoundaryDeviceTest"
+ENROLLMENT_CONSENT_METHOD = "enrollmentAndIndependentChoicesRefuseWithoutCreatingAuthority"
 SERIAL = "emulator-5562"
 
 
@@ -58,6 +60,8 @@ def selected_tests(root=ROOT):
             expected[PACKAGE + name] = count
     if (root / "android/app/src/androidTest/java/org/zrotext/gateway/ConversationEntryOptInDeviceTest.kt").is_file():
         expected[ENTRY_OPT_IN] = 1
+    if (root / "android/app/src/androidTest/java/org/zrotext/gateway/EnrollmentConsentBoundaryDeviceTest.kt").is_file():
+        expected[ENROLLMENT_CONSENT] = 1
     return expected
 
 
@@ -65,7 +69,7 @@ def instrumentation_arguments(expected):
     args = ["shell", "am", "instrument", "-w", "-r", "-e", "class", ",".join(expected),
             "-e", "a11yIsolatedEmulator", "true",
             "-e", "networkServiceIsolatedEmulator", "true"]
-    if ENTRY_OPT_IN in expected:
+    if ENTRY_OPT_IN in expected or ENROLLMENT_CONSENT in expected:
         args.extend(["-e", "entryOptInIsolatedEmulator", "true"])
     return [*args, "org.zrotext.gateway.test/androidx.test.runner.AndroidJUnitRunner"]
 
@@ -148,6 +152,10 @@ def verify_results(output, expected):
         observed = {name for cls, name in completed if cls == ENTRY_OPT_IN}
         if observed != {ENTRY_OPT_IN_METHOD}:
             raise ValueError("Conversation entry did not exercise the exact opt-in acceptance test")
+    if ENROLLMENT_CONSENT in expected:
+        observed = {name for cls, name in completed if cls == ENROLLMENT_CONSENT}
+        if observed != {ENROLLMENT_CONSENT_METHOD}:
+            raise ValueError("Enrollment did not exercise the exact consent acceptance test")
     if SEALED_PREPARATION in expected:
         custody = re.findall(r"^INSTRUMENTATION_RESULT: preparationCustody=(.*)$", output, re.MULTILINE)
         if len(custody) != 1 or custody[0].strip() not in ("unsupported", "platform-reported-hardware"):

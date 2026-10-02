@@ -67,6 +67,16 @@ class DeviceSigningKeyStore(
         )
     }
 
+    /** Read the existing hardware identity only; never replace a missing or unsupported signer. */
+    internal fun existingConversationPublicPoint(): ByteArray {
+        val key = privateKey()
+        check(key.encoded == null && securityLevel(key) in setOf(
+            SigningKeySecurity.STRONGBOX, SigningKeySecurity.TRUSTED_ENVIRONMENT))
+        val public = openStore().getCertificate(alias)?.publicKey as? ECPublicKey
+            ?: error("Existing conversation signer unavailable")
+        return DevicePayloadKeyStore.encodePoint(public)
+    }
+
     fun signEnrollmentChallenge(accountId: UUID, pairingId: UUID, nonce: ByteArray): ByteArray {
         val fingerprint = getOrCreate().fingerprint
         return sign(EnrollmentProof.enrollmentBytes(accountId, pairingId, fingerprint, nonce))
