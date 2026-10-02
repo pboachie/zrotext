@@ -20,14 +20,15 @@ const closed = (value, names) => value && typeof value === 'object' && !Array.is
  * Owner approval/binding is created independently in the existing owner lane.
  * No model provider or alternate cryptography is added here. */
 export class WorkflowRecipe {
-  #client; #descriptor; #context; #replies; #consumer; #enabled = false;
+  #client; #options; #descriptor; #context; #replies; #consumer; #enabled = false; #epoch = 0;
   constructor({ origin, credential, descriptor, replyAdapter, consumerId, fetchImpl }) {
     canonicalWorkflowAction(descriptor);
     this.#descriptor = structuredClone(descriptor);
     this.#context = this.#descriptor.content_ref;
     // Trusted customer transport seam, identical to the shared client contract;
     // never supplied by callable inputs or exported workflow configuration.
-    this.#client = new WorkflowToolClient({ origin, credential, fetchImpl });
+    this.#options = { origin, credential, fetchImpl: fetchImpl ?? globalThis.fetch };
+    this.#client = new WorkflowToolClient(this.#options);
     if (replyAdapter !== undefined && (!(replyAdapter instanceof ReplyEventAdapter) || !uuid(consumerId) ||
       replyAdapter.accountId !== this.#descriptor.account_id || replyAdapter.lineId !== this.#descriptor.line_id)) deny('invalid_reply_adapter');
     this.#replies = replyAdapter; this.#consumer = consumerId;
@@ -44,13 +45,27 @@ export class WorkflowRecipe {
   }
   /** Local owner/controller activation, never exposed in the callable input. */
   async enable() {
+    const epoch = ++this.#epoch;
+    this.#enabled = false;
     const setup = await this.setup();
+    if (epoch !== this.#epoch) deny('disabled');
     for (const method of ['workflow.context.metadata', 'workflow.action.propose', 'workflow.action.status']) {
       if (!setup.methods.find(item => item.method === method)?.permission_granted) deny('missing_grant');
     }
     this.#enabled = true;
   }
-  disable() { this.#enabled = false; }
+  disable() { this.#enabled = false; this.#epoch++; }
+  #current(epoch) { if (!this.#enabled || epoch !== this.#epoch) deny('disabled'); }
+  async #effect(method, params, epoch) {
+    this.#current(epoch);
+    // The shared client may await digest calculation before transport. Fence the
+    // actual request too, so a newer activation never revives older work.
+    const client = new WorkflowToolClient({ ...this.#options, fetchImpl: (...args) => {
+      if (!this.#enabled || epoch !== this.#epoch) throw new WorkflowToolError('forbidden', 'refused', 0);
+      return this.#options.fetchImpl(...args);
+    } });
+    return client.call(method, params);
+  }
   async preview(requestId) {
     if (!uuid(requestId)) deny('invalid_request');
     // Preview is read-only and never persists a proposal or prepares a message.
@@ -66,21 +81,23 @@ export class WorkflowRecipe {
     if (!this.#enabled) deny('disabled');
     const id = input.request_id;
     if (input.operation === 'task_completion' || input.operation === 'owner_proposal') {
-      return this.#client.call('workflow.action.propose', { request_id: id, descriptor: this.#descriptor });
+      return this.#effect('workflow.action.propose', { request_id: id, descriptor: this.#descriptor }, this.#epoch);
     }
-    return this.#client.call('workflow.action.status', {
-      request_id: id, context_id: this.#context, action_id: this.#descriptor.action_id });
+    return this.#effect('workflow.action.status', {
+      request_id: id, context_id: this.#context, action_id: this.#descriptor.action_id }, this.#epoch);
   }
   async prepare(input) {
+    try { input = structuredClone(input); } catch { deny('invalid_request'); }
     if (!input || Object.keys(input).some(name => !['request_id', 'key', 'occurrence_id'].includes(name))) deny('invalid_request');
     const { request_id, key, occurrence_id = null } = input;
+    const epoch = this.#epoch;
     if (!this.#enabled) deny('disabled');
     if (!uuid(request_id) || !closed(key, ['account_id', 'action_id', 'revision', 'binding_digest']) ||
       key.account_id !== this.#descriptor.account_id || key.action_id !== this.#descriptor.action_id ||
       key.revision !== this.#descriptor.revision || key.binding_digest !== await workflowActionDigest(this.#descriptor)) deny('scope_mismatch');
     // The shared client validates the digest/schema; the service requires exact
     // owner approval, genuine binding and (for windows) the real occurrence.
-    return this.#client.call('workflow.action.send', { request_id, key, occurrence_id });
+    return this.#effect('workflow.action.send', { request_id, key, occurrence_id }, epoch);
   }
   ingestReply(raw, headers) {
     if (!this.#replies) deny('reply_unavailable');
@@ -89,6 +106,7 @@ export class WorkflowRecipe {
   async routeReply(input) {
     if (!closed(input, ['event_id', 'request_id'])) deny('invalid_request');
     const { event_id, request_id } = input;
+    const epoch = this.#epoch;
     if (!this.#enabled) deny('disabled');
     if (!this.#replies || !uuid(event_id) || !uuid(request_id)) deny('reply_unavailable');
     // Existing signed receiver/current-source checks and durable event action
@@ -96,7 +114,7 @@ export class WorkflowRecipe {
     return this.#replies.runAction({ consumerId: this.#consumer, eventId: event_id, actionId: request_id },
       async reservation => {
         if (reservation.disposition !== 'reply_notice') return;
-        await this.#client.call('workflow.action.propose', { request_id, descriptor: this.#descriptor });
+        await this.#effect('workflow.action.propose', { request_id, descriptor: this.#descriptor }, epoch);
       });
   }
 }
