@@ -33,6 +33,7 @@ pub mod channel;
 pub mod composition;
 pub mod confirmed_http;
 pub mod enrollment;
+pub mod genesis;
 pub(crate) mod lifecycle;
 pub mod owner_host;
 pub mod send;
