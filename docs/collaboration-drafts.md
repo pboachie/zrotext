@@ -48,11 +48,17 @@ must not be presented as available.
 
 | Principal | Status read | Decrypted content | Draft ciphertext | Approve | Send | Team management | Root operations |
 |---|---|---|---|---|---|---|---|
-| Owner (live membership, password/MFA where noted) | Yes | Via account takeout export only | Only with a separate live drafting grant | Yes (owner confirmations) | Yes, via existing send paths | Yes (seats, invitations, grants, API keys) | Yes |
+| Owner (live membership, password/MFA where noted) | Yes | Retained legacy/contact content through account takeout; sealed content requires separate client custody | Only with a separate live drafting grant | Yes (owner confirmations) | Yes, via existing send paths | Yes (seats, invitations, grants, API keys) | Owner-only operations with their own MFA, custody and configuration prerequisites |
 | Device-status observer (live seat) | Yes (own account device status) | No | No (grant required) | No | No | No | No |
 | Observer additionally holding `encrypted_drafter` | Yes (unchanged) | No | Own artifacts only | No | No | No | No |
-| Agent / API key | Per its own independent scopes; a drafting grant neither broadens nor satisfies them | No implicit | No (browser-session projection only) | Per scope | Per scope | No | No |
+| Agent / API key | Per its own independent scopes; a drafting grant neither broadens nor satisfies them | No implicit content or decryption authority | No (browser-session projection only) | No owner confirmation authority; there is no approval API-key scope | Per independent send scope and applicable scoped grants | No | No |
 | Device credential | Device-stream status only | No | No | No | No (radio requires the grant machinery) | No | No |
+| Independent workflow credential (candidate, server routes unmounted by default) | Only independently granted resources | No implicit decryption; separate selected-reader custody is required | Separately authorized workflow proposals only, not browser-draft CRUD | No owner confirmation authority | Only separately granted operations with their required owner confirmation | No | No |
+
+This matrix describes authenticated access, not possession of decryption keys.
+Account takeout returns sealed message envelopes as ciphertext. An owner role,
+API key or device credential does not supply the separately provisioned reader
+keys or replace signed operation authority.
 
 Revocation is per half and propagates immediately: revoking a drafting grant
 leaves the observer seat reading status; removing the observer seat ends the
