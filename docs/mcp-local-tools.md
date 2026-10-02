@@ -92,11 +92,16 @@ is an independently chosen absolute private directory, defaulting to
 `~/.config/zrotext/credentials`. The credential filename may be relative inside
 that directory or an absolute path inside it. Normalized paths and resolved
 symlinks must remain inside the canonical directory; sibling-prefix and traversal
-paths are refused. Custom deployments set the root explicitly; it is never
+paths are refused. Custom deployments set the root explicitly and launch the MCP subprocess with
+its working directory set to that approved private directory (or a private
+ancestor). Before filesystem access, the configured root must be inside either
+that independently selected working directory or the fixed home credential
+directory. Filesystem-root working directories are not custom anchors. Canonical
+root resolution must stay inside the selected canonical anchor. The root is never
 inferred from the credential filename. For example, configure
 `ZROTEXT_WORKFLOW_CREDENTIAL_ROOT=/private/customer/credentials` and
 `ZROTEXT_WORKFLOW_CREDENTIAL_FILE=workflow-token` in the subprocess environment.
-The root and its ancestors are trusted operator configuration. This wrapper does
+The launch working directory, root and their ancestors are trusted operator configuration. This wrapper does
 not protect against a privileged process concurrently replacing directory paths.
 Windows network/device paths are refused; local ACL protection remains the
 operator's responsibility. The file must be regular and at most

@@ -175,11 +175,25 @@ export async function configuredClient(env = process.env) {
     if (typeof configuredRoot !== 'string' || !isAbsolute(configuredRoot) || configuredRoot.includes('\0') ||
         typeof file !== 'string' || file.length > 32768 || /[\u0000-\u001f\u007f]/.test(file) ||
         (process.platform === 'win32' && (configuredRoot.startsWith('\\\\') || file.startsWith('\\\\')))) throw new Error();
-    const root = await fs.realpath(resolve(configuredRoot));
-    if (root === parse(root).root) throw new Error();
+    // Arbitrary environment paths cannot select a filesystem root. The launcher
+    // independently selects the process working directory for custom deployments.
+    const homeAnchor = resolve(join(homedir(), '.config', 'zrotext', 'credentials'));
+    const cwdAnchor = resolve(process.cwd());
+    const requestedRoot = resolve(configuredRoot);
+    let selectedAnchor;
+    if (requestedRoot === homeAnchor || requestedRoot.startsWith(homeAnchor + sep)) {
+      selectedAnchor = homeAnchor;
+    } else if (cwdAnchor !== parse(cwdAnchor).root &&
+        (requestedRoot === cwdAnchor || requestedRoot.startsWith(cwdAnchor + sep))) {
+      selectedAnchor = cwdAnchor;
+    } else { throw new Error(); }
+    const canonicalAnchor = resolve(await fs.realpath(selectedAnchor));
+    const root = resolve(await fs.realpath(requestedRoot));
+    if (root === parse(root).root ||
+        (root !== canonicalAnchor && !root.startsWith(canonicalAnchor + sep))) throw new Error();
     const normalized = resolve(root, file);
     if (!normalized.startsWith(root + sep)) throw new Error();
-    credentialPath = await fs.realpath(normalized);
+    credentialPath = resolve(await fs.realpath(normalized));
     if (!credentialPath.startsWith(root + sep)) throw new Error();
   } catch { throw new Error('invalid_configuration'); }
   const candidate = await fs.stat(credentialPath, { bigint: true });
