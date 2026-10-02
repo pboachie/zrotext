@@ -36,6 +36,7 @@ fn acknowledgements_require_exact_identity_and_test_mode() {
         "acknowledged"
     );
     for response in [
+        MeterResponse::InvalidResponse,
         MeterResponse::Acknowledged {
             identifier: "different".into(),
             livemode: false,

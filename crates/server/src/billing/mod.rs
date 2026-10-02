@@ -13,6 +13,7 @@ pub mod drain;
 pub mod exposure;
 pub mod http;
 pub(crate) mod invoice;
+pub mod meter_transport;
 pub mod owner;
 pub mod plans;
 pub mod review;
