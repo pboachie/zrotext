@@ -95,6 +95,12 @@ of prompts, model arguments, logs and public repository files. Startup failures
 are redacted; credential buffers are cleared after parsing, but JavaScript strings
 cannot promise full memory zeroization during the subprocess lifetime.
 
+Workflow credential issuance is currently the existing owner/MFA-checked server
+library operation. This transport does not add a self-service grant-management
+HTTP endpoint, UI, or enrollment flow. A normal API or agent credential cannot
+substitute for that workflow grant. The authenticated simulator checks do not
+establish a deployed customer provisioning experience.
+
 The server must explicitly enable `WORKFLOW_TOOLS_ENABLED`; this does not enable
 physical dispatch or other production gates. The shared client bounds requests,
 responses and timeouts, refuses redirects and validates closed response shapes.
