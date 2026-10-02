@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer, request } from 'node:https';
+import { request as httpRequest } from 'node:http';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -68,7 +69,8 @@ async function fixture(run) {
       const raw=Buffer.from(JSON.stringify(event)),timestamp=String(time/1000);
       return [raw,{'x-zrotext-timestamp':timestamp,'x-zrotext-signature':'v1='+createHmac('sha256',eventKey).update(timestamp).update('.').update(raw).digest('hex')}];
     };
-    await run({recipe,key,signed,adapter,calls,holdReadiness:()=>{let release;readinessWait=new Promise(done=>release=done);return ()=>{readinessWait=undefined;release();};},revoke:()=>{active=false;},deny:()=>{permission=false;},denySend:()=>{sendPermission=false;},approve:()=>{approved=true;},disconnect:()=>{disconnect=true;}});
+    await run({recipe,key,signed,adapter,calls,holdReadiness:()=>{let release;readinessWait=new Promise(done=>release=done);return ()=>{readinessWait=undefined;release();};},revoke:()=>{active=false;},deny:()=>{permission=false;},denySend:()=>{sendPermission=false;},approve:()=>{approved=true;},disconnect:()=>{disconnect=true;},advance:ms=>{time+=ms;}});
+
   }finally{
     if(server){server.closeAllConnections();await new Promise(done=>server.close(done));}
     adapter?.close();assert.equal(dirname(resolve(directory)),resolve(tmpdir()));await rm(directory,{recursive:true,force:true});
@@ -86,6 +88,8 @@ test('disabled installation and actual read-only HTTPS preview precede exact pro
   f.approve();assert.equal((await f.recipe.prepare({request_id:id(24),key:f.key})).result.state,'prepared');
   await assert.rejects(()=>f.recipe.prepare({request_id:id(25),key:{...f.key,binding_digest:'cd'.repeat(32)}}),e=>e.code==='scope_mismatch');
   await assert.rejects(()=>f.recipe.call({operation:'owner_proposal',request_id:id(26),verified:true}),e=>e.code==='invalid_request');
+  await assert.rejects(()=>f.recipe.prepare([]),e=>e.code==='invalid_request');
+  await assert.rejects(()=>f.recipe.prepare(Object.create({request_id:id(40),key:f.key})),e=>e.code==='invalid_request');
   f.revoke();await assert.rejects(()=>f.recipe.prepare({request_id:id(27),key:f.key}),e=>e.code==='unauthorized');
 }));
 
@@ -110,9 +114,19 @@ test('missing remote grants refuse activation and local bridge rejects browser o
   try{
     const url=`http://localhost:${server.address().port}/recipe`,headers={authorization:`Bearer ${local.toString('base64url')}`,'content-type':'application/json'};
     assert.equal((await fetch(url,{headers:{...headers,origin:'https://example.test'}})).status,401);
+    assert.equal((await fetch(url,{headers:{...headers,cookie:''}})).status,401);
     const response=await fetch(url,{method:'POST',headers,body:JSON.stringify({operation:'verified_reply',params:{event_id:id(14),request_id:id(32),verified:true}})});
     assert.equal(response.status,400);
     assert.equal(f.calls.length,0);
+    const slow=httpRequest(url,{method:'POST',headers:{...headers,'content-length':'1000'}});
+    let timer;
+    try {
+      const closed=new Promise(done=>{slow.once('error',()=>done('closed'));slow.once('close',()=>done('closed'));});
+      slow.write('{');
+      const deadline=new Promise(done=>{timer=setTimeout(()=>done('late'),7500);});
+      assert.equal(await Promise.race([closed,deadline]),'closed');
+      assert.equal(f.calls.length,0);
+    } finally {clearTimeout(timer);slow.destroy();}
   }finally{server.closeAllConnections();await new Promise(done=>server.close(done));}
 }));
 
@@ -174,4 +188,23 @@ test('preparation snapshots the exact owner key before digest awaits',()=>fixtur
   await pending;
   assert.equal(f.calls.length,1);
   assert.equal(f.calls[0].params.key.action_id,f.key.action_id);
+}));
+test('reply turn cap routes a second distinct signed event to owner review without another proposal',()=>fixture(async f=>{
+  await f.recipe.enable();f.recipe.ingestReply(...f.signed());
+  assert.equal((await f.recipe.routeReply({event_id:id(14),request_id:id(36)})).disposition,'reply_notice');
+  f.recipe.ingestReply(...f.signed(id(17)));
+  assert.equal((await f.recipe.routeReply({event_id:id(17),request_id:id(37)})).disposition,'owner_review');
+  assert.equal(f.calls.length,1);
+}));
+
+test('offline request expiry refuses reply effects even while the event and source grant remain live',()=>fixture(async f=>{
+  await f.recipe.enable();f.recipe.ingestReply(...f.signed());f.advance(31000);
+  assert.equal((await f.recipe.routeReply({event_id:id(14),request_id:id(38)})).disposition,'owner_review');
+  assert.equal(f.calls.length,0);
+}));
+
+test('trusted takeover after ingestion refuses cached reply authority before a service call',()=>fixture(async f=>{
+  await f.recipe.enable();f.recipe.ingestReply(...f.signed());f.adapter.deny('takeover');
+  await assert.rejects(()=>f.recipe.routeReply({event_id:id(14),request_id:id(39)}),e=>e.code==='revoked');
+  assert.equal(f.calls.length,0);
 }));
