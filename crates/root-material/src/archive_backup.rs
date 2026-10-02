@@ -30,6 +30,9 @@ const WRAP_INFO: &[u8] = b"ZTSE/archive-vault-wrap/v1\0";
 const WRAP_AAD: &[u8] = b"ZTSE/archive-vault-key-wrap/v1\0";
 const ARCHIVE_AAD: &[u8] = b"ZTSE/archive-backup/v1\0";
 
+#[path = "archive_init.rs"]
+pub mod creation;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ArchiveBackupError {
     #[error("invalid archive backup input")]

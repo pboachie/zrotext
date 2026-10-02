@@ -25,6 +25,7 @@ impl BrowserAssets {
             "sdk/draft02-manifest.js".to_owned(),
             "sdk/conversation-refresh-proposal.js".to_owned(),
             "sdk/conversation-activation-proposal.js".to_owned(),
+            "sdk/conversation-genesis-proposal.js".to_owned(),
         ];
         let mut visited = BTreeSet::new();
         while let Some(name) = pending.pop() {
@@ -462,6 +463,7 @@ mod tests {
             "draft02-manifest",
             "conversation-refresh-proposal",
             "conversation-activation-proposal",
+            "conversation-genesis-proposal",
         ] {
             files.insert(format!("sdk/{name}.js"), Vec::new());
         }
@@ -482,6 +484,12 @@ mod tests {
             "vendor/common/mod.js".into(),
             b"export const fixture = true;".to_vec(),
         );
+        assert!(assets(files.clone()).require_owner_setup().is_ok());
+        let genesis = files
+            .remove("sdk/conversation-genesis-proposal.js")
+            .unwrap();
+        assert!(assets(files.clone()).require_owner_setup().is_err());
+        files.insert("sdk/conversation-genesis-proposal.js".into(), genesis);
         assert!(assets(files.clone()).require_owner_setup().is_ok());
         files.insert(
             "vendor/common/mod.js".into(),
