@@ -86,3 +86,11 @@ acceptance stops without retry or replacement identity; inspect current status
 using a distinct read request. Explicit exact effect replay remains governed by
 the shared service. No provider call, real SMS or physical gateway acceptance is
 established by recipe fixture tests.
+
+The ignored `actual_recipe_https_proposes_and_only_prepares_after_independent_owner_binding`
+regression runs the customer recipe through certificate-validated HTTPS into the
+real workflow router and a disposable PostgreSQL schema. It checks read-only
+preview, proposal, waiting without a queue row, an independently authenticated
+owner decision and normal message binding, then prepared replay with one message.
+It requires a built TypeScript SDK, Node 22 or later and OpenSSL. The TLS proxy is
+test-only; neither a production trust exception nor delivery authority is added.
