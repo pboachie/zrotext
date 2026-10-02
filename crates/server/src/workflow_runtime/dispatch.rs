@@ -47,11 +47,19 @@ pub async fn call(
             Ok(Response::ContextContent(content(&bytes)?))
         }
         Request::Propose(v) => Ok(Response::Action(
-            super::propose_action(client, principal, v.request_id, v.descriptor).await?,
+            super::propose_action(client, principal, v.request_id, v.descriptor)
+                .await?
+                .into(),
         )),
         Request::Status(v) => Ok(Response::Action(
-            super::read_action_status(client, principal, v.request_id, v.context_id, v.action_id)
-                .await?,
+            super::read_action_delivery_status(
+                client,
+                principal,
+                v.request_id,
+                v.context_id,
+                v.action_id,
+            )
+            .await?,
         )),
         Request::Schedule(v) => {
             let result = super::schedule_action(

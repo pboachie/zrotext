@@ -13,6 +13,8 @@ pub mod exposure;
 mod recovery;
 pub use recovery::{RECOVERY_BATCH, RECOVERY_BATCHES_PER_TICK, RecoveryBacklog, RecoveryPass};
 pub mod billable;
+mod status;
+pub use status::message_status;
 mod usage_projection;
 pub use usage_projection::{USAGE_PAGE_MAX, UsageHistoryPage, UsagePeriodView, usage_history};
 pub mod sealed;
@@ -202,29 +204,7 @@ impl<'a> DeliveryStore<'a> {
         account_id: Uuid,
         message_id: Uuid,
     ) -> Result<Option<MessageSnapshot>, StoreError> {
-        let row = self
-            .client
-            .query_opt(
-                "SELECT device_id,state,state_version, \
-             (extract(epoch FROM created_at)*1000)::bigint, \
-             (extract(epoch FROM updated_at)*1000)::bigint \
-             FROM messages WHERE account_id=$1 AND id=$2",
-                &[&account_id, &message_id],
-            )
-            .await?;
-        row.map(|row| {
-            Ok(MessageSnapshot {
-                account_id,
-                message_id,
-                device_id: row.get(0),
-                state: state_from_str(&row.get::<_, String>(1))
-                    .ok_or(StoreError::InvalidTransition)?,
-                state_version: row.get(2),
-                created_at_ms: row.get(3),
-                updated_at_ms: row.get(4),
-            })
-        })
-        .transpose()
+        message_status(&*self.client, account_id, message_id).await
     }
 
     /// Inserts idempotency identity, message and job in one writer transaction.
