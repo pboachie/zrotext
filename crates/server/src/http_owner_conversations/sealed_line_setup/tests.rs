@@ -26,6 +26,15 @@ fn token_hash(domain: &[u8], text: &str) -> Vec<u8> {
 }
 impl Case {
     pub(crate) async fn new() -> Self {
+        Self::build(true).await
+    }
+    /// A fresh owner/paired-device fixture for the real root enrollment path.
+    /// Never insert then erase authority: insertion also reserves its permanent
+    /// enrollment ledger, and that history must remain protected.
+    pub(crate) async fn without_root() -> Self {
+        Self::build(false).await
+    }
+    async fn build(install_root: bool) -> Self {
         let mut owner = Owner::new().await;
         let account = owner.principal.tenant.account_id();
         let device = Uuid::new_v4();
@@ -50,7 +59,9 @@ impl Case {
             account.as_bytes(),
         )
         .unwrap();
-        owner.f.db.execute("INSERT INTO sealed_manifest_authorities(account_id,root_pin,root_fingerprint,generation,anchor_digest) VALUES($1,$2,$3,1,$4)",&[&account,&owner.pin.as_slice(),&rootfp.as_slice(),&vec![0u8;32]]).await.unwrap();
+        if install_root {
+            owner.f.db.execute("INSERT INTO sealed_manifest_authorities(account_id,root_pin,root_fingerprint,generation,anchor_digest) VALUES($1,$2,$3,1,$4)",&[&account,&owner.pin.as_slice(),&rootfp.as_slice(),&vec![0u8;32]]).await.unwrap();
+        }
         owner
             .f
             .db
@@ -768,4 +779,32 @@ async fn setup_cleanup_skips_locked_challenge_and_preserves_renewed_exact_identi
         renewed
     );
     c.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn setup_fresh_root_fixture_preserves_initialized_enrollment_history() {
+    for initialized in [false, true] {
+        let c = if initialized {
+            Case::new().await
+        } else {
+            Case::without_root().await
+        };
+        let account = c.owner.principal.tenant.account_id();
+        let row=c.owner.f.db.query_one("SELECT (SELECT count(*) FROM sealed_manifest_authorities WHERE account_id=$1),(SELECT count(*) FROM sealed_root_enrollments WHERE account_id=$1),(SELECT count(*) FROM known_signing_role_claims WHERE account_id=$1 AND role='sealed_root')", &[&account]).await.unwrap();
+        let expected = i64::from(initialized);
+        assert_eq!(row.get::<_, i64>(0), expected);
+        assert_eq!(row.get::<_, i64>(1), expected);
+        assert_eq!(row.get::<_, i64>(2), expected);
+        assert_eq!(c.owner.f.db.query_one("SELECT count(*) FROM device_keys k JOIN device_sessions s USING(device_id,account_id) WHERE k.account_id=$1 AND k.device_id=$2 AND k.revoked_at IS NULL AND s.lease_until>clock_timestamp()", &[&account,&c.device]).await.unwrap().get::<_,i64>(0),1);
+        assert_eq!(
+            crate::auth::authenticate_session(&c.owner.f.db, &c.owner.hasher, &c.owner.token)
+                .await
+                .unwrap()
+                .session_id,
+            c.owner.principal.session_id
+        );
+        lifecycle::require_installed(&c.owner.f.db).await.unwrap();
+        c.cleanup().await;
+    }
 }
