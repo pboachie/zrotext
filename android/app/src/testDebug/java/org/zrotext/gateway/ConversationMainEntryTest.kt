@@ -200,6 +200,17 @@ class ConversationMainEntryTest {
         compose.onNodeWithText("Review closure could not be completed. Content transfer is not confirmed.").assertExists()
         assertEquals(1, handles.size)
     }
+    @Test fun pausedVisibleReviewRevokesOptInAndClosesItsSetupBeforeStop() {
+        installFixture()
+        compose.activityRule.scenario.moveToState(Lifecycle.State.STARTED)
+        assertFalse(compose.activity.conversationSetupEnabled)
+        assertEquals(1, handles[0].closes)
+        compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+        compose.waitForIdle()
+        compose.onNodeWithText("Conversation review").assertDoesNotExist()
+        click("Open conversation review")
+        compose.onNodeWithText("Review selected conversation").assertIsNotEnabled()
+    }
     @Test fun cancellingPublicFileSelectionCannotStartSetup() {
         var created = 0
         compose.runOnIdle {
