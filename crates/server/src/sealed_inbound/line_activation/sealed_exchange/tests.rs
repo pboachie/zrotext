@@ -732,7 +732,7 @@ async fn cleanup_stale_snapshot_cannot_clear_committed_activation_ack_nonce() {
         next_ack(
             &mut c.owner.f.connect().await,
             c.session(),
-            &std::collections::HashSet::new()
+            &[]
         )
         .await
         .unwrap()
