@@ -60,6 +60,11 @@ export async function readPublicDownload(download,maximum,{timeoutMs=10000}={}) 
   try{const result=await Promise.race([reading,deadline]);complete=true;return result;}
   finally{clearTimeout(timer);stream?.destroy();try{if(!complete)await download.cancel();}finally{await download.delete();}}
 }
+export async function assertContentInert(page) {
+  assert.equal(await page.locator('#composer').evaluate(element=>element.tagName==='FIELDSET'&&element.disabled===true),true,'Composer fieldset must retain its native disabled gate');
+  for(const id of ['body','review','confirm'])assert.equal(await page.locator('#'+id).isDisabled(),true,'Actual content controls must remain effectively disabled');
+  assert.equal(await page.locator('#confirmation').isVisible(),false,'No content review may be exposed by line setup');
+}
 async function artifact(page, host) {
   const link=page.locator(`#${host} a[download]`); await link.waitFor();
   const pending=page.waitForEvent('download');await link.click();const download=await pending;
@@ -120,7 +125,7 @@ export async function runSetupServerAcceptance(input) {
     const openResponse=page.waitForResponse(r=>r.request().method()==='POST'&&new URL(r.url()).pathname===`/v1/owner/conversation/sealed-line/${f.lineId}/challenges`);await lineClick('line-open');const opened=await(await openResponse).json();await input.submitPhoneProof({expected:structuredClone(expected),challenge:structuredClone(opened)});await lineClick('line-check');await page.waitForFunction(()=>!document.querySelector('#line-approve').disabled);await lineClick('line-approve');await page.waitForFunction(()=>document.querySelector('#line-status').textContent.startsWith('Activation committed.'));
     await lineClick('line-check');await page.waitForFunction(()=>document.querySelector('#line-status').textContent.startsWith('Activation committed.'));assert.ok(!(await page.locator('#line-status').innerText()).includes('installation acknowledged'));
     await input.acknowledgePhone({expected:structuredClone(expected),challenge:structuredClone(opened)});await lineClick('line-check');await page.waitForFunction(()=>document.querySelector('#line-status').textContent.startsWith('SEALED line installation acknowledged'));
-    assert.equal(await page.locator('#composer').isDisabled(),true);assert.deepEqual(await page.evaluate(()=>fixtureGeneratedKeys),[{algorithm:'ECDSA',extractable:false,usages:['sign']}]);assert.equal(await page.evaluate(()=>localStorage.length+sessionStorage.length),0);const after=counters(await input.snapshot());for(const key of Object.keys(before))assert.equal(after[key],before[key]+1);assert.equal(completions.length,3);assert.ok(completions.every(c=>c.status>=200&&c.status<300));
+    await assertContentInert(page);assert.deepEqual(await page.evaluate(()=>fixtureGeneratedKeys),[{algorithm:'ECDSA',extractable:false,usages:['sign']}]);assert.equal(await page.evaluate(()=>localStorage.length+sessionStorage.length),0);const after=counters(await input.snapshot());for(const key of Object.keys(before))assert.equal(after[key],before[key]+1);assert.equal(completions.length,3);assert.ok(completions.every(c=>c.status>=200&&c.status<300));
     return Object.freeze({rootEnrollmentReread:true,noOriginExport:true,cancelZeroCompletion:true,lineRegistration:true,activationDistinctFromPhoneAck:true,contentAuthorityGranted:false});
   } finally {await context.close();}
 }

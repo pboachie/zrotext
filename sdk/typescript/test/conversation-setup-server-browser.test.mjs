@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
-import { copyAcceptanceFixture, validateAcceptanceProviders, runSetupServerAcceptance,readPublicDownload } from './conversation-setup-server-browser.mjs';
+import { copyAcceptanceFixture, validateAcceptanceProviders, runSetupServerAcceptance,readPublicDownload,assertContentInert } from './conversation-setup-server-browser.mjs';
 const hash=(...parts)=>createHash('sha256').update(Buffer.concat(parts.map(p=>Buffer.from(p)))).digest('hex');
 const id='11111111-1111-4111-8111-111111111111';
 function fixture(){
@@ -25,3 +25,7 @@ test('oversized public download is destroyed and canceled before publication',as
 test('empty or failed download cannot become an artifact',async()=>{for(const d of [download([]),download([Buffer.from('public')],{failure:'fixture failure'})]){await assert.rejects(readPublicDownload(d,64));assert.equal(d.canceled,1);assert.equal(d.deleted,1);}});
 test('held public download closes at its absolute deadline',async()=>{const stream=new Readable({read(){}});let canceled=false,deleted=false;const d={createReadStream:async()=>stream,failure:async()=>null,cancel:async()=>{canceled=true;},delete:async()=>{deleted=true;}};await assert.rejects(readPublicDownload(d,64,{timeoutMs:20}),/deadline exceeded/);assert.equal(stream.destroyed,true);assert.equal(canceled,true);assert.equal(deleted,true);});
 test('download consumption clicks the real link without CSP blob fetch',async()=>{const source=await readFile(new URL('./conversation-setup-server-browser.mjs',import.meta.url),'utf8');assert.ok(source.includes("page.waitForEvent('download')"));assert.ok(source.includes('await link.click()'));assert.ok(!source.includes('link.evaluate'));assert.ok(!source.includes('fetch(a.href)'));assert.ok(source.includes('download.suggestedFilename()'));});
+function inertPage({fieldset=true,enabledControl=null,visibleReview=false}={}){return {locator(selector){if(selector==='#composer')return {evaluate:async fn=>fn({tagName:'FIELDSET',disabled:fieldset}),isDisabled:async()=>false};if(selector==='#confirmation')return {isVisible:async()=>visibleReview};return {isDisabled:async()=>selector!=='#'+enabledControl};}};}
+test('native fieldset property and disabled descendants establish content inertia',async()=>{await assertContentInert(inertPage());});
+for(const control of ['body','review','confirm'])test('enabled '+control+' fails the content-inertia gate',async()=>{await assert.rejects(assertContentInert(inertPage({enabledControl:control})));});
+test('missing fieldset gate or exposed review fails even when controls report disabled',async()=>{await assert.rejects(assertContentInert(inertPage({fieldset:false})));await assert.rejects(assertContentInert(inertPage({visibleReview:true})));});
