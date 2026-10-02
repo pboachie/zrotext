@@ -41,6 +41,57 @@ function ambiguousStatusResponse() {
 }
 const settle = () => new Promise(setImmediate);
 
+test("exposure warnings include outstanding prior-period liability without granting spend", async () => {
+  const { byId, requests } = billingPage();
+  requests.shift()({ ok: true, json: async () => ({ ...await statusResponse().json(), exposureCap: {
+    startMs: Date.parse("2030-01-01T00:00:00Z"), endMs: Date.parse("2030-02-01T00:00:00Z"),
+    softUnits: 4, hardUnits: 6, finalizedUnits: 1, outstandingUnits: 5,
+  } }) }); await settle();
+  assert.match(byId("exposure-cap").textContent, /1 finalized units, 5 outstanding units across all periods/);
+  assert.match(byId("exposure-cap").textContent, /soft cap 4 \(reached\), hard cap 6 \(reached\)/);
+  assert.match(byId("exposure-cap").textContent, /not permission to spend/);
+  const refresh = byId("refresh").listeners.click();
+  assert.equal(byId("exposure-cap").textContent, "");
+  requests.shift()({ ok: false }); await refresh;
+  assert.match(byId("exposure-cap").textContent, /unavailable; old observations/);
+});
+
+test("invalid and absent exposure caps never invent a limit", async () => {
+  for (const cap of [null, { softUnits: 2, hardUnits: 1 }, { softUnits: "<script>" }]) {
+    const { byId, requests } = billingPage();
+    requests.shift()({ ok: true, json: async () => ({ ...await statusResponse().json(), exposureCap: cap }) }); await settle();
+    assert.match(byId("exposure-cap").textContent, /unavailable/);
+    assert.doesNotMatch(byId("exposure-cap").textContent, /script|hard cap/);
+  }
+});
+
+test("forwarding receipts stay separate from settlement and clear after session loss", async () => {
+  const { byId, requests } = billingPage();
+  const snapshot = await statusResponse().json();
+  snapshot.usageSynchronization = { configured: false, pending: 2, leased: 1, acknowledged: 3, review: 4, uncertain: 1 };
+  requests.shift()({ ok: true, json: async () => snapshot }); await settle();
+  assert.match(byId("usage-synchronization").textContent, /2 pending, 1 in flight, 3 acknowledged, 4 requiring review; 1 uncertain/);
+  assert.match(byId("usage-synchronization").textContent, /No active forwarding policy/);
+  assert.match(byId("usage-synchronization").textContent, /not validated usage, invoice settlement or spend authority/);
+  const refresh = byId("refresh").listeners.click();
+  assert.equal(byId("usage-synchronization").textContent, "");
+  requests.shift()({ ok: false }); await refresh;
+  assert.match(byId("usage-synchronization").textContent, /unavailable; old observations/);
+  assert.doesNotMatch(byId("usage-synchronization").textContent, /3 acknowledged/);
+});
+
+test("malformed forwarding counters remain unavailable without echoing input", async () => {
+  for (const synchronization of [null, { configured: true, pending: -1 },
+    { configured: true, pending: 0, leased: 0, acknowledged: 0, review: 0, uncertain: 1 },
+    { configured: "<script>", pending: 0, leased: 0, acknowledged: 0, review: 0, uncertain: 0 }]) {
+    const { byId, requests } = billingPage();
+    requests.shift()({ ok: true, json: async () => ({ ...await statusResponse().json(), usageSynchronization: synchronization }) });
+    await settle();
+    assert.match(byId("usage-synchronization").textContent, /unavailable/);
+    assert.doesNotMatch(byId("usage-synchronization").textContent, /script|acknowledged/);
+  }
+});
+
 function invoiceFixture(overrides = {}) {
   return { currentPeriodEligible: true, effectiveLimit: 2, lastObservedPhase: "grace", lastObservedEffectiveLimit: 20,
     startMs: Date.parse("2030-01-15T00:00:00Z"), endMs: Date.parse("2030-02-15T00:00:00Z"),
