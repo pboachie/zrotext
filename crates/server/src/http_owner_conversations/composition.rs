@@ -42,7 +42,7 @@ impl Startup {
             mfa_cipher,
         });
         Ok((
-            self.router(owner, socket, sockets_per_account, billing_enabled)?
+            self.router_with_setup(owner, socket, sockets_per_account, billing_enabled, true)?
                 .merge(setup),
             retention,
         ))
@@ -79,11 +79,30 @@ impl Startup {
         sockets_per_account: usize,
         billing_enabled: bool,
     ) -> Result<Router, &'static str> {
-        let device = device_socket::router_with_conversations_and_account_share(
-            socket.clone(),
-            &self.wss_origin,
-            sockets_per_account,
-        )?;
+        self.router_with_setup(owner, socket, sockets_per_account, billing_enabled, false)
+    }
+
+    fn router_with_setup(
+        self,
+        owner: OwnerConversationsState,
+        socket: DeviceSocketState,
+        sockets_per_account: usize,
+        billing_enabled: bool,
+        sealed_setup: bool,
+    ) -> Result<Router, &'static str> {
+        let device = if sealed_setup {
+            device_socket::router_with_sealed_line_setup(
+                socket.clone(),
+                &self.wss_origin,
+                sockets_per_account,
+            )?
+        } else {
+            device_socket::router_with_conversations_and_account_share(
+                socket.clone(),
+                &self.wss_origin,
+                sockets_per_account,
+            )?
+        };
         Ok(super::router_with_browser_sdk(owner.clone(), self.assets)
             .merge(owner_host::router(owner.clone()))
             .merge(confirmed_http::router(owner, socket, billing_enabled))

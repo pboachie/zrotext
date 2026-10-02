@@ -194,6 +194,8 @@ fn stream_schema_examples_match_serde_frames() {
             ClientFrame::InboundEvent { .. } => "inbound_event",
             ClientFrame::LineOptOut { .. } => "line_opt_out",
             ClientFrame::SmsLineProof { .. } => "sms_line_proof",
+            ClientFrame::SealedLineProof { .. } => "sealed_line_proof",
+            ClientFrame::SealedLineInstalled { .. } => "sealed_line_installed",
         };
         assert_eq!(frame["type"], variant);
     }

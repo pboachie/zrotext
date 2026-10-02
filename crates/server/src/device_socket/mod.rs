@@ -48,6 +48,7 @@ mod mms_spike_policy;
 pub use mms_spike_policy::MmsSpikePolicy;
 mod conversation;
 mod preconditions;
+mod sealed_line_setup;
 mod stream_diagnostic;
 
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -277,6 +278,28 @@ pub struct DeviceSession {
 #[derive(Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 enum ClientFrame {
+    #[serde(rename = "sealed_line_proof")]
+    SealedLineProof {
+        v: u8,
+        connection_epoch: i64,
+        challenge_id: Uuid,
+        android_api_level: u16,
+        active_subscription_count: u8,
+        selected_subscription_id: i32,
+        signature_der: String,
+    },
+    #[serde(rename = "sealed_line_installed")]
+    SealedLineInstalled {
+        v: u8,
+        connection_epoch: i64,
+        challenge_id: Uuid,
+        account_id: Uuid,
+        line_id: Uuid,
+        device_id: Uuid,
+        generation: i64,
+        device_statement_sha256: String,
+        device_signature_sha256: String,
+    },
     #[serde(rename = "conversation_ready")]
     ConversationReady {
         v: u8,
@@ -612,7 +635,27 @@ pub fn router_with_conversations_and_account_share(
     origin: &str,
     sockets_per_account: usize,
 ) -> Result<Router, &'static str> {
-    let policy = conversation::Policy::new(origin)?;
+    conversation_router(state, origin, sockets_per_account, false)
+}
+
+/// SEALED activation transport is available only in the explicitly validated
+/// setup composition. Ordinary conversation and SMS activation routers keep it off.
+pub fn router_with_sealed_line_setup(
+    state: DeviceSocketState,
+    origin: &str,
+    sockets_per_account: usize,
+) -> Result<Router, &'static str> {
+    conversation_router(state, origin, sockets_per_account, true)
+}
+
+fn conversation_router(
+    state: DeviceSocketState,
+    origin: &str,
+    sockets_per_account: usize,
+    sealed_line_setup: bool,
+) -> Result<Router, &'static str> {
+    let mut policy = conversation::Policy::new(origin)?;
+    policy.sealed_line_setup = sealed_line_setup;
     Ok(Router::new()
         .route("/v1/device-stream", get(upgrade))
         .with_state(SocketRoute {
@@ -1028,6 +1071,9 @@ async fn run_socket(
     deadline: tokio::time::Instant,
     conversation_policy: Option<conversation::Policy>,
 ) {
+    let sealed_setup_enabled = conversation_policy
+        .as_ref()
+        .is_some_and(|policy| policy.sealed_line_setup);
     let mut status_protocol = socket
         .protocol()
         .map(|value| value.to_str().unwrap_or_default().to_owned());
@@ -1115,6 +1161,7 @@ async fn run_socket(
     dispatch_checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     dispatch_checks.tick().await;
     let mut sms_line_next_poll = tokio::time::Instant::now();
+    let mut sealed_line_next_poll = tokio::time::Instant::now();
     let mut sms_line_last_retire: Option<Instant> = None;
     let mut sms_line_acks_sent: Vec<Uuid> = Vec::new();
     let mut last_grant_at: Option<Instant> = None;
@@ -1461,6 +1508,65 @@ async fn run_socket(
                             v: 1, event_id, created,
                         }).await { break; }
                     }
+                    Some(ClientFrame::SealedLineProof {
+                        v: 1, connection_epoch, challenge_id, android_api_level,
+                        active_subscription_count, selected_subscription_id, signature_der,
+                    }) => {
+                        if !sealed_setup_enabled || connection_epoch != session.connection_epoch {
+                            close_with_code = Some(close_code::POLICY); break;
+                        }
+                        let Some(signature) = sealed_line_setup::canonical_signature(&signature_der) else {
+                            close_with_code = Some(EVIDENCE_REJECTED); break;
+                        };
+                        let inbound_session = InboundSession {
+                            account_id: session.account_id, device_id: session.device_id,
+                            site_id: &state.site_id, instance_id: &state.instance_id,
+                            connection_epoch: session.connection_epoch, deployment_epoch: state.deployment_epoch,
+                        };
+                        let Ok(mut client) = runtime_db::connect_device(&state.database_url).await else {
+                            close_with_code = Some(RETRY_LATER); break;
+                        };
+                        let accepted = match crate::sealed_inbound::line_activation::sealed_exchange::record_device_proof(
+                            &mut client, inbound_session,
+                            crate::sealed_inbound::line_activation::sealed_exchange::DeviceProof {
+                                challenge_id, observation: SimObservation { android_api_level,
+                                    active_subscription_count, selected_subscription_id }, signature_der: &signature,
+                            },
+                        ).await { Ok(value) => value, Err(_) => { close_with_code = Some(RETRY_LATER); break; } };
+                        drop(client);
+                        if !sealed_line_setup::receipt(&mut socket,"sealed_line_proof_ack",
+                            connection_epoch,challenge_id,accepted).await { break; }
+                    }
+                    Some(ClientFrame::SealedLineInstalled {
+                        v: 1, connection_epoch, challenge_id, account_id, line_id, device_id,
+                        generation, device_statement_sha256, device_signature_sha256,
+                    }) => {
+                        if !sealed_setup_enabled || connection_epoch != session.connection_epoch {
+                            close_with_code = Some(close_code::POLICY); break;
+                        }
+                        let (Some(statement),Some(signature)) = (
+                            sealed_line_setup::canonical_bytes::<32>(&device_statement_sha256),
+                            sealed_line_setup::canonical_bytes::<32>(&device_signature_sha256),
+                        ) else { close_with_code = Some(EVIDENCE_REJECTED); break; };
+                        let inbound_session = InboundSession {
+                            account_id: session.account_id, device_id: session.device_id,
+                            site_id: &state.site_id, instance_id: &state.instance_id,
+                            connection_epoch: session.connection_epoch, deployment_epoch: state.deployment_epoch,
+                        };
+                        let Ok(mut client) = runtime_db::connect_device(&state.database_url).await else {
+                            close_with_code = Some(RETRY_LATER); break;
+                        };
+                        let accepted = match crate::sealed_inbound::line_activation::sealed_exchange::confirm_ack(
+                            &mut client, inbound_session,
+                            crate::sealed_inbound::line_activation::sealed_exchange::ActivationAck {
+                                challenge_id,account_id,line_id,device_id,generation,
+                                device_statement_sha256:statement,device_signature_sha256:signature,
+                            },
+                        ).await { Ok(value) => value, Err(_) => { close_with_code = Some(RETRY_LATER); break; } };
+                        drop(client);
+                        if !sealed_line_setup::receipt(&mut socket,"sealed_line_install_ack",
+                            connection_epoch,challenge_id,accepted).await { break; }
+                    }
                     Some(ClientFrame::SmsLineProof {
                         v: 1, connection_epoch, challenge_id, android_api_level,
                         active_subscription_count, selected_subscription_id, signature_der,
@@ -1584,6 +1690,17 @@ async fn run_socket(
                     Err(_) => break,
                 }
             }
+            _ = tokio::time::sleep_until(sealed_line_next_poll), if sealed_setup_enabled => {
+                let inbound_session = InboundSession {
+                    account_id: session.account_id, device_id: session.device_id,
+                    site_id: &state.site_id, instance_id: &state.instance_id,
+                    connection_epoch: session.connection_epoch, deployment_epoch: state.deployment_epoch,
+                };
+                match sealed_line_setup::push(&mut socket,&state.database_url,inbound_session).await {
+                    Some(pushed) => sealed_line_next_poll = tokio::time::Instant::now() + sms_line_poll_delay(pushed),
+                    None => { close_reason = "sealed_line_push_failed"; close_with_code = Some(RETRY_LATER); break; }
+                }
+            },
             _ = tokio::time::sleep_until(sms_line_next_poll), if state.sms_line_activation_enabled => {
                 let inbound_session = InboundSession {
                     account_id: session.account_id,
