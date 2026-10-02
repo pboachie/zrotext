@@ -53,6 +53,10 @@ dedicated workflow credential. Cookies, Origin headers, duplicate credentials,
 owner sessions and ordinary API/device/agent keys are refused. Credentials never
 appear in the DTO or caller-selected actor fields.
 
+Issuance remains the existing owner/MFA-checked library operation; this mount
+does not provide a self-service grant-management HTTP endpoint or UI. It consumes
+an actual issued workflow grant rather than translating an ordinary API key.
+
 GET rechecks the authenticated grant's current context scope and returns exactly
 `available`, `methods`, `scope`, and `send_semantics`. `available` is true for a
 successful response; scope contains `context_id`, `device_id`, and `line_id`.
