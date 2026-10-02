@@ -72,7 +72,9 @@ export class WorkflowRecipe {
       request_id: id, context_id: this.#context, action_id: this.#descriptor.action_id });
   }
   async prepare(input) {
-    if (!input || Object.keys(input).some(name => !['request_id', 'key', 'occurrence_id'].includes(name))) deny('invalid_request');
+    if (!input || typeof input !== 'object' || Array.isArray(input) ||
+      !Object.hasOwn(input, 'request_id') || !Object.hasOwn(input, 'key') ||
+      Object.keys(input).some(name => !['request_id', 'key', 'occurrence_id'].includes(name))) deny('invalid_request');
     const { request_id, key, occurrence_id = null } = input;
     if (!this.#enabled) deny('disabled');
     if (!uuid(request_id) || !closed(key, ['account_id', 'action_id', 'revision', 'binding_digest']) ||
@@ -117,7 +119,7 @@ export function createWorkflowRecipeServer(recipe, localCredential) {
     const authorization = request.headers.authorization ?? '';
     const provided = Buffer.from(authorization.startsWith('Bearer ') ? authorization.slice(7) : '');
     const authorizationCount = request.rawHeaders.filter((value, index) => index % 2 === 0 && value.toLowerCase() === 'authorization').length;
-    if (Object.hasOwn(request.headers, 'origin') || request.headers.cookie || authorizationCount !== 1 || provided.length !== bearer.length || !timingSafeEqual(provided, bearer)) {
+    if (Object.hasOwn(request.headers, 'origin') || Object.hasOwn(request.headers, 'cookie') || authorizationCount !== 1 || provided.length !== bearer.length || !timingSafeEqual(provided, bearer)) {
       response.statusCode = 401; response.end(JSON.stringify({ code: 'unauthorized' })); return;
     }
     if (inFlight >= 4) { response.statusCode = 429; response.end(JSON.stringify({ code: 'rate_limited' })); return; }
@@ -127,7 +129,10 @@ export function createWorkflowRecipeServer(recipe, localCredential) {
       if (request.method === 'GET') { response.end(JSON.stringify(await recipe.setup())); return; }
       if (request.method !== 'POST' || !/^application\/json(?:;\s*charset=utf-8)?$/i.test(request.headers['content-type'] ?? '')) deny('invalid_request');
       const parts = []; let length = 0;
-      for await (const bytes of request) { length += bytes.length; if (length > 8192) deny('invalid_request'); parts.push(bytes); }
+      const deadline = setTimeout(() => request.destroy(), 5000);
+      try {
+        for await (const bytes of request) { length += bytes.length; if (length > 8192) deny('invalid_request'); parts.push(bytes); }
+      } finally { clearTimeout(deadline); }
       let input;
       try { input = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(parts))); }
       catch { deny('invalid_request'); }
