@@ -133,7 +133,7 @@ fn linux_fixture_root_is_independent_of_caller_temp_paths_and_private() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         if let Some(status) = child.try_wait().unwrap() {
             assert!(
@@ -142,7 +142,7 @@ fn linux_fixture_root_is_independent_of_caller_temp_paths_and_private() {
             );
             return;
         }
-        if Instant::now() >= deadline {
+        if std::time::Instant::now() >= deadline {
             child.kill().unwrap();
             child.wait().unwrap();
             panic!("private fixture root probe exceeded its deadline");
