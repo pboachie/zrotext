@@ -5,6 +5,8 @@ const state = document.getElementById("billing-state");
 const entitlementStatus = document.getElementById("entitlement-status");
 const localUsage = document.getElementById("local-usage");
 const invoicePeriod = document.getElementById("invoice-period");
+const usageSynchronization = document.getElementById("usage-synchronization");
+const exposureCap = document.getElementById("exposure-cap");
 const deviceCapStatus = document.getElementById("device-cap-status");
 const manageDevices = document.getElementById("manage-devices");
 const list = document.getElementById("subscriptions");
@@ -66,6 +68,8 @@ async function loadStatus() {
   entitlementStatus.textContent = "";
   localUsage.textContent = "Loading local usage…";
   invoicePeriod.textContent = "";
+  usageSynchronization.textContent = "";
+  exposureCap.textContent = "";
   deviceCapStatus.textContent = "";
   manageDevices.hidden = true;
   portal.disabled = true;
@@ -92,6 +96,24 @@ async function loadStatus() {
       localUsage.textContent = "Local usage unavailable; no current authoritative period. Soft cap unavailable.";
     }
     list.replaceChildren();
+    const synchronization = result.usageSynchronization;
+    const capSnapshot = result.exposureCap;
+    if (capSnapshot && ["softUnits", "hardUnits", "outstandingUnits", "finalizedUnits"].every(key => units(capSnapshot[key]))
+        && timestamp(capSnapshot.startMs) && timestamp(capSnapshot.endMs) && capSnapshot.endMs > capSnapshot.startMs
+        && capSnapshot.hardUnits >= capSnapshot.softUnits
+        && Number.isSafeInteger(capSnapshot.outstandingUnits + capSnapshot.finalizedUnits)) {
+      const liability = capSnapshot.outstandingUnits + capSnapshot.finalizedUnits;
+      exposureCap.textContent = `Tenant exposure: ${capSnapshot.finalizedUnits} finalized units, ${capSnapshot.outstandingUnits} outstanding units across all periods; soft cap ${capSnapshot.softUnits}${liability >= capSnapshot.softUnits ? " (reached)" : ""}, hard cap ${capSnapshot.hardUnits}${liability >= capSnapshot.hardUnits ? " (reached)" : ""}. UTC period ${new Date(capSnapshot.startMs).toISOString()} inclusive to ${new Date(capSnapshot.endMs).toISOString()} exclusive. These policy units are separate from message allowance. Other scoped and deployment limits also apply; this snapshot is not permission to spend.`;
+    } else {
+      exposureCap.textContent = "Tenant exposure caps unavailable; no current configured policy snapshot.";
+    }
+    if (synchronization && typeof synchronization.configured === "boolean"
+        && ["pending", "leased", "acknowledged", "review", "uncertain"].every(key => units(synchronization[key]))
+        && synchronization.uncertain <= synchronization.pending + synchronization.leased + synchronization.review) {
+      usageSynchronization.textContent = `Retained local TEST forwarding records: ${synchronization.pending} pending, ${synchronization.leased} in flight, ${synchronization.acknowledged} acknowledged, ${synchronization.review} requiring review; ${synchronization.uncertain} currently classified unknown. Review also includes attempt-limit and manual-review records. ${synchronization.configured ? "A forwarding policy is configured." : "No active forwarding policy is configured."} Acknowledgement is a transport receipt, not validated usage, invoice settlement or spend authority.`;
+    } else {
+      usageSynchronization.textContent = "Billing synchronization unavailable; no verified forwarding snapshot.";
+    }
     for (const subscription of result.subscriptions) {
       const item = document.createElement("li");
       const checked = new Date(subscription.reconciledAtUnix * 1000).toLocaleString();
@@ -160,6 +182,8 @@ async function loadStatus() {
     state.textContent = "Billing status unavailable.";
     localUsage.textContent = "Local usage unavailable. Refresh after signing in again; old usage is not shown.";
     invoicePeriod.textContent = "Invoice status unavailable; old observations are not shown.";
+    usageSynchronization.textContent = "Billing synchronization unavailable; old observations are not shown.";
+    exposureCap.textContent = "Tenant exposure caps unavailable; old observations are not shown.";
     entitlementStatus.textContent = "";
     deviceCapStatus.textContent = "";
     manageDevices.hidden = true;
