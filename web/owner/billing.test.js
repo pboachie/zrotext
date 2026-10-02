@@ -70,7 +70,7 @@ test("forwarding receipts stay separate from settlement and clear after session 
   const snapshot = await statusResponse().json();
   snapshot.usageSynchronization = { configured: false, pending: 2, leased: 1, acknowledged: 3, review: 4, uncertain: 1 };
   requests.shift()({ ok: true, json: async () => snapshot }); await settle();
-  assert.match(byId("usage-synchronization").textContent, /2 pending, 1 in flight, 3 acknowledged, 4 requiring review; 1 uncertain/);
+  assert.match(byId("usage-synchronization").textContent, /2 pending, 1 in flight, 3 acknowledged, 4 requiring review; 1 currently classified unknown/);
   assert.match(byId("usage-synchronization").textContent, /No active forwarding policy/);
   assert.match(byId("usage-synchronization").textContent, /not validated usage, invoice settlement or spend authority/);
   const refresh = byId("refresh").listeners.click();
@@ -80,6 +80,16 @@ test("forwarding receipts stay separate from settlement and clear after session 
   assert.doesNotMatch(byId("usage-synchronization").textContent, /3 acknowledged/);
 });
 
+test("attempt-limit review records are not presented as classified unknown", async () => {
+  const { byId, requests } = billingPage();
+  const snapshot = await statusResponse().json();
+  snapshot.usageSynchronization = { configured: true, pending: 0, leased: 0, acknowledged: 0, review: 1, uncertain: 0 };
+  requests.shift()({ ok: true, json: async () => snapshot }); await settle();
+  const text = byId("usage-synchronization").textContent;
+  assert.match(text, /1 requiring review; 0 currently classified unknown/);
+  assert.match(text, /Review also includes attempt-limit and manual-review records/);
+  assert.doesNotMatch(text, /0 uncertain outcomes/);
+});
 test("malformed forwarding counters remain unavailable without echoing input", async () => {
   for (const synchronization of [null, { configured: true, pending: -1 },
     { configured: true, pending: 0, leased: 0, acknowledged: 0, review: 0, uncertain: 1 },

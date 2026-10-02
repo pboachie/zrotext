@@ -110,7 +110,7 @@ async function loadStatus() {
     if (synchronization && typeof synchronization.configured === "boolean"
         && ["pending", "leased", "acknowledged", "review", "uncertain"].every(key => units(synchronization[key]))
         && synchronization.uncertain <= synchronization.pending + synchronization.leased + synchronization.review) {
-      usageSynchronization.textContent = `Retained local TEST forwarding records: ${synchronization.pending} pending, ${synchronization.leased} in flight, ${synchronization.acknowledged} acknowledged, ${synchronization.review} requiring review; ${synchronization.uncertain} uncertain outcomes. ${synchronization.configured ? "A forwarding policy is configured." : "No active forwarding policy is configured."} Acknowledgement is a transport receipt, not validated usage, invoice settlement or spend authority.`;
+      usageSynchronization.textContent = `Retained local TEST forwarding records: ${synchronization.pending} pending, ${synchronization.leased} in flight, ${synchronization.acknowledged} acknowledged, ${synchronization.review} requiring review; ${synchronization.uncertain} currently classified unknown. Review also includes attempt-limit and manual-review records. ${synchronization.configured ? "A forwarding policy is configured." : "No active forwarding policy is configured."} Acknowledgement is a transport receipt, not validated usage, invoice settlement or spend authority.`;
     } else {
       usageSynchronization.textContent = "Billing synchronization unavailable; no verified forwarding snapshot.";
     }
