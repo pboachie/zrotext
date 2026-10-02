@@ -4,6 +4,7 @@
 const state = document.getElementById("billing-state");
 const entitlementStatus = document.getElementById("entitlement-status");
 const localUsage = document.getElementById("local-usage");
+const invoicePeriod = document.getElementById("invoice-period");
 const deviceCapStatus = document.getElementById("device-cap-status");
 const manageDevices = document.getElementById("manage-devices");
 const list = document.getElementById("subscriptions");
@@ -23,7 +24,32 @@ const entitlementReasons = {
   unmapped: "subscription price not mapped",
   startup_reset: "reset at server startup, pending reconciliation",
   provider_deleted: "subscription deleted at Stripe",
+  invoice_current: "current invoice snapshot",
+  invoice_restricted: "invoice spend restricted",
 };
+
+const units = value => Number.isSafeInteger(value) && value >= 0;
+const timestamp = value => units(value) && value <= 8640000000000000;
+function invoiceSummary(invoice) {
+  if (!invoice || typeof invoice !== "object" || Array.isArray(invoice)
+      || typeof invoice.currentPeriodEligible !== "boolean" || !units(invoice.effectiveLimit)
+      || (!invoice.currentPeriodEligible && invoice.effectiveLimit !== 0)
+      || ![invoice.lastObservedEffectiveLimit, invoice.consumedUnits, invoice.previousOpenUnits].every(value => value === null || units(value))
+      || ![invoice.startMs, invoice.endMs, invoice.graceUntilMs, invoice.cancelAtMs].every(value => value === null || timestamp(value))
+      || !(invoice.lastObservedPhase === null || ["active", "grace", "restricted", "cancelled", "review"].includes(invoice.lastObservedPhase))
+      || ((invoice.startMs === null) !== (invoice.endMs === null))
+      || (invoice.startMs !== null && invoice.endMs <= invoice.startMs)
+      || (invoice.currentPeriodEligible && (invoice.startMs === null || invoice.consumedUnits === null))) return null;
+  const date = value => new Date(value).toISOString();
+  let text = `Invoice snapshot: ${invoice.currentPeriodEligible ? "eligible at the status check" : "new discretionary spend restricted"}; current ceiling ${invoice.effectiveLimit}.`;
+  text += invoice.startMs === null ? " No verified invoice period observed." : ` UTC invoice period ${date(invoice.startMs)} inclusive to ${date(invoice.endMs)} exclusive.`;
+  text += invoice.consumedUnits === null ? " Invoice consumption unavailable." : ` ${invoice.consumedUnits} net consumed in this invoice period.`;
+  text += invoice.previousOpenUnits === null ? " Prior unresolved usage unavailable." : ` ${invoice.previousOpenUnits} unresolved units from earlier periods.`;
+  if (invoice.lastObservedPhase !== null) text += ` Last observed phase: ${invoice.lastObservedPhase}; observed ceiling ${invoice.lastObservedEffectiveLimit === null ? "unavailable" : invoice.lastObservedEffectiveLimit}.`;
+  if (invoice.graceUntilMs !== null) text += ` Grace deadline ${date(invoice.graceUntilMs)}.`;
+  if (invoice.cancelAtMs !== null) text += ` Cancellation deadline ${date(invoice.cancelAtMs)}.`;
+  return `${text} This snapshot is not remaining capacity or permission to send. Soft cap unavailable.`;
+}
 
 function csrfToken() {
   const entry = document.cookie.split(";").map((part) => part.trim())
@@ -38,6 +64,7 @@ async function loadStatus() {
   state.textContent = "Loading billing status…";
   entitlementStatus.textContent = "";
   localUsage.textContent = "Loading local usage…";
+  invoicePeriod.textContent = "";
   deviceCapStatus.textContent = "";
   manageDevices.hidden = true;
   portal.disabled = true;
@@ -48,11 +75,16 @@ async function loadStatus() {
     if (generation !== statusGeneration) return;
     if (result.mode !== "test") throw new Error("Unexpected billing mode.");
     if (!Array.isArray(result.subscriptions)) throw new Error("The billing status response was invalid.");
+    const invoiceEnabled = result.invoicePeriod !== null && result.invoicePeriod !== undefined;
+    const invoiceText = invoiceEnabled ? invoiceSummary(result.invoicePeriod) : null;
+    invoicePeriod.textContent = invoiceEnabled ? invoiceText || "Invoice status unavailable; no current ceiling or period can be displayed." : "";
     const usage = result.localUsage;
     if (usage && [usage.used_units, usage.reserved_units, usage.refunded_units, usage.limit_units].every(value => Number.isSafeInteger(value) && value >= 0)
         && usage.refunded_units <= usage.reserved_units && usage.used_units === usage.reserved_units - usage.refunded_units
         && /^\d{4}-\d{2}-\d{2}$/.test(usage.period_start) && /^\d{4}-\d{2}-\d{2}$/.test(usage.period_end) && usage.period_end > usage.period_start) {
-      localUsage.textContent = `Local outbound admission usage: ${usage.used_units} consumed, ${usage.reserved_units} gross reserved, ${usage.refunded_units} refunded; hard cap ${usage.limit_units}${usage.used_units >= usage.limit_units ? " (reached)" : ""}. UTC period ${usage.period_start} inclusive to ${usage.period_end} exclusive. Soft cap unavailable. This is a local snapshot; it does not confirm delivery or provider billing.`;
+      localUsage.textContent = invoiceEnabled
+        ? `Calendar usage history: ${usage.used_units} consumed, ${usage.reserved_units} gross reserved, ${usage.refunded_units} refunded. UTC calendar period ${usage.period_start} inclusive to ${usage.period_end} exclusive. Its recorded calendar limit ${usage.limit_units} is not the current invoice ceiling. This history does not confirm delivery or provider billing.`
+        : `Local outbound admission usage: ${usage.used_units} consumed, ${usage.reserved_units} gross reserved, ${usage.refunded_units} refunded; hard cap ${usage.limit_units}${usage.used_units >= usage.limit_units ? " (reached)" : ""}. UTC period ${usage.period_start} inclusive to ${usage.period_end} exclusive. Soft cap unavailable. This is a local snapshot; it does not confirm delivery or provider billing.`;
     } else {
       localUsage.textContent = "Local usage unavailable; no current authoritative period. Soft cap unavailable.";
     }
@@ -79,7 +111,9 @@ async function loadStatus() {
       const reason = entitlement.reason === null || entitlement.reason === undefined
         ? "no projection yet"
         : entitlementReasons[entitlement.reason] || entitlement.reason;
-      const outbound = Number.isSafeInteger(entitlement.outboundLimit)
+      const outbound = invoiceEnabled
+        ? invoiceText ? `current invoice ceiling ${result.invoicePeriod.effectiveLimit}` : "current invoice ceiling unavailable"
+        : Number.isSafeInteger(entitlement.outboundLimit)
         ? `outbound allowance ${entitlement.outboundLimit}/month`
         : "outbound allowance not projected";
       const cap = Number.isSafeInteger(entitlement.deviceCap)
@@ -122,6 +156,7 @@ async function loadStatus() {
     list.replaceChildren();
     state.textContent = "Billing status unavailable.";
     localUsage.textContent = "Local usage unavailable. Refresh after signing in again; old usage is not shown.";
+    invoicePeriod.textContent = "Invoice status unavailable; old observations are not shown.";
     entitlementStatus.textContent = "";
     deviceCapStatus.textContent = "";
     manageDevices.hidden = true;
