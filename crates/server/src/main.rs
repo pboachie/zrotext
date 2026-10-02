@@ -357,6 +357,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // would only report the database as unavailable.
     zrotext_postgres_connection::check_url(&database_url)
         .map_err(|error| format!("DATABASE_URL: {error}"))?;
+    let external_authority_config = if failover_executor_env.is_some() {
+        match env::var("FAILOVER_EXTERNAL_AUTHORITY_CONFIG") {
+            Ok(path) if !path.is_empty() => Some(std::path::PathBuf::from(path)),
+            Ok(_) | Err(env::VarError::NotPresent) => None,
+            Err(_) => return Err("external authority configuration path must be UTF-8".into()),
+        }
+    } else {
+        None
+    };
+    if external_authority_config.is_some() {
+        failover_executor::hold_before_external_start(&database_url).await?;
+    }
     // Readiness tracks the failover executor only when it is enabled; the
     // default-off path adds no signal and changes nothing.
     let failover_executor_healthy = failover_executor_env
@@ -986,12 +998,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }));
         }
     }
-    let _failover_executor_thread = failover_executor::spawn_failover_executor_with_adapters(
+    let _failover_executor_thread = failover_executor::spawn_failover_executor_with_external(
         failover_executor_env,
         config.database_url.clone(),
         config.draining.clone(),
         failover_executor_healthy.unwrap_or_default(),
         failover_adapters,
+        external_authority_config,
     );
     eprintln!(
         "zrotext site={} instance={} listening={bind}",

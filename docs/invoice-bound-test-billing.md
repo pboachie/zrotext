@@ -110,3 +110,27 @@ Synthetic PostgreSQL and provider fixtures verify the restricted candidate.
 They do not verify a live Stripe account, production proration policy, physical
 SMS delivery or hosted readiness. Deployment requires the contiguous reviewed
 migration train, separately configured policy and existing launch gates.
+# Owner status snapshots
+
+The billing dashboard uses its existing authenticated status request to show
+retained local TEST forwarding records: pending, leased, acknowledged, review,
+and records currently classified unknown. Review also includes attempt-limit
+and manual-review records. These counts span retained records, not just the
+current invoice period. A configured policy does not prove that a worker is
+running. An acknowledgement is a transport receipt; it does not establish
+validated usage, invoice settlement, delivery, or entitlement.
+
+When configured, the same response shows the current tenant exposure policy's
+soft and hard caps with its exact UTC period. Outstanding liability includes
+all original periods; finalized usage includes all policy versions with the
+same period bounds. Exposure policy units are distinct from the invoice
+message allowance. Other scope and deployment budgets still apply, so this
+snapshot does not report remaining spend authority. Missing or expired
+policies remain explicitly unavailable. Refresh and session failure clear
+previous observations.
+
+These projections expose counters and period bounds only, without provider
+identifiers, message content, customer identifiers, or credential material.
+They create no new retained records and follow the existing ledger retention
+and account-erasure rules. Free and self-hosted operation remains independent
+of billing configuration.
