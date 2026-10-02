@@ -128,7 +128,20 @@ class ConversationEntryOptInDeviceTest {
             assertNoConversationAuthority()
             assertFalse(context.getDatabasePath(ConversationJournalStores.CAPTURE_FILE).exists())
             assertFalse(context.getDatabasePath(ConversationJournalStores.SEND_FILE).exists())
+            val dialogWindowId = checkNotNull(instrumentation.uiAutomation.rootInActiveWindow).windowId
             click("Close conversation review")
+            // Dialog dismissal outlives Compose's idle callback. Wait for its window to
+            // leave before resolving the underlying page's fresh action node.
+            val dismissalDeadline = SystemClock.elapsedRealtime() + 5000
+            var pageWindow = instrumentation.uiAutomation.rootInActiveWindow
+            while ((pageWindow == null || pageWindow.windowId == dialogWindowId) &&
+                SystemClock.elapsedRealtime() < dismissalDeadline) {
+                Thread.sleep(25)
+                pageWindow = instrumentation.uiAutomation.rootInActiveWindow
+            }
+            pageWindow = checkNotNull(pageWindow) { "Missing page after conversation dismissal" }
+            assertNotEquals("Conversation dialog did not dismiss", dialogWindowId, pageWindow.windowId)
+            assertTrue("Conversation close control remains mounted", matchingText("Close conversation review").isEmpty())
             click("Open conversation review")
             assertFalse(awaitNode("Enable review for this session", enabled = false).isEnabled)
         } finally {
