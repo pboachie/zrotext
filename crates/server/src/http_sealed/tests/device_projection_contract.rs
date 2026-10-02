@@ -7,16 +7,8 @@
 use super::*;
 
 async fn projection_case() -> (Fixture, String, String) {
-    let mut f = Fixture::new().await;
-    let now = route_now(&f.db).await;
-    let digest = Sha256::digest(&f.bytes[..f.bytes.len() - 64]);
-    f.db.execute("UPDATE sealed_manifest_authorities SET version=1,semantic_digest=$2,manifest=$3,accepted_at_ms=$4,last_verified_ms=$4 WHERE account_id=$1",
-        &[&f.account,&digest.as_slice(),&f.bytes,&now]).await.unwrap();
-    let token = format!("ztk_{}", URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>()));
-    let user = insert_owner(&mut f).await;
-    insert_api_key(&mut f, &token, "devices:read", user).await;
-    let url = format!("{}?options=-csearch_path%3D{}", f.url, f.schema);
-    (f, token, url)
+    let (case, token) = resource_case("devices:read").await;
+    (case.fixture, token, case.url)
 }
 
 fn projection_get(token: &str, path: &str) -> Request<Body> {
@@ -30,16 +22,13 @@ fn projection_get(token: &str, path: &str) -> Request<Body> {
 
 #[derive(serde::Deserialize)]
 struct LineView {
-    #[allow(dead_code)]
     line_id: Uuid,
-    #[allow(dead_code)]
     binding_generation: i64,
     state: String,
 }
 
 #[derive(serde::Deserialize)]
 struct DeviceView {
-    #[allow(dead_code)]
     device_id: Uuid,
     revoked: bool,
     active_socket_lease: bool,
@@ -89,13 +78,15 @@ async fn revoked_line_bindings_report_their_stored_state() {
     let app = router(SealedHttpState::new(url, hasher(), "manifest-test".into(), 1, true).unwrap());
     let page = devices(&app, &token).await;
     assert_eq!(page.devices.len(), 1);
-    let states: Vec<&str> = page.devices[0]
+    assert_eq!(page.devices[0].device_id, f.device);
+    let mut bindings: Vec<_> = page.devices[0]
         .lines
         .iter()
-        .map(|line| line.state.as_str())
+        .filter(|line| line.line_id == retired_line)
+        .map(|line| (line.binding_generation, line.state.as_str()))
         .collect();
-    assert!(states.contains(&"revoked"), "states: {states:?}");
-    assert!(states.contains(&"active"), "states: {states:?}");
+    bindings.sort_unstable();
+    assert_eq!(bindings, vec![(1, "revoked"), (2, "active")]);
     f.cleanup().await;
 }
 
@@ -119,9 +110,9 @@ async fn lease_snapshot_follows_site_and_session_epochs() {
         !page.devices[0].active_socket_lease,
         "expired lease reads false"
     );
-    // A stale deployment epoch (session behind the authority) reads false.
+    // A mismatched deployment epoch reads false; zero is forbidden by the schema.
     f.db.execute(
-        "UPDATE device_sessions SET lease_until=now()+interval '10 minutes',deployment_epoch=0",
+        "UPDATE device_sessions SET lease_until=now()+interval '10 minutes',deployment_epoch=2",
         &[],
     )
     .await
@@ -162,6 +153,8 @@ async fn revoked_devices_still_list_with_revoked_true() {
     let app = router(SealedHttpState::new(url, hasher(), "manifest-test".into(), 1, true).unwrap());
     let page = devices(&app, &token).await;
     assert_eq!(page.devices.len(), 1);
+    assert_eq!(page.devices[0].device_id, f.device);
     assert!(page.devices[0].revoked);
+    assert!(!page.devices[0].active_socket_lease);
     f.cleanup().await;
 }
