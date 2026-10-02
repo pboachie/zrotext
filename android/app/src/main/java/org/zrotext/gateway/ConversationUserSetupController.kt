@@ -22,10 +22,14 @@ internal class ConversationUserSetupController(
         val identity: EvidenceIdentity, val intervalId: String, val lineId: String,
         val bindingGeneration: Long, val peer: String,
         val bindings: ConversationConnectionBindings, val site: String, val instance: String,
-        phoneReaderId: ByteArray? = null
+        phoneReaderId: ByteArray? = null,
+        initialManifests: List<ByteArray> = emptyList()
     ) {
         private val reader = phoneReaderId?.copyOf()
         val phoneReaderId get() = reader?.copyOf()
+        private val predecessors = initialManifests.also { require(it.size <= ConversationEnrollmentSession.MAX_CHAIN) }
+            .map { require(it.size in 364..9751); it.copyOf() }
+        val initialManifests get() = predecessors.map { it.copyOf() }
         init { require(reader == null || reader.size == 32 && reader.any { it != 0.toByte() }) }
         override fun toString() = "ConversationUserSelection(redacted)"
     }
@@ -94,6 +98,8 @@ internal class ConversationUserSetupController(
                         return checkNotNull(clock.nowMs()).also { check(it in 1 until parsed.expiresMs) }
                     }
                     val trust = inputs.inputs.trust
+                    ConversationManifestBootstrap.install(trust, selection.initialManifests, parsed,
+                        inputs.inputs.payloadKeys.existingPublic().keyId, ::now, ::requireOpen)
                     val saved = trust.inspect()
                     check(saved.status == Draft02TrustStore.Status.NEEDS_FRESHNESS)
                     val snapshot = checkNotNull(saved.snapshot)

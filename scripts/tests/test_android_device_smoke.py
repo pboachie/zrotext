@@ -222,3 +222,27 @@ class DeviceSmokeTests(unittest.TestCase):
                       result(smoke.ENTRY_OPT_IN, "unrelatedPassingTest")):
             with self.subTest(entry=entry), self.assertRaises(ValueError):
                 smoke.verify_results(prefix + entry + suffix, expected)
+
+    def test_enrollment_consent_is_selected_with_explicit_emulator_gate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "android/app/src/androidTest/java/org/zrotext/gateway/EnrollmentConsentBoundaryDeviceTest.kt"
+            source.parent.mkdir(parents=True)
+            source.touch()
+            name = smoke.PACKAGE + "EnrollmentConsentBoundaryDeviceTest"
+            expected = {smoke.PRECONDITIONS: 1, name: 1}
+            self.assertEqual(smoke.selected_tests(root), expected)
+            arguments = smoke.instrumentation_arguments(expected)
+            self.assertIn(name, arguments[arguments.index("class") + 1].split(","))
+            self.assertIn("entryOptInIsolatedEmulator", arguments)
+
+    def test_enrollment_consent_requires_its_exact_successful_method(self):
+        name = smoke.PACKAGE + "EnrollmentConsentBoundaryDeviceTest"
+        method = "enrollmentAndIndependentChoicesRefuseWithoutCreatingAuthority"
+        expected = {smoke.PRECONDITIONS: 1, name: 1}
+        prefix = result(smoke.PRECONDITIONS)
+        suffix = "INSTRUMENTATION_CODE: -1\n"
+        smoke.verify_results(prefix + result(name, method) + suffix, expected)
+        for entry in ("", result(name, method, -3), result(name, "unrelatedPassingTest")):
+            with self.subTest(entry=entry), self.assertRaises(ValueError):
+                smoke.verify_results(prefix + entry + suffix, expected)
