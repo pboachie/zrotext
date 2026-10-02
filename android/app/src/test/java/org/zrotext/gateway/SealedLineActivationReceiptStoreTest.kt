@@ -46,8 +46,10 @@ class SealedLineActivationReceiptStoreTest {
     @Test fun receiptCodecRejectsScopeStatementDigestDerTypeAndOversizeTampering() {
         val f = SealedLineActivationFixture(); val proof = checkNotNull(f.device.prepare(f.challenge, f.selection))
         val encoded = SealedLineActivationReceiptCodec.encode(SealedLineActivationSnapshot(proof, f.receipt(proof.signature())))
+        // JSONObject's serializer turns 1.0 into 1. Preserve the received floating token itself.
+        assertTrue(runCatching { SealedLineActivationReceiptCodec.decode(encoded.replace("\"version\":1", "\"version\":1.0")) }.isFailure)
         val changes: List<(JSONObject) -> Unit> = listOf(
-            { it.put("version", 1.0) }, { it.put("api", 30) }, { it.put("subscription", 8) },
+            { it.put("api", 30) }, { it.put("subscription", 8) },
             { it.getJSONObject("challenge").put("generation", 8) },
             { it.getJSONObject("challenge").put("nonce", SealedLineActivationFrames.encode(ByteArray(32) { 8 })) },
             { it.put("signature", SealedLineActivationFrames.encode(byteArrayOf(0x30, 6, 2, 1, 0, 2, 1, 1))) },
