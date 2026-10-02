@@ -3375,7 +3375,7 @@ fn confirmed_proof_delete_precedes_every_referenced_parent() {
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn malformed_confirmation_schema_fails_erasure_closed_without_partial_deletes() {
-    let (admin, mut db, database_url, schema) = migrated_schema("proof_shape").await;
+    let (_admin, mut db, database_url, schema) = migrated_schema("proof_shape").await;
     let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
     let (a, session_a, _b, _session_b, app) = fixture(&mut db, &hasher, &database_url, None).await;
     db.batch_execute("DROP TABLE conversation_execution_records CASCADE; DROP TABLE conversation_confirmation_records; CREATE TABLE conversation_confirmation_records(account_id uuid NOT NULL)").await.unwrap();
@@ -3411,8 +3411,7 @@ async fn malformed_confirmation_schema_fails_erasure_closed_without_partial_dele
             .get(0);
         assert!(count > 0);
     }
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+    crate::sealed_manifest_store::tests::cleanup::drop_fixture(&db, &schema)
         .await
         .unwrap();
 }
@@ -3421,7 +3420,7 @@ async fn malformed_confirmation_schema_fails_erasure_closed_without_partial_dele
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated synthetic schema"]
 async fn execution_installed_schema_erasure_succeeds_and_absence_keeps_existing_behavior() {
     for absent in [false, true] {
-        let (admin, mut db, database_url, schema) =
+        let (_admin, mut db, database_url, schema) =
             migrated_schema_with_execution("execution_erase", !absent).await;
         let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
         let (a, session, _b, _bsession, app) = fixture(&mut db, &hasher, &database_url, None).await;
@@ -3457,8 +3456,7 @@ async fn execution_installed_schema_erasure_succeeds_and_absence_keeps_existing_
             .get::<_, i64>(0),
             0
         );
-        admin
-            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        crate::sealed_manifest_store::tests::cleanup::drop_fixture(&db, &schema)
             .await
             .unwrap();
     }
@@ -3547,7 +3545,7 @@ async fn execution_schema_wait_expired_owner_rolls_back_disable_and_all_deletes(
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated synthetic schema"]
 async fn execution_record_wait_holds_owner_lock_and_expiry_rolls_back_all_deletes() {
-    let (admin, mut db, database_url, schema) = migrated_schema("execution_record_expiry").await;
+    let (admin, mut db, database_url, schema) = migrated_schema("exec_expiry").await;
     let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
     let handler_database_url = handler_url(&database_url, "zt_execution_record_expiry");
     let (a, session, _b, _bsession, app) =
@@ -3651,8 +3649,7 @@ async fn execution_record_wait_holds_owner_lock_and_expiry_rolls_back_all_delete
         .get::<_, i64>(0),
         2
     );
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+    crate::sealed_manifest_store::tests::cleanup::drop_fixture(&db, &schema)
         .await
         .unwrap();
 }
