@@ -1162,7 +1162,8 @@ async fn account_routes(
         auth_state = auth_state.with_mfa_enrollment_enabled();
     }
     auth_state = auth_state
-        .with_root_custody_opt_in(config.root_custody_enabled, config.mfa_recovery_only)?;
+        .with_root_custody_opt_in(config.root_custody_enabled, config.mfa_recovery_only)?
+        .with_workflow_grants_enabled(config.workflow_tools_enabled);
     if config.sms_line_activation_enabled {
         auth_state = auth_state.with_sms_line_activation_enabled();
     }
