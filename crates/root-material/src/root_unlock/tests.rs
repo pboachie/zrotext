@@ -8,7 +8,7 @@ fn synthetic(label: &[u8]) -> Zeroizing<[u8; 32]> {
     Zeroizing::new(sha2::Sha256::digest(label).into())
 }
 
-fn pin_of(root: &RootSecret, account: [u8; 16]) -> [u8; 94] {
+pub(super) fn pin_of(root: &RootSecret, account: [u8; 16]) -> [u8; 94] {
     let secret = p256::SecretKey::from_slice(root.as_bytes()).unwrap();
     let mut pin = [0_u8; 94];
     pin[..5].copy_from_slice(b"ZTRP\x02");
@@ -18,7 +18,7 @@ fn pin_of(root: &RootSecret, account: [u8; 16]) -> [u8; 94] {
     pin
 }
 
-fn material(label: &str) -> (RootSecret, RecoverySecret, ExpectedIdentity) {
+pub(super) fn material(label: &str) -> (RootSecret, RecoverySecret, ExpectedIdentity) {
     let account = [0xaa; 16];
     let root = RootSecret::new(synthetic(label.as_bytes())).unwrap();
     let recovery = RecoverySecret::new(synthetic(b"ZROtext synthetic root-unlock recovery"));
@@ -31,7 +31,7 @@ fn material(label: &str) -> (RootSecret, RecoverySecret, ExpectedIdentity) {
     (root, recovery, expected)
 }
 
-fn challenge(expected: &ExpectedIdentity, issued: u64, expires: u64) -> Vec<u8> {
+pub(super) fn challenge(expected: &ExpectedIdentity, issued: u64, expires: u64) -> Vec<u8> {
     sealed_root_enrollment::encode(&Challenge {
         account_id: expected.account_id,
         user_id: [2; 16],

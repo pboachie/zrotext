@@ -28,6 +28,14 @@ pub fn router(state: OwnerConversationsState) -> Router {
         .route("/v1/owner/conversation/activation", post(begin))
         .route("/v1/owner/conversation/enrollment", post(install))
         .route("/v1/owner/conversation/bootstrap", post(bootstrap))
+        .route(
+            "/v1/owner/conversation/genesis/bootstrap",
+            post(super::genesis::bootstrap),
+        )
+        .route(
+            "/v1/owner/conversation/genesis/install",
+            post(super::genesis::install),
+        )
         .layer(DefaultBodyLimit::max(20 * 1024))
         .layer(middleware::from_fn(super::no_store))
         .with_state(Arc::new(state))
