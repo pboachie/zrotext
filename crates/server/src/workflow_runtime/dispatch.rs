@@ -76,6 +76,9 @@ pub async fn call(
                 expires_at_ms: result.expires_at_ms,
             }))
         }
+        Request::Cancel(v) => Ok(Response::Cancel(
+            super::cancel_action(client, principal, v.request_id, v.key).await?,
+        )),
         Request::Send(v) => Ok(Response::Send(
             super::send_action(client, principal, v.request_id, v.key, v.occurrence_id).await?,
         )),

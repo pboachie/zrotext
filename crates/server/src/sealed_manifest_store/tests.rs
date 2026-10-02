@@ -7,7 +7,7 @@ use p256::{
 };
 use sha2::{Digest, Sha256};
 use tokio_postgres::{Client, NoTls};
-mod cleanup;
+pub(crate) mod cleanup;
 
 pub(crate) struct Fixture {
     pub(crate) url: String,
