@@ -11,6 +11,8 @@ use serde_json::{Value, json};
 
 #[path = "lifecycle_tests.rs"]
 mod lifecycle_tests;
+#[path = "mixed_role_tests.rs"]
+mod mixed_role_tests;
 use std::{future::Future, pin::Pin};
 use tokio_postgres::{Client, NoTls};
 use tower::ServiceExt;
@@ -45,6 +47,7 @@ const MIGRATIONS: [&str; 11] = [
 struct Fixture {
     db: Client,
     schema: String,
+    url: String,
     state: AuthHttpState,
     owner: SessionCredentials,
     other: SessionCredentials,
@@ -56,6 +59,12 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Self {
+        Self::build(false).await
+    }
+    async fn with_device_status() -> Self {
+        Self::build(true).await
+    }
+    async fn build(device_status: bool) -> Self {
         let base = std::env::var("ZT_AUTH_TEST_DATABASE_URL").unwrap();
         let (setup, connection) = tokio_postgres::connect(&base, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
@@ -68,8 +77,12 @@ impl Fixture {
         let url = format!("{base}{separator}options=-csearch_path%3D{schema}");
         let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
-        for sql in MIGRATIONS {
-            db.batch_execute(sql).await.unwrap();
+        if device_status {
+            auth::test_schema::apply(&db).await;
+        } else {
+            for sql in MIGRATIONS {
+                db.batch_execute(sql).await.unwrap();
+            }
         }
         let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(61)).unwrap());
         let password = crate::test_keys::password(61);
@@ -114,13 +127,18 @@ impl Fixture {
         let other = auth::login(&db, &hasher, "other@example.test", &password)
             .await
             .unwrap();
-        let state =
-            AuthHttpState::new(url, hasher, "https://example.test".into(), Arc::new(NoMail))
-                .unwrap()
-                .with_collaboration_drafts_enabled();
+        let state = AuthHttpState::new(
+            url.clone(),
+            hasher,
+            "https://example.test".into(),
+            Arc::new(NoMail),
+        )
+        .unwrap()
+        .with_collaboration_drafts_enabled();
         Self {
             db,
             schema,
+            url,
             state,
             owner,
             member,
@@ -132,7 +150,15 @@ impl Fixture {
         }
     }
     fn app(&self) -> Router {
-        Router::new().nest("/v1/auth", crate::http_auth::router(self.state.clone()))
+        Router::new()
+            .nest("/v1/auth", crate::http_auth::router(self.state.clone()))
+            .nest(
+                "/v1/observer",
+                crate::http_observer::router(crate::http_observer::ObserverState {
+                    database_url: self.url.clone(),
+                    auth_hasher: self.state.hasher.clone(),
+                }),
+            )
     }
     async fn request(
         &self,
