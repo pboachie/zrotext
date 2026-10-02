@@ -200,7 +200,35 @@ mod tests {
         let (address, server) =
             serve(router_with_sealed_line_setup(state(&c), "wss://example.test", 8).unwrap()).await;
         let (mut socket, epoch) = connect(address, &c).await;
-        let registration = c.register(1).await;
+        let mut selection = c.selection(1);
+        selection.connection_epoch = epoch;
+        let statement = crate::http_owner_conversations::sealed_line_setup::registration::issue(
+            &mut c.owner.f.connect().await,
+            &c.owner.principal,
+            crate::http_owner_conversations::sealed_line_setup::tests::ORIGIN,
+            selection,
+        )
+        .await
+        .unwrap();
+        let registration = Uuid::from_bytes(statement.scope().challenge);
+        let (bytes, root, approval) = c.signatures(&statement);
+        let factor = c.factor().await;
+        crate::http_owner_conversations::sealed_line_setup::registration::complete(
+            &mut c.owner.f.connect().await,
+            &c.owner.principal,
+            crate::http_owner_conversations::sealed_line_setup::tests::ORIGIN,
+            &c.owner.hasher,
+            &c.owner.cipher,
+            registration,
+            crate::http_owner_conversations::sealed_line_setup::registration::Completion {
+                unsigned: &bytes,
+                root_signature: &root,
+                approval_signature: &approval,
+                factor: &factor,
+            },
+        )
+        .await
+        .unwrap();
         let (challenge, _) = sealed_exchange::open(
             &mut c.owner.f.connect().await,
             &c.owner.principal,
@@ -249,6 +277,7 @@ mod tests {
         .await
         .unwrap();
         let ack = frame(&mut socket, "sealed_line_activated").await;
+        assert_eq!(frame(&mut socket, "sealed_line_activated").await, ack);
         let mut receipt = ack.clone();
         receipt["type"] = "sealed_line_installed".into();
         let digest = receipt["device_statement_sha256"].clone();
