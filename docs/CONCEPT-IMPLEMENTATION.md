@@ -65,7 +65,10 @@ and text size. Combined owner activity/navigation tests pass at compact and wide
 viewports with 200% text. Android landscape tests use actual scrolling and the
 Compose frame clock to reveal platform-visible status and reachable Pause and
 its local-processing disclosure. These are automated implementation checks, not
-completed #612 acceptance. The [candidate accessibility contract](CANDIDATE-ACCESSIBILITY.md)
+completed #612 acceptance. The #612 acceptance run added a rendered
+[state-matrix regression](CANDIDATE-ACCESSIBILITY.md) covering the full state
+grammar, including the rule that unknown transport or writer states never
+borrow connected or delivered wording. The [candidate accessibility contract](CANDIDATE-ACCESSIBILITY.md)
 keeps actual TalkBack/Switch Access, keyboard-open editing/masking/focus return,
 permission revocation, final integrated lifecycle traversal and physical OEM/motion
 acceptance open. Merged #690 and #701 provide implementation and automated
