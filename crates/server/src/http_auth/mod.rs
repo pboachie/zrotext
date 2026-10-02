@@ -705,11 +705,26 @@ impl AuthHttpState {
         self
     }
 
-    /// Library opt-in for controlled provisioning tests/embedding. The normal
-    /// binary has no environment switch or call to this method.
+    /// Library opt-in for controlled provisioning tests/embedding.
+    /// The shipping binary uses the prerequisite-checking opt-in below.
     pub fn with_root_custody_enabled(mut self) -> Self {
         self.root_custody_enabled = true;
         self
+    }
+
+    /// Operator opt-in exposes the existing authenticated ceremony, not new
+    /// enrollment authority. Recovery-only startup omits the cipher and is
+    /// therefore incompatible with this opt-in.
+    pub fn with_root_custody_opt_in(
+        mut self,
+        enabled: bool,
+        recovery_only: bool,
+    ) -> Result<Self, &'static str> {
+        if enabled && (recovery_only || self.mfa_cipher.is_none()) {
+            return Err("root custody requires MFA_ENCRYPTION_KEY_B64 outside recovery-only mode");
+        }
+        self.root_custody_enabled = enabled;
+        Ok(self)
     }
 
     /// Trust the configured networks for the reset request lane. Invalid

@@ -149,6 +149,7 @@ mod tests {
             "draft02-manifest",
             "conversation-refresh-proposal",
             "conversation-activation-proposal",
+            "conversation-genesis-proposal",
         ] {
             package
                 .write(&format!("sdk/{name}.js"), b"export const fixture = true;")

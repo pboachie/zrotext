@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Candidate one-challenge unlock signing from a recovered root. No runtime caller.
+//! Candidate one-challenge unlock and typed custody signing from a recovered root.
 //!
 //! This module turns an already recovered root and an independently intended
 //! identity into one enrollment possession signature. It does not enroll a
@@ -16,6 +16,8 @@ use p256::{
     ecdsa::{Signature, SigningKey, signature::Signer},
     elliptic_curve::sec1::ToSec1Point,
 };
+
+pub mod custody;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum UnlockError {
@@ -67,6 +69,13 @@ pub fn sign_enrollment(
     now_ms: u64,
 ) -> Result<[u8; 64], UnlockError> {
     inspect_challenge(unsigned, expected, now_ms)?;
+    let key = signing_key(root, expected)?;
+    let statement =
+        sealed_root_enrollment::transcript(unsigned).map_err(|_| UnlockError::InvalidInput)?;
+    Ok(sign_statement(key, &statement))
+}
+
+fn signing_key(root: &RootSecret, expected: &ExpectedIdentity) -> Result<SigningKey, UnlockError> {
     let secret = p256::SecretKey::from_slice(root.as_bytes()).map_err(|_| UnlockError::Crypto)?;
     let mut pin = Vec::with_capacity(94);
     pin.extend_from_slice(b"ZTRP\x02");
@@ -79,14 +88,16 @@ pub fn sign_enrollment(
     {
         return Err(UnlockError::ContextRejected);
     }
-    let statement =
-        sealed_root_enrollment::transcript(unsigned).map_err(|_| UnlockError::InvalidInput)?;
+    Ok(SigningKey::from(secret))
+}
+
+fn sign_statement(key: SigningKey, statement: &[u8]) -> [u8; 64] {
     // Signers may canonicalize their own signatures; receivers never normalize.
-    let signature: Signature = SigningKey::from(secret).sign(&statement);
+    let signature: Signature = key.sign(statement);
     let signature = signature.normalize_s();
     let mut output = [0_u8; 64];
     output.copy_from_slice(signature.to_bytes().as_slice());
-    Ok(output)
+    output
 }
 
 #[cfg(test)]
