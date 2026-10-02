@@ -349,7 +349,7 @@ pub struct FailoverExecutor<S: ObservationSource, A: WriterAuthority> {
     /// retry re-attempts a failed intent save instead of promoting on an
     /// intent that exists only in memory.
     durable_journal: Option<ControllerJournal>,
-    /// The authority epoch as of the last restore. The external-fencing gate
+    /// The authority epoch proven by restore or a successful local CAS. The external-fencing gate
     /// uses it to tell the one promotion epoch the authority may legitimately
     /// serve again (the idempotent completion replay) from a recycled epoch
     /// the external anchor already witnessed.
@@ -775,15 +775,27 @@ impl<S: ObservationSource, A: WriterAuthority> FailoverExecutor<S, A> {
                     *new_epoch,
                 ) {
                     Ok(outcome @ (PromoteOutcome::Promoted | PromoteOutcome::AlreadyAtEpoch)) => {
+                        // Retain the proven CAS identity so a lost external
+                        // witness ACK can finish through identical replay.
+                        self.authority_epoch_at_restore = *new_epoch;
                         // Witness the applied promotion in the external
                         // anchor AFTER the compare-and-set succeeded. The
                         // order is deliberate: an anchor that lags can only
                         // force later refusals (fail-closed), while an anchor
                         // that led could mask a restored database during the
-                        // promotion window. A refused or lost witness is
-                        // therefore non-blocking — the anchor is a witness,
-                        // not a gate that leads.
-                        let _ = self.fencing.record_promotion(*new_epoch);
+                        // promotion window. A refused or lost witness keeps
+                        // completion pending and dispatch paused; an identical
+                        // CAS replay may finish once the witness is confirmed.
+                        let witnessed = match self.fencing.record_promotion(*new_epoch) {
+                            crate::fence::AnchorRecord::Recorded => true,
+                            crate::fence::AnchorRecord::Refused { anchored_epoch } => {
+                                anchored_epoch == *new_epoch
+                            }
+                            crate::fence::AnchorRecord::RefusedUnconfirmed => false,
+                        };
+                        if !witnessed {
+                            return AttemptOutcome::Pending;
+                        }
                         self.advance_journal_promoted(*new_epoch);
                         if self.save_journal() {
                             *journal_saved = true;

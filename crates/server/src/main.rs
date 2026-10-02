@@ -950,12 +950,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }));
         }
     }
-    let _failover_executor_thread = failover_executor::spawn_failover_executor_with_adapters(
+    let external_authority_config = if failover_executor_env.is_some() {
+        match env::var("FAILOVER_EXTERNAL_AUTHORITY_CONFIG") {
+            Ok(path) if !path.is_empty() => Some(std::path::PathBuf::from(path)),
+            Ok(_) | Err(env::VarError::NotPresent) => None,
+            Err(_) => return Err("external authority configuration path must be UTF-8".into()),
+        }
+    } else {
+        None
+    };
+    let _failover_executor_thread = failover_executor::spawn_failover_executor_with_external(
         failover_executor_env,
         config.database_url.clone(),
         config.draining.clone(),
         failover_executor_healthy.unwrap_or_default(),
         failover_adapters,
+        external_authority_config,
     );
     eprintln!(
         "zrotext site={} instance={} listening={bind}",
