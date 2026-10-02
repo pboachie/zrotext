@@ -652,20 +652,27 @@ unsafe fn fixture_readonly_owner_ace(ace: *mut c_void, owner: PSID) -> Result<()
 
 #[cfg(test)]
 pub(super) fn fixture_readonly_ace_rejected(bytes: Option<&mut [u8]>) -> bool {
+    let Some(bytes) = bytes else {
+        return true;
+    };
+    const HEADER: usize = size_of::<windows_sys::Win32::Security::ACE_HEADER>();
+    if bytes.len() < HEADER {
+        return true;
+    }
+    let advertised = usize::from(u16::from_ne_bytes([bytes[2], bytes[3]]));
+    if advertised < HEADER || advertised > bytes.len() {
+        return true;
+    }
     let security = Security::current().unwrap();
     let mut owner = null_mut();
     let mut defaulted = 0;
     // SAFETY: descriptor owns the valid expected SID until the checked mutation
-    // returns. Test input owns a full readable header and its advertised bytes.
+    // returns. The slice owns the complete header and all advertised ACE bytes.
     unsafe {
         assert_ne!(
             GetSecurityDescriptorOwner(security.0.0, &mut owner, &mut defaulted),
             0
         );
-        let pointer = bytes.map_or(null_mut(), |bytes| {
-            assert!(bytes.len() >= size_of::<windows_sys::Win32::Security::ACE_HEADER>());
-            bytes.as_mut_ptr().cast()
-        });
-        fixture_readonly_owner_ace(pointer, owner).is_err()
+        fixture_readonly_owner_ace(bytes.as_mut_ptr().cast(), owner).is_err()
     }
 }

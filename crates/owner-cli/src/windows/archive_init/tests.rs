@@ -406,3 +406,16 @@ fn fixture_permission_mutation_refuses_null_undersized_and_wrong_type_aces() {
         assert_eq!(bytes, before, "rejected fixture ACE must not be mutated");
     }
 }
+
+#[test]
+fn fixture_permission_mutation_refuses_truncated_advertised_aces() {
+    for length in [0usize, 3, 4, 8, 16] {
+        let mut bytes = vec![0u8; length];
+        if length >= 4 {
+            bytes[2..4].copy_from_slice(&32u16.to_ne_bytes());
+        }
+        let before = bytes.clone();
+        assert!(storage::fixture_readonly_ace_rejected(Some(&mut bytes)));
+        assert_eq!(bytes, before, "truncated fixture ACE must not be mutated");
+    }
+}
