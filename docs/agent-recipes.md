@@ -1,5 +1,50 @@
 # Importable agent recipe previews
 
+## Authenticated workflow recipe candidate
+
+The separate [runtime adapter](../sdk/recipes/workflow-runtime.mjs) uses the actual
+HTTPS `WorkflowToolClient` for selected-context metadata, exact proposals, action
+status and owner-bound preparation. The older simulator below remains a synthetic
+preview. Neither a proposal nor `Prepared` means a message was delivered.
+
+Build the TypeScript SDK first, then import `WorkflowRecipe` and
+`createWorkflowRecipeServer` in a customer-controlled startup module. Configure
+the service origin, a narrowly scoped workflow credential and one immutable
+owner-selected descriptor from the customer secret/configuration store. Do not
+put credentials or recipient material in exported workflows. `setup()` checks
+actual readiness and selected scope; `preview(requestId)` reads metadata only.
+Installation starts disabled. Only the trusted local controller can call
+`enable()`; callable input cannot activate the recipe or change its recipient.
+Keep the local bridge bound to loopback, or supply customer-controlled TLS and
+network isolation. Its separate local credential is not the service credential.
+
+When the existing default-off workflow service is explicitly configured, an
+authenticated owner can request a narrow grant through
+`POST /v1/auth/workflow-grants`, using the existing session, CSRF, current password
+and MFA protections. The credential is returned once with `Cache-Control:
+no-store`; store it privately. Revoke through
+`DELETE /v1/auth/workflow-grants/{grant_id}`. Permission widening requires a new
+grant. This setup does not approve an action or create its message binding.
+See the [closed setup and recipe contract](../protocol/v1/workflow-recipe-contract.md).
+
+Import [the runtime workflow](../sdk/recipes/n8n-workflow-runtime.json) only into a
+fresh disposable n8n instance. It is disabled and contains a manual read-only
+preview with a credential-store reference. The
+[callable descriptor](../sdk/recipes/callable-workflow-runtime.json) also exposes
+closed task-completion, owner-proposal, status, exact preparation and verified
+reply operations through the same local adapter. Review and configure these
+operations before activation; no connector compatibility beyond actual tested
+versions is implied.
+
+Reply ingestion reuses the signed-raw-byte `ReplyEventAdapter` and its durable
+identity/consumption ledger. The customer must independently configure its
+current-source authority and selected-reader implementation. These seams are
+not mounted grant/source lookup services in this candidate. Without them, reply
+routing is unavailable. A caller's `verified` or `approved` boolean is never
+accepted. STOP metadata produces no proposal; other eligible replies can propose
+the fixed action, but cannot approve it or send. Interrupted effects remain
+unknown and are not automatically retried. No model provider is configured.
+
 These customer-controlled examples are **synthetic previews; production activation
 is unavailable**. They cover task completion, an owner-reviewed proposal and
 verified reply routing. Production authority and reply services remain #615 and
