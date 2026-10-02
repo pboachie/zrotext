@@ -140,6 +140,93 @@ Threat and failure cases considered:
   malformed or expired challenges, oversized challenge files and unsupported
   environments fail closed with a fixed diagnostic and no signature.
 
+## Candidate custody signing (disabled by default)
+
+The explicit `unlock` feature also provides a separate offline operation:
+
+```text
+zrotext-owner custody-sign --account UUID --origin HTTPS_ORIGIN --bundle PUBLIC_ID --challenge FILE
+```
+
+Supply account, origin, bundle ID and fingerprint from your independent recovery
+kit. The command reads the existing local encrypted bundle and a bounded public
+enrollment challenge once, verifies their identity and card/backup digest binding,
+and displays the bundle ID, both public artifact digests, challenge ID and expiry.
+Type exactly `CUSTODY` to authorize this encrypted publication, or `DECLINE` to
+end without requesting recovery material. `UNLOCK` does not authorize custody.
+
+Only after consent does the eligible secure console request the recovery token.
+Authenticated recovery and root-pin comparison are required. A fresh clock check
+after secret entry rejects expiry before either signature is produced. The
+immutable review binds the exact unsigned enrollment bytes, SHA256 of the stored
+encrypted backup, SHA256 of its public card, and independently compared root
+fingerprint under the existing `ZTSE/root-custody/v1` domain with a trailing NUL.
+
+The two public console lines, `Enrollment signature:` and `Custody signature:`,
+contain distinct canonical 64-byte low-s signatures. Use them only with that
+reviewed challenge and those exact encrypted/public artifacts. The command
+contacts no server, enrolls nothing, creates no output file or durable unlock
+marker, and leaves recovery readiness unchanged. The root and recovery secret
+are dropped before output. A console/output failure may leave a partial public
+signature display; no completed publication is thereby established. All ordinary
+unlock environment, context, token, clock and memory-hygiene limits apply.
+
+Fixture tests verify the server's exact transcript encoding, signature-domain
+separation, immutable review, wrong root/context/bundle, malformed or oversized
+input and expiry. Hidden limited-token console tests exercise success, pre-secret
+context rejection, decline, wrong token and expiry during token entry, checking
+that rejected operations emit neither signature and do not modify the bundle.
+
+## Candidate first conversation manifest (disabled by default)
+
+The explicit `unlock` build also accepts `conversation-genesis`. Supply these
+flags in order: `--account`, `--origin`, `--bundle`, `--proposal`, `--output`,
+`--session`, `--device`, `--line`, `--device-signing-fingerprint`, `--generation`,
+`--peer`, `--phone-reader-point`, `--archive-reader-point`,
+`--phone-signer-point`, `--issued`, `--expires`. UUIDs use canonical lowercase
+hyphenation; fingerprints are full lowercase 32-byte hex, points are full
+uncompressed 65-byte SEC1 hex, and times are epoch milliseconds. Proposal and
+output paths use the existing absolute ASCII drive-path restrictions.
+
+This command requires independently intended account/session/device/line,
+paired signing fingerprint, binding generation, peer and time window. Compare
+the actual phone reader and signing points through an independent phone export
+comparison and the existing archive reader point against its independent
+receipt. Supply those compared points explicitly. Copying them from a downloaded
+proposal, or accepting a matching API identifier, cannot establish phone-key
+provenance. If independent comparison is unavailable, decline the operation.
+The signing fingerprint is SHA256 of the canonical uncompressed signing point,
+matching the existing device-pairing store; it is not an API credential ID.
+
+The bounded `ZTCG01` proposal contains public scope, the paired signing
+fingerprint, root pin, times and an unsigned manifest. Before asking for a
+recovery token, the command validates the local root bundle against its
+independent kit fingerprint and reconstructs the only accepted manifest from
+the supplied scope and points: generation one, version one, zero predecessor,
+and exactly four active records in role order 1/2/4/6 with scopes 4/12/2/0.
+All record validity windows equal the intended manifest window, at most one day.
+The reader, archive reader, signer and root revoker points must be distinct,
+and the revoker must match the root pin. Every proposed unsigned byte must match
+this reconstruction. A generic manifest, replacement archive, changed scope
+or substituted phone point is refused before secret entry.
+
+Review the displayed scope and all three points, then type `APPROVE-GENESIS`
+or `DECLINE`. Only approval proceeds to ordinary authenticated root recovery.
+The fresh clock after token entry must remain within the intended window.
+The root must match the reviewed pin. The command signs the existing manifest
+transcript in canonical low-s form and writes one public signed manifest with
+create-new semantics; it never overwrites existing output. Recovery and root
+material are dropped before writing. Cancellation or failure creates no durable
+unlock or recovery marker; an I/O failure may leave a partial public output.
+
+The manifest signature does not encode session, peer, origin, paired signing
+fingerprint or binding generation. Those are contextual owner review, requiring
+authenticated server installation, current pairing/lease validation and separate
+phone approval. This offline operation establishes none of them and generates
+no phone, archive, recovery or root credentials. Fixture tests pin the shared
+public proposal/manifest digests and exercise changed framing, points, scopes,
+wrong roots, expiry during token entry and output overwrite refusal.
+
 ## Automated verification
 
 Native tests use hidden, exclusively owned child consoles, unique temporary
@@ -180,3 +267,11 @@ Process-tree, account, optional profile and owned-directory cleanup must
 succeed. Forced VM termination may prevent cleanup; the disposable VM is the
 final containment boundary. Neither path changes UAC, machine policy,
 repository permissions or production eligibility checks.The production `init` command is not executed with real owner material by tests.
+
+## Explicit archive candidate creation (Windows, `unlock` feature)
+
+`archive-init --account <canonical-uuid> --origin <canonical-https-origin> --bundle <root-backup-id-hex> --archive-output <absolute-new-path> --receipt-output <absolute-new-path> --recovery-output <absolute-new-path>` creates one new, unregistered account-wide archive candidate after independent root fingerprint comparison and authenticated root recovery. It requires both `CREATE-ARCHIVE` and `SAVE-RECOVERY` consent in the eligible private console. This is separate from root initialization and does not enroll or replace registered archive authority.
+
+The encrypted archive uses the existing ZTAB01 format. The public receipt supplies the archive key ID, SEC1 point, root identity and ciphertext digest for independent comparison in initial conversation setup. The separate recovery file contains exactly 32 raw private bytes, compatible with the browser archive recovery input; it is never a root recovery token and is never printed. Preserve that file separately from public artifacts. Each output is created once on a fixed local NTFS volume, with a protected current-user-only ACL; existing destinations, reparse points and unsafe ancestors are refused before archive material generation. Memory recovery and protected-file readback recovery are authenticated before publication is confirmed.
+
+Cancellation and errors attempt to remove only newly created files through their held handles. Three files are not a power-loss-atomic transaction: an interrupted process or cleanup failure may leave partial output, including a protected private recovery file. Inspect the selected destinations before retrying. No root bundle is rewritten. Tests use synthetic fixture scalars and isolated hidden consoles; no actual user provisioning is performed by repository tests.

@@ -2,9 +2,10 @@
 
 **Candidate implementation, default off.** The server library's explicitly
 enabled owner-authentication router composes generation-one root enrollment and
-immutable encrypted bundle publication. The standard server never calls
-`with_root_custody_enabled`, has no environment switch for it, and exposes none
-of these routes. This does not enable sealed messages or close Q1/Q10. An
+immutable encrypted bundle publication. The standard server exposes these
+routes only with explicit `ROOT_CUSTODY_ENABLED=true`, configured account routes
+and an MFA cipher outside recovery-only mode. The default remains off; see
+[operator setup](../../docs/root-custody-setup.md). This does not enable sealed messages or close Q1/Q10. An
 independently distributed owner signing client and browser/SDK/phone provisioning
 drills remain release requirements; a relay-served page is not independent trust.
 

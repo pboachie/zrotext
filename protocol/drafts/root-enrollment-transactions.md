@@ -1,15 +1,16 @@
-# Dormant root enrollment transactions
+# Default-off root enrollment transactions
 
 The server's `sealed_root_ceremony` module composes the [candidate possession
-transcript](root-enrollment-01.md) with database state. The opt-in library
+transcript](root-enrollment-01.md) with database state. The opt-in authenticated
 [custody adapter](root-custody-01.md) can call it and commit an immutable encrypted
-bundle in the same completion transaction. The standard binary exposes no such
-route and no sealed runtime gate calls it. It receives no private root key.
+bundle in the same completion transaction. The standard binary mounts the
+adapter only with `ROOT_CUSTODY_ENABLED` and its account/MFA prerequisites;
+this does not enable a sealed runtime. It receives no private root key.
 
-The future request adapter must authenticate the owner request, enforce CSRF
-and the configured canonical origin, and establish independent owner software,
-custody and full-fingerprint comparison. A valid possession signature alone
-does not prove those properties. The transaction independently rechecks the
+The request adapter authenticates the owner and enforces CSRF and the configured
+canonical origin. Independent owner software, custody and full-fingerprint
+comparison remain requirements outside mere route availability. A valid
+possession signature alone does not prove those properties. The transaction independently rechecks the
 current verified owner, live session and enabled MFA rather than accepting a
 cached step-up flag.
 

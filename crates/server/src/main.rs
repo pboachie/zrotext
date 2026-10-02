@@ -88,10 +88,12 @@ struct Config {
     sealed_dispatch_enabled: bool,
     mfa_recovery_only: bool,
     mfa_enrollment_enabled: bool,
+    root_custody_enabled: bool,
     sms_line_activation_enabled: bool,
     collaboration_drafts_enabled: bool,
     mms_spike_policy: Arc<device_socket::MmsSpikePolicy>,
     sealed_admission_enabled: bool,
+    workflow_tools_enabled: bool,
     retention: RetentionPolicy,
     draining: Arc<AtomicBool>,
     drain_notify: Arc<Notify>,
@@ -300,12 +302,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let line_opt_out_enabled = optional_bool("LINE_OPT_OUT_ENABLED")?;
     let mfa_recovery_only = optional_bool("MFA_RECOVERY_ONLY")?;
     let mfa_enrollment_enabled = optional_bool("MFA_ENROLLMENT_ENABLED")?;
+    let root_custody_enabled = optional_bool("ROOT_CUSTODY_ENABLED")?;
     let sms_line_activation_enabled = optional_bool("SMS_LINE_ACTIVATION_ENABLED")?;
     let collaboration_drafts_enabled = optional_bool("COLLABORATION_DRAFTS_ENABLED")?;
     // Sealed v1 message admission. Disabled by default; off leaves the
     // route unmounted so no sealed code path runs.
     let sealed_admission_enabled = optional_bool("SEALED_ADMISSION_ENABLED")?;
     let sealed_dispatch_enabled = optional_bool("SEALED_DISPATCH_ENABLED")?;
+    let workflow_tools_enabled = optional_bool("WORKFLOW_TOOLS_ENABLED")?;
     // Independent-quorum failover executor and member-side reporting loop.
     // Disabled by default; when off (or absent) nothing further is read and
     // no thread, database or store access exists. When on, the validated
@@ -359,10 +363,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         sealed_dispatch_enabled,
         mfa_recovery_only,
         mfa_enrollment_enabled,
+        root_custody_enabled,
         sms_line_activation_enabled,
         collaboration_drafts_enabled,
         mms_spike_policy,
         sealed_admission_enabled,
+        workflow_tools_enabled,
         retention: RetentionPolicy::from_env()?,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
@@ -822,6 +828,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             database_url: config.database_url.clone(),
             auth_hasher: auth_state.hasher.clone(),
         };
+        let workflow_state = zrotext_server::workflow_runtime::http::WorkflowHttpState {
+            database_url: config.database_url.clone(),
+            hasher: auth_state.hasher.clone(),
+        };
         app = app
             .nest("/v1/auth", http_auth::router(auth_state))
             .nest("/v1/enrollment", http_enrollment::router(enrollment_state))
@@ -837,6 +847,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .merge(http_owner_contacts::router(owner_contacts_state))
             .merge(owner_ui::router())
             .merge(device_router);
+        app = app.merge(zrotext_server::workflow_runtime::http::router(
+            workflow_state,
+            config.workflow_tools_enabled,
+        ));
         if config.alpha_policy.enabled() {
             let message_state = MessagesHttpState::new(
                 config.database_url.clone(),
@@ -875,6 +889,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         || config.sms_line_activation_enabled
         || config.sealed_admission_enabled
         || config.sealed_dispatch_enabled
+        || config.workflow_tools_enabled
         || webhook_delivery_enabled
         || webhook_management_configured
         || usage_limits_enabled
@@ -1049,6 +1064,13 @@ fn contacts_vault() -> Option<ContactFieldVault> {
     }
 }
 
+fn validate_unconfigured_account_routes(config: &Config) -> Result<(), &'static str> {
+    if config.mfa_recovery_only || config.mfa_enrollment_enabled || config.root_custody_enabled {
+        return Err("MFA or root custody mode requires configured account routes");
+    }
+    Ok(())
+}
+
 async fn account_routes(
     config: &Config,
 ) -> Result<Option<(AuthHttpState, EnrollmentHttpState)>, Box<dyn std::error::Error>> {
@@ -1060,9 +1082,7 @@ async fn account_routes(
         .filter(|value| !value.is_empty());
     if origin.is_none() && auth_pepper.is_none() && enrollment_pepper.is_none() && mfa_key.is_none()
     {
-        if config.mfa_recovery_only || config.mfa_enrollment_enabled {
-            return Err("MFA mode requires configured account routes".into());
-        }
+        validate_unconfigured_account_routes(config)?;
         return Ok(None);
     }
     let origin = origin.ok_or("AUTH_ORIGIN is required when account routes are enabled")?;
@@ -1141,6 +1161,8 @@ async fn account_routes(
         }
         auth_state = auth_state.with_mfa_enrollment_enabled();
     }
+    auth_state = auth_state
+        .with_root_custody_opt_in(config.root_custody_enabled, config.mfa_recovery_only)?;
     if config.sms_line_activation_enabled {
         auth_state = auth_state.with_sms_line_activation_enabled();
     }
@@ -1592,10 +1614,12 @@ mod tests {
             sealed_dispatch_enabled: false,
             mfa_recovery_only: false,
             mfa_enrollment_enabled: false,
+            root_custody_enabled: false,
             sms_line_activation_enabled: false,
             collaboration_drafts_enabled: false,
             mms_spike_policy: Arc::new(device_socket::MmsSpikePolicy::disabled()),
             sealed_admission_enabled: false,
+            workflow_tools_enabled: false,
             retention: RetentionPolicy::default(),
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),
@@ -1603,6 +1627,20 @@ mod tests {
             failover_executor_healthy: None,
             readiness: Arc::new(ReadinessCache::new()),
         }
+    }
+
+    #[test]
+    fn root_custody_opt_in_cannot_start_without_account_routes() {
+        let mut config = unreachable_config();
+        assert!(validate_unconfigured_account_routes(&config).is_ok());
+        config.root_custody_enabled = true;
+        assert!(validate_unconfigured_account_routes(&config).is_err());
+        config.root_custody_enabled = false;
+        config.mfa_recovery_only = true;
+        assert!(validate_unconfigured_account_routes(&config).is_err());
+        config.mfa_recovery_only = false;
+        config.mfa_enrollment_enabled = true;
+        assert!(validate_unconfigured_account_routes(&config).is_err());
     }
 
     #[tokio::test(start_paused = true)]
@@ -1761,10 +1799,12 @@ mod tests {
             sealed_dispatch_enabled: false,
             mfa_recovery_only: false,
             mfa_enrollment_enabled: false,
+            root_custody_enabled: false,
             sms_line_activation_enabled: false,
             collaboration_drafts_enabled: false,
             mms_spike_policy: Arc::new(device_socket::MmsSpikePolicy::disabled()),
             sealed_admission_enabled: false,
+            workflow_tools_enabled: false,
             retention: RetentionPolicy::default(),
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),

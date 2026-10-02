@@ -186,3 +186,5 @@ pub(crate) mod outbox_test_support {
 
 #[cfg(test)]
 mod sealed_root_roles_tests;
+
+pub mod workflow_templates;

@@ -432,3 +432,6 @@ async fn sms_line_activation_frames_are_gated_bound_to_the_connection_and_resent
         .await
         .unwrap();
 }
+
+#[path = "sealed_session_socket_tests.rs"]
+mod sealed_session_socket_tests;

@@ -100,38 +100,49 @@ impl<'tx, 'connection> ActionFence<'connection> for IntegrationAction<'tx, 'conn
     fn owner_session_id(&self) -> Option<Uuid> {
         None
     }
-    async fn recheck(&mut self) -> Result<(), ConversationError> {
-        self.scope
-            .check_descriptor(&self.descriptor)
-            .map_err(authorization)?;
-        decisions::fence::contact(self.tx, &self.descriptor, &self.scope.header).await?;
-        decisions::fence::live_routine(self.tx, &self.descriptor, &self.scope.header).await?;
-        let state =
-            decisions::store::head(self.tx, self.key.account_id, self.key.action_id).await?;
-        if state.key != self.key || !matches!(state.phase, Phase::Approved | Phase::Dispatching) {
-            return Err(ConversationError::Conflict);
-        }
-        if !self.tx.query_one("SELECT EXISTS(SELECT 1 FROM workflow_actions a JOIN memberships m ON (m.account_id,m.user_id)=(a.account_id,a.approved_by) JOIN users u ON u.id=m.user_id WHERE a.account_id=$1 AND a.id=$2 AND m.role='owner' AND m.revoked_at IS NULL AND u.email_verified_at IS NOT NULL) AND workflow_action_origin_current($1,$2)", &[&self.key.account_id,&self.key.action_id]).await?.get::<_,bool>(0) {
+    fn recheck(
+        &mut self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), ConversationError>> + Send + '_>,
+    > {
+        Box::pin(async move {
+            self.scope
+                .check_descriptor(&self.descriptor)
+                .map_err(authorization)?;
+            decisions::fence::contact(self.tx, &self.descriptor, &self.scope.header).await?;
+            decisions::fence::live_routine(self.tx, &self.descriptor, &self.scope.header).await?;
+            let state =
+                decisions::store::head(self.tx, self.key.account_id, self.key.action_id).await?;
+            if state.key != self.key || !matches!(state.phase, Phase::Approved | Phase::Dispatching)
+            {
+                return Err(ConversationError::Conflict);
+            }
+            if !self.tx.query_one("SELECT EXISTS(SELECT 1 FROM workflow_actions a JOIN memberships m ON (m.account_id,m.user_id)=(a.account_id,a.approved_by) JOIN users u ON u.id=m.user_id WHERE a.account_id=$1 AND a.id=$2 AND m.role='owner' AND m.revoked_at IS NULL AND u.email_verified_at IS NOT NULL) AND workflow_action_origin_current($1,$2)", &[&self.key.account_id,&self.key.action_id]).await?.get::<_,bool>(0) {
             return Err(ConversationError::Forbidden);
         }
-        self.tx.query_opt("SELECT 1 FROM workflow_actions a JOIN memberships m ON (m.account_id,m.user_id)=(a.account_id,a.approved_by) JOIN users u ON u.id=m.user_id WHERE a.account_id=$1 AND a.id=$2 AND m.role='owner' AND m.revoked_at IS NULL AND u.email_verified_at IS NOT NULL FOR SHARE OF m,u", &[&self.key.account_id,&self.key.action_id]).await?.ok_or(ConversationError::Forbidden)?;
-        self.scope.recheck().await.map_err(authorization)?;
-        if crate::http_owner_conversations::activation::now(self.tx).await? >= self.expires_at_ms()
-        {
-            return Err(ConversationError::Forbidden);
-        }
-        Ok(())
+            self.tx.query_opt("SELECT 1 FROM workflow_actions a JOIN memberships m ON (m.account_id,m.user_id)=(a.account_id,a.approved_by) JOIN users u ON u.id=m.user_id WHERE a.account_id=$1 AND a.id=$2 AND m.role='owner' AND m.revoked_at IS NULL AND u.email_verified_at IS NOT NULL FOR SHARE OF m,u", &[&self.key.account_id,&self.key.action_id]).await?.ok_or(ConversationError::Forbidden)?;
+            self.scope.recheck().await.map_err(authorization)?;
+            if crate::http_owner_conversations::activation::now(self.tx).await?
+                >= self.expires_at_ms()
+            {
+                return Err(ConversationError::Forbidden);
+            }
+            Ok(())
+        })
     }
-    async fn mark_dispatching(
+    fn mark_dispatching(
         &mut self,
         message: Uuid,
         dispatch: Uuid,
-    ) -> Result<(), ConversationError> {
-        if self.operation != Operation::Send {
-            return Err(ConversationError::Forbidden);
-        }
-        self.recheck().await?;
-        let row = self
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), ConversationError>> + Send + '_>,
+    > {
+        Box::pin(async move {
+            if self.operation != Operation::Send {
+                return Err(ConversationError::Forbidden);
+            }
+            self.recheck().await?;
+            let row = self
             .tx
             .query_opt(
                 "SELECT transport_payload FROM messages WHERE account_id=$1 AND id=$2 FOR UPDATE",
@@ -139,23 +150,24 @@ impl<'tx, 'connection> ActionFence<'connection> for IntegrationAction<'tx, 'conn
             )
             .await?
             .ok_or(ConversationError::NotFound)?;
-        let bytes = row
-            .get::<_, Option<Vec<u8>>>(0)
-            .ok_or(ConversationError::Forbidden)?;
-        let envelope = sealed_envelope::parse(&bytes, Profile::Draft02Candidate)
-            .map_err(|_| ConversationError::Forbidden)?;
-        if envelope.signer_key_id != self.scope.signer().map_err(authorization)? {
-            return Err(ConversationError::Forbidden);
-        }
-        decisions::store::dispatch_transition(
-            self.tx,
-            &self.descriptor,
-            self.scope.header.context,
-            decisions::proposal::Actor::Integration(self.grant),
-            message,
-            dispatch,
-        )
-        .await?;
-        self.recheck().await
+            let bytes = row
+                .get::<_, Option<Vec<u8>>>(0)
+                .ok_or(ConversationError::Forbidden)?;
+            let envelope = sealed_envelope::parse(&bytes, Profile::Draft02Candidate)
+                .map_err(|_| ConversationError::Forbidden)?;
+            if envelope.signer_key_id != self.scope.signer().map_err(authorization)? {
+                return Err(ConversationError::Forbidden);
+            }
+            decisions::store::dispatch_transition(
+                self.tx,
+                &self.descriptor,
+                self.scope.header.context,
+                decisions::proposal::Actor::Integration(self.grant),
+                message,
+                dispatch,
+            )
+            .await?;
+            self.recheck().await
+        })
     }
 }

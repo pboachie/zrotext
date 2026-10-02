@@ -112,6 +112,9 @@ export class WorkflowToolClient {
     try { validateWorkflowReadiness(value); return value; }
     catch { throw new WorkflowToolError('response_unknown', 'unknown', 1); }
   }
+  async cancel(requestId: string, key: unknown): Promise<WorkflowResponse> {
+    return this.call('workflow.action.cancel', { request_id: requestId, key });
+  }
   async call(method: WorkflowMethod, params: unknown, maxAttempts = 1): Promise<WorkflowResponse> {
     let body: string;
     let snapshot: Record<string, any>;
@@ -133,6 +136,10 @@ export class WorkflowToolClient {
         const key = result.key as Record<string, unknown>;
         for (const field of ['account_id', 'action_id', 'revision']) if (key[field] !== snapshot.descriptor[field]) throw new Error();
         if (key.binding_digest !== proposalDigest) throw new Error();
+      }
+      if (method === 'workflow.action.cancel') {
+        const actual = result.key as Record<string, unknown>;
+        for (const field of ['account_id', 'action_id', 'revision', 'binding_digest']) if (actual[field] !== snapshot.key[field]) throw new Error();
       }
       if (method === 'workflow.action.schedule' && (result.series_id !== snapshot.series_id || result.ordinal !== snapshot.ordinal)) throw new Error();
       return value;

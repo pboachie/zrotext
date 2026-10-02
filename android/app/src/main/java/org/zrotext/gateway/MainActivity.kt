@@ -745,9 +745,6 @@ class MainActivity : ComponentActivity() {
         val labels = sims.toMap()
         val allowReplies = conversationRepliesEnabled
         val initialChain = conversationInitialChain
-        fun report(text: String) = runOnUiThread {
-            if (!cancelled.get() && conversationEntryOpen && conversationUiEpoch == epoch) conversationEntryStatus = text
-        }
         return object : ConversationSetupEntrySession.Handle {
             override fun begin(): Boolean {
                 if (!conversationSetupEnabled) return false
@@ -783,13 +780,14 @@ class MainActivity : ComponentActivity() {
                         }
                     } catch (error: Exception) {
                         runCatching { owned.getAndSet(null)?.close() }
-                        report(if (error is ConversationUserSetupProvider.ExistingHardwareEnrollmentRequired)
+                        val failureStatus = if (error is ConversationUserSetupProvider.ExistingHardwareEnrollmentRequired)
                             "An existing enrolled hardware reader is required. Complete enrollment before reviewing."
-                            else "The selected conversation could not be verified. Check pairing, the selected line and the setup file.")
+                            else "The selected conversation could not be verified. Check pairing, the selected line and the setup file."
                         runOnUiThread {
                             if (!cancelled.get() && conversationEntryOpen && conversationUiEpoch == epoch) {
                                 conversationEntry?.close(); conversationEntry = null
                                 conversationSetupEnabled = false
+                                conversationEntryStatus = failureStatus
                             }
                         }
                     }
