@@ -114,7 +114,8 @@ migration train, separately configured policy and existing launch gates.
 
 The billing dashboard uses its existing authenticated status request to show
 retained local TEST forwarding records: pending, leased, acknowledged, review,
-and uncertain outcomes. These counts span retained records, not just the
+and records currently classified unknown. Review also includes attempt-limit
+and manual-review records. These counts span retained records, not just the
 current invoice period. A configured policy does not prove that a worker is
 running. An acknowledgement is a transport receipt; it does not establish
 validated usage, invoice settlement, delivery, or entitlement.
