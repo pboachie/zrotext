@@ -23,3 +23,23 @@ its routes nor starts this retention lane.
 Root enrollment, line registration, owner activation and phone installation
 acknowledgment are distinct decisions. None replaces separate phone and browser
 content consent, current reader authority, or exact confirmed-send authorization.
+
+The enabled authenticated device socket carries separate `sealed_line_challenge`,
+`sealed_line_proof`, `sealed_line_proof_ack`, `sealed_line_activated`,
+`sealed_line_installed`, and `sealed_line_install_ack` frames. Every frame binds
+the current connection epoch. The phone proof uses the SEALED line domain and
+requires Android API 31 or later and one explicitly selected active subscription;
+the SMS line proof domain and its lower API floor cannot substitute for it.
+The public device-stream schema includes synthetic examples of these frames.
+Runtime checks additionally enforce integer representation bounds and verify
+canonical signatures, current account and
+device authority, expiry, and the exact signed statement and signature digests.
+
+Sending an activation acknowledgment does not retire it. The socket repeats it
+until the phone confirms the exact installed receipt. The phone requires an
+independent local line approval, installation in its durable binding journal,
+and successful storage of the exact public signed provenance before sending
+that confirmation. Missing provenance, storage failure, cancellation, changed
+SIM or signing identity, stale session, and expired proof fail closed. Restart
+requires fresh local approval and authentication; receipt recovery grants no
+body-transfer consent, content readiness, or send permission.

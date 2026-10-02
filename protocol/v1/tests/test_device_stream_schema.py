@@ -11,6 +11,24 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DeviceStreamSchemaTest(unittest.TestCase):
+    def test_sealed_line_setup_frames_preserve_epoch_and_exact_receipt_bounds(self):
+        names = {"sealed_line_challenge", "sealed_line_proof", "sealed_line_proof_ack",
+                 "sealed_line_activated", "sealed_line_installed", "sealed_line_install_ack"}
+        frames = {frame["type"]: frame for frame in self.frames if frame["type"] in names}
+        self.assertEqual(set(frames), names)
+        for frame in frames.values():
+            self.validator.validate(frame)
+            self.assertFalse(self.validator.is_valid({**frame, "connection_epoch": 0}))
+            self.assertFalse(self.validator.is_valid({**frame, "body": "synthetic"}))
+        proof = frames["sealed_line_proof"]
+        self.assertFalse(self.validator.is_valid({**frames["sealed_line_challenge"], "nonce": "A" * 43}))
+        self.assertFalse(self.validator.is_valid({**proof, "android_api_level": 30}))
+        self.assertFalse(self.validator.is_valid({**proof, "active_subscription_count": 2}))
+        for name in ("sealed_line_activated", "sealed_line_installed"):
+            receipt = frames[name]
+            for value in ("A" * 42, "A" * 44, "A" * 42 + "B", "A" * 43 + "="):
+                self.assertFalse(self.validator.is_valid({**receipt, "device_statement_sha256": value}))
+
     @classmethod
     def setUpClass(cls):
         cls.schema = json.loads((ROOT / "device-stream.schema.json").read_text())
