@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Opt-in library adapter; the shipped server never enables these routes.
 
-use super::{AuthHttpError, AuthHttpState, connect, map_auth, require_owner};
+use super::{
+    AuthHttpError, AuthHttpState, connect, map_auth, require_owner, require_owner_read,
+    require_owner_read_headers,
+};
 use crate::{api_json::ApiJson, sealed_root_ceremony as ceremony, sealed_root_custody as custody};
 use axum::{Json, extract::State, http::HeaderMap};
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -194,11 +197,12 @@ pub(super) async fn export(
     State(state): State<Arc<AuthHttpState>>,
     headers: HeaderMap,
 ) -> Result<Json<ExportView>, AuthHttpError> {
+    // Same-origin browser GETs omit Origin. Require the existing content-read
+    // proof instead: a live owner session and its bound double-submit CSRF token.
+    // Reject cookie-only requests before taking a database connection.
+    require_owner_read_headers(&headers)?;
     let mut db = connect(&state.database_url).await?;
-    // Reads also require the owner Origin/CSRF proof to prevent cross-origin
-    // encrypted backup exfiltration and reject sessions without a live MFA owner.
-    let principal =
-        require_owner(&db, &state.hasher, &state.canonical_origin, &headers, true).await?;
+    let principal = require_owner_read(&db, &state.hasher, &headers).await?;
     let compared = headers
         .get("x-zrotext-root-fingerprint")
         .and_then(|h| h.to_str().ok())

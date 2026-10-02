@@ -101,6 +101,21 @@ async fn authenticated_http_custody_requires_csrf_and_exports_same_independently
         .await
         .unwrap();
     assert_eq!(missing_csrf.status(), StatusCode::FORBIDDEN);
+    let missing_origin = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/sealed-root/challenge")
+                .header("cookie", &cookie)
+                .header("x-zrotext-csrf", &o.csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_origin.status(), StatusCode::FORBIDDEN);
     let response = app
         .clone()
         .oneshot(
@@ -146,9 +161,50 @@ async fn authenticated_http_custody_requires_csrf_and_exports_same_independently
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+    // The real browser sends no Origin for a same-origin GET. Cookie-only
+    // reads still fail, and mutation requests above retain their Origin fence.
+    let missing_read_csrf = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/sealed-root")
+                .header("cookie", &cookie)
+                .header("x-zrotext-root-fingerprint", STANDARD.encode(compared))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_read_csrf.status(), StatusCode::FORBIDDEN);
+    // Equality alone is insufficient: this pair is not bound to the live session.
+    let wrong_csrf = "synthetic-other-session-csrf";
+    let wrong_cookie = format!(
+        "{}={}; {}={}",
+        super::super::SESSION_COOKIE,
+        o.token,
+        super::super::CSRF_COOKIE,
+        wrong_csrf
+    );
+    let wrong_read_csrf = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/sealed-root")
+                .header("cookie", wrong_cookie)
+                .header("x-zrotext-csrf", wrong_csrf)
+                .header("x-zrotext-root-fingerprint", STANDARD.encode(compared))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(wrong_read_csrf.status(), StatusCode::FORBIDDEN);
     let response = app
         .oneshot(
-            headers("GET", "/sealed-root")
+            Request::builder()
+                .uri("/sealed-root")
+                .header("cookie", &cookie)
+                .header("x-zrotext-csrf", &o.csrf)
                 .header("x-zrotext-root-fingerprint", STANDARD.encode(compared))
                 .body(Body::empty())
                 .unwrap(),
@@ -164,4 +220,42 @@ async fn authenticated_http_custody_requires_csrf_and_exports_same_independently
     assert_eq!(exported["public_card_b64"], STANDARD.encode(card));
     assert!(exported.get("recovery_token").is_none());
     o.f.cleanup().await;
+}
+
+#[tokio::test]
+async fn custody_export_rejects_cookie_only_reads_before_database_access() {
+    let state = AuthHttpState::new(
+        "not-a-database".into(),
+        Arc::new(crate::auth::TokenHasher::new(crate::test_keys::key(91)).unwrap()),
+        "https://owner.example.test".into(),
+        Arc::new(super::super::DisabledVerificationDispatcher),
+    )
+    .unwrap()
+    .with_root_custody_enabled();
+    let app = super::super::router(state);
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/sealed-root")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/sealed-root")
+                .header(
+                    "cookie",
+                    format!("{}=synthetic", super::super::SESSION_COOKIE),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
