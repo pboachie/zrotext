@@ -17,12 +17,7 @@ async fn authenticate_offered(
         .headers_mut()
         .insert("Sec-WebSocket-Protocol", protocol.parse().unwrap());
     let (mut socket, response) = connect_async(request).await.unwrap();
-    if protocol == crate::sealed_dispatch::wire::PROTOCOL_V2 {
-        // Dormant routers intentionally do not select the offered protocol.
-        if let Some(selected) = response.headers().get("Sec-WebSocket-Protocol") {
-            assert_eq!(selected.to_str().unwrap(), protocol);
-        }
-    }
+    assert_eq!(response.headers()["Sec-WebSocket-Protocol"], protocol);
     send_json(
         &mut socket,
         json!({"v":1,"type":"hello","device_id":fixture.device}),
@@ -131,7 +126,29 @@ async fn dormant_clock_gates_and_replacement_cleanup_preserve_live_session() {
         },
     ] {
         let (address, dormant_server) = serve(dormant).await;
-        let (mut socket, epoch) = authenticate_offered(address, &fixture, &key, v2).await;
+        let mut request = format!("ws://{address}/v1/device-stream")
+            .into_client_request()
+            .unwrap();
+        request
+            .headers_mut()
+            .insert("Sec-WebSocket-Protocol", v2.parse().unwrap());
+        assert!(matches!(
+            connect_async(request).await,
+            Err(tokio_tungstenite::tungstenite::Error::Protocol(
+                tokio_tungstenite::tungstenite::error::ProtocolError::SecWebSocketSubProtocolError(
+                    tokio_tungstenite::tungstenite::error::SubProtocolError::NoSubProtocol
+                )
+            ))
+        ));
+        // Authenticate through a supported ordinary protocol to verify that
+        // a dormant gate also refuses the clock frame after authentication.
+        let (mut socket, epoch) = authenticate_offered(
+            address,
+            &fixture,
+            &key,
+            super::super::preconditions::PROTOCOL_V2,
+        )
+        .await;
         send_json(&mut socket,json!({"v":1,"type":"sealed_session_request","connection_epoch":epoch,"challenge":Uuid::new_v4()})).await;
         closed_without_sample(&mut socket, true).await;
         drop(socket);
