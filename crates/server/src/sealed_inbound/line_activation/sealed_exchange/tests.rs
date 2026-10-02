@@ -729,14 +729,10 @@ async fn cleanup_stale_snapshot_cannot_clear_committed_activation_ack_nonce() {
     assert_eq!(cleanup(&c.owner.f.db, 100).await.unwrap(), 0);
     assert!(c.owner.f.db.query_one("SELECT nonce IS NOT NULL FROM sealed_line_activation_exchanges WHERE challenge_id=$1", &[&ch.id]).await.unwrap().get::<_,bool>(0));
     assert!(
-        next_ack(
-            &mut c.owner.f.connect().await,
-            c.session(),
-            &[]
-        )
-        .await
-        .unwrap()
-        .is_some()
+        next_ack(&mut c.owner.f.connect().await, c.session(), &[])
+            .await
+            .unwrap()
+            .is_some()
     );
     c.cleanup().await;
 }
