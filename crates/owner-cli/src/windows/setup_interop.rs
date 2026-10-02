@@ -122,12 +122,12 @@ fn fixture_origin(origin: &str) -> bool {
         if let Some(port) = host
             .strip_prefix(reserved)
             .and_then(|s| s.strip_prefix(':'))
+            && let Ok(n) = port.parse::<u16>()
+            && n > 0
+            && n != 443
+            && n.to_string() == port
         {
-            if let Ok(n) = port.parse::<u16>() {
-                if n > 0 && n != 443 && n.to_string() == port {
-                    return true;
-                }
-            }
+            return true;
         }
     }
     false
@@ -291,10 +291,10 @@ fn fake_identity(m: &Map<String, Value>) -> Result<ExpectedIdentity> {
         return Err(());
     }
     let fingerprint = root_fingerprint(&fake_pin(&account)?, &account).map_err(|_| ())?;
-    if let Some(expected) = m.get("rootFingerprint") {
-        if hex::<32>(expected.as_str().ok_or(())?.as_bytes())? != fingerprint {
-            return Err(());
-        }
+    if let Some(expected) = m.get("rootFingerprint")
+        && hex::<32>(expected.as_str().ok_or(())?.as_bytes())? != fingerprint
+    {
+        return Err(());
     }
     Ok(ExpectedIdentity {
         account_id: account,
@@ -609,12 +609,13 @@ impl Drop for OwnedRun {
         let Ok(target) = self.0.canonicalize() else {
             return;
         };
-        if target != root && target.starts_with(&root) {
-            if let Ok(m) = std::fs::symlink_metadata(&self.0) {
-                if m.is_dir() && m.file_attributes() & 0x0400 == 0 {
-                    let _ = std::fs::remove_dir_all(&self.0);
-                }
-            }
+        if target != root
+            && target.starts_with(&root)
+            && let Ok(m) = std::fs::symlink_metadata(&self.0)
+            && m.is_dir()
+            && m.file_attributes() & 0x0400 == 0
+        {
+            let _ = std::fs::remove_dir_all(&self.0);
         }
     }
 }
