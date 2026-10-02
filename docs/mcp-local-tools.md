@@ -131,9 +131,11 @@ of prompts, model arguments, logs and public repository files. Startup failures
 are redacted; credential buffers are cleared after parsing, but JavaScript strings
 cannot promise full memory zeroization during the subprocess lifetime.
 
-Workflow credential issuance is currently the existing owner/MFA-checked server
-library operation. This transport does not add a self-service grant-management
-HTTP endpoint, UI, or enrollment flow. A normal API or agent credential cannot
+The separately authenticated owner can use the opt-in workflow-grant
+[setup routes](../protocol/v1/workflow-recipe-contract.md), which reuse the
+existing password/MFA-checked server library and require owner session, Origin
+and CSRF checks. The MCP transport does not expose issuance, a grant UI or
+enrollment. A normal API or agent credential cannot
 substitute for that workflow grant. The authenticated simulator checks do not
 establish a deployed customer provisioning experience.
 
