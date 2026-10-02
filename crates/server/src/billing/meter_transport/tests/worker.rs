@@ -114,19 +114,18 @@ impl Db {
             segment_count: None,
         };
         store.record_radio_event(event).await.unwrap();
+        let mut last_callback = event;
         for index in 0..segments {
-            store
-                .record_radio_event(RadioEvent {
-                    event_id: Uuid::new_v4(),
-                    evidence: Evidence::SentCallbackOk,
-                    segment_index: Some(index),
-                    segment_count: Some(segments),
-                    ..event
-                })
-                .await
-                .unwrap();
+            last_callback = RadioEvent {
+                event_id: Uuid::new_v4(),
+                evidence: Evidence::SentCallbackOk,
+                segment_index: Some(index),
+                segment_count: Some(segments),
+                ..event
+            };
+            store.record_radio_event(last_callback).await.unwrap();
         }
-        (id, event)
+        (id, last_callback)
     }
     async fn close(self) {
         self.client
@@ -181,16 +180,7 @@ async fn finalized_outbox_https_ack_and_unknown_retry_preserve_one_original_char
     assert_eq!(row.get::<_, i32>(2), 2);
     assert!(row.get::<_, bool>(3));
     let mut store = DeliveryStore::new(&mut db.client);
-    store
-        .record_radio_event(RadioEvent {
-            event_id: Uuid::new_v4(),
-            evidence: Evidence::SentCallbackOk,
-            segment_index: Some(0),
-            segment_count: Some(2),
-            ..event
-        })
-        .await
-        .unwrap();
+    store.record_radio_event(event).await.unwrap();
     assert_eq!(
         worker.run_one(&mut db.client, &t).await.unwrap(),
         WorkResult::Idle
