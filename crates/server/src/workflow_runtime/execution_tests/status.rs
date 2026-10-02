@@ -55,15 +55,46 @@ async fn status_uses_exact_bound_delivery_and_never_guesses_from_owner_approval(
             ..
         })
     ));
-    flow.case
-        .f
-        .db
-        .execute(
+    // Match the existing tombstone lifecycle fixture: clear dependent terminal
+    // job and ledger records before removing only this message. The immutable
+    // workflow binding must survive with its live-message reference cleared.
+    let mut db = flow.case.f.connect().await;
+    let tx = db.transaction().await.unwrap();
+    tx.execute(
+        "DELETE FROM usage_ledger WHERE account_id=$1 AND message_id=$2",
+        &[&flow.action.key.account_id, &message],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        tx.execute(
+            "DELETE FROM dispatch_jobs WHERE account_id=$1 AND message_id=$2 AND finished_at IS NOT NULL AND grant_issued_at IS NULL",
+            &[&flow.action.key.account_id, &message],
+        )
+        .await
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        tx.execute(
             "DELETE FROM messages WHERE account_id=$1 AND id=$2",
             &[&flow.action.key.account_id, &message],
         )
         .await
+        .unwrap(),
+        1
+    );
+    tx.commit().await.unwrap();
+    let retained = db
+        .query_one(
+            "SELECT message_id,dispatch_id,live_message_id FROM workflow_message_links WHERE account_id=$1 AND action_id=$2 AND revision=$3 AND binding_digest=$4",
+            &[&flow.action.key.account_id, &flow.action.key.action_id, &flow.action.key.revision, &&flow.action.key.binding_digest[..]],
+        )
+        .await
         .unwrap();
+    assert_eq!(retained.get::<_, Uuid>(0), message);
+    assert_eq!(retained.get::<_, Uuid>(1), dispatch);
+    assert!(retained.get::<_, Option<Uuid>>(2).is_none());
     assert!(matches!(
         snapshot(&flow).await.unwrap().delivery,
         Some(DeliveryStatus::Unavailable)
