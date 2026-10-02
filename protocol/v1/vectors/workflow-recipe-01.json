@@ -1,0 +1,47 @@
+{
+  "requests": [
+    {
+      "operation": "preview",
+      "params": {
+        "request_id": "00000000-0000-0000-0000-000000000001"
+      }
+    },
+    {
+      "operation": "task_completion",
+      "params": {
+        "request_id": "00000000-0000-0000-0000-000000000001"
+      }
+    },
+    {
+      "operation": "owner_proposal",
+      "params": {
+        "request_id": "00000000-0000-0000-0000-000000000001"
+      }
+    },
+    {
+      "operation": "status",
+      "params": {
+        "request_id": "00000000-0000-0000-0000-000000000001"
+      }
+    },
+    {
+      "operation": "prepare",
+      "params": {
+        "request_id": "00000000-0000-0000-0000-000000000001",
+        "key": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-000000000002",
+          "revision": 1,
+          "binding_digest": "abababababababababababababababababababababababababababababababab"
+        }
+      }
+    },
+    {
+      "operation": "verified_reply",
+      "params": {
+        "request_id": "00000000-0000-0000-0000-000000000001",
+        "event_id": "00000000-0000-0000-0000-000000000003"
+      }
+    }
+  ]
+}

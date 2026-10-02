@@ -7,6 +7,7 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 mod log_canaries;
+mod recipe_service;
 
 fn state(case: &Case) -> WorkflowHttpState {
     let separator = if case.f.url.contains('?') { '&' } else { '?' };

@@ -1,0 +1,38 @@
+{
+  "request": {
+    "current_password": "your-password",
+    "code": "123456",
+    "connector_id": "00000000-0000-0000-0000-000000000001",
+    "context_id": "00000000-0000-0000-0000-000000000002",
+    "contact_id": "00000000-0000-0000-0000-000000000003",
+    "purpose": "operational",
+    "permissions": [
+      "context_metadata",
+      "propose",
+      "status"
+    ],
+    "expires_at_ms": 1
+  },
+  "forbidden_fields": [
+    "account_id",
+    "device_id",
+    "token",
+    "approved",
+    "verified",
+    "owner",
+    "manifest_generation"
+  ],
+  "invalid_permissions": [
+    [],
+    [
+      "send",
+      "send"
+    ],
+    [
+      "owner"
+    ],
+    [
+      "cancel"
+    ]
+  ]
+}
