@@ -153,7 +153,7 @@ test('shape-valid foreign context, action, proposal and occurrence responses are
     ...['account_id', 'action_id', 'revision', 'binding_digest'].map(field => ['workflow.action.propose', { request_id: uuid(1), descriptor },
       { ...state, result: { ...state.result, key: { ...key, [field]: field === 'revision' ? 2 : field === 'binding_digest' ? 'cd'.repeat(32) : uuid(9) } } }]),
     ['workflow.action.schedule', { request_id: uuid(1), key, policy, series_id: uuid(3), ordinal: 0 },
-      { kind: 'occurrence', result: { occurrence_id: uuid(4), series_id: uuid(9), ordinal: 0, phase: 'waiting', opens_at_ms: null, closes_at_ms: null, expires_at_ms: 1 } }],
+      { kind: 'occurrence', result: { occurrence_id: uuid(4), series_id: uuid(9), ordinal: 0, phase: 'waiting_window', opens_at_ms: null, closes_at_ms: null, expires_at_ms: 1 } }],
   ];
   for (const [method, request, response] of cases) {
     let calls = 0;
@@ -162,4 +162,28 @@ test('shape-valid foreign context, action, proposal and occurrence responses are
     assert.equal(calls, 1);
   }
   assert.deepEqual(await client(async () => reply(state)).call('workflow.action.propose', { request_id: uuid(1), descriptor }), state);
+});
+
+test('scheduling accepts current service phases but unknown phases never succeed or resend', async () => {
+  const migration = await readFile(new URL('../../../deploy/compose/migrations/077_encrypted_schedule.sql', import.meta.url), 'utf8');
+  const phaseConstraint = migration.match(/phase text NOT NULL CHECK\(phase IN \(([^)]+)\)\)/);
+  assert.ok(phaseConstraint, 'canonical occurrence phase constraint exists');
+  const phases = Array.from(phaseConstraint[1].matchAll(/'([^']+)'/g), match => match[1]);
+  const request = { request_id: uuid(1), key: { account_id: uuid(1), action_id: uuid(2), revision: 1, binding_digest: 'ab'.repeat(32) },
+    policy: { timezone: 'UTC', first_local_date: '2027-01-01', opens_minute: 1, closes_minute: 2,
+      repeat_every_days: null, max_occurrences: 1, pacing_seconds: 60 }, series_id: uuid(3), ordinal: 0 };
+  const occurrence = phase => ({ kind: 'occurrence', result: { occurrence_id: uuid(4), series_id: request.series_id,
+    ordinal: request.ordinal, phase, opens_at_ms: 1, closes_at_ms: 2, expires_at_ms: 3 } });
+  for (const phase of ['delivered_by_carrier', 'sent', 'waiting', 'future_phase']) {
+    let calls = 0;
+    await assert.rejects(client(async () => { calls++; return reply(occurrence(phase)); })
+      .call('workflow.action.schedule', request, 3), error =>
+      error instanceof WorkflowToolError && error.code === 'response_unknown' && error.state === 'unknown' && error.attempts === 1);
+    assert.equal(calls, 1);
+  }
+  for (const phase of phases) {
+    assert.deepEqual(await client(async () => reply(occurrence(phase))).call('workflow.action.schedule', request), occurrence(phase));
+  }
+  const schema = workflowTools.find(tool => tool.name === 'workflow.action.schedule').outputSchema;
+  assert.deepEqual(schema.properties.result.properties.phase.enum, phases);
 });

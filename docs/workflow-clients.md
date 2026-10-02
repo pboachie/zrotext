@@ -45,8 +45,10 @@ not wrap these calls in their own automatic effect retry loops.
 
 Successful replies must match the predictable context, action, proposal binding
 or occurrence identities in that snapshot. A correctly shaped reply for another
-identity is unknown and never permission to retry. Returned encrypted projection
-bytes must also have a canonical base64url representation; format validation
+identity is unknown and never permission to retry. Occurrence phases are limited
+to the current service vocabulary; unfamiliar or carrier-delivery phase claims
+are unknown outcomes and stop without automatic resend. Returned encrypted
+projection bytes must also have a canonical base64url representation; format validation
 does not establish their cryptographic authenticity.
 
 `workflowFunctions` and Python `workflow_functions()` expose the same parameter

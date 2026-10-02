@@ -72,7 +72,9 @@ const responses: Record<string, Schema> = {
   context_content: object({ context_id: uuid, revision: integer(1), envelope_base64url: {
     ...text(1, 131072), pattern: '^[A-Za-z0-9_-]+$' } }),
   action,
-  occurrence: object({ occurrence_id: uuid, series_id: uuid, ordinal: integer(0, 99), phase: text(),
+  occurrence: object({ occurrence_id: uuid, series_id: uuid, ordinal: integer(0, 99),
+    phase: { enum: ['owner_review', 'waiting_window', 'waiting_renderer', 'waiting_phone', 'claimed', 'dispatching',
+      'unknown', 'cancelled', 'expired', 'missed_window', 'completed', 'failed'] },
     opens_at_ms: nullable(integer()), closes_at_ms: nullable(integer()), expires_at_ms: integer(1) }),
   send: { anyOf: [object({ state: { enum: ['waiting_owner_binding', 'waiting_window'] } }),
     object({ state: { enum: ['prepared'] }, message_id: uuid, dispatch_id: uuid })] },
