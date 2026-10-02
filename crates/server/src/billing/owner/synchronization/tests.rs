@@ -18,7 +18,12 @@ async fn forwarding_counts_follow_real_finalized_delivery_without_cross_tenant_r
     )
     .await
     .unwrap();
-    db.execute("INSERT INTO usage_quota_policies(account_id,metric,limit_units,source) VALUES($1,'outbound_message',100,'stripe_test') ON CONFLICT(account_id,metric) DO UPDATE SET limit_units=100", &[&account]).await.unwrap();
+    let subscription = format!("sub_Synthetic{}", account.simple());
+    db.execute(
+        "INSERT INTO billing_reconciliations(account_id,stripe_customer_id,stripe_subscription_id,processed_generation) VALUES($1,$2,$3,1)",
+        &[&account, &customer, &subscription],
+    ).await.unwrap();
+    db.execute("INSERT INTO usage_quota_policies(account_id,metric,limit_units,source) VALUES($1,'outbound_message',100,'stripe_test') ON CONFLICT(account_id,metric) DO UPDATE SET limit_units=100,source='stripe_test'", &[&account]).await.unwrap();
     db.execute("INSERT INTO billing_usage_test_policies(account_id,policy_version,stripe_customer_id,meter_id,event_name,active) VALUES($1,1,$2,'mtr_Synthetic','synthetic_execution',true)", &[&account,&customer]).await.unwrap();
     db.batch_execute("UPDATE deployment_authority SET dispatch_enabled=true")
         .await
