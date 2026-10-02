@@ -100,7 +100,9 @@ The root and its ancestors are trusted operator configuration. This wrapper does
 not protect against a privileged process concurrently replacing directory paths.
 Windows network/device paths are refused; local ACL protection remains the
 operator's responsibility. The file must be regular and at most
-128 bytes; POSIX group/other permissions are refused. Windows ACL protection is
+128 bytes; POSIX group/other permissions are refused. The canonical regular file is checked before opening; the opened descriptor must
+retain the same inode and comparable device identity. A replaced file is refused.
+Windows ACL protection is
 the customer's responsibility and is not verified by this wrapper. No owner,
 ordinary API, device, or agent credential fallback exists. Keep credentials out
 of prompts, model arguments, logs and public repository files. Startup failures

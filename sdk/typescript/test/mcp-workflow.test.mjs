@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, writeFile, rm, chmod, mkdir, symlink } from 'node:fs/promises';
+import fs, { mkdtemp, writeFile, rm, chmod, mkdir, symlink, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSession, configuredClient, tools } from '../../mcp/server.mjs';
@@ -66,6 +66,9 @@ test('startup configuration consumes only a bounded private workflow credential 
     await writeFile(file, 'ztw_' + Buffer.alloc(32, 9).toString('base64url') + '\n', { mode: 0o600 });
     const configured = await configuredClient({ ZROTEXT_WORKFLOW_ORIGIN: 'https://example.test', ZROTEXT_WORKFLOW_CREDENTIAL_ROOT: folder, ZROTEXT_WORKFLOW_CREDENTIAL_FILE: file });
     assert.equal(typeof configured.call, 'function');
+    const relativeClient = await configuredClient({ ZROTEXT_WORKFLOW_ORIGIN: 'https://example.test',
+      ZROTEXT_WORKFLOW_CREDENTIAL_ROOT: folder, ZROTEXT_WORKFLOW_CREDENTIAL_FILE: 'credential' });
+    assert.equal(typeof relativeClient.call, 'function');
     await writeFile(file, 'ztk_' + Buffer.alloc(32, 9).toString('base64url'));
     await assert.rejects(configuredClient({ ZROTEXT_WORKFLOW_ORIGIN: 'https://example.test', ZROTEXT_WORKFLOW_CREDENTIAL_ROOT: folder, ZROTEXT_WORKFLOW_CREDENTIAL_FILE: file }));
     await writeFile(file, 'x'.repeat(129));
@@ -123,7 +126,7 @@ test('startup credential paths stay within an independent operator root', async 
  try {
   assert.equal(typeof (await configure(inside)).call,'function');
   assert.equal(typeof (await configure('credential')).call,'function');
-  for(const file of [outside,join(root,'..','private-sibling','credential'),'../private-sibling/credential',root,'credential\0']) await assert.rejects(configure(file),{message:'invalid_configuration'});
+  for(const file of [outside,join(root,'..','private-sibling','credential'),'../private-sibling/credential',root,'credential\0','credential\n','credential\t','credential\x7f']) await assert.rejects(configure(file),{message:'invalid_configuration'});
   await assert.rejects(configuredClient({ZROTEXT_WORKFLOW_ORIGIN:'https://example.test',ZROTEXT_WORKFLOW_CREDENTIAL_ROOT:'relative',ZROTEXT_WORKFLOW_CREDENTIAL_FILE:inside}),{message:'invalid_configuration'});
   await assert.rejects(configuredClient({ZROTEXT_WORKFLOW_CREDENTIAL_ROOT:root}),{message:'invalid_configuration'});
  } finally {await rm(folder,{recursive:true});}
@@ -148,4 +151,30 @@ test('startup rejects final file symlinks escaping the credential root', async t
   catch(error){if(process.platform==='win32'&&['EPERM','EACCES'].includes(error.code)){t.skip('Windows account cannot create synthetic file symlinks');return;}throw error;}
   await assert.rejects(configuredClient({ZROTEXT_WORKFLOW_ORIGIN:'https://example.test',ZROTEXT_WORKFLOW_CREDENTIAL_ROOT:root,ZROTEXT_WORKFLOW_CREDENTIAL_FILE:'final'}),{message:'invalid_configuration'});
  } finally {await rm(folder,{recursive:true});}
+});
+
+// Substitute an owned file at the real filesystem open boundary, not its credential parser.
+test('startup refuses replacement of the validated private credential file before opening', async () => {
+  const folder = await mkdtemp(join(tmpdir(), 'zrotext-mcp-replacement-'));
+  const file = join(folder, 'credential');
+  const originalOpen = fs.open;
+  let replaced = false;
+  try {
+    await writeFile(file, 'ztw_' + Buffer.alloc(32, 9).toString('base64url'), { mode: 0o600 });
+    fs.open = async (path, ...args) => {
+      if (path === file && !replaced) {
+        replaced = true;
+        await rename(file, join(folder, 'previous-credential'));
+        await writeFile(file, 'ztw_' + Buffer.alloc(32, 10).toString('base64url'), { mode: 0o600 });
+      }
+      return originalOpen(path, ...args);
+    };
+    await assert.rejects(configuredClient({
+      ZROTEXT_WORKFLOW_ORIGIN: 'https://example.test', ZROTEXT_WORKFLOW_CREDENTIAL_ROOT: folder, ZROTEXT_WORKFLOW_CREDENTIAL_FILE: file,
+    }), { message: 'invalid_configuration' });
+    assert.equal(replaced, true, 'the real file replacement must occur before opening');
+  } finally {
+    fs.open = originalOpen;
+    await rm(folder, { recursive: true });
+  }
 });

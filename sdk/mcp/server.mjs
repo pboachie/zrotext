@@ -1,7 +1,7 @@
 import { createHash, webcrypto } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { constants } from 'node:fs';
-import { open, realpath } from 'node:fs/promises';
+import fs from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, parse, resolve, sep } from 'node:path';
 import { parseDraftEnvelope } from '../typescript/dist/draft01.js';
@@ -173,19 +173,26 @@ export async function configuredClient(env = process.env) {
   try {
     const configuredRoot = env.ZROTEXT_WORKFLOW_CREDENTIAL_ROOT ?? join(homedir(), '.config', 'zrotext', 'credentials');
     if (typeof configuredRoot !== 'string' || !isAbsolute(configuredRoot) || configuredRoot.includes('\0') ||
-        typeof file !== 'string' || file.includes('\0') ||
+        typeof file !== 'string' || file.length > 32768 || /[\u0000-\u001f\u007f]/.test(file) ||
         (process.platform === 'win32' && (configuredRoot.startsWith('\\\\') || file.startsWith('\\\\')))) throw new Error();
-    const root = await realpath(resolve(configuredRoot));
+    const root = await fs.realpath(resolve(configuredRoot));
     if (root === parse(root).root) throw new Error();
     const normalized = resolve(root, file);
     if (!normalized.startsWith(root + sep)) throw new Error();
-    credentialPath = await realpath(normalized);
+    credentialPath = await fs.realpath(normalized);
     if (!credentialPath.startsWith(root + sep)) throw new Error();
   } catch { throw new Error('invalid_configuration'); }
-  const handle = await open(credentialPath, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
+  const candidate = await fs.stat(credentialPath, { bigint: true });
+  const privateFile = info => info.isFile() && info.ino > 0n && info.size <= 128n &&
+    (process.platform === 'win32' || (info.mode & 0o077n) === 0n);
+  if (!privateFile(candidate)) throw new Error('invalid_configuration');
+  const handle = await fs.open(credentialPath, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
   try {
-    const info = await handle.stat();
-    if (!info.isFile() || info.size > 128 || (process.platform !== 'win32' && (info.mode & 0o077) !== 0)) throw new Error('invalid_configuration');
+    const info = await handle.stat({ bigint: true });
+    // Windows path stat may omit the volume id (dev=0), while fstat supplies it.
+    const comparableDevice = process.platform !== 'win32' || candidate.dev !== 0n;
+    if (!privateFile(info) || info.ino !== candidate.ino ||
+        (comparableDevice && info.dev !== candidate.dev)) throw new Error('invalid_configuration');
     const buffer = Buffer.alloc(129);
     try {
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
