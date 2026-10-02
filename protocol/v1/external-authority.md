@@ -20,6 +20,16 @@ request and response. The initial epoch floor is positive and must match the
 independent deployment authority; it is not a replacement for durable state.
 No authority endpoint, credential or production configuration belongs here.
 
+Selecting this candidate authority configuration forces a durable global dispatch
+hold before server workers or the HTTP listener start; failure aborts startup.
+The configured executor holds on reload and checks the live independent anchor
+before each subsequent round. A partition invalidates cached hysteresis and holds
+dispatch; an anchor ahead of the writer snapshot latches a terminal hold. A failed
+hold never counts as confirmation or recovery. Checks run at the configured quorum
+cadence; they are not a per-radio or per-effect authority lease. Actual host fencing
+and controlled restore/drain procedures remain required. No successful check
+automatically enables dispatch; safe reconciliation is a separate operator action.
+
 Every operation posts JSON to the configured endpoint. The request is
 `{namespace,nonce,operation}`, with a new random UUID nonce per call. Operations
 are closed objects: `fence` has `site` and `epoch`, `status` has `site`,

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+
 //! Tests for the failover executor server wiring: environment parsing (the
 //! default-off path above all), the singleton-executor advisory-lock guard,
 //! and — against a disposable PostgreSQL database — the exact SQL semantics
@@ -2321,4 +2322,50 @@ fn an_enabled_executor_with_the_refusing_fence_backend_never_promotes() {
             .await
             .unwrap();
     }));
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_FAILOVER_TEST_DATABASE_URL; isolated schema, no physical host fencing"]
+async fn independent_authority_startup_hold_is_durable_idempotent_and_never_changes_epoch() {
+    let base = std::env::var("ZT_FAILOVER_TEST_DATABASE_URL").unwrap();
+    let (client, connection) = zrotext_postgres_connection::connect(&base).await.unwrap();
+    let driver = tokio::spawn(connection);
+    let schema = format!("external_start_hold_{}", uuid::Uuid::new_v4().simple());
+    client
+        .batch_execute(&format!(
+            "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+        ))
+        .await
+        .unwrap();
+    client.batch_execute(MIGRATION_FOUNDATION).await.unwrap();
+    client
+        .execute("UPDATE deployment_authority SET dispatch_enabled=TRUE", &[])
+        .await
+        .unwrap();
+    let before: i64 = client
+        .query_one("SELECT epoch FROM deployment_authority", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let separator = if base.contains('?') { '&' } else { '?' };
+    let url = format!("{base}{separator}options=-csearch_path%3D{schema}");
+    hold_before_external_start(&url).await.unwrap();
+    hold_before_external_start(&url).await.unwrap();
+    let row = client
+        .query_one(
+            "SELECT epoch, dispatch_enabled FROM deployment_authority",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(row.get::<_, i64>(0), before);
+    assert!(!row.get::<_, bool>(1));
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+    // A missing authority is a startup error, never an implicit successful hold.
+    assert!(hold_before_external_start(&url).await.is_err());
+    drop(client);
+    let _ = driver.await;
 }

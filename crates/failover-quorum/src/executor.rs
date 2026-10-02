@@ -157,6 +157,9 @@ pub trait WriterAuthority {
     /// Set the old writer's `sites` row draining.
     fn fence_writer_site(&mut self, site_id: &str) -> Result<FenceOutcome, Self::Error>;
 
+    /// Idempotently pause dispatch without changing epochs or sites.
+    fn hold_dispatch(&mut self) -> Result<(), Self::Error>;
+
     /// Atomically: hold the `deployment_authority` row, verify the old
     /// writer's `sites` row still shows a fence, then move the epoch to
     /// exactly `new_epoch` (only forward), enable the promoted site and force
@@ -358,6 +361,7 @@ pub struct FailoverExecutor<S: ObservationSource, A: WriterAuthority> {
     /// decision order.
     pending: Vec<PendingAction>,
     status: ExecutorStatus,
+    live_external_required: bool,
 }
 
 impl<S: ObservationSource, A: WriterAuthority> FailoverExecutor<S, A> {
@@ -380,7 +384,65 @@ impl<S: ObservationSource, A: WriterAuthority> FailoverExecutor<S, A> {
             authority_epoch_at_restore: 0,
             pending: Vec::new(),
             status: ExecutorStatus::WaitingForAuthority,
+            live_external_required: false,
         }
+    }
+
+    /// Explicit independent-authority runtime: hold on initial/reloaded state,
+    /// and recheck the live anchor before each subsequent round. Never unpause.
+    pub fn with_live_external_preflight(mut self) -> Self {
+        self.live_external_required = true;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn authority_mut_for_test(&mut self) -> &mut A {
+        &mut self.authority
+    }
+
+    fn live_external_preflight(&mut self) -> bool {
+        if self.controller.is_none() {
+            if self.authority.hold_dispatch().is_err() {
+                return false;
+            }
+            return true;
+        }
+        // The anchor must be observed before the snapshot, as during restore.
+        let anchored = match self.fencing.confirmed_epoch() {
+            AnchorReading::Confirmed { epoch } => epoch,
+            AnchorReading::Unconfirmed => {
+                let _ = self.authority.hold_dispatch();
+                self.discard_stale_state();
+                return false;
+            }
+        };
+        let snapshot = match self
+            .authority
+            .load_state(self.config.writer_site_id(), self.config.standby_site_id())
+        {
+            Ok(snapshot) => snapshot,
+            Err(_) => {
+                let _ = self.authority.hold_dispatch();
+                self.discard_stale_state();
+                return false;
+            }
+        };
+        if anchored > snapshot.epoch {
+            let _ = self.authority.hold_dispatch();
+            self.status = ExecutorStatus::EpochAnchorAhead {
+                anchored_epoch: anchored,
+                authority_epoch: snapshot.epoch,
+            };
+            return false;
+        }
+        if snapshot.epoch != self.authority_epoch_at_restore {
+            let held = self.authority.hold_dispatch().is_ok();
+            self.discard_stale_state();
+            if !held {
+                return false;
+            }
+        }
+        true
     }
 
     /// The current executor status.
@@ -456,6 +518,9 @@ impl<S: ObservationSource, A: WriterAuthority> FailoverExecutor<S, A> {
                 | ExecutorStatus::PromotionSuperseded { .. }
                 | ExecutorStatus::EpochAnchorAhead { .. }
         ) {
+            if self.live_external_required {
+                let _ = self.authority.hold_dispatch();
+            }
             return TickReport {
                 decision: None,
                 application: Application::None,
@@ -474,6 +539,13 @@ impl<S: ObservationSource, A: WriterAuthority> FailoverExecutor<S, A> {
         // like a restart, failing closed where they disagree.
         if self.authority.exclusivity_reacquired() {
             self.discard_stale_state();
+        }
+        if self.live_external_required && !self.live_external_preflight() {
+            return TickReport {
+                decision: None,
+                application: Application::None,
+                journal_saved: false,
+            };
         }
         if self.controller.is_none() && !self.restore() {
             return TickReport {

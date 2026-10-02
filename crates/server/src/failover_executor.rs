@@ -829,6 +829,13 @@ fn reconnect_jitter() -> Duration {
 impl WriterAuthority for PgWriterAuthority {
     type Error = PgAuthorityError;
 
+    fn hold_dispatch(&mut self) -> Result<(), Self::Error> {
+        self.call(|client| Box::pin(async move {
+            client.query_one("UPDATE deployment_authority SET dispatch_enabled=FALSE WHERE singleton=TRUE RETURNING epoch", &[]).await?;
+            Ok(())
+        }))
+    }
+
     fn load_state(
         &mut self,
         writer_site: &str,
@@ -1311,6 +1318,28 @@ pub fn spawn_failover_executor(
     spawn_failover_executor_with_adapters(env, database_url, shutdown, healthy, None)
 }
 
+/// Global startup hold before any worker or HTTP listener can admit dispatch.
+/// Only explicit independent-authority configuration invokes this operation.
+/// Failure aborts startup; no code here enables dispatch or changes the epoch.
+pub async fn hold_before_external_start(database_url: &str) -> Result<(), &'static str> {
+    let (client, connection) = tokio::time::timeout(
+        CONNECT_CEILING,
+        zrotext_postgres_connection::connect(database_url),
+    )
+    .await
+    .map_err(|_| "external authority startup hold unavailable")?
+    .map_err(|_| "external authority startup hold unavailable")?;
+    let driver = tokio::spawn(connection);
+    let result = tokio::time::timeout(OPERATION_CEILING, client.query_one(
+        "UPDATE deployment_authority SET dispatch_enabled=FALSE WHERE singleton=TRUE RETURNING epoch", &[])).await;
+    drop(client);
+    driver.abort();
+    match result {
+        Ok(Ok(_)) => Ok(()),
+        _ => Err("external authority startup hold unavailable"),
+    }
+}
+
 pub fn spawn_failover_executor_with_adapters(
     env: Option<ExecutorEnv>,
     database_url: String,
@@ -1331,6 +1360,7 @@ pub fn spawn_failover_executor_with_external(
     external_config: Option<PathBuf>,
 ) -> Option<FailoverExecutorThreads> {
     let env = env?;
+    let independent = external_config.is_some();
     let store = open_consensus_store(&env, &healthy)?;
     let store: SharedStore = Arc::new(Mutex::new(store));
     let reporter = spawn_failover_reporter(env.clone(), store.clone(), shutdown.clone(), adapters);
@@ -1383,6 +1413,7 @@ pub fn spawn_failover_executor_with_external(
                 authority,
                 fencing,
             );
+            if independent { executor = executor.with_live_external_preflight(); }
             let interval = Duration::from_millis(env.check_interval_ms());
             let mut last_status = None;
             let mut last_role = None;
