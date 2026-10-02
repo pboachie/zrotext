@@ -19,6 +19,7 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.style.TextAlign
 
 internal val GatewayColors = darkColorScheme(
     primary = Color(0xFFB6F36A),
@@ -53,10 +54,11 @@ internal fun GatewaySectionTitle(text: String) {
 }
 
 @Composable
-internal fun GatewayStatusText(label: String, value: String) {
+internal fun GatewayStatusText(label: String, value: String, textAlign: TextAlign = TextAlign.Start) {
     // Heartbeat counters deliberately live outside this region: a routine
     // acknowledgement must not repeatedly interrupt assistive reading.
-    Text("$label: $value", modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+    Text("$label: $value", textAlign = textAlign,
+        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
 }
 
 @Composable

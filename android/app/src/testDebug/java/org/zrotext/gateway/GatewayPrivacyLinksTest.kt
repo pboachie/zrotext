@@ -20,7 +20,7 @@ class GatewayPrivacyLinksTest {
     @get:Rule val compose = createAndroidComposeRule<MainActivity>()
 
     private fun access() {
-        compose.onNodeWithText("Setup").performClick()
+        compose.openGatewayPage("Setup")
         compose.onNodeWithText("1. Review access").performScrollTo().performClick()
     }
 

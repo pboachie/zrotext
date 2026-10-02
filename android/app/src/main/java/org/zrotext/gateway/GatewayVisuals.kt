@@ -96,7 +96,7 @@ internal fun GatewayEntrance(order: Int, motion: Boolean, content: @Composable (
 
 /** Canvas decoration has no duplicated spoken status and no pretend activity. */
 @Composable
-internal fun GatewaySignal(mood: GatewayConnectionMood, motion: Boolean) {
+internal fun GatewaySignal(mood: GatewayConnectionMood, motion: Boolean, compact: Boolean = false) {
     val live = mood == GatewayConnectionMood.CONNECTED || mood == GatewayConnectionMood.CONNECTING
     val phase = if (motion && live) {
         val transition = rememberInfiniteTransition(label = "Connection breathing")
@@ -108,7 +108,7 @@ internal fun GatewaySignal(mood: GatewayConnectionMood, motion: Boolean) {
         GatewayConnectionMood.ATTENTION -> Color(0xFFEDBE70)
         else -> GatewayColors.onSurfaceVariant
     }
-    Canvas(Modifier.size(164.dp)) {
+    Canvas(Modifier.size(if (compact) 64.dp else 96.dp)) {
         val center = Offset(size.width / 2, size.height / 2)
         val radius = size.minDimension / 2
         drawCircle(ink.copy(alpha = 0.06f), radius * 0.72f, center)
@@ -138,7 +138,7 @@ internal fun GatewaySignal(mood: GatewayConnectionMood, motion: Boolean) {
 @Composable
 internal fun GatewayBrandMark() {
     // Same geometry as docs/assets/zrotext-mark.svg, rendered natively.
-    Canvas(Modifier.size(30.dp)) {
+    Canvas(Modifier.size(26.dp)) {
         val unit = size.width / 48f
         drawRoundRect(GatewayColors.primary, cornerRadius = CornerRadius(11f * unit))
         val mark = Path().apply {
