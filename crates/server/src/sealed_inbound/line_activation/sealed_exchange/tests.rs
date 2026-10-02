@@ -522,7 +522,9 @@ async fn registration_absolute_expiry_is_not_reset_by_line_issuance_or_retry() {
     let c = Case::new().await;
     let statement = c.issue(1).await;
     let mut scope = statement.scope().clone();
-    scope.expires_ms = scope.issued_ms + 1200;
+    // Allow real password/factor verification and database setup to finish before
+    // exercising expiry; the original 1.2-second window expired during setup.
+    scope.expires_ms = scope.issued_ms + 30_000;
     let short = zrotext_root_material::line_key_registration::Statement::new(
         scope,
         *statement.root_pin(),
@@ -574,7 +576,27 @@ async fn registration_absolute_expiry_is_not_reset_by_line_issuance_or_retry() {
     assert!(expires <= short.scope().expires_ms as i64);
     let retained_proof = proof(&c, &ch).await;
     let retained_digest: Vec<u8> = c.owner.f.db.query_one("SELECT device_statement_digest FROM sealed_line_activation_exchanges WHERE challenge_id=$1", &[&ch.id]).await.unwrap().get(0);
-    tokio::time::sleep(std::time::Duration::from_millis(1250)).await;
+    tokio::time::timeout(std::time::Duration::from_secs(35), async {
+        loop {
+            let expired: bool = c
+                .owner
+                .f
+                .db
+                .query_one(
+                    "SELECT floor(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint >= $1",
+                    &[&(short.scope().expires_ms as i64)],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            if expired {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("signed registration did not reach its absolute expiry");
     assert!(
         open(
             &mut c.owner.f.connect().await,
