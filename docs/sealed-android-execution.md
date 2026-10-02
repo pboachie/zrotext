@@ -12,7 +12,9 @@ When explicitly installed, the ordinary authenticated service offers sealed
 dispatch v2. Its fresh nonce time sample binds the already authenticated account,
 device, connection epoch, deployment epoch, and per-socket session identity.
 The phone uses elapsed time and a conservative network upper bound, never its
-wall clock. Samples expire after 60 seconds, replies take at most two seconds,
+wall clock. A later sample with a shorter round trip retains the earlier
+conservative bound; it cannot restore lifetime to an expired operation. A sample
+below the prior server-send time plus elapsed time still refuses as rollback. Samples expire after 60 seconds, replies take at most two seconds,
 and refreshes neither renew the five-minute readiness window nor an execution
 grant. Reboot, stale sessions, rollback, identity changes, and unavailable samples
 refuse execution. A finite sample budget requires a new authenticated socket.
