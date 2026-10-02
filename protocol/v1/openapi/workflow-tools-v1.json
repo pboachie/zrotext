@@ -1,0 +1,1252 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "ZROtext authorized workflow tools",
+    "version": "0.0.0-draft",
+    "description": "Requires the separately enabled WORKFLOW_TOOLS_ENABLED transport and a current workflow grant. Default off. Schemas and method hints confer no authority."
+  },
+  "paths": {
+    "/v1/workflow/tools": {
+      "get": {
+        "operationId": "workflowReadiness",
+        "security": [
+          {
+            "workflowCredential": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current scope and method hints, not a reusable permission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowReadiness"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Redacted failure. Unavailable can be ambiguous; do not resend automatically.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Redacted failure. Unavailable can be ambiguous; do not resend automatically.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Redacted failure. Unavailable can be ambiguous; do not resend automatically.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Redacted failure. Unavailable can be ambiguous; do not resend automatically.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Redacted failure. Unavailable can be ambiguous; do not resend automatically.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Redacted failure. Unavailable can be ambiguous; do not resend automatically.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Redacted failure. Unavailable can be ambiguous; do not resend automatically.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "callWorkflowTool",
+        "security": [
+          {
+            "workflowCredential": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Checked service metadata; Prepared never proves carrier submission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Redacted failure. Unavailable can be ambiguous; do not resend automatically.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Redacted failure. Unavailable can be ambiguous; do not resend automatically.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Redacted failure. Unavailable can be ambiguous; do not resend automatically.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Redacted failure. Unavailable can be ambiguous; do not resend automatically.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Redacted failure. Unavailable can be ambiguous; do not resend automatically.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Redacted failure. Unavailable can be ambiguous; do not resend automatically.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Redacted failure. Unavailable can be ambiguous; do not resend automatically.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "workflowCredential": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "ztw_",
+        "description": "Dedicated bounded workflow credential, never owner cookies, ordinary API keys or agent keys."
+      }
+    },
+    "schemas": {
+      "WorkflowReadiness": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "available",
+          "methods",
+          "scope",
+          "send_semantics"
+        ],
+        "properties": {
+          "available": {
+            "const": true
+          },
+          "methods": {
+            "type": "array",
+            "minItems": 7,
+            "maxItems": 7,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "method",
+                "operation",
+                "read_only_hint",
+                "destructive_hint",
+                "idempotent_hint",
+                "implementation",
+                "transport_mounted",
+                "permission_granted"
+              ],
+              "properties": {
+                "method": {
+                  "enum": [
+                    "workflow.contact.read",
+                    "workflow.context.metadata",
+                    "workflow.context.content",
+                    "workflow.action.propose",
+                    "workflow.action.status",
+                    "workflow.action.schedule",
+                    "workflow.action.send"
+                  ]
+                },
+                "operation": {
+                  "enum": [
+                    "contact_read",
+                    "context_metadata",
+                    "context_content",
+                    "propose",
+                    "status",
+                    "schedule",
+                    "send"
+                  ]
+                },
+                "read_only_hint": {
+                  "type": "boolean"
+                },
+                "destructive_hint": {
+                  "type": "boolean"
+                },
+                "idempotent_hint": {
+                  "const": true
+                },
+                "implementation": {
+                  "const": "library_candidate"
+                },
+                "transport_mounted": {
+                  "const": true
+                },
+                "permission_granted": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "scope": {
+            "type": "object",
+            "properties": {
+              "context_id": {
+                "type": "string",
+                "minLength": 36,
+                "maxLength": 36,
+                "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+              },
+              "device_id": {
+                "type": "string",
+                "minLength": 36,
+                "maxLength": 36,
+                "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+              },
+              "line_id": {
+                "type": "string",
+                "minLength": 36,
+                "maxLength": 36,
+                "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+              }
+            },
+            "required": [
+              "context_id",
+              "device_id",
+              "line_id"
+            ],
+            "additionalProperties": false
+          },
+          "send_semantics": {
+            "const": "owner_bound_prepared_only"
+          }
+        }
+      },
+      "WorkflowError": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "enum": [
+                  "invalid_request",
+                  "unauthorized",
+                  "forbidden",
+                  "not_found",
+                  "conflict",
+                  "rate_limited",
+                  "unavailable"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "WorkflowRequest": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "method",
+              "params"
+            ],
+            "properties": {
+              "method": {
+                "const": "workflow.contact.read"
+              },
+              "params": {
+                "type": "object",
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "minLength": 36,
+                    "maxLength": 36,
+                    "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  },
+                  "context_id": {
+                    "type": "string",
+                    "minLength": 36,
+                    "maxLength": 36,
+                    "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  }
+                },
+                "required": [
+                  "request_id",
+                  "context_id"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "method",
+              "params"
+            ],
+            "properties": {
+              "method": {
+                "const": "workflow.context.metadata"
+              },
+              "params": {
+                "type": "object",
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "minLength": 36,
+                    "maxLength": 36,
+                    "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  },
+                  "context_id": {
+                    "type": "string",
+                    "minLength": 36,
+                    "maxLength": 36,
+                    "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  }
+                },
+                "required": [
+                  "request_id",
+                  "context_id"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "method",
+              "params"
+            ],
+            "properties": {
+              "method": {
+                "const": "workflow.context.content"
+              },
+              "params": {
+                "type": "object",
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "minLength": 36,
+                    "maxLength": 36,
+                    "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  },
+                  "context_id": {
+                    "type": "string",
+                    "minLength": 36,
+                    "maxLength": 36,
+                    "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  }
+                },
+                "required": [
+                  "request_id",
+                  "context_id"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "method",
+              "params"
+            ],
+            "properties": {
+              "method": {
+                "const": "workflow.action.propose"
+              },
+              "params": {
+                "type": "object",
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "minLength": 36,
+                    "maxLength": 36,
+                    "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  },
+                  "descriptor": {
+                    "type": "object",
+                    "properties": {
+                      "account_id": {
+                        "type": "string",
+                        "minLength": 36,
+                        "maxLength": 36,
+                        "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                      },
+                      "action_id": {
+                        "type": "string",
+                        "minLength": 36,
+                        "maxLength": 36,
+                        "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                      },
+                      "revision": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 128
+                      },
+                      "line_id": {
+                        "type": "string",
+                        "minLength": 36,
+                        "maxLength": 36,
+                        "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                      },
+                      "recipient_id": {
+                        "type": "string",
+                        "minLength": 36,
+                        "maxLength": 36,
+                        "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                      },
+                      "purpose_id": {
+                        "type": "string",
+                        "minLength": 36,
+                        "maxLength": 36,
+                        "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                      },
+                      "content_ref": {
+                        "type": "string",
+                        "minLength": 36,
+                        "maxLength": 36,
+                        "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                      },
+                      "content_digest": {
+                        "type": "string",
+                        "minLength": 64,
+                        "maxLength": 64,
+                        "pattern": "^[0-9a-f]{64}$"
+                      },
+                      "content_version": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      },
+                      "not_before": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "expires_at": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      },
+                      "timezone": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      },
+                      "window_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      },
+                      "routine_id": {
+                        "type": "string",
+                        "minLength": 36,
+                        "maxLength": 36,
+                        "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                      },
+                      "authority_generation": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      },
+                      "commitment": {
+                        "enum": [
+                          "informational",
+                          "sensitive"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "account_id",
+                      "action_id",
+                      "revision",
+                      "line_id",
+                      "recipient_id",
+                      "purpose_id",
+                      "content_ref",
+                      "content_digest",
+                      "content_version",
+                      "not_before",
+                      "expires_at",
+                      "timezone",
+                      "window_id",
+                      "routine_id",
+                      "authority_generation",
+                      "commitment"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "request_id",
+                  "descriptor"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "method",
+              "params"
+            ],
+            "properties": {
+              "method": {
+                "const": "workflow.action.status"
+              },
+              "params": {
+                "type": "object",
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "minLength": 36,
+                    "maxLength": 36,
+                    "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  },
+                  "context_id": {
+                    "type": "string",
+                    "minLength": 36,
+                    "maxLength": 36,
+                    "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  },
+                  "action_id": {
+                    "type": "string",
+                    "minLength": 36,
+                    "maxLength": 36,
+                    "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  }
+                },
+                "required": [
+                  "request_id",
+                  "context_id",
+                  "action_id"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "method",
+              "params"
+            ],
+            "properties": {
+              "method": {
+                "const": "workflow.action.schedule"
+              },
+              "params": {
+                "type": "object",
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "minLength": 36,
+                    "maxLength": 36,
+                    "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  },
+                  "key": {
+                    "type": "object",
+                    "properties": {
+                      "account_id": {
+                        "type": "string",
+                        "minLength": 36,
+                        "maxLength": 36,
+                        "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                      },
+                      "action_id": {
+                        "type": "string",
+                        "minLength": 36,
+                        "maxLength": 36,
+                        "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                      },
+                      "revision": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 128
+                      },
+                      "binding_digest": {
+                        "type": "string",
+                        "minLength": 64,
+                        "maxLength": 64,
+                        "pattern": "^[0-9a-f]{64}$"
+                      }
+                    },
+                    "required": [
+                      "account_id",
+                      "action_id",
+                      "revision",
+                      "binding_digest"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "policy": {
+                    "type": "object",
+                    "properties": {
+                      "timezone": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                            "pattern": "^[!-~]+$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "first_local_date": {
+                        "type": "string",
+                        "minLength": 10,
+                        "maxLength": 10,
+                        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+                      },
+                      "opens_minute": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 1439
+                      },
+                      "closes_minute": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 1439
+                      },
+                      "repeat_every_days": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 365
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "max_occurrences": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100
+                      },
+                      "pacing_seconds": {
+                        "type": "integer",
+                        "minimum": 60,
+                        "maximum": 86400
+                      }
+                    },
+                    "required": [
+                      "timezone",
+                      "first_local_date",
+                      "opens_minute",
+                      "closes_minute",
+                      "repeat_every_days",
+                      "max_occurrences",
+                      "pacing_seconds"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "series_id": {
+                    "type": "string",
+                    "minLength": 36,
+                    "maxLength": 36,
+                    "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  },
+                  "ordinal": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 99
+                  }
+                },
+                "required": [
+                  "request_id",
+                  "key",
+                  "policy",
+                  "series_id",
+                  "ordinal"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "method",
+              "params"
+            ],
+            "properties": {
+              "method": {
+                "const": "workflow.action.send"
+              },
+              "params": {
+                "type": "object",
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "minLength": 36,
+                    "maxLength": 36,
+                    "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  },
+                  "key": {
+                    "type": "object",
+                    "properties": {
+                      "account_id": {
+                        "type": "string",
+                        "minLength": 36,
+                        "maxLength": 36,
+                        "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                      },
+                      "action_id": {
+                        "type": "string",
+                        "minLength": 36,
+                        "maxLength": 36,
+                        "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                      },
+                      "revision": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 128
+                      },
+                      "binding_digest": {
+                        "type": "string",
+                        "minLength": 64,
+                        "maxLength": 64,
+                        "pattern": "^[0-9a-f]{64}$"
+                      }
+                    },
+                    "required": [
+                      "account_id",
+                      "action_id",
+                      "revision",
+                      "binding_digest"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "occurrence_id": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 36,
+                        "maxLength": 36,
+                        "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "request_id",
+                  "key"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        ]
+      },
+      "WorkflowResponse": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "contact"
+                ]
+              },
+              "result": {
+                "type": "object",
+                "properties": {
+                  "contact_id": {
+                    "type": "string",
+                    "minLength": 36,
+                    "maxLength": 36,
+                    "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  },
+                  "purpose": {
+                    "enum": [
+                      "transactional",
+                      "operational",
+                      "marketing"
+                    ]
+                  },
+                  "peer_digest": {
+                    "type": "string",
+                    "minLength": 64,
+                    "maxLength": 64,
+                    "pattern": "^[0-9a-f]{64}$"
+                  }
+                },
+                "required": [
+                  "contact_id",
+                  "purpose",
+                  "peer_digest"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "kind",
+              "result"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "context_metadata"
+                ]
+              },
+              "result": {
+                "type": "object",
+                "properties": {
+                  "context_id": {
+                    "type": "string",
+                    "minLength": 36,
+                    "maxLength": 36,
+                    "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  },
+                  "source_content_digest": {
+                    "type": "string",
+                    "minLength": 64,
+                    "maxLength": 64,
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  "revision": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "kind": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 255
+                  },
+                  "expires_at_ms": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "binding_generation": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "trust_generation": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "manifest_version": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "context_id",
+                  "source_content_digest",
+                  "revision",
+                  "kind",
+                  "expires_at_ms",
+                  "binding_generation",
+                  "trust_generation",
+                  "manifest_version"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "kind",
+              "result"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "context_content"
+                ]
+              },
+              "result": {
+                "type": "object",
+                "properties": {
+                  "context_id": {
+                    "type": "string",
+                    "minLength": 36,
+                    "maxLength": 36,
+                    "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  },
+                  "revision": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "envelope_base64url": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 131072,
+                    "pattern": "^[A-Za-z0-9_-]+$"
+                  }
+                },
+                "required": [
+                  "context_id",
+                  "revision",
+                  "envelope_base64url"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "kind",
+              "result"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "action"
+                ]
+              },
+              "result": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "object",
+                    "properties": {
+                      "account_id": {
+                        "type": "string",
+                        "minLength": 36,
+                        "maxLength": 36,
+                        "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                      },
+                      "action_id": {
+                        "type": "string",
+                        "minLength": 36,
+                        "maxLength": 36,
+                        "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                      },
+                      "revision": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 128
+                      },
+                      "binding_digest": {
+                        "type": "string",
+                        "minLength": 64,
+                        "maxLength": 64,
+                        "pattern": "^[0-9a-f]{64}$"
+                      }
+                    },
+                    "required": [
+                      "account_id",
+                      "action_id",
+                      "revision",
+                      "binding_digest"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "record_version": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "phase": {
+                    "enum": [
+                      "proposed",
+                      "approved",
+                      "invalidated",
+                      "cancelled",
+                      "expired",
+                      "dispatching",
+                      "unknown",
+                      "succeeded",
+                      "failed"
+                    ]
+                  }
+                },
+                "required": [
+                  "key",
+                  "record_version",
+                  "phase"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "kind",
+              "result"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "occurrence"
+                ]
+              },
+              "result": {
+                "type": "object",
+                "properties": {
+                  "occurrence_id": {
+                    "type": "string",
+                    "minLength": 36,
+                    "maxLength": 36,
+                    "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  },
+                  "series_id": {
+                    "type": "string",
+                    "minLength": 36,
+                    "maxLength": 36,
+                    "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                  },
+                  "ordinal": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 99
+                  },
+                  "phase": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "opens_at_ms": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "closes_at_ms": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "expires_at_ms": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "occurrence_id",
+                  "series_id",
+                  "ordinal",
+                  "phase",
+                  "opens_at_ms",
+                  "closes_at_ms",
+                  "expires_at_ms"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "kind",
+              "result"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "send"
+                ]
+              },
+              "result": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "waiting_owner_binding",
+                          "waiting_window"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "state"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "prepared"
+                        ]
+                      },
+                      "message_id": {
+                        "type": "string",
+                        "minLength": 36,
+                        "maxLength": 36,
+                        "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                      },
+                      "dispatch_id": {
+                        "type": "string",
+                        "minLength": 36,
+                        "maxLength": 36,
+                        "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "message_id",
+                      "dispatch_id"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "result"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
+    }
+  }
+}
