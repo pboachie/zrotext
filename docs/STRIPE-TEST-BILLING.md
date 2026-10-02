@@ -205,8 +205,18 @@ meter summaries do not enforce these counters. No additional polling is added.
 Portal returns remain informational: only reconciled provider reads affect
 entitlement. The selected cancellation mode is displayed by Stripe's configured
 portal; a return URL does not prove cancellation, payment or quota recovery.
-Invoice-period entitlement changes and hosted mode enforcement are separate
-work; this bounded TEST flow does not claim production hosted readiness.
+For enabled invoice-bound TEST accounts, the page separately displays the
+server's current invoice snapshot: exact UTC period bounds, current eligibility
+and ceiling, net consumption and unresolved usage from earlier periods. Stored
+phase and ceiling are labeled last-observed values; grace and cancellation
+deadlines remain informational. Calendar reservations/refunds remain history,
+and their recorded limit is not presented as the current invoice ceiling.
+Missing or malformed invoice observations never fall back to a calendar cap.
+An invoice-specific projection without its required observation stays unavailable,
+and consumption without verified period bounds is rejected.
+The snapshot is neither remaining capacity nor permission to send. Disabled
+invoice policies retain the existing calendar display. Hosted mode enforcement
+and production readiness remain separate acceptance work.
 Local billing records follow existing export, erasure and retention controls;
 this change stores no card details, invoices, hosted session URLs or new ledger.
 
