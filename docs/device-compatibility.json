@@ -37,6 +37,7 @@
         "android/app/src/androidTest/java/org/zrotext/gateway/Draft02RootStorageDeviceTest.kt",
         "android/app/src/androidTest/java/org/zrotext/gateway/SealedBodyDeviceTest.kt",
         "android/app/src/androidTest/java/org/zrotext/gateway/SealedPreparationDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/ConversationEntryOptInDeviceTest.kt",
         "android/app/src/preparationProbeTest/java/org/zrotext/gateway/PreparationProbeDeviceTest.kt"
       ],
       "notes": "The selected-device-tests job in .github/workflows/android-device-smoke.yml runs scripts/android_device_smoke.py, which executes exactly this no-radio class allowlist plus the preparation probe (scripts/android_preparation_probe.py) on a disposable API 36 google_apis x86_64 Android Virtual Device with no SIM, on every pull request that touches android/**, the scripts, or the workflow. The validator cross-checks this list against the allowlist in scripts/android_device_smoke.py, so the two cannot drift. Proves the app-level, no-radio behavior of the current build on that one virtual configuration. Proves nothing about any physical device, carrier delivery, OEM power management, Keystore hardware behavior, or any other API level."
@@ -143,6 +144,7 @@
         "android/app/src/androidTest/java/org/zrotext/gateway/OutboundEnvelopeDeviceTest.kt",
         "android/app/src/androidTest/java/org/zrotext/gateway/SealedBodyDeviceTest.kt",
         "android/app/src/androidTest/java/org/zrotext/gateway/SealedPreparationDeviceTest.kt",
+        "android/app/src/androidTest/java/org/zrotext/gateway/ConversationEntryOptInDeviceTest.kt",
         "android/app/src/preparationProbeTest/java/org/zrotext/gateway/PreparationProbeDeviceTest.kt"
       ],
       "no_radio_run": [
