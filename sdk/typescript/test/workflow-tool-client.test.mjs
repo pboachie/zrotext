@@ -6,6 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { WorkflowToolClient, WorkflowToolError, workflowTools, workflowFunctions } from '../dist/workflow-tool-client.js';
 import { validateWorkflowRequest } from '../dist/workflow-tools.js';
+import { workflowActionDigest } from '../dist/workflow-decisions.js';
+import { webcrypto } from 'node:crypto';
+globalThis.crypto ??= webcrypto;
 const uuid = n => `${String(n).repeat(8)}-${String(n).repeat(4)}-${String(n).repeat(4)}-${String(n).repeat(4)}-${String(n).repeat(12)}`;
 const params = { request_id: uuid(1), context_id: uuid(2) };
 const credential = 'ztw_' + Buffer.alloc(32, 7).toString('base64url');
@@ -132,4 +135,31 @@ except WorkflowError as error:
   const result = spawnSync('python', ['-B', '-c', source, fileURLToPath(new URL('../../python/', import.meta.url))],
     { input: JSON.stringify(vector), encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
+});
+test('shape-valid foreign context, action, proposal and occurrence responses are unknown without resend', async () => {
+  const vector = JSON.parse(await readFile(new URL('../../../protocol/v1/vectors/workflow-action-01.json', import.meta.url)));
+  const descriptor = { ...vector.action, account_id: uuid(1), action_id: uuid(2), line_id: uuid(3),
+    recipient_id: uuid(4), purpose_id: '00000000-0000-0000-0000-000000000001', content_ref: uuid(5), routine_id: uuid(6) };
+  const key = { account_id: uuid(1), action_id: uuid(2), revision: 1, binding_digest: await workflowActionDigest(descriptor) };
+  const state = { kind: 'action', result: { key, record_version: 1, phase: 'proposed' } };
+  const policy = { timezone: 'UTC', first_local_date: '2027-01-01', opens_minute: 500, closes_minute: 600,
+    repeat_every_days: null, max_occurrences: 1, pacing_seconds: 60 };
+  const cases = [
+    ['workflow.context.content', params, { kind: 'context_content', result: { context_id: uuid(9), revision: 1, envelope_base64url: 'YQ' } }],
+    ['workflow.context.content', params, { kind: 'context_content', result: { context_id: params.context_id, revision: 1, envelope_base64url: 'YR' } }],
+    ['workflow.context.metadata', params, { kind: 'context_metadata', result: { context_id: uuid(9), source_content_digest: 'ab'.repeat(32),
+      revision: 1, kind: 1, expires_at_ms: 1, binding_generation: 1, trust_generation: 1, manifest_version: 1 } }],
+    ['workflow.action.status', { ...params, action_id: uuid(9) }, state],
+    ...['account_id', 'action_id', 'revision', 'binding_digest'].map(field => ['workflow.action.propose', { request_id: uuid(1), descriptor },
+      { ...state, result: { ...state.result, key: { ...key, [field]: field === 'revision' ? 2 : field === 'binding_digest' ? 'cd'.repeat(32) : uuid(9) } } }]),
+    ['workflow.action.schedule', { request_id: uuid(1), key, policy, series_id: uuid(3), ordinal: 0 },
+      { kind: 'occurrence', result: { occurrence_id: uuid(4), series_id: uuid(9), ordinal: 0, phase: 'waiting', opens_at_ms: null, closes_at_ms: null, expires_at_ms: 1 } }],
+  ];
+  for (const [method, request, response] of cases) {
+    let calls = 0;
+    await assert.rejects(client(async () => { calls++; return reply(response); }).call(method, request, 3),
+      error => error.state === 'unknown' && error.code === 'response_unknown' && error.attempts === 1);
+    assert.equal(calls, 1);
+  }
+  assert.deepEqual(await client(async () => reply(state)).call('workflow.action.propose', { request_id: uuid(1), descriptor }), state);
 });

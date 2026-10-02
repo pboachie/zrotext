@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { validateWorkflowReadiness, validateWorkflowRequest, validateWorkflowResponse,
   type WorkflowMethod, type WorkflowReadiness, type WorkflowResponse } from './workflow-tools.js';
+import { workflowActionDigest } from './workflow-decisions.js';
 export { workflowTools, workflowFunctions, workflowReadinessSchema } from './workflow-tools.js';
 
 const PATH = '/v1/workflow/tools';
@@ -113,14 +114,29 @@ export class WorkflowToolClient {
   }
   async call(method: WorkflowMethod, params: unknown, maxAttempts = 1): Promise<WorkflowResponse> {
     let body: string;
+    let snapshot: Record<string, any>;
+    let proposalDigest: string | undefined;
     try {
-      const snapshot = structuredClone(params);
+      snapshot = structuredClone(params) as Record<string, any>;
       validateWorkflowRequest(method, snapshot);
       body = JSON.stringify({ method, params: snapshot });
       if (new TextEncoder().encode(body).byteLength > MAX_REQUEST) throw new Error();
+      if (method === 'workflow.action.propose') proposalDigest = await workflowActionDigest(snapshot.descriptor);
     } catch { throw new WorkflowToolError('invalid_request', 'refused', 0); }
     const { value, attempts } = await this.#request(body, maxAttempts);
-    try { validateWorkflowResponse(method, value); return value; }
+    try {
+      validateWorkflowResponse(method, value);
+      const result = value.result;
+      if ((method === 'workflow.context.metadata' || method === 'workflow.context.content') && result.context_id !== snapshot.context_id) throw new Error();
+      if (method === 'workflow.action.status' && (result.key as Record<string, unknown>).action_id !== snapshot.action_id) throw new Error();
+      if (method === 'workflow.action.propose') {
+        const key = result.key as Record<string, unknown>;
+        for (const field of ['account_id', 'action_id', 'revision']) if (key[field] !== snapshot.descriptor[field]) throw new Error();
+        if (key.binding_digest !== proposalDigest) throw new Error();
+      }
+      if (method === 'workflow.action.schedule' && (result.series_id !== snapshot.series_id || result.ordinal !== snapshot.ordinal)) throw new Error();
+      return value;
+    }
     catch { throw new WorkflowToolError('response_unknown', 'unknown', attempts); }
   }
 }

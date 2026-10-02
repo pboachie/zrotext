@@ -96,6 +96,11 @@ export type WorkflowResponse = Readonly<{ kind: string; result: Readonly<Record<
 export function validateWorkflowResponse(method: WorkflowMethod, value: unknown): asserts value is WorkflowResponse {
   const kind = responseKinds[workflowTools.findIndex(tool => tool.name === method)];
   if (!matchesSchema(object({ kind: { enum: [kind] }, result: responses[kind] }), value)) throw new Error('unexpected_response');
+  if (kind === 'context_content') {
+    const encoded = (value as WorkflowResponse).result.envelope_base64url as string;
+    if (encoded.length % 4 === 1 || btoa(atob(encoded.replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4 - encoded.length % 4) % 4)))
+      .replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/u, '') !== encoded) throw new Error('unexpected_response');
+  }
 }
 export interface WorkflowReadiness {
   available: true;

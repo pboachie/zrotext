@@ -43,6 +43,12 @@ and stop without automatic resend. Review through the authorized status operatio
 never create a new identity merely to escape an uncertain result. Frameworks must
 not wrap these calls in their own automatic effect retry loops.
 
+Successful replies must match the predictable context, action, proposal binding
+or occurrence identities in that snapshot. A correctly shaped reply for another
+identity is unknown and never permission to retry. Returned encrypted projection
+bytes must also have a canonical base64url representation; format validation
+does not establish their cryptographic authenticity.
+
 `workflowFunctions` and Python `workflow_functions()` expose the same parameter
 schemas used by MCP. They contain no credentials or administrative tools. The
 existing SDK remains the authority for client-side sealing, manifest/signature
