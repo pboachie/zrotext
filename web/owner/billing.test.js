@@ -91,6 +91,30 @@ test("invalid invoice observations do not fall back to calendar caps or echo inp
   }
 });
 
+test("missing invoice observations with invoice entitlement reasons never restore calendar caps", async () => {
+  for (const reason of ["invoice_current", "invoice_restricted"]) {
+    for (const invoice of [null, undefined]) {
+      const page = billingPage();
+      const snapshot = await statusResponse().json();
+      snapshot.invoicePeriod = invoice;
+      snapshot.localUsage = { used_units: 5, reserved_units: 7, refunded_units: 2, limit_units: 20, period_start: "2030-01-01", period_end: "2030-02-01" };
+      snapshot.projectedEntitlement = { reason, outboundLimit: 20, deviceCap: 1 };
+      page.requests.shift()({ ok: true, json: async () => snapshot }); await settle();
+      assert.match(page.byId("invoice-period").textContent, /unavailable/);
+      assert.match(page.byId("local-usage").textContent, /Calendar usage history/);
+      assert.doesNotMatch(page.byId("local-usage").textContent, /hard cap/);
+      assert.match(page.byId("entitlement-status").textContent, /current invoice ceiling unavailable/);
+      assert.doesNotMatch(page.byId("entitlement-status").textContent, /\/month/);
+    }
+  }
+});
+
+test("invoice consumption without verified period bounds stays unavailable", async () => {
+  const { byId } = await invoicePage(invoiceFixture({ currentPeriodEligible: false, effectiveLimit: 0, startMs: null, endMs: null, consumedUnits: 1 }));
+  assert.match(byId("invoice-period").textContent, /unavailable/);
+  assert.doesNotMatch(byId("invoice-period").textContent, /1 net consumed/);
+});
+
 test("invoice refresh and failed sessions clear observations and ignore an older response", async () => {
   const { byId, requests } = await invoicePage(invoiceFixture());
   const first = byId("refresh").listeners.click(); const old = requests.shift();

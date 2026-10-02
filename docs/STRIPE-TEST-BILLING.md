@@ -212,6 +212,8 @@ phase and ceiling are labeled last-observed values; grace and cancellation
 deadlines remain informational. Calendar reservations/refunds remain history,
 and their recorded limit is not presented as the current invoice ceiling.
 Missing or malformed invoice observations never fall back to a calendar cap.
+An invoice-specific projection without its required observation stays unavailable,
+and consumption without verified period bounds is rejected.
 The snapshot is neither remaining capacity nor permission to send. Disabled
 invoice policies retain the existing calendar display. Hosted mode enforcement
 and production readiness remain separate acceptance work.

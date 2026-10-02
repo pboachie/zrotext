@@ -39,6 +39,7 @@ function invoiceSummary(invoice) {
       || !(invoice.lastObservedPhase === null || ["active", "grace", "restricted", "cancelled", "review"].includes(invoice.lastObservedPhase))
       || ((invoice.startMs === null) !== (invoice.endMs === null))
       || (invoice.startMs !== null && invoice.endMs <= invoice.startMs)
+      || (invoice.startMs === null && invoice.consumedUnits !== null)
       || (invoice.currentPeriodEligible && (invoice.startMs === null || invoice.consumedUnits === null))) return null;
   const date = value => new Date(value).toISOString();
   let text = `Invoice snapshot: ${invoice.currentPeriodEligible ? "eligible at the status check" : "new discretionary spend restricted"}; current ceiling ${invoice.effectiveLimit}.`;
@@ -75,7 +76,9 @@ async function loadStatus() {
     if (generation !== statusGeneration) return;
     if (result.mode !== "test") throw new Error("Unexpected billing mode.");
     if (!Array.isArray(result.subscriptions)) throw new Error("The billing status response was invalid.");
-    const invoiceEnabled = result.invoicePeriod !== null && result.invoicePeriod !== undefined;
+    const invoiceReason = result.projectedEntitlement?.reason;
+    const invoiceEnabled = (result.invoicePeriod !== null && result.invoicePeriod !== undefined)
+      || invoiceReason === "invoice_current" || invoiceReason === "invoice_restricted";
     const invoiceText = invoiceEnabled ? invoiceSummary(result.invoicePeriod) : null;
     invoicePeriod.textContent = invoiceEnabled ? invoiceText || "Invoice status unavailable; no current ceiling or period can be displayed." : "";
     const usage = result.localUsage;
