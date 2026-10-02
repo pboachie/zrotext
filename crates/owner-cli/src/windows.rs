@@ -16,9 +16,15 @@ use zrotext_root_material::{
 use zrotext_root_terminal::{Session, verify_process_eligibility};
 
 #[cfg(feature = "unlock")]
+mod archive_init;
+#[cfg(feature = "unlock")]
 mod conversation_activation;
 #[cfg(feature = "unlock")]
+mod conversation_genesis;
+#[cfg(feature = "unlock")]
 mod conversation_refresh;
+#[cfg(feature = "unlock")]
+mod custody_sign;
 #[cfg(all(test, feature = "unlock"))]
 mod native_fixture_path;
 
@@ -519,6 +525,18 @@ fn run_unlock(
 }
 
 pub(super) fn run(args: &[String]) -> Result<()> {
+    #[cfg(feature = "unlock")]
+    if args.first().map(String::as_str) == Some("archive-init") {
+        return archive_init::run(args, local_store_parent()?);
+    }
+    #[cfg(feature = "unlock")]
+    if args.first().map(String::as_str) == Some("conversation-genesis") {
+        return conversation_genesis::run(args, local_store_parent()?);
+    }
+    #[cfg(feature = "unlock")]
+    if args.first().map(String::as_str) == Some("custody-sign") {
+        return custody_sign::run(args, local_store_parent()?);
+    }
     #[cfg(feature = "unlock")]
     if args.first().map(String::as_str) == Some("conversation-refresh") {
         return conversation_refresh::run(args, local_store_parent()?);
