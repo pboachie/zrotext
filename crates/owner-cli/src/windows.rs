@@ -29,6 +29,8 @@ mod custody_sign;
 mod line_key_registration;
 #[cfg(all(test, feature = "unlock"))]
 mod native_fixture_path;
+#[cfg(all(test, feature = "unlock"))]
+mod setup_interop;
 
 type Result<T> = std::result::Result<T, ()>;
 const TIMEOUT: Duration = Duration::from_secs(300);

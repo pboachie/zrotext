@@ -2890,6 +2890,7 @@ version = "0.1.0"
 dependencies = [
  "p256",
  "rand 0.10.3",
+ "serde_json",
  "sha2",
  "uuid",
  "windows-sys 0.61.2",

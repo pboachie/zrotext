@@ -20,6 +20,19 @@ class RuntimeReadsTest(unittest.TestCase):
         module = Path(env.ROOT, "crates/owner-cli/src/windows/archive_init.rs").read_text(encoding="utf-8")
         self.assertRegex(module, r'#\[cfg\(test\)\]\s*mod tests;')
 
+    def test_owner_setup_callback_transport_is_excluded_only_in_the_cfg_test_helper(self):
+        flags = {"TEMP", "ZT_OWNER_SETUP_INTEROP_REQUEST_HEX", "ZT_OWNER_SETUP_INTEROP_CHILD"}
+        source = ";".join(f'std::env::var("{flag}")' for flag in flags)
+        fixture = "crates/owner-cli/src/windows/setup_interop.rs"
+        self.assertEqual(env.runtime_reads(source, fixture), set())
+        for runtime in ["crates/owner-cli/src/windows.rs",
+                        "crates/owner-cli/src/windows/setup_interop/tests.rs",
+                        "crates/owner-cli/src/windows/line_key_registration.rs",
+                        "crates/server/src/main.rs"]:
+            self.assertEqual(env.runtime_reads(source, runtime), flags)
+        module = Path(env.ROOT, "crates/owner-cli/src/windows.rs").read_text(encoding="utf-8")
+        self.assertRegex(module, r'#\[cfg\(all\(test, feature = "unlock"\)\)\]\s*mod setup_interop;')
+
     def test_line_key_registration_markers_are_excluded_only_in_the_test_module(self):
         flags = {"TEMP", "ZT_LINE_REGISTRATION_NATIVE_CASE"}
         source = ";".join(f'std::env::var("{flag}")' for flag in flags)
