@@ -27,6 +27,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.DropdownMenu
@@ -174,11 +175,20 @@ internal fun GatewayHome(
     GatewayEntrance(1, motion) {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween) {
-                GatewayHomeSectionTitle("Message activity")
-                TextButton(onClick = { widget = "messages" }, modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)) {
+            val details: @Composable (Modifier) -> Unit = { modifier ->
+                TextButton(onClick = { widget = "messages" }, modifier = modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                    .testTag("home-message-details")) {
                     Text("Message details", style = MaterialTheme.typography.labelMedium)
+                }
+            }
+            if (LocalDensity.current.fontScale > 1.3f) {
+                GatewayHomeSectionTitle("Message activity")
+                details(Modifier.fillMaxWidth())
+            } else {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween) {
+                    GatewayHomeSectionTitle("Message activity")
+                    details(Modifier)
                 }
             }
             val prominent = summary.snapshot != null && summary.phase != GatewaySummaryState.Phase.UNAVAILABLE
@@ -207,6 +217,7 @@ internal fun GatewayHome(
     GatewayHomeButton("Quick controls", { widget = "controls" }, Modifier.fillMaxWidth().semantics { heading() })
     if (widget != null) {
         ModalBottomSheet(onDismissRequest = { widget = null },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             containerColor = MaterialTheme.colorScheme.surface, contentColor = MaterialTheme.colorScheme.onSurface) {
             Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(24.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)) {

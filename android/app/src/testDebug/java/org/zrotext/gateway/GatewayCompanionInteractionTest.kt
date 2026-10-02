@@ -4,6 +4,8 @@ package org.zrotext.gateway
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.text.TextLayoutResult
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -148,6 +150,32 @@ class GatewayCompanionInteractionTest {
         compose.onNodeWithText("Quick controls").performScrollTo().performClick()
         compose.onNodeWithText("Set up this phone").performScrollTo().performClick()
         compose.onNodeWithText("3. Pair this phone").assertExists()
+        compose.runOnIdle {
+            assertNull(shadowOf(compose.activity).lastRequestedPermission)
+            assertTrue(shadowOf(compose.activity).allStartedServices.isEmpty())
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "w320dp-h640dp")
+    fun largeTextMessageDetailsKeepsItsCompleteNameAndFullWidthTarget() {
+        RuntimeEnvironment.setFontScale(2f)
+        compose.activityRule.scenario.recreate()
+        val target = compose.onNodeWithTag("home-message-details").performScrollTo()
+            .assertIsDisplayed().fetchSemanticsNode()
+        val density = compose.activity.resources.displayMetrics.density
+        assertEquals("Large-text details use the full 288 dp content width", 288f, target.size.width / density, 1f)
+        assertTrue("The visible target remains at least 48 dp", target.size.height / density >= 48f)
+        compose.onNodeWithText("Message details", useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { action ->
+                val layouts = mutableListOf<TextLayoutResult>()
+                assertTrue(action(layouts))
+                assertEquals("The full action name fits without fragmented words", 1, layouts.single().lineCount)
+            }
+        compose.onNodeWithTag("home-message-details").performClick()
+        compose.onNodeWithText("Message counts are unavailable on this phone. An authorized summary reader is not connected.")
+            .performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Close widget").performScrollTo().assertIsDisplayed().performClick()
         compose.runOnIdle {
             assertNull(shadowOf(compose.activity).lastRequestedPermission)
             assertTrue(shadowOf(compose.activity).allStartedServices.isEmpty())
