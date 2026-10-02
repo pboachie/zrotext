@@ -85,6 +85,19 @@ class DeviceSigningKeyStore(
     fun signDeviceChallenge(accountId: UUID, deviceId: UUID, challengeId: UUID, nonce: ByteArray): ByteArray =
           sign(EnrollmentProof.deviceAuthBytes(accountId, deviceId, challengeId, nonce))
 
+    /** Exact scoped fetch only. Missing identities are never enrolled or replaced by a receive path. */
+    internal fun signSealedEnvelopeFetch(grant: SealedExecutionGrantValidator.Fields): ByteArray {
+        val transcript = SealedEnvelopeFetch.transcript(grant)
+        val key = privateKey()
+        check(key.encoded == null && securityLevel(key) in setOf(
+            SigningKeySecurity.STRONGBOX, SigningKeySecurity.TRUSTED_ENVIRONMENT))
+        return Signature.getInstance("SHA256withECDSA").run {
+            initSign(key)
+            update(transcript)
+            sign()
+        }
+    }
+
     /** Explicit approved conversation only; missing/unsupported existing keys are never created. */
     internal fun signConversationStatement(domain:ByteArray,statement:ByteArray,expectedPoint:ByteArray):ByteArray {
         ConversationActivationCodec.decode(statement)
