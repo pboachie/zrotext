@@ -144,3 +144,14 @@ test('disable releases its waiting lease and preserves unknown identity for a re
     }finally{runner?.close();await rm(directory,{recursive:true,force:true});}
   }
 });
+
+test('disable after Send starts records its returned outcome without issuing another request',async()=>{
+  const directory=await mkdtemp(join(tmpdir(),'zrotext-scheduler-'));let runner;
+  try{
+    const f=fixture();f.set({state:'prepared'});runner=new ScheduledRunner({client:f.client,filename:join(directory,'journal.sqlite'),enabled:true});await runner.enqueue(f.params);
+    let entered,release;const reached=new Promise(resolve=>{entered=resolve;});const held=new Promise(resolve=>{release=resolve;});const call=f.client.call.bind(f.client);
+    f.client.call=async(method,params)=>{const response=await call(method,params);if(method==='workflow.action.send'){entered();await held;}return response;};
+    const pending=runner.advance(key.action_id);await reached;runner.disable();release();assert.equal((await pending).state,'prepared');
+    assert.equal(f.calls.filter(c=>c.method==='workflow.action.send').length,1);await assert.rejects(runner.advance(key.action_id),error=>error.code==='disabled');
+  }finally{runner?.close();await rm(directory,{recursive:true,force:true});}
+});
