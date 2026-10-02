@@ -191,9 +191,13 @@ abstract class GatewayAccessibilityChecks {
             fields.filter { it.config.contains(SemanticsProperties.Password) }.map(::text))
     }
 
-    @Test fun actionsRetainNamesAndMinimumTouchTargetsAtCurrentTextScale() = everyScreen { _, root ->
+    @Test fun actionsRetainNamesAndMinimumTouchTargetsAtCurrentTextScale() = everyScreen { page, root ->
         val buttons = nodes(root).filter { it.config.getOrNull(SemanticsProperties.Role) == Role.Button }
-        assertTrue("Screen navigation and all current actions remain reachable", buttons.size >= 4)
+        // Navigation now has one named menu entry. A SIM step without any
+        // available lines still exposes Controls, Setup overview and Next.
+        // Menu interaction tests verify all four destinations on their surface.
+        val minimum = when (page) { "HOME" -> 4; "SETUP" -> 5; else -> 3 }
+        assertTrue("$page retains its actions and screen menu: ${buttons.map(::text)}", buttons.size >= minimum)
         assertTrue("Every screen exposes its navigation menu", buttons.any { text(it) == "Controls" })
         for (button in buttons) {
             assertTrue("An action needs a spoken name", text(button).isNotBlank())
