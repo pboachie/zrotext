@@ -224,3 +224,15 @@ test('a filesystem-root cwd cannot authorize arbitrary custom credential roots',
  try {await assert.rejects(configuredClient({ZROTEXT_WORKFLOW_ORIGIN:'https://example.test',ZROTEXT_WORKFLOW_CREDENTIAL_ROOT:folder,ZROTEXT_WORKFLOW_CREDENTIAL_FILE:'credential'}),{message:'invalid_configuration'});}
  finally {process.chdir(previousCwd);await rm(folder,{recursive:true});}
 });
+
+test('an exact launch-root selection reuses its canonical directory identity', async () => {
+ const root=await mkdtemp(join(tmpdir(),'zrotext-mcp-exact-anchor-'));
+ const previousCwd=process.cwd();process.chdir(root);
+ const originalRealpath=fs.realpath;let rootLookups=0;
+ fs.realpath=async(path,...args)=>{if(path===root)rootLookups++;return originalRealpath(path,...args);};
+ try {
+  await writeFile(join(root,'credential'),'ztw_'+Buffer.alloc(32,9).toString('base64url'),{mode:0o600});
+  assert.equal(typeof(await configuredClient({ZROTEXT_WORKFLOW_ORIGIN:'https://example.test',ZROTEXT_WORKFLOW_CREDENTIAL_ROOT:root,ZROTEXT_WORKFLOW_CREDENTIAL_FILE:'credential'})).call,'function');
+  assert.equal(rootLookups,1,'the exact authorized root must not be selected twice');
+ } finally {fs.realpath=originalRealpath;process.chdir(previousCwd);await rm(root,{recursive:true});}
+});

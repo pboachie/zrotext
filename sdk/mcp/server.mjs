@@ -188,7 +188,15 @@ export async function configuredClient(env = process.env) {
       selectedAnchor = cwdAnchor;
     } else { throw new Error(); }
     const canonicalAnchor = resolve(await fs.realpath(selectedAnchor));
-    const root = resolve(await fs.realpath(requestedRoot));
+    let root;
+    if (requestedRoot === selectedAnchor) {
+      root = canonicalAnchor;
+    } else {
+      // The independently authorized anchor is the lookup boundary, including
+      // when the earlier selection took its fixed-home or launcher-cwd branch.
+      if (!requestedRoot.startsWith(selectedAnchor + sep)) throw new Error();
+      root = resolve(await fs.realpath(requestedRoot));
+    }
     if (root === parse(root).root ||
         (root !== canonicalAnchor && !root.startsWith(canonicalAnchor + sep))) throw new Error();
     const rootInfo = await fs.stat(root, { bigint: true });
