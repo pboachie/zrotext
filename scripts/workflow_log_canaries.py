@@ -12,6 +12,7 @@ FRAME = b'workflow-test-receipt/'
 CONTENT = 'synthetic workflow rejected plaintext canary'
 OUT = b'workflow output capture positive control'
 ERR = b'workflow diagnostic capture positive control'
+FIXTURE_TIMEOUT_SECONDS = 600
 
 
 def split_receipt(stderr, nonce):
@@ -64,9 +65,12 @@ def main():
         env = os.environ.copy()
         env.update(ZT_WORKFLOW_LOG_CANARY_CHILD='1', ZT_WORKFLOW_LOG_CANARY_NONCE=str(nonce),
                    ZT_WORKFLOW_LOG_CANARY_INJECT_LEAK=mode)
-        result = subprocess.run(['cargo', 'test', '--locked', '--workspace', '--', '--exact', TEST,
-                                 '--ignored', '--nocapture'], cwd=Path(__file__).resolve().parents[1],
-                                env=env, capture_output=True, check=False)
+        try:
+            result = subprocess.run(['cargo', 'test', '--locked', '--workspace', '--', '--exact', TEST,
+                                     '--ignored', '--nocapture'], cwd=Path(__file__).resolve().parents[1],
+                                    env=env, capture_output=True, check=False, timeout=FIXTURE_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError('actual HTTP fixture timed out') from None
         # Never print captured logs: a failed fixture could contain a canary.
         if result.returncode:
             raise RuntimeError('actual HTTP fixture failed')

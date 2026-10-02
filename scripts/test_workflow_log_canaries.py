@@ -12,8 +12,11 @@ from workflow_log_canaries import CONTENT, OUT, ERR, split_receipt, verify
 class WorkflowLogCanaryTest(unittest.TestCase):
     def setUp(self):
         self.nonce = uuid.uuid4()
-        values = [CONTENT, 'ztw_synthetic', 'projection', 'archive', 'projection bytes', 'archive bytes']
-        payload = base64.urlsafe_b64encode(json.dumps(values).encode()).rstrip(b'=')
+        self.values = [CONTENT, 'ztw_synthetic',
+                       base64.urlsafe_b64encode(b'synthetic projection').decode(),
+                       base64.urlsafe_b64encode(b'synthetic archive').decode(),
+                       'projection bytes', 'archive bytes']
+        payload = base64.urlsafe_b64encode(json.dumps(self.values).encode()).rstrip(b'=')
         self.frame = b'workflow-test-receipt/' + str(self.nonce).encode() + b':' + payload + b'\n'
 
     def test_capture_preserves_binary_diagnostics_and_detects_both_stream_leaks(self):
@@ -26,6 +29,11 @@ class WorkflowLogCanaryTest(unittest.TestCase):
             verify(out, err, self.nonce, mode)
             with self.assertRaises(ValueError):
                 verify(out, err, self.nonce, 'none')
+        for value in self.values[1:]:
+            with self.assertRaises(ValueError):
+                verify(OUT + value.encode(), stderr, self.nonce, 'none')
+            with self.assertRaises(ValueError):
+                verify(OUT, stderr + value.encode(), self.nonce, 'none')
 
     def test_forged_duplicate_missing_oversized_receipts_and_missing_controls_fail_closed(self):
         for stderr in (self.frame * 2, b'', self.frame.replace(str(self.nonce).encode(), str(uuid.uuid4()).encode()),
@@ -52,6 +60,7 @@ class WorkflowLogCanaryTest(unittest.TestCase):
         def child(argv, **kwargs):
             self.assertEqual(argv, ['cargo', 'test', '--locked', '--workspace', '--', '--exact',
                                     runner.TEST, '--ignored', '--nocapture'])
+            self.assertEqual(kwargs['timeout'], runner.FIXTURE_TIMEOUT_SECONDS)
             env = kwargs['env']
             nonce = env['ZT_WORKFLOW_LOG_CANARY_NONCE']
             mode = env['ZT_WORKFLOW_LOG_CANARY_INJECT_LEAK']
@@ -67,6 +76,13 @@ class WorkflowLogCanaryTest(unittest.TestCase):
         with patch.object(runner.subprocess, 'run', return_value=SimpleNamespace(returncode=1)), patch('builtins.print'):
             with self.assertRaises(RuntimeError):
                 runner.main()
+        timeout = runner.subprocess.TimeoutExpired(['cargo'], runner.FIXTURE_TIMEOUT_SECONDS,
+                                                    output=CONTENT.encode(), stderr=CONTENT.encode())
+        with patch.object(runner.subprocess, 'run', side_effect=timeout), patch('builtins.print') as output:
+            with self.assertRaisesRegex(RuntimeError, '^actual HTTP fixture timed out$') as caught:
+                runner.main()
+        self.assertTrue(caught.exception.__suppress_context__)
+        output.assert_not_called()
 
 
 if __name__ == '__main__':
