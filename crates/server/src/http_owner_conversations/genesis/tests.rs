@@ -29,6 +29,10 @@ async fn case() -> (Fixture, SessionPrincipal, InstallRequest) {
     record.push(1);
     f.bytes.splice(151..151, record);
     f.bytes[150] = 4;
+    let validity: [u8; 16] = f.bytes[37..53].try_into().unwrap();
+    for i in 0..4 {
+        f.bytes[151 + i * 149 + 132..151 + i * 149 + 148].copy_from_slice(&validity);
+    }
     f.resign();
     let signer_point = f
         .event_signer
@@ -215,12 +219,99 @@ async fn genesis_rejects_changed_comparison_scope_key_and_signed_fork() {
         .unwrap();
     let issued = u64::from_be_bytes(f.bytes[37..45].try_into().unwrap());
     f.bytes[37..45].copy_from_slice(&(issued + 1).to_be_bytes());
+    for i in 0..4 {
+        f.bytes[151 + i * 149 + 132..151 + i * 149 + 140]
+            .copy_from_slice(&(issued + 1).to_be_bytes());
+    }
     f.resign();
     request.signed_manifest = STANDARD.encode(&f.bytes);
     assert!(matches!(
         install_manifest(&mut f.connect().await, &owner, &request).await,
         Err(ConversationError::Conflict)
     ));
+    f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn genesis_rejects_signed_role_windows_that_differ_from_manifest_validity() {
+    let (mut f, owner, mut request) = case().await;
+    let original = f.bytes.clone();
+    let issued = u64::from_be_bytes(original[37..45].try_into().unwrap());
+    let expires = u64::from_be_bytes(original[45..53].try_into().unwrap());
+    for i in 0..4 {
+        for (offset, value) in [(132, issued - 1), (140, expires + 1)] {
+            f.bytes = original.clone();
+            let at = 151 + i * 149 + offset;
+            f.bytes[at..at + 8].copy_from_slice(&value.to_be_bytes());
+            f.resign();
+            let now: i64 =
+                f.db.query_one(
+                    "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+                    &[],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            // The generic manifest protocol permits wider role windows. This
+            // owner-signed input must be rejected by the strict genesis profile.
+            sealed_manifest::verify(
+                &f.pin,
+                &f.bytes,
+                &ManifestTrust {
+                    account_id: *f.account.as_bytes(),
+                    root_fingerprint: decode(&request.expected_root_fingerprint, 32)
+                        .unwrap()
+                        .try_into()
+                        .unwrap(),
+                    generation: 1,
+                    position: ChainPosition::Genesis {
+                        anchor_digest: [0; 32],
+                    },
+                },
+                now as u64,
+            )
+            .unwrap();
+            request.signed_manifest = STANDARD.encode(&f.bytes);
+            assert!(matches!(
+                install_manifest(&mut f.connect().await, &owner, &request).await,
+                Err(ConversationError::Forbidden)
+            ));
+            assert_eq!(
+                f.db.query_one("SELECT version FROM sealed_manifest_authorities", &[])
+                    .await
+                    .unwrap()
+                    .get::<_, i64>(0),
+                0
+            );
+        }
+    }
+    f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn genesis_rejects_signed_lifetime_exceeding_twenty_four_hours() {
+    let (mut f, owner, mut request) = case().await;
+    let issued = u64::from_be_bytes(f.bytes[37..45].try_into().unwrap());
+    let expires = issued + 86_400_001;
+    f.bytes[45..53].copy_from_slice(&expires.to_be_bytes());
+    for i in 0..4 {
+        f.bytes[151 + i * 149 + 140..151 + i * 149 + 148].copy_from_slice(&expires.to_be_bytes());
+    }
+    f.resign();
+    request.signed_manifest = STANDARD.encode(&f.bytes);
+    assert!(matches!(
+        install_manifest(&mut f.connect().await, &owner, &request).await,
+        Err(ConversationError::Forbidden)
+    ));
+    assert_eq!(
+        f.db.query_one("SELECT version FROM sealed_manifest_authorities", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
     f.cleanup().await;
 }
 

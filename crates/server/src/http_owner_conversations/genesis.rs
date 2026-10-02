@@ -183,6 +183,7 @@ fn exact_roles(
                 }
             || u16::from_be_bytes(r[130..132].try_into().unwrap()) != [4, 12, 2, 0][i]
             || r[148] != 1
+            || r[132..148] != bytes[37..53]
             || u64::from_be_bytes(r[132..140].try_into().unwrap()) > now as u64
             || u64::from_be_bytes(r[140..148].try_into().unwrap()) <= now as u64
         {
