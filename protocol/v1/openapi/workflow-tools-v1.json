@@ -1131,9 +1131,20 @@
                     "maximum": 99
                   },
                   "phase": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 128
+                    "enum": [
+                      "owner_review",
+                      "waiting_window",
+                      "waiting_renderer",
+                      "waiting_phone",
+                      "claimed",
+                      "dispatching",
+                      "unknown",
+                      "cancelled",
+                      "expired",
+                      "missed_window",
+                      "completed",
+                      "failed"
+                    ]
                   },
                   "opens_at_ms": {
                     "anyOf": [
