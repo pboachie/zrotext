@@ -209,7 +209,9 @@ abstract class GatewayAccessibilityChecks {
         val scroll = all.single { it.config.getOrNull(SemanticsProperties.TestTag) == "gateway-screen-scroll" }
         val range = scroll.config[SemanticsProperties.VerticalScrollAxisRange]
         val viewportDp = root.semanticsOwner.rootSemanticsNode.size.height / root.density.density
-        if (root.density.fontScale <= 1.3f && viewportDp >= 560f) {
+        val configuration = (root as ViewRootForTest).view.resources.configuration
+        if (root.density.fontScale <= 1.3f && configuration.screenHeightDp >= 600) {
+            assertTrue("The normal/compact portrait fixture must provide its full viewport: $viewportDp dp", viewportDp >= 560f)
             assertEquals("Ordinary portrait Home must have no scroll range", 0f, range.maxValue(), 0f)
             val required = all.filter { node ->
                 val value = text(node)
