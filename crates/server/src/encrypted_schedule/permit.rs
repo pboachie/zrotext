@@ -4,7 +4,7 @@ use crate::http_owner_conversations::{
     ConversationError,
     context::decisions::{ActionKey, Descriptor, LockedAction},
 };
-use std::future::Future;
+use std::{future::Future, pin::Pin};
 use tokio_postgres::Transaction;
 use uuid::Uuid;
 
@@ -38,12 +38,14 @@ pub(crate) trait ActionFence<'connection>: Send {
     fn expires_at_ms(&self) -> i64;
     fn actor(&self) -> Actor;
     fn owner_session_id(&self) -> Option<Uuid>;
-    fn recheck(&mut self) -> impl Future<Output = Result<(), ConversationError>> + Send;
+    fn recheck(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ConversationError>> + Send + '_>>;
     fn mark_dispatching(
         &mut self,
         message: Uuid,
         dispatch: Uuid,
-    ) -> impl Future<Output = Result<(), ConversationError>> + Send;
+    ) -> Pin<Box<dyn Future<Output = Result<(), ConversationError>> + Send + '_>>;
 }
 impl<'tx, 'connection> ActionFence<'connection> for LockedAction<'tx, 'connection> {
     fn transaction(&self) -> &Transaction<'connection> {
@@ -73,14 +75,16 @@ impl<'tx, 'connection> ActionFence<'connection> for LockedAction<'tx, 'connectio
     fn owner_session_id(&self) -> Option<Uuid> {
         Some(self.actor_session_id())
     }
-    async fn recheck(&mut self) -> Result<(), ConversationError> {
-        self.recheck().await
+    fn recheck(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ConversationError>> + Send + '_>> {
+        Box::pin(self.recheck())
     }
-    async fn mark_dispatching(
+    fn mark_dispatching(
         &mut self,
         message: Uuid,
         dispatch: Uuid,
-    ) -> Result<(), ConversationError> {
-        self.mark_dispatching(message, dispatch).await
+    ) -> Pin<Box<dyn Future<Output = Result<(), ConversationError>> + Send + '_>> {
+        Box::pin(self.mark_dispatching(message, dispatch))
     }
 }

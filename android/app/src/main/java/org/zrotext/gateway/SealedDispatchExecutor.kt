@@ -5,9 +5,8 @@ import java.nio.ByteBuffer
 import java.util.UUID
 
 /**
- * Grant-bound sealed decrypt executor (roadmap #539). Dormant: no stream handler or
- * service calls it, because no hub emits the PROPOSED `sealed_execution_grant` frame
- * and this client never negotiates it.
+ * Grant-bound sealed decrypt executor (roadmap #539). The explicitly installed
+ * candidate stream uses this executor; ordinary startup remains disabled.
  *
  * Order of fences, each fail-closed and none reachable without the previous one:
  * 1. the envelope is bounded by the sealed-v1 profile-02 outbound parser before the

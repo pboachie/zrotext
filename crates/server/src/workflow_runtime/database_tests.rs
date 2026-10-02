@@ -499,7 +499,7 @@ impl Case {
         self.f.db.execute("INSERT INTO owner_mfa_recovery_codes(account_id,user_id,code_hash) VALUES($1,$2,$3)", &[&self.f.account,&self.owner.user_id,&hash.as_slice()]).await.unwrap();
         self.issue().await.unwrap()
     }
-    async fn projection(&self) -> Vec<u8> {
+    pub(super) async fn projection(&self) -> Vec<u8> {
         let reader: Vec<u8>=self.f.db.query_one("SELECT key_id FROM connector_registrations WHERE account_id=$1 AND connector_id=$2", &[&self.f.account,&self.request.connector]).await.unwrap().get(0);
         let mut header = self.header.clone();
         header.reader = reader.try_into().unwrap();

@@ -57,6 +57,8 @@ async fn no_store(request: Request, next: Next) -> Response {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExportQuery {
+    templates_after: Option<Uuid>,
+    template_versions_after: Option<Uuid>,
     invoice_periods_after: Option<Uuid>,
     invoice_usage_after: Option<Uuid>,
     invoice_audit_after: Option<i64>,
@@ -186,6 +188,7 @@ struct ExportView {
     workflow_schedule: crate::encrypted_schedule::lifecycle::ScheduleExport,
     workflow_integrations: crate::workflow_runtime::lifecycle::Export,
     invoice_billing: crate::billing::invoice::lifecycle::InvoiceExport,
+    encrypted_templates: crate::workflow_templates::lifecycle::Export,
     workflow_context: crate::http_owner_conversations::context::lifecycle::WorkflowExport,
     confirmation_inventory: crate::http_owner_conversations::confirmation_records::ProofInventory,
     agent_grants: crate::auth::agent_grants::GrantPage,
@@ -400,6 +403,16 @@ async fn export_account(
         truncated: contacts_truncated,
         next_cursor: contacts_next_cursor,
     } = contacts;
+    let encrypted_templates = match crate::workflow_templates::lifecycle::export(
+        &mut client,
+        &principal,
+        [query.templates_after, query.template_versions_after],
+    )
+    .await
+    {
+        Ok(view) => view,
+        Err(error) => return error.into_response(),
+    };
     let workflow_context = match crate::http_owner_conversations::context::lifecycle::export(
         &mut client,
         &principal,
@@ -464,6 +477,7 @@ async fn export_account(
         Err(error) => return error.into_response(),
     };
     Json(ExportView {
+        encrypted_templates,
         execution_inventory,
         workflow_integrations,
         workflow_decisions,

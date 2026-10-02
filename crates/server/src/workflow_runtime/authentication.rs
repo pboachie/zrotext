@@ -33,7 +33,7 @@ impl IntegrationPrincipal {
     }
 }
 
-fn credential_shape(token: &str) -> bool {
+pub(super) fn credential_shape(token: &str) -> bool {
     let Some(encoded) = token.strip_prefix("ztw_") else {
         return false;
     };
