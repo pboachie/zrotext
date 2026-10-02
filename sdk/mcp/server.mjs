@@ -1,7 +1,7 @@
 import { createHash, webcrypto } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { constants } from 'node:fs';
-import { open } from 'node:fs/promises';
+import fs from 'node:fs/promises';
 import { parseDraftEnvelope } from '../typescript/dist/draft01.js';
 import { WorkflowToolClient, WorkflowToolError, workflowTools, workflowReadinessSchema } from '../typescript/dist/workflow-tool-client.js';
 import { validateWorkflowRequest } from '../typescript/dist/workflow-tools.js';
@@ -165,10 +165,22 @@ export async function configuredClient(env = process.env) {
   const file = env.ZROTEXT_WORKFLOW_CREDENTIAL_FILE;
   if (!origin && !file) return undefined;
   if (!origin || !file) throw new Error('invalid_configuration');
-  const handle = await open(file, constants.O_RDONLY | constants.O_NONBLOCK);
+  if (typeof file !== 'string' || file.length > 32768 || /[\u0000-\u001f\u007f]/.test(file)) throw new Error('invalid_configuration');
+  // Resolve the operator's path once, then bind opening to that exact regular file.
+  const canonicalFile = await fs.realpath(file);
+  const candidate = await fs.stat(canonicalFile, { bigint: true });
+  const privateFile = info => info.isFile() && info.ino > 0n && info.size <= 128n &&
+    (process.platform === 'win32' || (info.mode & 0o077n) === 0n);
+  if (!privateFile(candidate)) throw new Error('invalid_configuration');
+  const flags = constants.O_RDONLY | constants.O_NONBLOCK |
+    (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW);
+  const handle = await fs.open(canonicalFile, flags);
   try {
-    const info = await handle.stat();
-    if (!info.isFile() || info.size > 128 || (process.platform !== 'win32' && (info.mode & 0o077) !== 0)) throw new Error('invalid_configuration');
+    const info = await handle.stat({ bigint: true });
+    // Windows path stat may omit the volume id (dev=0), while fstat supplies it.
+    const comparableDevice = process.platform !== 'win32' || candidate.dev !== 0n;
+    if (!privateFile(info) || info.ino !== candidate.ino ||
+        (comparableDevice && info.dev !== candidate.dev)) throw new Error('invalid_configuration');
     const buffer = Buffer.alloc(129);
     try {
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);

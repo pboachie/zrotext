@@ -2,9 +2,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, writeFile, rm, chmod } from 'node:fs/promises';
+import fs, { mkdtemp, writeFile, rm, chmod, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { createSession, configuredClient, tools } from '../../mcp/server.mjs';
 import { workflowTools, WorkflowToolError } from '../dist/workflow-tool-client.js';
 const uuid = digit => `${digit.repeat(8)}-${digit.repeat(4)}-${digit.repeat(4)}-${digit.repeat(4)}-${digit.repeat(12)}`;
@@ -66,6 +66,9 @@ test('startup configuration consumes only a bounded private workflow credential 
     await writeFile(file, 'ztw_' + Buffer.alloc(32, 9).toString('base64url') + '\n', { mode: 0o600 });
     const configured = await configuredClient({ ZROTEXT_WORKFLOW_ORIGIN: 'https://example.test', ZROTEXT_WORKFLOW_CREDENTIAL_FILE: file });
     assert.equal(typeof configured.call, 'function');
+    const relativeClient = await configuredClient({ ZROTEXT_WORKFLOW_ORIGIN: 'https://example.test',
+      ZROTEXT_WORKFLOW_CREDENTIAL_FILE: relative(process.cwd(), file) });
+    assert.equal(typeof relativeClient.call, 'function');
     await writeFile(file, 'ztk_' + Buffer.alloc(32, 9).toString('base64url'));
     await assert.rejects(configuredClient({ ZROTEXT_WORKFLOW_ORIGIN: 'https://example.test', ZROTEXT_WORKFLOW_CREDENTIAL_FILE: file }));
     await writeFile(file, 'x'.repeat(129));
@@ -98,6 +101,32 @@ test('startup refuses a FIFO credential path without waiting for a writer', { sk
     assert.equal(code, 0, 'non-regular credentials must be refused before reading');
   } finally {
     if (child && child.exitCode === null) child.kill('SIGKILL');
+    await rm(folder, { recursive: true });
+  }
+});
+
+// Substitute an owned file at the real filesystem open boundary, not its credential parser.
+test('startup refuses replacement of the validated private credential file before opening', async () => {
+  const folder = await mkdtemp(join(tmpdir(), 'zrotext-mcp-replacement-'));
+  const file = join(folder, 'credential');
+  const originalOpen = fs.open;
+  let replaced = false;
+  try {
+    await writeFile(file, 'ztw_' + Buffer.alloc(32, 9).toString('base64url'), { mode: 0o600 });
+    fs.open = async (path, ...args) => {
+      if (path === file && !replaced) {
+        replaced = true;
+        await rename(file, join(folder, 'previous-credential'));
+        await writeFile(file, 'ztw_' + Buffer.alloc(32, 10).toString('base64url'), { mode: 0o600 });
+      }
+      return originalOpen(path, ...args);
+    };
+    await assert.rejects(configuredClient({
+      ZROTEXT_WORKFLOW_ORIGIN: 'https://example.test', ZROTEXT_WORKFLOW_CREDENTIAL_FILE: file,
+    }), { message: 'invalid_configuration' });
+    assert.equal(replaced, true, 'the real file replacement must occur before opening');
+  } finally {
+    fs.open = originalOpen;
     await rm(folder, { recursive: true });
   }
 });

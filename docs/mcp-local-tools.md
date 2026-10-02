@@ -88,7 +88,11 @@ For live scoped calls, configure the subprocess environment with
 `ZROTEXT_WORKFLOW_CREDENTIAL_FILE` (a customer-controlled file containing only the
 dedicated workflow credential, optionally followed by one newline). Neither is a
 tool argument. Both must be present together. The file must be regular and at most
-128 bytes; POSIX group/other permissions are refused. Windows ACL protection is
+128 bytes; POSIX group/other permissions are refused. Startup resolves the local
+operator-selected path and checks the opened file against its validated identity;
+replacement or unavailable file identity is refused. Relative paths and aliases
+are supported, but control characters and oversized path strings are refused.
+Windows ACL protection is
 the customer's responsibility and is not verified by this wrapper. No owner,
 ordinary API, device, or agent credential fallback exists. Keep credentials out
 of prompts, model arguments, logs and public repository files. Startup failures
