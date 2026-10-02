@@ -111,14 +111,15 @@ internal fun GatewayCompanion(initialPage: GatewayPage = GatewayPage.HOME,
                                 contentDescription = "Controls"
                                 stateDescription = "${page.label}. Open controls menu"
                             }) { GatewayGearMark() }
-                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false },
+                            containerColor = MaterialTheme.colorScheme.surface) {
                             listOf("Quick controls" to "controls", "Android access" to "access", "Phone details" to "details")
                                 .forEach { (label, panel) ->
                                     DropdownMenuItem(text = { Text(label) },
                                         onClick = { menu = false; homePanel.value = panel; navigate(GatewayPage.HOME) },
                                         modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp))
                                 }
-                            HorizontalDivider()
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
                             GatewayPage.entries.forEach { destination ->
                                 DropdownMenuItem(text = { Text(destination.label) },
                                     onClick = { menu = false; navigate(destination) },
