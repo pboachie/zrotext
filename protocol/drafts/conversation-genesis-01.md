@@ -52,6 +52,9 @@ The browser independently verifies the signature and rechecks the owner session,
 root, paired phone signing key, line generation and expiry around signing and
 installation. Server installation must perform the same checks in a transaction
 with a provisioned nonrevoked authority and a version-zero compare-and-swap.
+The install request carries the exact `expected_session_id` from the reviewed
+selection; the authenticated current owner session must match it before any write.
+A newly authenticated session cannot adopt another session's in-progress ceremony.
 The accepted version-one manifest is reread and independently verified before
 the browser presents its accepted checkpoint. Concurrent forks, changed keys,
 revoked sessions, expiry and missing verification fail closed.
