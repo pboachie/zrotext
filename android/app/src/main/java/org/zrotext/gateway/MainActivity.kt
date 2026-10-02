@@ -122,6 +122,19 @@ class MainActivity : ComponentActivity() {
     private var conversationUiEpoch = 0L
     private var conversationPickEpoch: Long? = null
     private var conversationReplyPending by mutableStateOf(false)
+    internal var conversationRepliesEnabled by mutableStateOf(false)
+        private set
+    private var conversationEnrollmentOpen by mutableStateOf(false)
+    private var conversationEnrollmentBusy by mutableStateOf(false)
+    private var conversationEnrollmentStatus by mutableStateOf("")
+    private var conversationReaderExport by mutableStateOf("")
+    private var conversationRootPin by mutableStateOf("")
+    private var conversationRootFingerprint by mutableStateOf("")
+    private var conversationRootCompared by mutableStateOf(false)
+    private var conversationRootReviewed by mutableStateOf(false)
+    private var conversationInitialChain by mutableStateOf("")
+    private var conversationEnrollmentToken: AtomicBoolean? = null
+    private val conversationEnrollment = AtomicReference<ConversationEnrollmentSession?>(null)
     private val conversationSetupPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         val accepted = conversationEntryOpen && conversationPickEpoch == conversationUiEpoch
         conversationPickEpoch = null
@@ -411,6 +424,8 @@ class MainActivity : ComponentActivity() {
 
     private fun revokeConversationForeground() {
         conversationSetupEnabled = false
+        conversationRepliesEnabled = false
+        closeConversationEnrollment()
         // A file picker may return a public candidate, but never preserves phone authority.
         conversationEntry?.close()
         conversationEntry = null
@@ -426,12 +441,15 @@ class MainActivity : ComponentActivity() {
     internal fun acceptConversationSetupFile(uri: Uri?) {
         if (!conversationEntryOpen) return
         conversationSetupEnabled = false
+        conversationRepliesEnabled = false
         conversationSetupFile = uri
         conversationEntryStatus = if (uri == null) "File selection cancelled." else "Public setup selected. Phone approval is still required."
     }
 
     private fun closeConversationEntry() {
         conversationSetupEnabled = false
+        conversationRepliesEnabled = false
+        closeConversationEnrollment()
         // Capture CLOSE_FAILED while this exact view generation is still observable.
         conversationEntry?.close()
         ++conversationUiEpoch
@@ -448,6 +466,51 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable private fun ConversationEntryContent() {
+        if (conversationEnrollmentOpen) {
+            Dialog(onDismissRequest = { closeConversationEnrollment() },
+                properties = DialogProperties(usePlatformDefaultWidth = false)) {
+                Surface(Modifier.fillMaxSize()) {
+                    Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding()
+                        .verticalScroll(rememberScrollState()).padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        GatewaySectionTitle("Conversation enrollment")
+                        OutlinedButton(onClick = { closeConversationEnrollment() },
+                            modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Close enrollment and return to review") }
+                        ConversationEnrollmentPane(conversationRootPin, conversationRootFingerprint,
+                            conversationRootCompared, conversationRootReviewed, conversationEnrollmentBusy,
+                            conversationEnrollmentStatus, conversationReaderExport, conversationInitialChain,
+                            { value ->
+                                if (value.length <= 128) {
+                                    closeConversationEnrollmentSession()
+                                    conversationRootPin = value; conversationRootCompared = false; conversationRootReviewed = false
+                                }
+                            }, { value -> if (value.length <= 64) conversationRootFingerprint = value },
+                            { conversationRootCompared = it },
+                            { value -> if (value.length <= ConversationEnrollmentSession.MAX_CHAIN_TEXT) conversationInitialChain = value },
+                            { runConversationEnrollment({ session ->
+                                val reader = session.enrollReader()
+                                val encode = java.util.Base64.getEncoder()
+                                "reader_id_b64=" + encode.encodeToString(reader.keyId) + "\npublic_point_b64=" + encode.encodeToString(reader.point)
+                            }) { result -> conversationReaderExport = result; conversationEnrollmentStatus = "Hardware reader enrolled. Export only these public values to your owner enrollment." } },
+                            {
+                                val pin = conversationRootPin
+                                runConversationEnrollment({ session ->
+                                    val display = session.reviewRoot(ConversationEnrollmentSession.decodePublic(pin, 94, 94))
+                                    "Account " + display.accountHex + "; full public root fingerprint " + display.fingerprintHex
+                                }) { result -> conversationRootReviewed = true; conversationEnrollmentStatus = result }
+                            }, {
+                                val fingerprint = conversationRootFingerprint; val compared = conversationRootCompared
+                                runConversationEnrollment({ session ->
+                                    val result = session.enrollComparedRoot(fingerprint, compared)
+                                    check(result.status == Draft02TrustStore.Status.NEEDS_FRESHNESS)
+                                    "Compared root enrolled. Import its complete signed predecessor chain before your first review. No content transfer or sending is approved."
+                                }) { result -> conversationRootReviewed = false; conversationRootCompared = false; conversationEnrollmentStatus = result }
+                            })
+                    }
+                }
+            }
+            return
+        }
         val observedPort = conversationPort
         DisposableEffect(observedPort) {
             conversationReplyObservation = null
@@ -494,15 +557,22 @@ class MainActivity : ComponentActivity() {
                             conversationVerifiedLineLabel?.takeIf { conversationSelectedLine == (line to generation) }
                         }, Modifier.weight(1f), onDismiss = { closeConversationEntry() }, onStopRequested = {
                             conversationSetupEnabled = false
+                            conversationRepliesEnabled = false
                             cancelConversationReplyImport()
                         })
                     } else {
                         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),
                             verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp)) {
                             Text("Select the public phone setup file from the paired browser. The existing paired device, selected line and enrolled hardware key must match. No key is created here.")
+                            OutlinedButton(onClick = {
+                                conversationSetupEnabled = false; conversationRepliesEnabled = false
+                                conversationEnrollmentOpen = true
+                            }, enabled = conversationEntryState != ConversationSetupEntrySession.State.OPENING &&
+                                conversationEntryState != ConversationSetupEntrySession.State.CLOSE_FAILED,
+                                modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Enroll conversation keys and compared root") }
                             Text(if (conversationSetupEnabled) "Review is enabled for this foreground session. Phone approval is still required."
                                 else "Review is off for this session.")
-                            Text("Selecting a public file does not start setup. Enable review explicitly after selection to check the existing pairing, line and reader. This is not agreement to SMS content transfer: the selected conversation needs separate phone approval. Leaving this app turns review off and closes its setup. No SMS dispatch is enabled here.")
+                            Text("Selecting a public file does not start setup. Enable review explicitly after selection to check the existing pairing, line and reader. This is not agreement to SMS content transfer: the selected conversation needs separate phone approval. Leaving this app turns review and replies off and closes its setup. Replies additionally require your separate choice below, signed reply authority and server permission.")
                             Button(onClick = {
                                 conversationSetupEnabled = false
                                 conversationSetupFile = null
@@ -521,6 +591,15 @@ class MainActivity : ComponentActivity() {
                                 conversationEntryState != ConversationSetupEntrySession.State.OPENING &&
                                 conversationEntryState != ConversationSetupEntrySession.State.CLOSE_FAILED,
                                 modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Enable review for this session") }
+                            Text(if (conversationRepliesEnabled) "Approved replies are enabled for this foreground review."
+                                else "Replies are off. Review can continue without sending.")
+                            OutlinedButton(onClick = { conversationRepliesEnabled = !conversationRepliesEnabled },
+                                enabled = conversationSetupEnabled && conversationEntryState != ConversationSetupEntrySession.State.OPENING &&
+                                    conversationEntryState != ConversationSetupEntrySession.State.CLOSE_FAILED,
+                                modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) {
+                                Text(if (conversationRepliesEnabled) "Turn replies off" else "Allow approved replies for this session")
+                            }
+                            Text("Allowing replies authorizes this phone to send only individually confirmed replies for the selected conversation after phone content approval and reply-authority verification. SMS carrier charges may apply. Leaving the app withdraws this permission.")
                             Button(onClick = { beginConversationEntry() }, enabled = conversationSetupEnabled && conversationSetupFile != null &&
                                 conversationEntryState != ConversationSetupEntrySession.State.OPENING && conversationEntryState != ConversationSetupEntrySession.State.CLOSE_FAILED,
                                 modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Review selected conversation") }
@@ -596,6 +675,8 @@ class MainActivity : ComponentActivity() {
         val owned = AtomicReference<ConversationUserSetupController?>(null)
         val selectedSubscription = selectedSim
         val labels = sims.toMap()
+        val allowReplies = conversationRepliesEnabled
+        val initialChain = conversationInitialChain
         fun report(text: String) = runOnUiThread {
             if (!cancelled.get() && conversationEntryOpen && conversationUiEpoch == epoch) conversationEntryStatus = text
         }
@@ -608,7 +689,8 @@ class MainActivity : ComponentActivity() {
                             ?: error("Public file unavailable")
                         if (cancelled.get()) return@execute
                         val database = SmsJournalDatabase.get(applicationContext)
-                        val prepared = ConversationUserSetupProvider(applicationContext, database.attempts()).resolve(bytes, enabled = true)
+                        val prepared = ConversationUserSetupProvider(applicationContext, database.attempts()).resolve(bytes, enabled = true,
+                            initialManifests = ConversationEnrollmentSession.decodeChain(initialChain))
                             ?: error("Setup unavailable")
                         val binding = checkNotNull(database.attempts().currentLineBinding())
                         check(binding.accountId == prepared.selection.identity.accountId && binding.deviceId == prepared.selection.identity.deviceId &&
@@ -617,8 +699,9 @@ class MainActivity : ComponentActivity() {
                         if (cancelled.get()) return@execute
                         val controller = ConversationUserSetupController(applicationContext, database.attempts(), prepared.payloadAlias,
                             conversationWorker, java.util.concurrent.Executor { action -> runOnUiThread(action) },
-                            ConversationExecutionComposition(applicationContext, database, enabled = false), { port ->
+                            ConversationExecutionComposition(applicationContext, database, enabled = allowReplies), { port ->
                                 if (!cancelled.get() && conversationEntryOpen && conversationUiEpoch == epoch) {
+                                    conversationInitialChain = ""
                                     conversationSelectedLine = prepared.selection.lineId to prepared.selection.bindingGeneration
                                     conversationVerifiedLineLabel = verifiedLabel
                                     ready(port)
@@ -655,6 +738,47 @@ class MainActivity : ComponentActivity() {
         conversationReplyText = ""
         conversationReplyEditorOpen = false
         conversationReplyPending = false
+    }
+
+    private fun closeConversationEnrollmentSession() {
+        conversationEnrollmentToken?.set(false)
+        conversationEnrollmentToken = null
+        conversationEnrollment.getAndSet(null)?.close()
+        conversationEnrollmentBusy = false
+        conversationRootReviewed = false
+        conversationRootCompared = false
+    }
+
+    private fun closeConversationEnrollment() {
+        closeConversationEnrollmentSession()
+        conversationEnrollmentOpen = false
+        conversationRootFingerprint = ""
+    }
+
+    private fun runConversationEnrollment(action: (ConversationEnrollmentSession) -> String, completed: (String) -> Unit) {
+        if (!conversationEnrollmentOpen || conversationEnrollmentBusy) return
+        val token = conversationEnrollmentToken ?: AtomicBoolean(true).also { conversationEnrollmentToken = it }
+        conversationEnrollmentBusy = true
+        conversationWorker.execute {
+            val result = runCatching {
+                check(token.get())
+                val session = conversationEnrollment.get() ?: ConversationAndroidEnrollment.open(applicationContext,
+                    SmsJournalDatabase.get(applicationContext), token).also {
+                    check(conversationEnrollment.compareAndSet(null, it))
+                    if (!token.get()) { conversationEnrollment.getAndSet(null)?.close(); error("Enrollment cancelled") }
+                }
+                check(token.get()); action(session).also { check(token.get()) }
+            }
+            runOnUiThread {
+                if (token.get() && conversationEnrollmentToken === token && conversationEnrollmentOpen) {
+                    conversationEnrollmentBusy = false
+                    result.onSuccess(completed).onFailure {
+                        conversationRootReviewed = false
+                        conversationEnrollmentStatus = "Enrollment refused. Check the current paired connection, selected approved line, hardware eligibility and independent root comparison. Existing protected state may require recovery."
+                    }
+                }
+            }
+        }
     }
 
     private fun conversationReplyIsCurrent(): Boolean {
