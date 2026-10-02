@@ -140,6 +140,43 @@ Threat and failure cases considered:
   malformed or expired challenges, oversized challenge files and unsupported
   environments fail closed with a fixed diagnostic and no signature.
 
+## Candidate custody signing (disabled by default)
+
+The explicit `unlock` feature also provides a separate offline operation:
+
+```text
+zrotext-owner custody-sign --account UUID --origin HTTPS_ORIGIN --bundle PUBLIC_ID --challenge FILE
+```
+
+Supply account, origin, bundle ID and fingerprint from your independent recovery
+kit. The command reads the existing local encrypted bundle and a bounded public
+enrollment challenge once, verifies their identity and card/backup digest binding,
+and displays the bundle ID, both public artifact digests, challenge ID and expiry.
+Type exactly `CUSTODY` to authorize this encrypted publication, or `DECLINE` to
+end without requesting recovery material. `UNLOCK` does not authorize custody.
+
+Only after consent does the eligible secure console request the recovery token.
+Authenticated recovery and root-pin comparison are required. A fresh clock check
+after secret entry rejects expiry before either signature is produced. The
+immutable review binds the exact unsigned enrollment bytes, SHA256 of the stored
+encrypted backup, SHA256 of its public card, and independently compared root
+fingerprint under the existing `ZTSE/root-custody/v1` domain with a trailing NUL.
+
+The two public console lines, `Enrollment signature:` and `Custody signature:`,
+contain distinct canonical 64-byte low-s signatures. Use them only with that
+reviewed challenge and those exact encrypted/public artifacts. The command
+contacts no server, enrolls nothing, creates no output file or durable unlock
+marker, and leaves recovery readiness unchanged. The root and recovery secret
+are dropped before output. A console/output failure may leave a partial public
+signature display; no completed publication is thereby established. All ordinary
+unlock environment, context, token, clock and memory-hygiene limits apply.
+
+Fixture tests verify the server's exact transcript encoding, signature-domain
+separation, immutable review, wrong root/context/bundle, malformed or oversized
+input and expiry. Hidden limited-token console tests exercise success, pre-secret
+context rejection, decline, wrong token and expiry during token entry, checking
+that rejected operations emit neither signature and do not modify the bundle.
+
 ## Automated verification
 
 Native tests use hidden, exclusively owned child consoles, unique temporary
