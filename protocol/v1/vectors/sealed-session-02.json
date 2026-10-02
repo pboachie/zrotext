@@ -1,0 +1,20 @@
+{
+  "protocol": "zrotext-device-status-v2+sealed-dispatch-v2",
+  "request": {
+    "v": 1,
+    "type": "sealed_session_request",
+    "connection_epoch": 3,
+    "challenge": "00000000-0000-0000-0000-000000000001"
+  },
+  "reply": {
+    "v": 1,
+    "type": "sealed_session",
+    "challenge": "00000000-0000-0000-0000-000000000001",
+    "account_id": "00000000-0000-0000-0000-000000000002",
+    "device_id": "00000000-0000-0000-0000-000000000003",
+    "connection_epoch": 3,
+    "deployment_epoch": 4,
+    "session_id": "00000000-0000-0000-0000-000000000004",
+    "server_time_ms": 1000000
+  }
+}

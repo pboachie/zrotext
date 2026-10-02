@@ -7,6 +7,12 @@
     },
     {
       "$ref": "#/$defs/fetch"
+    },
+    {
+      "$ref": "#/$defs/sessionRequest"
+    },
+    {
+      "$ref": "#/$defs/sessionReply"
     }
   ],
   "$defs": {
@@ -67,6 +73,99 @@
           "minLength": 11,
           "maxLength": 107,
           "pattern": "^[A-Za-z0-9_-]+$"
+        }
+      }
+    },
+    "sessionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "type",
+        "connection_epoch",
+        "challenge"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "sealed_session_request"
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "challenge": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        }
+      }
+    },
+    "sessionReply": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "type",
+        "challenge",
+        "account_id",
+        "device_id",
+        "connection_epoch",
+        "deployment_epoch",
+        "session_id",
+        "server_time_ms"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "sealed_session"
+        },
+        "challenge": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "account_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "device_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "deployment_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "session_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "server_time_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
         }
       }
     }

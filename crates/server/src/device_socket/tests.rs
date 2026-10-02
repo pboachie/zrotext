@@ -180,6 +180,7 @@ fn stream_schema_examples_match_serde_frames() {
         let parsed: ClientFrame = serde_json::from_value(frame.clone()).unwrap();
         assert_eq!(frame["v"], 1);
         let variant = match parsed {
+            ClientFrame::SealedSessionRequest { .. } => "sealed_session_request",
             ClientFrame::ConversationReady { .. } => "conversation_ready",
             ClientFrame::ConversationBinary(_) => "conversation_binary",
             ClientFrame::Hello { .. } => "hello",
@@ -286,6 +287,7 @@ fn stream_schema_examples_match_serde_frames() {
         let variant = match &actual {
             ServerFrame::Challenge { .. } => "challenge",
             ServerFrame::Session { .. } => "session",
+            ServerFrame::SealedSession { .. } => "sealed_session",
             ServerFrame::HeartbeatAck { .. } => "heartbeat_ack",
             ServerFrame::SyntheticGrant { .. } => "synthetic_grant",
             ServerFrame::MmsSpikeGrant { .. } => "mms_spike_grant",
@@ -320,7 +322,13 @@ fn sealed_ready_contract_has_no_unbound_or_unknown_fields() {
 async fn sealed_subprotocol_requires_both_gates_and_an_explicit_client_offer() {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     let sealed = crate::sealed_dispatch::wire::PROTOCOL;
+    let sealed_v2 = crate::sealed_dispatch::wire::PROTOCOL_V2;
+    let both = format!("{sealed_v2}, {sealed}");
     for (enabled, dispatch, offered, expected) in [
+        (false, true, sealed_v2, None),
+        (true, false, sealed_v2, None),
+        (true, true, sealed_v2, Some(sealed_v2)),
+        (true, true, both.as_str(), Some(sealed_v2)),
         (false, true, sealed, None),
         (true, false, sealed, None),
         (
