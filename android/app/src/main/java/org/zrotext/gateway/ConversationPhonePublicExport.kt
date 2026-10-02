@@ -33,6 +33,8 @@ internal class ConversationPhonePublicExport(
         val elapsed = elapsedMs() - issued
         check(elapsed >= 0 && elapsed < 300_000)
         requireBoundCurrent()
+        val validatedElapsed = elapsedMs() - issued
+        check(validatedElapsed >= 0 && validatedElapsed < 300_000)
     }
     /** Caller supplies only the destination selected by the explicit public-file action. */
     fun write(requireForeground: () -> Unit, openDestination: () -> OutputStream) {

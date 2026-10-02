@@ -40,6 +40,14 @@ class ConversationPhonePublicExportTest {
         denied { export.write({}) { opened = true; ByteArrayOutputStream() } }
         assertFalse(opened)
     }
+    @Test fun expiryDuringBindingValidationRefusesBeforeOpeningDestination() {
+        val export = ConversationPhonePublicExport("01010101-0101-0101-0101-010101010101",
+            "02020202-0202-0202-0202-020202020202", "03030303-0303-0303-0303-030303030303", 7,
+            reader, signer, { now += 300_000 }, { now })
+        var opened = false
+        denied { export.write({}) { opened = true; ByteArrayOutputStream() } }
+        assertFalse(opened)
+    }
     @Test fun foregroundWithdrawalDuringDestinationOpeningWritesNoBytes() {
         val export = packet(); val output = ByteArrayOutputStream(); var foreground = true
         denied { export.write({ check(foreground) }) { foreground = false; output } }

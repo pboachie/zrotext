@@ -144,7 +144,8 @@ destination. Only the requested public packet survives that destination picker;
 review, reply permission and pending enrollment still withdraw on pause.
 Saving resumes in the foreground and rechecks the original authenticated host,
 line, SIM, permissions and both existing hardware keys. Its elapsed lifetime is
-five minutes; changed or lost keys are never replaced. Cancel, explicit close or
+five minutes and is checked again after binding validation, before opening the
+selected destination; changed or lost keys are never replaced. Cancel, explicit close or
 destruction discards pending export. Pause fences a write already in progress.
 The completion presents the exact saved packet fingerprint for independent
 comparison directly on the phone; a failed write may leave an incomplete public
