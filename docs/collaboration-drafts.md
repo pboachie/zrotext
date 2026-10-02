@@ -37,6 +37,29 @@ cannot substitute for a browser session.
 | `DELETE /drafts/{draft_id}` | Live encrypted-drafter grant | Delete own bytes and retain an idempotency tombstone; repeated delete is harmless |
 | `GET /export?before=<draft-uuid>:<author-uuid>` | Current owner | Account grant metadata and a capped page of ciphertext/tombstones |
 
+## Cross-role authority matrix
+
+The seven authority classes the collaboration design separates, across every
+principal type that exists today. "Own" means scoped to the caller's own
+account and own artifacts. No cell inherits from another: a drafting grant
+never widens any other column, and no non-owner principal ever reaches the
+root-operation column. Unselected future roles are intentionally absent and
+must not be presented as available.
+
+| Principal | Status read | Decrypted content | Draft ciphertext | Approve | Send | Team management | Root operations |
+|---|---|---|---|---|---|---|---|
+| Owner (live membership, password/MFA where noted) | Yes | Via account takeout export only | Only with a separate live drafting grant | Yes (owner confirmations) | Yes, via existing send paths | Yes (seats, invitations, grants, API keys) | Yes |
+| Device-status observer (live seat) | Yes (own account device status) | No | No (grant required) | No | No | No | No |
+| Observer additionally holding `encrypted_drafter` | Yes (unchanged) | No | Own artifacts only | No | No | No | No |
+| Agent / API key | Per its own independent scopes; a drafting grant neither broadens nor satisfies them | No implicit | No (browser-session projection only) | Per scope | Per scope | No | No |
+| Device credential | Device-stream status only | No | No | No | No (radio requires the grant machinery) | No | No |
+
+Revocation is per half and propagates immediately: revoking a drafting grant
+leaves the observer seat reading status; removing the observer seat ends the
+membership, scrubs the introduced grants and ciphertext, and kills the
+session's reads and drafts together. The mixed-role lifecycle is pinned by
+`mixed_observer_drafter_role_adds_only_drafting_and_each_half_revokes_independently`.
+
 An owner needs a separate live drafting grant for the draft CRUD routes. The
 owner's account takeout and grant-management authority come from the existing
 owner role, not from encrypted_drafter. An observer with the drafting grant

@@ -45,6 +45,7 @@ const MIGRATIONS: [&str; 11] = [
 struct Fixture {
     db: Client,
     schema: String,
+    url: String,
     state: AuthHttpState,
     owner: SessionCredentials,
     other: SessionCredentials,
@@ -115,12 +116,13 @@ impl Fixture {
             .await
             .unwrap();
         let state =
-            AuthHttpState::new(url, hasher, "https://example.test".into(), Arc::new(NoMail))
+            AuthHttpState::new(url.clone(), hasher, "https://example.test".into(), Arc::new(NoMail))
                 .unwrap()
                 .with_collaboration_drafts_enabled();
         Self {
             db,
             schema,
+            url,
             state,
             owner,
             member,
@@ -132,7 +134,15 @@ impl Fixture {
         }
     }
     fn app(&self) -> Router {
-        Router::new().nest("/v1/auth", crate::http_auth::router(self.state.clone()))
+        Router::new()
+            .nest("/v1/auth", crate::http_auth::router(self.state.clone()))
+            .nest(
+                "/v1/observer",
+                crate::http_observer::router(crate::http_observer::ObserverState {
+                    database_url: self.url.clone(),
+                    auth_hasher: self.state.hasher.clone(),
+                }),
+            )
     }
     async fn request(
         &self,
@@ -587,5 +597,107 @@ async fn grant_widening_requires_confirmation_proof_and_never_accepts_api_key_au
     assert_eq!(f.request(Method::POST,"/v1/auth/collaboration/grants",Some(&f.owner),json!({"user_id":f.member_id,"role":"encrypted_drafter","confirm_widening":true,"current_password":f.password})).await.status(),StatusCode::UNAUTHORIZED);
     let granted=f.request(Method::POST,"/v1/auth/collaboration/grants",Some(&f.owner),json!({"user_id":f.member_id,"role":"encrypted_drafter","confirm_widening":true,"current_password":f.password,"code":recovery.codes[0]})).await;
     assert_eq!(granted.status(), StatusCode::CREATED);
+    f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn mixed_observer_drafter_role_adds_only_drafting_and_each_half_revokes_independently() {
+    let mut f = Fixture::new().await;
+    let draft = json!({"draft_id":Uuid::new_v4(),"ciphertext_base64":STANDARD.encode(vec![7_u8;32])});
+    // Before any drafting grant: the observer seat reads status, cannot draft
+    // and holds no owner authority.
+    assert_eq!(
+        f.request(Method::GET, "/v1/observer/devices", Some(&f.member), json!(null))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        f.request(Method::POST, "/v1/auth/collaboration/drafts", Some(&f.member), draft.clone())
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        f.request(Method::GET, "/v1/auth/collaboration/grants", Some(&f.member), json!(null))
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    // The drafting grant adds drafting only: status reads continue, owner
+    // authority is not inherited.
+    let grant = f.grant(f.member_id).await;
+    assert_eq!(
+        f.request(Method::POST, "/v1/auth/collaboration/drafts", Some(&f.member), draft.clone())
+            .await
+            .status(),
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        f.request(Method::GET, "/v1/observer/devices", Some(&f.member), json!(null))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        f.request(Method::GET, "/v1/auth/collaboration/grants", Some(&f.member), json!(null))
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    // Revoking only the grant keeps the observer seat fully alive.
+    assert_eq!(
+        f.request(Method::DELETE, &format!("/v1/auth/collaboration/grants/{grant}"), Some(&f.owner), json!(null))
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        f.request(Method::POST, "/v1/auth/collaboration/drafts", Some(&f.member), draft.clone())
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        f.request(Method::GET, "/v1/observer/devices", Some(&f.member), json!(null))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    // Removing the observer seat ends the whole membership: the session can
+    // neither read status nor draft, and the introduced grants and ciphertext
+    // are scrubbed.
+    f.grant(f.member_id).await;
+    assert_eq!(
+        f.request(Method::POST, "/v1/auth/collaboration/drafts", Some(&f.member), draft.clone())
+            .await
+            .status(),
+        StatusCode::CREATED
+    );
+    let owner = auth::authenticate_session(&f.db, &f.state.hasher, &f.owner.token)
+        .await
+        .unwrap();
+    auth::seats::remove_observer(&mut f.db, &owner, f.member_id)
+        .await
+        .unwrap();
+    for path in ["/v1/observer/devices", "/v1/auth/collaboration/drafts"] {
+        let dead = f.request(Method::GET, path, Some(&f.member), json!(null)).await;
+        assert_eq!(dead.status(), StatusCode::UNAUTHORIZED, "stale membership read {path}");
+    }
+    assert_eq!(
+        f.db.query_one("SELECT count(*) FROM collaboration_draft_grants", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+    assert_eq!(
+        f.db.query_one("SELECT count(*) FROM collaboration_drafts", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
     f.cleanup().await;
 }
