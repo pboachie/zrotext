@@ -83,8 +83,8 @@ struct Claim {
 }
 
 impl TestUsageWorker {
-    /// Explicit library opt-in for synthetic integration, never inherited from
-    /// BILLING_ENABLED and never mounted or spawned by the server.
+    /// Explicit library opt-in for synthetic integration and the separately gated
+    /// TEST forwarding worker; never inherited from BILLING_ENABLED.
     pub fn test_candidate() -> Self {
         Self { enabled: true }
     }
