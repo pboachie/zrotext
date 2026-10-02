@@ -84,6 +84,11 @@ class FixtureDiagnosticsTests(unittest.TestCase):
         self.assertEqual("Fixture log exceeded the diagnostic capture bound",
             self.capture(b"x" * (probe.MAX_STARTUP_LOG_BYTES + 1)))
 
+    def test_multibyte_diagnostic_tail_remains_within_byte_bound(self):
+        details = self.capture((chr(0x20ac) * 3000 + "fixture failed").encode("utf-8"))
+        self.assertLessEqual(len(details.encode("utf-8")), 4096)
+        self.assertTrue(details.endswith("fixture failed"))
+
     def test_success_does_not_read_or_export_fixture_log(self):
         server = SimpleNamespace(wait=lambda timeout: 0)
         with patch.object(probe, "fixture_failure_details") as details:

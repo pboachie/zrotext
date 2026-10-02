@@ -36,7 +36,7 @@ def fixture_failure_details(log, ready=None):
     for key, value in (ready or {}).items():
         if isinstance(value, str) and value and (key == "token" or key.endswith("Scalar")):
             details = details.replace(value, "[redacted fixture credential]")
-    return details.encode("utf-8")[-4096:].decode("utf-8", errors="replace")
+    return details.encode("utf-8")[-4096:].decode("utf-8", errors="ignore")
 
 
 def require_fixture_exit(server, log, ready):
