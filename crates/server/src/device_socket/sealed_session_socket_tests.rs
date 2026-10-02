@@ -46,15 +46,15 @@ async fn authenticate_offered(
     (socket, session["connection_epoch"].as_i64().unwrap())
 }
 
-async fn closed_without_sample(socket: &mut TestSocket, policy: bool) {
+async fn closed_without_sample(socket: &mut TestSocket, expected_code: Option<Option<u16>>) {
     loop {
         let frame = timeout(Duration::from_secs(10), socket.next())
             .await
             .unwrap();
         match frame {
             Some(Ok(Message::Close(reason))) => {
-                if policy {
-                    assert_eq!(u16::from(reason.unwrap().code), close_code::POLICY);
+                if let Some(expected) = expected_code {
+                    assert_eq!(reason.map(|frame| u16::from(frame.code)), expected);
                 }
                 return;
             }
@@ -65,7 +65,7 @@ async fn closed_without_sample(socket: &mut TestSocket, policy: bool) {
                     "refused socket returned a clock sample"
                 );
             }
-            None | Some(Err(_)) if !policy => return,
+            None | Some(Err(_)) if expected_code.is_none() => return,
             other => panic!("expected refused socket close, got {other:?}"),
         }
     }
@@ -150,7 +150,7 @@ async fn dormant_clock_gates_and_replacement_cleanup_preserve_live_session() {
         )
         .await;
         send_json(&mut socket,json!({"v":1,"type":"sealed_session_request","connection_epoch":epoch,"challenge":Uuid::new_v4()})).await;
-        closed_without_sample(&mut socket, true).await;
+        closed_without_sample(&mut socket, Some(None)).await;
         drop(socket);
         dormant_server.abort();
         let _ = dormant_server.await;
@@ -158,7 +158,7 @@ async fn dormant_clock_gates_and_replacement_cleanup_preserve_live_session() {
     let (mut old, old_epoch) = authenticate_offered(address, &fixture, &key, v2).await;
     let (mut replacement, new_epoch) = authenticate_offered(address, &fixture, &key, v2).await;
     assert!(new_epoch > old_epoch);
-    closed_without_sample(&mut old, false).await;
+    closed_without_sample(&mut old, None).await;
     drop(old);
     let held: i64 = fixture
         .db
@@ -174,7 +174,7 @@ async fn dormant_clock_gates_and_replacement_cleanup_preserve_live_session() {
         "old socket cleanup must preserve the replacement session"
     );
     send_json(&mut replacement,json!({"v":1,"type":"sealed_session_request","connection_epoch":old_epoch,"challenge":Uuid::new_v4()})).await;
-    closed_without_sample(&mut replacement, true).await;
+    closed_without_sample(&mut replacement, Some(Some(close_code::POLICY))).await;
     drop(replacement);
     server.abort();
     let _ = server.await;
