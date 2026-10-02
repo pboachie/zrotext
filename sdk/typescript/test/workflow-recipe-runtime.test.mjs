@@ -67,7 +67,7 @@ async function fixture(run) {
       const raw=Buffer.from(JSON.stringify(event)),timestamp=String(time/1000);
       return [raw,{'x-zrotext-timestamp':timestamp,'x-zrotext-signature':'v1='+createHmac('sha256',eventKey).update(timestamp).update('.').update(raw).digest('hex')}];
     };
-    await run({recipe,key,signed,adapter,calls,revoke:()=>{active=false;},deny:()=>{permission=false;},denySend:()=>{sendPermission=false;},approve:()=>{approved=true;},disconnect:()=>{disconnect=true;}});
+    await run({recipe,key,signed,adapter,calls,revoke:()=>{active=false;},deny:()=>{permission=false;},denySend:()=>{sendPermission=false;},approve:()=>{approved=true;},disconnect:()=>{disconnect=true;},advance:ms=>{time+=ms;}});
   }finally{
     if(server){server.closeAllConnections();await new Promise(done=>server.close(done));}
     adapter?.close();assert.equal(dirname(resolve(directory)),resolve(tmpdir()));await rm(directory,{recursive:true,force:true});
@@ -130,4 +130,24 @@ test('proposal-only grants can activate without send authority and cannot prepar
   assert.deepEqual((await f.recipe.setup()).required_permissions,['context_metadata','propose','status']);
   assert.equal((await f.recipe.call({operation:'owner_proposal',request_id:id(34)})).result.phase,'proposed');
   await assert.rejects(()=>f.recipe.prepare({request_id:id(35),key:f.key}),e=>e.code==='forbidden');
+}));
+
+test('reply turn cap routes a second distinct signed event to owner review without another proposal',()=>fixture(async f=>{
+  await f.recipe.enable();f.recipe.ingestReply(...f.signed());
+  assert.equal((await f.recipe.routeReply({event_id:id(14),request_id:id(36)})).disposition,'reply_notice');
+  f.recipe.ingestReply(...f.signed(id(17)));
+  assert.equal((await f.recipe.routeReply({event_id:id(17),request_id:id(37)})).disposition,'owner_review');
+  assert.equal(f.calls.length,1);
+}));
+
+test('offline request expiry refuses reply effects even while the event and source grant remain live',()=>fixture(async f=>{
+  await f.recipe.enable();f.recipe.ingestReply(...f.signed());f.advance(31000);
+  assert.equal((await f.recipe.routeReply({event_id:id(14),request_id:id(38)})).disposition,'owner_review');
+  assert.equal(f.calls.length,0);
+}));
+
+test('trusted takeover after ingestion refuses cached reply authority before a service call',()=>fixture(async f=>{
+  await f.recipe.enable();f.recipe.ingestReply(...f.signed());f.adapter.deny('takeover');
+  await assert.rejects(()=>f.recipe.routeReply({event_id:id(14),request_id:id(39)}),e=>e.code==='revoked');
+  assert.equal(f.calls.length,0);
 }));
