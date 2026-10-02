@@ -4,7 +4,9 @@ use super::*;
 async fn inject_catalog_error(f: &Fixture, failures: i64, message: &str) {
     assert!(matches!(
         message,
-        "cache lookup failed for attribute 1 of relation 1" | "synthetic unrelated catalog failure"
+        "cache lookup failed for attribute 1 of relation 1"
+            | "cache lookup failed for relation 1"
+            | "synthetic unrelated catalog failure"
     ));
     f.db.batch_execute(&format!(
         r#"
@@ -63,9 +65,45 @@ async fn transient_catalog_invalidation_rechecks_the_complete_guard_before_teard
 
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; unique disposable fixture"]
+async fn transient_relation_invalidation_rechecks_the_complete_guard_before_teardown() {
+    let f = Fixture::new().await;
+    inject_catalog_error(&f, 1, "cache lookup failed for relation 1").await;
+    let result = drop_fixture(&f.db, &f.schema).await;
+    if let Err(error) = result {
+        // Preserve cleanup on the original failing implementation.
+        remove_injection(&f).await;
+        f.cleanup().await;
+        panic!("transient relation invalidation was not retried: {error}");
+    }
+    let present: bool =
+        f.db.query_one(
+            "SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname=$1)",
+            &[&f.schema],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(!present);
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; unique disposable fixture"]
 async fn persistent_catalog_invalidation_exhausts_three_attempts_without_owned_ddl() {
     let f = Fixture::new().await;
     inject_catalog_error(&f, 100, "cache lookup failed for attribute 1 of relation 1").await;
+    let before = inventory(&f).await;
+    assert!(drop_fixture(&f.db, &f.schema).await.is_err());
+    assert_eq!(calls(&f).await, 3);
+    assert_eq!(inventory(&f).await, before);
+    remove_injection(&f).await;
+    f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; unique disposable fixture"]
+async fn persistent_relation_invalidation_exhausts_three_attempts_without_owned_ddl() {
+    let f = Fixture::new().await;
+    inject_catalog_error(&f, 100, "cache lookup failed for relation 1").await;
     let before = inventory(&f).await;
     assert!(drop_fixture(&f.db, &f.schema).await.is_err());
     assert_eq!(calls(&f).await, 3);
@@ -101,6 +139,38 @@ async fn successful_catalog_retry_still_refuses_an_external_view_before_owned_dd
     .await
     .unwrap();
     inject_catalog_error(&f, 1, "cache lookup failed for attribute 1 of relation 1").await;
+    let before = inventory(&f).await;
+    assert_eq!(
+        drop_fixture(&f.db, &f.schema).await.unwrap_err(),
+        "foreign fixture dependency"
+    );
+    assert!(calls(&f).await > 1);
+    assert_eq!(inventory(&f).await, before);
+    f.db.batch_execute(&format!(
+        "DROP VIEW {}.external_view RESTRICT; DROP SCHEMA {} RESTRICT",
+        quote(&other),
+        quote(&other)
+    ))
+    .await
+    .unwrap();
+    remove_injection(&f).await;
+    f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; unique disposable fixtures"]
+async fn successful_relation_retry_still_refuses_an_external_view_before_owned_ddl() {
+    let f = Fixture::new().await;
+    let other = format!("manifest_authority_{}", uuid::Uuid::new_v4().simple());
+    f.db.batch_execute(&format!(
+        "CREATE SCHEMA {}; CREATE VIEW {}.external_view AS SELECT id FROM {}.accounts",
+        quote(&other),
+        quote(&other),
+        quote(&f.schema)
+    ))
+    .await
+    .unwrap();
+    inject_catalog_error(&f, 1, "cache lookup failed for relation 1").await;
     let before = inventory(&f).await;
     assert_eq!(
         drop_fixture(&f.db, &f.schema).await.unwrap_err(),

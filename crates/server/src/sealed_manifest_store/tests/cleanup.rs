@@ -5,13 +5,20 @@ mod catalog_retry;
 mod regressions;
 
 fn valid_name(name: &str) -> bool {
-    name.strip_prefix("manifest_authority_")
-        .is_some_and(|suffix| {
-            suffix.len() == 32
-                && suffix
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        })
+    [
+        "manifest_authority_",
+        "owner_erasure_proof_shape_",
+        "owner_erasure_exec_expiry_",
+        "owner_erasure_execution_erase_",
+    ]
+    .iter()
+    .find_map(|prefix| name.strip_prefix(prefix))
+    .is_some_and(|suffix| {
+        suffix.len() == 32
+            && suffix
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
 }
 fn quote(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
@@ -69,9 +76,17 @@ async fn foreign_dependency(db: &Client, schema: &str) -> Result<bool, String> {
             Err(error) => {
                 let transient = error.as_db_error().is_some_and(|error| {
                     error.code() == &tokio_postgres::error::SqlState::INTERNAL_ERROR
-                        && error
+                        && (error
                             .message()
                             .starts_with("cache lookup failed for attribute ")
+                            || error
+                                .message()
+                                .strip_prefix("cache lookup failed for relation ")
+                                .is_some_and(|relation| {
+                                    !relation.is_empty()
+                                        && relation.bytes().all(|byte| byte.is_ascii_digit())
+                                        && relation.parse::<u32>().is_ok()
+                                }))
                 });
                 if !transient || attempt == 2 {
                     return Err(error.to_string());
@@ -82,7 +97,7 @@ async fn foreign_dependency(db: &Client, schema: &str) -> Result<bool, String> {
     unreachable!("every preflight attempt returns or retries within the bound")
 }
 
-pub(super) async fn drop_fixture(db: &Client, schema: &str) -> Result<(), String> {
+pub(crate) async fn drop_fixture(db: &Client, schema: &str) -> Result<(), String> {
     if !valid_name(schema) {
         return Err("invalid fixture schema".into());
     }
@@ -107,7 +122,7 @@ pub(super) async fn drop_fixture(db: &Client, schema: &str) -> Result<(), String
         ) RETURNS boolean LANGUAGE plpgsql SECURITY INVOKER AS $$
         DECLARE function_name text; function_arguments text;
         BEGIN
-            IF fixture_schema !~ '^manifest_authority_[0-9a-f]{32}$'
+            IF fixture_schema !~ '^(manifest_authority|owner_erasure_proof_shape|owner_erasure_exec_expiry|owner_erasure_execution_erase)_[0-9a-f]{32}$'
                 OR current_schema() IS DISTINCT FROM fixture_schema
                 OR NOT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname=fixture_schema
                     AND nspowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)) THEN
@@ -163,7 +178,19 @@ fn only_generated_fixture_names_are_accepted_and_identifiers_are_quoted() {
     assert!(valid_name(
         "manifest_authority_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     ));
+    for prefix in [
+        "owner_erasure_proof_shape_",
+        "owner_erasure_exec_expiry_",
+        "owner_erasure_execution_erase_",
+    ] {
+        assert!(valid_name(&format!("{prefix}{}", "a".repeat(32))));
+        assert!(!valid_name(&format!("{prefix}{}", "A".repeat(32))));
+        assert!(!valid_name(&format!("{prefix}{}", "a".repeat(31))));
+        assert!(!valid_name(&format!("{prefix}{}", "a".repeat(33))));
+    }
     for name in [
+        "owner_erasure_unselected_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "owner_erasure_proof_shape_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_extra",
         "public",
         "manifest_authority_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         "manifest_authority_a;DROP SCHEMA public",
