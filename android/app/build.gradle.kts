@@ -111,7 +111,11 @@ android {
         // Robolectric 4.17 reads raw FileDescriptor internals through
         // jdk.internal.access, which JDK 17+ does not export to test code.
         // Only this package is opened; see robolectric.org/getting-started.
-        unitTests.all { it.jvmArgs("--add-opens=java.base/jdk.internal.access=ALL-UNNAMED") }
+        unitTests.all {
+            it.jvmArgs("--add-opens=java.base/jdk.internal.access=ALL-UNNAMED")
+            // Preserve the actual native-linkage or assertion cause in CI output.
+            it.testLogging.exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        }
     }
     // The same signature corpus runs in CI's JVM suite and on an Android device.
     for (testSource in listOf("test", "androidTest")) {
