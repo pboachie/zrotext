@@ -29,9 +29,9 @@ class GatewayHomePowerLifecycleTest {
     }
     @Test fun leavingHomeAndPausingRemoveTheReceiverAndResumeObservesAgain() {
         compose.runOnIdle { assertEquals(1, receiverCount()) }
-        compose.onNodeWithText("Setup").performClick()
+        compose.openGatewayPage("Setup")
         compose.runOnIdle { assertEquals(0, receiverCount()) }
-        compose.onNodeWithText("Home").performClick()
+        compose.openGatewayPage("Home")
         compose.runOnIdle { assertEquals(1, receiverCount()) }
         compose.activityRule.scenario.moveToState(Lifecycle.State.STARTED)
         assertEquals(0, receiverCount())

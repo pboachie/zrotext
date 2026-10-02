@@ -34,7 +34,7 @@ class ConversationEnrollmentEntryTest {
         node.performClick()
     }
     private fun open() {
-        compose.onNode(hasText("Connection") and hasClickAction()).performClick()
+        compose.openGatewayPage("Connection")
         click("Open conversation review")
     }
     private fun replies(): Boolean = compose.activity.conversationRepliesEnabled
