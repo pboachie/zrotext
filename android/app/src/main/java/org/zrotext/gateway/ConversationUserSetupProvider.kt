@@ -22,7 +22,8 @@ internal class ConversationUserSetupProvider(private val context: Context, priva
     }
 
     /** Explicit worker action; disabled resolution touches no host, database or Keystore. */
-    fun resolve(publicSetupBytes: ByteArray, enabled: Boolean = false): Prepared? {
+    fun resolve(publicSetupBytes: ByteArray, enabled: Boolean = false,
+                initialManifests: List<ByteArray> = emptyList()): Prepared? {
         if (!enabled) return null
         check(Build.VERSION.SDK_INT >= 31)
         val application = checkNotNull(context.applicationContext)
@@ -43,7 +44,11 @@ internal class ConversationUserSetupProvider(private val context: Context, priva
         host.requireCurrent()
         check(lines.currentLineBinding() == line)
         host.requireCurrent()
-        return Prepared(decoded.first, matches.single())
+        val selected = decoded.first
+        require(initialManifests.size <= ConversationEnrollmentSession.MAX_CHAIN)
+        return Prepared(ConversationUserSetupController.Selection(selected.identity, selected.intervalId,
+            selected.lineId, selected.bindingGeneration, selected.peer, selected.bindings,
+            selected.site, selected.instance, selected.phoneReaderId, initialManifests), matches.single())
     }
 
     companion object {

@@ -93,7 +93,8 @@ interval and fresh phone approval from the domain.
 Stop remains a request until durable closure is observed. A failed durable close
 is described as capture disabled locally with closure unconfirmed. Retained
 encrypted content is deleted separately, and submitted messages cannot be
-recalled. This component does not enable production conversation transfer.
+recalled. Server composition, existing owner custody, root-signed manifests and
+the phone's exact content-transfer approval remain required.
 
 Closing or backgrounding the view closes its owned setup controller and rejects
 late callbacks. Reopening creates a fresh controller and does not restore phone
@@ -106,5 +107,59 @@ changed observations, closing and backgrounding invalidate pending UI actions
 and completions. Opening or cancelling the input does not remount the consent
 pane or renew approval. An external file picker during an active interval still
 closes that interval; returning cannot restore it. A failed close remains visible
-and prevents another setup in that activity. Radio execution remains disabled
-in this UI composition.
+and prevents another setup in that activity. Replies remain off by default.
+After review opt-in, **Allow approved replies for this session** is a separate
+deliberate choice, disclosed with carrier charges. Its value selects the existing
+guarded execution composition for that setup only. It cannot grant content
+consent, import reply authority, create an execution grant or bypass policy.
+Candidate replacement, pause, stop, closing and recreation withdraw this choice;
+the owned runtime closes before later callbacks can restore authority.
+Each reply control belongs to its exact local choice generation. Earlier control
+actions cannot re-enable a withdrawn choice or apply to a reselected candidate.
+
+**Enroll conversation keys and compared root** opens a separate foreground
+ceremony. It requires the current proof-authenticated host, an owner-approved
+line, selected SIM continuity, SMS permissions and Android API 31 or later.
+Creating a reader explicitly provisions a hardware ECDH key through the existing
+enrollment lifecycle and initializes local journal protection when there is no
+retained state needing recovery. The existing paired signing key is read without
+creation or signing and must have StrongBox or TEE custody. Only public values
+are exposed. The 223-byte `ZTPK01` packet binds account, device, line, paired
+signing-point SHA256, big-endian binding generation, reader point and signing
+point. Its independently compared fingerprint is SHA256 of
+`ZTSE/phone-keys/v1` followed by a zero byte and the complete packet.
+Software or unknown reader custody is refused. Lost protection with retained
+conversation, inbound or suppression state is never silently recreated.
+
+Root import accepts only the existing public genesis pin for the authenticated
+account. The full fingerprint is independently entered and compared, never
+autofilled from the downloaded candidate. Separate confirmation consumes the
+existing comparison receipt and persists an unfresh root pin. Cancellation,
+backgrounding, host/line/SIM or permission loss fence storage precommit.
+Completed enrollment remains durable; closing does not delete keys or reset trust.
+Enrollment never grants capture, content transfer or sending.
+
+**Save public phone key export** explicitly selects a public binary-file
+destination. Only the requested public packet survives that destination picker;
+review, reply permission and pending enrollment still withdraw on pause.
+Saving resumes in the foreground and rechecks the original authenticated host,
+line, SIM, permissions and both existing hardware keys. Its elapsed lifetime is
+five minutes and is checked again after binding validation, before opening the
+selected destination; changed or lost keys are never replaced. Cancel, explicit close or
+destruction discards pending export. Pause fences a write already in progress.
+The completion presents the exact saved packet fingerprint for independent
+comparison directly on the phone; a failed write may leave an incomplete public
+file, which must be discarded. Files and fingerprints alone grant no authority;
+the owner flow must match the export against current paired scope and keys.
+
+First review accepts at most 64 public root-signed manifest predecessor links,
+one canonical base64 manifest per line. Verification and every trust CAS use the
+same negotiated authenticated socket clock as ordinary setup, without a separate
+connection or phone wall-clock fallback. Genesis and each newly accepted link
+must still be live; expired history and missing keys require separately supported
+recovery and cannot be restored by this UI. The complete chain is preflighted
+against the selected setup predecessor and hardware reader before its first CAS.
+An interrupted import can resume from its exact persisted signed checkpoint;
+replaying an accepted prefix cannot lower or duplicate the high-water mark.
+Missing server root custody, initial archive/reader manifest publication or
+validated SDK mounting still prevents ordinary production activation.
