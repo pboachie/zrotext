@@ -5,6 +5,22 @@ This historical source review is complemented by the current
 browser-rendered checks and their limits. Its current shell, fleet and summary
 tests do not turn the earlier source-only findings into a conformance claim.
 
+**Palette note:** the shared owner shell introduced after this review replaced
+the reviewed light theme on the devices, account, SMS-lines, seats, observer,
+template-preview and conversation pages with the dark token set from
+[DESIGN.md](DESIGN.md) (`#0b0f0c`/`#111712`/`#161e17` surfaces, `#f0f3e9`
+text, `#99a696` secondary, `#b6f36a` accent and focus, `#edbe70` caution).
+Computed ratios for that implemented palette and the rendered-contrast
+enforcement live in the candidate gate; the light-theme values below apply
+only to files that have not adopted the shell. Of the findings below, M1
+(receptionist-demo at-rest control borders below 3:1) remains open in that
+unserved local demo page. The source-review advisories A1 (focus falls to `body` after
+sign-in/password-change view switches), A2 (capacity text set while its status
+region is still hidden), A4 (repeated "Use this line" names), A5 (generic
+validation text without field linkage), A6 (`.check` rows below a 44px target)
+and A3's `cursor: wait` on disabled buttons also remain open; A7's light-theme
+border values are superseded by the passing dark-palette borders. These remain the remediation shortlist below and are not a conformance claim.
+
 The separate [Android gateway review](ANDROID-ACCESSIBILITY.md) covers the app's
 Compose screen and records the limits of its automated and emulator checks.
 
