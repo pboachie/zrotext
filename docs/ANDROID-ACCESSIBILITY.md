@@ -61,6 +61,17 @@ Compose-clock JVM landscape regressions verify actual scrolling and reachable
 Pause/disclosure; see [the integrated candidate gate](CANDIDATE-ACCESSIBILITY.md).
 These checks validate platform semantics, not spoken announcements.
 
+Home uses the common dark canvas for its observations and transparent outlined
+actions. Navigation remains named text with native button semantics; an underline
+and selected/state descriptions identify the current page. The compact navigation
+regression measures visible targets between 48 and 52 dp high at default text size
+and checks that navigation does not request access or start services. A 320 dp
+viewport uses two navigation columns so complete names stay on one line. Existing
+heading, live-region, observation order, 48 dp target, masking, disclosure and
+large-text assertions remain. At large text sizes, quick actions use one column
+and observation labels and values stack. The app keeps its dark palette under
+either system theme; changing system appearance does not change authorization.
+
 ```sh
 cd android
 ./gradlew :app:lintDebug :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon

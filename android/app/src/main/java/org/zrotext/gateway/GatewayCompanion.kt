@@ -4,6 +4,7 @@ package org.zrotext.gateway
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -16,12 +17,12 @@ import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ModalBottomSheet
@@ -76,32 +77,36 @@ internal fun GatewayCompanion(initialPage: GatewayPage = GatewayPage.HOME,
         val scope = rememberCoroutineScope()
         val resetScroll: () -> Unit = { scope.launch { scroll.scrollTo(0) } }
         Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding().clipToBounds()
-            .verticalScroll(scroll).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            .verticalScroll(scroll).padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(if (page == GatewayPage.HOME) 8.dp else 16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 GatewayBrandMark()
-                Text("ZROtext", style = MaterialTheme.typography.titleLarge,
+                Text("ZROtext", style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.semantics { heading() })
             }
-            val columns = if (LocalDensity.current.fontScale > 1.3f) 2 else 4
-            GatewayPage.entries.chunked(columns).forEach { pages ->
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    pages.forEach { destination ->
-                        OutlinedButton(onClick = { navigate(destination) },
-                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
-                            shape = MaterialTheme.shapes.medium,
-                            colors = ButtonDefaults.outlinedButtonColors(
-                                containerColor = if (page == destination) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent,
-                                contentColor = if (page == destination) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface),
-                            modifier = Modifier.weight(1f).sizeIn(minHeight = 48.dp).semantics {
-                                selected = page == destination
-                                stateDescription = if (page == destination) "Current screen" else "Open screen"
-                            }, border = BorderStroke(1.dp, if (page == destination)
-                                MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline)) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                GatewayShortcutIcon(destination)
-                                Text(destination.label, style = MaterialTheme.typography.labelSmall,
-                                    textAlign = TextAlign.Center)
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                val columns = if (LocalDensity.current.fontScale > 1.3f || maxWidth < 296.dp) 2 else 4
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    GatewayPage.entries.chunked(columns).forEach { pages ->
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            pages.forEach { destination ->
+                                TextButton(onClick = { navigate(destination) },
+                                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
+                                    shape = MaterialTheme.shapes.small,
+                                    colors = ButtonDefaults.textButtonColors(containerColor = Color.Transparent,
+                                        contentColor = if (page == destination) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface),
+                                    modifier = Modifier.weight(1f).sizeIn(minWidth = 48.dp, minHeight = 48.dp).semantics {
+                                        selected = page == destination
+                                        stateDescription = if (page == destination) "Current screen" else "Open screen"
+                                    }) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                        Text(destination.label, style = MaterialTheme.typography.labelMedium,
+                                            textAlign = TextAlign.Center)
+                                        HorizontalDivider(Modifier.width(24.dp), thickness = 2.dp,
+                                            color = if (page == destination) MaterialTheme.colorScheme.primary else Color.Transparent)
+                                    }
+                                }
                             }
                         }
                     }
@@ -140,72 +145,59 @@ internal fun GatewayHome(
             GatewaySignal(mood, motion)
             Text(mood.title, style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
-            GatewayStatusText("Device status", authenticatedStatus)
+            GatewayStatusText("Device status", authenticatedStatus, textAlign = TextAlign.Center)
             Text("Connection proof, not SMS readiness.", style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
         }
     }
     GatewayEntrance(1, motion) {
-        Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.large,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline), modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                GatewaySectionTitle("Message activity")
-                fun label(count: GatewaySummaryCount?): String = when (summary.phase) {
-                    GatewaySummaryState.Phase.UNAVAILABLE -> "Unavailable"
-                    GatewaySummaryState.Phase.LOADING -> count?.let { "${it.label()} (refreshing)" } ?: "Loading…"
-                    GatewaySummaryState.Phase.STALE -> count?.let { "${it.label()} (stale)" } ?: "Unavailable"
-                    GatewaySummaryState.Phase.FRESH -> count?.label() ?: "Unavailable"
-                }
-                GatewayObservationRow("Submitted today", label(summary.snapshot?.submittedToday))
-                GatewayObservationRow("In queue", label(summary.snapshot?.pending))
-                GatewayObservationRow("Awaiting receipt", label(summary.snapshot?.inFlight))
-                Text(summaryStatus, style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                summary.snapshot?.let { snapshot ->
-                    Text("Device-scoped UTC observation: ${java.time.Instant.ofEpochMilli(snapshot.observedMs)}. Submitted is not delivered. In queue includes accepted, queued and claimed work, which can already hold a grant. Awaiting receipt includes submitting and submitted states.",
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-
+        Column(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+            GatewayHomeSectionTitle("Message activity")
+            fun label(count: GatewaySummaryCount?): String = when (summary.phase) {
+                GatewaySummaryState.Phase.UNAVAILABLE -> "Unavailable"
+                GatewaySummaryState.Phase.LOADING -> count?.let { "${it.label()} (refreshing)" } ?: "Loading…"
+                GatewaySummaryState.Phase.STALE -> count?.let { "${it.label()} (stale)" } ?: "Unavailable"
+                GatewaySummaryState.Phase.FRESH -> count?.label() ?: "Unavailable"
+            }
+            val prominent = summary.snapshot != null && summary.phase != GatewaySummaryState.Phase.UNAVAILABLE
+            GatewayObservationRow("Submitted today", label(summary.snapshot?.submittedToday), prominent)
+            GatewayObservationRow("In queue", label(summary.snapshot?.pending), prominent)
+            GatewayObservationRow("Awaiting receipt", label(summary.snapshot?.inFlight))
+            Text(summaryStatus, style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            summary.snapshot?.let { snapshot ->
+                Text("Device-scoped UTC observation: ${java.time.Instant.ofEpochMilli(snapshot.observedMs)}. Submitted is not delivered. In queue includes accepted, queued and claimed work, which can already hold a grant. Awaiting receipt includes submitting and submitted states.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
     GatewayEntrance(1, motion) {
-        Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.large,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline), modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                GatewaySectionTitle("This phone")
-                GatewayObservationRow("Sending from", sim)
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
-                GatewayObservationRow("Power", power.label)
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
-                GatewayObservationRow("Connection", mood.title.removeSuffix("."))
-                Text("Heartbeat acknowledgments this session: $heartbeats",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+        Column(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+            GatewayHomeSectionTitle("This phone")
+            GatewayObservationRow("Sending from", sim)
+            GatewayObservationRow("Power", power.label)
+            GatewayObservationRow("Connection", mood.title.removeSuffix("."))
+            Text("Heartbeat acknowledgments this session: $heartbeats",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
     // Pause stays beside its disclosure in the main flow, below the observations.
-    OutlinedButton(onClick = onPause, modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp),
-        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary),
-        shape = MaterialTheme.shapes.medium, border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)) {
-        Text("Pause connections")
-    }
+    GatewayHomeButton("Pause connections", onPause, Modifier.fillMaxWidth())
     Text("Pause stops connections. SMS receiving access can still process messages locally; revoke it in Android app settings to stop local processing.",
         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     GatewayEntrance(2, motion) {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            GatewaySectionTitle("Quick controls")
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                GatewayButton(onClick = onConnection, modifier = Modifier.weight(1f)) { Text("Connection controls") }
-                GatewayButton(onClick = onSetup, modifier = Modifier.weight(1f)) { Text("Set up this phone") }
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { widget = "access" }, modifier = Modifier.weight(1f).sizeIn(minHeight = 48.dp)) {
-                    Text("Android access")
-                }
-                OutlinedButton(onClick = { widget = "details" }, modifier = Modifier.weight(1f).sizeIn(minHeight = 48.dp)) {
-                    Text("Phone details")
+            GatewayHomeSectionTitle("Quick controls")
+            val controls = listOf("Connection controls" to onConnection, "Set up this phone" to onSetup,
+                "Android access" to { widget = "access" }, "Phone details" to { widget = "details" })
+            controls.chunked(if (LocalDensity.current.fontScale > 1.3f) 1 else 2).forEach { row ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    row.forEach { (label, action) ->
+                        GatewayHomeButton(label, action, Modifier.weight(1f))
+                    }
                 }
             }
         }
@@ -238,22 +230,41 @@ internal fun GatewayHome(
 
 /** Labels and observations reflow rather than truncating at large text sizes. */
 @Composable
-private fun GatewayObservationRow(label: String, value: String) {
+private fun GatewayObservationRow(label: String, value: String, prominent: Boolean = false) {
     val largeType = LocalDensity.current.fontScale > 1.3f
+    val valueStyle = if (prominent) MaterialTheme.typography.titleLarge else MaterialTheme.typography.bodyMedium
     val description = Modifier.fillMaxWidth().testTag("home-observation-$label")
         .semantics(mergeDescendants = true) {}
     if (largeType) {
         Column(description, verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(label, style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(value, style = MaterialTheme.typography.bodyMedium)
+            Text(value, style = valueStyle)
         }
     } else {
         Row(description, horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.Top) {
             Text(label, modifier = Modifier.weight(0.35f), style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(value, modifier = Modifier.weight(0.65f), style = MaterialTheme.typography.bodyMedium)
+            Text(value, modifier = Modifier.weight(0.65f), style = valueStyle, textAlign = TextAlign.End)
         }
+    }
+}
+
+@Composable
+private fun GatewayHomeSectionTitle(label: String) {
+    Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.semantics { heading() })
+}
+
+/** Quiet Home actions retain a visible boundary, native button semantics and full-size targets. */
+@Composable
+private fun GatewayHomeButton(label: String, action: () -> Unit, modifier: Modifier = Modifier) {
+    OutlinedButton(onClick = action, modifier = modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp), shape = MaterialTheme.shapes.small,
+        colors = ButtonDefaults.outlinedButtonColors(containerColor = Color.Transparent,
+            contentColor = MaterialTheme.colorScheme.onSurface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)) {
+        Text(label, textAlign = TextAlign.Center)
     }
 }

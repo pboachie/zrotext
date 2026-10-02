@@ -37,6 +37,50 @@ class GatewayCompanionInteractionTest {
         RuntimeEnvironment.setFontScale(1f)
     }
 
+    @Test fun compactNavigationKeepsNamedSelectedActionsAndVisibleTouchTargets() {
+        val density = compose.activity.resources.displayMetrics.density
+        GatewayPage.entries.forEach { destination ->
+            val node = compose.onNode(hasText(destination.label) and hasClickAction())
+                .assertIsDisplayed().fetchSemanticsNode()
+            assertEquals(destination == GatewayPage.HOME, node.config[SemanticsProperties.Selected])
+            assertEquals(if (destination == GatewayPage.HOME) "Current screen" else "Open screen",
+                node.config[SemanticsProperties.StateDescription])
+            assertTrue("${destination.label} must retain a visible 48 dp touch target", node.size.height / density >= 48f)
+            assertTrue("${destination.label} must retain a visible 48 dp width", node.size.width / density >= 48f)
+            assertTrue("Compact navigation must leave room for Home status", node.size.height / density <= 52f)
+        }
+        compose.runOnIdle {
+            assertNull(shadowOf(compose.activity).lastRequestedPermission)
+            assertTrue(shadowOf(compose.activity).allStartedServices.isEmpty())
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "w320dp-h640dp")
+    fun narrowNavigationReflowsWithoutBreakingNamesOrTouchTargets() {
+        val density = compose.activity.resources.displayMetrics.density
+        val actions = GatewayPage.entries.associateWith { destination ->
+            compose.onNode(hasText(destination.label) and hasClickAction())
+                .assertIsDisplayed().fetchSemanticsNode()
+        }
+        actions.forEach { (destination, node) ->
+            assertTrue("${destination.label} must keep a 48 dp target", node.size.height / density >= 48f)
+            assertTrue("${destination.label} must keep its name on one line", node.size.height / density <= 52f)
+            assertTrue("Narrow navigation must provide room for complete names", node.size.width / density >= 130f)
+            assertEquals(destination == GatewayPage.HOME, node.config[SemanticsProperties.Selected])
+        }
+        assertEquals(actions.getValue(GatewayPage.HOME).boundsInRoot.top,
+            actions.getValue(GatewayPage.SETUP).boundsInRoot.top, 0f)
+        assertTrue(actions.getValue(GatewayPage.HOME).boundsInRoot.bottom <=
+            actions.getValue(GatewayPage.CONNECTION).boundsInRoot.top)
+        assertEquals(actions.getValue(GatewayPage.CONNECTION).boundsInRoot.top,
+            actions.getValue(GatewayPage.TOOLS).boundsInRoot.top, 0f)
+        compose.runOnIdle {
+            assertNull(shadowOf(compose.activity).lastRequestedPermission)
+            assertTrue(shadowOf(compose.activity).allStartedServices.isEmpty())
+        }
+    }
+
     @Test fun homeShowsRealStateAndNavigationKeepsPilotActionsSeparate() {
         compose.onNodeWithText("Gateway home").assertExists()
         compose.onNodeWithText("Arm one test SMS").assertDoesNotExist()
