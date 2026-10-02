@@ -529,6 +529,11 @@ pub(super) async fn prepared() -> (Fixture, SessionPrincipal) {
     ] {
         f.db.batch_execute(migration).await.unwrap();
     }
+    f.db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/083_encrypted_template_versions.sql"
+    ))
+    .await
+    .unwrap();
     let owner = owner(&f).await;
     (f, owner)
 }
