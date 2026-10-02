@@ -33,7 +33,7 @@ must match every field, including the fresh nonce. Reply variants are `fenced`,
 `already_fenced`, `competing_fence`, `epoch`, `recorded`, `refused_epoch` with an
 `epoch`, or `unfenced`/`unconfirmed` without extra fields. The reply must also be
 valid for the requested operation: an unrelated valid signature is not evidence.
-Standard base64 encodes a raw 64-byte P-256 ECDSA signature. The transcript is
+Standard base64 encodes a raw 64-byte P-256 ECDSA signature using SHA-256. The transcript is
 UTF-8 `ZT/external-authority/v1` followed by NUL, then the request and reply,
 each prefixed by its unsigned 32-bit big-endian byte length. Request field order
 is `namespace,nonce,operation`; operation and reply start with `kind`, followed

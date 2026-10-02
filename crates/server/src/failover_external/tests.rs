@@ -380,7 +380,7 @@ fn timeout_and_partition_remain_unconfirmed_without_transport_retry() {
     let (url, ca, handle) = server(
         move |request| {
             if seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0 {
-                thread::sleep(Duration::from_millis(250));
+                thread::sleep(Duration::from_millis(2500));
             }
             Some(signed(request, Reply::Epoch { epoch: 4 }))
         },
@@ -391,10 +391,12 @@ fn timeout_and_partition_remain_unconfirmed_without_transport_retry() {
         adapter.call(Operation::ReadEpoch),
         Some(Reply::Epoch { epoch: 4 })
     );
-    adapter.timeout = Duration::from_millis(100);
+    // Allow localhost's platform IPv6-to-IPv4 fallback to finish before
+    // the delayed response; this checks an acknowledged request, not DNS.
+    adapter.timeout = Duration::from_millis(1500);
     let start = std::time::Instant::now();
     assert_eq!(adapter.call(Operation::ReadEpoch), None);
-    assert!(start.elapsed() < Duration::from_millis(220));
+    assert!(start.elapsed() < Duration::from_millis(2200));
     handle.join().unwrap();
     assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 2);
     assert_eq!(adapter.call(Operation::ReadEpoch), None);

@@ -134,8 +134,10 @@ impl Authority {
                 .map_err(|_| "external authority key")?,
         )
         .map_err(|_| "external authority key")?;
-        let bearer = String::from_utf8(bounded_file(&config.bearer_file, 258)?)
-            .map_err(|_| "external authority credential")?;
+        let bearer = zeroize::Zeroizing::new(
+            String::from_utf8(bounded_file(&config.bearer_file, 258)?)
+                .map_err(|_| "external authority credential")?,
+        );
         let bearer = bearer.trim_end_matches(['\r', '\n']);
         if !(32..=256).contains(&bearer.len()) || !bearer.bytes().all(|c| c.is_ascii_graphic()) {
             return Err("external authority credential");
