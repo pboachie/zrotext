@@ -134,7 +134,8 @@ async fn authenticated_http_custody_requires_csrf_and_exports_same_independently
     )
     .unwrap()
     .with_mfa_cipher(Arc::new(o.cipher))
-    .with_root_custody_enabled();
+    .with_root_custody_opt_in(true, false)
+    .unwrap();
     let app = super::super::router(state);
     let cookie = format!(
         "{}={}; {}={}",
