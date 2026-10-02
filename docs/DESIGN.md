@@ -70,7 +70,9 @@ capture, approve a request, or start a service. After selecting a public file,
 it still requires current pairing, exact line binding and an existing enrolled
 hardware reader. Software-only emulator custody is not accepted as hardware
 enrollment. The opt-in is not saved or restored from intents or preferences, and
-closing, backgrounding or recreating the activity turns it off. Returning from
+closing, backgrounding or recreating the activity turns it off.
+Pausing a still-visible activity also revokes review and closes its setup;
+visibility alone does not preserve foreground authority. Returning from
 the initial picker requires a fresh opt-in. This review control does not grant
 SMS permissions or replace the separate selected-conversation phone agreement.
 An explicitly selected public setup file is bounded before

@@ -389,6 +389,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
+        revokeConversationForeground()
         summaryResumed = false
         clearSummaryReader(clearKey = true)
         super.onPause()
@@ -404,6 +405,11 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        revokeConversationForeground()
+        super.onStop()
+    }
+
+    private fun revokeConversationForeground() {
         conversationSetupEnabled = false
         // A file picker may return a public candidate, but never preserves phone authority.
         conversationEntry?.close()
@@ -414,8 +420,7 @@ class MainActivity : ComponentActivity() {
         conversationVerifiedLineLabel = null
         conversationReplyPending = false
         cancelConversationReplyImport()
-        if (conversationPickEpoch == null) closeConversationEntry()
-        super.onStop()
+        if (conversationPickEpoch == null && conversationEntryOpen) closeConversationEntry()
     }
 
     internal fun acceptConversationSetupFile(uri: Uri?) {
