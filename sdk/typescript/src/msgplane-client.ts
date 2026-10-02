@@ -7,7 +7,9 @@
  * SEALED_ADMISSION_ENABLED (default off); this module must not be
  * published as a production SDK or wired to a send, inbound, webhook or
  * radio path, and production submission is handled by src/sealed-client.ts,
- * which targets that mounted route. This client never constructs a plaintext
+ * which targets that mounted route. The read-only devices/webhooks/usage
+ * GETs share the same flag but are out of scope here: this client covers
+ * the envelope plane only and grants no metadata access. This client never constructs a plaintext
  * alternative, never targets the synthetic-alpha route, and never accepts a
  * caller-supplied idempotency key: the unsigned-envelope digest is the
  * identity (Q6).

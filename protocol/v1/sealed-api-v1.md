@@ -139,7 +139,7 @@ first acceptance (Q8). Deleting an accepted row without a separate durable
 event-ID and device-sequence high-water fence would permit replay; ciphertext
 may be purged earlier, the fence may not.
 
-## Devices (proposed)
+## Devices (implemented behind the admission flag)
 
 `GET /v1/sealed/devices` and `GET /v1/sealed/devices/{device_id}` are a
 read-only projection of the owner enrollment view onto the sealed API-key
@@ -169,7 +169,7 @@ Design boundaries of this surface:
   (Android API 31+, Q5) is a property the owner verifies at enrollment — this
   surface reports stored state only.
 
-## Webhooks (proposed)
+## Webhooks (implemented behind the admission flag)
 
 The webhook surface projects the owner-session lifecycle
 ([webhook-endpoints.md](webhook-endpoints.md)) onto API-key authentication:
