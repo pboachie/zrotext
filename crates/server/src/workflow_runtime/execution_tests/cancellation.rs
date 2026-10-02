@@ -298,7 +298,6 @@ async fn cancellation_replay_expiring_during_job_lock_wait_rolls_back_access() {
     };
     let (result, ()) = tokio::join!(&mut waiting, release);
     assert!(matches!(result, Err(crate::auth::AuthError::Forbidden)));
-    drop(waiting);
     let row = flow.case.f.db.query_one("SELECT state,(SELECT count(*) FROM usage_ledger WHERE entry_kind='refund'),(SELECT count(*) FROM workflow_integration_access WHERE request_id=$2) FROM messages WHERE id=$1", &[&message,&request]).await.unwrap();
     assert_eq!(row.get::<_, String>(0), "cancelled");
     assert_eq!(row.get::<_, i64>(1), 1);
