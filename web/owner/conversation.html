@@ -23,6 +23,16 @@
     <label>Independently accepted manifest digest (64 lowercase hex characters) <input id="owner-digest" autocomplete="off" maxlength="64"></label>
     <label>Optional received event UUID <input id="owner-event" autocomplete="off" maxlength="36"></label>
     <label><input id="content-consent" type="checkbox"> Allow phone SMS body transfer for this exact line and peer. Pairing and SMS permission do not grant this consent; separate phone approval is required.</label>
+    <fieldset><legend>First reader manifest</legend>
+    <p>For an account with an independently accepted root receipt and no manifest, enter version 0 and a digest of 64 zeroes above. Import the selected phone's public key export and compare its fingerprint directly on that phone. Import your existing encrypted archive and compare its key ID with your separate archive receipt. These files contain public review information; header comparison does not decrypt or authenticate the archive backup.</p>
+    <label>Independently accepted paired phone signing fingerprint (64 lowercase hex characters) <input id="genesis-phone-signing-fingerprint" autocomplete="off" maxlength="64"></label>
+    <label>Independently compared phone export fingerprint (64 lowercase hex characters) <input id="genesis-phone-fingerprint" autocomplete="off" maxlength="64"></label>
+    <label>Independently accepted archive key ID (64 lowercase hex characters) <input id="genesis-archive-id" autocomplete="off" maxlength="64"></label>
+    <label>Public phone key export <input id="genesis-phone-file" type="file" accept="application/octet-stream"></label>
+    <label>Existing encrypted archive <input id="genesis-archive-file" type="file" accept="application/octet-stream"></label>
+    <label><input id="genesis-consent" type="checkbox"> Approve initial public reader authority with my existing offline root custodian. Content transfer and replies require separate approval.</label>
+    <button id="provision-initial" type="button">Review first manifest with offline custodian</button>
+    </fieldset>
     <label>Existing root-signed activation successor <input id="activation-file" type="file" accept="application/octet-stream"></label>
     <button id="prepare-activation" type="button">Review activation with existing offline custodian</button>
     <button id="activate-conversation" type="button">Submit activation for phone approval</button>
