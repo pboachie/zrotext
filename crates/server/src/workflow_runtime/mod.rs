@@ -20,6 +20,7 @@ mod proposals;
 mod status;
 pub use proposals::propose_action;
 pub use status::read_action_status;
+pub use status::{ActionStatus, DeliveryStatus, read_action_delivery_status};
 #[cfg(test)]
 mod database_tests;
 #[cfg(test)]

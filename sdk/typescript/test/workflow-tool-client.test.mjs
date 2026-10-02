@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { WorkflowToolClient, WorkflowToolError, workflowTools, workflowFunctions } from '../dist/workflow-tool-client.js';
-import { validateWorkflowRequest } from '../dist/workflow-tools.js';
+import { validateWorkflowRequest, validateWorkflowResponse } from '../dist/workflow-tools.js';
 import { workflowActionDigest } from '../dist/workflow-decisions.js';
 import { webcrypto } from 'node:crypto';
 globalThis.crypto ??= webcrypto;
@@ -15,6 +15,20 @@ const credential = 'ztw_' + Buffer.alloc(32, 7).toString('base64url');
 const contact = { kind: 'contact', result: { contact_id: uuid(3), purpose: 'transactional', peer_digest: 'ab'.repeat(32) } };
 const reply = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } });
 const client = fetchImpl => new WorkflowToolClient({ origin: 'https://gateway.example', credential, fetchImpl });
+test('status distinguishes exact delivery lifecycle from action phase and unavailable metadata', () => {
+  const action = { key: { account_id: uuid(1), action_id: uuid(2), revision: 1, binding_digest: 'ab'.repeat(32) }, record_version: 1, phase: 'approved' };
+  for (const state of ['accepted', 'queued', 'claimed', 'submitting', 'submitted', 'delivered', 'delivery_unknown', 'unknown', 'failed', 'cancelled', 'expired']) {
+    validateWorkflowResponse('workflow.action.status', { kind: 'action', result: { ...action, delivery: {
+      availability: 'available', message_id: uuid(3), dispatch_id: uuid(4), state, state_version: 1, accepted_at_ms: 1, updated_at_ms: 2,
+    } } });
+  }
+  for (const availability of ['not_bound', 'unavailable']) {
+    validateWorkflowResponse('workflow.action.status', { kind: 'action', result: { ...action, delivery: { availability } } });
+  }
+  assert.throws(() => validateWorkflowResponse('workflow.action.status', { kind: 'action', result: action }), /unexpected_response/);
+  assert.throws(() => validateWorkflowResponse('workflow.action.status', { kind: 'action', result: { ...action, delivery: { availability: 'delivered' } } }), /unexpected_response/);
+  validateWorkflowResponse('workflow.action.propose', { kind: 'action', result: action });
+});
 function readiness() {
   return { available: true, methods: workflowTools.map(tool => ({ method: tool.name,
     operation: tool.name === 'workflow.action.cancel' ? 'send' : tool.name.replace('workflow.', '').replace('action.', '').replaceAll('.', '_'),
