@@ -32,8 +32,8 @@ pub struct MeterRequest {
     pub api_version: &'static str,
 }
 
-/// Trusted TEST/synthetic transport boundary. There is deliberately no HTTP
-/// provider, credential discovery or runtime registration in this slice.
+/// Trusted TEST transport boundary. Credentials and HTTP remain outside the
+/// delivery transaction; an acknowledgement is not asynchronous validation.
 pub trait TestMeterTransport {
     fn submit(&self, request: MeterRequest) -> impl Future<Output = MeterResponse> + Send;
 }
@@ -49,6 +49,7 @@ pub enum MeterResponse {
         retry_after_seconds: u64,
     },
     Unknown,
+    InvalidResponse,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -214,6 +215,7 @@ fn disposition(response: MeterResponse, claim: &Claim) -> (&'static str, &'stati
             livemode,
         } if !livemode && identifier == claim.request.identifier => ("acknowledged", "", 0),
         MeterResponse::Acknowledged { .. } => ("review", "response", 0),
+        MeterResponse::InvalidResponse => ("review", "response", 0),
         MeterResponse::Http {
             status: 429 | 500..=599,
             retry_after_seconds,

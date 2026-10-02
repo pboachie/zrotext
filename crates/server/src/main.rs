@@ -232,6 +232,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if billing_test.is_none() && hosted_sessions_enabled {
         return Err("Stripe hosted sessions require STRIPE_BILLING_TEST_ENABLED=true".into());
     }
+    let meter_enabled = optional_bool("STRIPE_TEST_METER_FORWARD_ENABLED")?;
+    let meter_key = if meter_enabled {
+        Some(required("STRIPE_TEST_METER_SECRET_KEY")?)
+    } else {
+        None
+    };
+    let meter_transport =
+        zrotext_server::billing::meter_transport::StripeTestMeterTransport::configured(
+            meter_enabled,
+            billing_test.is_some(),
+            meter_key,
+        )?;
     // Usage-limit plans are quota-only operator configuration with no price
     // or provider; the feature is disabled by default and encodes no default
     // limits. See docs/USAGE-PLANS.md.
@@ -944,6 +956,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let billing_notify = config.drain_notify.clone();
         let worker = Arc::new(worker);
         let permits = Arc::new(tokio::sync::Semaphore::new(concurrency));
+        if let Some(transport) = meter_transport {
+            tokio::spawn(zrotext_server::billing::meter_transport::run_queue(
+                billing_database.clone(),
+                transport,
+                billing_draining.clone(),
+                billing_notify.clone(),
+                permits.clone(),
+            ));
+        }
         for risk in [false, true] {
             // Offset the two co-periodic queues by half a tick so their
             // claim bursts never coincide.
