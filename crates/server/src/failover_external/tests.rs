@@ -73,7 +73,9 @@ impl Scratch {
     fn new() -> Self {
         let root = std::env::temp_dir().canonicalize().unwrap();
         let root = root.to_str().unwrap();
-        assert!(!root.contains("../") && !root.contains("..\\"));
+        if root.contains("../") || root.contains("..\\") {
+            panic!("canonical fixture root contains parent traversal syntax");
+        }
         let path = Path::new(root).join(format!("external-authority-{}", Uuid::new_v4()));
         fs::create_dir(&path).unwrap();
         assert!(path.canonicalize().unwrap().starts_with(root));
@@ -539,7 +541,7 @@ fn bounded_configuration_files_require_regular_files_and_preserve_byte_limits() 
     );
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn bounded_configuration_file_refuses_fifo_without_waiting_for_a_writer() {
     const CHILD_PATH: &str = "ZT_EXTERNAL_AUTHORITY_FIFO_TEST_PATH";
@@ -549,14 +551,23 @@ fn bounded_configuration_file_refuses_fifo_without_waiting_for_a_writer() {
     }
     let scratch = Scratch::new();
     let fifo = scratch.0.join("credential");
+    // Only the generated fixture's exact credential path may reach mkfifo;
+    // terminate options independently of its absolute parent directory.
+    let owned_targets = [scratch.0.join("credential")];
+    if !owned_targets.contains(&fifo) {
+        panic!("FIFO target is outside the generated fixture");
+    }
     assert!(
         std::process::Command::new("mkfifo")
+            .arg("--")
             .arg(&fifo)
             .status()
             .unwrap()
             .success()
     );
-    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+    // Linux resolves this kernel-owned link to this running test executable;
+    // no caller-provided executable path or shell is used.
+    let mut child = std::process::Command::new("/proc/self/exe")
         .args([
             "--exact",
             "failover_external::tests::bounded_configuration_file_refuses_fifo_without_waiting_for_a_writer",
