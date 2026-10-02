@@ -126,6 +126,7 @@ fn confirming_fencing() -> ExternalFencing {
 pub(crate) enum AuthorityCall {
     LoadState,
     LoadJournal,
+    HoldDispatch,
     Fence {
         site_id: String,
     },
@@ -151,6 +152,7 @@ pub(crate) struct MemoryAuthority {
     pub(crate) promotions_applied: u64,
     pub(crate) fail_load_state: bool,
     pub(crate) fail_fence: bool,
+    pub(crate) fail_hold: bool,
     pub(crate) fail_promote: bool,
     /// Adversarial: let `n` journal saves succeed after arming, then fail
     /// the next one (None = never).
@@ -191,6 +193,7 @@ impl MemoryAuthority {
             promotions_applied: 0,
             fail_load_state: false,
             fail_fence: false,
+            fail_hold: false,
             fail_promote: false,
             fail_save_after: None,
             saves_since_arm: 0,
@@ -240,6 +243,15 @@ impl MemoryAuthority {
 
 impl WriterAuthority for MemoryAuthority {
     type Error = &'static str;
+
+    fn hold_dispatch(&mut self) -> Result<(), Self::Error> {
+        self.calls.push(AuthorityCall::HoldDispatch);
+        if self.fail_hold {
+            return Err("authority hold unavailable");
+        }
+        self.dispatch_enabled = false;
+        Ok(())
+    }
 
     fn load_state(
         &mut self,

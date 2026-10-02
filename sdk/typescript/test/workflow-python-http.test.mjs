@@ -119,7 +119,8 @@ test('Python uses the shared TLS transport for readiness, proposal, status and o
         idempotent_hint: true, implementation: 'library_candidate', transport_mounted: true, permission_granted: false })),
       scope: { context_id: id(5), device_id: id(7), line_id: id(3) }, send_semantics: 'owner_bound_prepared_only' });
     if (body.method === 'workflow.action.send') return reply(200, { kind: 'send', result: { state: 'waiting_owner_binding' } });
-    reply(200, { kind: 'action', result: { key, record_version: 1, phase: 'proposed' } });
+    reply(200, { kind: 'action', result: { key, record_version: 1, phase: 'proposed',
+      ...(body.method === 'workflow.action.status' ? { delivery: { availability: 'not_bound' } } : {}) } });
   });
   const ready = await invoke(origin, { op: 'readiness' });
   assert.equal(ready.ok, true); assert.equal(ready.result.methods.length, 8);
@@ -128,6 +129,7 @@ test('Python uses the shared TLS transport for readiness, proposal, status and o
   assert.deepEqual(preview.result.result.key, key);
   const status = await invoke(origin, { op: 'status', request_id: id(9), context_id: id(5), action_id: id(2) });
   assert.equal(status.result.result.phase, 'proposed');
+  assert.deepEqual(status.result.result.delivery, { availability: 'not_bound' });
   const send = await invoke(origin, { op: 'submit', request_id: id(10), key });
   assert.deepEqual(send.result, { kind: 'send', result: { state: 'waiting_owner_binding' } });
   assert.deepEqual(requests.map(request => request.method), ['GET', 'POST', 'POST', 'POST']);

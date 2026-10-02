@@ -19,7 +19,7 @@ import org.robolectric.annotation.GraphicsMode
 class GatewaySetupGuideTest {
     @get:Rule val compose = createAndroidComposeRule<MainActivity>()
 
-    private fun setup() { compose.onNodeWithText("Setup").performScrollTo().performClick() }
+    private fun setup() { compose.openGatewayPage("Setup") }
     private fun noAction() = compose.runOnIdle {
         assertNull(shadowOf(compose.activity).lastRequestedPermission)
         assertTrue(shadowOf(compose.activity).allStartedServices.isEmpty())

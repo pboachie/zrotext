@@ -232,6 +232,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if billing_test.is_none() && hosted_sessions_enabled {
         return Err("Stripe hosted sessions require STRIPE_BILLING_TEST_ENABLED=true".into());
     }
+    let meter_enabled = optional_bool("STRIPE_TEST_METER_FORWARD_ENABLED")?;
+    let meter_key = if meter_enabled {
+        Some(required("STRIPE_TEST_METER_SECRET_KEY")?)
+    } else {
+        None
+    };
+    let meter_transport =
+        zrotext_server::billing::meter_transport::StripeTestMeterTransport::configured(
+            meter_enabled,
+            billing_test.is_some(),
+            meter_key,
+        )?;
     // Usage-limit plans are quota-only operator configuration with no price
     // or provider; the feature is disabled by default and encodes no default
     // limits. See docs/USAGE-PLANS.md.
@@ -345,6 +357,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // would only report the database as unavailable.
     zrotext_postgres_connection::check_url(&database_url)
         .map_err(|error| format!("DATABASE_URL: {error}"))?;
+    let external_authority_config = if failover_executor_env.is_some() {
+        match env::var("FAILOVER_EXTERNAL_AUTHORITY_CONFIG") {
+            Ok(path) if !path.is_empty() => Some(std::path::PathBuf::from(path)),
+            Ok(_) | Err(env::VarError::NotPresent) => None,
+            Err(_) => return Err("external authority configuration path must be UTF-8".into()),
+        }
+    } else {
+        None
+    };
+    if external_authority_config.is_some() {
+        failover_executor::hold_before_external_start(&database_url).await?;
+    }
     // Readiness tracks the failover executor only when it is enabled; the
     // default-off path adds no signal and changes nothing.
     let failover_executor_healthy = failover_executor_env
@@ -944,6 +968,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let billing_notify = config.drain_notify.clone();
         let worker = Arc::new(worker);
         let permits = Arc::new(tokio::sync::Semaphore::new(concurrency));
+        if let Some(transport) = meter_transport {
+            tokio::spawn(zrotext_server::billing::meter_transport::run_queue(
+                billing_database.clone(),
+                transport,
+                billing_draining.clone(),
+                billing_notify.clone(),
+                permits.clone(),
+            ));
+        }
         for risk in [false, true] {
             // Offset the two co-periodic queues by half a tick so their
             // claim bursts never coincide.
@@ -965,12 +998,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }));
         }
     }
-    let _failover_executor_thread = failover_executor::spawn_failover_executor_with_adapters(
+    let _failover_executor_thread = failover_executor::spawn_failover_executor_with_external(
         failover_executor_env,
         config.database_url.clone(),
         config.draining.clone(),
         failover_executor_healthy.unwrap_or_default(),
         failover_adapters,
+        external_authority_config,
     );
     eprintln!(
         "zrotext site={} instance={} listening={bind}",

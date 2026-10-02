@@ -429,10 +429,9 @@ fn a_promotion_epoch_the_anchor_already_witnessed_is_refused() {
 }
 
 /// The witness record happens only after the epoch compare-and-set succeeds,
-/// and its refusal never blocks or rolls the promotion back: an anchor that
-/// lags can only force refusals later, never authorize anything now.
+/// and its refusal keeps completion pending without rolling the CAS back.
 #[test]
-fn a_successful_promotion_witnesses_the_epoch_after_the_cas_and_survives_refusal() {
+fn a_successful_promotion_requires_durable_witness_after_the_cas() {
     // Part one: the witness follows the compare-and-set. A failed CAS leaves
     // the anchor untouched; the successful retry records the epoch.
     let mut anchor = MemoryEpochAnchor::new();
@@ -468,8 +467,7 @@ fn a_successful_promotion_witnesses_the_epoch_after_the_cas_and_survives_refusal
     let (_, _, port) = executor.into_parts();
     assert_eq!(port.epoch, 5);
 
-    // Part two: an authority that cannot witness at all never blocks the
-    // promotion — the fail-safe direction is an anchor that lags.
+    // Part two: a refused witness cannot complete the promotion journal.
     let mut refusing = MemoryEpochAnchor::new();
     refusing.refuse_records();
     let mut executor = FailoverExecutor::new(
@@ -487,8 +485,8 @@ fn a_successful_promotion_witnesses_the_epoch_after_the_cas_and_survives_refusal
     drive_to_fence(&mut executor);
     let report = executor.tick(5_000);
     assert!(
-        matches!(report.application, Application::Applied { .. }),
-        "a refused witness record never blocks the promotion: {:?}",
+        matches!(report.application, Application::Pending { .. }),
+        "a refused witness record holds promotion completion: {:?}",
         report.application
     );
     assert_eq!(
@@ -499,6 +497,137 @@ fn a_successful_promotion_witnesses_the_epoch_after_the_cas_and_survives_refusal
     let (_, _, port) = executor.into_parts();
     assert_eq!(port.epoch, 5);
     assert!(!port.dispatch_enabled);
+}
+
+#[test]
+fn lost_durable_witness_ack_completes_identical_cas_replay_without_restart() {
+    struct LostAck {
+        anchor: MemoryEpochAnchor,
+        lose: bool,
+    }
+    impl ExternalEpochAnchor for LostAck {
+        fn confirmed_epoch(&mut self) -> AnchorReading {
+            self.anchor.confirmed_epoch()
+        }
+        fn record_promotion(&mut self, epoch: u64) -> crate::fence::AnchorRecord {
+            let outcome = ExternalEpochAnchor::record_promotion(&mut self.anchor, epoch);
+            if self.lose {
+                self.lose = false;
+                crate::fence::AnchorRecord::RefusedUnconfirmed
+            } else {
+                outcome
+            }
+        }
+    }
+    let mut executor = FailoverExecutor::new(
+        test_config(),
+        source(&[
+            healthy_round(4, 1_000),
+            failure_round(2_000),
+            failure_round(3_000),
+            failure_round(4_000),
+            evidence_round(5_000),
+            evidence_round(6_000),
+        ]),
+        MemoryAuthority::new(4),
+        ExternalFencing::new(
+            MemoryFenceAuthority::default(),
+            LostAck {
+                anchor: MemoryEpochAnchor::new(),
+                lose: true,
+            },
+        ),
+    );
+    drive_to_fence(&mut executor);
+    assert!(matches!(
+        executor.tick(5_000).application,
+        Application::Pending { .. }
+    ));
+    assert!(matches!(
+        executor.tick(6_000).application,
+        Application::Applied { replayed: true, .. }
+    ));
+    let (_, _, port) = executor.into_parts();
+    assert_eq!(port.epoch, 5);
+    assert!(!port.dispatch_enabled);
+}
+
+#[test]
+fn live_external_start_refuses_unconfirmed_anchor_and_failed_dispatch_hold() {
+    let anchor = MemoryEpochAnchor::new();
+    anchor.mark_unconfirmed();
+    let mut executor = FailoverExecutor::new(
+        test_config(),
+        source(&[healthy_round(4, 1_000)]),
+        MemoryAuthority::new(4),
+        ExternalFencing::new(MemoryFenceAuthority::default(), anchor),
+    )
+    .with_live_external_preflight();
+    assert_eq!(executor.tick(1_000).decision, None);
+    assert!(!executor.authority_mut_for_test().dispatch_enabled);
+    let mut port = MemoryAuthority::new(4);
+    port.fail_hold = true;
+    let mut executor = FailoverExecutor::new(
+        test_config(),
+        source(&[healthy_round(4, 1_000)]),
+        port,
+        ExternalFencing::new(MemoryFenceAuthority::default(), MemoryEpochAnchor::new()),
+    )
+    .with_live_external_preflight();
+    assert_eq!(executor.tick(1_000).decision, None);
+    assert_eq!(
+        executor.authority_mut_for_test().calls,
+        vec![crate::executor_tests::AuthorityCall::HoldDispatch]
+    );
+}
+
+#[test]
+fn cached_live_executor_holds_dispatch_on_partition_and_invalidates_hysteresis() {
+    let anchor = MemoryEpochAnchor::new();
+    anchor.seed(4);
+    let mut executor = FailoverExecutor::new(
+        test_config(),
+        source(&[healthy_round(4, 1_000), healthy_round(4, 2_000)]),
+        MemoryAuthority::new(4),
+        ExternalFencing::new(MemoryFenceAuthority::default(), anchor.clone()),
+    )
+    .with_live_external_preflight();
+    executor.tick(1_000);
+    assert!(executor.controller_phase().is_some());
+    executor.authority_mut_for_test().dispatch_enabled = true;
+    anchor.mark_unconfirmed();
+    assert_eq!(executor.tick(2_000).decision, None);
+    assert!(!executor.authority_mut_for_test().dispatch_enabled);
+    assert!(executor.controller_phase().is_none());
+}
+
+#[test]
+fn cached_live_executor_detects_restored_epoch_and_keeps_terminal_hold() {
+    let anchor = MemoryEpochAnchor::new();
+    anchor.seed(4);
+    let mut executor = FailoverExecutor::new(
+        test_config(),
+        source(&[healthy_round(4, 1_000), healthy_round(4, 2_000)]),
+        MemoryAuthority::new(4),
+        ExternalFencing::new(MemoryFenceAuthority::default(), anchor),
+    )
+    .with_live_external_preflight();
+    executor.tick(1_000);
+    executor.authority_mut_for_test().epoch = 3;
+    executor.authority_mut_for_test().dispatch_enabled = true;
+    assert_eq!(executor.tick(2_000).decision, None);
+    assert_eq!(
+        *executor.status(),
+        ExecutorStatus::EpochAnchorAhead {
+            anchored_epoch: 4,
+            authority_epoch: 3
+        }
+    );
+    assert!(!executor.authority_mut_for_test().dispatch_enabled);
+    // A manual flip cannot release a terminal hold without safe recovery/restart.
+    executor.authority_mut_for_test().dispatch_enabled = true;
+    executor.tick(3_000);
+    assert!(!executor.authority_mut_for_test().dispatch_enabled);
 }
 
 /// The crash window between a successful compare-and-set and the completion
