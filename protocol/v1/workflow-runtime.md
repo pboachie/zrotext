@@ -31,7 +31,7 @@ or audit payloads. No owner-cookie/API-key/agent-key fallback is implied.
 | `workflow.context.metadata` | `ContextMetadata` | `request_id`, `context_id` | Public context lifecycle metadata |
 | `workflow.context.content` | `ContextContent` | `request_id`, `context_id` | Separate checked role-3 encrypted projection |
 | `workflow.action.propose` | `Propose` | `request_id`, existing exact `descriptor` | Durable `ActionState`; no approval/message |
-| `workflow.action.status` | `Status` | `request_id`, `context_id`, `action_id` | Latest durable action key, record version and phase |
+| `workflow.action.status` | `Status` | `request_id`, `context_id`, `action_id` | Latest durable action key, record version, phase and exact bound delivery snapshot |
 | `workflow.action.schedule` | `Schedule` | `request_id`, exact `key`, `policy`, `series_id`, `ordinal` | Existing scheduler occurrence through the checked integration permit |
 | `workflow.action.send` | `Send` | `request_id`, exact `key`, optional `occurrence_id` | Durable typed `SendOutcome` through the checked integration permit |
 
@@ -165,9 +165,16 @@ before decryption. For proposal construction the client uses metadata
 substitute a digest computed from the role-3 envelope. Metadata alone does not prove successful encryption, content
 meaning, reader access or authority. The server stores/forwards opaque bytes.
 
-Action status uses the existing `ActionState`: exact `key`, `record_version` and
-closed phase. Looking up the current head deliberately reveals revision changes;
-a prior approved key never authorizes its replacement. Occurrence responses
+Action status retains the exact `key`, `record_version` and closed action phase,
+and adds `delivery`. Its availability is `not_bound`, `unavailable`, or `available`.
+Available metadata comes from the canonical delivery store for the immutable
+message/dispatch link matching this exact action revision and binding digest,
+under the current tenant, device and line scope. It reports message/dispatch
+UUIDs, delivery state/version, acceptance time and update time; no content or
+recipient is returned. Unavailable metadata never becomes a guessed delivery
+state. Approval and Prepared are not submission or delivery evidence. Looking up
+the current head reveals revision changes; a prior approved key never authorizes
+its replacement. Occurrence responses
 expose occurrence/series UUIDs, ordinal, lifecycle phase, nullable opening/closing
 times and expiry. Internal lease/message/dispatch markers are omitted.
 
