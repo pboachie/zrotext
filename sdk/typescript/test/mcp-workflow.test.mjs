@@ -118,7 +118,7 @@ test('MCP cancel preserves action identity and denies caller message identifiers
 test('startup credential paths stay within an independent operator root', async () => {
  const folder=await mkdtemp(join(tmpdir(),'zrotext-mcp-boundary-'));
  const root=join(folder,'private'),sibling=join(folder,'private-sibling');
- await mkdir(root);await mkdir(sibling);
+ await mkdir(root,{mode:0o700});await mkdir(sibling,{mode:0o700});
  const value='ztw_'+Buffer.alloc(32,9).toString('base64url');
  const inside=join(root,'credential'),outside=join(sibling,'credential');
  await writeFile(inside,value,{mode:0o600});await writeFile(outside,value,{mode:0o600});
@@ -132,9 +132,24 @@ test('startup credential paths stay within an independent operator root', async 
  } finally {await rm(folder,{recursive:true});}
 });
 
+test('startup refuses credentials in a root writable by other users',
+ { skip: process.platform === 'win32' }, async () => {
+ const root = await mkdtemp(join(tmpdir(), 'zrotext-mcp-root-mode-'));
+ const file = join(root, 'credential');
+ const options = { ZROTEXT_WORKFLOW_ORIGIN: 'https://example.test',
+   ZROTEXT_WORKFLOW_CREDENTIAL_ROOT: root, ZROTEXT_WORKFLOW_CREDENTIAL_FILE: file };
+ try {
+  await writeFile(file, 'ztw_' + Buffer.alloc(32, 9).toString('base64url'), { mode: 0o600 });
+  await chmod(root, 0o777);
+  await assert.rejects(configuredClient(options), { message: 'invalid_configuration' });
+  await chmod(root, 0o700);
+  assert.equal(typeof (await configuredClient(options)).call, 'function');
+ } finally { await rm(root, { recursive: true }); }
+});
+
 test('startup rejects intermediate directory symlinks escaping the credential root', async () => {
  const folder=await mkdtemp(join(tmpdir(),'zrotext-mcp-dirlink-'));
- const root=join(folder,'private'),outside=join(folder,'outside');await mkdir(root);await mkdir(outside);
+ const root=join(folder,'private'),outside=join(folder,'outside');await mkdir(root,{mode:0o700});await mkdir(outside,{mode:0o700});
  await writeFile(join(outside,'credential'),'ztw_'+Buffer.alloc(32,9).toString('base64url'),{mode:0o600});
  try {
   await symlink(outside,join(root,'intermediate'),process.platform==='win32'?'junction':'dir');
@@ -144,7 +159,7 @@ test('startup rejects intermediate directory symlinks escaping the credential ro
 
 test('startup rejects final file symlinks escaping the credential root', async t=>{
  const folder=await mkdtemp(join(tmpdir(),'zrotext-mcp-filelink-'));
- const root=join(folder,'private'),outside=join(folder,'outside');await mkdir(root);await mkdir(outside);
+ const root=join(folder,'private'),outside=join(folder,'outside');await mkdir(root,{mode:0o700});await mkdir(outside,{mode:0o700});
  const credential=join(outside,'credential');await writeFile(credential,'ztw_'+Buffer.alloc(32,9).toString('base64url'),{mode:0o600});
  try {
   try {await symlink(credential,join(root,'final'),'file');}

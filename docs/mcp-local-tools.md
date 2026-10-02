@@ -98,6 +98,13 @@ inferred from the credential filename. For example, configure
 `ZROTEXT_WORKFLOW_CREDENTIAL_FILE=workflow-token` in the subprocess environment.
 The root and its ancestors are trusted operator configuration. This wrapper does
 not protect against a privileged process concurrently replacing directory paths.
+The root must resolve to a directory with available file identity. On POSIX it
+must belong to the running user's UID and deny all group/other permissions;
+create it with mode `0700`, for example using `umask 077` before `mkdir -p`.
+Existing absolute credential paths outside the default directory now require
+an explicit independent `ZROTEXT_WORKFLOW_CREDENTIAL_ROOT`. Paths and symlink
+targets inside that configured root remain supported. Root strings with control
+characters or excessive length are refused.
 Windows network/device paths are refused; local ACL protection remains the
 operator's responsibility. The file must be regular and at most
 128 bytes; POSIX group/other permissions are refused. The canonical regular file is checked before opening; the opened descriptor must
