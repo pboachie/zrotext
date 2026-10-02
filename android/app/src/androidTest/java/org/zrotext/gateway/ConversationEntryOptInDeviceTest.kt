@@ -25,16 +25,18 @@ class ConversationEntryOptInDeviceTest {
         val activity = instrumentation.startActivitySync(Intent(context, MainActivity::class.java)
             .putExtra("gateway_screen", "CONNECTION").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as MainActivity
         val candidate = File.createTempFile("public-setup-", ".bin", context.cacheDir)
-        fun matchingText(label: String): List<AccessibilityNodeInfo> {
+        fun accessibilityNodes(): List<AccessibilityNodeInfo> {
             val root = instrumentation.uiAutomation.rootInActiveWindow ?: return emptyList()
-            val matches = mutableListOf<AccessibilityNodeInfo>()
+            val nodes = mutableListOf<AccessibilityNodeInfo>()
             fun visit(current: AccessibilityNodeInfo) {
-                if (current.text?.toString() == label) matches.add(current)
+                nodes.add(current)
                 for (index in 0 until current.childCount) current.getChild(index)?.let(::visit)
             }
             visit(root)
-            return matches
+            return nodes
         }
+        fun matchingText(label: String): List<AccessibilityNodeInfo> =
+            accessibilityNodes().filter { it.text?.toString() == label }
         fun node(label: String): AccessibilityNodeInfo? {
             for (textNode in matchingText(label)) {
                 // Compose exposes button text as a non-clickable child of the action node.
@@ -47,20 +49,66 @@ class ConversationEntryOptInDeviceTest {
             return null
         }
         instrumentation.waitForIdleSync()
-        fun awaitNode(label: String, enabled: Boolean): AccessibilityNodeInfo {
+        fun awaitVisible(
+            label: String,
+            enabled: Boolean? = null,
+            find: () -> AccessibilityNodeInfo?,
+        ): AccessibilityNodeInfo {
             val deadline = SystemClock.elapsedRealtime() + 5000
-            var action = node(label)
-            while ((action == null || action.isEnabled != enabled) && SystemClock.elapsedRealtime() < deadline) {
+            var direction = AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+            var scrollAttempts = 0
+            var lastScroll = 0L
+            var result = find()
+            while ((result == null || !result.isVisibleToUser ||
+                    (enabled != null && result.isEnabled != enabled)) &&
+                SystemClock.elapsedRealtime() < deadline) {
+                // Offscreen Compose nodes are omitted from the accessibility viewport.
+                // Search the real scroll container in both directions; never click coordinates.
+                if ((result == null || !result.isVisibleToUser) && scrollAttempts < 20 &&
+                    SystemClock.elapsedRealtime() - lastScroll >= 200) {
+                    val scroller = accessibilityNodes().firstOrNull { it.isScrollable && it.isVisibleToUser }
+                    if (scroller != null) {
+                        if (!scroller.performAction(direction)) direction =
+                            if (direction == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+                                AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD else AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+                        scrollAttempts++
+                        lastScroll = SystemClock.elapsedRealtime()
+                    }
+                }
                 Thread.sleep(25)
-                action = node(label)
+                result = find()
             }
-            return checkNotNull(action) { "Missing control: $label" }
+            val visible = checkNotNull(result) { "Missing control: $label" }
+            assertTrue("Control is not visible: $label", visible.isVisibleToUser)
+            return visible
         }
+        fun awaitNode(label: String, enabled: Boolean): AccessibilityNodeInfo =
+            awaitVisible(label, enabled) { node(label) }
         fun click(label: String) {
             val action = awaitNode(label, enabled = true)
             assertTrue("Control is not enabled: $label", action.isEnabled)
             assertTrue("Control did not accept click: $label", action.performAction(AccessibilityNodeInfo.ACTION_CLICK))
             instrumentation.waitForIdleSync()
+        }
+        fun assertNoApprovalAcrossReview() {
+            fun assertAbsent() {
+                assertTrue(matchingText("Agree and continue").isEmpty())
+                assertTrue(matchingText("Content transfer: Confirmed for this interval").isEmpty())
+            }
+            fun search(direction: Int) {
+                repeat(20) {
+                    assertAbsent()
+                    val scroller = accessibilityNodes().firstOrNull { it.isScrollable && it.isVisibleToUser }
+                    if (scroller == null || scroller.actionList.none { it.id == direction }) return
+                    assertTrue("Advertised review scroll action did not execute", scroller.performAction(direction))
+                    instrumentation.waitForIdleSync()
+                    Thread.sleep(200)
+                }
+                assertAbsent()
+                fail("Could not search the full review within the scroll bound")
+            }
+            search(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+            search(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
         }
         try {
             click("Open conversation review")
@@ -80,11 +128,9 @@ class ConversationEntryOptInDeviceTest {
             while (activity.conversationSetupEnabled && SystemClock.elapsedRealtime() < deadline) Thread.sleep(25)
             assertFalse(activity.conversationSetupEnabled)
             val rejection = "The selected conversation could not be verified. Check pairing, the selected line and the setup file."
-            val renderedDeadline = SystemClock.elapsedRealtime() + 5000
-            while (matchingText(rejection).isEmpty() && SystemClock.elapsedRealtime() < renderedDeadline) Thread.sleep(25)
+            awaitVisible(rejection) { matchingText(rejection).firstOrNull() }
             assertTrue(matchingText(rejection).isNotEmpty())
-            assertTrue(matchingText("Agree and continue").isEmpty())
-            assertTrue(matchingText("Content transfer: Confirmed for this interval").isEmpty())
+            assertNoApprovalAcrossReview()
             assertFalse(context.getDatabasePath(ConversationJournalStores.CAPTURE_FILE).exists())
             assertFalse(context.getDatabasePath(ConversationJournalStores.SEND_FILE).exists())
             click("Close conversation review")
