@@ -47,7 +47,11 @@ minutes and refuse retained-history gaps. They are read checkpoints, not effect
 reservations. `exportMetadata()` exports at most the configured retained-entry
 cap, requiring current authority. `deny()` persists irreversible denial;
 `erase()` deletes retained references and leaves the denied scope tombstone.
-Owners must separately erase backups and previously exported records. Reopening
+Withdrawal requested during an authority callback is locally latched; if the
+event transaction rolls back, denial and requested erasure are persisted in a
+separate transaction. Storage failure leaves the current receiver denied and
+must be resolved before relying on a reopened database tombstone. Owners must
+separately erase backups and previously exported records. Reopening
 a denied database fails closed; deleting it to reset authority is not supported.
 
 The reused bounded HTTP transport accepts signed `POST /webhook` and separately

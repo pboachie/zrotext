@@ -41,6 +41,7 @@ export class SealedEventReceiver {
         !(cursorSecret instanceof Uint8Array) || cursorSecret.length !== 32) fail('invalid_request');
     Object.assign(this, { accountId, deviceId, lineId, authority, clock, capacity, retentionMs });
     this.webhookSecret = Buffer.from(webhookSecret); this.cursorSecret = Buffer.from(cursorSecret);
+    this.localDenied = false; this.eraseRequested = false; this.controlPending = false; this.transactionActive = false;
     this.db = new DatabaseSync(path);
     try {
       this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA secure_delete=ON;
@@ -63,18 +64,31 @@ export class SealedEventReceiver {
   }
   transaction(operation) {
     this.db.exec('BEGIN IMMEDIATE');
-    try { const result = operation(); this.db.exec('COMMIT'); return result; }
-    catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    this.transactionActive = true;
+    try { const result = operation(); this.db.exec('COMMIT'); this.controlPending = false; return result; }
+    catch (error) {
+      this.db.exec('ROLLBACK');
+      // Owner withdrawal is monotonic even when a callback withdraws during a
+      // transaction whose event/metadata changes must roll back.
+      if (this.controlPending) {
+        this.db.exec('BEGIN IMMEDIATE');
+        try { this.persistControl(); this.db.exec('COMMIT'); this.controlPending = false; }
+        catch { this.db.exec('ROLLBACK'); fail('unavailable'); }
+      }
+      throw error;
+    } finally { this.transactionActive = false; }
   }
   current(now) {
     const scope = this.db.prepare('SELECT * FROM sealed_scope WHERE id=1').get();
-    if (scope.denied || now < scope.last_clock) fail('revoked');
+    if (this.localDenied || scope.denied || now < scope.last_clock) fail('revoked');
     let live; try { live = this.authority(); } catch { fail('revoked'); }
+    const fresh = this.now(), latest = this.db.prepare('SELECT * FROM sealed_scope WHERE id=1').get();
+    if (this.localDenied || latest.denied || fresh < now || fresh < latest.last_clock) fail('revoked');
     if (!live || live.active !== true || live.accountId !== this.accountId || live.deviceId !== this.deviceId ||
-        live.lineId !== this.lineId || !Number.isSafeInteger(live.expiresAtMs) || live.expiresAtMs <= now ||
+        live.lineId !== this.lineId || !Number.isSafeInteger(live.expiresAtMs) || live.expiresAtMs <= fresh ||
         typeof live.revision !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(live.revision)) fail('revoked');
-    this.db.prepare('UPDATE sealed_scope SET last_clock=? WHERE id=1').run(now);
-    return { ...scope, revision: live.revision };
+    this.db.prepare('UPDATE sealed_scope SET last_clock=? WHERE id=1').run(fresh);
+    return { ...latest, revision: live.revision };
   }
   prune(now) {
     const row = this.db.prepare('SELECT max(seq) AS seq FROM sealed_events WHERE received<=?').get(now - this.retentionMs);
@@ -168,8 +182,19 @@ export class SealedEventReceiver {
       if (this.current(this.now()).revision !== live.revision) fail('revoked');
     });
   }
-  deny() { this.db.prepare('UPDATE sealed_scope SET denied=1 WHERE id=1').run(); }
-  erase() { this.transaction(() => { this.db.exec('UPDATE sealed_scope SET denied=1 WHERE id=1; DELETE FROM sealed_events;'); }); }
+  persistControl() {
+    this.db.prepare('UPDATE sealed_scope SET denied=1 WHERE id=1').run();
+    if (this.eraseRequested) this.db.exec('DELETE FROM sealed_events;');
+  }
+  deny() {
+    this.localDenied = true; this.controlPending = true; this.persistControl();
+    if (!this.transactionActive) this.controlPending = false;
+  }
+  erase() {
+    this.localDenied = true; this.eraseRequested = true; this.controlPending = true;
+    if (this.transactionActive) this.persistControl();
+    else this.transaction(() => this.persistControl());
+  }
   close() { this.db.close(); this.webhookSecret.fill(0); this.cursorSecret.fill(0); }
 }
 

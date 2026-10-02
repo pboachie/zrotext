@@ -196,3 +196,42 @@ test('actual bounded HTTP transport acknowledges signed sender body once and ref
     } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
   });
 });
+
+test('final callback expiry and clock rollback refuse metadata without advancing its clock', async () => {
+  for (const end of [initial + 20_000, initial - 1]) await fixture(async f => {
+    f.ingest(event(10)); let checks = 0;
+    f.receiver.authority = () => {
+      if (++checks === 2) f.time(end);
+      return { active: true, revision: 'selected_1', accountId: account, deviceId: device,
+        lineId: line, expiresAtMs: initial + 10_000 };
+    };
+    reject(() => f.receiver.page({ consumerId: consumer }), 'revoked');
+    assert.equal(checks, 2);
+    assert.equal(f.receiver.db.prepare('SELECT last_clock FROM sealed_scope').get().last_clock, initial);
+  });
+});
+test('callback denial and erasure survive rollback and reopening without accepting a replay', async () => {
+  for (const operation of ['deny', 'erase']) await fixture(async f => {
+    f.ingest(event(10)); let checks = 0;
+    f.receiver.authority = () => {
+      if (++checks === 2) f.receiver[operation]();
+      return { active: true, revision: 'selected_1', accountId: account, deviceId: device,
+        lineId: line, expiresAtMs: initial + 10_000 };
+    };
+    reject(() => f.ingest(event(10)), 'revoked');
+    assert.equal(f.receiver.db.prepare('SELECT denied FROM sealed_scope').get().denied, 1);
+    assert.equal(f.receiver.db.prepare('SELECT count(*) AS count FROM sealed_events').get().count, operation === 'erase' ? 0 : 1);
+    f.reopen(); reject(() => f.receiver.exportMetadata(), 'revoked');
+  });
+});
+
+test('failed denial storage retains a fail-closed local latch until the tombstone can persist', async () => {
+  await fixture(async f => {
+    f.ingest(event(10));
+    f.receiver.db.exec("CREATE TRIGGER refuse_denial BEFORE UPDATE OF denied ON sealed_scope WHEN NEW.denied=1 BEGIN SELECT RAISE(ABORT,'synthetic storage refusal'); END;");
+    assert.throws(() => f.receiver.deny());
+    reject(() => f.receiver.page({ consumerId: consumer }), 'unavailable');
+    f.receiver.db.exec('DROP TRIGGER refuse_denial;');
+    f.receiver.deny(); f.reopen(); reject(() => f.receiver.exportMetadata(), 'revoked');
+  });
+});
