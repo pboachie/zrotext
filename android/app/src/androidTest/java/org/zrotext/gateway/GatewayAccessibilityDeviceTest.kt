@@ -14,7 +14,17 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 @OptIn(ExperimentalComposeUiApi::class)
 class GatewayAccessibilityDeviceTest : GatewayAccessibilityChecks() {
-    override fun onScreen(page: String, revealStatus: Boolean, check: (RootForTest) -> Unit) {
+    override val primaryMetricsSideBySide: Boolean
+        get() {
+            val requested = InstrumentationRegistry.getArguments().getString("primaryMetricsLayout")
+            if (requested != null) {
+                require(requested in setOf("row", "stack"))
+                return requested == "row"
+            }
+            val configuration = InstrumentationRegistry.getInstrumentation().targetContext.resources.configuration
+            return configuration.fontScale <= 1.3f && configuration.screenWidthDp >= 344
+        }
+    override fun onScreen(page: String, revealStatus: Boolean, revealObservations: Boolean, check: (RootForTest) -> Unit) {
         assumeTrue(InstrumentationRegistry.getArguments().getString("a11yIsolatedEmulator") == "true")
         assumeTrue(Build.HARDWARE in setOf("ranchu", "goldfish"))
         val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -25,13 +35,13 @@ class GatewayAccessibilityDeviceTest : GatewayAccessibilityChecks() {
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         try {
             instrumentation.waitForIdleSync()
-            if (revealStatus) {
+            if (revealStatus || revealObservations) {
                 for (attempt in 0 until 20) {
                     var visible = false
                     instrumentation.runOnMainSync {
                         val root = requireNotNull(findRoot(activity.window.decorView))
                         root.measureAndLayoutForTest()
-                        visible = homeStatusIsVisible(root)
+                        visible = if (revealObservations) homeObservationsAreVisible(root) else homeStatusIsVisible(root)
                         if (!visible) scrollTowardHomeStatus(root)
                     }
                     if (visible) break
