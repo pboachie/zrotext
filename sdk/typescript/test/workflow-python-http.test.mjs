@@ -26,9 +26,10 @@ const descriptor = { account_id: id(1), action_id: id(2), revision: 1, line_id: 
 let directory, tls, key;
 before(async () => {
   directory = await mkdtemp(join(tmpdir(), 'zrotext-workflow-tls-'));
-  const openssl = process.platform === 'win32'
-    ? join(process.env.ProgramFiles, 'Git', 'usr', 'bin', 'openssl.exe') : 'openssl';
-  const run = args => execFileSync(openssl, args, { cwd: directory, timeout: 15000, stdio: 'pipe' });
+  const run = args => process.platform === 'win32'
+    ? execFileSync(join('C:', 'Program Files', 'Git', 'usr', 'bin', 'openssl.exe'), args,
+      { cwd: directory, timeout: 15000, stdio: 'pipe' })
+    : execFileSync('openssl', args, { cwd: directory, timeout: 15000, stdio: 'pipe' });
   run(['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=Synthetic Workflow Test CA',
     '-keyout', 'ca.key', '-out', 'ca.pem']);
   run(['req', '-new', '-newkey', 'rsa:2048', '-nodes', '-subj', '/CN=localhost', '-keyout', 'leaf.key', '-out', 'leaf.csr']);
