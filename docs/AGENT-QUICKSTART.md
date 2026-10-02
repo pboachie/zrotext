@@ -72,17 +72,22 @@ Three boundaries stay distinct throughout: simulated acceptance (queued), modele
 
 ## Acceptance checklist
 
-Run these from a clean checkout. Every check is offline.
+Run these from a clean checkout. Every check is offline, and the first
+four are machine-verified: `cargo test --locked -p zrotext-device-sim`
+runs the `agent_journey` harness plus the `quickstart_checklist` runner,
+which executes the simulator binary, parses this page’s four fenced JSON
+examples, and compares each complete object, including its deterministic
+tick, with the corresponding simulator timeline entry. The existing journey harness pins the adverse-state outcomes.
 
-- [ ] `cargo run --locked -p zrotext-device-sim` prints `agent_journey` with `"final_state": "submitted"` and `"radio_calls_modelled": 1`.
-- [ ] The queued next action shows `"awaiting": "authenticated_owner_approval"` with `"radio_calls": 0`; nothing sends before approval.
-- [ ] Every adverse state above appears in the timeline with its rejected retry.
-- [ ] `cargo test --locked -p zrotext-device-sim` passes, including the `agent_journey` harness tests.
-- [ ] The run needed no device, SIM, credential, network or provider account; nothing was sent.
+- [x] `cargo run --locked -p zrotext-device-sim` prints `agent_journey` with `"final_state": "submitted"` and `"radio_calls_modelled": 1`. *(machine-verified)*
+- [x] The queued next action shows `"awaiting": "authenticated_owner_approval"` with `"radio_calls": 0`; nothing sends before approval. *(machine-verified)*
+- [x] The journey harness checks each listed modeled adverse-state outcome. *(machine-verified; table wording remains manually reviewed)*
+- [x] `cargo test --locked -p zrotext-device-sim` passes, including the `agent_journey` harness and the `quickstart_checklist` runner. *(machine-verified)*
+- [ ] The run needed no device, SIM, credential, network or provider account; nothing was sent. *(true by construction — the simulator has no radio, socket or credential path — and the privacy sweep below checks the output; a human confirms the claim when first running it)*
 
 ## Reproducible privacy and security harness
 
-`crates/device-sim/tests/agent_journey.rs` is the durable harness for this page. It runs the real simulator binary — the same command a contributor uses — parses the printed JSON, and asserts the happy path and every adverse outcome above, so the documentation cannot drift from the model. It is deterministic and runs in CI through normal Cargo test discovery (`cargo test --locked --workspace`).
+`crates/device-sim/tests/agent_journey.rs` is the durable harness for this page. It runs the real simulator binary — the same command a contributor uses — parses the printed JSON, and asserts the happy path and every adverse outcome above, pinning those selected modeled outcome fields. `crates/device-sim/tests/quickstart_checklist.rs` goes one step further: it reads this page’s fenced JSON examples and compares complete parsed objects with the simulator timeline. It recursively scans decoded strings and object keys for plus-prefixed E.164-shaped digit sequences, credential and connection-string patterns, personal filesystem path patterns, and specific live-delivery claims (`delivered_by_carrier` and friends). Synthetic negative probes check those detectors, including JSON-escaped Windows separators. This bounded pattern check complements the repository privacy guard; it does not prove the absence of all personal data or replace that guard. Both are deterministic and run in CI through normal Cargo test discovery (`cargo test --locked --workspace`).
 
 Safety properties that keep this quickstart safe to publish and rerun:
 
