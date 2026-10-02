@@ -56,3 +56,29 @@ Grant, retrieval and first-intent transactions lock the device before its
 session, matching enrollment revocation. Revocation that wins the device lock
 can remove the session without a reverse lock dependency; subsequent authority
 checks refuse new execution while historical exact receipts remain reconcilable.
+
+## Sealed session time sampling (opt-in stream v2)
+
+The explicit `zrotext-device-status-v2+sealed-dispatch-v2` subprotocol adds
+`sealed_session_request` and `sealed_session` frames after ordinary device
+session authentication. Sealed v1 remains available with its existing behavior;
+grant version 1 and the envelope-fetch signature transcript are unchanged.
+The default dispatch gates remain disabled.
+
+A request carries version 1, the current connection epoch and a fresh nonzero
+UUID challenge. The reply echoes that challenge and binds account, device,
+connection/deployment epochs and an independent socket-local session UUID to a
+fresh database UTC millisecond sample. The sample is captured after the live
+session check. It supplies time and session identity, not manifest trust or
+permission to send. The socket UUID remains stable across resampling.
+
+The server refuses reused challenges, samples less than five seconds apart,
+and more than 64 accepted challenges per socket. Reconnect establishes a new
+session and nonce history; no nonce is evicted to reopen replay. V2 requires a
+successful initial sample before `sealed_ready`. Resampling never renews the
+existing 300-second readiness deadline. The phone must bind each response to
+its outstanding challenge and authenticated socket, bound round-trip time to
+two seconds, and anchor a conservative upper UTC bound using monotonic time.
+Stale time, a changed session or an ambiguous request cannot authorize radio
+submission. Session-time frames never derive their clock from a grant or the
+phone wall clock. The synthetic frame contract is in `vectors/sealed-session-02.json`.
