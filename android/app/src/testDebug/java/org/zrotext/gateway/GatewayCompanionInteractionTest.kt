@@ -41,13 +41,77 @@ class GatewayCompanionInteractionTest {
 
     @Test fun compactNavigationKeepsNamedSelectedActionsAndVisibleTouchTargets() = checkScreenMenu()
 
+    @Test fun metricsOpenTheirOwnDetailsWithoutPermissionsOrServiceStarts() {
+        compose.runOnIdle {
+            AuthenticatedGatewayStatus.value = "Waiting for network"
+            AuthenticatedGatewayStatus.heartbeats = 7
+        }
+        compose.onNodeWithTag("home-metric-Connections").assertTextEquals("Connections. Authenticated links. 0")
+            .assertIsDisplayed().performClick()
+        compose.onNodeWithText("Connection details").assertExists()
+        compose.onNodeWithText("Authenticated connection status: Waiting for network").assertExists()
+        compose.onNodeWithText("Heartbeat acknowledgments this session: 7").assertExists()
+        compose.onNodeWithText("Close widget").performScrollTo().performClick()
+        compose.openGatewayMessages()
+        compose.onNodeWithText("Message details").assertExists()
+        listOf("Submitted today", "In queue", "Awaiting receipt").forEach { label ->
+            val node = compose.onNodeWithTag("home-observation-$label").fetchSemanticsNode()
+            assertFalse("Detail observations cannot start work", node.config.contains(SemanticsActions.OnClick))
+            assertFalse("Counts do not repeatedly announce", node.config.contains(SemanticsProperties.LiveRegion))
+        }
+        compose.onNodeWithText("Close widget").performScrollTo().performClick()
+        compose.onNodeWithTag("home-metric-Messages").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Controls").assertIsDisplayed()
+        compose.runOnIdle {
+            assertNull(shadowOf(compose.activity).lastRequestedPermission)
+            assertTrue(shadowOf(compose.activity).allStartedServices.isEmpty())
+        }
+    }
+
+    @Test fun connectionCountUsesAuthenticatedStateAndLeavesUrgentStateVisible() {
+        listOf("Paused" to "0", "Waiting for network" to "0", "Proving enrolled device key" to "0",
+            "Authenticated heartbeat acknowledged" to "1", "Quarantined: enrollment revoked" to "Unavailable")
+            .forEach { (status, count) ->
+                compose.runOnIdle {
+                    AuthenticatedGatewayStatus.value = status
+                    AuthenticatedGatewayStatus.heartbeats = 71
+                }
+                compose.onNodeWithTag("home-metric-Connections")
+                    .assertTextEquals("Connections. Authenticated links. $count")
+                compose.onNodeWithText("Device status: $status").assertExists()
+                compose.onNodeWithText("Close widget").assertDoesNotExist()
+            }
+        compose.runOnIdle {
+            assertNull(shadowOf(compose.activity).lastRequestedPermission)
+            assertTrue(shadowOf(compose.activity).allStartedServices.isEmpty())
+        }
+    }
+
+    @Test fun gearOffersSecondaryOptionsWithoutMainDashboardClutter() {
+        compose.onNodeWithText("Quick controls").assertDoesNotExist()
+        compose.onNodeWithText("Message details").assertDoesNotExist()
+        compose.onNodeWithTag("gateway-controls").assertContentDescriptionEquals("Controls").performClick()
+        listOf("Quick controls", "Android access", "Phone details").forEach { label ->
+            compose.onNode(hasText(label) and hasClickAction()).assertIsDisplayed()
+        }
+        compose.onNode(hasText("Phone details") and hasClickAction()).performClick()
+        compose.onNodeWithText("Pairing in this session: Not paired").assertExists()
+        compose.onNodeWithText("Close widget").performScrollTo().performClick()
+        compose.onNodeWithTag("gateway-controls").assertIsDisplayed()
+        compose.onNodeWithText("Pairing in this session: Not paired").assertDoesNotExist()
+        compose.runOnIdle {
+            assertNull(shadowOf(compose.activity).lastRequestedPermission)
+            assertTrue(shadowOf(compose.activity).allStartedServices.isEmpty())
+        }
+    }
+
     @Test
     @Config(qualifiers = "w320dp-h640dp")
     fun narrowNavigationKeepsCompleteNamesAndTouchTargets() = checkScreenMenu()
 
     private fun checkScreenMenu() {
         val density = compose.activity.resources.displayMetrics.density
-        compose.onNode(hasText("Controls") and hasClickAction()).assertIsDisplayed().performClick()
+        compose.onNode(hasContentDescription("Controls") and hasClickAction()).assertIsDisplayed().performClick()
         GatewayPage.entries.forEach { destination ->
             val node = compose.onNode(hasText(destination.label) and hasClickAction())
                 .assertIsDisplayed().fetchSemanticsNode()
@@ -72,7 +136,7 @@ class GatewayCompanionInteractionTest {
             AuthenticatedGatewayStatus.heartbeats = 7
         }
         compose.onNodeWithText("Device status: Waiting for network").assertExists()
-        compose.onNodeWithText("Quick controls").performScrollTo().performClick()
+        compose.openGatewayQuickControls()
         compose.onNodeWithText("Phone details").performScrollTo().performClick()
         compose.onNodeWithText("Heartbeat acknowledgments this session: 7").assertExists()
         compose.onNodeWithText("Close widget").performScrollTo().performClick()
@@ -113,7 +177,7 @@ class GatewayCompanionInteractionTest {
     }
 
     @Test fun detailsWidgetCanBeOpenedAndClosedWithoutStartingPilots() {
-        compose.onNodeWithText("Quick controls").performScrollTo().performClick()
+        compose.openGatewayQuickControls()
         compose.onNodeWithText("Phone details").performScrollTo().performClick()
         compose.onNodeWithText("Pairing in this session: Not paired").assertExists()
         compose.onNodeWithText("Test connection: Paused").assertExists()
@@ -128,7 +192,7 @@ class GatewayCompanionInteractionTest {
 
     @Test fun quickControlsRetainEveryNamedActionAndDoNotStartServicesWhenOpened() {
         val density = compose.activity.resources.displayMetrics.density
-        compose.onNodeWithText("Quick controls").performScrollTo().performClick()
+        compose.openGatewayQuickControls()
         listOf("Connection controls", "Set up this phone", "Android access", "Phone details").forEach { label ->
             val node = compose.onNode(hasText(label) and hasClickAction()).performScrollTo()
                 .assertIsDisplayed().fetchSemanticsNode()
@@ -143,11 +207,11 @@ class GatewayCompanionInteractionTest {
         compose.onNodeWithText("Android access").performScrollTo().performClick()
         compose.onNodeWithText("Pause stops connections. To stop permission-enabled local SMS processing, revoke SMS receiving access in Android app settings.").assertExists()
         compose.onNodeWithText("Close widget").performScrollTo().performClick()
-        compose.onNodeWithText("Quick controls").performScrollTo().performClick()
+        compose.openGatewayQuickControls()
         compose.onNodeWithText("Connection controls").performScrollTo().performClick()
         compose.onNodeWithText("Authenticated device heartbeat").assertExists()
         compose.openGatewayPage("Home")
-        compose.onNodeWithText("Quick controls").performScrollTo().performClick()
+        compose.openGatewayQuickControls()
         compose.onNodeWithText("Set up this phone").performScrollTo().performClick()
         compose.onNodeWithText("3. Pair this phone").assertExists()
         compose.runOnIdle {
@@ -158,21 +222,21 @@ class GatewayCompanionInteractionTest {
 
     @Test
     @Config(qualifiers = "w320dp-h640dp")
-    fun largeTextMessageDetailsKeepsItsCompleteNameAndFullWidthTarget() {
+    fun largeTextMessageMetricKeepsItsCompleteNameAndFullWidthTarget() {
         RuntimeEnvironment.setFontScale(2f)
         compose.activityRule.scenario.recreate()
-        val target = compose.onNodeWithTag("home-message-details").performScrollTo()
+        val target = compose.onNodeWithTag("home-metric-Messages").performScrollTo()
             .assertIsDisplayed().fetchSemanticsNode()
         val density = compose.activity.resources.displayMetrics.density
         assertEquals("Large-text details use the full 288 dp content width", 288f, target.size.width / density, 1f)
         assertTrue("The visible target remains at least 48 dp", target.size.height / density >= 48f)
-        compose.onNodeWithText("Message details", useUnmergedTree = true)
+        compose.onNodeWithText("Messages", useUnmergedTree = true)
             .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { action ->
                 val layouts = mutableListOf<TextLayoutResult>()
                 assertTrue(action(layouts))
                 assertEquals("The full action name fits without fragmented words", 1, layouts.single().lineCount)
             }
-        compose.onNodeWithTag("home-message-details").performClick()
+        compose.onNodeWithTag("home-metric-Messages").performClick()
         compose.onNodeWithText("Message counts are unavailable on this phone. An authorized summary reader is not connected.")
             .performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Close widget").performScrollTo().assertIsDisplayed().performClick()

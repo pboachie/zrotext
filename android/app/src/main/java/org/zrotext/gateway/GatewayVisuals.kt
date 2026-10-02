@@ -30,6 +30,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.delay
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
 
 /** Conservative presentation only; the full service observation stays visible. */
 internal enum class GatewayConnectionMood(val title: String) {
@@ -132,6 +135,26 @@ internal fun GatewaySignal(mood: GatewayConnectionMood, motion: Boolean, compact
             drawLine(ink, center + Offset(0f, -s), center + Offset(s, -s), stroke)
             drawLine(ink, center + Offset(s, -s), center + Offset(s, 0f), stroke)
         }
+    }
+}
+
+@Composable
+internal fun GatewayGearMark() {
+    // A native vector keeps the header quiet without adding an icon dependency.
+    Canvas(Modifier.size(24.dp)) {
+        val center = Offset(size.width / 2, size.height / 2)
+        val unit = size.minDimension / 24f
+        val outline = Path().apply {
+            repeat(32) { index ->
+                val angle = index * PI / 16 - PI / 2
+                val radius = (if (index % 4 < 2) 10.5f else 8f) * unit
+                val point = center + Offset(cos(angle).toFloat() * radius, sin(angle).toFloat() * radius)
+                if (index == 0) moveTo(point.x, point.y) else lineTo(point.x, point.y)
+            }
+            close()
+        }
+        drawPath(outline, GatewayColors.onSurface, style = Stroke(1.5f * unit))
+        drawCircle(GatewayColors.onSurface, 3f * unit, center, style = Stroke(1.5f * unit))
     }
 }
 

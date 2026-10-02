@@ -79,9 +79,9 @@ class GatewaySummaryUiTest {
                     summaryStatus = "Synthetic checked metadata", onSetup = {}, onConnection = {}, onPause = {})
             } } }
         }
+        compose.openGatewayMessages()
         compose.onNodeWithTag("home-observation-Submitted today").assertTextEquals("Submitted today 0")
         compose.onNodeWithTag("home-observation-In queue").assertTextEquals("In queue 1000+ (capped)")
-        compose.onNode(hasText("Message details") and hasClickAction()).performClick()
         compose.onNodeWithTag("home-observation-Awaiting receipt").assertTextContains("1")
         assertFalse(compose.onNodeWithTag("home-observation-Awaiting receipt").fetchSemanticsNode().config.contains(SemanticsActions.OnClick))
         assertFalse(compose.onNodeWithTag("home-observation-Awaiting receipt").fetchSemanticsNode().config.contains(SemanticsProperties.LiveRegion))
@@ -89,6 +89,7 @@ class GatewaySummaryUiTest {
         compose.onNodeWithText("Device-scoped UTC observation:", substring = true).assertExists()
         compose.onNodeWithText("Submitted is not delivered.", substring = true).assertExists()
         compose.onNodeWithText("Close widget").performScrollTo().performClick()
+        compose.openGatewayMessages()
         assertFalse(compose.onNodeWithTag("home-observation-In queue").fetchSemanticsNode().config.contains(SemanticsActions.OnClick))
         compose.runOnIdle { view.value = GatewaySummaryState.View(GatewaySummaryState.Phase.LOADING, snapshot) }
         compose.onNodeWithTag("home-observation-In queue").assertTextEquals("In queue 1000+ (capped) (refreshing)")
@@ -124,7 +125,7 @@ class GatewaySummaryUiTest {
     }
 
     @Test fun unavailableReceiptAndCompleteReaderExplanationRemainReadOnlyInDetails() {
-        compose.onNode(hasText("Message details") and hasClickAction()).performScrollTo().performClick()
+        compose.openGatewayMessages()
         val receipt = compose.onNodeWithTag("home-observation-Awaiting receipt")
             .assertTextEquals("Awaiting receipt", "Unavailable").fetchSemanticsNode()
         assertFalse("Absent reader cannot initiate work", receipt.config.contains(SemanticsActions.OnClick))
