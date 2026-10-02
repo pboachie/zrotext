@@ -6,9 +6,11 @@ use uuid::Uuid;
 
 mod action;
 mod authentication;
+mod cancellation;
 pub mod contracts;
 mod dispatch;
 mod execution;
+pub use cancellation::{CancelOutcome, CancelState, cancel_action};
 mod scheduling;
 pub use dispatch::call;
 pub use execution::{IMMEDIATE_WINDOW_ID, SendOutcome, send_action};

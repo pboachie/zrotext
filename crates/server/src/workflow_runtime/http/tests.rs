@@ -125,7 +125,7 @@ async fn authenticated_http_calls_real_metadata_proposal_and_exact_status_withou
     assert_eq!(ready["scope"]["line_id"], case.header.line.to_string());
     assert_eq!(ready["send_semantics"], "owner_bound_prepared_only");
     let methods = ready["methods"].as_array().unwrap();
-    assert_eq!(methods.len(), 7);
+    assert_eq!(methods.len(), 8);
     assert!(methods.iter().all(|m| m["transport_mounted"] == true));
     assert_eq!(
         methods
@@ -378,6 +378,39 @@ async fn http_schedule_and_send_require_actual_owner_binding_and_replay_prepared
         .await
         .unwrap();
     assert_eq!(json_body(response).await, prepared);
+    let cancel = json!({"method":"workflow.action.cancel","params":{"request_id":Uuid::new_v4(),"key":bound.key}});
+    for _ in 0..2 {
+        let response = app
+            .clone()
+            .oneshot(request(&issued.token, Some(cancel.clone())))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            json_body(response).await,
+            json!({"kind":"cancel","result":{"key":bound.key,"message_id":message,"state":"cancelled"}})
+        );
+    }
+    let forged = json!({"method":"workflow.action.cancel","params":{"request_id":Uuid::new_v4(),"key":bound.key,"message_id":message}});
+    assert_eq!(
+        app.clone()
+            .oneshot(request(&issued.token, Some(forged)))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let refund: i64 = case
+        .f
+        .db
+        .query_one(
+            "SELECT count(*) FROM usage_ledger WHERE entry_kind='refund'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(refund, 1);
     let count: i64 = case
         .f
         .db

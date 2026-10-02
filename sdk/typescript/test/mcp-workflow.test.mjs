@@ -15,7 +15,7 @@ function session(client) {
   call({ jsonrpc: '2.0', method: 'notifications/initialized' });
   return call;
 }
-test('seven shared workflow tool schemas are reused without adding actor or credentials', () => {
+test('eight shared workflow tool schemas are reused without adding actor or credentials', () => {
   for (const definition of workflowTools) {
     const advertised = tools.find(tool => tool.name === definition.name);
     assert.equal(advertised.outputSchema.type, 'object', 'MCP tool discovery requires an object output schema');
@@ -100,4 +100,13 @@ test('startup refuses a FIFO credential path without waiting for a writer', { sk
     if (child && child.exitCode === null) child.kill('SIGKILL');
     await rm(folder, { recursive: true });
   }
+});
+
+test('MCP cancel preserves action identity and denies caller message identifiers',async()=>{
+ const key={account_id:uuid('a'),action_id:uuid('b'),revision:1,binding_digest:'ab'.repeat(32)},input={request_id:uuid('c'),key};let calls=0;
+ const output={kind:'cancel',result:{key,message_id:uuid('d'),state:'cancelled'}};
+ const call=session({async call(method,params){calls++;assert.equal(method,'workflow.action.cancel');assert.deepEqual(params,input);return output;}});
+ const actual=await call(rpc('tools/call',{name:'workflow.action.cancel',arguments:input}));assert.deepEqual(actual.result.structuredContent,output);
+ for(const field of ['message_id','dispatch_id','actor']) {const denied=await call(rpc('tools/call',{name:'workflow.action.cancel',arguments:{...input,[field]:uuid('e')}}));assert.ok(denied.error||denied.result?.isError);}
+ assert.equal(calls,1);
 });

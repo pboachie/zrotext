@@ -2,11 +2,11 @@
 
 This is a client-neutral library candidate for #641 with an independently
 opted-in HTTP transport for #616; it is not a production sending capability.
-Its seven methods share the existing
+Its eight methods share the existing
 workflow context, exact-action decision and recipient-local scheduling stores.
 It adds no queue, approval ledger, crypto implementation or background worker.
 The executable DTOs are `workflow_runtime::contracts`; the library dispatcher
-`workflow_runtime::call` invokes the seven actual checked service
+`workflow_runtime::call` invokes the eight actual checked service
 functions and preserves typed authorization errors. Transport wrappers must
 authenticate the separate workflow credential and call the checked service;
 parsing a DTO or reading the catalog never grants authority.
@@ -35,12 +35,12 @@ or audit payloads. No owner-cookie/API-key/agent-key fallback is implied.
 | `workflow.action.schedule` | `Schedule` | `request_id`, exact `key`, `policy`, `series_id`, `ordinal` | Existing scheduler occurrence through the checked integration permit |
 | `workflow.action.send` | `Send` | `request_id`, exact `key`, optional `occurrence_id` | Durable typed `SendOutcome` through the checked integration permit |
 
-All seven library operations exist with checked transaction-bound service
+All eight library operations exist with checked transaction-bound service
 permits; their catalog state is `library_candidate`. The transport is disabled
 by default and no activation or noninteractive background worker is implied. The dispatcher
 requires a real authenticated `IntegrationPrincipal`; it does not authenticate
 caller fields or serialize raw database/provider diagnostics.
-No approve, cancel, edit, bind, reply-correlation or takeover method is exposed
+No approve, edit, bind, reply-correlation or takeover method is exposed
 to an integration. Those remain independently authenticated owner operations.
 
 ## Opt-in authenticated HTTP transport
@@ -60,7 +60,7 @@ an actual issued workflow grant rather than translating an ordinary API key.
 GET rechecks the authenticated grant's current context scope and returns exactly
 `available`, `methods`, `scope`, and `send_semantics`. `available` is true for a
 successful response; scope contains `context_id`, `device_id`, and `line_id`.
-The seven method entries retain the catalog fields and add `permission_granted`;
+The eight method entries retain the catalog fields and add `permission_granted`;
 `transport_mounted` is true. Permission hints do not replace each operation's
 fresh checks. `send_semantics` is `owner_bound_prepared_only`.
 
@@ -197,3 +197,5 @@ the module is declared. End-to-end transport,
 radio execution, physical-device delivery and real provider calls are not proved
 by these DTO tests. Production configuration and activation remain explicit and
 outside this candidate contract.
+
+Send permission explicitly includes withdrawal of this same grant’s own prepared output through `workflow.action.cancel`. The closed input is `request_id` and exact `key`; callers cannot nominate a queue or message identifier. Cancellation discovers the immutable owner binding and verifies the actual preparing grant, then uses the existing job/message grant boundary and refund-once transaction. Status, Propose and another Send grant confer no withdrawal authority. Cancellation changes the bound message only; the historical owner decision and scheduling series are not cancelled or reapproved. Already granted, expired or uncertain work is refused; transport ambiguity stays unknown and never triggers resend. Exact retries still require live scope, credentials and authority. The UUID-only legacy cancellation tool remains unavailable.

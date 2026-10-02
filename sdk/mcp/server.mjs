@@ -111,7 +111,7 @@ export function createSession({ client } = {}) {
       const version = ['2025-11-25', '2025-06-18'].includes(request.params.protocolVersion) ? request.params.protocolVersion : '2025-11-25';
       return { jsonrpc: '2.0', id, result: { protocolVersion: version, capabilities: { tools: { listChanged: false } },
         serverInfo: { name: 'zrotext-scoped-tools', version: '0.0.0-experimental' },
-        instructions: 'Workflow tools use the configured customer service grant and current authority. Proposals are not approval; send prepares only an existing owner-bound message. Legacy envelope submission and cancellation are unavailable. Tool annotations confer no authority.' } };
+        instructions: 'Workflow tools use the configured customer service grant and current authority. Proposals are not approval; send prepares only an existing owner-bound message. Workflow cancellation withdraws only the same grant’s exact prepared output before its execution grant. Legacy envelope submission and UUID-only cancellation are unavailable. Tool annotations confer no authority.' } };
     }
     if (phase !== 'ready') return failure(-32000, 'Initialization required');
     if (request.method === 'tools/list') {

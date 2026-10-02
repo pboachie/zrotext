@@ -1,7 +1,7 @@
 # Local scoped SMS MCP tools
 
 **Experimental local stdio server with an opt-in authenticated workflow transport.**
-The seven shared workflow tools call the existing checked gateway service. Send
+The eight shared workflow tools call the existing checked gateway service. Send
 prepares metadata for an existing owner-confirmed sealed message; it does not
 create content, approve an action, submit to a radio, or prove delivery.
 The gateway HTTP mount is independently disabled by default.
@@ -63,7 +63,7 @@ returns only the selected role-3 encrypted projection. Propose is not approval;
 Schedule requires the existing exact owner decision and independent permission.
 Send returns `waiting_owner_binding`, `waiting_window`, or `prepared`. Prepared
 is a metadata transition for an existing owner binding, never a delivery receipt.
-Approval, takeover and cancellation have no integration tool authority.
+Approval and takeover have no integration tool authority. Cancellation is limited to the same Send grant's prepared output.
 
 Preview accepts canonical base64 of an existing profile-01 outbound SDK envelope;
 inputs are bounded and inbound/profile-02/plaintext inputs are rejected. It returns
@@ -117,7 +117,7 @@ token passthrough; stdio does not supply remote authorization.
 Verified locally on Windows with Node.js v22.16.0 and Python 3.12.9: official MCP
 JavaScript SDK 1.31.0 and Python MCP client 2.2.0, both over stdio against the shared
 synthetic protocol vector. Both exercised initialize, list, preview, unavailable
-readiness and refused cancellation. These are library clients, not a claim that
+readiness and refused legacy UUID-only cancellation. These are library clients, not a claim that
 Claude Desktop, ChatGPT or another hosted UI was tested. `npm test` in
 `sdk/typescript` automatically runs lifecycle, schemas, shared-vector preview,
 refusal, framing and redaction regression tests in ordinary CI.
@@ -139,3 +139,5 @@ The implementation follows the official MCP [stdio transport](https://modelconte
 and [tools](https://modelcontextprotocol.io/specification/2025-11-25/server/tools)
 contracts. Treat SMS and client input as untrusted data; follow
 [SECURITY.md](../SECURITY.md) for suspected vulnerabilities.
+
+Send permission explicitly includes withdrawal of this same grant’s own prepared output through `workflow.action.cancel`. The closed input is `request_id` and exact `key`; callers cannot nominate a queue or message identifier. Cancellation discovers the immutable owner binding and verifies the actual preparing grant, then uses the existing job/message grant boundary and refund-once transaction. Status, Propose and another Send grant confer no withdrawal authority. Cancellation changes the bound message only; the historical owner decision and scheduling series are not cancelled or reapproved. Already granted, expired or uncertain work is refused; transport ambiguity stays unknown and never triggers resend. Exact retries still require live scope, credentials and authority. The UUID-only legacy cancellation tool remains unavailable.

@@ -25,7 +25,7 @@ test('MCP lifecycle refuses tools before readiness and negotiates supported vers
   assert.deepEqual(initialized.result.capabilities, { tools: { listChanged: false } });
   assert.equal(session(rpc('tools/list')).error.code, -32000);
   session({ jsonrpc: '2.0', method: 'notifications/initialized' });
-  assert.equal(session(rpc('tools/list')).result.tools.length, 13);
+  assert.equal(session(rpc('tools/list')).result.tools.length, 14);
   assert.equal(session(rpc('initialize', {})).error.code, -32602);
 });
 test('tool discovery has closed schemas and no administration or secret inputs', () => {
