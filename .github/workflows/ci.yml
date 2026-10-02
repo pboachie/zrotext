@@ -255,6 +255,9 @@ jobs:
       - name: Test against PostgreSQL
         if: env.RUN_RUST == 'true'
         run: cargo test --locked --workspace -- --ignored --skip real_stripe_ --test-threads=4
+      - name: Capture authenticated workflow HTTP output canaries
+        if: env.RUN_RUST == 'true'
+        run: python3 scripts/workflow_log_canaries.py
       - name: Build migrator and simulator with the workspace feature set
         # `cargo run -p` resolves features for one package and rebuilds about
         # fifty dependencies; the workspace build reuses the test build's.
