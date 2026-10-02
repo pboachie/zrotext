@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkflowToolClient } from '../typescript/dist/workflow-tool-client.js';
 import { ScheduledRunner } from './runner.mjs';
+import { fixtureRequest } from './service-fixture-route.mjs';
 let input='';for await(const chunk of process.stdin){input+=chunk;if(Buffer.byteLength(input)>65536)throw new Error('fixture too large');}
 const fixture=JSON.parse(input),directory=await mkdtemp(join(tmpdir(),'zrotext-scheduler-tls-'));
 let server,runner;
@@ -18,9 +19,12 @@ try{
   execFileSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=localhost','-addext','subjectAltName=DNS:localhost','-keyout','key.pem','-out','cert.pem'],{cwd:directory,stdio:'pipe',timeout:15000});
   const cert=await readFile(join(directory,'cert.pem'));
   server=createServer({cert,key:await readFile(join(directory,'key.pem'))},async(req,res)=>{
+    let destination;
+    try { destination=fixtureRequest(upstream.href,req.method,req.url); }
+    catch { res.writeHead(400);res.end();return; }
     let body='';for await(const chunk of req)body+=chunk;
     const sent=body?JSON.parse(body).method==='workflow.action.send':false;
-    const forwarded=plainRequest(new URL(req.url,upstream),{method:req.method,headers:req.headers},reply=>{
+    const forwarded=plainRequest({...destination,headers:req.headers},reply=>{
       if(sent&&fixture.drop_send){reply.resume();reply.on('end',()=>res.destroy());}
       else{res.writeHead(reply.statusCode,reply.headers);reply.pipe(res);}
     });forwarded.on('error',()=>res.destroy());forwarded.end(body);
