@@ -46,9 +46,26 @@ function counters(value) {
   for (const key of ['rootCompletions','lineRegistrations','lineApprovals','phoneAcknowledgments']) { assert.ok(Number.isSafeInteger(value?.[key]) && value[key] >= 0, 'Actual fixture counters required'); result[key]=value[key]; }
   return result;
 }
+export async function readPublicDownload(download,maximum,{timeoutMs=10000}={}) {
+  assert.ok(Number.isInteger(maximum)&&maximum>0&&maximum<=1024);
+  assert.ok(Number.isInteger(timeoutMs)&&timeoutMs>0&&timeoutMs<=10000);
+  let stream,timer,expired=false,complete=false;
+  const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>{expired=true;stream?.destroy();reject(Error('Public download deadline exceeded'));},timeoutMs);});
+  const reading=(async()=>{
+    stream=await download.createReadStream();if(expired){stream?.destroy();throw Error('Public download closed');}
+    assert.ok(stream,'Public download stream unavailable');let size=0;const parts=[];
+    for await(const chunk of stream){size+=chunk.length;assert.ok(size<=maximum,'Public download size exceeded');parts.push(Buffer.from(chunk));}
+    assert.ok(size>0,'Empty public download refused');assert.equal(await download.failure(),null,'Public download failed');return Uint8Array.from(Buffer.concat(parts));
+  })();
+  try{const result=await Promise.race([reading,deadline]);complete=true;return result;}
+  finally{clearTimeout(timer);stream?.destroy();try{if(!complete)await download.cancel();}finally{await download.delete();}}
+}
 async function artifact(page, host) {
   const link=page.locator(`#${host} a[download]`); await link.waitFor();
-  return Uint8Array.from(await link.evaluate(async a => [...new Uint8Array(await (await fetch(a.href)).arrayBuffer())]));
+  const pending=page.waitForEvent('download');await link.click();const download=await pending;
+  const root=host==='root-artifacts';
+  if(download.suggestedFilename()!==(root?'root-enrollment-challenge.ztre':'line-owner-key-registration.bin')){try{await download.cancel();}finally{await download.delete();}throw Error('Exact public artifact download required');}
+  return readPublicDownload(download,root?663:1024);
 }
 const upload = (page,id,name,bytes) => page.locator(`#${id}`).setInputFiles({name,mimeType:'application/octet-stream',buffer:Buffer.from(bytes)});
 
@@ -71,7 +88,7 @@ const upload = (page,id,name,bytes) => page.locator(`#${id}`).setInputFiles({nam
 export async function runSetupServerAcceptance(input) {
   validateAcceptanceProviders(input); const f=copyAcceptanceFixture(input.fixture);
   const before=counters(await input.snapshot());
-  const context=await input.browser.newContext({ignoreHTTPSErrors:true});
+  const context=await input.browser.newContext({ignoreHTTPSErrors:true,acceptDownloads:true});
   let noOriginExport=0; const completions=[];
   try {
     await context.addCookies(f.cookies);
