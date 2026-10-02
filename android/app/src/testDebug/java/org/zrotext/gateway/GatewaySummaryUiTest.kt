@@ -28,7 +28,7 @@ class GatewaySummaryUiTest {
     @get:Rule val compose = createAndroidComposeRule<MainActivity>()
     private val device = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     private val token = "ztk_" + Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32) { 7 })
-    private fun connection() { compose.onNode(hasText("Connection") and hasClickAction()).performScrollTo().performClick() }
+    private fun connection() { compose.openGatewayPage("Connection") }
     private fun configure() {
         connection()
         compose.onNodeWithText("Summary HTTPS origin").performScrollTo().performTextInput("https://example.test")
@@ -65,7 +65,7 @@ class GatewaySummaryUiTest {
         assertEquals("", compose.onNodeWithText("Separate messages-read API key").fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
         compose.onNodeWithText("Separate messages-read API key").performScrollTo().performTextInput(token)
         compose.activityRule.scenario.recreate()
-        compose.onNode(hasText("Connection") and hasClickAction()).performScrollTo().performClick()
+        compose.openGatewayPage("Connection")
         assertEquals("", compose.onNodeWithText("Separate messages-read API key").fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
         noEffects()
     }
@@ -81,7 +81,14 @@ class GatewaySummaryUiTest {
         }
         compose.onNodeWithTag("home-observation-Submitted today").assertTextEquals("Submitted today 0")
         compose.onNodeWithTag("home-observation-In queue").assertTextEquals("In queue 1000+ (capped)")
+        compose.onNode(hasText("Message details") and hasClickAction()).performClick()
         compose.onNodeWithTag("home-observation-Awaiting receipt").assertTextContains("1")
+        assertFalse(compose.onNodeWithTag("home-observation-Awaiting receipt").fetchSemanticsNode().config.contains(SemanticsActions.OnClick))
+        assertFalse(compose.onNodeWithTag("home-observation-Awaiting receipt").fetchSemanticsNode().config.contains(SemanticsProperties.LiveRegion))
+        compose.onAllNodesWithText("Synthetic checked metadata").assertCountEquals(2)
+        compose.onNodeWithText("Device-scoped UTC observation:", substring = true).assertExists()
+        compose.onNodeWithText("Submitted is not delivered.", substring = true).assertExists()
+        compose.onNodeWithText("Close widget").performScrollTo().performClick()
         assertFalse(compose.onNodeWithTag("home-observation-In queue").fetchSemanticsNode().config.contains(SemanticsActions.OnClick))
         compose.runOnIdle { view.value = GatewaySummaryState.View(GatewaySummaryState.Phase.LOADING, snapshot) }
         compose.onNodeWithTag("home-observation-In queue").assertTextEquals("In queue 1000+ (capped) (refreshing)")
@@ -100,5 +107,31 @@ class GatewaySummaryUiTest {
             assertEquals("", compose.onNodeWithText("Separate messages-read API key").fetchSemanticsNode().config[SemanticsProperties.EditableText].text)
             noEffects()
         } finally { RuntimeEnvironment.setFontScale(1f) }
+    }
+
+    @Test fun summaryAccessRefusalRemainsOnHomeWithoutOpeningDetails() {
+        val refused = "Summary access refused. Check the separate device-scoped read key."
+        compose.runOnIdle {
+            compose.activity.setContent { GatewayTheme { Column {
+                GatewayHome("Quarantined: enrollment revoked", "Paused", 0, "Not selected", "Not paired",
+                    summaryStatus = refused, onSetup = {}, onConnection = {}, onPause = {})
+            } } }
+        }
+        compose.onNodeWithTag("home-reader-status").assertTextEquals(refused)
+        compose.onNodeWithText("Device status: Quarantined: enrollment revoked").assertExists()
+        compose.onNodeWithText("Close widget").assertDoesNotExist()
+        noEffects()
+    }
+
+    @Test fun unavailableReceiptAndCompleteReaderExplanationRemainReadOnlyInDetails() {
+        compose.onNode(hasText("Message details") and hasClickAction()).performScrollTo().performClick()
+        val receipt = compose.onNodeWithTag("home-observation-Awaiting receipt")
+            .assertTextEquals("Awaiting receipt", "Unavailable").fetchSemanticsNode()
+        assertFalse("Absent reader cannot initiate work", receipt.config.contains(SemanticsActions.OnClick))
+        assertFalse("Absent reader is a static observation", receipt.config.contains(SemanticsProperties.LiveRegion))
+        compose.onNodeWithText("Message counts are unavailable on this phone. An authorized summary reader is not connected.").assertExists()
+        compose.onNodeWithText("Close widget").performScrollTo().assertIsDisplayed().performClick()
+        compose.onNodeWithText("Close widget").assertDoesNotExist()
+        noEffects()
     }
 }

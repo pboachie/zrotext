@@ -187,8 +187,8 @@ dependencies {
     implementation("androidx.core:core-ktx:1.19.1")
     implementation("androidx.room:room-runtime:2.8.5")
     ksp("androidx.room:room-compiler:2.8.5")
-    // Drives Compose frames reliably for navigation and permission-dialog regression tests.
-    testDebugImplementation("androidx.compose.ui:ui-test-junit4")
+    // Drives Compose frames for shared accessibility checks in both unit-test variants.
+    testImplementation("androidx.compose.ui:ui-test-junit4")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.17")
     androidTestImplementation("androidx.test:runner:1.7.0")

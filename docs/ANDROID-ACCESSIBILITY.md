@@ -16,7 +16,7 @@ and [accessible apps](https://developer.android.com/guide/topics/ui/accessibilit
 | Area | Behavior and verification | Limits |
 |---|---|---|
 | Labels and secret fields | All eight text fields retain visible Material labels. Buttons retain text names and native click semantics. Both token fields retain password semantics and visual masking. Rendered-tree assertions verify these properties. | No localization, autofill-service or spoken-password session was exercised. |
-| Headings and order | The app title and four sections expose heading semantics. Sections remain in a column. The two primary metrics form a traversal group with a label-first observation per cell; platform-node tests verify Submitted today, In queue, then Awaiting receipt in either responsive layout and RTL. Section tests retain their sequence and vertical-position checks. | Actual TalkBack heading navigation, keyboard traversal and Switch Access scanning require a separate interactive review. |
+| Headings and order | The app title and four sections expose heading semantics. Sections remain in a column. The two primary metrics form a traversal group with a label-first observation per cell; platform-node tests verify Submitted today before In queue in either responsive layout and RTL. Section tests retain their sequence and vertical-position checks. | Actual TalkBack heading navigation, keyboard traversal and Switch Access scanning require a separate interactive review. |
 | Contrast | A themed `Surface` paints the dark background and supplies the matching foreground. Tests check enabled body/label/action/error text against at least 4.5:1 contrast and field borders against at least 3:1, using the configured colors. | These are color-pair checks, not a complete pixel audit of every focus, disabled, selection or system-dialog state. |
 | Touch targets | Gateway buttons explicitly reserve at least 48 by 48 dp in their visible/semantic layout. Tests measure rendered action bounds; the app does not rely only on Material's expanded hit area around a 40 dp button. | Reachability with alternate input devices has not been established. |
 | Text scaling and insets | Content can grow vertically without fixed text heights or ellipses. Safe drawing and keyboard insets keep the scrolling area separate from system UI. JVM checks exercise a compact portrait viewport at normal and 2× font scale. | Landscape, magnification, display-size combinations and every supported Android version need further device checks. |
@@ -62,24 +62,9 @@ Compose-clock JVM landscape regressions verify actual scrolling and reachable
 Pause/disclosure; see [the integrated candidate gate](CANDIDATE-ACCESSIBILITY.md).
 These checks validate platform semantics, not spoken announcements.
 
-Home uses the common dark canvas for its observations and transparent outlined
-actions. Navigation remains named text with native button semantics; an underline
-and selected/state descriptions identify the current page. The compact navigation
-regression measures visible targets between 48 and 52 dp high at default text size
-and checks that navigation does not request access or start services. A 320 dp
-viewport uses two navigation columns so complete names stay on one line. Existing
-heading, live-region, observation order, 48 dp target, masking, disclosure and
-large-text assertions remain. Normal-width primary metrics share a row; compact
-viewports or font scales above 1.3 use a stack. Bounds checks require equal-width,
-non-overlapping columns or non-overlapping stacked cells, with Awaiting receipt
-below both. Each metric supplies its full label and value once, without a click
-action or live region. The platform check really scrolls the observations into
-view and verifies exported text and traversal links. RTL mirrors the columns
-while preserving logical reading order. The JVM RTL fixture enables RTL support
-only in its test application and asserts the actual root direction; this does
-not establish app-wide localization. At large text sizes, quick actions use one column
-and observation labels and values stack. The app keeps its dark palette under
-either system theme; changing system appearance does not change authorization.
+Home uses the common dark canvas for observations and transparent outlined actions. A named Controls menu retains all four screen destinations, their selected/state descriptions and 48 dp targets. Menu navigation is exercised through the actual visible controls; existing permission, credential masking, lifecycle, consent and no-service assertions remain. Quick controls, Android access, Phone details and Message details are checked on their actual sheets. Awaiting receipt, full reader status and UTC/scope explanations remain read-only detail content; current reader errors remain on Home.
+
+The ordinary portrait check proves the Home scroll range is zero and that all five main observations, current status, the four named main controls and the complete Pause disclosure fit within the viewport. Large type and short windows retain readable overflow. Normal-width primary metrics share equal-width, non-overlapping columns; compact windows use short label/value rows and font scales above 1.3 use a stack. Each metric supplies its full label and value once, without a click action or live region. Actual platform nodes verify full text and Submitted-before-In-queue traversal. RTL mirrors the columns while preserving logical reading order. The JVM RTL fixture enables RTL support only in its test application and asserts the actual root direction; this does not establish app-wide localization. At large text sizes, observation labels and values stack. The app keeps its dark palette under either system theme; changing system appearance does not change authorization.
 
 ```sh
 cd android
