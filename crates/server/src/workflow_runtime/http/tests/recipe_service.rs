@@ -25,11 +25,7 @@ async fn recipe(input: Value) -> Value {
             .write_all(&serde_json::to_vec(&input).unwrap())
             .unwrap();
         let output = child.wait_with_output().unwrap();
-        assert!(
-            output.status.success(),
-            "recipe client refused: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        assert!(output.status.success(), "recipe client refused");
         serde_json::from_slice(&output.stdout).unwrap()
     })
     .await
