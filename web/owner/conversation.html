@@ -4,7 +4,7 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex"><title>Conversation simulator · ZROtext</title>
   <link rel="stylesheet" href="devices.css"><link rel="stylesheet" href="conversation.css">
-  <script defer src="conversation-core.js"></script><script defer src="conversation-owner-adapter.js"></script><script defer src="conversation-bootstrap.js"></script><script defer src="conversation-owner-setup.js"></script><script defer src="conversation-root-enrollment.js"></script><script defer src="conversation.js"></script>
+  <script defer src="conversation-core.js"></script><script defer src="conversation-owner-adapter.js"></script><script defer src="conversation-bootstrap.js"></script><script defer src="conversation-owner-setup.js"></script><script defer src="conversation-root-enrollment.js"></script><script defer src="conversation-line-setup.js"></script><script defer src="conversation.js"></script>
 </head>
 <body><main>
   <header><div><p class="eyebrow">ZROtext</p><h1>One conversation</h1></div></header>
@@ -50,6 +50,23 @@
       <label>Saved public signature lines <input id="root-signatures-file" type="file"></label>
       <label>Current owner MFA code <input id="root-mfa" type="password" autocomplete="off"></label>
       <button id="root-complete" type="button">Review and complete root enrollment</button>
+    </fieldset>
+    <fieldset id="sealed-line-setup"><legend>First SEALED line setup</legend>
+      <p>Use the independently selected account, device, line, next binding generation, root fingerprint and HTTPS owner origin above. Compare the existing paired phone signing fingerprint directly with your phone or custodian receipt. This ceremony does not approve content transfer.</p>
+      <label>Independently compared paired phone signing fingerprint <input id="line-paired-fingerprint" type="text" autocomplete="off"></label>
+      <label>Existing paired phone public signing point (65-byte uncompressed SEC1) <input id="line-phone-point-file" type="file"></label>
+      <label><input id="line-session-consent" type="checkbox"> Create a nonexportable session-only line approval key. Closing or losing this page loses the key; an unactivated replacement requires fresh offline root approval.</label>
+      <button id="line-begin" type="button" disabled>Prepare session line approval</button>
+      <div id="line-artifacts"></div>
+      <p>Approve the exact downloaded public packet with the existing offline line-key-registration command. Select its 64-byte public root-signature output. No root recovery material belongs in this browser.</p>
+      <label>Existing root approval signature <input id="line-root-signature-file" type="file"></label>
+      <label>Current owner MFA code <input id="line-mfa" type="password" autocomplete="off"></label>
+      <button id="line-complete" type="button" disabled>Review and register session approval key</button>
+      <button id="line-reconcile" type="button" disabled>Check uncertain registration receipt</button>
+      <button id="line-open" type="button" disabled>Request selected phone SIM proof</button>
+      <button id="line-check" type="button" disabled>Check phone proof or acknowledgment</button>
+      <button id="line-approve" type="button" disabled>Review and approve selected SIM proof</button>
+      <p id="line-status">SEALED line setup is unavailable until explicitly configured and approved.</p>
     </fieldset>
     <div id="custody-artifacts"></div>
   </fieldset>
