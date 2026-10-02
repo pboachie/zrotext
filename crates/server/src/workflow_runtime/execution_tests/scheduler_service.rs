@@ -3,10 +3,158 @@ use super::*;
 use serde_json::{Value, json};
 use std::{
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::Arc,
 };
+
+fn owned_component(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("zrotext-scheduler-"))
+        .and_then(|value| {
+            Uuid::parse_str(value)
+                .ok()
+                .map(|id| id.to_string() == value)
+        })
+        .unwrap_or(false)
+}
+
+fn scratch_anchor(configured: &Path) -> std::io::Result<PathBuf> {
+    let root = configured.canonicalize()?;
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()?;
+    if root.starts_with(repository) || !root.is_dir() {
+        return Err(std::io::Error::other("public scratch anchor refused"));
+    }
+    Ok(root)
+}
+
+fn create_scratch(root: &Path) -> std::io::Result<PathBuf> {
+    let directory = root.join(format!("zrotext-scheduler-{}", Uuid::new_v4()));
+    if !directory.starts_with(root)
+        || directory.parent() != Some(root)
+        || !owned_component(&directory)
+    {
+        return Err(std::io::Error::other("scheduler scratch refused"));
+    }
+    // A pre-existing entry is never adopted as owned scratch.
+    std::fs::create_dir(&directory)?;
+    Ok(directory)
+}
+
+fn remove_scratch(root: &Path, directory: &Path) -> std::io::Result<()> {
+    if !directory.starts_with(root)
+        || directory.parent() != Some(root)
+        || !owned_component(directory)
+    {
+        return Err(std::io::Error::other("scheduler cleanup scope refused"));
+    }
+    let metadata = std::fs::symlink_metadata(directory)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(std::io::Error::other("scheduler cleanup entry refused"));
+    }
+    let resolved = directory.canonicalize()?;
+    // Check the absolute target immediately before recursive cleanup. Private
+    // parent ACLs remain required against privileged local replacement races.
+    if !resolved.starts_with(root)
+        || resolved.parent() != Some(root)
+        || resolved != directory
+        || !owned_component(&resolved)
+    {
+        return Err(std::io::Error::other("scheduler cleanup target refused"));
+    }
+    std::fs::remove_dir_all(resolved)
+}
+
+#[test]
+fn scheduler_scratch_identity_refuses_other_names_and_nested_paths() {
+    let root = std::env::current_dir().unwrap();
+    let child = root.join(format!("zrotext-scheduler-{}", Uuid::new_v4()));
+    assert!(owned_component(&child));
+    assert_eq!(child.parent(), Some(root.as_path()));
+    assert!(!owned_component(&root.join("zrotext-scheduler-not-a-uuid")));
+    assert!(!owned_component(&root.join("other")));
+    assert_ne!(
+        root.join("nested")
+            .join(child.file_name().unwrap())
+            .parent(),
+        Some(root.as_path())
+    );
+}
+
+#[test]
+fn scheduler_scratch_refuses_public_anchor_foreign_target_and_non_directory() {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    assert!(scratch_anchor(&repository).is_err());
+    let root = scratch_anchor(&std::env::temp_dir()).unwrap();
+    let directory = create_scratch(&root).unwrap();
+    let foreign = repository.join("Cargo.toml");
+    let before = std::fs::read(&foreign).unwrap();
+    assert!(remove_scratch(&root, &foreign).is_err());
+    assert_eq!(std::fs::read(&foreign).unwrap(), before);
+    assert!(remove_scratch(&root, &root).is_err());
+    assert!(directory.is_dir());
+    if !directory.starts_with(&root) || directory.parent() != Some(root.as_path()) {
+        panic!("test scratch target refused");
+    }
+    std::fs::remove_dir(&directory).unwrap();
+    if !directory.starts_with(&root) || directory.parent() != Some(root.as_path()) {
+        panic!("test scratch replacement refused");
+    }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&directory)
+        .unwrap();
+    assert!(remove_scratch(&root, &directory).is_err());
+    assert!(directory.is_file());
+    let resolved = directory.canonicalize().unwrap();
+    if !resolved.starts_with(&root)
+        || resolved.parent() != Some(root.as_path())
+        || resolved != directory
+    {
+        panic!("test file cleanup refused");
+    }
+    std::fs::remove_file(resolved).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn scheduler_scratch_refuses_a_symlink_replacement_without_removing_its_target() {
+    let root = scratch_anchor(&std::env::temp_dir()).unwrap();
+    let link = create_scratch(&root).unwrap();
+    let target = create_scratch(&root).unwrap();
+    if !link.starts_with(&root) || link.parent() != Some(root.as_path()) {
+        panic!("symlink fixture refused");
+    }
+    std::fs::remove_dir(&link).unwrap();
+    if !link.starts_with(&root)
+        || !target.starts_with(&root)
+        || link.parent() != Some(root.as_path())
+        || target.parent() != Some(root.as_path())
+    {
+        panic!("symlink fixture scope refused");
+    }
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    assert!(remove_scratch(&root, &link).is_err());
+    assert!(target.is_dir());
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    if !link.starts_with(&root) || link.parent() != Some(root.as_path()) {
+        panic!("symlink cleanup scope refused");
+    }
+    std::fs::remove_file(&link).unwrap();
+    remove_scratch(&root, &target).unwrap();
+}
 
 async fn driver(input: Value) -> Value {
     tokio::task::spawn_blocking(move || {
@@ -65,8 +213,10 @@ async fn actual_customer_scheduler_restart_resolves_lost_send_and_cancels_withou
         true,
     );
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    let directory = std::env::temp_dir().join(format!("zrotext-scheduler-{}", Uuid::new_v4()));
-    std::fs::create_dir(&directory).unwrap();
+    // TEMP is trusted test startup configuration. Resolve its selected anchor
+    // once and permit only one freshly generated child, never the anchor itself.
+    let scratch_root = scratch_anchor(&std::env::temp_dir()).unwrap();
+    let directory = create_scratch(&scratch_root).unwrap();
     let input = request();
     let mut fixture = json!({"upstream":format!("http://{address}"),"credential":flow.credential.as_str(),"journal":directory.join("journal.sqlite"),"phase":"enqueue","expected_state":"waiting","action_id":flow.action.key.action_id,"params":{"request_id":input.request_id,"key":flow.action.key,"policy":flow.policy,"series_id":input.series_id,"ordinal":0}});
     driver(fixture.clone()).await;
@@ -133,5 +283,5 @@ async fn actual_customer_scheduler_restart_resolves_lost_send_and_cancels_withou
     server.abort();
     let _ = server.await;
     flow.case.f.cleanup().await;
-    std::fs::remove_dir_all(directory).unwrap();
+    remove_scratch(&scratch_root, &directory).unwrap();
 }
