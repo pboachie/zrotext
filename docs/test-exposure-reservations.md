@@ -65,8 +65,28 @@ that maximum once, releasing only the unused remainder; a verified-not-started
 observation can release the bound once. Conflicting or duplicate completions
 cannot restore more budget. These are TEST observations, not a production
 provider signature/reconciliation implementation. Recovery of production
-terminal evidence and safe release of an abandoned pre-intent reservation
-remain unavailable; such rows conservatively consume their bound until review.
+terminal evidence remains unavailable; such started rows conservatively consume
+their bound until review.
+
+`cancel_unstarted` releases an abandoned reservation only when its durable state
+is still `reserved` and no intent nonce or lease has ever been issued. It requires
+a currently authenticated account owner, rechecked after the last database write.
+Cleanup does not require renewed action approval, live route policies, invoice
+eligibility or a current reader: those conditions grant no authority to start work
+through this method. Expired actions and withdrawn policies can therefore be
+cleaned up without reactivating them. The global deployment lock serializes
+cancellation with the first intent; cancellation then locks the account/owner,
+reservation and its six original sorted budget rows. It never acquires root or
+action locks afterwards. An issued, expired, unknown or reviewed intent is refused.
+
+The existing immutable `released` tombstone records zero actual units and a
+domain-bound cancellation digest. All original scope and deployment outstanding
+units decrease atomically; finalized units, Android quota and financial credits
+are untouched. A trigger/storage failure or owner expiry rolls back the entire
+release. Exact replay on another connection returns unchanged after fresh owner
+authentication. The same reservation cannot obtain an intent or reserve again as
+new work. There is no automatic expiry release, new public endpoint or provider
+evidence claim.
 
 Confirmed completion of an already-started synthetic effect remains
 accountable after owner/action expiry or policy withdrawal. It grants no new
