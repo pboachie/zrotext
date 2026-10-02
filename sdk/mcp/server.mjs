@@ -192,8 +192,8 @@ export async function configuredClient(env = process.env) {
     if (requestedRoot === selectedAnchor) {
       root = canonicalAnchor;
     } else {
-      // The independently authorized anchor is the lookup boundary, including
-      // when the earlier selection took its fixed-home or launcher-cwd branch.
+      // Recheck the chosen independent anchor immediately before resolving a
+      // nested root. An environment value cannot choose a sibling path here.
       if (!requestedRoot.startsWith(selectedAnchor + sep)) throw new Error();
       root = resolve(await fs.realpath(requestedRoot));
     }
