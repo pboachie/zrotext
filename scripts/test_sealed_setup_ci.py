@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 import os
 import io
+import base64
 from contextlib import redirect_stdout
 from pathlib import Path
 import subprocess
@@ -13,6 +14,95 @@ import sealed_setup_ci as driver
 
 
 class SetupCiTest(unittest.TestCase):
+    def test_owned_directory_permission_change_is_confined_and_precedes_initialization(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            with patch.object(driver, "ROOT", root), \
+                    patch.object(driver, "native_host_supported", return_value=True), \
+                    patch.object(driver, "grant_fixture_user_access") as grant:
+                parent = driver.owned_fixture_parent()
+                owned = parent / "sealed-setup-ci-fixture"
+                owned.mkdir()
+                self.assertEqual(driver.prepare_owned_directory(owned), owned)
+                grant.assert_called_once_with(owned)
+                grant.reset_mock()
+                (owned / "existing").write_bytes(b"preserve")
+                sibling = parent / "unrelated"
+                sibling.mkdir()
+                for selected in (parent, sibling, owned):
+                    with self.assertRaises(ValueError):
+                        driver.prepare_owned_directory(selected)
+                grant.assert_not_called()
+                self.assertEqual((owned / "existing").read_bytes(), b"preserve")
+
+    def test_native_permission_tool_uses_fixed_code_and_literal_owned_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            executable = root / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+            executable.parent.mkdir(parents=True)
+            executable.write_bytes(b"fixture")
+            def system_directory(buffer, _capacity):
+                buffer.value = str(root)
+                return len(str(root))
+            api = SimpleNamespace(kernel32=SimpleNamespace(GetSystemDirectoryW=system_directory))
+            selected = root / "sealed-setup-ci-literal-'$fixture"
+            with patch.object(driver.ctypes, "windll", api, create=True), \
+                    patch.object(driver.subprocess, "run") as run:
+                driver.grant_fixture_user_access(selected)
+            command = run.call_args.args[0]
+            self.assertEqual(command[:4], [str(executable), "-NoProfile", "-NonInteractive", "-EncodedCommand"])
+            script = base64.b64decode(command[4]).decode("utf-16-le")
+            self.assertNotIn(str(selected), script)
+            self.assertIn("$item.SetAccessControl($acl)", script)
+            self.assertIn("$acl.SetOwner($user)", script)
+            self.assertIn("$acl.SetAccessRuleProtection($true, $false)", script)
+            self.assertEqual(run.call_args.kwargs["env"]["ZT_SEALED_SETUP_OWNED_DIRECTORY"], str(selected))
+            self.assertEqual(run.call_args.kwargs["stderr"], subprocess.DEVNULL)
+            self.assertTrue(run.call_args.kwargs["check"])
+
+    @unittest.skipUnless(os.name == "nt", "requires native Windows PostgreSQL tools")
+    def test_real_postgres_initializes_starts_queries_and_stops_private_user_fixture(self):
+        program_files = os.environ.get("ProgramFiles")
+        if not program_files:
+            self.skipTest("requires installed PostgreSQL 17")
+        requested = Path(program_files) / "PostgreSQL" / "17" / "bin"
+        if not (requested / "initdb.exe").is_file():
+            self.skipTest("requires installed PostgreSQL 17")
+        tools = driver.installed_postgres_directory(requested)
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch.object(driver, "ROOT", Path(temporary).resolve()):
+                owned = Path(tempfile.mkdtemp(prefix="sealed-setup-ci-", dir=driver.owned_fixture_parent()))
+                cluster = None
+                try:
+                    driver.prepare_owned_directory(owned)
+                    cluster = driver.OwnedCluster(owned, tools)
+                    # Run actual restricted-token tools, never a runner service.
+                    with patch.dict(os.environ):
+                        os.environ.pop("PG_RESTRICT_EXEC", None)
+                        uri = cluster.start()
+                        result = subprocess.run([str(driver.tool(tools, "psql")), uri, "-X", "-A", "-t",
+                                                 "-c", "SELECT 1"], stdin=subprocess.DEVNULL,
+                                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                                timeout=10, check=True)
+                    self.assertEqual(result.stdout.strip(), b"1")
+                    self.assertTrue((cluster.data / "PG_VERSION").is_file())
+                finally:
+                    driver.cleanup_owned_directory(owned, cluster)
+                self.assertFalse(owned.exists())
+
+    def test_permission_failure_preserves_closed_diagnostics_and_cleans_owned_leaf(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = io.StringIO()
+            with patch.object(driver, "ROOT", Path(temporary).resolve()), \
+                    patch.dict(driver.os.environ, {"RUNNER_TEMP": temporary}), \
+                    patch.object(driver, "native_host_supported", return_value=True), \
+                    patch.object(driver, "grant_fixture_user_access", side_effect=ValueError("private-fixture-diagnostic")), \
+                    patch.object(driver, "OwnedCluster") as cluster, redirect_stdout(output):
+                self.assertEqual(driver.main(["--tools", temporary, "--pg-bin", temporary]), 1)
+                self.assertEqual(list(driver.owned_fixture_parent().iterdir()), [])
+            cluster.assert_not_called()
+            self.assertEqual(output.getvalue(), "Explicit sealed setup fixture failed at owned-directory (fixture-error); private inputs withheld.\n")
+
     def test_failure_stage_withholds_exception_and_caller_material(self):
         with tempfile.TemporaryDirectory() as temporary:
             cluster = unittest.mock.Mock(stage="cluster-initialization")
@@ -23,10 +113,12 @@ class SetupCiTest(unittest.TestCase):
                     patch.object(driver, "native_host_supported", return_value=True), \
                     patch.object(driver, "installed_postgres_directory", return_value=Path(temporary)), \
                     patch.object(driver, "OwnedCluster", return_value=cluster), \
+                    patch.object(driver, "prepare_owned_directory") as prepare, \
                     patch.object(driver, "cleanup_owned_directory") as cleanup, redirect_stdout(output):
                 self.assertEqual(driver.main(["--tools", temporary, "--pg-bin", temporary]), 1)
             self.assertEqual(output.getvalue(), "Explicit sealed setup fixture failed at cluster-initialization (fixture-error); private inputs withheld.\n")
             cleanup.assert_called_once()
+            prepare.assert_called_once_with(cleanup.call_args.args[0])
             # The mocked cleanup did not remove the newly owned empty fixture.
             owned = cleanup.call_args.args[0]
             self.assertEqual(owned.parent.resolve(), Path(temporary).resolve())
@@ -221,6 +313,7 @@ class SetupCiTest(unittest.TestCase):
                     patch.object(driver, "OwnedCluster", return_value=cluster), \
                     patch.object(driver, "installed_postgres_directory", return_value=Path(temporary)), \
                     patch.object(driver, "native_host_supported", return_value=True), \
+                    patch.object(driver, "prepare_owned_directory"), \
                     patch.object(driver, "tls_fixture", return_value={}), \
                     patch.object(driver, "launch_consumer", side_effect=driver.ProcessCleanupFailure("fixture")):
                 self.assertEqual(driver.main(["--tools", temporary, "--pg-bin", temporary]), 1)

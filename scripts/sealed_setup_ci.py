@@ -6,6 +6,7 @@ Existing isolated database mode never initializes/stops a cluster. No credential
 ready records or TLS private material are printed or written as evidence.
 """
 import argparse
+import base64
 import ctypes
 import datetime
 import ipaddress
@@ -104,6 +105,52 @@ def owned_fixture_parent():
             raise ValueError("Canonical owned fixture namespace required")
         parent = selected
     return parent
+
+
+def grant_fixture_user_access(directory):
+    # A fixed script and a literal environment argument keep paths out of code.
+    # Apply a protected ACL ONLY to this newly created, empty fixture leaf.
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = ctypes.windll.kernel32.GetSystemDirectoryW(buffer, len(buffer))
+    if not 0 < length < len(buffer):
+        raise ValueError("System fixture permission tool unavailable")
+    executable = Path(buffer.value) / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    if executable.is_symlink() or not executable.is_file():
+        raise ValueError("System fixture permission tool unavailable")
+    script = """
+$ErrorActionPreference = 'Stop'
+$path = $env:ZT_SEALED_SETUP_OWNED_DIRECTORY
+$item = [IO.DirectoryInfo]::new($path)
+if (-not $item.Exists -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Fixture directory refused' }
+if ($item.GetFileSystemInfos().Length -ne 0) { throw 'Nonempty fixture refused' }
+$user = [Security.Principal.WindowsIdentity]::GetCurrent().User
+$system = [Security.Principal.SecurityIdentifier]::new([Security.Principal.WellKnownSidType]::LocalSystemSid, $null)
+$acl = [Security.AccessControl.DirectorySecurity]::new()
+$acl.SetOwner($user)
+$acl.SetAccessRuleProtection($true, $false)
+$inherit = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+foreach ($sid in @($user, $system)) {
+  $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, [Security.AccessControl.FileSystemRights]::FullControl, $inherit, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
+  $acl.AddAccessRule($rule)
+}
+$item.SetAccessControl($acl)
+"""
+    subprocess.run([str(executable), "-NoProfile", "-NonInteractive", "-EncodedCommand",
+                    base64.b64encode(script.encode("utf-16-le")).decode("ascii")],
+                   env=dict(os.environ, ZT_SEALED_SETUP_OWNED_DIRECTORY=str(directory)),
+                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL, timeout=15, check=True)
+
+
+def prepare_owned_directory(directory):
+    actual = confined(directory, owned_fixture_parent())
+    if not actual.name.startswith("sealed-setup-ci-") or any(actual.iterdir()):
+        raise ValueError("New empty owned fixture required")
+    if native_host_supported():
+        # initdb's restricted token retains the user SID but disables the
+        # Administrators SID. Inherit a direct user grant into its data tree.
+        grant_fixture_user_access(actual)
+    return actual
 
 
 def reserve_port():
@@ -260,6 +307,7 @@ def main(argv=None):
         stage = "owned-directory"
         temporary = Path(tempfile.mkdtemp(prefix="sealed-setup-ci-", dir=owned_fixture_parent()))
         try:
+            prepare_owned_directory(temporary)
             if args.existing_database:
                 uri = database_url(os.environ.get("ZT_INBOUND_TEST_DATABASE_URL", ""))
             else:
