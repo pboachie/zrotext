@@ -1436,7 +1436,8 @@
                       "state": {
                         "enum": [
                           "waiting_owner_binding",
-                          "waiting_window"
+                          "waiting_window",
+                          "waiting_phone"
                         ]
                       }
                     },

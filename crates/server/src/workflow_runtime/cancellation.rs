@@ -59,6 +59,18 @@ pub async fn cancel_action(
         .await?
         .ok_or(AuthError::Forbidden)?;
     let message: Uuid = row.get(0);
+    // Preserve action -> series -> occurrence -> job/message lock order.
+    // This exact grant may withdraw its own prepared occurrence, not a series
+    // owned by another grant or an independently approved future action.
+    tx.query_opt("SELECT s.id FROM workflow_schedule_series s JOIN workflow_schedule_occurrences o ON (o.account_id,o.series_id)=(s.account_id,s.id) WHERE o.account_id=$1 AND o.action_id=$2 AND o.action_revision=$3 AND o.binding_digest=$4 FOR UPDATE OF s", &[&key.account_id,&key.action_id,&key.revision,&&key.binding_digest[..]]).await?;
+    let occurrence = tx.query_opt("SELECT id,actor_kind,actor_id,message_id,phase,observed_message_state FROM workflow_schedule_occurrences WHERE account_id=$1 AND action_id=$2 AND action_revision=$3 AND binding_digest=$4 FOR UPDATE", &[&key.account_id,&key.action_id,&key.revision,&&key.binding_digest[..]]).await?;
+    if let Some(row) = &occurrence
+        && (row.get::<_, String>("actor_kind") != "integration"
+            || row.get::<_, Uuid>("actor_id") != principal.grant_id()
+            || row.get::<_, Option<Uuid>>("message_id") != Some(message))
+    {
+        return Err(AuthError::Forbidden);
+    }
     let digest = store::request_digest(8, &("cancel-prepared-v1", principal.grant_id(), key))
         .map_err(error)?;
     // The shared bounded access ledger refuses cross-method/request reuse. Its
@@ -76,6 +88,29 @@ pub async fn cancel_action(
         })?;
     if !cancelled {
         return Err(AuthError::Conflict);
+    }
+    if let Some(row) = occurrence {
+        let phase: String = row.get("phase");
+        if phase == "dispatching" {
+            let occurrence: Uuid = row.get("id");
+            // Existing schema forbids reopening a dispatched occurrence. The
+            // authoritative cancelled message projects a failed outcome;
+            // this does not cancel the independently approved action/series.
+            tx.execute("UPDATE workflow_schedule_occurrences SET phase='failed',observed_message_state='cancelled',updated_at=clock_timestamp() WHERE account_id=$1 AND id=$2", &[&key.account_id,&occurrence]).await?;
+            crate::encrypted_schedule::store::audit(
+                &tx,
+                key.account_id,
+                occurrence,
+                Some(crate::encrypted_schedule::permit::Actor::Integration(
+                    principal.grant_id(),
+                )),
+                "cancel",
+                "failed",
+                None,
+            )
+            .await
+            .map_err(error)?;
+        }
     }
     // Job/message locks serialized the irreversible grant race; now repeat the
     // real current-authority and clock checks after every possible lock wait.
