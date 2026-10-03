@@ -14,7 +14,40 @@ def identity(path):
     return info.st_dev, info.st_ino
 
 
-def checked_path(candidate, *, artifact=False):
+def artifact_capability(value=None):
+    # This root is selected independently by setup or its reviewed launcher.
+    raw = os.fspath(value if value is not None else os.getcwd())
+    if not os.path.isabs(raw) or raw.startswith(("\\\\", "//")) or any(ord(c) < 32 for c in raw):
+        raise ValueError("guided_path_refused")
+    root = os.path.normcase(os.path.abspath(raw))
+    if os.path.dirname(root) == root:
+        raise ValueError("guided_path_refused")
+    canonical = os.path.normcase(os.path.realpath(root))
+    if canonical != root:
+        raise ValueError("guided_path_refused")
+    current = Path(root)
+    while current != current.parent:
+        info = os.lstat(current)
+        if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                or getattr(info, "st_file_attributes", 0) & 0x400):
+            raise ValueError("guided_path_refused")
+        if os.name == "posix":
+            if current == Path(root) and (info.st_uid != os.getuid() or info.st_mode & 0o022):
+                raise ValueError("guided_path_refused")
+            if info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX:
+                raise ValueError("guided_path_refused")
+        current = current.parent
+    return root
+
+
+def setup_artifact_root(broker):
+    installed = os.path.normcase(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    normalized = os.path.normcase(os.path.abspath(os.fspath(broker)))
+    # Both alternatives are independent capabilities, not candidate parents.
+    return artifact_capability(installed if normalized.startswith(installed + os.path.sep) else os.getcwd())
+
+
+def checked_path(candidate, *, artifact=False, approved_artifact_root=None):
     raw = os.fspath(candidate)
     if not os.path.isabs(raw) or raw.startswith(("\\\\", "//")) or any(ord(c) < 32 for c in raw):
         raise ValueError("guided_path_refused")
@@ -23,6 +56,8 @@ def checked_path(candidate, *, artifact=False):
     roots = [os.path.normcase(os.path.abspath(os.getcwd())), os.path.normcase(os.path.abspath(os.path.join(os.path.expanduser("~"), ".config")))]
     if artifact:
         roots.append(os.path.normcase(os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))))
+        if approved_artifact_root is not None:
+            roots = [artifact_capability(approved_artifact_root)]
     selected = None
     for root in roots:
         if root == os.path.abspath(os.path.sep) or os.path.dirname(root) == root:

@@ -12,7 +12,7 @@ import subprocess
 import sys
 import threading
 import uuid
-from workflow_paths import checked_path, ParentGuard
+from workflow_paths import checked_path, ParentGuard, artifact_capability, setup_artifact_root
 import agent_setup as local
 from workflow_owner_setup import OwnerSession, OwnerSetupError, scope, identity
 from workflow_secret_store import operating_system_store, SecretStoreError, reference
@@ -26,18 +26,23 @@ class SetupRecovery(OwnerSetupError):
         self.grant, self.secret = grant, secret
 
 
-def plan(path, client, broker, expected, origin, grant, secret, remove=False, scope_digest=None):
+def plan(path, client, broker, expected, origin, grant, secret, remove=False, scope_digest=None, artifact_root=None):
     path = checked_path(path)
-    broker = checked_path(broker, artifact=True)
     if client not in ("mcp-json", "claude-desktop"):
         raise local.SetupError("unsupported_client")
-    broker = local.checked_artifact(broker, expected)
     identity(grant)
     reference(secret)
     raw, config = local.read_config(path)
+    existing = config.get("mcpServers", {}).get(ENTRY)
+    if artifact_root is None and isinstance(existing, dict):
+        stored_args = existing.get("args", [])
+        if len(stored_args) == 16 and stored_args[12] == "--artifact-root":
+            artifact_root = stored_args[13]
+    selected_root = artifact_capability(artifact_root) if artifact_root is not None else setup_artifact_root(broker)
+    broker = local.checked_artifact(checked_path(broker, artifact=True, approved_artifact_root=selected_root), expected)
     desired = {"command": sys.executable, "args": [str(Path(__file__).resolve()), "stdio",
                "--broker", str(broker), "--sha256", expected, "--origin", origin,
-               "--grant", grant, "--secret-reference", secret]}
+               "--grant", grant, "--secret-reference", secret, "--artifact-root", selected_root]}
     if scope_digest is not None:
         if not isinstance(scope_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", scope_digest):
             raise local.SetupError("invalid_scope_digest")
@@ -153,7 +158,7 @@ def preflight(path, client, broker, expected, origin, selected):
     existing = config.get("mcpServers", {}).get(ENTRY)
     if existing is not None:
         args = existing.get("args", []) if isinstance(existing, dict) else []
-        if len(args) != 14 or args[-2:] != ["--scope-digest", selected_digest]:
+        if len(args) != 16 or args[-2:] != ["--scope-digest", selected_digest]:
             raise local.SetupError("entry_conflict")
         proposal, _, _ = plan(path, client, broker, expected, origin, args[9], args[11],
                               scope_digest=selected_digest)
@@ -182,7 +187,7 @@ def install(path, reviewed, owner, selected, password, code, store, client, brok
     existing = config.get("mcpServers", {}).get(ENTRY)
     if existing is not None:
         args = existing.get("args", []) if isinstance(existing, dict) else []
-        if len(args) != 14 or args[-2:] != ["--scope-digest", scope_digest]:
+        if len(args) != 16 or args[-2:] != ["--scope-digest", scope_digest]:
             raise local.SetupError("entry_conflict")
         # Parsing fixed positions cannot change the launcher or select authority.
         grant, secret = args[9], args[11]
@@ -281,11 +286,17 @@ def disconnect(path, client, broker, expected, origin, grant, secret, reviewed, 
     return {"grantRevoked": True, "action": proposal["action"]}
 
 
-def launch(broker, expected, origin, secret, store):
-    broker = checked_path(broker, artifact=True)
+def launch(broker, expected, origin, secret, store, artifact_root=None):
+    selected_root = artifact_capability(artifact_root)
+    root_identity = os.stat(selected_root, follow_symlinks=False)
+    broker = checked_path(broker, artifact=True, approved_artifact_root=selected_root)
     broker = local.checked_artifact(broker, expected)
     node, _ = local.node_runtime()
     token = store.get(secret)
+    current_root = os.stat(artifact_capability(selected_root), follow_symlinks=False)
+    if (current_root.st_dev, current_root.st_ino) != (root_identity.st_dev, root_identity.st_ino):
+        raise ValueError("guided_path_refused")
+    local.checked_artifact(checked_path(broker, artifact=True, approved_artifact_root=selected_root), expected)
     env = {k: v for k, v in os.environ.items() if k.upper() in {"SYSTEMROOT", "WINDIR", "PATH"}}
     child = subprocess.Popen([node, str(broker)], stdin=subprocess.PIPE, stdout=sys.stdout.buffer,
                              stderr=subprocess.DEVNULL, env=env)
@@ -328,7 +339,7 @@ def main():
     parser.add_argument("operation", choices=["simulator", "preview", "connect", "disconnect", "recovery-preview", "recover", "stdio"], default="simulator", nargs="?")
     for option in ["client", "origin", "grant", "secret-reference", "sha256", "review-digest", "scope-digest"]:
         parser.add_argument("--" + option)
-    for option in ["broker", "config", "scope"]:
+    for option in ["broker", "config", "scope", "artifact-root"]:
         parser.add_argument("--" + option, type=Path)
     args = parser.parse_args()
     owner = None
@@ -340,13 +351,16 @@ def main():
                     "recovery-preview": ("config",), "recover": ("config", "origin", "review_digest")}
         if any(getattr(args, name) is None for name in required[args.operation]):
             raise local.SetupError("missing_setup_arguments")
+        if args.artifact_root is not None and args.operation != "stdio":
+            raise local.SetupError("artifact_root_is_launcher_only")
         config_path = checked_path(args.config) if args.config is not None else None
         scope_path = checked_path(args.scope) if args.scope is not None else None
-        broker_path = checked_path(args.broker, artifact=True) if args.broker is not None else None
+        selected_root = artifact_capability(args.artifact_root) if args.artifact_root is not None else None
+        broker_path = checked_path(args.broker, artifact=True, approved_artifact_root=selected_root) if args.broker is not None else None
         if args.operation == "simulator":
             result = local.journey()
         elif args.operation == "stdio":
-            return launch(broker_path, args.sha256, args.origin, args.secret_reference, operating_system_store())
+            return launch(broker_path, args.sha256, args.origin, args.secret_reference, operating_system_store(), selected_root)
         elif args.operation == "recovery-preview":
             pending = read_intent(config_path)
             if pending is None:

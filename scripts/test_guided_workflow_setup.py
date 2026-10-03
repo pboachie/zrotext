@@ -93,6 +93,61 @@ class GuidedSetup(unittest.TestCase):
         session.assert_not_called()
         prompt.assert_not_called()
 
+    def test_generated_custom_broker_launcher_survives_changed_desktop_cwd(self):
+        self.broker.write_text("""let raw='';process.stdin.on('data',b=>{raw+=b; if(raw.includes('\\n')){const v=JSON.parse(raw.split('\\n')[0]);if(v.v!==1||!v.credential.startsWith('ztw_'))process.exit(2); console.log(JSON.stringify({started:true,leaked:!!process.env.SYNTHETIC_OWNER_CANARY}));process.exit(0)}});""")
+        self.sha = setup.local.digest(self.broker.read_bytes())
+        self.install()
+        selected = json.loads(self.config.read_text())['mcpServers'][setup.ENTRY]
+        self.assertEqual(selected['args'][12:14], ['--artifact-root', str(self.root).lower() if os.name == 'nt' else str(self.root)])
+        other = self.root / 'desktop'
+        other.mkdir()
+        program = """import json,sys
+sys.path.insert(0,sys.argv[1])
+import guided_workflow_setup as setup
+class Vault:
+ def get(self,name): return 'ztw_'+'a'*43
+setup.operating_system_store=lambda:Vault()
+args=json.loads(sys.stdin.buffer.readline())
+sys.argv=args
+raise SystemExit(setup.main())
+"""
+        env = dict(os.environ, SYNTHETIC_OWNER_CANARY='synthetic-private-canary')
+        result = subprocess.run([sys.executable, '-c', program, str(Path(setup.__file__).parent)],
+                                input=(json.dumps(selected['args'])+'\n').encode(), capture_output=True,
+                                cwd=other, env=env, timeout=10, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
+        self.assertEqual(json.loads(result.stdout), {'started': True, 'leaked': False})
+        self.assertNotIn(b'ztw_', result.stdout)
+
+    def test_launcher_capability_rejects_volume_sibling_and_changed_pin_before_vault(self):
+        from workflow_paths import artifact_capability, checked_path
+        with self.assertRaisesRegex(ValueError, 'guided_path_refused'):
+            artifact_capability(Path(self.root.anchor))
+        sibling = self.root.with_name(self.root.name + '-sibling') / 'broker.mjs'
+        with self.assertRaisesRegex(ValueError, 'guided_path_refused'):
+            checked_path(sibling, artifact=True, approved_artifact_root=str(self.root))
+        with self.assertRaisesRegex(setup.local.SetupError, 'artifact_changed'):
+            setup.launch(self.broker, '0'*64, 'https://gateway.example', 'zrotext-workflow-'+'a'*32,
+                         self.store, str(self.root))
+        self.store.get.assert_not_called()
+
+    def test_changed_reviewed_artifact_root_refuses_resume_without_new_mint(self):
+        self.install()
+        configuration = json.loads(self.config.read_text())
+        alternate = self.root / 'alternate'
+        alternate.mkdir()
+        configuration['mcpServers'][setup.ENTRY]['args'][13] = str(alternate)
+        self.config.write_text(json.dumps(configuration))
+        with self.assertRaisesRegex(ValueError, 'guided_path_refused'):
+            self.install()
+        self.assertEqual(self.owner.create.call_count, 1)
+
+    @unittest.skipUnless(os.name == 'posix', 'requires POSIX artifact modes')
+    def test_readable_nonwritable_artifact_root_is_supported(self):
+        from workflow_paths import artifact_capability
+        self.root.chmod(0o755)
+        self.assertEqual(artifact_capability(), str(self.root))
+
     def test_hardlinked_config_refuses_before_owner_effect_and_preserves_other_link(self):
         target = self.root / 'foreign.json'
         os.link(self.config, target)
@@ -139,7 +194,7 @@ class GuidedSetup(unittest.TestCase):
 
     @unittest.skipUnless(os.name == 'posix', 'requires POSIX symlink creation')
     def test_alias_artifact_and_receipt_refused_without_reading_target(self):
-        from workflow_paths import checked_path
+        from workflow_paths import checked_path, artifact_capability
         alias = self.root / 'alias.mjs'
         alias.symlink_to(self.broker)
         with self.assertRaisesRegex(ValueError, 'guided_path_refused'):
@@ -148,6 +203,10 @@ class GuidedSetup(unittest.TestCase):
         receipt.symlink_to(self.broker)
         with self.assertRaisesRegex(ValueError, 'guided_path_refused'):
             setup.read_intent(self.config)
+        directory_alias = self.root / 'directory-alias'
+        directory_alias.symlink_to(self.root, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, 'guided_path_refused'):
+            artifact_capability(directory_alias)
 
     def test_actual_install_preserves_other_servers_and_never_stores_owner_or_narrow_secret_in_config(self):
         result = self.install()

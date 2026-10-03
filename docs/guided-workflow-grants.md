@@ -53,6 +53,19 @@ privileged actor or a writer with access to a trusted ancestor from racing every
 filesystem operation. CLI status/error output contains no credential or creator
 IDs; those nonsecret recovery identities stay in the local receipt/config.
 
+The reviewed generated launcher records the independently selected setup working
+directory (or the independent installed repository root for its broker) as its
+`--artifact-root` capability. This allows a pinned custom broker
+to start when the desktop application uses a different working directory. The
+capability is launcher-only; connect, resume, review and disconnect still run from
+the selected configuration directory. Artifact roots may be readable by others
+but must be owned by the current user and not group/world writable on POSIX;
+system-owned installations are not supported by this customer-owned checkout path.
+Canonical directory/ancestor
+checks and a root identity recheck precede startup; the broker must remain a regular,
+single-link descendant with the reviewed digest. The trusted launcher/config
+is an operator capability, not model-controlled authority or an OS sandbox.
+
 ## Credential custody and launcher
 
 Windows uses current-user generic Windows Credential Manager through its native
