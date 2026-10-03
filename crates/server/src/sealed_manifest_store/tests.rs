@@ -22,7 +22,6 @@ pub(crate) struct Fixture {
     pub(crate) readers: Vec<ExpectedRecipient>,
     pub(crate) signer: [u8; 32],
     pub(crate) event_signer: SigningKey,
-    #[cfg(feature = "conversation-simulator-tests")]
     pub(crate) archive_key: SigningKey,
 }
 
@@ -189,7 +188,6 @@ impl Fixture {
         let mut readers = Vec::new();
         let mut signer = [0; 32];
         let mut event_signer = None;
-        #[cfg(feature = "conversation-simulator-tests")]
         let mut archive_key = None;
         for (role, scope) in [(2, 12u16), (4, 2), (6, 0)] {
             let key = SigningKey::generate_from_rng(&mut rand::rng());
@@ -218,10 +216,7 @@ impl Fixture {
             bytes.push(1);
             if role == 2 {
                 readers.push(ExpectedRecipient { role, key_id: id });
-                #[cfg(feature = "conversation-simulator-tests")]
-                {
-                    archive_key = Some(key.clone());
-                }
+                archive_key = Some(key.clone());
             }
             if role == 4 {
                 signer = id;
@@ -242,7 +237,6 @@ impl Fixture {
             readers,
             signer,
             event_signer: event_signer.unwrap(),
-            #[cfg(feature = "conversation-simulator-tests")]
             archive_key: archive_key.unwrap(),
         };
         fixture.resign();

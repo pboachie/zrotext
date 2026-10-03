@@ -4,7 +4,8 @@
 The authenticated owner-declared service described in
 [the routine service contract](../protocol/v1/customer-routine-service.md)
 uses real current workflow grants, durable admission and explicit owner output
-publication. It admits deterministic or owner-selected local process policy identities for a separately supplied customer executor; this foundation includes no executable routine runner. This does not activate customer AI, hosted AI,
+publication. It supports deterministic routines and an owner-selected local
+process installation. This does not activate customer AI, hosted AI,
 messaging, provider access or a sending policy. Related prerequisites are #641,
 #634, #635, #636, #638, #639, #617 and independent #615 send authority.
 
