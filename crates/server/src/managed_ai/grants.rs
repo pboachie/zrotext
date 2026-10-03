@@ -176,17 +176,20 @@ impl ManagedGrants {
             .await
             .map_err(|_| Error::Forbidden)?;
         lock_owner(&tx, owner).await?;
-        let stored: String = tx
+        let user = tx
             .query_one(
-                "SELECT password_hash FROM users WHERE id=$1",
+                "SELECT password_hash,mfa_enabled FROM users WHERE id=$1",
                 &[&owner.user_id],
             )
-            .await?
-            .get(0);
+            .await?;
+        let stored: String = user.get(0);
         if stored != verified {
             return Err(Error::Authentication(
                 crate::auth::AuthError::InvalidCredentials,
             ));
+        }
+        if !user.get::<_, bool>(1) {
+            return Err(Error::Forbidden);
         }
         let (id, version, operation) = if let Some((id, expected)) = existing {
             if id.is_nil() || !(1..128).contains(&expected) {

@@ -216,6 +216,25 @@ async fn managed_grants_reject_changed_head_digest_purpose_and_missing_ceremony(
     c.request.policy.reader_generation = 2;
     assert!(c.issue().await.is_err());
     c.request = original;
+    c.case
+        .f
+        .db
+        .execute(
+            "UPDATE users SET mfa_enabled=false WHERE id=$1",
+            &[&c.case.owner.user_id],
+        )
+        .await
+        .unwrap();
+    assert!(matches!(c.issue().await, Err(managed_ai::Error::Forbidden)));
+    c.case
+        .f
+        .db
+        .execute(
+            "UPDATE users SET mfa_enabled=true WHERE id=$1",
+            &[&c.case.owner.user_id],
+        )
+        .await
+        .unwrap();
     let good = c.case.factor.clone();
     let verified_before: i64 = c
         .case
@@ -593,7 +612,7 @@ async fn managed_grants_current_owner_cannot_substitute_a_revoked_activation_cre
 
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated observed managed grant wait schema"]
-async fn managed_grants_observed_account_wait_refences_expiry_and_owner_before_any_effect() {
+async fn managed_grants_observed_account_wait_rechecks_expiry_and_owner_before_any_effect() {
     for replacing in [false, true] {
         for revoke_owner in [false, true] {
             let mut c =

@@ -62,7 +62,8 @@ permit. Task-bound wraps and atomic exposure admission require separate designs.
 Verification: the real PostgreSQL fixtures cover owner/archive/MFA admission,
 exact digest/head rejection, immutable rows, cross-account foreign keys, export,
 child-first erase counts/rollback, expired/purged reductions, the version cap,
-fresh MFA for replacement, creator-session loss, and the mounted consent route.
+fresh MFA for replacement, creator-session loss, the mounted consent route,
+observed account-lock waits, and mounted erasure commit/counts/later-failure rollback.
 Run `cargo test --locked -p zrotext-server managed_grants -- --ignored` with a
 disposable `ZT_INBOUND_TEST_DATABASE_URL`. Hosted PostgreSQL results and an
 independent exact-head review are required before this draft is ready.

@@ -132,6 +132,81 @@ async fn managed_grants_mounted_owner_erasure_reports_counts_and_rolls_back_late
             .unwrap()
             .get(0);
         assert_eq!(accounts, i64::from(fail_later));
-        crate::sealed_manifest_store::tests::cleanup::drop_fixture(&admin, &schema).await;
+        crate::sealed_manifest_store::tests::cleanup::drop_fixture(&admin, &schema)
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated optional managed proposal schema"]
+async fn managed_grants_absence_preserves_owner_erasure_and_partial_schema_fails_preflight() {
+    for partial in [false, true] {
+        let (admin, mut db, url, schema) = migrated_schema("managed_optional").await;
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(23)).unwrap());
+        let (a, session, _, _, app) = fixture(&mut db, &hasher, &url, None).await;
+        if partial {
+            let owner = principal_of(&db, &hasher, &session).await;
+            history(&mut db, &owner).await;
+            db.batch_execute("DROP TABLE managed_reader_events")
+                .await
+                .unwrap();
+        } else {
+            // Only this generated fixture schema is affected.
+            for table in crate::managed_ai::lifecycle::TABLES {
+                db.batch_execute(&format!("DROP TABLE {table} CASCADE"))
+                    .await
+                    .unwrap();
+            }
+        }
+        let response = app
+            .oneshot(erasure_post(
+                Some(&session.token),
+                Some(&session.csrf_token),
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        if partial {
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            for table in &crate::managed_ai::lifecycle::TABLES[1..] {
+                assert_eq!(
+                    db.query_one(
+                        &format!("SELECT count(*) FROM {table} WHERE account_id=$1"),
+                        &[&a.account_id]
+                    )
+                    .await
+                    .unwrap()
+                    .get::<_, i64>(0),
+                    1,
+                    "{table}"
+                );
+            }
+            assert!(
+                db.query_one(
+                    "SELECT disabled_at IS NULL FROM accounts WHERE id=$1",
+                    &[&a.account_id]
+                )
+                .await
+                .unwrap()
+                .get::<_, bool>(0)
+            );
+        } else {
+            assert_eq!(response.status(), StatusCode::OK);
+            let report = body(response).await;
+            assert_eq!(deleted_count(&report, "accounts"), 1);
+            assert!(report["deleted"].as_array().unwrap().iter().all(|row| {
+                !row["table"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("managed_reader_")
+            }));
+        }
+        crate::sealed_manifest_store::tests::cleanup::drop_fixture(&admin, &schema)
+            .await
+            .unwrap();
     }
 }
