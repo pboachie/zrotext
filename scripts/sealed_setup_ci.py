@@ -121,6 +121,23 @@ class FixtureToolFailure(ValueError):
 def tool_failure_category(output):
     # Never return subprocess text, paths, identifiers or environment values.
     text = output.lower()
+    if b"permission denied" in text or b"access is denied" in text:
+        for marker, category in (
+                (b"could not access directory", "directory-access-denied"),
+                (b"could not create directory", "directory-creation-denied"),
+                (b"could not change permissions", "directory-mode-denied"),
+                (b"could not open file", "file-open-denied"),
+                (b"could not execute", "child-execution-denied"),
+                (b"popen failure", "child-execution-denied")):
+            if marker in text:
+                return category
+        for marker, category in (
+                (b"performing post-bootstrap initialization", "post-bootstrap-permission-denied"),
+                (b"running bootstrap script", "bootstrap-permission-denied"),
+                (b"creating configuration files", "configuration-permission-denied"),
+                (b"creating subdirectories", "subdirectory-permission-denied")):
+            if marker in text:
+                return category
     for marker, category in (
             (b"restricted token", "restricted-token"),
             (b"permission denied", "permission-denied"),

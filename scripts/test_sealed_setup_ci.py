@@ -58,6 +58,11 @@ class SetupCiTest(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["stdout"], subprocess.DEVNULL)
         self.assertEqual(run.call_args.kwargs["stderr"], subprocess.DEVNULL)
 
+    def test_permission_context_returns_only_static_categories(self):
+        self.assertEqual(driver.tool_failure_category(b'could not create directory "private-fixture": Permission denied'), "directory-creation-denied")
+        self.assertEqual(driver.tool_failure_category(b'could not execute "private-fixture": Permission denied'), "child-execution-denied")
+        self.assertEqual(driver.tool_failure_category(b'running bootstrap script ... private-fixture Permission denied'), "bootstrap-permission-denied")
+
     def test_database_is_explicit_credential_free_loopback(self):
         self.assertEqual(driver.database_url("postgresql://fixture@localhost:4444/postgres"),
                          "postgresql://fixture@localhost:4444/postgres")
