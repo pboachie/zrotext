@@ -1,10 +1,15 @@
 # Customer assistant routine candidate
 
-**Draft customer-side runtime; live workflow services and selected-reader
-integration are unavailable.** This does not activate customer AI, hosted AI,
+**Default-off customer-side candidate; original inbound routines remain unavailable.**
+The authenticated owner-declared service described in
+[the routine service contract](../protocol/v1/customer-routine-service.md)
+uses real current workflow grants, durable admission and explicit owner output
+publication. It admits deterministic or owner-selected local process policy identities for a separately supplied customer executor; this foundation includes no executable routine runner. This does not activate customer AI, hosted AI,
 messaging, provider access or a sending policy. Related prerequisites are #641,
 #634, #635, #636, #638, #639, #617 and independent #615 send authority.
 
+The rest of this document describes the older injected-adapter contract.
+It is not the authenticated service entry point or evidence of inbound authority.
 `sdk/assistant/runtime.mjs` implements a callable Node 22 candidate for configured
 FAQ, intake, note, reminder and owner-conversation proposals. The deterministic
 SDK tests execute all five through encrypted synthetic fixtures. No network,

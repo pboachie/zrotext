@@ -1,0 +1,27 @@
+{
+  "request_id": "00000000-0000-4000-8000-000000000004",
+  "policy_id": "00000000-0000-4000-8000-000000000005",
+  "context_id": "00000000-0000-4000-8000-000000000006",
+  "routine_id": "00000000-0000-4000-8000-000000000007",
+  "generation": 1,
+  "kind": "faq",
+  "executor": "local_process",
+  "adapter_id": "customer_faq",
+  "artifact_digest": "abababababababababababababababababababababababababababababababab",
+  "period": "utc_day",
+  "expires_ms": 1893456000000,
+  "call_limit": 1,
+  "unit_limit": 5,
+  "units_per_call": 5,
+  "turn_limit": 1,
+  "timeout_ms": 1000,
+  "window": {
+    "timezone": "UTC",
+    "first_local_date": "2030-01-01",
+    "opens_minute": 0,
+    "closes_minute": 60,
+    "repeat_every_days": null,
+    "max_occurrences": 1,
+    "pacing_seconds": 60
+  }
+}

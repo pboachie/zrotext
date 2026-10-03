@@ -539,6 +539,11 @@ pub(super) async fn prepared() -> (Fixture, SessionPrincipal) {
     ))
     .await
     .unwrap();
+    f.db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/085_customer_routine_calls.sql"
+    ))
+    .await
+    .unwrap();
     let owner = owner(&f).await;
     (f, owner)
 }
