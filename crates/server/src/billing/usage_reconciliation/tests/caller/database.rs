@@ -3,6 +3,20 @@ use super::*;
 use crate::sealed_manifest_store::tests::Fixture;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+async fn invoice_fixture() -> Fixture {
+    let fixture = Fixture::new().await;
+    // The shared fixture ends at 078. Its billing prerequisites are installed;
+    // apply the actual invoice migration only in this caller's isolated schema.
+    fixture
+        .db
+        .batch_execute(include_str!(
+            "../../../../../../../deploy/compose/migrations/081_invoice_bound_test_billing.sql"
+        ))
+        .await
+        .unwrap();
+    fixture
+}
+
 async fn seed(
     db: &Database,
     account: Uuid,
@@ -43,7 +57,7 @@ async fn authority_snapshot(db: &Database, account: Uuid) -> Value {
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated schema and synthetic certificate-validated TLS only"]
 async fn actual_https_pg_observation_is_immutable_idempotent_and_cannot_credit_or_change_entitlement()
  {
-    let mut f = Fixture::new().await;
+    let mut f = invoice_fixture().await;
     seed(
         &f.db,
         f.account,
@@ -100,7 +114,7 @@ async fn actual_https_pg_observation_is_immutable_idempotent_and_cannot_credit_o
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated schema and synthetic certificate-validated TLS only"]
 async fn failed_account_does_not_starve_the_next_period_or_append_a_foreign_meter_observation() {
-    let mut f = Fixture::new().await;
+    let mut f = invoice_fixture().await;
     seed(&f.db, f.account, f.device, "cus_First", "mtr_First", false).await;
     let account = Uuid::from_u128(u128::MAX);
     let device = Uuid::new_v4();
@@ -176,7 +190,7 @@ async fn failed_account_does_not_starve_the_next_period_or_append_a_foreign_mete
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated schema, no external provider calls"]
 async fn enabled_startup_requires_actual_schema_and_foreign_period_refuses_before_network() {
-    let mut f = Fixture::new().await;
+    let mut f = invoice_fixture().await;
     let (worker, server) = tls(vec![]).await;
     worker.validate_schema(&f.db).await.unwrap();
     assert!(
