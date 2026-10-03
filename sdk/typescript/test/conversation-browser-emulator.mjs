@@ -91,6 +91,10 @@ try{
     await page.goto(origin+"/conversation.html");
     await page.getByRole("button",{name:"Check conversation authorization"}).click();
     await page.waitForFunction(()=>!document.querySelector("#body").matches(":disabled"));
+    // Authorization can enable the composer before the asynchronous history
+    // read completes. Observe the exact rendered content, not that earlier state.
+    await page.waitForFunction(expected=>document.querySelector("#messages").textContent===expected,
+        "Phone received: "+inbound,{timeout:10000});
     assert.equal(await page.locator("#messages").textContent(),"Phone received: "+inbound);
     const body="Synthetic browser reply \u03A9\nExact trailing spaces  ";
     await page.locator("#body").fill(body);
