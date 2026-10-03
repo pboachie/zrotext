@@ -119,6 +119,7 @@ async fn stop(
         tx.execute("UPDATE workflow_actions SET phase=$3,record_version=record_version+1,approved_by=CASE WHEN $3='cancelled' THEN NULL ELSE approved_by END,approved_at=CASE WHEN $3='cancelled' THEN NULL ELSE approved_at END WHERE account_id=$1 AND id=$2",
             &[&account,&current.key.action_id,&phase]).await?;
     }
+    crate::encrypted_schedule::store::cancel_stopped(tx, account, context, routine).await?;
     Ok((stopped, cancelled, irreversible))
 }
 

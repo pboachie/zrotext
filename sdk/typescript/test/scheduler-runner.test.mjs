@@ -15,23 +15,24 @@ const policy={timezone:'UTC',first_local_date:'2027-01-01',opens_minute:500,clos
 function fixture() {
   const occurrence={occurrence_id:uuid(3),series_id:uuid(4),ordinal:0,phase:'waiting_window',opens_at_ms:Date.now()-1000,closes_at_ms:Date.now()+60000,expires_at_ms:Date.now()+60000};
   const readiness={available:true,methods:workflowTools.map(tool=>({method:tool.name,operation:tool.name==='workflow.action.cancel'?'send':tool.name.replace('workflow.','').replace('action.','').replaceAll('.','_'),read_only_hint:tool.annotations.readOnlyHint,destructive_hint:tool.annotations.destructiveHint,idempotent_hint:true,implementation:'library_candidate',transport_mounted:true,permission_granted:true})),scope:{context_id:uuid(5),device_id:uuid(6),line_id:uuid(7)},send_semantics:'owner_bound_prepared_only'};
-  let phase='approved',state='waiting_phone',unknown=false,refuse=false,available=true;
+  let phase='approved',state='waiting_phone',unknown=false,refuse=false,available=true,statusUnavailable=false;
   const calls=[];
   const client=new WorkflowToolClient({origin:'https://gateway.example',credential:'ztw_'+Buffer.alloc(32,7).toString('base64url'),fetchImpl:async(_,init)=>{
     if(refuse)return new Response(JSON.stringify({error:{code:'unauthorized'}}),{status:401,headers:{'content-type':'application/json'}});
     if(init.method==='GET')return new Response(JSON.stringify(readiness),{headers:{'content-type':'application/json'}});
     const request=JSON.parse(init.body);calls.push(request);
+    if(statusUnavailable&&request.method==='workflow.action.status')return new Response(JSON.stringify({error:{code:'unavailable'}}),{status:503,headers:{'content-type':'application/json'}});
     let response;
     switch(request.method){
-      case'workflow.action.schedule':response={kind:'occurrence',result:occurrence};break;
-      case'workflow.action.status':response={kind:'action',result:{key,record_version:1,phase,delivery:phase==='dispatching'?(available?{availability:'available',message_id:uuid(8),dispatch_id:uuid(9),state:'queued',state_version:1,accepted_at_ms:1,updated_at_ms:2}:{availability:'unavailable'}):{availability:'not_bound'}}};break;
+      case'workflow.action.schedule':response={kind:'occurrence',result:{...occurrence,series_id:request.params.series_id,ordinal:request.params.ordinal}};break;
+      case'workflow.action.status':response={kind:'action',result:{key,record_version:1,phase,delivery:['dispatching','unknown'].includes(phase)?(available?{availability:'available',message_id:uuid(8),dispatch_id:uuid(9),state:'queued',state_version:1,accepted_at_ms:1,updated_at_ms:2}:{availability:'unavailable'}):{availability:'not_bound'}}};break;
       case'workflow.action.send':if(unknown)throw new Error('synthetic response loss');response={kind:'send',result:state==='prepared'?{state,message_id:uuid(8),dispatch_id:uuid(9)}:{state}};break;
       case'workflow.action.cancel':response={kind:'cancel',result:{key,message_id:uuid(8),state:'cancelled'}};break;
       default:throw new Error('unexpected call');
     }
     return new Response(JSON.stringify(response),{headers:{'content-type':'application/json'}});
   }});
-  return{client,calls,params:{request_id:uuid(6),key,policy,series_id:uuid(4),ordinal:0},set(values){if(values.phase)phase=values.phase;if(values.state)state=values.state;if(values.unknown!==undefined)unknown=values.unknown;if(values.refuse!==undefined)refuse=values.refuse;if(values.available!==undefined)available=values.available;}};
+  return{client,calls,params:{request_id:uuid(6),key,policy,series_id:uuid(4),ordinal:0},set(values){if(values.phase)phase=values.phase;if(values.state)state=values.state;if(values.unknown!==undefined)unknown=values.unknown;if(values.refuse!==undefined)refuse=values.refuse;if(values.available!==undefined)available=values.available;if(values.statusUnavailable!==undefined)statusUnavailable=values.statusUnavailable;}};
 }
 const due=()=>new Promise(resolve=>setTimeout(resolve,5100));
 test('unattended waiting poll uses a new correlation identity while retaining the exact occurrence',async()=>{
@@ -172,4 +173,113 @@ test('TLS fixture observes the durable local poll deadline without rewriting it 
     await waitForFixturePoll(filename,key.action_id);assert.equal(readDeadline(),deadline);assert.ok(Date.now()>=deadline);
     assert.equal((await runner.advance(key.action_id)).state,'prepared');assert.equal(f.calls.filter(c=>c.method==='workflow.action.send').length,2);
   }finally{runner?.close();await rm(directory,{recursive:true,force:true});}
+});
+
+
+test('journal export is bounded and erasure permanently fences restart and pending work',async()=>{
+ const directory=await mkdtemp(join(tmpdir(),'zrotext-scheduler-'));let runner,other;
+ try {
+  const f=fixture(),filename=join(directory,'journal.sqlite');runner=new ScheduledRunner({client:f.client,filename,enabled:true});
+  await runner.enqueue(f.params);
+  assert.equal(runner.exportPage({limit:1}).items.length,1);
+  assert.deepEqual(runner.exportPage().items[0].identity.params,f.params);
+  assert.throws(()=>runner.exportPage({limit:101}),/invalid_page/);
+  other=new ScheduledRunner({client:f.client,filename,enabled:true});
+  runner.erase();assert.deepEqual(runner.exportPage(),{items:[],next:null});
+  await assert.rejects(other.advance(key.action_id),/disabled/);
+  other.close();other=new ScheduledRunner({client:f.client,filename,enabled:true});
+  await assert.rejects(other.enqueue(f.params),/disabled/);
+  assert.equal(f.calls.filter(x=>x.method==='workflow.action.send').length,0);
+ }finally{other?.close();runner?.close();await rm(directory,{recursive:true,force:true});}
+});
+test('retention removes expired resolved metadata while preserving unknown and retired identity',async()=>{
+ const directory=await mkdtemp(join(tmpdir(),'zrotext-scheduler-'));let runner;
+ try {
+  const f=fixture(),filename=join(directory,'journal.sqlite');runner=new ScheduledRunner({client:f.client,filename,enabled:true});await runner.enqueue(f.params);
+  const db=new DatabaseSync(filename);
+  const row=db.prepare('SELECT identity FROM scheduled_actions').get(),identity=JSON.parse(row.identity);
+  identity.occurrence.expires_at_ms=Date.now()-1000;
+  db.prepare("UPDATE scheduled_actions SET identity=?,state='unknown'").run(JSON.stringify(identity));
+  assert.equal(runner.retain({beforeMs:Date.now()}),0);
+  db.prepare("UPDATE scheduled_actions SET state='cancelled'").run();
+  assert.equal(runner.retain({beforeMs:Date.now(),limit:1}),1);db.close();
+  assert.equal(runner.exportPage().items[0].state,'retired');
+  assert.equal(runner.exportPage().items[0].identity,null);
+  await assert.rejects(runner.enqueue(f.params),/retired/);
+  assert.throws(()=>runner.retain({beforeMs:Date.now()+100000}),/invalid_retention/);
+ }finally{runner?.close();await rm(directory,{recursive:true,force:true});}
+});
+test('recurrence cannot reuse an action approval for a different ordinal or change an existing occurrence',async()=>{
+ const directory=await mkdtemp(join(tmpdir(),'zrotext-scheduler-'));let runner;
+ try {
+  const f=fixture();runner=new ScheduledRunner({client:f.client,filename:join(directory,'journal.sqlite'),enabled:true});
+  await runner.enqueueOccurrence(f.params);
+  const policy={...f.params.policy,repeat_every_days:1,max_occurrences:2};
+  await assert.rejects(runner.enqueueOccurrence({...f.params,policy,ordinal:1,request_id:uuid(7)}),/approval_reused/);
+  await assert.rejects(runner.enqueueOccurrence({...f.params,policy}),/changed_schedule/);
+  assert.equal(f.calls.filter(x=>x.method==='workflow.action.schedule').length,1);
+ }finally{runner?.close();await rm(directory,{recursive:true,force:true});}
+});
+
+
+test('each supplied recurring ordinal retains its distinct action and actual service occurrence',async()=>{
+ const directory=await mkdtemp(join(tmpdir(),'zrotext-scheduler-'));let runner;
+ try {
+  const f=fixture();runner=new ScheduledRunner({client:f.client,filename:join(directory,'journal.sqlite'),enabled:true});
+  const policy={...f.params.policy,repeat_every_days:1,max_occurrences:2};
+  await runner.enqueueOccurrence({...f.params,policy});
+  const second={...f.params,policy,request_id:uuid(7),key:{...key,action_id:uuid(8)},ordinal:1};
+  await runner.enqueueOccurrence(second);
+  const items=runner.exportPage().items;
+  assert.deepEqual(items.map(x=>x.identity.params.ordinal),[0,1]);
+  assert.deepEqual(items.map(x=>x.action_id),[key.action_id,second.key.action_id]);
+  const page=runner.exportPage({limit:1});assert.equal(page.items.length,1);assert.equal(page.next,key.action_id);
+  assert.equal(runner.exportPage({after:page.next,limit:1}).items[0].action_id,second.key.action_id);
+  assert.equal(f.calls.filter(x=>x.method==='workflow.action.schedule').length,2);
+ }finally{runner?.close();await rm(directory,{recursive:true,force:true});}
+});
+test('prepared work polls verified server cancellation without a second Send or local reply authority',async()=>{
+ const directory=await mkdtemp(join(tmpdir(),'zrotext-scheduler-'));let runner;
+ try {
+  const f=fixture();runner=new ScheduledRunner({client:f.client,filename:join(directory,'journal.sqlite'),enabled:true});
+  await runner.enqueue(f.params);f.set({state:'prepared'});await runner.advance(key.action_id);
+  assert.equal(runner.inspect(key.action_id).state,'prepared');
+  f.set({phase:'cancelled'});await due();await runner.advance(key.action_id);
+  assert.equal(runner.inspect(key.action_id).state,'cancelled');
+  assert.equal(f.calls.filter(x=>x.method==='workflow.action.send').length,1);
+  assert.equal(f.calls.filter(x=>x.method==='workflow.action.cancel').length,0);
+ }finally{runner?.close();await rm(directory,{recursive:true,force:true});}
+});
+
+
+test('unknown action with available dispatch metadata remains unknown and cannot be retained as resolved',async()=>{
+ const directory=await mkdtemp(join(tmpdir(),'zrotext-scheduler-'));let runner;
+ try {
+  const f=fixture();runner=new ScheduledRunner({client:f.client,filename:join(directory,'journal.sqlite'),enabled:true});
+  await runner.enqueue(f.params);f.set({phase:'unknown'});await runner.advance(key.action_id);
+  assert.equal(runner.inspect(key.action_id).state,'unknown');
+  assert.equal(runner.retain({beforeMs:Date.now()}),0);
+  assert.equal(f.calls.filter(x=>x.method==='workflow.action.send').length,0);
+ }finally{runner?.close();await rm(directory,{recursive:true,force:true});}
+});
+
+
+for(const refusal of ['readiness','status','changed_phase'])test(`prepared reconciliation survives ${refusal} and retention/restart without another Send`,async()=>{
+ const directory=await mkdtemp(join(tmpdir(),'zrotext-scheduler-'));let runner;
+ try {
+  const f=fixture(),filename=join(directory,'journal.sqlite');runner=new ScheduledRunner({client:f.client,filename,enabled:true});
+  await runner.enqueue(f.params);f.set({state:'prepared'});await runner.advance(key.action_id);
+  const before=runner.inspect(key.action_id),db=new DatabaseSync(filename);
+  const identity=JSON.parse(db.prepare('SELECT identity FROM scheduled_actions').get().identity);identity.occurrence.expires_at_ms=Date.now()-1;
+  db.prepare('UPDATE scheduled_actions SET identity=?,next_ms=0').run(JSON.stringify(identity));
+  f.set(refusal==='readiness'?{refuse:true}:refusal==='status'?{statusUnavailable:true}:{phase:'expired'});
+  if(refusal==='changed_phase')await runner.advance(key.action_id);else await assert.rejects(runner.advance(key.action_id),e=>['unauthorized','unavailable'].includes(e.code));
+  assert.deepEqual(runner.inspect(key.action_id),before);
+  assert.equal(runner.retain({beforeMs:Date.now()}),0);
+  runner.close();runner=new ScheduledRunner({client:f.client,filename,enabled:true});
+  db.prepare('UPDATE scheduled_actions SET next_ms=0').run();db.close();
+  if(refusal==='changed_phase')await runner.advance(key.action_id);else await assert.rejects(runner.advance(key.action_id));
+  assert.deepEqual(runner.inspect(key.action_id),before);
+  assert.equal(f.calls.filter(x=>x.method==='workflow.action.send').length,1);
+ }finally{runner?.close();await rm(directory,{recursive:true,force:true});}
 });
