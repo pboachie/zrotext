@@ -179,7 +179,11 @@ registered request identity for the account lifetime. Later decisions and delive
 checks follow immutable parent action/revision/digest bindings for at most 128 original
 request links. Cycles, changed current heads, missing marked bindings or expired/revoked
 ancestor authority refuse. After ancestor row-lock waits, the complete chain is checked
-again against the current database clock. Ordinary actions without original-source
+again against the current database clock. The bounded SQL walk captures each hop's
+minimum already-enforced deadline once and compares the accumulated minimum with
+a fresh clock at termination. Original-read authority does not inherit the expired
+phone approval challenge deadline; integration-origin authority retains its existing
+context and interval deadline checks. Ordinary actions without original-source
 markers retain the existing decision contract.
 
 Source tombstones cannot be independently deleted, even after their associated action

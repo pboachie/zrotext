@@ -16,7 +16,7 @@ pub mod consumption;
 mod grants;
 pub mod http;
 pub mod lifecycle;
-mod page;
+pub(crate) mod page;
 pub(crate) mod source;
 pub use grants::{GrantRequest, IssuedCredential, issue, withdraw};
 

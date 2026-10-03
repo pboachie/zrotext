@@ -39,7 +39,6 @@ pub(super) struct Case {
     pub(super) header: wire::Header,
     pub(super) outbound: Option<SigningKey>,
     pub(super) phone_reader: Option<[u8; 32]>,
-    reader_key: SigningKey,
 }
 
 #[tokio::test]

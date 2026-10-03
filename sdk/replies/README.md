@@ -46,3 +46,34 @@ Close the adapter to release handles and the receiver's secret copies.
 The legacy adapter and opaque receiver remain separate. New original events are
 not converted into `inbound.message`. Metadata STOP continues through its
 existing authenticated source; this adapter never infers it from body text.
+
+### Separate customer reply ingress
+
+`createCustomerReplies` in `customer-replies.mjs` binds a separately configured
+`ReplyEventAdapter` to the independently current original receiver account and
+line. It does not manufacture a message or attempt identity. Operators configure
+both private ledgers and independent trusted authority sources; neither secret
+belongs in exported recipes or model parameters.
+
+`ingestMetadataStop` accepts only actual signed `inbound.message` metadata
+`opt_out`/`opt_out_review` events. The existing metadata adapter authenticates
+exact raw bytes, timestamp, source scope and durable replay identity. Its
+persisted stop latch fences new original callbacks, including after decryption
+and after a callback await. This cannot retract text already disclosed before
+STOP. Original text, including text saying STOP, and unavailable content never
+become metadata STOP.
+
+`ingestOriginal`, `pageOriginal` and `processOriginal` preserve original event
+identity, exact reader authority and bounded proposal callbacks. Reopen both
+ledgers on restart: an existing original reservation reconciles through service
+status only, without another callback or consumption. `consumeOwnerReview`
+explicitly routes unassociated original events to owner review without automatic
+interpretation. It grants neither approval nor Send. `exportOriginal`,
+`retainOriginal` and `eraseOriginal` retain the original adapter's bounded
+metadata, unknown-state and logical-erasure rules. `close` closes the original
+receiver; the caller closes its separately supplied metadata adapter.
+
+These are trusted-local library entry points, not a public ingress listener or
+proof of a deployed metadata producer. Customer HTTPS ingress still requires
+bounded bodies, separate route selection and secrets; do not auto-detect event
+kind and rewrite one contract into the other.

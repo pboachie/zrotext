@@ -14,6 +14,15 @@ struct OriginalCase {
 impl OriginalCase {
     async fn new() -> Self {
         let mut case = Case::for_original_reply().await;
+        // This new fixture exercises the full account-erasure table plan and
+        // genuine execution-issued source messages, unlike older partial cases.
+        case.f
+            .db
+            .batch_execute(include_str!(
+                "../../../../../deploy/compose/migrations/082_conversation_execution_records.sql"
+            ))
+            .await
+            .unwrap();
         activation::close(
             &mut case.f.connect().await,
             &case.owner,
@@ -79,6 +88,9 @@ impl OriginalCase {
         }
     }
     async fn issue(&mut self) -> service::IssuedCredential {
+        self.issue_with_lifetime(60000).await
+    }
+    async fn issue_with_lifetime(&mut self, lifetime: i64) -> service::IssuedCredential {
         let reader = self.statement.integration_readers[0].key_id;
         let now: i64 = self
             .case
@@ -104,7 +116,7 @@ impl OriginalCase {
                 connector_id: self.case.request.connector,
                 read_grant_id: self.read_grant,
                 reader_key_id: reader,
-                expires_at_ms: now + 60000,
+                expires_at_ms: now + lifetime,
             },
         )
         .await
@@ -168,7 +180,7 @@ async fn original_reader_uses_phone_selected_grant_and_withdrawal_cannot_reissue
 
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; original reader disposable schema"]
-async fn original_source_tombstones_refuse_partial_deletion_but_allow_committed_account_erasure() {
+async fn original_source_tombstones_refuse_partial_source_and_action_deletion() {
     let f = OriginalCase::new().await;
     let descriptor = f.case.descriptor().await;
     let action = decisions::register(
@@ -208,10 +220,25 @@ async fn original_source_tombstones_refuse_partial_deletion_but_allow_committed_
             .get::<_, i64>(0),
         1
     );
-    // Even deleting all associated actions cannot shed provenance while the account lives.
+    // Even deleting the associated action cannot shed provenance while the account lives.
     let tx = client.transaction().await.unwrap();
-    for &(_, sql) in crate::http_owner_erasure::DELETE_PLAN {
-        tx.execute(sql, &[&f.case.f.account]).await.unwrap();
+    tx.execute(
+        "DELETE FROM original_reply_sources WHERE account_id=$1",
+        &[&f.case.f.account],
+    )
+    .await
+    .unwrap();
+    for table in [
+        "workflow_action_mutations",
+        "workflow_action_versions",
+        "workflow_actions",
+    ] {
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE account_id=$1"),
+            &[&f.case.f.account],
+        )
+        .await
+        .unwrap();
     }
     assert_eq!(
         tx.commit().await.unwrap_err().code(),
@@ -230,27 +257,9 @@ async fn original_source_tombstones_refuse_partial_deletion_but_allow_committed_
             .get::<_, i64>(0),
         1
     );
-    // Genuine erasure commits the same dependency-ordered table plan plus account deletion.
-    let tx = client.transaction().await.unwrap();
-    for &(_, sql) in crate::http_owner_erasure::DELETE_PLAN {
-        tx.execute(sql, &[&f.case.f.account]).await.unwrap();
-    }
-    tx.execute("DELETE FROM accounts WHERE id=$1", &[&f.case.f.account])
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(
-        f.case
-            .f
-            .db
-            .query_one(
-                "SELECT count(*) FROM original_reply_sources WHERE account_id=$1",
-                &[&f.case.f.account]
-            )
-            .await
-            .unwrap()
-            .get::<_, i64>(0),
-        0
-    );
     f.case.f.cleanup().await;
 }
+
+mod network;
+
+mod races;

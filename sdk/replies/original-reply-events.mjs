@@ -149,7 +149,9 @@ class OriginalReplyReceiver {
       if (automaticAuthority !== null) { if (typeof automaticAuthority !== 'function') fail('invalid_request'); automaticAuthority(); }
       let descriptor = null;
       if (activeRequestId !== null) {
-        const text = await this.#client.read(idBytes(eventId)), controller = new AbortController(); let timer;
+        const text = await this.#client.read(idBytes(eventId));
+        if (automaticAuthority !== null) automaticAuthority();
+        const controller = new AbortController(); let timer;
         try { descriptor = await Promise.race([Promise.resolve().then(() => propose(text, { eventId, activeRequestId, signal: controller.signal })),
           new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new OriginalReplyEventError('unavailable')); }, this.#callbackTimeout); })]); }
         finally { clearTimeout(timer); controller.abort(); }

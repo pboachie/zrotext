@@ -1011,6 +1011,14 @@ async fn erasure_deletes_every_account_row_and_ends_the_session() {
     let (admin, mut db, database_url, schema) = migrated_schema("full").await;
     let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(23)).unwrap());
     let (a, session_a, b, _session_b, app) = fixture(&mut db, &hasher, &database_url, None).await;
+    // Minimal original-action provenance has account-lifetime custody. This
+    // full-schema, genuinely erasable account exercises the deferred DELETE
+    // constraint through the actual owner route and its committed transaction.
+    db.execute(
+        "INSERT INTO original_reply_sources(account_id,action_id,revision,binding_digest,source_grant_id,source_event_id,request_id,expires_at_ms) VALUES($1,$2,1,$3,$4,$5,$6,1)",
+        &[&a.account_id,&Uuid::new_v4(),&[9u8;32].as_slice(),&Uuid::new_v4(),&Uuid::new_v4(),&Uuid::new_v4()],
+    ).await.unwrap();
+
     let response = app
         .clone()
         .oneshot(erasure_post(
@@ -1026,6 +1034,18 @@ async fn erasure_deletes_every_account_row_and_ends_the_session() {
     assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
     let report = body(response).await;
     assert_eq!(report["account_id"], a.account_id.to_string());
+    assert_eq!(deleted_count(&report, "original_reply_sources"), 1);
+    assert_eq!(
+        db.query_one(
+            "SELECT count(*) FROM original_reply_sources WHERE account_id=$1",
+            &[&a.account_id]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        0
+    );
+
     for (table, rows) in [
         ("recipient_suppressions", 1),
         ("webhook_attempts", 1),
