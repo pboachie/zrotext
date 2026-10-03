@@ -8,6 +8,7 @@ use crate::inbound::InboundSession;
 use tokio_postgres::GenericClient;
 use uuid::Uuid;
 
+pub mod delivery;
 pub mod ingest;
 pub mod line_activation;
 pub mod upload;

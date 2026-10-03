@@ -103,6 +103,14 @@ const BLOCKED_TABLES: &[&str] = &[
 /// counts stay honest.
 pub(crate) const DELETE_PLAN: &[(&str, &str)] = &[
     (
+        "sealed_event_delivery_attempts",
+        "DELETE FROM sealed_event_delivery_attempts WHERE delivery_id IN (SELECT id FROM sealed_event_deliveries WHERE account_id=$1)",
+    ),
+    (
+        "sealed_event_deliveries",
+        "DELETE FROM sealed_event_deliveries WHERE account_id=$1",
+    ),
+    (
         "exposure_reservation_scopes",
         "DELETE FROM exposure_reservation_scopes WHERE account_id=$1",
     ),

@@ -2,6 +2,7 @@
 use super::*;
 mod device_projection_contract;
 mod resource_pagination;
+mod sealed_delivery;
 use crate::sealed_envelope::ExpectedRecipient;
 
 // Ordinary-CI layer of the issue #632 downgrade/leakage acceptance harness:
