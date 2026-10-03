@@ -643,3 +643,5 @@ fn auth_hash(domain: &[u8], value: &str) -> Vec<u8> {
     mac.update(value.as_bytes());
     mac.finalize().into_bytes().to_vec()
 }
+
+mod service;
