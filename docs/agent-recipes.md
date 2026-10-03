@@ -147,9 +147,11 @@ is claimed.
 The SDK test suite checks the disabled export and default preview in ordinary CI.
 To also import, export and execute it in a separately installed n8n **2.41.4**, use
 Node.js **24** to invoke the test and set `ZT_N8N_CLI` to that installation's
-absolute `bin/n8n` file. The child uses the same Node executable as the test;
-configuration cannot replace the executable. The selected CLI must belong to an
-n8n 2.41.4 package, and Node options end before its script argument.
+absolute `node_modules/n8n/bin/n8n` file. This is trusted, operator-selected test
+configuration. The child uses the same Node executable as the test; configuration
+cannot replace the executable. The test checks the path shape and exact CLI
+version inside its disposable instance, and Node options end before its script
+argument. Child processes do not use a shell.
 From `sdk/typescript`, after building the SDK:
 
 ```sh

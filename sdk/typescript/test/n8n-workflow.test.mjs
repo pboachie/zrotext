@@ -44,9 +44,8 @@ test('n8n imports and executes proposals and durable reply safety through the ac
   assert.ok(isAbsolute(cliPath));
   assert.equal(basename(cliPath), 'n8n');
   assert.equal(basename(dirname(cliPath)), 'bin');
-  const installed = JSON.parse(await readFile(join(dirname(cliPath), '..', 'package.json')));
-  assert.equal(installed.name, 'n8n');
-  assert.equal(installed.version, '2.41.4');
+  assert.equal(basename(dirname(dirname(cliPath))), 'n8n');
+  assert.equal(basename(dirname(dirname(dirname(cliPath)))), 'node_modules');
   const directory = await mkdtemp(join(tmpdir(), 'zrotext-n8n-compatibility-'));
   const local = randomBytes(32);
   let bridge;
@@ -59,7 +58,8 @@ test('n8n imports and executes proposals and durable reply safety through the ac
   const cli = async (...args) => {
     try {
       return await execute(process.execPath,
-        ['--', cliPath, ...args], { env, cwd: directory, timeout: 300_000, maxBuffer: 8 * 1024 * 1024 });
+        ['--', cliPath, ...args], { env, cwd: directory, shell: false,
+          timeout: 300_000, maxBuffer: 8 * 1024 * 1024 });
     } catch (error) {
       // Synthetic execution output stays in the disposable private test folder.
       await writeFile(join(directory, 'last-cli-error.txt'), `${error.stdout ?? ''}\n${error.stderr ?? ''}`);
