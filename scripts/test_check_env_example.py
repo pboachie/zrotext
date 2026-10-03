@@ -28,7 +28,7 @@ class RuntimeReadsTest(unittest.TestCase):
         self.assertEqual(env.runtime_reads(source, fixture), set())
         self.assertEqual(env.runtime_reads(source, "crates/server/src/main.rs"), flags)
         module = Path(env.ROOT, "crates/server/src/http_owner_conversations/sealed_line_setup/mod.rs").read_text(encoding="utf-8")
-        self.assertRegex(module, r'#\[cfg\(test\)\]\s*mod server_browser_fixture;')
+        self.assertRegex(module, r'#\[cfg\(all\(test, feature = "conversation-simulator-tests"\)\)\]\s*mod server_browser_fixture;')
 
     def test_archive_init_markers_are_excluded_only_in_the_test_module(self):
         flags = {"TEMP", "ZT_ARCHIVE_INIT_NATIVE_CASE"}
