@@ -269,6 +269,8 @@ const QUEUE_SCHEMA: [(&str, &str); 85] = queue_schema!(
     "083_encrypted_template_versions.sql",
     "084_sealed_event_deliveries.sql",
     "085_customer_routine_calls.sql",
+    "086_sealed_line_key_registration.sql",
+    "087_sealed_line_activation_exchanges.sql",
 );
 #[test]
 fn queue_fixture_includes_every_checked_in_migration() {

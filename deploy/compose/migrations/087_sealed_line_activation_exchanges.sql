@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: AGPL-3.0-only
--- Local-only unnumbered schema proposal; no runtime adapter applies it.
--- A migration coordinator must assign/order it before any supported mounting.
+-- Provisional number for draft/CI; final assignment belongs to the coordinator.
+-- Registration migration must precede this dependent activation migration.
 -- Carries one sealed line activation challenge between the owner's browser and
 -- the enrolled device. The owner signs over the device signature, so the
 -- device proof is stored until the owner approves. The nonce is retained only

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Explicit setup adapter. The default startup never mounts it. The separate
 //! opt-in composition validates the installed schema and returns an unspawned
-//! retention lane; the local schema proposal is not an applied migration.
+//! retention lane. Numbered draft migrations require final coordinator assignment.
 pub mod lifecycle;
 pub mod registration;
 mod retention;

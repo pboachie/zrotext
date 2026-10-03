@@ -41,18 +41,6 @@ impl Case {
         let line = Uuid::new_v4();
         let paired = SigningKey::generate_from_rng(&mut rand::rng());
         let approval = SigningKey::generate_from_rng(&mut rand::rng());
-        owner
-            .f
-            .db
-            .batch_execute(include_str!("registration.sql"))
-            .await
-            .unwrap();
-        owner
-            .f
-            .db
-            .batch_execute(include_str!("schema.sql"))
-            .await
-            .unwrap();
         // Synthetic existing independently pinned v0 authority and real paired role.
         let rootfp = zrotext_root_material::sealed_root_enrollment::root_fingerprint(
             &owner.pin,

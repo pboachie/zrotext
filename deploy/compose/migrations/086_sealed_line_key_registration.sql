@@ -1,5 +1,5 @@
 -- SPDX-License-Identifier: AGPL-3.0-only
--- Unnumbered local proposal. Never automatically applied by a runtime adapter.
+-- Provisional number for draft/CI; final assignment belongs to the coordinator.
 -- One pending challenge per account; at most sixteen completed first-activation
 -- attempts are allowed by the transaction, retaining bounded public tombstones.
 CREATE TABLE sealed_line_key_challenges (

@@ -228,21 +228,27 @@ pub(crate) async fn require_installed<C: GenericClient + Sync>(
             "sealed_line_key_receipt_before_update",
             "sealed_line_key_receipt_guard",
             19i16,
-            include_str!("registration.sql"),
+            include_str!(
+                "../../../../../deploy/compose/migrations/086_sealed_line_key_registration.sql"
+            ),
         ),
         (
             "sealed_line_activation_exchanges",
             "sealed_line_activation_exchange_before_update",
             "sealed_line_activation_exchange_guard",
             19i16,
-            include_str!("schema.sql"),
+            include_str!(
+                "../../../../../deploy/compose/migrations/087_sealed_line_activation_exchanges.sql"
+            ),
         ),
         (
             "sealed_line_activation_exchanges",
             "sealed_line_activation_exchange_before_delete",
             "sealed_line_activation_exchange_guard",
             11i16,
-            include_str!("schema.sql"),
+            include_str!(
+                "../../../../../deploy/compose/migrations/087_sealed_line_activation_exchanges.sql"
+            ),
         ),
     ] {
         let body = source

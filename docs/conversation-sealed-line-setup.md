@@ -43,3 +43,8 @@ that confirmation. Missing provenance, storage failure, cancellation, changed
 SIM or signing identity, stale session, and expired proof fail closed. Restart
 requires fresh local approval and authentication; receipt recovery grants no
 body-transfer consent, content readiness, or send permission.
+
+The draft schema uses provisional migrations `086_sealed_line_key_registration.sql`
+and `087_sealed_line_activation_exchanges.sql`, in that order. Final numbering
+belongs to the coordinator before merge. These files do not enable setup or
+carrier dispatch; request handlers never install a schema.
