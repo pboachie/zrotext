@@ -1797,13 +1797,30 @@ async fn run_socket(
             )
         );
     }
-    release_socket_session(&state, session).await;
-    let _ = socket
-        .send(Message::Close(close_with_code.map(|code| CloseFrame {
+    close_socket_then_release(
+        &mut socket,
+        close_with_code,
+        release_socket_session(&state, session),
+    )
+    .await;
+}
+
+async fn close_socket_then_release(
+    socket: &mut WebSocket,
+    close_with_code: Option<u16>,
+    release: impl std::future::Future<Output = ()>,
+) {
+    // Closing must not wait for database admission or session cleanup. The
+    // receive loop has ended; cleanup remains guarded by the connection epoch.
+    let _ = timeout(
+        HANDSHAKE_CLOSE_TIMEOUT,
+        socket.send(Message::Close(close_with_code.map(|code| CloseFrame {
             code,
             reason: "".into(),
-        })))
-        .await;
+        }))),
+    )
+    .await;
+    release.await;
 }
 
 async fn release_socket_session(state: &DeviceSocketState, session: DeviceSession) {
