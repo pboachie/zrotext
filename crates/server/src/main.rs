@@ -441,6 +441,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         app = app.merge(adapters.router());
     }
     let retention_database = config.database_url.clone();
+    if config.workflow_tools_enabled {
+        tokio::spawn(zrotext_server::encrypted_schedule::worker::run(
+            config.database_url.clone(),
+            config.draining.clone(),
+            config.drain_notify.clone(),
+        ));
+    }
     let retention_policy = config.retention;
     let retention_draining = config.draining.clone();
     let retention_notify = config.drain_notify.clone();
