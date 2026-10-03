@@ -310,14 +310,69 @@ impl Drop for PooledClient {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn diagnostic_connect_failure(stage: &'static str, error: &ConnectError) {
+    if std::env::var("ZT_RUNTIME_DB_TEST_DIAGNOSTIC").as_deref() != Ok("1") {
+        return;
+    }
+    let category = match error {
+        ConnectError::Capacity => "capacity",
+        ConnectError::Timeout => "connect_timeout",
+        ConnectError::Database(_) => "pg_connect",
+        ConnectError::Transport(_) => "transport",
+    };
+    eprintln!("fixture_database_failure stage={stage} category={category}");
+}
+
+#[cfg(test)]
+pub(crate) fn diagnostic_auth_failure(
+    stage: &'static str,
+    error: &crate::http_auth::AuthHttpError,
+) {
+    if std::env::var("ZT_RUNTIME_DB_TEST_DIAGNOSTIC").as_deref() != Ok("1") {
+        return;
+    }
+    let category = match error {
+        crate::http_auth::AuthHttpError::Unavailable => "unavailable",
+        crate::http_auth::AuthHttpError::Busy => "busy",
+        _ => "other",
+    };
+    eprintln!("fixture_auth_failure stage={stage} category={category}");
+}
+
+#[cfg(test)]
+pub(crate) fn diagnostic_query_failure(stage: &'static str, error: &tokio_postgres::Error) {
+    if std::env::var("ZT_RUNTIME_DB_TEST_DIAGNOSTIC").as_deref() != Ok("1") {
+        return;
+    }
+    let category = match error.code().map(|code| code.code()) {
+        Some("55P03") => "lock_timeout",
+        Some("57014") => "statement_timeout",
+        Some("42P01" | "42703" | "42883") => "missing_schema",
+        Some(code) if code.starts_with("23") => "constraint",
+        Some(_) => "pg_other",
+        None => "client",
+    };
+    eprintln!("fixture_query_failure stage={stage} category={category}");
+}
+
 pub async fn connect(url: &str) -> Result<PooledClient, ConnectError> {
-    acquire(&POOLS.requests, url).await
+    acquire(&POOLS.requests, url).await.inspect_err(|_error| {
+        #[cfg(test)]
+        diagnostic_connect_failure("requests", _error);
+    })
 }
 pub async fn connect_device(url: &str) -> Result<PooledClient, ConnectError> {
-    acquire(&POOLS.devices, url).await
+    acquire(&POOLS.devices, url).await.inspect_err(|_error| {
+        #[cfg(test)]
+        diagnostic_connect_failure("devices", _error);
+    })
 }
 pub async fn connect_worker(url: &str) -> Result<PooledClient, ConnectError> {
-    acquire(&POOLS.workers, url).await
+    acquire(&POOLS.workers, url).await.inspect_err(|_error| {
+        #[cfg(test)]
+        diagnostic_connect_failure("workers", _error);
+    })
 }
 
 #[cfg(test)]

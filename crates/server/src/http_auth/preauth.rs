@@ -108,6 +108,10 @@ impl<S: OwnerAuthState> FromRequestParts<Arc<S>> for OwnerMutation {
                 true,
             )
             .await
+            .inspect_err(|_error| {
+                #[cfg(test)]
+                crate::runtime_db::diagnostic_auth_failure("owner_lookup", _error);
+            })
             .map_err(IntoResponse::into_response)?
             // The client returns to the pool here, before any body byte is read.
         };

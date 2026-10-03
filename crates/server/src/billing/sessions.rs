@@ -225,7 +225,13 @@ async fn checkout(
     // projects an ambiguous entitlement of zero outbound quota and a zero
     // device cap. Refuse before any Stripe work and before spending the
     // shared session budget.
-    if subscription_exists(&mut db, account_id).await? {
+    if subscription_exists(&mut db, account_id)
+        .await
+        .inspect_err(|_error| {
+            #[cfg(test)]
+            crate::runtime_db::diagnostic_auth_failure("checkout_subscription", _error);
+        })?
+    {
         return Ok((
             StatusCode::CONFLICT,
             Json(SessionRefusal {
@@ -234,11 +240,28 @@ async fn checkout(
         )
             .into_response());
     }
-    consume_session_budget(&db, &state, account_id).await?;
-    let customer_id = match bound_customer(&db, account_id).await? {
+    consume_session_budget(&db, &state, account_id)
+        .await
+        .inspect_err(|_error| {
+            #[cfg(test)]
+            crate::runtime_db::diagnostic_auth_failure("checkout_budget", _error);
+        })?;
+    let customer_id = match bound_customer(&db, account_id)
+        .await
+        .inspect_err(|_error| {
+            #[cfg(test)]
+            crate::runtime_db::diagnostic_auth_failure("checkout_customer_read", _error);
+        })? {
         Some(id) => id,
         None => {
-            let id = state.stripe.create_customer(account_id).await?;
+            let id = state
+                .stripe
+                .create_customer(account_id)
+                .await
+                .inspect_err(|_error| {
+                    #[cfg(test)]
+                    crate::runtime_db::diagnostic_auth_failure("checkout_customer_create", _error);
+                })?;
             // The webhook foundation serializes this binding with event ingress.
             bind_customer(&mut db, account_id, &id)
                 .await
@@ -275,25 +298,38 @@ async fn checkout(
 /// reconciliation's per-account advisory lock, so it can never interleave
 /// with an in-flight projection and observe half-committed billing state.
 async fn subscription_exists(db: &mut Client, account_id: Uuid) -> Result<bool, AuthHttpError> {
-    let tx = db
-        .transaction()
-        .await
-        .map_err(|_| AuthHttpError::Unavailable)?;
+    let tx = db.transaction().await.map_err(|_error| {
+        #[cfg(test)]
+        crate::runtime_db::diagnostic_query_failure("subscription_begin", &_error);
+        AuthHttpError::Unavailable
+    })?;
     tx.query_one(
         "SELECT pg_advisory_xact_lock(hashtextextended($1, 2))",
         &[&account_id.to_string()],
     )
     .await
-    .map_err(|_| AuthHttpError::Unavailable)?;
+    .map_err(|_error| {
+        #[cfg(test)]
+        crate::runtime_db::diagnostic_query_failure("subscription_lock", &_error);
+        AuthHttpError::Unavailable
+    })?;
     let blocked: bool = tx
         .query_one(
             "SELECT EXISTS(SELECT 1 FROM billing_subscriptions WHERE account_id=$1 AND stripe_status NOT IN ('canceled','incomplete_expired','provider_deleted')) OR EXISTS(SELECT 1 FROM billing_reconciliations WHERE account_id=$1 AND dirty_generation>processed_generation)",
             &[&account_id],
         )
         .await
-        .map_err(|_| AuthHttpError::Unavailable)?
+        .map_err(|_error| {
+            #[cfg(test)]
+            crate::runtime_db::diagnostic_query_failure("subscription_read", &_error);
+            AuthHttpError::Unavailable
+        })?
         .get(0);
-    tx.commit().await.map_err(|_| AuthHttpError::Unavailable)?;
+    tx.commit().await.map_err(|_error| {
+        #[cfg(test)]
+        crate::runtime_db::diagnostic_query_failure("subscription_commit", &_error);
+        AuthHttpError::Unavailable
+    })?;
     Ok(blocked)
 }
 
@@ -335,8 +371,11 @@ async fn consume_session_budget(
         Some(&account_id.to_string()),
     )
     .await
-    .map_err(|_| AuthHttpError::Unavailable)?
-    {
+    .map_err(|_error| {
+        #[cfg(test)]
+        crate::runtime_db::diagnostic_query_failure("session_budget", &_error);
+        AuthHttpError::Unavailable
+    })? {
         Ok(())
     } else {
         Err(AuthHttpError::TooManyRequests)
@@ -410,7 +449,11 @@ async fn bound_customer(db: &Client, account_id: Uuid) -> Result<Option<String>,
         &[&account_id],
     )
     .await
-    .map_err(|_| AuthHttpError::Unavailable)
+    .map_err(|_error| {
+        #[cfg(test)]
+        crate::runtime_db::diagnostic_query_failure("customer_read", &_error);
+        AuthHttpError::Unavailable
+    })
     .map(|row| row.map(|row| row.get(0)))
 }
 
@@ -445,10 +488,20 @@ impl StripeClient {
         request: reqwest::RequestBuilder,
         limit: usize,
     ) -> Result<Value, AuthHttpError> {
-        let mut response = request
-            .send()
-            .await
-            .map_err(|_| AuthHttpError::Unavailable)?;
+        let mut response = request.send().await.map_err(|_error| {
+            #[cfg(test)]
+            if std::env::var("ZT_RUNTIME_DB_TEST_DIAGNOSTIC").as_deref() == Ok("1") {
+                let category = if _error.is_timeout() {
+                    "timeout"
+                } else if _error.is_connect() {
+                    "connect"
+                } else {
+                    "other"
+                };
+                eprintln!("fixture_provider_failure stage=send category={category}");
+            }
+            AuthHttpError::Unavailable
+        })?;
         if !response.status().is_success() {
             return Err(AuthHttpError::Unavailable);
         }
