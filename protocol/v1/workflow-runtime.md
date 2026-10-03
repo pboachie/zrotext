@@ -4,7 +4,8 @@ This is a client-neutral library candidate for #641 with an independently
 opted-in HTTP transport for #616; it is not a production sending capability.
 Its eight methods share the existing
 workflow context, exact-action decision and recipient-local scheduling stores.
-It adds no queue, approval ledger, crypto implementation or background worker.
+It adds no queue, approval ledger or crypto implementation. The same opt-in
+mount starts a bounded scheduling metadata worker; it never executes an actor.
 The executable DTOs are `workflow_runtime::contracts`; the library dispatcher
 `workflow_runtime::call` invokes the eight actual checked service
 functions and preserves typed authorization errors. Transport wrappers must
@@ -38,7 +39,7 @@ or audit payloads. No owner-cookie/API-key/agent-key fallback is implied.
 
 All eight library operations exist with checked transaction-bound service
 permits; their catalog state is `library_candidate`. The transport is disabled
-by default and no activation or noninteractive background worker is implied. The dispatcher
+by default and no activation or noninteractive execution is implied. The dispatcher
 requires a real authenticated `IntegrationPrincipal`; it does not authenticate
 caller fields or serialize raw database/provider diagnostics.
 No approve, edit, bind, reply-correlation or takeover method is exposed
@@ -48,7 +49,8 @@ to an integration. Those remain independently authenticated owner operations.
 
 `WORKFLOW_TOOLS_ENABLED=true` mounts `GET` and `POST /v1/workflow/tools`
 when server authentication is enabled. With the flag off the route is absent.
-This flag does not enable sealed sending, device dispatch, or a background worker.
+This flag also starts the scheduling expiry/outcome metadata sweep. It does not
+enable sealed sending, device dispatch, background rendering or actor execution.
 Both methods require exactly one `Authorization: Bearer` header containing the
 dedicated workflow credential. Cookies, Origin headers, duplicate credentials,
 owner sessions and ordinary API/device/agent keys are refused. Credentials never
@@ -129,6 +131,44 @@ immediate by omitting its occurrence, even before scheduling. A nonnull occurren
 and the exact occurrence owned by the same authenticated workflow grant, which
 must also possess Schedule. Caller-selected occurrences do not grant authority.
 
+For an opened scheduled occurrence, missing owner-confirmed ciphertext also
+persists `waiting_renderer`. Here renderer means no authorized encrypted binding
+is available, not an observed renderer process outage. The response remains
+`waiting_owner_binding`; no plaintext renderer or caller health flag is trusted.
+If the binding exists but there is no unexpired device connection, the occurrence
+and response persist `waiting_phone`. This negative observation neither asserts
+sealed readiness nor changes phone grant, fetch, intent or physical release gates.
+Authority withdrawal is refused rather than reported as an offline prerequisite.
+Both deferrals clear the bounded lease, retain the original window/expiry, and
+require a new explicit request identity after the durable five-second retry bound.
+
+The anonymous five-second worker visits at most twenty accounts, with one hundred
+rows per expiry, withdrawal and outcome projection in each account transaction. Account locks are skipped when
+busy. It advances expiry and observes only existing message lifecycle state;
+it does not reconstruct a principal from an occurrence actor, render, create a
+message, approve, reserve a budget or retry a send. Restart resumes those durable
+metadata rows. Explicit owner cancellation, changed exact action revision,
+stopped context/routine and revoked integration grants cancel pending occurrence
+metadata. The worker does not mutate messages or refund reservations; existing
+effect fences and canonical delivery expiry own those separate boundaries.
+An absent retained message becomes unknown, never a new message.
+Cancellation of this grant's exact prepared output retains the shared
+series/occurrence/job lock order and existing pre-grant refund CAS. A successful
+message cancellation projects the dispatched occurrence to `failed` with
+`observed_message_state=cancelled`, in the same transaction. It does not cancel
+the independently approved action or future series. Phone-grant winners remain
+uncertain; cancellation cannot reopen or refund them.
+
+The [customer-owned scheduler runner](../../sdk/scheduler/README.md) supplies
+bounded authenticated timer progression through the real HTTPS service. Its
+durable unknown checkpoint prevents automatic Send replay after transport loss
+or restart. It rechecks current status, retains the exact occurrence and observes
+the server-discovered dispatch identity without creating another binding.
+Automatic authorized encrypted rendering and independent recurring action
+approval remain unavailable. Each occurrence still needs its own exact owner decision
+and live credential. These candidate changes are not full #639 completion or
+proof of hardware/carrier delivery.
+
 Exact replay retains the first waiting or prepared outcome after current
 authority is rechecked. A waiting result needs a new request identity after the
 prerequisite changes. `prepared` contains the exact server-discovered message
@@ -144,7 +184,7 @@ it is not success, delivery, approval, or permission for an automatic resend.
 Responses contain `kind` and `result`. The candidate kinds are `contact`,
 `context_metadata`, `context_content`, `action`, `occurrence`, `send`, and
 `unavailable`. The `send` result reuses the strict `SendOutcome` states
-`waiting_owner_binding`, `waiting_window` and `prepared`.
+`waiting_owner_binding`, `waiting_window`, `waiting_phone` and `prepared`.
 These are serialization shapes, not tokens a caller can replay as authority.
 
 Contact metadata contains no phone numbers or decrypted notes. `peer_digest` is

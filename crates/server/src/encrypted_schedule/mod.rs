@@ -7,6 +7,7 @@ pub(crate) mod lifecycle;
 pub mod state;
 pub mod store;
 pub mod time;
+pub mod worker;
 
 #[cfg(test)]
 mod schema_tests;
