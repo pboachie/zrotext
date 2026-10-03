@@ -40,13 +40,13 @@ function guardedConfiguration(path){
   // Independent startup capability: launch from the selected private directory.
   // The config argument cannot select an unrelated filesystem subtree.
   const anchor=resolve(process.cwd());if(anchor===parse(anchor).root)fail();
-  if(!path.startsWith(anchor+sep))fail();
+  if(!path.startsWith(anchor+sep))throw Error('storage_unavailable');
   const anchorGuard=privateDirectory(anchor),parent=dirname(path);
   // Check the parent itself before using it as a filesystem capability.
   // Containment of the selected file must also hold for every derived path.
-  if(parent!==anchor&&!parent.startsWith(anchor+sep))fail();
+  if(parent!==anchor&&!parent.startsWith(anchor+sep))throw Error('storage_unavailable');
   const canonical=parent===anchor?anchorGuard.path:realpathSync(parent);
-  if(canonical!==anchorGuard.path&&!canonical.startsWith(anchorGuard.path+sep))fail();
+  if(canonical!==anchorGuard.path&&!canonical.startsWith(anchorGuard.path+sep))throw Error('storage_unavailable');
   const before=lstatSync(parent,{bigint:true});
   if(!samePath(canonical,parent))fail();privateEntry(before,true);
   const candidate=lstatSync(path,{bigint:true});privateEntry(candidate,false);
