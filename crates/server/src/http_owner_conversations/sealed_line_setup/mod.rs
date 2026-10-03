@@ -336,5 +336,5 @@ async fn approve(
 #[cfg(test)]
 pub(crate) mod tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "conversation-simulator-tests"))]
 mod server_browser_fixture;
