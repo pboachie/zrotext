@@ -50,7 +50,9 @@ this module does not create ciphertext or bypass exact owner binding.
 retired identity tombstones in bounded key order (default twenty, maximum one
 hundred). Page cursors are local action IDs, not authority. `retain({beforeMs,limit})`
 removes cancelled, expired or blocked records only after their occurrence expiry,
-retaining a minimal replay tombstone. Unknown and prepared records are not pruned:
+retaining a minimal replay tombstone. Request-bearing blocked/expired records from
+older installations conservatively recover as status-only unknown; retention cannot
+erase their reconciliation identity. Unknown and prepared records are not pruned:
 absence of a receipt cannot prove an effect rolled back. `erase()` disables pending
 calls, clears all records/tombstones and permanently fences this journal installation
 across open instances and restart. It does not cancel remote work, erase owner/server

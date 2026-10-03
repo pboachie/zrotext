@@ -38,6 +38,9 @@ export class ScheduledRunner {
       CREATE TABLE IF NOT EXISTS scheduler_lifecycle (id INTEGER PRIMARY KEY CHECK(id=1), erased INTEGER NOT NULL CHECK(erased IN (0,1)));
       INSERT OR IGNORE INTO scheduler_lifecycle VALUES(1,0);
       CREATE TABLE IF NOT EXISTS scheduler_retired (action_id TEXT PRIMARY KEY);`);
+    // Older installations could label an uncertain Send as blocked/expired.
+    // A durable request without an authoritative cancellation is not rollback.
+    this.#db.exec("UPDATE scheduled_actions SET state='unknown' WHERE state IN ('blocked','expired') AND request_id IS NOT NULL;");
     this.#active = enabled === true && this.#db.prepare('SELECT erased FROM scheduler_lifecycle WHERE id=1').get().erased === 0;
   }
   #operation() { if (!this.#active || this.#db.prepare('SELECT erased FROM scheduler_lifecycle WHERE id=1').get().erased) fail('disabled'); return this.#epoch; }
@@ -116,7 +119,7 @@ export class ScheduledRunner {
     if (!Number.isSafeInteger(beforeMs) || beforeMs < 0 || beforeMs > Date.now() || !Number.isInteger(limit) || limit < 1 || limit > 100) fail('invalid_retention');
     this.#db.exec('BEGIN IMMEDIATE');
     try {
-      const rows = this.#db.prepare("SELECT action_id,identity FROM scheduled_actions WHERE state IN ('cancelled','expired','blocked') AND lease_until=0 ORDER BY action_id").all();
+      const rows = this.#db.prepare("SELECT action_id,identity FROM scheduled_actions WHERE (state='cancelled' OR (state IN ('expired','blocked') AND request_id IS NULL)) AND lease_until=0 ORDER BY action_id").all();
       let count = 0;
       for (const row of rows) {
         const occurrence = JSON.parse(row.identity).occurrence;

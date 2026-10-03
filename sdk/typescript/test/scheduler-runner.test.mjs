@@ -283,3 +283,23 @@ for(const refusal of ['readiness','status','changed_phase'])test(`prepared recon
   assert.equal(f.calls.filter(x=>x.method==='workflow.action.send').length,1);
  }finally{runner?.close();await rm(directory,{recursive:true,force:true});}
 });
+
+
+test('legacy blocked Send identity upgrades to unknown and survives retention and status-only restart',async()=>{
+ const directory=await mkdtemp(join(tmpdir(),'zrotext-scheduler-'));let runner;
+ try {
+  const f=fixture(),filename=join(directory,'journal.sqlite');runner=new ScheduledRunner({client:f.client,filename,enabled:true});
+  await runner.enqueue(f.params);f.set({unknown:true});await assert.rejects(runner.advance(key.action_id));
+  const request=runner.inspect(key.action_id).request_id;runner.close();
+  const db=new DatabaseSync(filename),identity=JSON.parse(db.prepare('SELECT identity FROM scheduled_actions').get().identity);
+  identity.occurrence.expires_at_ms=Date.now()-1;
+  db.prepare("UPDATE scheduled_actions SET state='blocked',identity=?,next_ms=0").run(JSON.stringify(identity));db.close();
+  runner=new ScheduledRunner({client:f.client,filename,enabled:true});
+  assert.equal(runner.inspect(key.action_id).state,'unknown');
+  assert.equal(runner.retain({beforeMs:Date.now()}),0);
+  await runner.advance(key.action_id);
+  assert.equal(runner.inspect(key.action_id).request_id,request);
+  assert.equal(runner.inspect(key.action_id).state,'unknown');
+  assert.equal(f.calls.filter(x=>x.method==='workflow.action.send').length,1);
+ }finally{runner?.close();await rm(directory,{recursive:true,force:true});}
+});
