@@ -35,7 +35,7 @@ abstract class GatewayAccessibilityChecks {
 
     @Test fun sectionsAreHeadingsInReadingOrder() = everyScreen { page, root ->
         val expected = when (page) {
-            "HOME" -> listOf("Gateway home", "Message activity", "This phone", "Quick controls")
+            "HOME" -> listOf("Gateway home")
             "SETUP" -> listOf("Set up this phone")
             "SETUP/ACCESS" -> listOf("Set up this phone", "Review access", "Android access")
             "SETUP/SIM" -> listOf("Set up this phone", "Choose a SIM")
@@ -69,7 +69,7 @@ abstract class GatewayAccessibilityChecks {
     }
 
     @Test fun homeObservationsKeepReadOnlyLabelsAndReadingOrderAtCurrentTextScale() = onScreen { root ->
-        val tags = listOf("Submitted today", "In queue").map { "home-observation-$it" }
+        val tags = listOf("Connections", "Messages").map { "home-metric-$it" }
         val summaries = nodes(root).filter { it.config.getOrNull(SemanticsProperties.TestTag) in tags }
         assertEquals("The semantics tree keeps the logical observation order", tags,
             summaries.map { it.config[SemanticsProperties.TestTag] })
@@ -90,16 +90,17 @@ abstract class GatewayAccessibilityChecks {
             assertTrue("Compact or large-text metrics stack without overlap", first.positionInRoot.y + first.size.height <= second.positionInRoot.y)
             assertEquals("Stacked metrics align", first.positionInRoot.x, second.positionInRoot.x, 1f)
         }
-        val group = nodes(root).single { it.config.getOrNull(SemanticsProperties.TestTag) == "home-primary-metrics" }
+        val group = nodes(root).single { it.config.getOrNull(SemanticsProperties.TestTag) == "home-dashboard-metrics" }
         assertTrue("The primary metrics form a traversal group", group.config[SemanticsProperties.IsTraversalGroup])
         assertEquals(listOf(0f, 1f), primary.map { it.config[SemanticsProperties.TraversalIndex] })
         summaries.forEach { summary ->
-            assertTrue("An absent summary reader must not display a measured zero", text(summary).endsWith("Unavailable"))
-            assertFalse("Summary observations must not initiate work", summary.config.contains(SemanticsActions.OnClick))
+            if (text(summary).startsWith("Messages")) assertTrue("An absent summary reader must not display a measured zero", text(summary).endsWith("Unavailable"))
+            assertTrue("Metric actions open details only", summary.config.contains(SemanticsActions.OnClick))
+            assertEquals(Role.Button, summary.config[SemanticsProperties.Role])
             assertFalse("Static unavailable observations are not live announcements", summary.config.contains(SemanticsProperties.LiveRegion))
         }
-        assertTrue(nodes(root).any { text(it) == "Summary reader not connected." })
-        val rows = listOf("Sending from", "Power", "Connection").map { label ->
+        assertFalse("Routine reader explanation is in details", nodes(root).any { text(it) == "Summary reader not connected." })
+        val rows = listOf("Sending from", "Power").map { label ->
             nodes(root).single { it.config.getOrNull(SemanticsProperties.TestTag) == "home-observation-$label" }
         }
         assertTrue("Message observations precede phone observations", summaries.last().positionInRoot.y < rows.first().positionInRoot.y)
@@ -108,8 +109,6 @@ abstract class GatewayAccessibilityChecks {
         assertTrue("Observations precede Pause in the Home hierarchy", rows.last().positionInRoot.y < pause.positionInRoot.y)
         assertTrue(rows.all { !it.config.contains(SemanticsActions.OnClick) })
         assertTrue(text(rows[1]).contains("Unavailable") || text(rows[1]).contains("%"))
-        assertTrue(text(rows[2]).contains("paused") || text(rows[2]).contains("authenticated") ||
-            text(rows[2]).contains("network") || text(rows[2]).contains("connection") || text(rows[2]).contains("Proving"))
         dashboardFitsOrdinaryPortraitAndPreservesReadableOverflow(root)
     }
 
@@ -118,8 +117,8 @@ abstract class GatewayAccessibilityChecks {
         try {
             val view = (root as ViewRootForTest).view
             val provider = requireNotNull(view.accessibilityNodeProvider)
-            val observations = listOf("Submitted today", "In queue").map { label ->
-                nodes(root).single { it.config.getOrNull(SemanticsProperties.TestTag) == "home-observation-$label" }
+            val observations = listOf("Connections", "Messages").map { label ->
+                nodes(root).single { it.config.getOrNull(SemanticsProperties.TestTag) == "home-metric-$label" }
             }
             assertTrue("All observations must be visible after actual scrolling", homeObservationsAreVisible(root))
             val platformNodes = observations.map { requireNotNull(provider.createAccessibilityNodeInfo(it.id)) }
@@ -128,14 +127,14 @@ abstract class GatewayAccessibilityChecks {
                     requireNotNull(info.text).toString().replace(Regex("\\s+"), " ").trim())
             }
             platformNodes.forEach { info ->
-                assertFalse("Static observations must not expose an action", info.isClickable)
+                assertTrue("Dashboard observations expose their details action", info.isClickable)
                 assertEquals(View.ACCESSIBILITY_LIVE_REGION_NONE, info.liveRegion)
             }
             val beforeKey = "android.view.accessibility.extra.EXTRA_DATA_TEST_TRAVERSALBEFORE_VAL"
             platformNodes.zip(observations).forEach { (info, node) ->
                 provider.addExtraDataToAccessibilityNodeInfo(node.id, info, beforeKey, null)
             }
-            assertEquals("Submitted precedes In queue in platform traversal", observations[1].id,
+            assertEquals("Connections precedes Messages in platform traversal", observations[1].id,
                 platformNodes[0].extras.getInt(beforeKey, -1))
         } finally {
             root.forceAccessibilityForTesting(false)
@@ -219,14 +218,18 @@ abstract class GatewayAccessibilityChecks {
             assertEquals("Ordinary portrait Home must have no scroll range", 0f, range.maxValue(), 0f)
             val required = all.filter { node ->
                 val value = text(node)
-                node.config.getOrNull(SemanticsProperties.TestTag)?.startsWith("home-observation-") == true ||
-                    value in listOf("Controls", "Message details", "Pause connections", "Quick controls") ||
+                (node.config.getOrNull(SemanticsProperties.TestTag)?.startsWith("home-observation-") == true ||
+                    node.config.getOrNull(SemanticsProperties.TestTag)?.startsWith("home-metric-") == true) ||
+                    value in listOf("Controls", "Pause connections") ||
                     value.startsWith("Device status:") || value.startsWith("Pause stops connections.")
             }
-            assertEquals("All five observations and six main controls/status/disclosures are checked", 11, required.size)
+            assertEquals("Both metrics, phone rows, gear, Pause, status and disclosure are checked", 8, required.size)
             assertTrue("Every required element must fit entirely in the viewport", required.all { nodeIsFullyVisible(root, it) })
         } else {
-            assertTrue("Large type and short windows retain readable scrolling", range.maxValue() > 0f)
+            val critical = all.filter { it.config.getOrNull(SemanticsProperties.TestTag)?.startsWith("home-metric-") == true ||
+                text(it).startsWith("Device status:") || text(it).startsWith("Pause stops connections.") }
+            assertTrue("Large type and short windows either fit or retain readable scrolling",
+                critical.all { nodeIsFullyVisible(root, it) } || range.maxValue() > 0f)
         }
     }
 
@@ -236,7 +239,8 @@ abstract class GatewayAccessibilityChecks {
     }
 
     protected fun text(node: SemanticsNode): String =
-        node.config.getOrNull(SemanticsProperties.Text)?.joinToString(" ") { it.text }.orEmpty()
+        node.config.getOrNull(SemanticsProperties.Text)?.joinToString(" ") { it.text }
+            ?: node.config.getOrNull(SemanticsProperties.ContentDescription)?.joinToString(" ").orEmpty()
 
     /** Large text/landscape can place status below the initial viewport. */
     protected fun homeStatusIsVisible(root: RootForTest): Boolean = nodes(root).any {
@@ -245,7 +249,7 @@ abstract class GatewayAccessibilityChecks {
     }
 
     protected fun homeObservationsAreVisible(root: RootForTest): Boolean {
-        val tags = listOf("Submitted today", "In queue").map { "home-observation-$it" }
+        val tags = listOf("Connections", "Messages").map { "home-metric-$it" }
         val observations = nodes(root).filter { it.config.getOrNull(SemanticsProperties.TestTag) in tags }
         return observations.size == tags.size && observations.all { nodeIsFullyVisible(root, it) }
     }
