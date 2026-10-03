@@ -526,6 +526,21 @@ async fn migrated_schema_with_execution(
     String,
     String,
 ) {
+    migrated_schema_with_optional_setup(label, execution, true).await
+}
+
+// Upgrade compatibility controls deliberately exercise a through-085 schema.
+// Ordinary fixtures always replay the complete migration inventory.
+async fn migrated_schema_with_optional_setup(
+    label: &str,
+    execution: bool,
+    setup: bool,
+) -> (
+    tokio_postgres::Client,
+    tokio_postgres::Client,
+    String,
+    String,
+) {
     let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
         .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
     let (admin, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
@@ -540,6 +555,14 @@ async fn migrated_schema_with_execution(
     let (db, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     for (file, migration) in MIGRATIONS {
+        if !setup
+            && matches!(
+                *file,
+                "086_sealed_line_key_registration.sql" | "087_sealed_line_activation_exchanges.sql"
+            )
+        {
+            continue;
+        }
         if !execution && *file == "082_conversation_execution_records.sql" {
             continue;
         }
@@ -3722,7 +3745,8 @@ async fn execution_partial_schema_erasure_fails_without_disabling_or_deleting_ac
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated synthetic schema"]
 async fn optional_sealed_setup_absence_preserves_ordinary_account_erasure() {
-    let (admin, mut db, url, schema) = migrated_schema("optional_setup_absent").await;
+    let (admin, mut db, url, schema) =
+        migrated_schema_with_optional_setup("optional_setup_absent", true, false).await;
     assert!(
         !db.query_one(
             "SELECT to_regclass('sealed_line_activation_exchanges') IS NOT NULL",
@@ -3850,7 +3874,8 @@ async fn optional_sealed_setup_exchange_remains_an_erasure_blocker() {
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated synthetic schema"]
 async fn optional_sealed_setup_malformed_relation_fails_erasure_closed() {
-    let (admin, mut db, url, schema) = migrated_schema("optional_setup_malformed").await;
+    let (admin, mut db, url, schema) =
+        migrated_schema_with_optional_setup("optional_setup_malformed", true, false).await;
     let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
     let (a, session, _, _, app) = fixture(&mut db, &hasher, &url, None).await;
     db.batch_execute("CREATE TABLE sealed_line_activation_exchanges(wrong_column uuid)")
