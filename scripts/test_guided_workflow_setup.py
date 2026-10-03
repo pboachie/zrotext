@@ -83,6 +83,16 @@ class GuidedSetup(unittest.TestCase):
         self.assertNotIn('synthetic-private-canary', output.getvalue())
         self.assertEqual(json.loads(output.getvalue())['state'], 'unknown')
 
+    def test_cli_outside_config_refuses_before_authentication(self):
+        outside = self.root.with_name(self.root.name + '-outside') / 'client.json'
+        args = ['guided_workflow_setup.py', 'connect', '--client', 'mcp-json', '--origin', 'https://gateway.example',
+                '--config', str(outside), '--scope', str(self.config), '--broker', str(self.broker), '--sha256', self.sha]
+        with patch.object(sys, 'argv', args), patch.object(setup, 'OwnerSession') as session, \
+             patch.object(setup.getpass, 'getpass') as prompt, contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(setup.main(), 2)
+        session.assert_not_called()
+        prompt.assert_not_called()
+
     def test_hardlinked_config_refuses_before_owner_effect_and_preserves_other_link(self):
         target = self.root / 'foreign.json'
         os.link(self.config, target)
@@ -263,6 +273,9 @@ try:
     if sys.argv[3] == 'read': setup.read_intent(Path(sys.argv[2]))
     else: setup.recover(Path(sys.argv[2]), 'unused', None, None)
 except setup.OwnerSetupError:
+    print('refused')
+except ValueError as error:
+    if str(error) != 'guided_path_refused': raise
     print('refused')
 else:
     raise SystemExit(2)

@@ -340,33 +340,32 @@ def main():
                     "recovery-preview": ("config",), "recover": ("config", "origin", "review_digest")}
         if any(getattr(args, name) is None for name in required[args.operation]):
             raise local.SetupError("missing_setup_arguments")
-        for name in ("config", "scope", "broker"):
-            value = getattr(args, name)
-            if value is not None:
-                setattr(args, name, checked_path(value, artifact=name == "broker"))
+        config_path = checked_path(args.config) if args.config is not None else None
+        scope_path = checked_path(args.scope) if args.scope is not None else None
+        broker_path = checked_path(args.broker, artifact=True) if args.broker is not None else None
         if args.operation == "simulator":
             result = local.journey()
         elif args.operation == "stdio":
-            return launch(args.broker, args.sha256, args.origin, args.secret_reference, operating_system_store())
+            return launch(broker_path, args.sha256, args.origin, args.secret_reference, operating_system_store())
         elif args.operation == "recovery-preview":
-            pending = read_intent(args.config)
+            pending = read_intent(config_path)
             if pending is None:
                 raise OwnerSetupError("setup_recovery_required")
             result = {"creator": pending.get("creator"), "grant_id": pending.get("grant_id"),
                       "state": pending.get("state"), "automaticRetry": False,
-                      "reviewDigest": local.digest(intent_path(args.config).read_bytes())}
+                      "reviewDigest": local.digest(intent_path(config_path).read_bytes())}
         elif args.operation == "preview":
-            result, _, _ = plan(args.config, args.client, args.broker, args.sha256, args.origin,
+            result, _, _ = plan(config_path, args.client, broker_path, args.sha256, args.origin,
                                 args.grant, args.secret_reference, remove=True)
         else:
             if args.operation == "connect":
-                if not args.scope.is_file() or args.scope.stat().st_size > 4096:
+                if not scope_path.is_file() or scope_path.stat().st_size > 4096:
                     raise local.SetupError("invalid_scope")
-                selected = json.loads(args.scope.read_bytes(), object_pairs_hook=local.unique_object,
+                selected = json.loads(scope_path.read_bytes(), object_pairs_hook=local.unique_object,
                                       parse_constant=local.invalid_constant)
                 scope(selected)
-                local.checked_artifact(args.broker, args.sha256)
-                raw, configuration = preflight(args.config, args.client, args.broker, args.sha256, args.origin, selected)
+                local.checked_artifact(broker_path, args.sha256)
+                raw, configuration = preflight(config_path, args.client, broker_path, args.sha256, args.origin, selected)
                 print(json.dumps({"status": "confirmation_required", "configurationDigest": local.digest(raw),
                                   "scopeDigest": local.digest(json.dumps(scope(selected), sort_keys=True).encode()),
                                   "permissions": ["context_metadata", "status"],
@@ -374,13 +373,13 @@ def main():
                 if input("Type the displayed configuration digest to confirm: ") != local.digest(raw):
                     raise local.SetupError("review_required")
             if args.operation == "recover":
-                _, configuration = local.read_config(args.config)
+                _, configuration = local.read_config(config_path)
                 if ENTRY in configuration.get("mcpServers", {}):
                     raise local.SetupError("disconnect_installed_entry_first")
-                pending = read_intent(args.config)
+                pending = read_intent(config_path)
                 if pending is None:
                     raise OwnerSetupError("setup_recovery_required")
-                raw_receipt = intent_path(args.config).read_bytes()
+                raw_receipt = intent_path(config_path).read_bytes()
                 if local.digest(raw_receipt) != args.review_digest:
                     raise local.SetupError("review_required_or_configuration_changed")
             store = operating_system_store()
@@ -388,13 +387,13 @@ def main():
             password = getpass.getpass("Owner password: ")
             owner.login(input("Owner email: "), password, lambda: getpass.getpass("Login MFA code: "))
             if args.operation == "connect":
-                result = install(args.config, local.digest(raw), owner, selected, password,
+                result = install(config_path, local.digest(raw), owner, selected, password,
                                  (None if ENTRY in configuration.get("mcpServers", {}) else getpass.getpass("Fresh grant MFA code: ")), store, args.client,
-                                 args.broker, args.sha256, args.origin)
+                                 broker_path, args.sha256, args.origin)
             elif args.operation == "recover":
-                result = recover(args.config, args.review_digest, owner, store)
+                result = recover(config_path, args.review_digest, owner, store)
             else:
-                result = disconnect(args.config, args.client, args.broker, args.sha256, args.origin,
+                result = disconnect(config_path, args.client, broker_path, args.sha256, args.origin,
                                     args.grant, args.secret_reference, args.review_digest, owner, store)
         public = {"status": "completed", "operation": args.operation, "automaticRetry": False,
                   "sendAvailable": False, "pairingCreated": False}
