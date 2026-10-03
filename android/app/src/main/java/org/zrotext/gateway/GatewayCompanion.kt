@@ -29,6 +29,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -38,6 +39,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -58,6 +60,10 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.traversalIndex
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
@@ -65,6 +71,7 @@ import kotlinx.coroutines.launch
 
 internal val LocalGatewayScrollReset = staticCompositionLocalOf<() -> Unit> { {} }
 private val LocalGatewayCompactHome = staticCompositionLocalOf { true }
+private val LocalGatewayHomePanel = staticCompositionLocalOf<MutableState<String?>?> { null }
 
 internal enum class GatewayPage(val label: String) {
     HOME("Home"), SETUP("Setup"), CONNECTION("Connection"), TOOLS("Tools")
@@ -78,6 +85,7 @@ internal fun GatewayCompanion(initialPage: GatewayPage = GatewayPage.HOME,
     var page by rememberSaveable { mutableStateOf(initialPage) }
     LaunchedEffect(page) { onPageChanged(page) }
     val screenState = rememberSaveableStateHolder()
+    val homePanel = remember { mutableStateOf<String?>(null) }
     val navigate: (GatewayPage) -> Unit = { page = it }
     BackHandler(enabled = page != GatewayPage.HOME) { page = GatewayPage.HOME }
     // Ordinary Home fits one viewport. Readable overflow remains available for
@@ -98,9 +106,20 @@ internal fun GatewayCompanion(initialPage: GatewayPage = GatewayPage.HOME,
                         modifier = Modifier.weight(1f).semantics { heading() })
                     var menu by remember { mutableStateOf(false) }
                     Box {
-                        TextButton(onClick = { menu = true }, modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-                            .semantics { stateDescription = "${page.label}. Open screen menu" }) { Text("Controls") }
-                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        IconButton(onClick = { menu = true }, modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                            .testTag("gateway-controls").semantics {
+                                contentDescription = "Controls"
+                                stateDescription = "${page.label}. Open controls menu"
+                            }) { GatewayGearMark() }
+                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false },
+                            containerColor = MaterialTheme.colorScheme.surface) {
+                            listOf("Quick controls" to "controls", "Android access" to "access", "Phone details" to "details")
+                                .forEach { (label, panel) ->
+                                    DropdownMenuItem(text = { Text(label) },
+                                        onClick = { menu = false; homePanel.value = panel; navigate(GatewayPage.HOME) },
+                                        modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp))
+                                }
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
                             GatewayPage.entries.forEach { destination ->
                                 DropdownMenuItem(text = { Text(destination.label) },
                                     onClick = { menu = false; navigate(destination) },
@@ -113,7 +132,8 @@ internal fun GatewayCompanion(initialPage: GatewayPage = GatewayPage.HOME,
                     }
                 }
                 CompositionLocalProvider(LocalGatewayScrollReset provides resetScroll,
-                    LocalGatewayCompactHome provides compactHome) {
+                    LocalGatewayCompactHome provides compactHome,
+                    LocalGatewayHomePanel provides homePanel) {
                     content(page, navigate)
                 }
             }
@@ -138,7 +158,8 @@ internal fun GatewayHome(
 ) {
     val motion = gatewayMotionAllowed()
     val mood = GatewayConnectionMood.from(authenticatedStatus)
-    var widget by remember { mutableStateOf<String?>(null) }
+    val localPanel = remember { mutableStateOf<String?>(null) }
+    var widget by (LocalGatewayHomePanel.current ?: localPanel)
     val compact = LocalGatewayCompactHome.current
     fun label(count: GatewaySummaryCount?): String = when (summary.phase) {
         GatewaySummaryState.Phase.UNAVAILABLE -> "Unavailable"
@@ -168,53 +189,41 @@ internal fun GatewayHome(
                 GatewaySignal(mood, motion)
                 status()
             }
-            Text("Connection proof, not SMS readiness. Full conversation sync unavailable.", style = MaterialTheme.typography.bodySmall,
+            Text("Connection proof only. SMS readiness is not verified.", style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
         }
     }
     GatewayEntrance(1, motion) {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
-            val details: @Composable (Modifier) -> Unit = { modifier ->
-                TextButton(onClick = { widget = "messages" }, modifier = modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-                    .testTag("home-message-details")) {
-                    Text("Message details", style = MaterialTheme.typography.labelMedium)
-                }
-            }
-            if (LocalDensity.current.fontScale > 1.3f) {
-                GatewayHomeSectionTitle("Message activity")
-                details(Modifier.fillMaxWidth())
-            } else {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween) {
-                    GatewayHomeSectionTitle("Message activity")
-                    details(Modifier)
-                }
-            }
             val prominent = summary.snapshot != null && summary.phase != GatewaySummaryState.Phase.UNAVAILABLE
-            GatewayPrimaryMetrics(label(summary.snapshot?.submittedToday), label(summary.snapshot?.pending), prominent)
-            // Only the routine absent-reader explanation is shortened. All
-            // refusal, revocation, stale, repair and error text remains on Home.
-            val readerStatus = if (summaryStatus == "Message counts are unavailable on this phone. An authorized summary reader is not connected.")
-                "Summary reader not connected." else summaryStatus
-            Text(readerStatus, modifier = Modifier.testTag("home-reader-status"), style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            val connections = when (mood) {
+                GatewayConnectionMood.CONNECTED -> "1"
+                GatewayConnectionMood.PAUSED, GatewayConnectionMood.OFFLINE, GatewayConnectionMood.CONNECTING -> "0"
+                GatewayConnectionMood.ATTENTION -> "Unavailable"
+            }
+            GatewayDashboardMetrics(connections, label(summary.snapshot?.submittedToday), prominent,
+                onConnections = { widget = "connection" }, onMessages = { widget = "messages" })
+            // Routine absent-reader information is available through Messages.
+            // Every other observation, including refusal, revocation and errors,
+            // stays visible without opening a panel.
+            if (summaryStatus != "Message counts are unavailable on this phone. An authorized summary reader is not connected.") {
+                Text(summaryStatus, modifier = Modifier.testTag("home-reader-status"), style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
     }
     GatewayEntrance(1, motion) {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
-            GatewayHomeSectionTitle("This phone")
             GatewayObservationRow("Sending from", sim)
             GatewayObservationRow("Power", power.label)
-            GatewayObservationRow("Connection", mood.title.removeSuffix("."))
         }
     }
     // Pause stays beside its complete disclosure in the main dashboard.
     GatewayHomeButton("Pause connections", onPause, Modifier.fillMaxWidth())
     Text("Pause stops connections. SMS receiving access can still process messages locally; revoke it in Android app settings to stop local processing.",
         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    GatewayHomeButton("Quick controls", { widget = "controls" }, Modifier.fillMaxWidth().semantics { heading() })
     if (widget != null) {
         ModalBottomSheet(onDismissRequest = { widget = null },
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -230,11 +239,23 @@ internal fun GatewayHome(
                     Text("Full conversation sync is not available in this build.")
                 } else if (widget == "messages") {
                     GatewaySectionTitle("Message details")
+                    GatewayPrimaryMetrics(label(summary.snapshot?.submittedToday), label(summary.snapshot?.pending),
+                        summary.snapshot != null && summary.phase != GatewaySummaryState.Phase.UNAVAILABLE)
                     GatewayObservationRow("Awaiting receipt", label(summary.snapshot?.inFlight))
                     Text(summaryStatus)
                     summary.snapshot?.let { snapshot ->
                         Text("Device-scoped UTC observation: ${java.time.Instant.ofEpochMilli(snapshot.observedMs)}. Submitted is not delivered. In queue includes accepted, queued and claimed work, which can already hold a grant. Awaiting receipt includes submitting and submitted states.")
                     }
+                } else if (widget == "connection") {
+                    GatewaySectionTitle("Connection details")
+                    GatewayStatusText("Authenticated connection status", authenticatedStatus)
+                    GatewayStatusText("Pairing in this session", pairingStatus)
+                    GatewayStatusText("Test connection", testStatus)
+                    Text("Heartbeat acknowledgments this session: $heartbeats")
+                    Text("Counts authenticated links on this phone. Test sockets and heartbeat acknowledgments are not connection counts. An unrecognized connection state is unavailable.")
+                    Text("Connection proof does not establish SMS readiness. Full conversation sync is not available in this build.")
+                    GatewayHomeButton("Connection controls", { widget = null; onConnection() }, Modifier.fillMaxWidth())
+                    Text("Pause stops connections. SMS receiving access can still process messages locally; revoke it in Android app settings to stop local processing.")
                 } else if (widget == "access") {
                     GatewayAccessSummary()
                     Text("Pause stops connections. To stop permission-enabled local SMS processing, revoke SMS receiving access in Android app settings.")
@@ -250,6 +271,71 @@ internal fun GatewayHome(
                     Text("Close widget")
                 }
                 Spacer(Modifier.height(16.dp))
+            }
+        }
+    }
+}
+
+/** The two quiet numbers open observations, never connection or messaging work. */
+@Composable
+private fun GatewayDashboardMetrics(connections: String, messages: String, prominent: Boolean,
+    onConnections: () -> Unit, onMessages: () -> Unit) {
+    BoxWithConstraints(Modifier.fillMaxWidth().testTag("home-dashboard-metrics")
+        .semantics { isTraversalGroup = true }) {
+        if (maxWidth < 312.dp || LocalDensity.current.fontScale > 1.3f) {
+            val inline = LocalDensity.current.fontScale <= 1.3f
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                GatewayDashboardMetric("Connections", "Authenticated links", connections, true, 0f,
+                    onConnections, Modifier.fillMaxWidth(), inline)
+                GatewayDashboardMetric("Messages", "Submitted today", messages, prominent, 1f,
+                    onMessages, Modifier.fillMaxWidth(), inline)
+            }
+        } else {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                GatewayDashboardMetric("Connections", "Authenticated links", connections, true, 0f,
+                    onConnections, Modifier.weight(1f))
+                GatewayDashboardMetric("Messages", "Submitted today", messages, prominent, 1f,
+                    onMessages, Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+@Composable
+private fun GatewayDashboardMetric(label: String, scope: String, value: String, prominent: Boolean,
+    order: Float, onOpen: () -> Unit, modifier: Modifier, inline: Boolean = false) {
+    TextButton(onClick = onOpen, modifier = modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+        .clearAndSetSemantics {
+            this[SemanticsProperties.TestTag] = "home-metric-$label"
+            this[SemanticsProperties.Text] = listOf(AnnotatedString("$label. $scope. $value"))
+            role = Role.Button
+            traversalIndex = order
+            onClick(label = "Open ${if (label == "Connections") "connection" else "message"} details") {
+                onOpen(); true
+            }
+        }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSurface),
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 12.dp)) {
+        val valueStyle = if (prominent) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.bodyMedium
+        val captions: @Composable () -> Unit = {
+            Column(horizontalAlignment = if (inline) Alignment.Start else Alignment.CenterHorizontally) {
+                Text(label, style = MaterialTheme.typography.labelMedium)
+                Text(scope, style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = if (inline) TextAlign.Start else TextAlign.Center)
+            }
+        }
+        if (inline) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Box(Modifier.weight(1f)) { captions() }
+                Text(value, modifier = Modifier.weight(1f), style = valueStyle, textAlign = TextAlign.End,
+                    color = if (prominent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        } else {
+            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(value, style = valueStyle, textAlign = TextAlign.Center,
+                    color = if (prominent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                captions()
             }
         }
     }
