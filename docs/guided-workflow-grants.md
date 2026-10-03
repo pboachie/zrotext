@@ -43,7 +43,9 @@ scope and recovery files must be absolute paths within that directory or the
 home `.config` directory. Brokers must be within the installed repository or
 the dedicated home `.config/zrotext/workflow-artifacts` subtree. Merely placing
 a broker under an arbitrary setup working directory does not authorize it;
-unsupported broker roots refuse before authentication or issuance.
+unsupported broker roots refuse before authentication or issuance. Preflight also
+checks the selected root's canonical identity and supported ownership/permission
+guards before requesting owner credentials or consuming MFA.
 A filesystem-volume root cannot serve as the launch capability.
 Normalized and canonical containment checks reject sibling escapes, aliases,
 reparse points and hardlinked leaves. Parent and target identity are rechecked

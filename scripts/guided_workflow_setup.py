@@ -154,7 +154,8 @@ def write_intent(stream, value):
 
 def preflight(path, client, broker, expected, origin, selected):
     path = checked_path(path)
-    broker = checked_path(broker, artifact=True)
+    selected_root = setup_artifact_root(broker)
+    broker = checked_path(broker, artifact=True, approved_artifact_root=selected_root)
     scope(selected)
     if client not in ("mcp-json", "claude-desktop"):
         raise local.SetupError("unsupported_client")

@@ -48,6 +48,56 @@ class GuidedSetup(unittest.TestCase):
                              SELECTED, "example", "example", self.store, "mcp-json",
                              self.broker, self.sha, "https://gateway.example")
 
+    def assert_capability_refuses_before_owner_effect(self):
+        scope_file = self.root / "scope.json"
+        scope_file.write_text(json.dumps(SELECTED))
+        arguments = ["guided_workflow_setup.py", "connect", "--client", "mcp-json", "--origin", "https://gateway.example",
+                     "--config", str(self.config), "--scope", str(scope_file), "--broker", str(self.broker), "--sha256", self.sha]
+        error = io.StringIO()
+        with patch.object(sys, "argv", arguments), patch.object(setup, "OwnerSession", return_value=self.owner) as session, \
+             patch.object(setup, "operating_system_store", return_value=self.store) as vault, \
+             patch.object(setup.getpass, "getpass") as prompt, patch("builtins.input") as confirmation, \
+             contextlib.redirect_stderr(error), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(setup.main(), 2)
+        session.assert_not_called()
+        vault.assert_not_called()
+        prompt.assert_not_called()
+        confirmation.assert_not_called()
+        self.assertNotIn("Traceback", error.getvalue())
+        self.owner.create.assert_not_called()
+        self.store.put.assert_not_called()
+        self.assertFalse(setup.intent_path(self.config).exists())
+
+    def test_forbidden_artifact_capability_refuses_before_authentication_or_custody(self):
+        with patch.object(setup, "setup_artifact_root", side_effect=ValueError("guided_path_refused")):
+            self.assert_capability_refuses_before_owner_effect()
+            with self.assertRaisesRegex(ValueError, "^guided_path_refused$"):
+                self.install()
+
+    @unittest.skipUnless(os.name == "posix", "requires POSIX artifact modes")
+    def test_writable_artifact_root_and_ancestor_refuse_before_authentication(self):
+        for selected in (self.artifact_directory, self.home):
+            original = selected.stat().st_mode & 0o777
+            try:
+                selected.chmod(0o775)
+                self.assert_capability_refuses_before_owner_effect()
+            finally:
+                selected.chmod(original)
+
+    @unittest.skipUnless(os.name == "posix", "requires POSIX ownership checks")
+    def test_foreign_artifact_root_owner_refuses_before_authentication(self):
+        from types import SimpleNamespace
+        real_lstat = os.lstat
+        def foreign_owner(path, *args, **kwargs):
+            info = real_lstat(path, *args, **kwargs)
+            if Path(path) == self.artifact_directory:
+                fields = {name: getattr(info, name) for name in dir(info) if name.startswith("st_")}
+                fields["st_uid"] = os.getuid() + 1
+                return SimpleNamespace(**fields)
+            return info
+        with patch("workflow_paths.os.lstat", side_effect=foreign_owner):
+            self.assert_capability_refuses_before_owner_effect()
+
     def test_selected_custom_cwd_accepts_inside_and_refuses_sibling_and_traversal(self):
         from workflow_paths import checked_path
         self.assertEqual(checked_path(self.config), self.config)
