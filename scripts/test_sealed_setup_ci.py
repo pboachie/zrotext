@@ -62,33 +62,33 @@ class SetupCiTest(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "requires native Windows PostgreSQL tools")
     def test_real_postgres_initializes_starts_queries_and_stops_private_user_fixture(self):
-        program_files = os.environ.get("ProgramFiles")
-        if not program_files:
+        try:
+            tools = driver.installed_postgres_directory()
+        except FileNotFoundError:
             self.skipTest("requires installed PostgreSQL 17")
-        requested = Path(program_files) / "PostgreSQL" / "17" / "bin"
-        if not (requested / "initdb.exe").is_file():
-            self.skipTest("requires installed PostgreSQL 17")
-        tools = driver.installed_postgres_directory(requested)
-        with tempfile.TemporaryDirectory() as temporary:
-            with patch.object(driver, "ROOT", Path(temporary).resolve()):
-                owned = Path(tempfile.mkdtemp(prefix="sealed-setup-ci-", dir=driver.owned_fixture_parent()))
-                cluster = None
+        # Use the same fixed ancestor as the actual consumer. Windows runner
+        # user-temp ancestors can refuse PostgreSQL's restricted token.
+        owned = Path(tempfile.mkdtemp(prefix="sealed-setup-ci-", dir=driver.owned_fixture_parent()))
+        cluster = None
+        try:
+            driver.prepare_owned_directory(owned)
+            cluster = driver.OwnedCluster(owned, tools)
+            # Run actual restricted-token tools, never a runner service.
+            with patch.dict(os.environ):
+                os.environ.pop("PG_RESTRICT_EXEC", None)
                 try:
-                    driver.prepare_owned_directory(owned)
-                    cluster = driver.OwnedCluster(owned, tools)
-                    # Run actual restricted-token tools, never a runner service.
-                    with patch.dict(os.environ):
-                        os.environ.pop("PG_RESTRICT_EXEC", None)
-                        uri = cluster.start()
-                        result = subprocess.run([str(driver.tool(tools, "psql")), uri, "-X", "-A", "-t",
-                                                 "-c", "SELECT 1"], stdin=subprocess.DEVNULL,
-                                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                                timeout=10, check=True)
-                    self.assertEqual(result.stdout.strip(), b"1")
-                    self.assertTrue((cluster.data / "PG_VERSION").is_file())
-                finally:
-                    driver.cleanup_owned_directory(owned, cluster)
-                self.assertFalse(owned.exists())
+                    uri = cluster.start()
+                except driver.FixtureToolFailure as error:
+                    self.fail(error.category)  # Closed diagnostic, never raw tool output.
+                result = subprocess.run([str(driver.tool(tools, "psql")), uri, "-X", "-A", "-t",
+                                         "-c", "SELECT 1"], stdin=subprocess.DEVNULL,
+                                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                        timeout=10, check=True)
+            self.assertEqual(result.stdout.strip(), b"1")
+            self.assertTrue((cluster.data / "PG_VERSION").is_file())
+        finally:
+            driver.cleanup_owned_directory(owned, cluster)
+        self.assertFalse(owned.exists())
 
     def test_permission_failure_preserves_closed_diagnostics_and_cleans_owned_leaf(self):
         with tempfile.TemporaryDirectory() as temporary:

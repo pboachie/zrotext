@@ -56,7 +56,7 @@ def tls_fixture():
             "cert": cert.public_bytes(serialization.Encoding.PEM).decode("ascii")}
 
 
-def installed_postgres_directory(requested):
+def installed_postgres_directory(requested=None):
     # Ask Windows for its protected installed-programs directory; do not select
     # an executable from a caller-controlled path or inherited environment.
     buffer = ctypes.create_unicode_buffer(32768)
@@ -64,7 +64,7 @@ def installed_postgres_directory(requested):
     if result != 0:
         raise ValueError("Installed PostgreSQL directory unavailable")
     trusted = (Path(buffer.value) / "PostgreSQL" / "17" / "bin").resolve(strict=True)
-    if requested.resolve(strict=True) != trusted:
+    if requested is not None and requested.resolve(strict=True) != trusted:
         raise ValueError("Installed PostgreSQL directory required")
     return trusted
 
