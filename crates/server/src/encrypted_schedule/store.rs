@@ -531,7 +531,7 @@ pub async fn reconcile(
     tx.query_opt("SELECT 1 FROM accounts WHERE id=$1 FOR UPDATE", &[&account])
         .await?
         .ok_or(ConversationError::NotFound)?;
-    let rows=tx.query("SELECT o.id,o.phase,m.state,o.observed_message_state FROM workflow_schedule_occurrences o LEFT JOIN messages m ON (m.account_id,m.id)=(o.account_id,o.message_id) WHERE o.account_id=$1 AND o.phase IN ('dispatching','unknown') ORDER BY o.updated_at,o.id LIMIT $2 FOR UPDATE OF o SKIP LOCKED",&[&account,&i64::from(limit)]).await?;
+    let rows=tx.query("SELECT o.id,o.phase,m.state,o.observed_message_state FROM workflow_schedule_occurrences o LEFT JOIN messages m ON (m.account_id,m.id)=(o.account_id,o.message_id) WHERE o.account_id=$1 AND o.phase IN ('dispatching','unknown') AND (m.state IS DISTINCT FROM o.observed_message_state OR (o.phase='dispatching' AND m.id IS NULL)) ORDER BY o.updated_at,o.id LIMIT $2 FOR UPDATE OF o SKIP LOCKED",&[&account,&i64::from(limit)]).await?;
     let mut changed = 0;
     for row in rows {
         let id: Uuid = row.get(0);
@@ -547,6 +547,37 @@ pub async fn reconcile(
         changed+=tx.execute("UPDATE workflow_schedule_occurrences SET phase=$3,observed_message_state=$4,updated_at=clock_timestamp() WHERE account_id=$1 AND id=$2",&[&account,&id,&phase,&state]).await?;
     }
     Ok(changed)
+}
+
+// Only explicit monotonic negative evidence. An unavailable owner credential,
+// changed phone connection or unknown delivery outcome is not withdrawal.
+pub(crate) const WITHDRAWN_JOINS: &str = "JOIN workflow_schedule_series s ON (s.account_id,s.id)=(o.account_id,o.series_id) JOIN workflow_actions a ON (a.account_id,a.id)=(o.account_id,o.action_id) JOIN workflow_routines r ON (r.account_id,r.id)=(s.account_id,s.routine_id) JOIN workflow_context_fences f ON (f.account_id,f.context_id)=(s.account_id,s.context_id) LEFT JOIN workflow_integration_grants g ON o.actor_kind='integration' AND (g.account_id,g.grant_id)=(o.account_id,o.actor_id)";
+pub(crate) const WITHDRAWN: &str = "(a.revision<>o.action_revision OR a.binding_digest<>o.binding_digest OR a.phase IN ('cancelled','invalidated','expired') OR r.stopped_at IS NOT NULL OR r.generation<>s.routine_generation OR f.stopped_at IS NOT NULL OR g.revoked_ms IS NOT NULL)";
+
+/// Projects explicit decision, response/takeover and grant withdrawal only.
+/// No actor is reconstructed and no refund or message mutation occurs here.
+/// Existing effect fences and delivery expiry own those separate transitions.
+pub async fn project_withdrawn(
+    tx: &Transaction<'_>,
+    account: Uuid,
+    limit: u16,
+) -> Result<u64, ConversationError> {
+    if account.is_nil() || !(1..=100).contains(&limit) {
+        return Err(ConversationError::Invalid);
+    }
+    tx.query_opt(
+        "SELECT id FROM accounts WHERE id=$1 FOR UPDATE",
+        &[&account],
+    )
+    .await?
+    .ok_or(ConversationError::NotFound)?;
+    let rows=tx.query(&format!("SELECT o.id FROM workflow_schedule_occurrences o {WITHDRAWN_JOINS} WHERE o.account_id=$1 AND o.phase IN ('owner_review','waiting_window','waiting_renderer','waiting_phone','claimed') AND {WITHDRAWN} ORDER BY o.updated_at,o.id LIMIT $2 FOR UPDATE OF o SKIP LOCKED"), &[&account,&i64::from(limit)]).await?;
+    for row in &rows {
+        let id: Uuid = row.get(0);
+        tx.execute("UPDATE workflow_schedule_occurrences SET phase='cancelled',lease_id=NULL,lease_until_ms=NULL,updated_at=clock_timestamp() WHERE account_id=$1 AND id=$2", &[&account,&id]).await?;
+        audit(tx, account, id, None, "cancel", "cancelled", None).await?;
+    }
+    Ok(rows.len() as u64)
 }
 
 pub async fn schedule(
@@ -580,7 +611,7 @@ pub async fn cancel(permit: &mut LockedAction<'_, '_>, id: Uuid) -> Result<(), C
     cancel_core(permit, id).await
 }
 
-async fn audit(
+pub(crate) async fn audit(
     tx: &Transaction<'_>,
     account: Uuid,
     occurrence: Uuid,

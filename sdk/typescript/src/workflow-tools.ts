@@ -84,7 +84,7 @@ const responses: Record<string, Schema> = {
     phase: { enum: ['owner_review', 'waiting_window', 'waiting_renderer', 'waiting_phone', 'claimed', 'dispatching',
       'unknown', 'cancelled', 'expired', 'missed_window', 'completed', 'failed'] },
     opens_at_ms: nullable(integer()), closes_at_ms: nullable(integer()), expires_at_ms: integer(1) }),
-  send: { anyOf: [object({ state: { enum: ['waiting_owner_binding', 'waiting_window'] } }),
+  send: { anyOf: [object({ state: { enum: ['waiting_owner_binding', 'waiting_window', 'waiting_phone'] } }),
     object({ state: { enum: ['prepared'] }, message_id: uuid, dispatch_id: uuid })] },
 };
 responses.cancel = object({ key, message_id: uuid, state: { enum: ['cancelled'] } });
