@@ -1,0 +1,6 @@
+{
+  "response": { "kind": "send", "result": { "state": "waiting_phone" } },
+  "other_waiting_states": ["waiting_owner_binding", "waiting_window"],
+  "invalid_states": ["waiting_renderer", "phone_ready", "sent", "delivered"],
+  "forbidden_fields": ["phone_ready", "renderer_available", "approved", "message_id", "dispatch_id"]
+}

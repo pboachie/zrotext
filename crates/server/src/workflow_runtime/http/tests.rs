@@ -368,6 +368,26 @@ async fn http_schedule_and_send_require_actual_owner_binding_and_replay_prepared
         waiting_result,
         "old waiting identity cannot adopt a later owner binding"
     );
+    let deferred = json!({"method":"workflow.action.send","params":{"request_id":Uuid::new_v4(),"key":bound.key,"occurrence_id":occurrence_id}});
+    let response = app
+        .clone()
+        .oneshot(request(&issued.token, Some(deferred.clone())))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let deferred_result = json_body(response).await;
+    assert_eq!(deferred_result["result"]["state"], "waiting_window");
+    // Observe the actual persisted retry clock. Never rewrite scheduling
+    // timestamps or assume a new binding bypasses its existing deferral.
+    let started = tokio::time::Instant::now();
+    loop {
+        let due: bool = case.f.db.query_one("SELECT retry_at_ms<=floor(extract(epoch FROM clock_timestamp())*1000)::bigint FROM workflow_schedule_occurrences WHERE id=$1", &[&occurrence_id]).await.unwrap().get(0);
+        if due {
+            break;
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(6));
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     let send = json!({"method":"workflow.action.send","params":{"request_id":Uuid::new_v4(),"key":bound.key,"occurrence_id":occurrence_id}});
     let response = app
         .clone()
@@ -384,6 +404,16 @@ async fn http_schedule_and_send_require_actual_owner_binding_and_replay_prepared
         .await
         .unwrap();
     assert_eq!(json_body(response).await, prepared);
+    let response = app
+        .clone()
+        .oneshot(request(&issued.token, Some(deferred)))
+        .await
+        .unwrap();
+    assert_eq!(
+        json_body(response).await,
+        deferred_result,
+        "waiting replay remains immutable after preparation"
+    );
     let cancel = json!({"method":"workflow.action.cancel","params":{"request_id":Uuid::new_v4(),"key":bound.key}});
     for _ in 0..2 {
         let response = app
