@@ -192,6 +192,23 @@ impl Drop for SweeperRegistration {
     }
 }
 
+/// Balance reset accounting even if the runtime cancels an unpolled task.
+struct ResetRegistration(Arc<ClassPool>);
+
+impl ResetRegistration {
+    fn new(pool: Arc<ClassPool>) -> Self {
+        pool.resets_in_flight.fetch_add(1, Ordering::AcqRel);
+        Self(pool)
+    }
+}
+
+impl Drop for ResetRegistration {
+    fn drop(&mut self) {
+        self.0.resets_in_flight.fetch_sub(1, Ordering::AcqRel);
+        self.0.returned.notify_waiters();
+    }
+}
+
 fn drain_expired(idle: &mut Vec<Idle>, now: Instant) -> Vec<Idle> {
     let mut expired = Vec::new();
     let mut index = 0;
@@ -273,8 +290,9 @@ impl Drop for PooledClient {
         let pool = self.pool.clone();
         let url = self.url.clone();
         let created = self.created;
-        pool.resets_in_flight.fetch_add(1, Ordering::AcqRel);
+        let registration = ResetRegistration::new(pool.clone());
         runtime.spawn(async move {
+            let _registration = registration;
             // DISCARD ALL runs after any statement still queued on this socket
             // and fails inside a transaction block. Either way an unready
             // socket is closed rather than handed to another caller. It also
@@ -288,7 +306,6 @@ impl Drop for PooledClient {
                 client.clear_type_cache();
                 pool.put(url, client, created);
             }
-            pool.resets_in_flight.fetch_sub(1, Ordering::AcqRel);
         });
     }
 }
@@ -302,6 +319,10 @@ pub async fn connect_device(url: &str) -> Result<PooledClient, ConnectError> {
 pub async fn connect_worker(url: &str) -> Result<PooledClient, ConnectError> {
     acquire(&POOLS.workers, url).await
 }
+
+#[cfg(test)]
+#[path = "runtime_db/reset_tests.rs"]
+mod reset_tests;
 
 /// Test-only: how many idle worker-class sockets exist for `url`. An entry in
 /// the idle list is reusable by any worker acquire without a permit, so its
