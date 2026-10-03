@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
 use crate::http_owner_conversations::context::decisions::{model::Decision, tests::Case};
+mod cancellation;
 mod entitlement;
 mod invoice;
 mod resilience;

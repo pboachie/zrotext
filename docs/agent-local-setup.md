@@ -32,6 +32,16 @@ tool does not discover or edit a guessed global configuration location.
 
 ## Guided local workflow
 
+To try the complete bounded fixture journey without a client configuration,
+build the SDK and run `python scripts/agent_setup.py journey` from the checkout
+root. See [the synthetic quickstart](AGENT-QUICKSTART.md#launch) for prerequisites,
+steps and limits. It invokes the source-controlled recipe/shared adapter,
+verifies the pinned fixture reply, and removes its unique temporary checkpoint.
+It accepts no server path, credential, endpoint or install options. Acceptance
+is simulated; owner approval, radio submission and live reply-reader authority
+remain unavailable. The existing `demo` operation below continues to mean only
+the reviewed MCP readiness/preview exchange.
+
 Commands below use `SERVER`, `EXPECTED_SHA256` and `CLIENT_CONFIG` for the reviewed
 artifact path, reviewed fingerprint and explicit local client file. Quote paths.
 Run from the checkout root. The selected configuration's parent directory must

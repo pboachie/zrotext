@@ -14,6 +14,7 @@ use tokio_postgres::{Client, Transaction};
 use uuid::Uuid;
 use zrotext_delivery_store::exposure::{ExposureError, ExposureUnits, projected_liability};
 
+mod cancellation;
 mod store;
 use store::Scope;
 
@@ -62,6 +63,19 @@ pub enum TestOutcome {
 }
 
 impl TestExposure {
+    /// Irreversibly release a reservation that never obtained an execution
+    /// intent. This only requires a currently authenticated account owner;
+    /// expired actions and withdrawn policies are not renewed by cleanup.
+    pub async fn cancel_unstarted(
+        &self,
+        client: &mut Client,
+        owner: &SessionPrincipal,
+        reservation: Uuid,
+    ) -> Result<bool, Error> {
+        self.require_enabled()?;
+        cancellation::cancel(client, owner, reservation).await
+    }
+
     pub fn synthetic_candidate() -> Self {
         Self { enabled: true }
     }
