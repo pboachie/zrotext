@@ -7,8 +7,8 @@ HTTP grant mutation route, plaintext reader, credentials, model transport,
 task seed, key wrap, SEND permission, effect permit or worker is included.
 
 `deploy/compose/migration-candidates/managed_reader_grants.sql` is a proposal.
-The migrator does not discover or install it. Number 090 is reserved for later
-promotion only after the actual 088 and 089 migrations land; fixtures explicitly
+The migrator does not discover or install it. Number 091 is reserved for later
+promotion only after the actual 088, 089 and 090 migrations land; fixtures explicitly
 apply the proposal. Installing it does not enable issuance.
 
 The first supported source is `workflow_context_v1`, current head only.

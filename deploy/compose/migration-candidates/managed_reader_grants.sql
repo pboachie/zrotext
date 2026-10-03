@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: AGPL-3.0-only
 -- Issue #761 SQL proposal, NOT discovered or installed by the migrator.
--- Reserved promotion number 090 only after actual 088 and 089 land.
+-- Reserved promotion number 091 only after actual 088, 089 and 090 land.
 CREATE TABLE managed_reader_keys (
  account_id uuid NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
  id uuid NOT NULL, generation bigint NOT NULL CHECK(generation>0),
