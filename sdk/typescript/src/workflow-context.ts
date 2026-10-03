@@ -53,6 +53,7 @@ export async function sealIntegrationWorkflowContext(manifest: Manifest02, scope
 async function sealContext(manifest: Manifest02, scope: WorkflowContextScope, nowMs: bigint, plaintext: Uint8Array, role: 2 | 3): Promise<Uint8Array> {
   if (plaintext.length < 1 || plaintext.length > MAX_CONTENT) fail();
   const aad = workflowContextAad(scope), content = Uint8Array.from(plaintext);
+  try {
   const point = authorize(manifest, aad, nowMs, role);
   const sender = await suite.createSenderContext({recipientPublicKey: await suite.kem.deserializePublicKey(buffer(point)), info: buffer(concat(domain, aad))});
   const ciphertext = new Uint8Array(await sender.seal(buffer(content), buffer(aad)));
@@ -60,6 +61,10 @@ async function sealContext(manifest: Manifest02, scope: WorkflowContextScope, no
   if (encapsulation.length !== 65 || ciphertext.length !== content.length + 16) fail();
   const length = new Uint8Array(4); new DataView(length.buffer).setUint32(0, ciphertext.length, false);
   return concat(aad, encapsulation, length, ciphertext);
+  } finally {
+    // Best effort for this owned copy; JS/WebCrypto may retain internal copies.
+    content.fill(0);
+  }
 }
 /** The private key remains entirely in the selected customer client. */
 export async function openWorkflowContext(manifest: Manifest02, expected: WorkflowContextScope, nowMs: bigint, privateKey: CryptoKey, envelope: Uint8Array): Promise<Uint8Array> {

@@ -29,6 +29,7 @@ pub(super) struct Case {
     pub(super) f: Fixture,
     pub(super) owner: SessionPrincipal,
     pub(super) hasher: TokenHasher,
+    pub(super) reader_key: SigningKey,
     cipher: mfa::MfaCipher,
     password: Zeroizing<String>,
     factor: String,
@@ -455,6 +456,7 @@ impl Case {
             header,
             outbound,
             phone_reader,
+            reader_key: key,
         }
     }
     pub(super) async fn descriptor(
@@ -511,6 +513,9 @@ impl Case {
         );
         self.f.db.execute("INSERT INTO owner_mfa_recovery_codes(account_id,user_id,code_hash) VALUES($1,$2,$3)", &[&self.f.account,&self.owner.user_id,&hash.as_slice()]).await.unwrap();
         self.factor.clone()
+    }
+    pub(super) fn password(&self) -> &str {
+        self.password.as_str()
     }
     pub(super) async fn issue_another(&mut self) -> IssuedCredential {
         self.fresh_factor().await;
