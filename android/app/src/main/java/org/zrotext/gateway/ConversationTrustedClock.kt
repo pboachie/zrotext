@@ -31,7 +31,7 @@ internal class ConversationTrustedClock(
         override fun toString() = "ConversationTimeRequest(redacted)"
     }
     private data class Pending(val request: Request, val started: Long)
-    private data class Anchor(val session: ConversationPhoneSession, val upperUtc: Long, val received: Long)
+    private data class Anchor(val session: ConversationPhoneSession, val lowerUtc: Long, val upperUtc: Long, val received: Long)
     private var pending: Pending? = null
     private var anchor: Anchor? = null
     private var lastElapsed = -1L
@@ -65,9 +65,15 @@ internal class ConversationTrustedClock(
             val upper = serverSentUtcMs + rtt
             val prior = anchor
             val floor = if (prior == null) lastUtc else maxOf(lastUtc, Math.addExact(prior.upperUtc, now - prior.received))
-            require(upper >= floor) { "Authenticated UTC regressed" }
-            anchor = Anchor(replyingSession, upper, now)
-            lastUtc = upper
+            // A shorter RTT may lower the new uncertainty bound even though
+            // authenticated server UTC advances. Keep the old conservative
+            // upper bound, but reject a sample below the elapsed lower bound.
+            val lower = if (prior == null) serverSentUtcMs else
+                maxOf(serverSentUtcMs, Math.addExact(prior.lowerUtc, now - prior.received))
+            require(upper >= lower) { "Authenticated UTC regressed" }
+            val conservative = maxOf(upper, floor)
+            anchor = Anchor(replyingSession, lower, conservative, now)
+            lastUtc = conservative
         } catch (error: Exception) { invalidate(); throw error }
     }
     @Synchronized fun nowMs(): Long? { return try {
