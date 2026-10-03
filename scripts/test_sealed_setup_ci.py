@@ -19,6 +19,7 @@ class SetupCiTest(unittest.TestCase):
             cluster.start.side_effect = ValueError("private-fixture-diagnostic")
             output = io.StringIO()
             with patch.dict(driver.os.environ, {"RUNNER_TEMP": temporary}), \
+                    patch.object(driver, "owned_fixture_parent", return_value=Path(temporary)), \
                     patch.object(driver, "native_host_supported", return_value=True), \
                     patch.object(driver, "installed_postgres_directory", return_value=Path(temporary)), \
                     patch.object(driver, "OwnedCluster", return_value=cluster), \
@@ -28,8 +29,17 @@ class SetupCiTest(unittest.TestCase):
             cleanup.assert_called_once()
             # The mocked cleanup did not remove the newly owned empty fixture.
             owned = cleanup.call_args.args[0]
-            self.assertEqual(owned.parent.resolve(), Path(tempfile.gettempdir()).resolve())
+            self.assertEqual(owned.parent.resolve(), Path(temporary).resolve())
             owned.rmdir()
+
+    def test_owned_namespace_is_fixed_and_rejects_linked_directories(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            with patch.object(driver, "ROOT", root):
+                self.assertEqual(driver.owned_fixture_parent(), root / "target" / "sealed-setup-postgres-fixtures")
+                with patch.object(Path, "is_symlink", return_value=True):
+                    with self.assertRaises(ValueError):
+                        driver.owned_fixture_parent()
 
     def test_tool_failure_reports_only_allowlisted_category(self):
         for material, expected in ((b"private-fixture restricted token secret", "restricted-token"),

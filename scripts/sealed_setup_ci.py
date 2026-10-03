@@ -92,6 +92,20 @@ def confined(directory, parent):
     return actual
 
 
+def owned_fixture_parent():
+    # initdb drops administrator privileges on Windows. A private user-temp
+    # ancestor can deny its restricted token even when our child is new.
+    # Use a fixed checkout build namespace, never a caller-selected temp root.
+    parent = ROOT
+    for name in ("target", "sealed-setup-postgres-fixtures"):
+        selected = parent / name
+        selected.mkdir(exist_ok=True)
+        if selected.is_symlink() or not selected.is_dir() or selected.resolve() != selected:
+            raise ValueError("Canonical owned fixture namespace required")
+        parent = selected
+    return parent
+
+
 def reserve_port():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.bind(("localhost", 0))
@@ -227,7 +241,7 @@ def main(argv=None):
         if not args.existing_database and not os.environ.get("RUNNER_TEMP"):
             raise ValueError("Explicit CI marker RUNNER_TEMP required")
         stage = "owned-directory"
-        temporary = Path(tempfile.mkdtemp(prefix="sealed-setup-ci-"))
+        temporary = Path(tempfile.mkdtemp(prefix="sealed-setup-ci-", dir=owned_fixture_parent()))
         try:
             if args.existing_database:
                 uri = database_url(os.environ.get("ZT_INBOUND_TEST_DATABASE_URL", ""))
