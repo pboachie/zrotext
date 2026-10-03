@@ -23,6 +23,7 @@ use zeroize::Zeroizing;
 
 mod grant_http;
 mod grant_origin;
+mod guided_setup;
 
 mod scope_expiry;
 pub(super) struct Case {
