@@ -217,6 +217,17 @@ async fn managed_grants_reject_changed_head_digest_purpose_and_missing_ceremony(
     assert!(c.issue().await.is_err());
     c.request = original;
     let good = c.case.factor.clone();
+    let verified_before: i64 = c
+        .case
+        .f
+        .db
+        .query_one(
+            "SELECT last_verified_ms FROM sealed_manifest_authorities WHERE account_id=$1",
+            &[&c.case.f.account],
+        )
+        .await
+        .unwrap()
+        .get(0);
     let failures_before = auth::abuse_limits::failures_in_window(
         &c.case.f.db,
         &c.case.hasher,
@@ -239,6 +250,21 @@ async fn managed_grants_reject_changed_head_digest_purpose_and_missing_ceremony(
     .await
     .unwrap();
     assert_eq!(failures_after, failures_before + 1);
+    let verified_after: i64 = c
+        .case
+        .f
+        .db
+        .query_one(
+            "SELECT last_verified_ms FROM sealed_manifest_authorities WHERE account_id=$1",
+            &[&c.case.f.account],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        verified_after, verified_before,
+        "bad factor must not persist archive high-water changes"
+    );
     c.case.factor = good;
     c.issue().await.unwrap();
     assert!(
@@ -563,4 +589,137 @@ async fn managed_grants_current_owner_cannot_substitute_a_revoked_activation_cre
     assert!(c.issue().await.is_err());
     assert_eq!(c.count("managed_reader_grants").await, 0);
     c.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated observed managed grant wait schema"]
+async fn managed_grants_observed_account_wait_refences_expiry_and_owner_before_any_effect() {
+    for replacing in [false, true] {
+        for revoke_owner in [false, true] {
+            let mut c =
+                ManagedCase::with_lifetime(if revoke_owner { None } else { Some(2500) }).await;
+            let existing = if replacing {
+                Some(c.issue().await.unwrap())
+            } else {
+                None
+            };
+            if replacing {
+                c.case.fresh_factor().await;
+                c.request.instruction_digest = Sha256::digest(Uuid::new_v4().as_bytes()).into();
+            }
+            let account = c.case.f.account;
+            let session = c.case.owner.session_id;
+            let deadline = c.request.expires_ms;
+            let unused_before:i64=c.case.f.db.query_one("SELECT count(*) FROM owner_mfa_recovery_codes WHERE account_id=$1 AND used_at IS NULL",&[&account]).await.unwrap().get(0);
+            let failures_before = auth::abuse_limits::failures_in_window(
+                &c.case.f.db,
+                &c.case.hasher,
+                auth::abuse_limits::Limit::MfaStepUp,
+                &c.case.owner.user_id.to_string(),
+            )
+            .await
+            .unwrap();
+            let mut blocker = c.case.f.connect().await;
+            let tx = blocker.transaction().await.unwrap();
+            tx.query_one(
+                "SELECT id FROM accounts WHERE id=$1 FOR UPDATE",
+                &[&account],
+            )
+            .await
+            .unwrap();
+            let observer = c.case.f.connect().await;
+            let mut granting = c.case.f.connect().await;
+            let pid: i32 = granting
+                .query_one("SELECT pg_backend_pid()", &[])
+                .await
+                .unwrap()
+                .get(0);
+            let issued = tokio::spawn(async move {
+                let result = if let Some(id) = existing {
+                    c.service
+                        .replace(&mut granting, &c.ceremony(), id, 1, &c.request)
+                        .await
+                        .map(|_| id)
+                } else {
+                    c.service
+                        .create(&mut granting, &c.ceremony(), &c.request)
+                        .await
+                };
+                (c, result)
+            });
+            let started = tokio::time::Instant::now();
+            loop {
+                let waiting:bool=observer.query_one("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock' AND query LIKE '%FOR UPDATE OF a FOR SHARE OF m,u,s%')",&[&pid]).await.unwrap().get(0);
+                if waiting {
+                    break;
+                }
+                assert!(
+                    started.elapsed() < std::time::Duration::from_secs(2),
+                    "grant must reach the observed account lock"
+                );
+                tokio::task::yield_now().await;
+            }
+            if revoke_owner {
+                tx.execute(
+                    "UPDATE sessions SET revoked_at=clock_timestamp() WHERE id=$1",
+                    &[&session],
+                )
+                .await
+                .unwrap();
+            } else {
+                let now: i64 = observer
+                    .query_one(
+                        "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+                        &[],
+                    )
+                    .await
+                    .unwrap()
+                    .get(0);
+                assert!(
+                    now < deadline,
+                    "deadline must pass during the observed wait"
+                );
+                loop {
+                    let expired:bool=observer.query_one("SELECT $1::bigint<=floor(extract(epoch FROM clock_timestamp())*1000)::bigint",&[&deadline]).await.unwrap().get(0);
+                    if expired {
+                        break;
+                    }
+                    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            }
+            tx.commit().await.unwrap();
+            let (c, result) = issued.await.unwrap();
+            assert!(
+                matches!(
+                    result,
+                    Err(managed_ai::Error::Forbidden
+                        | managed_ai::Error::Archive(
+                            crate::http_owner_conversations::ConversationError::Forbidden
+                        ))
+                ),
+                "fresh authority must refuse, rather than merely timing out: {result:?}"
+            );
+            let expected = i64::from(replacing);
+            for table in [
+                "managed_reader_grants",
+                "managed_reader_grant_versions",
+                "managed_reader_events",
+            ] {
+                assert_eq!(c.count(table).await, expected, "{table}");
+            }
+            let unused_after:i64=c.case.f.db.query_one("SELECT count(*) FROM owner_mfa_recovery_codes WHERE account_id=$1 AND used_at IS NULL",&[&account]).await.unwrap().get(0);
+            assert_eq!(unused_after, unused_before);
+            let failures_after = auth::abuse_limits::failures_in_window(
+                &c.case.f.db,
+                &c.case.hasher,
+                auth::abuse_limits::Limit::MfaStepUp,
+                &c.case.owner.user_id.to_string(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(failures_after, failures_before);
+            c.cleanup().await;
+        }
+    }
 }

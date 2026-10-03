@@ -26,12 +26,12 @@ async fn current(
     id: Uuid,
     expected: i64,
 ) -> Result<GrantRequest, Error> {
-    let row = tx.query_opt("SELECT g.current_version,g.revoked_ms,v.binding,g.contact_id,g.purpose,v.policy_id,v.policy_version,v.policy_digest,v.reader_id,v.reader_generation FROM managed_reader_grants g JOIN managed_reader_grant_versions v ON (v.account_id,v.grant_id,v.version)=(g.account_id,g.id,g.current_version) WHERE g.account_id=$1 AND g.id=$2 FOR UPDATE OF g FOR SHARE OF v", &[&account,&id]).await?.ok_or(Error::NotFound)?;
+    let row = tx.query_opt("SELECT g.current_version,g.revoked_ms,v.binding::text,g.contact_id,g.purpose,v.policy_id,v.policy_version,v.policy_digest,v.reader_id,v.reader_generation FROM managed_reader_grants g JOIN managed_reader_grant_versions v ON (v.account_id,v.grant_id,v.version)=(g.account_id,g.id,g.current_version) WHERE g.account_id=$1 AND g.id=$2 FOR UPDATE OF g FOR SHARE OF v", &[&account,&id]).await?.ok_or(Error::NotFound)?;
     if row.get::<_, i64>(0) != expected || row.get::<_, Option<i64>>(1).is_some() {
         return Err(Error::Conflict);
     }
     let request: GrantRequest =
-        serde_json::from_value(row.get(2)).map_err(|_| Error::Unavailable)?;
+        serde_json::from_str(&row.get::<_, String>(2)).map_err(|_| Error::Unavailable)?;
     request.validate()?;
     if request.contact != row.get::<_, Uuid>(3)
         || request.purpose.slug() != row.get::<_, String>(4)
@@ -121,8 +121,8 @@ async fn insert_version(
 ) -> Result<(), Error> {
     let account = owner.tenant.account_id();
     let p = &r.policy;
-    let binding = serde_json::to_value(r).map_err(|_| Error::Invalid)?;
-    tx.execute("INSERT INTO managed_reader_grant_versions(account_id,grant_id,id,version,policy_id,policy_version,policy_digest,reader_id,reader_generation,binding,created_by_user,created_session,created_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)", &[&account,&id,&Uuid::new_v4(),&version,&p.id,&p.version,&p.digest.as_slice(),&p.reader,&p.reader_generation,&binding,&owner.user_id,&owner.session_id,&now(tx).await?]).await?;
+    let binding = serde_json::to_string(r).map_err(|_| Error::Invalid)?;
+    tx.execute("INSERT INTO managed_reader_grant_versions(account_id,grant_id,id,version,policy_id,policy_version,policy_digest,reader_id,reader_generation,binding,created_by_user,created_session,created_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::text::jsonb,$11,$12,$13)", &[&account,&id,&Uuid::new_v4(),&version,&p.id,&p.version,&p.digest.as_slice(),&p.reader,&p.reader_generation,&binding,&owner.user_id,&owner.session_id,&now(tx).await?]).await?;
     for s in &r.selections {
         tx.execute("INSERT INTO managed_reader_selections(account_id,id,grant_id,grant_version,kind,source_id,source_version,digest) VALUES($1,$2,$3,$4,'workflow_context_v1',$5,$6,$7)", &[&account,&Uuid::new_v4(),&id,&version,&s.id,&s.version,&s.digest.as_slice()]).await?;
     }
@@ -211,7 +211,6 @@ impl ManagedGrants {
             (Uuid::new_v4(), 1, "create")
         };
         policy(&tx, account, r).await?;
-        sources(&tx, owner, &mut authority, r).await?;
         let proof = mfa::consume_ceremony_factor(
             &tx,
             cipher,
@@ -228,6 +227,11 @@ impl ManagedGrants {
                 crate::auth::AuthError::InvalidCredentials,
             ));
         };
+        // Archive validation advances its verification high-water mark. Defer
+        // that mutation until a factor succeeds, so a rejected-factor commit
+        // persists only ceremony failure accounting. Any later source refusal
+        // rolls back the factor and all authority writes together.
+        sources(&tx, owner, &mut authority, r).await?;
         if version == 1 {
             tx.execute("INSERT INTO managed_reader_grants(account_id,id,contact_id,purpose,current_version) VALUES($1,$2,$3,$4,1)", &[&account,&id,&r.contact,&r.purpose.slug()]).await?;
         } else {

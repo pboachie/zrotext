@@ -88,14 +88,21 @@ async fn page(
         || "id::text".to_owned(),
         |column| format!("id::text||':'||{column}::text"),
     );
-    let rows = tx.query(&format!("SELECT to_jsonb(r),{key} AS cursor FROM {table} r WHERE account_id=$1 AND ($2::text IS NULL OR ({key})>$2) ORDER BY cursor LIMIT 21"), &[&account,&after]).await?;
+    let rows = tx.query(&format!("SELECT to_jsonb(r)::text,{key} AS cursor FROM {table} r WHERE account_id=$1 AND ($2::text IS NULL OR ({key})>$2) ORDER BY cursor LIMIT 21"), &[&account,&after]).await?;
     let next_cursor = if rows.len() > 20 {
         Some(rows[19].get(1))
     } else {
         None
     };
     Ok(Page {
-        items: rows.iter().take(20).map(|r| r.get(0)).collect(),
+        items: rows
+            .iter()
+            .take(20)
+            .map(|r| {
+                serde_json::from_str(&r.get::<_, String>(0))
+                    .map_err(|_| ConversationError::Unavailable)
+            })
+            .collect::<Result<_, _>>()?,
         next_cursor,
     })
 }

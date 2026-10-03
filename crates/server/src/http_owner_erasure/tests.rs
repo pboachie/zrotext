@@ -11,6 +11,7 @@ use axum::body::{Body, to_bytes};
 use serde_json::{Value, json};
 use totp_rs::{Builder, Secret};
 use tower::ServiceExt;
+mod managed_grants;
 
 const ORIGIN: &str = "https://test.example";
 

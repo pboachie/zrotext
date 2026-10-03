@@ -793,6 +793,11 @@ async fn erase_account(
     {
         return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
     }
+    // Inspect optional proposal storage before the final owner/MFA fence.
+    let managed_installed = match crate::managed_ai::lifecycle::installed(&tx).await {
+        Ok(value) => value,
+        Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+    };
     // Inspect proof storage before the final fence: schema preparation can wait.
     let confirmation_installed =
         match crate::http_owner_conversations::confirmation_records::installed(&tx).await {
@@ -912,10 +917,6 @@ async fn erase_account(
         Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
     };
     let mut deleted = Vec::new();
-    let managed_installed = match crate::managed_ai::lifecycle::installed(&tx).await {
-        Ok(value) => value,
-        Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
-    };
     match crate::workflow_templates::lifecycle::erase(&tx, account_id).await {
         Ok(counts) => deleted.extend(
             counts
