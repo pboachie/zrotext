@@ -70,8 +70,8 @@ android {
         applicationId = "org.zrotext.gateway"
         minSdk = 28
         targetSdk = 36
-        versionCode = 9
-        versionName = "0.1.6-rc.3"
+        versionCode = 10
+        versionName = "0.1.6"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         if (isolatedConversationProbe) {
             applicationId = "org.zrotext.gateway.conversationprobe"
