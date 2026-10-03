@@ -293,7 +293,18 @@ async fn original_lineage_rechecks_earlier_deadline_after_observed_later_hop_wai
     // Only the isolated fixture wraps the real one-hop predicate. It first captures
     // its actual enforced deadline, then waits at the later ancestor. No unconditional
     // valid deadline, fabricated provider success, or production sleep is installed.
-    flow.f.case.f.db.batch_execute(&format!("ALTER FUNCTION original_reply_source_one_deadline(uuid,uuid) RENAME TO original_reply_source_one_real_deadline; CREATE FUNCTION original_reply_source_one_deadline(wanted_account uuid,wanted_action uuid) RETURNS bigint LANGUAGE plpgsql VOLATILE SET search_path FROM CURRENT AS $$ DECLARE actual_deadline bigint; BEGIN actual_deadline:=original_reply_source_one_real_deadline(wanted_account,wanted_action); IF wanted_action='{}'::uuid THEN PERFORM pg_advisory_xact_lock({barrier}); END IF; RETURN actual_deadline; END; $$;",first.action_id)).await.unwrap();
+    flow.f.case.f.db.batch_execute("CREATE TABLE fixture_original_deadline_barrier(action_id uuid PRIMARY KEY,barrier bigint NOT NULL)").await.unwrap();
+    flow.f
+        .case
+        .f
+        .db
+        .execute(
+            "INSERT INTO fixture_original_deadline_barrier(action_id,barrier) VALUES($1,$2)",
+            &[&first.action_id, &barrier],
+        )
+        .await
+        .unwrap();
+    flow.f.case.f.db.batch_execute("ALTER FUNCTION original_reply_source_one_deadline(uuid,uuid) RENAME TO original_reply_source_one_real_deadline; CREATE FUNCTION original_reply_source_one_deadline(wanted_account uuid,wanted_action uuid) RETURNS bigint LANGUAGE plpgsql VOLATILE SET search_path FROM CURRENT AS $$ DECLARE actual_deadline bigint; wait_barrier bigint; BEGIN actual_deadline:=original_reply_source_one_real_deadline(wanted_account,wanted_action); SELECT barrier INTO wait_barrier FROM fixture_original_deadline_barrier WHERE action_id=wanted_action; IF FOUND THEN PERFORM pg_advisory_xact_lock(wait_barrier); END IF; RETURN actual_deadline; END; $$;").await.unwrap();
     let pid: i32 = flow
         .caller
         .query_one("SELECT pg_backend_pid()", &[])
