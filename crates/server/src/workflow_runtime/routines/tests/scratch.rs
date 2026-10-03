@@ -20,8 +20,19 @@ struct Identity {
     created: std::time::SystemTime,
 }
 fn identity(path: &Path) -> io::Result<Identity> {
+    let text = path
+        .to_str()
+        .ok_or_else(|| io::Error::other("non-Unicode fixture path"))?
+        .to_owned();
+    if text.contains("..") {
+        return Err(io::Error::other("traversing fixture path"));
+    }
+    if !Path::new(&text).is_absolute() {
+        return Err(io::Error::other("relative fixture path"));
+    }
+
     #[cfg(not(windows))]
-    let metadata = fs::symlink_metadata(path)?;
+    let metadata = fs::symlink_metadata(&text)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -53,7 +64,7 @@ fn identity(path: &Path) -> io::Result<Identity> {
         let file = fs::OpenOptions::new()
             .read(true)
             .custom_flags(0x02000000 | 0x00200000)
-            .open(path)?;
+            .open(&text)?;
         let mut information = FileIdInfo {
             volume: 0,
             file_id: [0; 16],
@@ -84,7 +95,18 @@ fn identity(path: &Path) -> io::Result<Identity> {
     }
 }
 fn checked(path: &Path) -> io::Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
+    let text = path
+        .to_str()
+        .ok_or_else(|| io::Error::other("non-Unicode fixture path"))?
+        .to_owned();
+    if text.contains("..") {
+        return Err(io::Error::other("traversing fixture path"));
+    }
+    if !Path::new(&text).is_absolute() {
+        return Err(io::Error::other("relative fixture path"));
+    }
+
+    let metadata = fs::symlink_metadata(&text)?;
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
@@ -92,7 +114,7 @@ fn checked(path: &Path) -> io::Result<()> {
             return Err(io::Error::other("reparse fixture directory"));
         }
     }
-    if !metadata.is_dir() || metadata.file_type().is_symlink() || fs::canonicalize(path)? != path {
+    if !metadata.is_dir() || metadata.file_type().is_symlink() || fs::canonicalize(&text)? != path {
         return Err(io::Error::other("unsafe fixture directory"));
     }
     Ok(())
@@ -118,8 +140,8 @@ impl Scratch {
         if raw.contains("..") {
             return Err(io::Error::other("traversing fixture anchor"));
         }
-        let raw = PathBuf::from(raw);
-        if !raw.is_absolute() {
+        let raw = raw.to_owned();
+        if !Path::new(&raw).is_absolute() {
             return Err(io::Error::other("relative fixture anchor"));
         }
         let metadata = fs::symlink_metadata(&raw)?;
@@ -133,7 +155,15 @@ impl Scratch {
                 return Err(io::Error::other("reparse fixture anchor"));
             }
         }
-        Self::at(&fs::canonicalize(&raw)?)
+        let normalized = fs::canonicalize(&raw)?;
+        let text = normalized
+            .to_str()
+            .ok_or_else(|| io::Error::other("non-Unicode normalized fixture anchor"))?
+            .to_owned();
+        if text.contains("..") {
+            return Err(io::Error::other("traversing normalized fixture anchor"));
+        }
+        Self::at(Path::new(&text))
     }
 
     fn at(anchor: &Path) -> io::Result<Self> {
@@ -153,7 +183,18 @@ impl Scratch {
             use std::os::unix::fs::DirBuilderExt;
             builder.mode(0o700);
         }
-        builder.create(&path)?;
+        if path.parent() != Some(anchor) {
+            return Err(io::Error::other("escaped fixture child"));
+        }
+        let child_text = path
+            .to_str()
+            .ok_or_else(|| io::Error::other("non-Unicode fixture child"))?
+            .to_owned();
+        if child_text.contains("..") {
+            return Err(io::Error::other("traversing fixture child"));
+        }
+        builder.create(&child_text)?;
+        checked(&path)?;
         let marker_path = path.join(".fixture-owner");
         let mut options = fs::OpenOptions::new();
         options.write(true).create_new(true);
@@ -162,8 +203,18 @@ impl Scratch {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
+        if marker_path.parent() != Some(path.as_path()) {
+            return Err(io::Error::other("escaped fixture marker"));
+        }
+        let marker_text = marker_path
+            .to_str()
+            .ok_or_else(|| io::Error::other("non-Unicode fixture marker"))?
+            .to_owned();
+        if marker_text.contains("..") {
+            return Err(io::Error::other("traversing fixture marker"));
+        }
         options
-            .open(&marker_path)?
+            .open(&marker_text)?
             .write_all(marker.to_string().as_bytes())?;
         let marker_identity = identity(&marker_path)?;
         let anchor_identity = identity(anchor)?;
@@ -180,19 +231,37 @@ impl Scratch {
     pub(super) fn remove(self) -> io::Result<()> {
         checked(&self.anchor)?;
         checked(&self.path)?;
+        let child_text = self
+            .path
+            .to_str()
+            .ok_or_else(|| io::Error::other("non-Unicode fixture child"))?
+            .to_owned();
+        if child_text.contains("..") {
+            return Err(io::Error::other("traversing fixture child"));
+        }
+        let marker_path = self.path.join(".fixture-owner");
+        if marker_path.parent() != Some(self.path.as_path()) || !marker_path.starts_with(&self.path)
+        {
+            return Err(io::Error::other("escaped fixture marker"));
+        }
+        let marker_text = marker_path
+            .to_str()
+            .ok_or_else(|| io::Error::other("non-Unicode fixture marker"))?
+            .to_owned();
+        if marker_text.contains("..") {
+            return Err(io::Error::other("traversing fixture marker"));
+        }
         if identity(&self.anchor)? != self.anchor_identity
             || identity(&self.path)? != self.child_identity
             || self.path.parent() != Some(self.anchor.as_path())
-            || !fs::symlink_metadata(self.path.join(".fixture-owner"))?.is_file()
-            || fs::symlink_metadata(self.path.join(".fixture-owner"))?
-                .file_type()
-                .is_symlink()
+            || !fs::symlink_metadata(&marker_text)?.is_file()
+            || fs::symlink_metadata(&marker_text)?.file_type().is_symlink()
             || identity(&self.path.join(".fixture-owner"))? != self.marker_identity
-            || fs::read_to_string(self.path.join(".fixture-owner"))? != self.marker.to_string()
+            || fs::read_to_string(&marker_text)? != self.marker.to_string()
         {
             return Err(io::Error::other("fixture ownership changed"));
         }
-        fs::remove_dir_all(self.path)
+        fs::remove_dir_all(&child_text)
     }
 }
 #[test]
@@ -203,12 +272,15 @@ fn repository_anchor_is_refused_without_creating_scratch() {
 #[test]
 fn substituted_child_is_preserved_and_refused() {
     let scratch = Scratch::create().unwrap();
-    let path = scratch.path.clone();
+    let path = scratch.path.to_str().unwrap().to_owned();
+    if path.contains("..") {
+        panic!("traversing fixture test path");
+    }
     fs::remove_dir_all(&path).unwrap();
     fs::create_dir(&path).unwrap();
-    fs::write(path.join("sentinel"), b"synthetic").unwrap();
+    fs::write(Path::new(&path).join("sentinel"), b"synthetic").unwrap();
     assert!(scratch.remove().is_err());
-    assert!(path.join("sentinel").exists());
+    assert!(Path::new(&path).join("sentinel").exists());
     fs::remove_dir_all(path).unwrap();
 }
 
@@ -224,10 +296,17 @@ fn owned_scratch_removes_only_its_child() {
 #[test]
 fn changed_marker_preserves_child() {
     let scratch = Scratch::create().unwrap();
-    let path = scratch.path.clone();
-    fs::write(path.join(".fixture-owner"), b"synthetic replacement").unwrap();
+    let path = scratch.path.to_str().unwrap().to_owned();
+    if path.contains("..") {
+        panic!("traversing fixture test path");
+    }
+    fs::write(
+        Path::new(&path).join(".fixture-owner"),
+        b"synthetic replacement",
+    )
+    .unwrap();
     assert!(scratch.remove().is_err());
-    assert!(path.exists());
+    assert!(Path::new(&path).exists());
     fs::remove_dir_all(path).unwrap();
 }
 
@@ -249,9 +328,12 @@ fn filesystem_root_is_refused() {
 #[test]
 fn recreated_marker_with_identical_bytes_is_preserved_and_refused() {
     let scratch = Scratch::create().unwrap();
-    let path = scratch.path.clone();
-    let marker = path.join(".fixture-owner");
-    fs::rename(&marker, path.join("retained-original-marker")).unwrap();
+    let path = scratch.path.to_str().unwrap().to_owned();
+    if path.contains("..") {
+        panic!("traversing fixture test path");
+    }
+    let marker = Path::new(&path).join(".fixture-owner");
+    fs::rename(&marker, Path::new(&path).join("retained-original-marker")).unwrap();
     fs::write(&marker, scratch.marker.to_string()).unwrap();
     assert!(scratch.remove().is_err());
     assert!(marker.exists());
@@ -261,9 +343,12 @@ fn recreated_marker_with_identical_bytes_is_preserved_and_refused() {
 #[test]
 fn linked_marker_is_preserved_and_refused() {
     let scratch = Scratch::create().unwrap();
-    let path = scratch.path.clone();
-    let marker = path.join(".fixture-owner");
-    let original = path.join("retained-original-marker");
+    let path = scratch.path.to_str().unwrap().to_owned();
+    if path.contains("..") {
+        panic!("traversing fixture test path");
+    }
+    let marker = Path::new(&path).join(".fixture-owner");
+    let original = Path::new(&path).join("retained-original-marker");
     fs::rename(&marker, &original).unwrap();
     std::os::unix::fs::symlink(&original, &marker).unwrap();
     assert!(scratch.remove().is_err());
@@ -274,4 +359,38 @@ fn linked_marker_is_preserved_and_refused() {
             .is_symlink()
     );
     fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn direct_filesystem_helpers_refuse_traversal_before_inspection() {
+    let scratch = Scratch::create().unwrap();
+    // The target exists: identity() would succeed without its lexical guard.
+    // Path::join can normalize parent components for Windows verbatim paths.
+    let traversing = PathBuf::from(format!(
+        "{}{}..{}{}",
+        scratch.path.display(),
+        std::path::MAIN_SEPARATOR,
+        std::path::MAIN_SEPARATOR,
+        scratch.path.file_name().unwrap().to_str().unwrap()
+    ));
+    assert!(checked(&traversing).is_err());
+    assert!(identity(&traversing).is_err());
+    assert!(checked(Path::new("relative")).is_err());
+    assert!(identity(Path::new(".")).is_err());
+    scratch.remove().unwrap();
+}
+#[test]
+fn changed_child_path_cannot_remove_another_owned_scratch() {
+    let mut first = Scratch::create().unwrap();
+    let second = Scratch::create().unwrap();
+    let original = first.path.clone();
+    first.path = second.path.clone();
+    assert!(first.remove().is_err());
+    assert!(second.path.exists());
+    second.remove().unwrap();
+    let text = original.to_str().unwrap();
+    if text.contains("..") {
+        panic!("traversing fixture cleanup path");
+    }
+    fs::remove_dir_all(text).unwrap();
 }
