@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Disposable actual-server driver, invoked only by the ignored Rust fixture."""
 import hashlib
+import contextlib
+import io
+from unittest.mock import patch
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -17,6 +20,7 @@ from workflow_owner_setup import OwnerSession, OwnerSetupError
 
 
 DIAGNOSTIC = {"stage": "start", "operation": "none", "status": 0}
+FAILURE = None
 
 
 class MemoryVault:
@@ -31,6 +35,7 @@ class MemoryVault:
 
 
 def run(fixture):
+    global FAILURE
     upstream = urlsplit(fixture['upstream'])
     if upstream.scheme != 'http' or upstream.hostname != '127.0.0.1' or upstream.path or not upstream.port:
         raise ValueError('invalid_fixture')
@@ -91,9 +96,11 @@ def run(fixture):
                              '/v1/auth/session': 'session', '/v1/auth/logout': 'logout',
                              '/v1/auth/workflow-grants': 'grant'}.get(path,
                              'session_revoke' if path.startswith('/v1/auth/sessions/') else 'grant_revoke')
-                DIAGNOSTIC.update(operation=operation, status=0)
+                if operation != 'logout':
+                    DIAGNOSTIC.update(operation=operation, status=0)
                 status, value = original(method, path, body)
-                DIAGNOSTIC['status'] = status
+                if operation != 'logout':
+                    DIAGNOSTIC['status'] = status
                 return status, value
             owner.request = observed
             return owner
@@ -112,17 +119,29 @@ def run(fixture):
             finally:
                 connection.close()
         try:
-            DIAGNOSTIC["stage"] = "login"
-            owner = login(fixture['login_factor'])
+            DIAGNOSTIC["stage"] = "install"
             config = root / 'client.json'
             config.write_text('{"mcpServers":{"unrelated":{"command":"synthetic"}}}')
+            scope_file = root / 'scope.json'
+            scope_file.write_text(json.dumps(fixture['scope']))
             broker = Path(fixture['broker'])
             vault = MemoryVault()
-            DIAGNOSTIC["stage"] = "install"
-            installed = setup.install(config, setup.local.digest(config.read_bytes()), owner,
-                                      fixture['scope'], fixture['password'], fixture['grant_factor'], vault,
-                                      'mcp-json', broker, setup.local.digest(broker.read_bytes()), origin)
+            preview_digest = setup.local.digest(config.read_bytes())
+            arguments = ['guided_workflow_setup.py', 'connect', '--client', 'mcp-json',
+                         '--config', str(config), '--scope', str(scope_file), '--broker', str(broker),
+                         '--sha256', setup.local.digest(broker.read_bytes()), '--origin', origin]
+            captured = io.StringIO()
+            with patch.object(sys, 'argv', arguments), patch.object(setup, 'operating_system_store', return_value=vault), \
+                 patch.object(setup, 'OwnerSession', side_effect=lambda requested: session() if requested == origin else None), \
+                 patch('builtins.input', side_effect=[preview_digest, fixture['email']]), \
+                 patch.object(setup.getpass, 'getpass', side_effect=[fixture['password'], fixture['login_factor'], fixture['grant_factor']]), \
+                 contextlib.redirect_stdout(captured):
+                assert setup.main() == 0
+            installed = json.loads(captured.getvalue().splitlines()[-1])
+            owner = sessions[-1]
+            assert fixture['password'] not in captured.getvalue()
             narrow = vault.get(installed['secret_reference'])
+            assert narrow not in captured.getvalue()
             creator = owner.session_identity.copy()
             DIAGNOSTIC["stage"] = "teardown"
             owner.close()
@@ -207,6 +226,9 @@ def run(fixture):
             assert not receipt.exists()
             return {'creator_logout_fenced': True, 'unknown_recovered': True, 'creator_session':  creator['session_id'], 'foreign_session': fixture['foreign_session'],
                     'after_teardown': True, 'bootstrap_current': True, 'recovery_fenced': True}
+        except Exception:
+            FAILURE = dict(DIAGNOSTIC)
+            raise
         finally:
             for owner in sessions:
                 owner.close()
@@ -222,5 +244,5 @@ if __name__ == '__main__':
         assert len(data) <= 65536
         print(json.dumps(run(json.loads(data))))
     except Exception:
-        print(json.dumps({'failed': DIAGNOSTIC}))
+        print(json.dumps({'failed': FAILURE or DIAGNOSTIC}))
         raise SystemExit(2)

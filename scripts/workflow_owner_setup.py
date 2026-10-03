@@ -96,7 +96,7 @@ class OwnerSession:
         if status == 202 and isinstance(data, dict) and set(data) == {"challenge_token"}:
             status, _ = self.request("POST", "/v1/auth/login/mfa",
                                      {"challenge_token": data["challenge_token"], "code": mfa_code()})
-        if status != 200:
+        if status != 204:
             raise OwnerSetupError("owner_authentication_refused")
         status, data = self.request("GET", "/v1/auth/session")
         if (status != 200 or not isinstance(data, dict)

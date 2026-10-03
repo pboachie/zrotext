@@ -97,8 +97,9 @@ and clears the receipt; it never silently reconnects or renews.
 Tests exercise actual stdio broker subprocess framing and redaction, synthetic
 owner login/MFA/closed grant requests, native Windows API structure, mocked
 Secret Service invocation, config preservation/rerun, rollback and revocation
-ordering. The composed real-router HTTPS/PostgreSQL and private-bootstrap fixture
-is authored but not yet run locally. They do not prove a real vault write, live deployment setup, Android
+ordering. The composed real-router HTTPS/PostgreSQL fixture exercises the guided
+CLI, private bootstrap, creator-session retention and explicit recovery using
+synthetic credentials and an in-memory vault. These tests do not prove a real vault write, live deployment setup, Android
 pairing, current reader enrollment, physical-device operation or carrier delivery.
 The doctor still reports unknown/unavailable device and release prerequisites;
 this metadata connector cannot turn those prerequisites into authority.

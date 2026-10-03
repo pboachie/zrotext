@@ -272,7 +272,7 @@ class OwnerHttp(unittest.TestCase):
     def test_login_requires_actual_owner_session_and_separate_fresh_grant_factor(self):
         session = OwnerSession("https://gateway.example", connection=Mock())
         session.cookies = {"__Host-zrotext_session": "example", "__Host-zrotext_csrf": "example"}
-        with patch.object(session, "request", side_effect=[(202, {"challenge_token": "example"}), (200, {}),
+        with patch.object(session, "request", side_effect=[(202, {"challenge_token": "example"}), (204, None),
               (200, {"role": "owner", "account_id": ID, "user_id": ID, "session_id": ID}), (201, {"grant_id": ID, "token": "ztw_" + "a" * 43})]) as request:
             self.assertEqual(session.login("owner@example.test", "example", lambda: "login-example"), ID)
             session.create(SELECTED, "example", "grant-example")
@@ -308,6 +308,13 @@ class OwnerHttp(unittest.TestCase):
             request.assert_not_called()
             session.revoke_creator(session.session_identity)
             # Mock does not produce a confirmed response; tested below with 204.
+
+    def test_login_rejects_legacy_mock_success_status_before_session_read(self):
+        session = OwnerSession("https://gateway.example", connection=Mock())
+        with patch.object(session, "request", return_value=(200, {})) as request:
+            with self.assertRaisesRegex(OwnerSetupError, "owner_authentication_refused"):
+                session.login("owner@example.test", "example", lambda: "example")
+            self.assertEqual(request.call_count, 1)
 
     def test_observer_wrong_identity_and_non_https_refuse(self):
         with self.assertRaises(OwnerSetupError):
