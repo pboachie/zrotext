@@ -149,4 +149,4 @@ test('n8n imports and executes proposals and durable reply safety through the ac
     assert.equal(dirname(resolve(directory)), resolve(tmpdir()));
     await rm(directory, { recursive: true, force: true });
   }
-}));
+}, { maxTurns: 2 }));

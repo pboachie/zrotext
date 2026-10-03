@@ -5,6 +5,14 @@ import { request as httpRequest } from 'node:http';
 import { createWorkflowRecipeServer } from '../../recipes/workflow-runtime.mjs';
 import { fixture, id } from '../../recipes/test-support/runtime-fixture.mjs';
 
+test('status validates current durable delivery metadata without preparing an action',()=>fixture(async f=>{
+  await f.recipe.enable();
+  const status=await f.recipe.call({operation:'status',request_id:id(46)});
+  assert.equal(status.result.phase,'proposed');
+  assert.deepEqual(status.result.delivery,{availability:'not_bound'});
+  assert.deepEqual(f.calls.map(call=>call.method),['workflow.action.status']);
+}));
+
 test('disabled installation and actual read-only HTTPS preview precede exact proposal and independent preparation',()=>fixture(async f=>{
   assert.equal((await f.recipe.setup()).installed_state,'disabled');
   await assert.rejects(()=>f.recipe.call({operation:'task_completion',request_id:id(20)}),e=>e.code==='disabled');

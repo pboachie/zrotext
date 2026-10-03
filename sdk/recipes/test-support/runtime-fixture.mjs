@@ -19,7 +19,7 @@ const descriptor = { account_id:id(1), action_id:id(2), revision:1, line_id:id(3
   routine_id:id(6), authority_generation:1, commitment:'informational' };
 const credential = `ztw_${Buffer.alloc(32,7).toString('base64url')}`;
 
-export async function fixture(run) {
+export async function fixture(run, { maxTurns = 1 } = {}) {
   const directory = await mkdtemp(join(tmpdir(),'zrotext-recipe-https-'));
   let server, adapter;
   try {
@@ -46,6 +46,7 @@ export async function fixture(run) {
       if(!permission || (body.method==='workflow.action.send' && !sendPermission)){res.statusCode=403;res.end(JSON.stringify({error:{code:'forbidden'}}));return;}
       if(body.method==='workflow.context.metadata')res.end(JSON.stringify({kind:'context_metadata',result:{context_id:id(5),source_content_digest:descriptor.content_digest,revision:1,kind:1,expires_at_ms:time+60000,binding_generation:1,trust_generation:1,manifest_version:1}}));
       else if(body.method==='workflow.action.send')res.end(JSON.stringify({kind:'send',result:approved?{state:'prepared',message_id:id(8),dispatch_id:id(9)}:{state:'waiting_owner_binding'}}));
+      else if(body.method==='workflow.action.status')res.end(JSON.stringify({kind:'action',result:{key,record_version:1,phase:approved?'approved':'proposed',delivery:{availability:'not_bound'}}}));
       else res.end(JSON.stringify({kind:'action',result:{key,record_version:1,phase:approved?'approved':'proposed'}}));
     });
     await new Promise(done=>server.listen(0,'localhost',done));
@@ -60,7 +61,7 @@ export async function fixture(run) {
       clock:()=>time,authority:()=>({active,accountId:id(1),lineId:id(3),deviceId:id(7),revision:'synthetic_policy',expiresAtMs:time+60000,
         canReadContent:true,readerId:id(10)}),readerId:id(10),reader:async()=>({kind:'decrypted',text:'Synthetic reply'})});
     adapter=openReplies();
-    adapter.registerRequest({id:id(11),messageId:id(8),attemptId:id(12),deviceId:id(7),startsAtMs:time-1000,expiresAtMs:time+30000,maxTurns:1});
+    adapter.registerRequest({id:id(11),messageId:id(8),attemptId:id(12),deviceId:id(7),startsAtMs:time-1000,expiresAtMs:time+30000,maxTurns});
     const recipe=new WorkflowRecipe({origin:`https://localhost:${server.address().port}`,credential,descriptor,fetchImpl,replyAdapter:adapter,consumerId:id(13)});
     const signed=(eventId=id(14),classification='captured_local')=>{
       const event={v:1,type:'inbound.message',event_id:eventId,delivery_id:id(15),account_id:id(1),device_id:id(7),message_id:id(8),attempt_id:id(12),
