@@ -18,6 +18,18 @@ test('POSIX public permissions refuse while Windows uses documented customer ACL
  const prior=process.cwd();try{process.chdir(p);if(process.platform!=='win32'){chmodSync(p,0o777);assert.throws(()=>readPrivateConfiguration(file),/storage_unavailable/);chmodSync(p,0o700);chmodSync(file,0o644);assert.throws(()=>readPrivateConfiguration(file),/storage_unavailable/);}
  else{const bytes=readPrivateConfiguration(file);bytes.fill(0);}}finally{process.chdir(prior);} // No Windows ACL-verification claim.
 });
+test('configuration permits private nested files but refuses sibling and linked parent selection',t=>{
+ const p=fixture(t),anchor=join(p,'selected'),nested=join(anchor,'nested'),foreign=join(p,'selected-sibling'),linked=join(anchor,'linked');
+ mkdirSync(anchor,{mode:0o700});mkdirSync(nested,{mode:0o700});mkdirSync(foreign,{mode:0o700});
+ const selected=join(nested,'config'),outside=join(foreign,'config');
+ writeFileSync(selected,'synthetic selected config',{mode:0o600});writeFileSync(outside,'synthetic preserved foreign config',{mode:0o600});
+ symlinkSync(foreign,linked,process.platform==='win32'?'junction':'dir');
+ const prior=process.cwd();try{process.chdir(anchor);
+  const bytes=readPrivateConfiguration(selected);assert.equal(bytes.toString(),'synthetic selected config');bytes.fill(0);
+  for(const candidate of [outside,join(anchor,'..','selected-sibling','config'),join(linked,'config')])assert.throws(()=>readPrivateConfiguration(candidate),/storage_unavailable/);
+  assert.equal(readFileSync(outside,'utf8'),'synthetic preserved foreign config');
+ }finally{process.chdir(prior);}
+});
 const id='00000000-0000-4000-8000-000000000004';
 const p={request_id:id,policy_id:id,context_id:id,routine_id:id,generation:1,kind:'faq',executor:'deterministic_local',period:'utc_day',expires_ms:100000,call_limit:1,unit_limit:1,units_per_call:1,turn_limit:1,timeout_ms:1000,window:{timezone:'UTC',first_local_date:'2026-01-01',opens_minute:1,closes_minute:2,repeat_every_days:null,max_occurrences:1,pacing_seconds:60}};
 test('legacy deterministic pair normalizes null, process identity and closed owner fields are required',()=>{
