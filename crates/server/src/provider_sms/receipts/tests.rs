@@ -204,7 +204,7 @@ async fn concurrent_receipts_have_an_exact_durable_capacity_and_no_eviction() {
                 match record_known_receipt(&mut db, &permit, &event).await {
                     Ok(_) => accepted += 1,
                     Err(Error::Evidence(Rejection::EventCapacity)) => {}
-                    other => panic!("unexpected closed receipt result: {other:?}"),
+                    _ => panic!("unexpected receipt result"),
                 }
             }
             accepted
@@ -489,7 +489,7 @@ async fn competing_failed_and_delivered_receipts_commit_only_one_consistent_outc
         match result.unwrap() {
             Ok(_) => successes += 1,
             Err(Error::Evidence(Rejection::EvidenceConflict)) => conflicts += 1,
-            other => panic!("unexpected closed receipt result: {other:?}"),
+            _ => panic!("unexpected receipt result"),
         }
     }
     assert_eq!((successes, conflicts), (1, 1));
