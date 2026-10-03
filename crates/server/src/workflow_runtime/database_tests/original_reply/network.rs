@@ -159,10 +159,9 @@ impl Https {
             loop {
                 tokio::select! {
                    socket=listener.accept()=>{let (socket,_)=socket.unwrap();let acceptor=acceptor.clone();children.spawn(async move{
-                     if let Ok(Ok(mut tls))=tokio::time::timeout(Duration::from_secs(5),acceptor.accept(socket)).await {
-                       if let Ok(mut plain)=tokio::net::TcpStream::connect(upstream).await {
+                     if let Ok(Ok(mut tls))=tokio::time::timeout(Duration::from_secs(5),acceptor.accept(socket)).await
+                       && let Ok(mut plain)=tokio::net::TcpStream::connect(upstream).await {
                          let _=tokio::time::timeout(Duration::from_secs(15),tokio::io::copy_bidirectional(&mut tls,&mut plain)).await;
-                       }
                      }
                    });},
                    _=children.join_next(),if !children.is_empty()=>{}

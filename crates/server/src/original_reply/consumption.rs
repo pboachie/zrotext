@@ -187,8 +187,7 @@ pub(crate) async fn consume(
     }
     let mut action = None;
     let mut output_permit = None;
-    if qualifying && input.descriptor.is_some() {
-        let descriptor = input.descriptor.as_ref().expect("present");
+    if qualifying && let Some(descriptor) = input.descriptor.as_ref() {
         let source = request_descriptor.as_ref().expect("qualifying");
         if descriptor.recipient_id != source.recipient_id
             || descriptor.purpose_id != source.purpose_id

@@ -41,7 +41,7 @@ enum RequestBody {
     Consume {
         v: u8,
         accepted_manifest_version: i64,
-        params: consumption::Request,
+        params: Box<consumption::Request>,
     },
     #[serde(rename = "status")]
     Status {
@@ -100,7 +100,7 @@ async fn call(State(state): State<Arc<StateData>>, request: Request) -> Response
    RequestBody::Current{v:1,accepted_manifest_version}=>serde_json::json!({"kind":"current","result":current(&mut client,&p,accepted_manifest_version).await?}),
    RequestBody::Read{v:1,event_id,accepted_manifest_version}=>serde_json::json!({"kind":"read","result":read(&mut client,&p,event_id,accepted_manifest_version).await?}),
    RequestBody::Page{v:1,accepted_manifest_version,cursor,limit}=>serde_json::json!({"kind":"page","result":page::page(&mut client,&p,accepted_manifest_version,cursor,limit).await?}),
-   RequestBody::Consume{v:1,accepted_manifest_version,params}=>serde_json::json!({"kind":"consume","result":consumption::consume(&mut client,&p,accepted_manifest_version,params,output.as_ref()).await?}),
+   RequestBody::Consume{v:1,accepted_manifest_version,params}=>serde_json::json!({"kind":"consume","result":consumption::consume(&mut client,&p,accepted_manifest_version,*params,output.as_ref()).await?}),
    RequestBody::Status{v:1,accepted_manifest_version,consumption_id}=>serde_json::json!({"kind":"status","result":page::status(&mut client,&p,accepted_manifest_version,consumption_id).await?}),
    _=>return Err(ConversationError::Invalid),
   };
