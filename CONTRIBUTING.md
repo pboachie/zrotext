@@ -48,6 +48,11 @@ On Windows, use `gradlew.bat` and `python` where appropriate. Return to the repo
 
 ### PostgreSQL-backed Rust tests
 
+The Windows sealed setup CI consumer owns a fresh disposable PostgreSQL fixture.
+Before initialization it gives the current user and SYSTEM inheritable access to
+that empty fixture directory, so PostgreSQL's restricted token can create its data
+tree. It does not change ancestor permissions or existing databases and services.
+
 `cargo test --locked --workspace` reports PostgreSQL-backed tests as **ignored**. They are separate from the unit tests so a missing database cannot look like a passing SQL test. Start a disposable PostgreSQL instance bound to your machine only:
 
 ```sh
