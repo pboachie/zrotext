@@ -27,7 +27,15 @@ class GuidedSetup(unittest.TestCase):
         self.addCleanup(os.chdir, previous)
         self.config = self.root / "client.json"
         self.config.write_text(json.dumps({"mcpServers": {"other": {"command": "synthetic"}}, "other": 1}))
-        self.broker = self.root / "broker.mjs"
+        self.home = self.root / "synthetic-home"
+        self.artifact_directory = self.home / ".config" / "zrotext" / "workflow-artifacts"
+        self.artifact_directory.mkdir(parents=True)
+        root_patch = patch('workflow_paths.artifact_roots', return_value={
+            'installed': os.path.normcase(str(Path(setup.__file__).parent.parent)),
+            'home-config': os.path.normcase(str(self.artifact_directory))})
+        root_patch.start()
+        self.addCleanup(root_patch.stop)
+        self.broker = self.artifact_directory / "broker.mjs"
         self.broker.write_text("// synthetic launcher")
         self.sha = setup.local.digest(self.broker.read_bytes())
         self.owner, self.store = Mock(), Mock()
@@ -93,12 +101,73 @@ class GuidedSetup(unittest.TestCase):
         session.assert_not_called()
         prompt.assert_not_called()
 
+    def test_custom_cwd_only_broker_refuses_before_authentication(self):
+        unsupported = self.root / 'unapproved.mjs'
+        unsupported.write_text('// synthetic unsupported artifact')
+        args = ['guided_workflow_setup.py', 'connect', '--client', 'mcp-json', '--origin', 'https://gateway.example',
+                '--config', str(self.config), '--scope', str(self.config), '--broker', str(unsupported),
+                '--sha256', setup.local.digest(unsupported.read_bytes())]
+        with patch.object(sys, 'argv', args), patch.object(setup, 'OwnerSession') as session, \
+             patch.object(setup.getpass, 'getpass') as prompt, contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(setup.main(), 2)
+        session.assert_not_called()
+        prompt.assert_not_called()
+
+    def test_malformed_stored_selector_refuses_without_new_grant(self):
+        self.install()
+        original = json.loads(self.config.read_text())
+        for selector in (None, [], {}, 'alternate'):
+            configuration = json.loads(json.dumps(original))
+            configuration['mcpServers'][setup.ENTRY]['args'][13] = selector
+            self.config.write_text(json.dumps(configuration))
+            with self.assertRaisesRegex((ValueError, setup.local.SetupError), 'guided_path_refused|entry_conflict'):
+                self.install()
+        self.assertEqual(self.owner.create.call_count, 1)
+
+    def test_malformed_existing_entry_and_servers_refuse_before_authentication(self):
+        scope_file = self.root / 'scope.json'
+        scope_file.write_text(json.dumps(SELECTED))
+        arguments = ['guided_workflow_setup.py', 'connect', '--client', 'mcp-json', '--origin', 'https://gateway.example',
+                     '--config', str(self.config), '--scope', str(scope_file), '--broker', str(self.broker), '--sha256', self.sha]
+        for servers in ({setup.ENTRY: None}, {setup.ENTRY: 1}, {setup.ENTRY: []}, []):
+            self.config.write_text(json.dumps({'mcpServers': servers}))
+            output = io.StringIO()
+            with patch.object(sys, 'argv', arguments), patch.object(setup, 'OwnerSession') as session, \
+                 patch.object(setup.getpass, 'getpass') as prompt, contextlib.redirect_stderr(output):
+                self.assertEqual(setup.main(), 2)
+            session.assert_not_called()
+            prompt.assert_not_called()
+            self.assertEqual(json.loads(output.getvalue())['code'], 'guided_setup_refused')
+        self.owner.create.assert_not_called()
+
+    def test_actual_cli_malformed_recorded_arguments_refuse_without_auth_or_traceback(self):
+        self.install()
+        original = json.loads(self.config.read_text())
+        scope_file = self.root / 'scope.json'
+        scope_file.write_text(json.dumps(SELECTED))
+        arguments = ['guided_workflow_setup.py', 'connect', '--client', 'mcp-json', '--origin', 'https://gateway.example',
+                     '--config', str(self.config), '--scope', str(scope_file), '--broker', str(self.broker), '--sha256', self.sha]
+        malformed = [None, 'not-an-array', {str(i): 'synthetic' for i in range(16)}, [None]*16]
+        for args in malformed:
+            configuration = json.loads(json.dumps(original))
+            configuration['mcpServers'][setup.ENTRY]['args'] = args
+            self.config.write_text(json.dumps(configuration))
+            output = io.StringIO()
+            with patch.object(sys, 'argv', arguments), patch.object(setup, 'OwnerSession') as session, \
+                 patch.object(setup.getpass, 'getpass') as prompt, contextlib.redirect_stderr(output):
+                self.assertEqual(setup.main(), 2)
+            session.assert_not_called()
+            prompt.assert_not_called()
+            self.assertEqual(json.loads(output.getvalue())['code'], 'guided_setup_refused')
+            self.assertNotIn('Traceback', output.getvalue())
+        self.assertEqual(self.owner.create.call_count, 1)
+
     def test_generated_custom_broker_launcher_survives_changed_desktop_cwd(self):
         self.broker.write_text("""let raw='';process.stdin.on('data',b=>{raw+=b; if(raw.includes('\\n')){const v=JSON.parse(raw.split('\\n')[0]);if(v.v!==1||!v.credential.startsWith('ztw_'))process.exit(2); console.log(JSON.stringify({started:true,leaked:!!process.env.SYNTHETIC_OWNER_CANARY}));process.exit(0)}});""")
         self.sha = setup.local.digest(self.broker.read_bytes())
         self.install()
         selected = json.loads(self.config.read_text())['mcpServers'][setup.ENTRY]
-        self.assertEqual(selected['args'][12:14], ['--artifact-root', str(self.root).lower() if os.name == 'nt' else str(self.root)])
+        self.assertEqual(selected['args'][12:14], ['--artifact-root', 'home-config'])
         other = self.root / 'desktop'
         other.mkdir()
         program = """import json,sys
@@ -111,7 +180,8 @@ args=json.loads(sys.stdin.buffer.readline())
 sys.argv=args
 raise SystemExit(setup.main())
 """
-        env = dict(os.environ, SYNTHETIC_OWNER_CANARY='synthetic-private-canary')
+        env = dict(os.environ, SYNTHETIC_OWNER_CANARY='synthetic-private-canary',
+                   HOME=str(self.home), USERPROFILE=str(self.home))
         result = subprocess.run([sys.executable, '-c', program, str(Path(setup.__file__).parent)],
                                 input=(json.dumps(selected['args'])+'\n').encode(), capture_output=True,
                                 cwd=other, env=env, timeout=10, check=False)
@@ -125,18 +195,16 @@ raise SystemExit(setup.main())
             artifact_capability(Path(self.root.anchor))
         sibling = self.root.with_name(self.root.name + '-sibling') / 'broker.mjs'
         with self.assertRaisesRegex(ValueError, 'guided_path_refused'):
-            checked_path(sibling, artifact=True, approved_artifact_root=str(self.root))
+            checked_path(sibling, artifact=True, approved_artifact_root='home-config')
         with self.assertRaisesRegex(setup.local.SetupError, 'artifact_changed'):
             setup.launch(self.broker, '0'*64, 'https://gateway.example', 'zrotext-workflow-'+'a'*32,
-                         self.store, str(self.root))
+                         self.store, 'home-config')
         self.store.get.assert_not_called()
 
     def test_changed_reviewed_artifact_root_refuses_resume_without_new_mint(self):
         self.install()
         configuration = json.loads(self.config.read_text())
-        alternate = self.root / 'alternate'
-        alternate.mkdir()
-        configuration['mcpServers'][setup.ENTRY]['args'][13] = str(alternate)
+        configuration['mcpServers'][setup.ENTRY]['args'][13] = 'installed'
         self.config.write_text(json.dumps(configuration))
         with self.assertRaisesRegex(ValueError, 'guided_path_refused'):
             self.install()
@@ -145,8 +213,8 @@ raise SystemExit(setup.main())
     @unittest.skipUnless(os.name == 'posix', 'requires POSIX artifact modes')
     def test_readable_nonwritable_artifact_root_is_supported(self):
         from workflow_paths import artifact_capability
-        self.root.chmod(0o755)
-        self.assertEqual(artifact_capability(), str(self.root))
+        self.artifact_directory.chmod(0o755)
+        self.assertEqual(artifact_capability('home-config'), str(self.artifact_directory))
 
     def test_hardlinked_config_refuses_before_owner_effect_and_preserves_other_link(self):
         target = self.root / 'foreign.json'
@@ -205,8 +273,9 @@ raise SystemExit(setup.main())
             setup.read_intent(self.config)
         directory_alias = self.root / 'directory-alias'
         directory_alias.symlink_to(self.root, target_is_directory=True)
-        with self.assertRaisesRegex(ValueError, 'guided_path_refused'):
-            artifact_capability(directory_alias)
+        with patch('workflow_paths.artifact_roots', return_value={'home-config': str(directory_alias)}):
+            with self.assertRaisesRegex(ValueError, 'guided_path_refused'):
+                artifact_capability('home-config')
 
     def test_actual_install_preserves_other_servers_and_never_stores_owner_or_narrow_secret_in_config(self):
         result = self.install()

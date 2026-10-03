@@ -14,12 +14,19 @@ def identity(path):
     return info.st_dev, info.st_ino
 
 
-def artifact_capability(value=None):
-    # This root is selected independently by setup or its reviewed launcher.
-    raw = os.fspath(value if value is not None else os.getcwd())
-    if not os.path.isabs(raw) or raw.startswith(("\\\\", "//")) or any(ord(c) < 32 for c in raw):
+def artifact_roots():
+    return {
+        "installed": os.path.normcase(os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))),
+        "home-config": os.path.normcase(os.path.abspath(os.path.join(os.path.expanduser("~"), ".config", "zrotext", "workflow-artifacts"))),
+    }
+
+
+def artifact_capability(value="installed"):
+    # Only independently fixed roots are available; argv cannot select a path.
+    roots = artifact_roots()
+    if not isinstance(value, str) or value not in roots:
         raise ValueError("guided_path_refused")
-    root = os.path.normcase(os.path.abspath(raw))
+    root = roots[value]
     if os.path.dirname(root) == root:
         raise ValueError("guided_path_refused")
     canonical = os.path.normcase(os.path.realpath(root))
@@ -41,10 +48,12 @@ def artifact_capability(value=None):
 
 
 def setup_artifact_root(broker):
-    installed = os.path.normcase(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
     normalized = os.path.normcase(os.path.abspath(os.fspath(broker)))
-    # Both alternatives are independent capabilities, not candidate parents.
-    return artifact_capability(installed if normalized.startswith(installed + os.path.sep) else os.getcwd())
+    for selector, root in artifact_roots().items():
+        if normalized.startswith(root + os.path.sep):
+            artifact_capability(selector)
+            return selector
+    raise ValueError("guided_path_refused")
 
 
 def checked_path(candidate, *, artifact=False, approved_artifact_root=None):
@@ -55,7 +64,7 @@ def checked_path(candidate, *, artifact=False, approved_artifact_root=None):
     # CWD is a deliberate launcher capability; never infer it from candidate.
     roots = [os.path.normcase(os.path.abspath(os.getcwd())), os.path.normcase(os.path.abspath(os.path.join(os.path.expanduser("~"), ".config")))]
     if artifact:
-        roots.append(os.path.normcase(os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))))
+        roots = list(artifact_roots().values())
         if approved_artifact_root is not None:
             roots = [artifact_capability(approved_artifact_root)]
     selected = None

@@ -40,8 +40,11 @@ zeroized.
 
 Launch from the deliberately selected private configuration directory. Config,
 scope and recovery files must be absolute paths within that directory or the
-home `.config` directory; the pinned broker may also be within the installed
-repository. A filesystem-volume root cannot serve as the launch capability.
+home `.config` directory. Brokers must be within the installed repository or
+the dedicated home `.config/zrotext/workflow-artifacts` subtree. Merely placing
+a broker under an arbitrary setup working directory does not authorize it;
+unsupported broker roots refuse before authentication or issuance.
+A filesystem-volume root cannot serve as the launch capability.
 Normalized and canonical containment checks reject sibling escapes, aliases,
 reparse points and hardlinked leaves. Parent and target identity are rechecked
 after asynchronous owner/custody operations and before replacement or deletion.
@@ -53,9 +56,10 @@ privileged actor or a writer with access to a trusted ancestor from racing every
 filesystem operation. CLI status/error output contains no credential or creator
 IDs; those nonsecret recovery identities stay in the local receipt/config.
 
-The reviewed generated launcher records the independently selected setup working
-directory (or the independent installed repository root for its broker) as its
-`--artifact-root` capability. This allows a pinned custom broker
+The reviewed generated launcher records the closed `installed` or `home-config`
+selector as its `--artifact-root` capability. The selector chooses one of the
+independent fixed roots; it cannot supply an arbitrary filesystem path. This
+allows a pinned custom broker within the dedicated home subtree
 to start when the desktop application uses a different working directory. The
 capability is launcher-only; connect, resume, review and disconnect still run from
 the selected configuration directory. Artifact roots may be readable by others

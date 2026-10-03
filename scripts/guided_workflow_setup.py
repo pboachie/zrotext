@@ -26,6 +26,15 @@ class SetupRecovery(OwnerSetupError):
         self.grant, self.secret = grant, secret
 
 
+def entry_arguments(existing):
+    if not isinstance(existing, dict):
+        raise local.SetupError("entry_conflict")
+    args = existing.get("args")
+    if not isinstance(args, list) or any(not isinstance(value, str) for value in args):
+        raise local.SetupError("entry_conflict")
+    return args
+
+
 def plan(path, client, broker, expected, origin, grant, secret, remove=False, scope_digest=None, artifact_root=None):
     path = checked_path(path)
     if client not in ("mcp-json", "claude-desktop"):
@@ -34,11 +43,14 @@ def plan(path, client, broker, expected, origin, grant, secret, remove=False, sc
     reference(secret)
     raw, config = local.read_config(path)
     existing = config.get("mcpServers", {}).get(ENTRY)
-    if artifact_root is None and isinstance(existing, dict):
-        stored_args = existing.get("args", [])
+    if ENTRY in config.get("mcpServers", {}):
+        stored_args = entry_arguments(existing)
+    if artifact_root is None and existing is not None:
         if len(stored_args) == 16 and stored_args[12] == "--artifact-root":
+            artifact_capability(stored_args[13])
             artifact_root = stored_args[13]
-    selected_root = artifact_capability(artifact_root) if artifact_root is not None else setup_artifact_root(broker)
+    selected_root = artifact_root if artifact_root is not None else setup_artifact_root(broker)
+    artifact_capability(selected_root)
     broker = local.checked_artifact(checked_path(broker, artifact=True, approved_artifact_root=selected_root), expected)
     desired = {"command": sys.executable, "args": [str(Path(__file__).resolve()), "stdio",
                "--broker", str(broker), "--sha256", expected, "--origin", origin,
@@ -50,7 +62,7 @@ def plan(path, client, broker, expected, origin, grant, secret, remove=False, sc
     servers = dict(config.get("mcpServers", {}))
     existing = servers.get(ENTRY)
     if remove and existing is not None and scope_digest is None:
-        prior_args = existing.get("args", []) if isinstance(existing, dict) else []
+        prior_args = entry_arguments(existing)
         if prior_args[:len(desired["args"])] == desired["args"] and len(prior_args) == len(desired["args"]) + 2 and prior_args[-2] == "--scope-digest":
             desired["args"] = prior_args
     if existing is not None and existing != desired:
@@ -156,8 +168,8 @@ def preflight(path, client, broker, expected, origin, selected):
     raw, config = local.read_config(path)
     selected_digest = local.digest(json.dumps(scope(selected), sort_keys=True).encode())
     existing = config.get("mcpServers", {}).get(ENTRY)
-    if existing is not None:
-        args = existing.get("args", []) if isinstance(existing, dict) else []
+    if ENTRY in config.get("mcpServers", {}):
+        args = entry_arguments(existing)
         if len(args) != 16 or args[-2:] != ["--scope-digest", selected_digest]:
             raise local.SetupError("entry_conflict")
         proposal, _, _ = plan(path, client, broker, expected, origin, args[9], args[11],
@@ -185,8 +197,8 @@ def install(path, reviewed, owner, selected, password, code, store, client, brok
         raise local.SetupError("configuration_changed")
     scope_digest = local.digest(json.dumps(scope(selected), sort_keys=True).encode())
     existing = config.get("mcpServers", {}).get(ENTRY)
-    if existing is not None:
-        args = existing.get("args", []) if isinstance(existing, dict) else []
+    if ENTRY in config.get("mcpServers", {}):
+        args = entry_arguments(existing)
         if len(args) != 16 or args[-2:] != ["--scope-digest", scope_digest]:
             raise local.SetupError("entry_conflict")
         # Parsing fixed positions cannot change the launcher or select authority.
@@ -287,8 +299,8 @@ def disconnect(path, client, broker, expected, origin, grant, secret, reviewed, 
 
 
 def launch(broker, expected, origin, secret, store, artifact_root=None):
-    selected_root = artifact_capability(artifact_root)
-    root_identity = os.stat(selected_root, follow_symlinks=False)
+    selected_root = artifact_root if artifact_root is not None else setup_artifact_root(broker)
+    root_identity = os.stat(artifact_capability(selected_root), follow_symlinks=False)
     broker = checked_path(broker, artifact=True, approved_artifact_root=selected_root)
     broker = local.checked_artifact(broker, expected)
     node, _ = local.node_runtime()
@@ -339,8 +351,9 @@ def main():
     parser.add_argument("operation", choices=["simulator", "preview", "connect", "disconnect", "recovery-preview", "recover", "stdio"], default="simulator", nargs="?")
     for option in ["client", "origin", "grant", "secret-reference", "sha256", "review-digest", "scope-digest"]:
         parser.add_argument("--" + option)
-    for option in ["broker", "config", "scope", "artifact-root"]:
+    for option in ["broker", "config", "scope"]:
         parser.add_argument("--" + option, type=Path)
+    parser.add_argument("--artifact-root", choices=("installed", "home-config"))
     args = parser.parse_args()
     owner = None
     try:
@@ -355,7 +368,9 @@ def main():
             raise local.SetupError("artifact_root_is_launcher_only")
         config_path = checked_path(args.config) if args.config is not None else None
         scope_path = checked_path(args.scope) if args.scope is not None else None
-        selected_root = artifact_capability(args.artifact_root) if args.artifact_root is not None else None
+        selected_root = args.artifact_root
+        if selected_root is not None:
+            artifact_capability(selected_root)
         broker_path = checked_path(args.broker, artifact=True, approved_artifact_root=selected_root) if args.broker is not None else None
         if args.operation == "simulator":
             result = local.journey()
