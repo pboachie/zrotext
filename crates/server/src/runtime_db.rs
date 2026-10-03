@@ -464,12 +464,26 @@ async fn open(
     // Preserve operator search_path options, but enforce deadlines last. These
     // start with the session and also apply after an HTTP future is cancelled.
     config.options(format!("{} -c statement_timeout=10000 -c lock_timeout=3000 -c idle_in_transaction_session_timeout=15000", config.get_options().unwrap_or_default()));
+    #[cfg(test)]
+    let diagnostic_started = (std::time::Instant::now(), Instant::now());
     let (client, connection) = timeout(
         CONNECT_DEADLINE,
         zrotext_postgres_connection::connect_config(config),
     )
     .await
-    .map_err(|_| ConnectError::Timeout)??;
+    .map_err(|_| {
+        #[cfg(test)]
+        if std::env::var("ZT_RUNTIME_DB_TEST_DIAGNOSTIC").as_deref() == Ok("1") {
+            eprintln!(
+                "fixture_connect_deadline wall_ms={} tokio_ms={} available_slots={} resets_in_flight={}",
+                diagnostic_started.0.elapsed().as_millis(),
+                diagnostic_started.1.elapsed().as_millis(),
+                pool.slots.available_permits(),
+                pool.resets_in_flight.load(Ordering::Acquire),
+            );
+        }
+        ConnectError::Timeout
+    })??;
     tokio::spawn(async move {
         // A dropped request/client need not mean its query has stopped. Keep
         // the permit until the PostgreSQL driver actually releases the socket.
