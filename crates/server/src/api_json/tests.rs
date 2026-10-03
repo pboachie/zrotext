@@ -217,6 +217,7 @@ async fn enrollment_router_rejects_malformed_json_with_its_envelope() {
 #[tokio::test]
 async fn webhook_router_rejects_malformed_json_with_its_envelope() {
     let state = WebhookHttpState {
+        sealed_delivery_enabled: false,
         database_url: UNUSED_DATABASE.into(),
         auth_hasher: hasher(),
         canonical_origin: ORIGIN.into(),
