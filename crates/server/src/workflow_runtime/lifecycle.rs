@@ -8,6 +8,8 @@ use serde_json::Value;
 use tokio_postgres::{Client, Transaction};
 use uuid::Uuid;
 
+pub(crate) mod consent;
+
 #[derive(Default, Serialize)]
 pub struct Page {
     pub items: Vec<Value>,

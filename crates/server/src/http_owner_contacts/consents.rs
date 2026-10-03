@@ -278,6 +278,13 @@ pub(super) async fn record_consent(
     let Ok(tx) = client.transaction().await else {
         return error(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
     };
+    if tx
+        .batch_execute("SET LOCAL lock_timeout='3s'; SET LOCAL statement_timeout='5s'")
+        .await
+        .is_err()
+    {
+        return error(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+    }
     // The same account lock admission and the opt-out writers take.
     let locked = tx
         .query_opt(
@@ -373,6 +380,18 @@ pub(super) async fn record_consent(
         Ok(Some(_)) => {}
         Ok(None) | Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
     }
+    if body.action == ConsentAction::Withdraw
+        && crate::workflow_runtime::lifecycle::consent::withdraw(
+            &tx,
+            account_id,
+            contact_id,
+            body.purpose.as_str(),
+        )
+        .await
+        .is_err()
+    {
+        return error(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+    }
     let history = match tx
         .query(
             "SELECT id,purpose,action,source, \
@@ -389,6 +408,12 @@ pub(super) async fn record_consent(
         Ok(rows) => rows.iter().map(record_view).collect::<Vec<_>>(),
         Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
     };
+    if crate::auth::require_current_owner(&tx, &owner)
+        .await
+        .is_err()
+    {
+        return error(StatusCode::UNAUTHORIZED, "unauthorized");
+    }
     if tx.commit().await.is_err() {
         return error(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
     }

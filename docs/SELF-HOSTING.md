@@ -715,6 +715,15 @@ expiry has passed reads as expired with no write. Marketing grants must
 carry an expiry of at most two years; withdrawals never carry one.
 An event cannot precede the latest effective event for that purpose;
 backdated transitions return `409 consent_conflict` without appending history.
+Recording a withdrawal also permanently revokes existing workflow integration
+grants for that account, contact and purpose, scrubs their connector envelope
+bytes, withdraws their customer routine policies and stops already-created
+routine outputs. These changes commit with the consent event under the same
+account lock as workflow admission. A later grant requires fresh workflow
+credentials and policies; it cannot restore the old identities. Other purposes
+and contacts retain their authority. Existing call records, replay tombstones
+and usage debits remain, including unknown outcomes; withdrawal does not imply
+that an already-started external effect was undone.
 Creating or importing a contact never creates consent, and nothing in the
 contacts API clears a suppression, releases an off-channel hold or revives
 cancelled work: those signed and owner-recorded planes are untouched.
@@ -727,9 +736,10 @@ same number survive with their own lifecycle. The owner takeout
 (`GET /v1/owner/export`) includes the account's contacts with decrypted
 names and notes and the full consent history (paged with
 `?contacts_before=` when large), and account erasure deletes contacts and
-their consent records with everything else. The contacts and consent
-records do not gate message sending; admission and suppression checks are
-unchanged by this data.
+their consent records with everything else. The default-off workflow services
+check current purpose consent alongside their exact owner approval and other
+authority fences. Ordinary message admission retains its existing suppression
+and hold checks.
 
 ## Source for modified deployments
 
