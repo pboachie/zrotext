@@ -328,7 +328,10 @@ def main():
             for selector in [("-e", "isolatedPreparationProbe", "true", "-e", "class",
                               "org.zrotext.gateway.JournalDeviceUpgradeTest"),
                              ("-e", "class", TEST),
-                             ("-e", "isolatedPreparationProbe", "true", "-e", "package", "org.zrotext.gateway")]:
+                             ("-e", "isolatedPreparationProbe", "true", "-e", "package", "org.zrotext.gateway"),
+                             ("-e", "isolatedPreparationProbe", "true", "-e", "class", CUSTODY_TEST),
+                             ("-e", "isolatedPreparationProbe", "true", "-e", "class", CUSTODY_TEST,
+                              "-e", "custodyStage", "roundtrip", "-e", "custodySession", "ab" * 16)]:
                 rejected = device("shell", "am", "instrument", "-w", "-r", *selector, TEST_APP + "/" + RUNNER)
                 validate_rejection(rejected)
             output = device("shell", "am", "instrument", "-w", "-r", "-e", "isolatedPreparationProbe", "true",

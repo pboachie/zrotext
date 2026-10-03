@@ -54,6 +54,8 @@ class PreparationProbeDeviceTest {
         val args = InstrumentationRegistry.getArguments()
         val stage = args.getString("custodyStage") ?: "roundtrip"
         require(stage in setOf("roundtrip", "enroll", "reload", "lose", "revoke", "cleanup"))
+        // Automatic cleanup belongs only to the default freshly allocated round-trip.
+        require(stage != "roundtrip" || !args.containsKey("custodySession"))
         val session = args.getString("custodySession") ?: UUID.randomUUID().toString().replace("-", "")
         require(Regex("[0-9a-f]{32}").matches(session))
         val alias = "zrotext.probe.custody.$session"

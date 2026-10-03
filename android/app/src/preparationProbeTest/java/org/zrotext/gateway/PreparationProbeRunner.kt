@@ -16,7 +16,9 @@ class PreparationProbeRunner : AndroidJUnitRunner() {
             else setOf("class", "isolatedPreparationProbe")
         rejectSelector = arguments.keySet().any { it !in allowed } ||
             arguments.getString("isolatedPreparationProbe") != "true" ||
-            arguments.getString("class") !in setOf(null, TEST, CUSTODY_TEST)
+            arguments.getString("class") !in setOf(null, TEST, CUSTODY_TEST) ||
+            custody && (arguments.getString("custodyStage") !in setOf("enroll", "reload", "lose", "revoke", "cleanup") ||
+                !Regex("[0-9a-f]{32}").matches(arguments.getString("custodySession").orEmpty()))
         super.onCreate(Bundle(arguments).apply {
             putString("class", if (custody) CUSTODY_TEST else TEST)
             putString("isolatedPreparationProbe", "true")
