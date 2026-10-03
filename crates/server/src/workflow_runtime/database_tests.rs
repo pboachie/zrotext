@@ -21,6 +21,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
+mod grant_http;
 mod grant_origin;
 
 mod scope_expiry;

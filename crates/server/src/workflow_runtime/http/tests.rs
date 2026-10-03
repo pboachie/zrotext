@@ -6,6 +6,9 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
 
+mod log_canaries;
+mod recipe_service;
+
 fn state(case: &Case) -> WorkflowHttpState {
     let separator = if case.f.url.contains('?') { '&' } else { '?' };
     WorkflowHttpState {
@@ -181,7 +184,10 @@ async fn authenticated_http_calls_real_metadata_proposal_and_exact_status_withou
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(json_body(response).await, first);
+    assert!(first["result"].get("delivery").is_none());
+    let mut expected_status = first.clone();
+    expected_status["result"]["delivery"] = json!({"availability":"not_bound"});
+    assert_eq!(json_body(response).await, expected_status);
     let send = json!({"method":"workflow.action.send","params":{"request_id":Uuid::new_v4(),"key":descriptor.key().unwrap(),"occurrence_id":null}});
     assert_eq!(
         app.oneshot(request(&issued.token, Some(send)))

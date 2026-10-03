@@ -19,6 +19,55 @@ personal numbers or production credentials.
 
 ## Launch
 
+For a guided exchange through the existing shared synthetic SDK adapter and
+customer recipe, build the SDK once, then run the fixed local journey:
+
+```sh
+cd sdk/typescript
+npm ci --ignore-scripts
+npm run build
+cd ../..
+python scripts/agent_setup.py journey
+```
+
+This command needs Node.js 22 or later and Python 3.12 or later. It takes no
+client configuration, endpoint, credential or provider argument. It uses a
+unique temporary checkpoint for this invocation and removes it on completion
+or failure. Inherited integration credentials and Node startup options are not
+passed to the fixture process. No HTTP server or network transport is started.
+
+The output carries `synthetic: true`, `available: false` and the actual Node and
+Python versions. Its measured elapsed time covers only the local fixture
+process, not installation, pairing or real delivery. All steps remain synthetic:
+
+- Task notification uses `AgentRecipe.taskCompletion` and the shared
+  `simulateSubmission` adapter. Its exact restart replay keeps one notification
+  identity and one simulated submission attempt.
+- The reply is decrypted and signature-checked by the existing fixture reader
+  against the independently pinned public test vector. It is routed for review,
+  not granted authority. Restart replay consumes no second reply turn.
+- The follow-up remains `awaiting_authenticated_exact_approval`. This command
+  implements no owner approval, scheduling or radio call.
+- Changed notification bytes under the same action identity are refused. This
+  proves an identity conflict; it does not prove production approval invalidation.
+- Foreign and tampered replies, unavailable content, ambiguous review, fixture
+  opt-out, revoked fixture access, offline expiry and unknown submission are
+  exercised. Unknown restart replay remains unknown with one simulated attempt.
+
+Fixture opt-out and revocation are local checkpoint controls, not evidence of
+an authenticated live STOP or production grant withdrawal. The pinned fixture
+reader does not establish a current #617 inbound content-reader service. Saving
+this result or rerunning the command creates no real permission.
+
+The SDK's discovered `guided-journey.test.mjs` runs the actual Python command,
+checks all steps and once-only accounting, verifies temporary cleanup, and
+checks that inherited credentials cannot turn it into a live invocation.
+The Python tests reject missing, duplicate or extra steps and unsupported
+authority claims. This completes a bounded guided fixture composition, not
+the full guided activation or controlled-device acceptance.
+
+For the separate pure decision model and its approval-invalidation scenarios:
+
 ```sh
 cargo run --locked -p zrotext-device-sim
 ```
@@ -72,17 +121,22 @@ Three boundaries stay distinct throughout: simulated acceptance (queued), modele
 
 ## Acceptance checklist
 
-Run these from a clean checkout. Every check is offline.
+Run these from a clean checkout. Every check is offline, and the first
+four are machine-verified: `cargo test --locked -p zrotext-device-sim`
+runs the `agent_journey` harness plus the `quickstart_checklist` runner,
+which executes the simulator binary, parses this page’s four fenced JSON
+examples, and compares each complete object, including its deterministic
+tick, with the corresponding simulator timeline entry. The existing journey harness pins the adverse-state outcomes.
 
-- [ ] `cargo run --locked -p zrotext-device-sim` prints `agent_journey` with `"final_state": "submitted"` and `"radio_calls_modelled": 1`.
-- [ ] The queued next action shows `"awaiting": "authenticated_owner_approval"` with `"radio_calls": 0`; nothing sends before approval.
-- [ ] Every adverse state above appears in the timeline with its rejected retry.
-- [ ] `cargo test --locked -p zrotext-device-sim` passes, including the `agent_journey` harness tests.
-- [ ] The run needed no device, SIM, credential, network or provider account; nothing was sent.
+- [x] `cargo run --locked -p zrotext-device-sim` prints `agent_journey` with `"final_state": "submitted"` and `"radio_calls_modelled": 1`. *(machine-verified)*
+- [x] The queued next action shows `"awaiting": "authenticated_owner_approval"` with `"radio_calls": 0`; nothing sends before approval. *(machine-verified)*
+- [x] The journey harness checks each listed modeled adverse-state outcome. *(machine-verified; table wording remains manually reviewed)*
+- [x] `cargo test --locked -p zrotext-device-sim` passes, including the `agent_journey` harness and the `quickstart_checklist` runner. *(machine-verified)*
+- [ ] The run needed no device, SIM, credential, network or provider account; nothing was sent. *(true by construction — the simulator has no radio, socket or credential path — and the privacy sweep below checks the output; a human confirms the claim when first running it)*
 
 ## Reproducible privacy and security harness
 
-`crates/device-sim/tests/agent_journey.rs` is the durable harness for this page. It runs the real simulator binary — the same command a contributor uses — parses the printed JSON, and asserts the happy path and every adverse outcome above, so the documentation cannot drift from the model. It is deterministic and runs in CI through normal Cargo test discovery (`cargo test --locked --workspace`).
+`crates/device-sim/tests/agent_journey.rs` is the durable harness for this page. It runs the real simulator binary — the same command a contributor uses — parses the printed JSON, and asserts the happy path and every adverse outcome above, pinning those selected modeled outcome fields. `crates/device-sim/tests/quickstart_checklist.rs` goes one step further: it reads this page’s fenced JSON examples and compares complete parsed objects with the simulator timeline. It recursively scans decoded strings and object keys for plus-prefixed E.164-shaped digit sequences, credential and connection-string patterns, personal filesystem path patterns, and specific live-delivery claims (`delivered_by_carrier` and friends). Synthetic negative probes check those detectors, including JSON-escaped Windows separators. This bounded pattern check complements the repository privacy guard; it does not prove the absence of all personal data or replace that guard. Both are deterministic and run in CI through normal Cargo test discovery (`cargo test --locked --workspace`).
 
 Safety properties that keep this quickstart safe to publish and rerun:
 
@@ -99,7 +153,8 @@ This simulator models decisions, not delivery. It does not prove:
 
 - carrier delivery or delivery receipts from any network;
 - behavior on a real Android phone or SIM (reboots, signal, battery, radio firmware);
-- any production tool adapter, MCP server or AI integration — none exists yet;
+- production activation or an integrated live AI/reply service; dormant scoped
+  adapters and MCP tools exist, but this model does not invoke them;
 - emergency readiness. Emergency numbers and safety-critical promises are outside the proposed agent workflows.
 
 A later controlled-device pilot (tracked under #614) must verify revocation, suppression, offline expiry, event replay and honest delivery states on a controlled device with the maintainer present before any availability claim. A green simulator run is the entry ticket to that pilot, not a substitute for it.

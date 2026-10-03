@@ -37,7 +37,7 @@ macro_rules! export_schema {
             [$(($name, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/compose/migrations/", $name)))),+]
         };
     }
-const EXPORT_SCHEMA: [(&str, &str); 83] = export_schema!(
+const EXPORT_SCHEMA: [(&str, &str); 84] = export_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -121,6 +121,7 @@ const EXPORT_SCHEMA: [(&str, &str); 83] = export_schema!(
     "081_invoice_bound_test_billing.sql",
     "082_conversation_execution_records.sql",
     "083_encrypted_template_versions.sql",
+    "084_sealed_event_deliveries.sql",
 );
 #[test]
 fn export_schema_includes_every_checked_in_migration() {

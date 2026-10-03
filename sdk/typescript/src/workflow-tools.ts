@@ -66,6 +66,13 @@ export function validateWorkflowRequest(method: string, params: unknown): assert
 
 const action = object({ key, record_version: integer(1), phase: { enum: ['proposed', 'approved', 'invalidated',
   'cancelled', 'expired', 'dispatching', 'unknown', 'succeeded', 'failed'] } });
+const actionStatus = object({ ...action.properties, delivery: { anyOf: [
+  object({ availability: { enum: ['not_bound', 'unavailable'] } }),
+  object({ availability: { enum: ['available'] }, message_id: uuid, dispatch_id: uuid,
+    state: { enum: ['accepted', 'queued', 'claimed', 'submitting', 'submitted', 'delivered',
+      'delivery_unknown', 'unknown', 'failed', 'cancelled', 'expired'] },
+    state_version: integer(1), accepted_at_ms: integer(), updated_at_ms: integer() }),
+] } });
 const responses: Record<string, Schema> = {
   contact: object({ contact_id: uuid, purpose: { enum: ['transactional', 'operational', 'marketing'] }, peer_digest: digest }),
   context_metadata: object({ context_id: uuid, source_content_digest: digest, revision: integer(1), kind: integer(0, 255),
@@ -82,6 +89,8 @@ const responses: Record<string, Schema> = {
 };
 responses.cancel = object({ key, message_id: uuid, state: { enum: ['cancelled'] } });
 const responseKinds = ['contact', 'context_metadata', 'context_content', 'action', 'action', 'occurrence', 'send', 'cancel'];
+const responseSchema = (method: string, kind: string): Schema =>
+  method === 'workflow.action.status' ? actionStatus : responses[kind];
 function freeze<T>(value: T): T {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
     for (const child of Object.values(value)) freeze(child);
@@ -91,7 +100,7 @@ function freeze<T>(value: T): T {
 }
 export const workflowTools = freeze(definitions.map(([name, description, inputSchema, readOnlyHint], index) => ({
   name, description, inputSchema,
-  outputSchema: object({ kind: { enum: [responseKinds[index]] }, result: responses[responseKinds[index]] }),
+  outputSchema: object({ kind: { enum: [responseKinds[index]] }, result: responseSchema(name, responseKinds[index]) }),
   annotations: { readOnlyHint, destructiveHint: ['workflow.action.send', 'workflow.action.cancel'].includes(name), idempotentHint: true, openWorldHint: false },
 })));
 /** Provider-neutral functions and MCP use exactly the same parameter schemas. */
@@ -99,7 +108,7 @@ export const workflowFunctions = freeze(workflowTools.map(tool => ({ name: tool.
 export type WorkflowResponse = Readonly<{ kind: string; result: Readonly<Record<string, unknown>> }>;
 export function validateWorkflowResponse(method: WorkflowMethod, value: unknown): asserts value is WorkflowResponse {
   const kind = responseKinds[workflowTools.findIndex(tool => tool.name === method)];
-  if (!matchesSchema(object({ kind: { enum: [kind] }, result: responses[kind] }), value)) throw new Error('unexpected_response');
+  if (!matchesSchema(object({ kind: { enum: [kind] }, result: responseSchema(method, kind) }), value)) throw new Error('unexpected_response');
   if (kind === 'context_content') {
     const encoded = (value as WorkflowResponse).result.envelope_base64url as string;
     if (encoded.length % 4 === 1 || btoa(atob(encoded.replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4 - encoded.length % 4) % 4)))

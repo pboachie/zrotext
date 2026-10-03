@@ -57,7 +57,7 @@ is never translated into a workflow Send action.
 
 The additional tools are `workflow.contact.read`, `workflow.context.metadata`,
 `workflow.context.content`, `workflow.action.propose`, `workflow.action.status`,
-`workflow.action.schedule`, and `workflow.action.send`. They reuse the SDK's exact
+`workflow.action.schedule`, `workflow.action.send`, and `workflow.action.cancel`. They reuse the SDK's exact
 closed schemas, response validators and descriptive annotations. Read content
 returns only the selected role-3 encrypted projection. Propose is not approval;
 Schedule requires the existing exact owner decision and independent permission.
@@ -73,13 +73,19 @@ send. It returns no recipients, content, key material, signatures or envelope by
 The digest comes from the SDK's exact unsigned bytes, preserving its operation
 identity semantics. No client-supplied idempotency identity is accepted.
 
-The output schema distinguishes `draft`, `accepted`, `queued`, `submitted`,
-`delivered` and `unknown` for future runtime integration. Current tools never claim
-acceptance, radio submission, delivery or successful cancellation. Unknown work
-must be reconciled through authenticated gateway state; do not resend it with a
-new identity. Protocol errors use JSON-RPC codes; tool validation errors return
+The legacy local preview tools retain their unavailable result contract. The
+authenticated `workflow.action.status` tool reads the canonical delivery state
+only for the current action’s exact owner-bound message. Its `delivery` field
+reports `not_bound`, `unavailable`, or `available` with message and dispatch IDs,
+state version and timestamps. Owner approval and a Prepared send receipt do not
+prove submission or delivery. An unavailable snapshot does not prove that no
+message was sent. Unknown work must be reconciled through authenticated gateway
+state; do not resend it with a new identity. Protocol errors use JSON-RPC codes; tool validation errors return
 `invalid_request` and `isError: true`. A readiness result is informational;
-unavailable action/status results carry `isError: true`.
+legacy unavailable action/status tool results carry `isError: true`. An
+authenticated workflow status response with `delivery.availability` set to
+`not_bound` or `unavailable` remains a valid metadata result; permission and
+scope refusals remain errors.
 
 ## Credentials, remote mode and compatibility
 
@@ -131,9 +137,11 @@ of prompts, model arguments, logs and public repository files. Startup failures
 are redacted; credential buffers are cleared after parsing, but JavaScript strings
 cannot promise full memory zeroization during the subprocess lifetime.
 
-Workflow credential issuance is currently the existing owner/MFA-checked server
-library operation. This transport does not add a self-service grant-management
-HTTP endpoint, UI, or enrollment flow. A normal API or agent credential cannot
+The separately authenticated owner can use the opt-in workflow-grant
+[setup routes](../protocol/v1/workflow-recipe-contract.md), which reuse the
+existing password/MFA-checked server library and require owner session, Origin
+and CSRF checks. The MCP transport does not expose issuance, a grant UI or
+enrollment. A normal API or agent credential cannot
 substitute for that workflow grant. The authenticated simulator checks do not
 establish a deployed customer provisioning experience.
 
@@ -167,8 +175,8 @@ cancellation. The fixture used actual owner-issued workflow credentials and
 normal sealed admission; no mocked principal or radio effect was used.
 Two named end-user MCP
 client applications, physical-device/carrier behavior, and production activation
-remain unverified. Cancellation and owner approval are explicitly unsupported
-integration operations rather than future success responses.
+remain unverified. Owner approval remains an unsupported integration operation;
+the tool interface does not fabricate future success responses.
 
 The implementation follows the official MCP [stdio transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports),
 [lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle)

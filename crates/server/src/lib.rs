@@ -9,6 +9,7 @@ pub mod encrypted_schedule;
 pub mod enrollment;
 pub mod failover_adapters;
 pub mod failover_executor;
+mod failover_external;
 pub mod http_auth;
 pub mod http_enrollment;
 pub mod http_message_summary;

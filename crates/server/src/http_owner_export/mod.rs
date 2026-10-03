@@ -57,6 +57,7 @@ async fn no_store(request: Request, next: Next) -> Response {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExportQuery {
+    sealed_deliveries_after: Option<Uuid>,
     templates_after: Option<Uuid>,
     template_versions_after: Option<Uuid>,
     invoice_periods_after: Option<Uuid>,
@@ -184,6 +185,7 @@ fn message_view(row: &Row) -> Result<MessageView, tokio_postgres::Error> {
 #[derive(Serialize)]
 struct ExportView {
     sealed_line_setup: serde_json::Value,
+    sealed_event_deliveries: crate::sealed_inbound::delivery::lifecycle::Export,
     execution_inventory:
         crate::http_owner_conversations::channel::execution::lifecycle::ExecutionInventory,
     workflow_schedule: crate::encrypted_schedule::lifecycle::ScheduleExport,
@@ -488,6 +490,16 @@ async fn export_account(
                 Ok(v) => v,
                 Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
             },
+        sealed_event_deliveries: match crate::sealed_inbound::delivery::lifecycle::export(
+            &mut client,
+            &principal,
+            query.sealed_deliveries_after,
+        )
+        .await
+        {
+            Ok(view) => view,
+            Err(error) => return error.into_response(),
+        },
         encrypted_templates,
         execution_inventory,
         workflow_integrations,

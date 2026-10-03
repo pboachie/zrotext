@@ -456,6 +456,122 @@ pub async fn dispatch_one(
     .await
 }
 
+/// Each caller owns its lane cursor; one call consumes at most one delivery.
+/// Empty preferred lanes fall back, but continuous work cannot starve either lane.
+// These errors report an already claimed/deferred legacy item. They count
+// against the batch bound just as in the original legacy drain loop.
+fn legacy_tick(result: Result<bool, WorkerError>) -> Result<bool, WorkerError> {
+    match result {
+        Err(WorkerError::Secret | WorkerError::Storage(inbound::InboundError::StaleLease)) => {
+            Ok(true)
+        }
+        other => other,
+    }
+}
+
+async fn fair_dispatch<F, Fut>(
+    enabled: bool,
+    prefer_sealed: &mut bool,
+    mut dispatch: F,
+) -> Result<bool, WorkerError>
+where
+    F: FnMut(bool) -> Fut,
+    Fut: Future<Output = Result<bool, WorkerError>>,
+{
+    if !enabled {
+        return dispatch(false).await;
+    }
+    let first = *prefer_sealed;
+    *prefer_sealed = !*prefer_sealed;
+    if dispatch(first).await? {
+        return Ok(true);
+    }
+    dispatch(!first).await
+}
+
+pub async fn dispatch_one_with_sealed(
+    database_url: &str,
+    vault: &WebhookSecretVault,
+    worker_id: &str,
+    enabled: bool,
+    prefer_sealed: &mut bool,
+) -> Result<bool, WorkerError> {
+    if !enabled {
+        return dispatch_one(database_url, vault, worker_id).await;
+    }
+    fair_dispatch(enabled, prefer_sealed, |sealed| async move {
+        if sealed {
+            crate::sealed_inbound::delivery::dispatch_one(database_url, vault, true)
+                .await
+                .map_err(|_| WorkerError::Database)
+        } else {
+            legacy_tick(dispatch_one(database_url, vault, worker_id).await)
+        }
+    })
+    .await
+}
+
+async fn recover_legacy_lane(database_url: &str) -> Result<(), WorkerError> {
+    let mut probe = crate::runtime_db::connect_worker(database_url)
+        .await
+        .map_err(|_| WorkerError::Database)?;
+    if inbound::webhook_lane_has_work(&probe).await? {
+        inbound::recover_expired_webhook_leases(&mut probe).await?;
+    }
+    Ok(())
+}
+
+async fn fair_batch<F, Fut>(
+    prefer_sealed: &mut bool,
+    limit: usize,
+    draining: &std::sync::atomic::AtomicBool,
+    mut dispatch: F,
+) -> Result<usize, WorkerError>
+where
+    F: FnMut(bool) -> Fut,
+    Fut: Future<Output = Result<bool, WorkerError>>,
+{
+    let mut count = 0;
+    while count < limit && !draining.load(std::sync::atomic::Ordering::Acquire) {
+        if !fair_dispatch(true, prefer_sealed, &mut dispatch).await? {
+            break;
+        }
+        count += 1;
+    }
+    Ok(count)
+}
+
+pub async fn dispatch_lane_batch_with_sealed(
+    database_url: &str,
+    vault: &WebhookSecretVault,
+    worker_id: &str,
+    limit: usize,
+    enabled: bool,
+    prefer_sealed: &mut bool,
+    draining: &std::sync::atomic::AtomicBool,
+) -> Result<usize, WorkerError> {
+    if draining.load(std::sync::atomic::Ordering::Acquire) {
+        return Ok(0);
+    }
+    if !enabled {
+        return dispatch_lane_batch(database_url, vault, worker_id, limit).await;
+    }
+    if limit == 0 {
+        return Ok(0);
+    }
+    recover_legacy_lane(database_url).await?;
+    fair_batch(prefer_sealed, limit, draining, |sealed| async move {
+        if sealed {
+            crate::sealed_inbound::delivery::dispatch_one(database_url, vault, true)
+                .await
+                .map_err(|_| WorkerError::Database)
+        } else {
+            legacy_tick(dispatch_one(database_url, vault, worker_id).await)
+        }
+    })
+    .await
+}
+
 /// One lane tick: one probe statement over the due and expired-lease partial
 /// indexes decides whether there is anything to do, so an idle tick opens no
 /// transaction. Otherwise close expired leases once, then drain a bounded
@@ -933,3 +1049,7 @@ mod tests {
             .unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "webhook_worker/fairness_tests.rs"]
+mod fairness_tests;

@@ -550,6 +550,7 @@ async fn observer_http_requests_fail_closed_on_existing_owner_routes() {
         ))
         .merge(crate::http_webhooks::router(
             crate::http_webhooks::WebhookHttpState {
+                sealed_delivery_enabled: false,
                 database_url: f.url.clone(),
                 auth_hasher: f.hasher.clone(),
                 canonical_origin: "https://example.test".into(),

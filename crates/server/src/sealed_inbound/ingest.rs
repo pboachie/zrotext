@@ -35,6 +35,8 @@ pub enum IngestError {
     Database(#[from] tokio_postgres::Error),
     #[error("conversation capture authority rejected")]
     Conversation(#[from] crate::http_owner_conversations::ConversationError),
+    #[error("sealed delivery enqueue failed")]
+    Delivery(#[from] super::delivery::DeliveryError),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -252,6 +254,9 @@ async fn ingest_inner(
             inserted.is_some(),
         )
         .await?;
+    }
+    if interval.is_some() {
+        super::delivery::enqueue(&tx, session.account_id, event_id, inserted.is_some()).await?;
     }
     admission.context(&wanted).await?;
     if let Some(selector) = interval {

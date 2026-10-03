@@ -50,7 +50,7 @@ class ConversationMainEntryTest {
         node.performClick()
     }
     private fun open() {
-        if (ports.isEmpty()) compose.onNode(hasText("Connection") and hasClickAction()).performClick()
+        if (ports.isEmpty()) compose.openGatewayPage("Connection")
         click("Open conversation review")
     }
     private fun installFixture(closeFailure: Boolean = false, verifiedLabel: String? = "Fixture line") {

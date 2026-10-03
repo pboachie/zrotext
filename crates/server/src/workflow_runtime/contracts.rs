@@ -3,7 +3,7 @@
 use super::Operation;
 use crate::{
     encrypted_schedule::policy::WindowPolicy,
-    http_owner_conversations::context::decisions::{ActionKey, ActionState, Descriptor},
+    http_owner_conversations::context::decisions::{ActionKey, Descriptor},
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -252,7 +252,7 @@ pub enum Response {
     #[serde(rename = "context_content")]
     ContextContent(ContextContentResponse),
     #[serde(rename = "action")]
-    Action(ActionState),
+    Action(super::ActionStatus),
     #[serde(rename = "occurrence")]
     Occurrence(OccurrenceResponse),
     #[serde(rename = "send")]

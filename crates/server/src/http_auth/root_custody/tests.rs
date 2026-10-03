@@ -39,6 +39,75 @@ async fn standard_auth_router_does_not_expose_root_custody() {
     }
 }
 
+fn opt_in_state() -> AuthHttpState {
+    AuthHttpState::new(
+        "not-a-database".into(),
+        Arc::new(crate::auth::TokenHasher::new(crate::test_keys::key(91)).unwrap()),
+        "https://owner.example.test".into(),
+        Arc::new(super::super::DisabledVerificationDispatcher),
+    )
+    .unwrap()
+}
+
+#[test]
+fn operator_root_custody_opt_in_requires_the_mfa_cipher() {
+    assert!(
+        opt_in_state()
+            .with_root_custody_opt_in(true, false)
+            .is_err()
+    );
+    let disabled = opt_in_state()
+        .with_root_custody_opt_in(false, false)
+        .unwrap();
+    assert!(!disabled.root_custody_enabled);
+    let cipher = Arc::new(crate::auth::mfa::MfaCipher::new(crate::test_keys::key(92)).unwrap());
+    let enabled = opt_in_state()
+        .with_mfa_cipher(cipher)
+        .with_root_custody_opt_in(true, false)
+        .unwrap();
+    assert!(enabled.root_custody_enabled);
+    assert!(
+        enabled
+            .clone()
+            .with_root_custody_opt_in(true, true)
+            .is_err()
+    );
+    assert!(
+        !enabled
+            .clone()
+            .with_root_custody_opt_in(false, true)
+            .unwrap()
+            .root_custody_enabled
+    );
+    assert!(
+        !enabled
+            .with_root_custody_opt_in(false, false)
+            .unwrap()
+            .root_custody_enabled
+    );
+}
+
+#[tokio::test]
+async fn operator_root_custody_opt_in_mounts_only_the_existing_ceremony() {
+    let cipher = Arc::new(crate::auth::mfa::MfaCipher::new(crate::test_keys::key(92)).unwrap());
+    let state = opt_in_state()
+        .with_mfa_cipher(cipher)
+        .with_root_custody_opt_in(true, false)
+        .unwrap();
+    let response = super::super::router(state)
+        .oneshot(
+            Request::builder()
+                .uri("/sealed-root/challenge")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // The challenge exists, but GET cannot perform enrollment or touch the DB.
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+}
+
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL and DATABASE_ALLOW_PLAINTEXT=true; disposable PostgreSQL custody HTTP test"]
 async fn authenticated_http_custody_requires_csrf_and_exports_same_independently_compared_pin() {
@@ -65,7 +134,8 @@ async fn authenticated_http_custody_requires_csrf_and_exports_same_independently
     )
     .unwrap()
     .with_mfa_cipher(Arc::new(o.cipher))
-    .with_root_custody_enabled();
+    .with_root_custody_opt_in(true, false)
+    .unwrap();
     let app = super::super::router(state);
     let cookie = format!(
         "{}={}; {}={}",

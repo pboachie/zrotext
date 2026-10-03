@@ -88,10 +88,12 @@ struct Config {
     sealed_dispatch_enabled: bool,
     mfa_recovery_only: bool,
     mfa_enrollment_enabled: bool,
+    root_custody_enabled: bool,
     sms_line_activation_enabled: bool,
     collaboration_drafts_enabled: bool,
     mms_spike_policy: Arc<device_socket::MmsSpikePolicy>,
     sealed_admission_enabled: bool,
+    sealed_webhook_delivery_enabled: bool,
     workflow_tools_enabled: bool,
     retention: RetentionPolicy,
     draining: Arc<AtomicBool>,
@@ -254,6 +256,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if billing_test.is_none() && hosted_sessions_enabled {
         return Err("Stripe hosted sessions require STRIPE_BILLING_TEST_ENABLED=true".into());
     }
+    let meter_enabled = optional_bool("STRIPE_TEST_METER_FORWARD_ENABLED")?;
+    let meter_key = if meter_enabled {
+        Some(required("STRIPE_TEST_METER_SECRET_KEY")?)
+    } else {
+        None
+    };
+    let meter_transport =
+        zrotext_server::billing::meter_transport::StripeTestMeterTransport::configured(
+            meter_enabled,
+            billing_test.is_some(),
+            meter_key,
+        )?;
     // Usage-limit plans are quota-only operator configuration with no price
     // or provider; the feature is disabled by default and encodes no default
     // limits. See docs/USAGE-PLANS.md.
@@ -325,11 +339,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let line_opt_out_enabled = optional_bool("LINE_OPT_OUT_ENABLED")?;
     let mfa_recovery_only = optional_bool("MFA_RECOVERY_ONLY")?;
     let mfa_enrollment_enabled = optional_bool("MFA_ENROLLMENT_ENABLED")?;
+    let root_custody_enabled = optional_bool("ROOT_CUSTODY_ENABLED")?;
     let sms_line_activation_enabled = optional_bool("SMS_LINE_ACTIVATION_ENABLED")?;
     let collaboration_drafts_enabled = optional_bool("COLLABORATION_DRAFTS_ENABLED")?;
     // Sealed v1 message admission. Disabled by default; off leaves the
     // route unmounted so no sealed code path runs.
     let sealed_admission_enabled = optional_bool("SEALED_ADMISSION_ENABLED")?;
+    let sealed_webhook_delivery_enabled = optional_bool("SEALED_WEBHOOK_DELIVERY_ENABLED")?;
     let sealed_dispatch_enabled = optional_bool("SEALED_DISPATCH_ENABLED")?;
     let workflow_tools_enabled = optional_bool("WORKFLOW_TOOLS_ENABLED")?;
     // Independent-quorum failover executor and member-side reporting loop.
@@ -367,6 +383,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // would only report the database as unavailable.
     zrotext_postgres_connection::check_url(&database_url)
         .map_err(|error| format!("DATABASE_URL: {error}"))?;
+    let external_authority_config = if failover_executor_env.is_some() {
+        match env::var("FAILOVER_EXTERNAL_AUTHORITY_CONFIG") {
+            Ok(path) if !path.is_empty() => Some(std::path::PathBuf::from(path)),
+            Ok(_) | Err(env::VarError::NotPresent) => None,
+            Err(_) => return Err("external authority configuration path must be UTF-8".into()),
+        }
+    } else {
+        None
+    };
+    if external_authority_config.is_some() {
+        failover_executor::hold_before_external_start(&database_url).await?;
+    }
     // Readiness tracks the failover executor only when it is enabled; the
     // default-off path adds no signal and changes nothing.
     let failover_executor_healthy = failover_executor_env
@@ -385,10 +413,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         sealed_dispatch_enabled,
         mfa_recovery_only,
         mfa_enrollment_enabled,
+        root_custody_enabled,
         sms_line_activation_enabled,
         collaboration_drafts_enabled,
         mms_spike_policy,
         sealed_admission_enabled,
+        sealed_webhook_delivery_enabled,
         workflow_tools_enabled,
         retention: RetentionPolicy::from_env()?,
         draining: Arc::new(AtomicBool::new(false)),
@@ -509,6 +539,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let vault = Arc::new(vault);
             webhook_worker::spawn_endpoint_key_audit(config.database_url.clone(), vault.clone());
             app = app.merge(http_webhooks::router(WebhookHttpState {
+                sealed_delivery_enabled: config.sealed_webhook_delivery_enabled,
                 database_url: config.database_url.clone(),
                 auth_hasher: auth_state.hasher.clone(),
                 canonical_origin: auth_state.canonical_origin.clone(),
@@ -516,6 +547,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }));
             if webhook_delivery_enabled {
                 for lane in 0..webhook_dispatch_concurrency {
+                    let sealed_enabled = config.sealed_webhook_delivery_enabled;
                     let worker_database = config.database_url.clone();
                     let worker_draining = config.draining.clone();
                     let worker_notify = config.drain_notify.clone();
@@ -532,6 +564,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                         let mut unavailable_logged = false;
                         let mut ticks = 0_u32;
+                        let mut prefer_sealed = false;
                         loop {
                             // Producers wake the lane at once when a delivery
                             // is queued; the tick stays the cross-process
@@ -551,11 +584,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         let sent = if worker_draining.load(Ordering::Acquire) {
                                             0
                                         } else {
-                                            webhook_worker::dispatch_lane_batch(
+                                            webhook_worker::dispatch_lane_batch_with_sealed(
                                                 &worker_database,
                                                 &worker_vault,
                                                 &worker_id,
                                                 WEBHOOK_DELIVERIES_PER_TICK,
+                                                sealed_enabled,
+                                                &mut prefer_sealed,
+                                                &worker_draining,
                                             )
                                             .await
                                             .map_err(|_| "webhook dispatch failed")?
@@ -591,7 +627,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         let mut sent = 0;
                                         while sent < WEBHOOK_DELIVERIES_PER_TICK
                                             && !worker_draining.load(Ordering::Acquire)
-                                            && webhook_worker::dispatch_one(&worker_database, &worker_vault, &worker_id).await
+                                            && webhook_worker::dispatch_one_with_sealed(&worker_database, &worker_vault, &worker_id,sealed_enabled,&mut prefer_sealed).await
                                                 .map_err(|_| "webhook dispatch failed")?
                                         {
                                             sent += 1;
@@ -935,6 +971,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         || line_opt_out_enabled
         || config.sms_line_activation_enabled
         || config.sealed_admission_enabled
+        || config.sealed_webhook_delivery_enabled
         || config.sealed_dispatch_enabled
         || config.workflow_tools_enabled
         || webhook_delivery_enabled
@@ -991,6 +1028,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let billing_notify = config.drain_notify.clone();
         let worker = Arc::new(worker);
         let permits = Arc::new(tokio::sync::Semaphore::new(concurrency));
+        if let Some(transport) = meter_transport {
+            tokio::spawn(zrotext_server::billing::meter_transport::run_queue(
+                billing_database.clone(),
+                transport,
+                billing_draining.clone(),
+                billing_notify.clone(),
+                permits.clone(),
+            ));
+        }
         for risk in [false, true] {
             // Offset the two co-periodic queues by half a tick so their
             // claim bursts never coincide.
@@ -1012,12 +1058,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }));
         }
     }
-    let _failover_executor_thread = failover_executor::spawn_failover_executor_with_adapters(
+    let _failover_executor_thread = failover_executor::spawn_failover_executor_with_external(
         failover_executor_env,
         config.database_url.clone(),
         config.draining.clone(),
         failover_executor_healthy.unwrap_or_default(),
         failover_adapters,
+        external_authority_config,
     );
     eprintln!(
         "zrotext site={} instance={} listening={bind}",
@@ -1111,6 +1158,13 @@ fn contacts_vault() -> Option<ContactFieldVault> {
     }
 }
 
+fn validate_unconfigured_account_routes(config: &Config) -> Result<(), &'static str> {
+    if config.mfa_recovery_only || config.mfa_enrollment_enabled || config.root_custody_enabled {
+        return Err("MFA or root custody mode requires configured account routes");
+    }
+    Ok(())
+}
+
 async fn account_routes(
     config: &Config,
 ) -> Result<Option<(AuthHttpState, EnrollmentHttpState)>, Box<dyn std::error::Error>> {
@@ -1122,9 +1176,7 @@ async fn account_routes(
         .filter(|value| !value.is_empty());
     if origin.is_none() && auth_pepper.is_none() && enrollment_pepper.is_none() && mfa_key.is_none()
     {
-        if config.mfa_recovery_only || config.mfa_enrollment_enabled {
-            return Err("MFA mode requires configured account routes".into());
-        }
+        validate_unconfigured_account_routes(config)?;
         return Ok(None);
     }
     let origin = origin.ok_or("AUTH_ORIGIN is required when account routes are enabled")?;
@@ -1203,6 +1255,9 @@ async fn account_routes(
         }
         auth_state = auth_state.with_mfa_enrollment_enabled();
     }
+    auth_state = auth_state
+        .with_root_custody_opt_in(config.root_custody_enabled, config.mfa_recovery_only)?
+        .with_workflow_grants_enabled(config.workflow_tools_enabled);
     if config.sms_line_activation_enabled {
         auth_state = auth_state.with_sms_line_activation_enabled();
     }
@@ -1679,10 +1734,12 @@ mod tests {
             sealed_dispatch_enabled: false,
             mfa_recovery_only: false,
             mfa_enrollment_enabled: false,
+            root_custody_enabled: false,
             sms_line_activation_enabled: false,
             collaboration_drafts_enabled: false,
             mms_spike_policy: Arc::new(device_socket::MmsSpikePolicy::disabled()),
             sealed_admission_enabled: false,
+            sealed_webhook_delivery_enabled: false,
             workflow_tools_enabled: false,
             retention: RetentionPolicy::default(),
             draining: Arc::new(AtomicBool::new(false)),
@@ -1691,6 +1748,20 @@ mod tests {
             failover_executor_healthy: None,
             readiness: Arc::new(ReadinessCache::new()),
         }
+    }
+
+    #[test]
+    fn root_custody_opt_in_cannot_start_without_account_routes() {
+        let mut config = unreachable_config();
+        assert!(validate_unconfigured_account_routes(&config).is_ok());
+        config.root_custody_enabled = true;
+        assert!(validate_unconfigured_account_routes(&config).is_err());
+        config.root_custody_enabled = false;
+        config.mfa_recovery_only = true;
+        assert!(validate_unconfigured_account_routes(&config).is_err());
+        config.mfa_recovery_only = false;
+        config.mfa_enrollment_enabled = true;
+        assert!(validate_unconfigured_account_routes(&config).is_err());
     }
 
     #[tokio::test(start_paused = true)]
@@ -1849,10 +1920,12 @@ mod tests {
             sealed_dispatch_enabled: false,
             mfa_recovery_only: false,
             mfa_enrollment_enabled: false,
+            root_custody_enabled: false,
             sms_line_activation_enabled: false,
             collaboration_drafts_enabled: false,
             mms_spike_policy: Arc::new(device_socket::MmsSpikePolicy::disabled()),
             sealed_admission_enabled: false,
+            sealed_webhook_delivery_enabled: false,
             workflow_tools_enabled: false,
             retention: RetentionPolicy::default(),
             draining: Arc::new(AtomicBool::new(false)),

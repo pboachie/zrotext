@@ -49,6 +49,7 @@ pub use mms_spike_policy::MmsSpikePolicy;
 mod conversation;
 mod preconditions;
 mod sealed_line_setup;
+mod sealed_session;
 mod stream_diagnostic;
 
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -300,6 +301,12 @@ enum ClientFrame {
         device_statement_sha256: String,
         device_signature_sha256: String,
     },
+    #[serde(rename = "sealed_session_request")]
+    SealedSessionRequest {
+        v: u8,
+        connection_epoch: i64,
+        challenge: Uuid,
+    },
     #[serde(rename = "conversation_ready")]
     ConversationReady {
         v: u8,
@@ -504,6 +511,17 @@ enum ServerFrame {
         connection_epoch: i64,
         heartbeat_seconds: u64,
     },
+    #[serde(rename = "sealed_session")]
+    SealedSession {
+        v: u8,
+        challenge: Uuid,
+        account_id: Uuid,
+        device_id: Uuid,
+        connection_epoch: i64,
+        deployment_epoch: i64,
+        session_id: Uuid,
+        server_time_ms: i64,
+    },
     #[serde(rename = "heartbeat_ack")]
     HeartbeatAck { v: u8, connection_epoch: i64 },
     #[serde(rename = "synthetic_grant")]
@@ -696,6 +714,7 @@ async fn upgrade(
     let mut protocols = vec![preconditions::PROTOCOL_V2, preconditions::PROTOCOL];
     if state.sealed_dispatch_enabled && state.dispatch_runtime_enabled {
         protocols.insert(0, crate::sealed_dispatch::wire::PROTOCOL);
+        protocols.insert(0, crate::sealed_dispatch::wire::PROTOCOL_V2);
     }
     let frame_limit = socket_frame_limit(conversation.is_some());
     websocket
@@ -1077,9 +1096,11 @@ async fn run_socket(
     let mut status_protocol = socket
         .protocol()
         .map(|value| value.to_str().unwrap_or_default().to_owned());
+    let sealed_v2 = status_protocol.as_deref() == Some(crate::sealed_dispatch::wire::PROTOCOL_V2);
     let sealed_negotiated = state.sealed_dispatch_enabled
         && state.dispatch_runtime_enabled
-        && status_protocol.as_deref() == Some(crate::sealed_dispatch::wire::PROTOCOL);
+        && (sealed_v2
+            || status_protocol.as_deref() == Some(crate::sealed_dispatch::wire::PROTOCOL));
     if sealed_negotiated {
         status_protocol = Some(preconditions::PROTOCOL_V2.to_owned());
     }
@@ -1169,6 +1190,7 @@ async fn run_socket(
     let mut alpha_ready_used = false;
     let mut sealed_ready: Option<(crate::sealed_dispatch::wire::Ready, Instant)> = None;
     let mut sealed_ready_used = false;
+    let mut sealed_clock = sealed_session::Samples::new();
     let mut mms_spike_ready_used = false;
     // Enabled only for controlled local liveness probes. Emit bounded,
     // content-free timing and exit markers, never frames or device IDs.
@@ -1181,6 +1203,23 @@ async fn run_socket(
         tokio::select! {
             message = receive_frame(&mut socket, &mut frame_budget) => {
                 match message {
+                    Some(ClientFrame::SealedSessionRequest { v: 1, connection_epoch, challenge }) if sealed_negotiated && sealed_v2 => {
+                        if connection_epoch != session.connection_epoch || !sealed_clock.admit(challenge, Instant::now()) {
+                            close_with_code = Some(close_code::POLICY); break;
+                        }
+                        let Ok(client) = runtime_db::connect_device(&state.database_url).await else {close_with_code=Some(RETRY_LATER);break;};
+                        if !session_current(&client, session, &state).await.unwrap_or(false) {close_with_code=Some(close_code::POLICY);break;}
+                        // Capture clock after the live-authority query and all its waits.
+                        let Ok(row) = client.query_one("SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint", &[]).await else {close_with_code=Some(RETRY_LATER);break;};
+                        let server_time_ms: i64 = row.get(0);
+                        drop(client);
+                        if server_time_ms < 0 || !send_frame(&mut socket, ServerFrame::SealedSession {
+                            v: 1, challenge, account_id: session.account_id, device_id: session.device_id,
+                            connection_epoch: session.connection_epoch, deployment_epoch: state.deployment_epoch,
+                            session_id: sealed_clock.session_id(), server_time_ms,
+                        }).await {break;}
+                        sealed_clock.sampled();
+                    }
                     Some(ClientFrame::ConversationReady {v:1,connection_epoch,challenge}) => {
                         if conversation_session.is_some() || connection_epoch!=session.connection_epoch || challenge.is_nil() {
                             close_with_code=Some(close_code::POLICY);break;
@@ -1203,7 +1242,7 @@ async fn run_socket(
                         }
                     }
                     Some(ClientFrame::SealedReady { v: 1, grant_version, connection_epoch, line_id, binding_generation, reader_key_id })
-                        if sealed_negotiated && !sealed_ready_used => {
+                        if sealed_negotiated && !sealed_ready_used && (!sealed_v2 || sealed_clock.is_sampled()) => {
                         let ready = crate::sealed_dispatch::wire::Ready {
                             grant_version, connection_epoch, line_id, binding_generation, reader_key_id,
                         };

@@ -15,9 +15,13 @@ use serde::Serialize;
 use std::sync::Arc;
 use uuid::Uuid;
 
+mod synchronization;
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BillingStatus {
+    exposure_cap: Option<synchronization::ExposureCap>,
+    usage_synchronization: Option<synchronization::Synchronization>,
     local_usage: Option<super::usage::UsageView>,
     invoice_period: Option<super::invoice::lifecycle::PeriodStatus>,
     mode: &'static str,
@@ -178,6 +182,12 @@ async fn status(
         },
     );
     Ok(Json(BillingStatus {
+        exposure_cap: synchronization::exposure(&db, account_id)
+            .await
+            .map_err(|_| AuthHttpError::Unavailable)?,
+        usage_synchronization: synchronization::current(&db, account_id)
+            .await
+            .map_err(|_| AuthHttpError::Unavailable)?,
         local_usage: super::usage::current(&db, account_id)
             .await
             .map_err(|_| AuthHttpError::Unavailable)?,

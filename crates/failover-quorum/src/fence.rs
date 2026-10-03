@@ -40,12 +40,11 @@
 //! must refuse when their replicas disagree — picking one side of a partition
 //! would fabricate a confirmed fence.
 //!
-//! This build ships exactly one production implementation, the fail-closed
-//! [`NoopFenceAuthority`]: no external fencing backend exists yet, so the
-//! wiring exists but every fence is refused and no promotion can pass the
-//! external-fence precondition. A real backend (for example an authenticated
-//! command executor against a watchdog) is deliberately deferred; the
-//! interface is the contract later increments implement. The in-repo
+//! The default production implementation is the fail-closed
+//! [`NoopFenceAuthority`]. The server can explicitly load a signed HTTPS
+//! customer authority adapter; that independent service must own actual host
+//! fencing and durable linearizable epoch state. No host driver is bundled.
+//! With no configuration every promotion remains refused. The in-repo
 //! [`crate::anchor::MemoryEpochAnchor`] and the test-only
 //! [`MemoryFenceAuthority`] exist for the contract's semantics corpus.
 
@@ -65,6 +64,11 @@ impl FenceToken {
     /// The fence identity of the promotion under `epoch`.
     pub const fn for_promotion(epoch: u64) -> Self {
         Self(epoch)
+    }
+
+    /// Stable wire identity; transport adapters must echo this exact epoch.
+    pub const fn epoch(self) -> u64 {
+        self.0
     }
 }
 
@@ -241,9 +245,8 @@ impl ExternalFencing {
         self.anchor.confirmed_epoch()
     }
 
-    /// Witness an applied promotion; best-effort by contract (the anchor is a
-    /// witness that may lag, never a gate that leads — see the executor's
-    /// promotion binding).
+    /// Witness an applied promotion after CAS. Completion remains pending
+    /// until the witness confirms the same epoch; it never leads the CAS.
     pub(crate) fn record_promotion(&mut self, new_epoch: u64) -> AnchorRecord {
         self.anchor.record_promotion(new_epoch)
     }

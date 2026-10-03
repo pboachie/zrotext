@@ -13,16 +13,19 @@ internal class ConversationExecutionCurrent(val session:SealedDispatchExecutor.S
     override fun toString()="ConversationExecutionCurrent(redacted)"
 }
 /** Validated metadata, not bearer authority: only the guarded one-use holder permits consumption. */
-internal sealed interface ConversationPreparedSubmissionContext {
-    val message:String
-    val attempt:String
+internal sealed interface ConversationPreparedSubmissionContext : JournaledRadioContext {
+    override val message:String
+    override val attempt:String
     val scope:ConversationCaptureScope
-    val originalDeadlineMs:Long
+    override val accountId get() = scope.accountId
+    override val deviceId get() = scope.deviceId
+    override val peer get() = scope.peer
+    override val originalDeadlineMs:Long
     val evidenceDigest:String
-    val deadlineMs:Long
-    val grant:SealedExecutionGrantValidator.Fields
-    val session:SealedDispatchExecutor.Session
-    val local:SealedDispatchExecutor.Local
+    override val deadlineMs:Long
+    override val grant:SealedExecutionGrantValidator.Fields
+    override val session:SealedDispatchExecutor.Session
+    override val local:SealedDispatchExecutor.Local
 }
 /**
  * Mandatory synchronous prepared-holder consumer. It must not retain or asynchronously consume

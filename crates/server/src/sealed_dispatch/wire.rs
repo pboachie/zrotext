@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub const PROTOCOL: &str = "zrotext-device-status-v2+sealed-dispatch-v1";
+pub const PROTOCOL_V2: &str = "zrotext-device-status-v2+sealed-dispatch-v2";
 pub const SEGMENT_LIMIT_HEADER: &str = "x-zrotext-sealed-segment-limit";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

@@ -47,6 +47,7 @@ mod sms_lines;
 mod sms_owner_keys;
 mod smtp_session;
 pub mod trusted_cidrs;
+mod workflow_grants;
 
 use std::net::SocketAddr;
 
@@ -630,6 +631,8 @@ pub struct AuthHttpState {
     pub root_custody_enabled: bool,
     /// Owner agent-grant pilot, never enabled by the shipped server.
     pub agent_grants_enabled: bool,
+    /// Owner setup for the existing shared workflow service; off by default.
+    pub workflow_grants_enabled: bool,
     /// Operator-configured networks trusted for the password-reset request
     /// lane. Empty unless configured; never grants any other route.
     pub reset_trusted_networks: Arc<TrustedNetworks>,
@@ -676,12 +679,18 @@ impl AuthHttpState {
             collaboration_drafts_enabled: false,
             root_custody_enabled: false,
             agent_grants_enabled: false,
+            workflow_grants_enabled: false,
             reset_trusted_networks: Arc::new(TrustedNetworks::default()),
         })
     }
 
     pub fn with_agent_grants_enabled(mut self) -> Self {
         self.agent_grants_enabled = true;
+        self
+    }
+
+    pub fn with_workflow_grants_enabled(mut self, enabled: bool) -> Self {
+        self.workflow_grants_enabled = enabled;
         self
     }
 
@@ -705,11 +714,26 @@ impl AuthHttpState {
         self
     }
 
-    /// Library opt-in for controlled provisioning tests/embedding. The normal
-    /// binary has no environment switch or call to this method.
+    /// Library opt-in for controlled provisioning tests/embedding.
+    /// The shipping binary uses the prerequisite-checking opt-in below.
     pub fn with_root_custody_enabled(mut self) -> Self {
         self.root_custody_enabled = true;
         self
+    }
+
+    /// Operator opt-in exposes the existing authenticated ceremony, not new
+    /// enrollment authority. Recovery-only startup omits the cipher and is
+    /// therefore incompatible with this opt-in.
+    pub fn with_root_custody_opt_in(
+        mut self,
+        enabled: bool,
+        recovery_only: bool,
+    ) -> Result<Self, &'static str> {
+        if enabled && (recovery_only || self.mfa_cipher.is_none()) {
+            return Err("root custody requires MFA_ENCRYPTION_KEY_B64 outside recovery-only mode");
+        }
+        self.root_custody_enabled = enabled;
+        Ok(self)
     }
 
     /// Trust the configured networks for the reset request lane. Invalid
@@ -796,6 +820,17 @@ pub fn router(state: AuthHttpState) -> Router {
     }
     if state.collaboration_drafts_enabled {
         router = router.merge(collaboration::router());
+    }
+    if state.workflow_grants_enabled {
+        router = router
+            .route(
+                "/workflow-grants",
+                post(workflow_grants::create).layer(DefaultBodyLimit::max(50 * 1024)),
+            )
+            .route(
+                "/workflow-grants/{grant_id}",
+                delete(workflow_grants::revoke),
+            );
     }
     if state.root_custody_enabled {
         router = router
