@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 FIXTURE = json.loads(
-    (Path(__file__).resolve().parents[1] / "vectors" / "ztse-body-text-01.json").read_text()
+    (Path(__file__).resolve().parents[1] / "vectors" / "ztse-body-text-01.json").read_text(encoding="utf-8")
 )
 
 

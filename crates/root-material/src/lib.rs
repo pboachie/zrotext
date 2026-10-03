@@ -26,3 +26,6 @@ pub mod root_backup;
 #[cfg(feature = "unlock")]
 pub mod root_unlock;
 pub mod sealed_root_enrollment;
+
+/// Dedicated line approval-key codec/verification; secret signing is unlock-only.
+pub mod line_key_registration;

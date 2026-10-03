@@ -153,11 +153,14 @@ const PERIODIC_WORKER_RESERVE: usize = 4;
 /// Refuse a configuration whose enabled worker lanes could need more
 /// worker-class sockets than the process budget. Webhook lanes are spawned,
 /// and therefore counted, only when delivery is enabled; Stripe lanes only
-/// when test billing is enabled.
+/// when test billing is enabled. Optional setup retention and workflow
+/// scheduling each consume one further socket only while enabled.
 fn worker_budget_check(
     webhook_delivery_enabled: bool,
     webhook_dispatch_concurrency: usize,
     stripe_reconcile_concurrency: Option<usize>,
+    sealed_setup_enabled: bool,
+    workflow_tools_enabled: bool,
 ) -> Result<(), String> {
     let webhook = if webhook_delivery_enabled {
         webhook_dispatch_concurrency
@@ -165,18 +168,41 @@ fn worker_budget_check(
         0
     };
     let stripe = stripe_reconcile_concurrency.unwrap_or(0);
-    if webhook + stripe + PERIODIC_WORKER_RESERVE <= zrotext_server::runtime_db::WORKER_SLOTS {
+    let setup = usize::from(sealed_setup_enabled);
+    let scheduler = usize::from(workflow_tools_enabled);
+    if webhook + stripe + PERIODIC_WORKER_RESERVE + setup + scheduler
+        <= zrotext_server::runtime_db::WORKER_SLOTS
+    {
         return Ok(());
     }
     Err(format!(
-        "WEBHOOK_DISPATCH_CONCURRENCY ({webhook}) plus STRIPE_TEST_RECONCILE_CONCURRENCY ({stripe}) plus the periodic worker reserve ({PERIODIC_WORKER_RESERVE}) exceed the worker database budget ({}); lower one of the concurrency settings",
+        "WEBHOOK_DISPATCH_CONCURRENCY ({webhook}) plus STRIPE_TEST_RECONCILE_CONCURRENCY ({stripe}) plus the periodic worker reserve ({PERIODIC_WORKER_RESERVE}), sealed setup retention ({setup}) and workflow scheduler ({scheduler}) exceed the worker database budget ({}); lower one of the concurrency settings",
         zrotext_server::runtime_db::WORKER_SLOTS
     ))
+}
+
+fn validate_sealed_setup_prerequisites(
+    enabled: bool,
+    conversations: bool,
+    root_custody: bool,
+    recovery_only: bool,
+    cipher_present: bool,
+) -> Result<(), &'static str> {
+    if enabled && (!conversations || !root_custody || recovery_only || !cipher_present) {
+        return Err(
+            "sealed line setup requires conversations, existing root custody and an MFA cipher outside recovery-only mode",
+        );
+    }
+    Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let conversation_enabled = optional_bool("CONVERSATION_ENABLED")?;
+    let sealed_setup_enabled = optional_bool("SEALED_LINE_SETUP_ENABLED")?;
+    if sealed_setup_enabled && !conversation_enabled {
+        return Err("SEALED_LINE_SETUP_ENABLED requires CONVERSATION_ENABLED=true".into());
+    }
     let conversation_startup =
         zrotext_server::http_owner_conversations::composition::Startup::load(
             conversation_enabled,
@@ -272,10 +298,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(env::VarError::NotPresent) => 2,
         Err(_) => return Err("WEBHOOK_DISPATCH_CONCURRENCY must be valid UTF-8".into()),
     };
+    let workflow_tools_enabled = optional_bool("WORKFLOW_TOOLS_ENABLED")?;
     worker_budget_check(
         webhook_delivery_enabled,
         webhook_dispatch_concurrency,
         billing_test.as_ref().map(|billing| billing.7),
+        sealed_setup_enabled,
+        workflow_tools_enabled,
     )?;
     // One account's share of this process's authenticated device sockets.
     let device_sockets_per_account = match env::var("DEVICE_SOCKETS_PER_ACCOUNT") {
@@ -324,7 +353,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sealed_admission_enabled = optional_bool("SEALED_ADMISSION_ENABLED")?;
     let sealed_webhook_delivery_enabled = optional_bool("SEALED_WEBHOOK_DELIVERY_ENABLED")?;
     let sealed_dispatch_enabled = optional_bool("SEALED_DISPATCH_ENABLED")?;
-    let workflow_tools_enabled = optional_bool("WORKFLOW_TOOLS_ENABLED")?;
     let customer_routines_enabled = optional_bool("CUSTOMER_ROUTINES_ENABLED")?;
     customer_routines_config_check(customer_routines_enabled, workflow_tools_enabled)?;
     // Independent-quorum failover executor and member-side reporting loop.
@@ -820,16 +848,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             drain_notify: config.drain_notify.clone(),
         };
         let device_router = if let Some(startup) = conversation_startup {
-            startup.router(
-                zrotext_server::http_owner_conversations::OwnerConversationsState {
-                    database_url: config.database_url.clone(),
-                    auth_hasher: auth_state.hasher.clone(),
-                    canonical_origin: auth_state.canonical_origin.clone(),
-                },
-                socket_state,
-                device_sockets_per_account,
-                billing_test.is_some() || usage_limits_enabled,
-            )?
+            let owner = zrotext_server::http_owner_conversations::OwnerConversationsState {
+                database_url: config.database_url.clone(),
+                auth_hasher: auth_state.hasher.clone(),
+                canonical_origin: auth_state.canonical_origin.clone(),
+            };
+            validate_sealed_setup_prerequisites(
+                sealed_setup_enabled,
+                conversation_enabled,
+                auth_state.root_custody_enabled,
+                config.mfa_recovery_only,
+                auth_state.mfa_cipher.is_some(),
+            )?;
+            if sealed_setup_enabled {
+                let cipher = auth_state
+                    .mfa_cipher
+                    .clone()
+                    .ok_or("sealed setup MFA cipher unavailable")?;
+                let (router, retention) = startup
+                    .router_with_sealed_line_setup(
+                        owner,
+                        socket_state,
+                        device_sockets_per_account,
+                        billing_test.is_some() || usage_limits_enabled,
+                        cipher,
+                    )
+                    .await?;
+                tokio::spawn(retention.run(config.draining.clone(), config.drain_notify.clone()));
+                router
+            } else {
+                startup.router(
+                    owner,
+                    socket_state,
+                    device_sockets_per_account,
+                    billing_test.is_some() || usage_limits_enabled,
+                )?
+            }
         } else {
             device_socket::router_with_account_share(socket_state, device_sockets_per_account)
         };
@@ -1612,21 +1666,56 @@ mod tests {
     use uuid::Uuid;
 
     #[test]
+    fn sealed_setup_requires_all_existing_authorities_without_changing_disabled_startup() {
+        assert!(validate_sealed_setup_prerequisites(false, false, false, true, false).is_ok());
+        assert!(validate_sealed_setup_prerequisites(true, true, true, false, true).is_ok());
+        for (conversations, root, recovery, cipher) in [
+            (false, true, false, true),
+            (true, false, false, true),
+            (true, true, true, true),
+            (true, true, false, false),
+        ] {
+            assert!(
+                validate_sealed_setup_prerequisites(true, conversations, root, recovery, cipher)
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn workflow_scheduler_consumes_one_worker_slot_only_when_enabled() {
+        assert!(worker_budget_check(true, 2, Some(2), false, false).is_ok());
+        assert!(worker_budget_check(true, 2, Some(2), false, true).is_err());
+        assert!(worker_budget_check(true, 1, Some(2), false, true).is_ok());
+        assert!(worker_budget_check(true, 1, Some(2), true, false).is_ok());
+        assert!(worker_budget_check(true, 1, Some(2), true, true).is_err());
+        assert!(worker_budget_check(false, 1, Some(2), true, true).is_ok());
+    }
+
+    #[test]
+    fn sealed_setup_retention_consumes_exactly_one_worker_slot_only_when_enabled() {
+        assert!(worker_budget_check(true, 2, Some(2), false, false).is_ok());
+        assert!(worker_budget_check(true, 2, Some(2), true, false).is_err());
+        assert!(worker_budget_check(true, 1, Some(2), true, false).is_ok());
+        assert!(worker_budget_check(false, 3, Some(3), true, false).is_ok());
+    }
+
+    #[test]
     fn worker_budget_counts_only_enabled_lanes() {
         // Delivery disabled: every documented Stripe concurrency (1-4) is
         // valid whatever WEBHOOK_DISPATCH_CONCURRENCY says.
         for webhook in 1..=3 {
             for stripe in 1..=4 {
-                assert!(worker_budget_check(false, webhook, Some(stripe)).is_ok());
+                assert!(worker_budget_check(false, webhook, Some(stripe), false, false).is_ok());
             }
-            assert!(worker_budget_check(true, webhook, None).is_ok());
+            assert!(worker_budget_check(true, webhook, None, false, false).is_ok());
         }
         // Delivery and test billing enabled: the two share four sockets.
-        assert!(worker_budget_check(true, 2, Some(2)).is_ok());
-        assert!(worker_budget_check(true, 1, Some(3)).is_ok());
-        assert!(worker_budget_check(true, 2, Some(3)).is_err());
-        assert!(worker_budget_check(true, 3, Some(2)).is_err());
-        assert!(worker_budget_check(true, 3, Some(4)).is_err());
+        assert!(worker_budget_check(true, 2, Some(2), false, false).is_ok());
+        assert!(worker_budget_check(true, 1, Some(3), false, false).is_ok());
+        assert!(worker_budget_check(true, 2, Some(3), false, false).is_err());
+        assert!(worker_budget_check(true, 3, Some(2), false, false).is_err());
+        assert!(worker_budget_check(true, 3, Some(4), false, false).is_err());
     }
 
     #[test]

@@ -544,6 +544,16 @@ pub(super) async fn prepared() -> (Fixture, SessionPrincipal) {
     ))
     .await
     .unwrap();
+    f.db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/086_sealed_line_key_registration.sql"
+    ))
+    .await
+    .unwrap();
+    f.db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/087_sealed_line_activation_exchanges.sql"
+    ))
+    .await
+    .unwrap();
     let owner = owner(&f).await;
     (f, owner)
 }

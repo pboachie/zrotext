@@ -219,25 +219,15 @@ async fn cancellation_replay_expiring_during_job_lock_wait_rolls_back_access() {
     // The cancelled-message replay bypasses the store's message-expiry guard:
     // only the runtime's final live authority check can reject this replay.
     let deadline: i64 = flow.case.f.db.query_one("SELECT LEAST(g.expires_ms,c.expires_at_ms,v.expires_at_ms) FROM workflow_integration_grants g JOIN workflow_contexts c ON (c.account_id,c.id)=(g.account_id,g.context_id) JOIN workflow_action_versions v ON v.account_id=g.account_id AND v.action_id=$1 AND v.revision=$2 WHERE g.grant_id=$3", &[&key.action_id,&key.revision,&flow.principal.grant_id()]).await.unwrap().get(0);
-    loop {
-        let now: i64 = flow
-            .case
-            .f
-            .db
-            .query_one(
-                "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
-                &[],
-            )
-            .await
-            .unwrap()
-            .get(0);
-        if now >= deadline - 1000 {
-            assert!(now < deadline);
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
+    // Prepare both connections and the exact blocker before entering the expiry
+    // window. Connection setup after a one-second window can expire authority
+    // before cancellation reaches the lock this test must exercise.
     let mut blocker = flow.case.f.connect().await;
+    let blocker_pid: i32 = blocker
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
     let lock = blocker.transaction().await.unwrap();
     lock.query_one(
         "SELECT message_id FROM dispatch_jobs WHERE message_id=$1 FOR UPDATE",
@@ -251,6 +241,27 @@ async fn cancellation_replay_expiring_during_job_lock_wait_rolls_back_access() {
         .await
         .unwrap()
         .get(0);
+    // Keep a deliberate slow preparation phase: the former ordering would
+    // spend its entire admission margin here and never observe the job lock.
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    loop {
+        let now: i64 = flow
+            .case
+            .f
+            .db
+            .query_one(
+                "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        if now >= deadline - 2000 {
+            assert!(now < deadline);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
     let request = Uuid::new_v4();
     let principal = &flow.principal;
     let waiting = cancel_action(&mut client, principal, request, key);
@@ -262,13 +273,10 @@ async fn cancellation_replay_expiring_during_job_lock_wait_rolls_back_access() {
                 .case
                 .f
                 .db
-                .query_one(
-                    "SELECT wait_event_type='Lock' FROM pg_stat_activity WHERE pid=$1",
-                    &[&pid],
-                )
+                .query_one("SELECT $2=ANY(pg_blocking_pids($1))", &[&pid, &blocker_pid])
                 .await
                 .unwrap();
-            if row.get::<_, Option<bool>>(0) == Some(true) {
+            if row.get::<_, bool>(0) {
                 break;
             }
             assert!(

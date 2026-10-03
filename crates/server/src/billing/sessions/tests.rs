@@ -1,4 +1,6 @@
 use super::*;
+#[path = "fixture_url.rs"]
+mod fixture_url;
 use crate::{auth, http_auth::DisabledVerificationDispatcher};
 use axum::{
     body::{Body, Bytes, to_bytes},
@@ -479,7 +481,7 @@ async fn owner_checkout_portal_bind_customer_and_reject_cross_tenant() {
         .batch_execute(&format!("CREATE SCHEMA {schema}"))
         .await
         .unwrap();
-    let db_url = format!("{base_url}?options=-csearch_path%3D{schema}");
+    let db_url = fixture_url::isolated_database_url(&base_url, &schema);
     let (mut db, connection) = tokio_postgres::connect(&db_url, NoTls).await.unwrap();
     tokio::spawn(async move {
         let _ = connection.await;
@@ -761,7 +763,7 @@ async fn owner_checkout_refused_while_subscription_live_or_pending() {
         .batch_execute(&format!("CREATE SCHEMA {schema}"))
         .await
         .unwrap();
-    let db_url = format!("{base_url}?options=-csearch_path%3D{schema}");
+    let db_url = fixture_url::isolated_database_url(&base_url, &schema);
     let (mut db, connection) = tokio_postgres::connect(&db_url, NoTls).await.unwrap();
     tokio::spawn(async move {
         let _ = connection.await;
@@ -989,7 +991,7 @@ async fn real_stripe_sandbox_hosted_sessions_smoke() {
         .batch_execute(&format!("CREATE SCHEMA {schema}"))
         .await
         .unwrap();
-    let db_url = format!("{base_url}?options=-csearch_path%3D{schema}");
+    let db_url = fixture_url::isolated_database_url(&base_url, &schema);
     let (mut db, connection) = tokio_postgres::connect(&db_url, NoTls).await.unwrap();
     tokio::spawn(async move {
         let _ = connection.await;

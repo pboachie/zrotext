@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Signed line-binding transaction. Only the dormant SMS exchange in
-//! [`exchange`] calls the SMS functions; no route calls the sealed ones.
+//! Signed line-binding transaction. Dormant SMS and local-only SEALED exchange
+//! adapters preserve separate domains and purpose fences.
 //! A signed device declaration is not independent evidence of physical SIM
 //! identity. The owner-key bootstrap and Android observation remain open gates.
 
@@ -198,7 +198,7 @@ async fn owner_session_active(
              JOIN memberships m ON (m.account_id,m.user_id)=(s.account_id,s.user_id) \
              WHERE s.id=$1 AND s.account_id=$2 AND s.user_id=$3 \
                AND s.revoked_at IS NULL AND s.expires_at>clock_timestamp() \
-               AND u.email_verified_at IS NOT NULL AND m.role='owner' \
+               AND u.email_verified_at IS NOT NULL AND m.role='owner' AND m.revoked_at IS NULL \
              FOR SHARE OF s,u,m",
             &[
                 &principal.session_id,
@@ -243,6 +243,7 @@ pub async fn issue_sms_line_challenge(
         device_id,
         CHALLENGE_LIFETIME_SECS,
         LinePurpose::Sms,
+        None,
     )
     .await
 }
@@ -261,6 +262,7 @@ async fn issue_line_challenge_with_lifetime(
         device_id,
         lifetime_secs,
         LinePurpose::Sealed,
+        None,
     )
     .await
 }
@@ -305,12 +307,26 @@ async fn issue_challenge_for_purpose(
     device_id: Uuid,
     lifetime_secs: i32,
     purpose: LinePurpose,
+    registration: Option<Uuid>,
 ) -> Result<LineChallenge, LineActivationError> {
     if line_id.is_nil() || device_id.is_nil() || lifetime_secs <= 0 {
         return Err(LineActivationError::InvalidInput);
     }
     let account_id = principal.tenant.account_id();
     let tx = client.transaction().await?;
+    if registration.is_some() {
+        tx.batch_execute("SET LOCAL lock_timeout='3s'; SET LOCAL statement_timeout='5s'")
+            .await?;
+    }
+    let scoped = if let Some(id) = registration {
+        Some(
+            setup_registration::lock_scope(&tx, principal, id, line_id, device_id, None, None)
+                .await
+                .map_err(scope_error)?,
+        )
+    } else {
+        None
+    };
     if tx
         .query_opt(
             "SELECT id FROM accounts WHERE id=$1 AND disabled_at IS NULL FOR SHARE",
@@ -394,6 +410,11 @@ async fn issue_challenge_for_purpose(
     let generation = issued
         .checked_add(1)
         .ok_or(LineActivationError::Unavailable)?;
+    if let Some(statement) = &scoped
+        && statement.scope().next_generation != generation as u64
+    {
+        return Err(LineActivationError::Unavailable);
+    }
     // A superseded pending challenge can never later activate. Preserve its
     // revoked binding and challenge rows as generation/replay tombstones.
     tx.execute(
@@ -424,13 +445,14 @@ async fn issue_challenge_for_purpose(
     if inserted != 1 {
         return Err(LineActivationError::Unavailable);
     }
+    let absolute_expiry = scoped.as_ref().map(|s| s.scope().expires_ms as i64);
     let id = Uuid::new_v4();
     let nonce: [u8; 32] = rand::random();
     let nonce_digest = digest(&nonce);
     tx.execute(
         "INSERT INTO line_activation_challenges \
          (id,account_id,line_id,device_id,generation,nonce_digest,expires_at) \
-         VALUES($1,$2,$3,$4,$5,$6,clock_timestamp()+($7::integer * interval '1 second'))",
+         VALUES($1,$2,$3,$4,$5,$6,LEAST(clock_timestamp()+($7::integer * interval '1 second'),to_timestamp($8::bigint::double precision/1000)))",
         &[
             &id,
             &account_id,
@@ -439,11 +461,34 @@ async fn issue_challenge_for_purpose(
             &generation,
             &&nonce_digest[..],
             &lifetime_secs,
+            &absolute_expiry,
         ],
     )
     .await?;
     if !owner_session_active(&tx, principal).await? {
         return Err(LineActivationError::Unavailable);
+    }
+    if let (Some(registration_id), Some(statement)) = (registration, &scoped) {
+        setup_registration::assign(&tx, principal, registration_id, id)
+            .await
+            .map_err(scope_error)?;
+        sealed_exchange::persist(
+            &tx,
+            principal,
+            registration_id,
+            &LineChallenge {
+                id,
+                account_id,
+                line_id,
+                device_id,
+                generation,
+                nonce,
+            },
+        )
+        .await?;
+        setup_registration::fresh(&tx, principal, statement, None)
+            .await
+            .map_err(scope_error)?;
     }
     tx.commit().await?;
     Ok(LineChallenge {
@@ -473,7 +518,10 @@ pub async fn activate_line_binding(
         line_id,
         generation,
         proof,
-        LinePurpose::Sealed,
+        ActivationScope {
+            purpose: LinePurpose::Sealed,
+            registration: None,
+        },
     )
     .await
 }
@@ -493,11 +541,18 @@ pub async fn activate_sms_line_binding(
         line_id,
         generation,
         proof,
-        LinePurpose::Sms,
+        ActivationScope {
+            purpose: LinePurpose::Sms,
+            registration: None,
+        },
     )
     .await
 }
 
+struct ActivationScope {
+    purpose: LinePurpose,
+    registration: Option<Uuid>,
+}
 async fn activate_for_purpose(
     client: &mut Client,
     principal: &SessionPrincipal,
@@ -505,8 +560,12 @@ async fn activate_for_purpose(
     line_id: Uuid,
     generation: i64,
     proof: LineActivationProof<'_>,
-    purpose: LinePurpose,
+    scope: ActivationScope,
 ) -> Result<(), LineActivationError> {
+    let ActivationScope {
+        purpose,
+        registration,
+    } = scope;
     let account_id = principal.tenant.account_id();
     if account_id != session.account_id {
         return Err(LineActivationError::Unavailable);
@@ -523,6 +582,27 @@ async fn activate_for_purpose(
     let owner_statement = owner_statement(&device_statement, proof.device_signature_der, purpose);
     let nonce_digest = digest(&proof.nonce);
     let tx = client.transaction().await?;
+    if registration.is_some() {
+        tx.batch_execute("SET LOCAL lock_timeout='3s'; SET LOCAL statement_timeout='5s'")
+            .await?;
+    }
+    let scoped = if let Some(id) = registration {
+        Some(
+            setup_registration::lock_scope(
+                &tx,
+                principal,
+                id,
+                line_id,
+                session.device_id,
+                Some(proof.challenge_id),
+                Some(session),
+            )
+            .await
+            .map_err(scope_error)?,
+        )
+    } else {
+        None
+    };
     if tx
         .query_opt(
             "SELECT id FROM accounts WHERE id=$1 AND disabled_at IS NULL FOR SHARE",
@@ -732,11 +812,71 @@ async fn activate_for_purpose(
     {
         return Err(LineActivationError::Unavailable);
     }
+    if !owner_session_active(&tx, principal).await? {
+        return Err(LineActivationError::Unavailable);
+    }
+    if let (Some(id), Some(statement)) = (registration, &scoped) {
+        setup_registration::activated(&tx, principal, id)
+            .await
+            .map_err(scope_error)?;
+        setup_registration::fresh(&tx, principal, statement, Some(session))
+            .await
+            .map_err(scope_error)?;
+    }
     tx.commit().await?;
     Ok(())
 }
 
+use crate::http_owner_conversations::sealed_line_setup::registration as setup_registration;
+fn scope_error(error: crate::sealed_root_ceremony::CeremonyError) -> LineActivationError {
+    match error {
+        crate::sealed_root_ceremony::CeremonyError::Database(e) => LineActivationError::Database(e),
+        _ => LineActivationError::Unavailable,
+    }
+}
+pub async fn issue_registered_line_challenge(
+    client: &mut Client,
+    p: &SessionPrincipal,
+    line: Uuid,
+    device: Uuid,
+    registration: Uuid,
+) -> Result<LineChallenge, LineActivationError> {
+    issue_challenge_for_purpose(
+        client,
+        p,
+        line,
+        device,
+        CHALLENGE_LIFETIME_SECS,
+        LinePurpose::Sealed,
+        Some(registration),
+    )
+    .await
+}
+pub async fn activate_registered_line_binding(
+    client: &mut Client,
+    p: &SessionPrincipal,
+    session: InboundSession<'_>,
+    line: Uuid,
+    generation: i64,
+    proof: LineActivationProof<'_>,
+    registration: Uuid,
+) -> Result<(), LineActivationError> {
+    activate_for_purpose(
+        client,
+        p,
+        session,
+        line,
+        generation,
+        proof,
+        ActivationScope {
+            purpose: LinePurpose::Sealed,
+            registration: Some(registration),
+        },
+    )
+    .await
+}
 pub mod exchange;
+pub mod sealed_exchange;
 
 #[cfg(test)]
 mod tests;

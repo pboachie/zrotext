@@ -13,7 +13,7 @@ async fn inject_catalog_error(f: &Fixture, failures: i64, message: &str) {
         CREATE SEQUENCE catalog_identification_calls;
         CREATE FUNCTION pg_identify_object(class_id oid, object_id oid, sub_id integer)
             RETURNS TABLE("type" text,"schema" text,"name" text,"identity" text)
-            LANGUAGE plpgsql AS $$
+            LANGUAGE plpgsql ROWS 1 AS $$
         BEGIN
             IF nextval('catalog_identification_calls') <= {failures} THEN
                 RAISE EXCEPTION USING ERRCODE='XX000', MESSAGE='{message}';

@@ -26,7 +26,7 @@ async fn prepared_bounded(
     future: bool,
     short: bool,
 ) -> Flow {
-    let mut case = Case::with_signer(Some(120000)).await;
+    let mut case = Case::with_signer_aligned(Some(120000), future).await;
     case.request.permissions = Permissions::new(permissions).unwrap();
     let issued = case.issue().await.unwrap();
     let principal = authenticate(&case.f.db, &case.hasher, &issued.token)
@@ -139,33 +139,8 @@ async fn expired_exact_action_cannot_use_its_still_live_owner_binding_and_integr
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; disposable workflow schema"]
 async fn exact_owner_binding_does_not_bypass_a_future_recipient_window() {
-    // Establish a bounded actual-clock precondition before the signed fixture
-    // starts its 60-second lifetime. This leaves time for owner step-up while
-    // keeping the next civil-minute opening strictly inside the action bound.
-    let url = std::env::var("ZT_INBOUND_TEST_DATABASE_URL").unwrap();
-    let (clock, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
-        .await
-        .unwrap();
-    tokio::spawn(async move {
-        connection.await.unwrap();
-    });
-    let started = tokio::time::Instant::now();
-    loop {
-        let second: i32 = clock
-            .query_one(
-                "SELECT floor(extract(second FROM clock_timestamp() AT TIME ZONE 'UTC'))::integer",
-                &[],
-            )
-            .await
-            .unwrap()
-            .get(0);
-        if (5..=35).contains(&second) {
-            break;
-        }
-        assert!(started.elapsed() < std::time::Duration::from_secs(31));
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    drop(clock);
+    // The aligned fixture establishes the actual-clock precondition after
+    // storage preparation and before minting its unchanged signed lifetimes.
     let mut flow = prepared_window(
         &[Operation::Propose, Operation::Schedule, Operation::Send],
         true,

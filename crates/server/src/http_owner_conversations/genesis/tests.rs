@@ -74,6 +74,31 @@ fn app() -> axum::Router {
     })
 }
 
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn genesis_rejects_reader_alias_of_historical_revoked_line_approval_key() {
+    let (f, owner, request) = case().await;
+    let point = STANDARD.decode(&request.archive_reader_point).unwrap();
+    let fingerprint = Sha256::digest(&point).to_vec();
+    f.db.execute("INSERT INTO line_owner_approval_keys(account_id,fingerprint,signing_key_sec1,revoked_at) VALUES($1,$2,$3,clock_timestamp())", &[&f.account,&fingerprint,&point]).await.unwrap();
+    assert!(
+        install_manifest(&mut f.connect().await, &owner, &request)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        f.db.query_one(
+            "SELECT version FROM sealed_manifest_authorities WHERE account_id=$1",
+            &[&f.account]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        0
+    );
+    f.cleanup().await;
+}
+
 #[test]
 fn genesis_rejects_unbounded_noncanonical_and_caller_account_fields() {
     for text in ["YQ", "YR==", "YQ==\n", "YQ==="] {

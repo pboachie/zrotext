@@ -204,16 +204,17 @@ async fn template_account_identity_cap_and_takeout_pages_are_real_and_atomic() {
     .await
     .unwrap();
     // Exact scoped opaque fixtures exercise storage capacity, never HPKE proof.
+    let mut db = c.f.connect().await;
+    let tx = db.transaction().await.unwrap();
     for _ in 1..256 {
         h.template = Uuid::new_v4();
         let bytes = envelope(&h, 88);
         let digest = Sha256::digest(&bytes).to_vec();
-        let mut db = c.f.connect().await;
-        let tx = db.transaction().await.unwrap();
         tx.execute("INSERT INTO encrypted_templates SELECT account_id,$2,interval_id,device_id,line_id,binding_generation,peer_digest,reader_key_id,trust_generation,revision,expires_at_ms,purged_at,created_at FROM encrypted_templates WHERE account_id=$1 LIMIT 1",&[&h.account,&h.template]).await.unwrap();
         tx.execute("INSERT INTO encrypted_template_versions(account_id,template_id,id,revision,expires_at_ms,request_id,request_digest,envelope) VALUES($1,$2,$3,1,$4,$5,$6,$7)",&[&h.account,&h.template,&Uuid::new_v4(),&h.expires_ms,&Uuid::new_v4(),&digest,&bytes]).await.unwrap();
-        tx.commit().await.unwrap();
     }
+    tx.commit().await.unwrap();
+    drop(db);
     h.template = Uuid::new_v4();
     assert!(
         write(

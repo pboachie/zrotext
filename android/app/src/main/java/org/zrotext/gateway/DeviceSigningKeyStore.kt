@@ -143,6 +143,34 @@ class DeviceSigningKeyStore(
         sign(SmsLineActivationTranscript.deviceStatement(challenge, apiLevel,
             selectedSubscriptionId))
 
+    /** Dedicated SEALED confirmation with the existing non-exportable hardware identity only. */
+    internal fun signSealedLineActivation(challenge: SealedLineChallenge, apiLevel: Int,
+                                         selectedSubscriptionId: Int, expectedFingerprint: ByteArray): ByteArray {
+        check(Build.VERSION.SDK_INT >= 31 && apiLevel == Build.VERSION.SDK_INT)
+        val expected = expectedFingerprint.copyOf()
+        val frozen = challenge.copy(nonce = challenge.nonce.copyOf())
+        val statement = SealedLineActivationTranscript.deviceStatement(frozen, apiLevel, selectedSubscriptionId)
+        val point = existingConversationPublicPoint()
+        check(expected.size == 32 && java.security.MessageDigest.isEqual(expected,
+            SealedLineActivationTranscript.digest(point)))
+        val sim = checkNotNull(SimCardContinuity.activationCandidate(SimCardContinuity.observe(context)))
+        fun selected() = context.getSharedPreferences("gateway_selection", Context.MODE_PRIVATE)
+            .getInt("subscription_id", android.telephony.SubscriptionManager.INVALID_SUBSCRIPTION_ID)
+        check(sim.subscriptionId == selectedSubscriptionId && selected() == selectedSubscriptionId)
+        val key = privateKey()
+        check(key.encoded == null && securityLevel(key) in setOf(
+            SigningKeySecurity.STRONGBOX, SigningKeySecurity.TRUSTED_ENVIRONMENT))
+        val signature = Signature.getInstance("SHA256withECDSA").run {
+            initSign(key); update(statement); sign()
+        }
+        SealedLineActivationTranscript.requireCanonicalDer(signature)
+        check(selected() == selectedSubscriptionId &&
+            SimCardContinuity.matches(sim, SimCardContinuity.observe(context)) &&
+            java.security.MessageDigest.isEqual(point, existingConversationPublicPoint()) &&
+            SealedLineActivationTranscript.verify(point, statement, signature))
+        return signature
+    }
+
     private fun sign(payload: ByteArray): ByteArray = Signature.getInstance("SHA256withECDSA").run {
         initSign(privateKey())
         update(payload)

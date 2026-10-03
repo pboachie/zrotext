@@ -15,6 +15,10 @@ on:
       - 'sdk/typescript/**'
       - 'android/**'
       - 'scripts/conversation_simulator.py'
+      - 'scripts/sealed_setup_ci.py'
+      - 'scripts/sealed_setup_ci_driver.mjs'
+      - 'scripts/test_sealed_setup_ci.py'
+      - 'scripts/package_conversation_browser.mjs'
       - '.github/workflows/conversation-simulator.yml'
   push:
     branches: [main]
@@ -111,10 +115,92 @@ jobs:
         # External Stripe tests require credentials and stay off.
         run: |
           cargo test --locked --workspace --features conversation-simulator-tests
-          cargo test --locked --workspace --features conversation-simulator-tests -- --ignored --skip real_stripe_ --skip loopback_journal_bridge --test-threads=4
+          # This external fixture is driven explicitly by sealed-setup-consumer below.
+          cargo test --locked --workspace --features conversation-simulator-tests -- --ignored --skip real_stripe_ --skip loopback_journal_bridge --skip ordinary_setup_server_browser_fixture --test-threads=4
       - name: Build the Android simulator contract tests
         run: (cd android && ./gradlew :app:compileDebugUnitTestKotlin --no-daemon --max-workers=2)
       - name: Require synthetic capture, encrypted history, confirmed reply and closure
         run: python3 scripts/conversation_simulator.py
       - name: Require authenticated dormant runtime assembly
         run: python3 scripts/conversation_simulator.py --assembly
+
+  sealed-setup-consumer:
+    # The existing offline CLI uses real Windows console/session protections.
+    # Do not replace that boundary with a Linux or JavaScript fixture signer.
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.16.0'
+      - name: Restore existing Windows dependency cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: windows-cargo-deps
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install pinned fixture tools and build the existing SDK
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Toolchain setup failed' }
+          npm ci --prefix sdk/typescript --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { throw 'SDK install failed' }
+          npm run build --prefix sdk/typescript
+          if ($LASTEXITCODE -ne 0) { throw 'SDK build failed' }
+          npm install --prefix "$env:RUNNER_TEMP/conversation-browser-tools" --no-save --ignore-scripts playwright@1.58.2
+          if ($LASTEXITCODE -ne 0) { throw 'Browser tooling setup failed' }
+          node "$env:RUNNER_TEMP/conversation-browser-tools/node_modules/playwright/cli.js" install chromium
+          if ($LASTEXITCODE -ne 0) { throw 'Browser installation failed' }
+          python -m venv "$env:RUNNER_TEMP/sealed-setup-python"
+          if ($LASTEXITCODE -ne 0) { throw 'Fixture Python setup failed' }
+          & "$env:RUNNER_TEMP/sealed-setup-python/Scripts/python.exe" -m pip install --disable-pip-version-check cryptography==46.0.4
+          if ($LASTEXITCODE -ne 0) { throw 'Fixture TLS tooling setup failed' }
+      - name: Verify explicit consumer guards
+        run: |
+          python -m unittest discover -s scripts -p test_sealed_setup_ci.py
+          if ($LASTEXITCODE -ne 0) { throw 'PostgreSQL ownership guards failed' }
+          node --test sdk/typescript/test/sealed-setup-ci-driver.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Consumer transport guards failed' }
+      - name: Inspect fresh fixture ownership without identifiers
+        timeout-minutes: 2
+        # Read-only metadata from an empty leaf created identically to the fixture.
+        # No ACL, owner, token, account or privilege changes are performed.
+        run: |
+          $leaf = & "$env:RUNNER_TEMP/sealed-setup-python/Scripts/python.exe" -c "import sys,tempfile; sys.path.insert(0,'scripts'); from sealed_setup_ci import owned_fixture_parent; print(tempfile.mkdtemp(prefix='sealed-setup-ci-acl-',dir=owned_fixture_parent()))" 2>$null
+          if ($LASTEXITCODE -ne 0) { throw 'Owned metadata fixture creation failed' }
+          $parent = [IO.Path]::GetFullPath('target/sealed-setup-postgres-fixtures')
+          $leaf = [IO.Path]::GetFullPath($leaf)
+          if ([IO.Path]::GetDirectoryName($leaf) -ne $parent -or -not [IO.Path]::GetFileName($leaf).StartsWith('sealed-setup-ci-acl-')) { throw 'Owned metadata fixture fence failed' }
+          try {
+            if ((Get-Item -LiteralPath $leaf -ErrorAction Stop).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Linked metadata fixture refused' }
+            $acl = Get-Acl -LiteralPath $leaf -ErrorAction Stop
+            $current = [Security.Principal.WindowsIdentity]::GetCurrent().User
+            $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier])
+            $admins = [Security.Principal.SecurityIdentifier]::new([Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null)
+            $ownerRights = [Security.Principal.SecurityIdentifier]::new('S-1-3-4')
+            $directAllow = $false
+            $ownerRightsAllow = $false
+            foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+              if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly)) { continue }
+              if ($rule.IdentityReference.Equals($current)) { $directAllow = $true }
+              if ($rule.IdentityReference.Equals($ownerRights)) { $ownerRightsAllow = $true }
+            }
+            [ordered]@{ version=1; ownerIsCurrentUser=$owner.Equals($current); ownerIsAdministrators=$owner.Equals($admins); directCurrentUserAllow=$directAllow; ownerRightsAllow=$ownerRightsAllow } | ConvertTo-Json -Compress
+          } catch { throw 'Owned fixture metadata inspection failed; identifiers withheld' }
+          finally {
+            try {
+              if ((Get-ChildItem -LiteralPath $leaf -Force -ErrorAction Stop).Count -ne 0) { throw 'Owned metadata fixture is not empty' }
+              Remove-Item -LiteralPath $leaf -ErrorAction Stop
+            } catch { throw 'Owned metadata fixture cleanup unconfirmed; identifiers withheld' }
+          }
+      - name: Require real compiled server, browser and protected native setup fixtures
+        # Initializes and stops ONLY a new RUNNER_TEMP cluster using installed PG17.
+        # No existing service, runner database/password, user credentials or SMS.
+        run: |
+          & "$env:RUNNER_TEMP/sealed-setup-python/Scripts/python.exe" scripts/sealed_setup_ci.py --tools "$env:RUNNER_TEMP/conversation-browser-tools" --pg-bin "$env:ProgramFiles/PostgreSQL/17/bin"
+          if ($LASTEXITCODE -ne 0) { throw 'Compiled setup consumer failed' }

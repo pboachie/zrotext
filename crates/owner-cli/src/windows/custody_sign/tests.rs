@@ -241,6 +241,9 @@ fn validated_parent(supplied: &std::path::Path, stage: &str) -> PathBuf {
 }
 #[test]
 fn native_console_custody_signs_only_reviewed_bundle() {
+    if super::super::setup_interop::dispatch(super::super::setup_interop::Family::Custody) {
+        return;
+    }
     if let Ok(stage) = std::env::var("ZT_CUSTODY_NATIVE_CASE") {
         let result = std::panic::catch_unwind(|| {
             let stage = match stage.as_str() {
