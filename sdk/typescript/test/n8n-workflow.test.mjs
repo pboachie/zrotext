@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname, resolve, isAbsolute, basename } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { createWorkflowRecipeServer } from '../../recipes/workflow-runtime.mjs';
 import { fixture, id } from '../../recipes/test-support/runtime-fixture.mjs';
@@ -39,6 +39,14 @@ test('n8n imports and executes proposals and durable reply safety through the ac
   skip: process.env.ZT_N8N_CLI ? false : 'requires a disposable n8n 2.41.4 installation and Node 24',
   timeout: 1_200_000,
 }, () => fixture(async f => {
+  assert.ok(Number(process.versions.node.split('.')[0]) >= 24, 'invoke this compatibility check with Node 24');
+  const cliPath = process.env.ZT_N8N_CLI;
+  assert.ok(isAbsolute(cliPath));
+  assert.equal(basename(cliPath), 'n8n');
+  assert.equal(basename(dirname(cliPath)), 'bin');
+  const installed = JSON.parse(await readFile(join(dirname(cliPath), '..', 'package.json')));
+  assert.equal(installed.name, 'n8n');
+  assert.equal(installed.version, '2.41.4');
   const directory = await mkdtemp(join(tmpdir(), 'zrotext-n8n-compatibility-'));
   const local = randomBytes(32);
   let bridge;
@@ -50,8 +58,8 @@ test('n8n imports and executes proposals and durable reply safety through the ac
   };
   const cli = async (...args) => {
     try {
-      return await execute(process.env.ZT_N8N_NODE ?? process.execPath,
-        [process.env.ZT_N8N_CLI, ...args], { env, cwd: directory, timeout: 300_000, maxBuffer: 8 * 1024 * 1024 });
+      return await execute(process.execPath,
+        ['--', cliPath, ...args], { env, cwd: directory, timeout: 300_000, maxBuffer: 8 * 1024 * 1024 });
     } catch (error) {
       // Synthetic execution output stays in the disposable private test folder.
       await writeFile(join(directory, 'last-cli-error.txt'), `${error.stdout ?? ''}\n${error.stderr ?? ''}`);
