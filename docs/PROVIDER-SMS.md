@@ -118,8 +118,10 @@ metadata for an already irreversible known intent. Recording that evidence
 cannot restore account access, dispatch or suppression. Erasure clears all
 correlation, outcome and event metadata, retaining only an opaque attempt
 identity fence for the account's lifetime. A replay cannot recreate the erased
-attempt. Full owner erasure removes that fence with the account; real account
-locks serialize concurrent receipt writes. The owner export adds bounded
+attempt. At the maximum version, erasure retains that version as the monotone
+fence; this exception permits only irreversible reduction, never new evidence
+or resurrection. Full owner erasure removes that fence with the account; real
+account locks serialize concurrent receipt writes. The owner export adds bounded
 metadata pages, omits erased attempts and excludes external IDs and digests.
 Absent proposal tables produce an empty page under the same final owner fence.
 

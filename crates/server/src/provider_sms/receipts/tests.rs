@@ -519,7 +519,7 @@ async fn competing_failed_and_delivered_receipts_commit_only_one_consistent_outc
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; disposable PostgreSQL only"]
-async fn maximum_version_allows_exact_duplicate_but_refuses_new_evidence() {
+async fn maximum_version_allows_duplicate_and_irreversible_erasure_but_refuses_new_evidence() {
     let (f, mut client) = Fixture::new(true).await;
     let req = request(f.account);
     let event = receipt(&req, Uuid::new_v4(), "future_status");
@@ -544,6 +544,61 @@ async fn maximum_version_allows_exact_duplicate_but_refuses_new_evidence() {
         )
         .await,
         Err(Error::VersionExhausted)
+    );
+    // Equal-version evidence and incomplete reduction remain forbidden at MAX.
+    for sql in [
+        "UPDATE provider_receipt_attempts SET event_count=2,state='submitted' WHERE account_id=$1",
+        "UPDATE provider_receipt_attempts SET erased_at=clock_timestamp() WHERE account_id=$1",
+    ] {
+        assert!(client.execute(sql, &[&f.account]).await.is_err());
+    }
+    assert!(
+        erase_receipt_attempt(&mut client, &f.permit(), f.attempt)
+            .await
+            .unwrap()
+    );
+    drop(client);
+    let mut client = connect(&f.url).await;
+    let row = client
+        .query_one(
+            "SELECT erased_at IS NOT NULL,route_fingerprint IS NULL,request_digest IS NULL, \
+        provider_message_id IS NULL,state IS NULL,delivery_failed IS NULL,accepted_at IS NULL, \
+        updated_at IS NULL,created_epoch IS NULL,event_count,state_version \
+        FROM provider_receipt_attempts WHERE account_id=$1",
+            &[&f.account],
+        )
+        .await
+        .unwrap();
+    for field in 0..9 {
+        assert!(row.get::<_, bool>(field));
+    }
+    assert_eq!(row.get::<_, i16>(9), 0);
+    assert_eq!(row.get::<_, i64>(10), i64::MAX);
+    assert_eq!(
+        client
+            .query_one("SELECT count(*) FROM provider_receipt_events", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+    assert_eq!(
+        record_known_receipt(&mut client, &f.permit(), &event).await,
+        Err(Error::Uncorrelated)
+    );
+    assert!(
+        !erase_receipt_attempt(&mut client, &f.permit(), f.attempt)
+            .await
+            .unwrap()
+    );
+    assert!(
+        client
+            .execute(
+                "UPDATE provider_receipt_attempts SET erased_at=NULL WHERE account_id=$1",
+                &[&f.account]
+            )
+            .await
+            .is_err()
     );
     f.finish().await;
 }

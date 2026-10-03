@@ -219,10 +219,10 @@ pub async fn erase_receipt_attempt(
     if row.get::<_, bool>(0) {
         return Ok(false);
     }
-    let version = row
-        .get::<_, i64>(1)
-        .checked_add(1)
-        .ok_or(Error::VersionExhausted)?;
+    // Erasure remains available at the hard version limit. The proposal allows
+    // equality only for this irreversible active-to-erased transition at MAX;
+    // ordinary evidence must still advance and an erased row cannot update.
+    let version = row.get::<_, i64>(1).saturating_add(1);
     tx.execute(
         "DELETE FROM provider_receipt_events WHERE account_id=$1 AND attempt_id=$2",
         &[&permit.account, &attempt],

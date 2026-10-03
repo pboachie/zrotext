@@ -55,7 +55,10 @@ BEGIN
         RAISE EXCEPTION 'provider receipt identity is erased';
     END IF;
     IF (NEW.account_id,NEW.attempt_id,NEW.provider) IS DISTINCT FROM
-       (OLD.account_id,OLD.attempt_id,OLD.provider) OR NEW.state_version <= OLD.state_version THEN
+       (OLD.account_id,OLD.attempt_id,OLD.provider)
+       OR NEW.state_version < OLD.state_version
+       OR (NEW.state_version = OLD.state_version AND NOT
+           (OLD.state_version = 9223372036854775807 AND NEW.erased_at IS NOT NULL)) THEN
         RAISE EXCEPTION 'provider receipt identity or version conflict';
     END IF;
     IF NEW.erased_at IS NULL THEN
