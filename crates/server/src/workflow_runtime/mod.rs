@@ -30,6 +30,7 @@ pub mod http;
 pub(crate) mod lifecycle;
 mod readiness;
 mod reads;
+pub mod routines;
 mod scope;
 pub use authentication::{IntegrationPrincipal, authenticate};
 pub use contacts::{ContactScope, read_contact};

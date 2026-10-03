@@ -881,6 +881,14 @@ async fn erase_account(
         ),
         Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
     }
+    match crate::workflow_runtime::routines::lifecycle::erase_account(&tx, account_id).await {
+        Ok(counts) => deleted.extend(
+            counts
+                .into_iter()
+                .map(|(table, rows)| TableCount { table, rows }),
+        ),
+        Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+    }
     for &(table, sql) in DELETE_PLAN {
         if table == "conversation_execution_records" && !execution_installed {
             continue;

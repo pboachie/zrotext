@@ -1,0 +1,39 @@
+# Authenticated customer routine service candidate
+
+The service is available only when `CUSTOMER_ROUTINES_ENABLED` and `WORKFLOW_TOOLS_ENABLED` are explicitly enabled. Both default to false. A disabled mount exposes neither execution nor owner publication routes. This candidate admits deterministic or explicitly selected customer-local process routines; it does not activate a hosted model, provider account, phone renderer or original inbound reader.
+
+## Independent authority
+
+A current owner configures an immutable routine policy using the owner session, CSRF token, exact origin and a separately authenticated input credential. The policy pins the input context revision and archive ciphertext digest, connector grant, kind, routine generation, explicit window, UTC-day call/unit limits and per-context turn limit. A context read credential alone cannot admit execution. Kind is one of FAQ, intake, note, reminder or owner reply; period is `utc_day`. Executor is `deterministic_local` or `local_process`. The deterministic policy has null/absent `adapter_id` and `artifact_digest`. A local-process policy requires both: a lowercase ASCII installation identifier starting with a letter (at most 64 characters), and a 64-character lowercase SHA-256 installation digest. Unsupported executors, model-selected executable paths and incomplete pairs refuse. The closed policy shape is `vectors/customer-routine-policy.schema.json`; runtime validation additionally checks resolved windows, ASCII timezone syntax, unequal opening/closing minutes and cross-field unit limits. The positive vector establishes syntax conformance, not current executable authority.
+
+## Customer-local process trust boundary
+
+The owner approves the adapter identity and installation digest through the authenticated policy service. A trusted local configuration maps that identifier to a fixed executable, working directory, arguments and artifact files. The digest commits the domain `ZT/customer-routine-local-executor/v1` followed by NUL and the ordered JSON tuple of identifier, canonical executable path, executable SHA-256, fixed arguments, canonical working directory and ordered artifact path/digest pairs. It is not a plaintext or provider-output commitment. Configuration possession does not create execution authority: the separately supplied executor must compare this identity with the independently returned current owner policy before exposing decrypted input.
+
+This service foundation authorizes a separately supplied customer executor. It does not include a local launcher, child-process isolation, crypto renderer or command-line entrypoint; those are a separate runtime layer. The policy digest specifies installation identity without proving that an external executor actually used that installation.
+
+Integration requests use `POST /v1/workflow/routines`, JSON `{operation, params}` and a dedicated Bearer credential. Operations are `current`, `admit`, `produced` and `resume`. Owner routes are `/v1/owner/workflow/routines/policy`, `/output`, `/withdraw` and `/export`. They require the current owner realm, not an integration credential pretending to be an owner. Credentials belong in trusted local configuration and authentication headers, never model parameters, JSON bodies or outputs.
+
+Admission accepts only `owner_declared` direction. `inbound` is explicitly refused until the independently selected inbound-reader bridge exists. Metadata or role-3 context-content access does not create authority over an original inbound capture.
+
+## Durable execution and budgets
+
+The transaction commits an `unknown` call before returning `execute_once: true`. The authenticated request UUID is also the assigned output context UUID. Only the first successful admission response permits local execution. Exact replay returns `execute_once: false`; a lost response, timeout or process crash never permits regeneration. A different request body under the same UUID conflicts. Unknown calls consume their original units and turns; a local timeout is not proof that work did not occur.
+
+Account UTC-day call/unit debits, per-context turns and admission tombstones are independent of call/policy metadata. New policies, withdrawal, content erasure and retention do not reset consumed budgets or reuse request identities. There are at most 1000 admission tombstones per account lifetime. A new UTC day resets the daily period allowance but does not reset this lifetime bound. Exhaustion refuses further admissions; there is no automatic eviction or replay-identity reuse. Full account erasure removes these account-bound records. These are logical routine limits, not financial credits or provider settlement.
+
+## Encrypted output and owner publication
+
+Before the produced checkpoint, the customer executor must seal output as reviewed ZTWC ciphertext for the current archive reader. The foundation accepts an exact ciphertext digest; it does not perform customer-side sealing. The checkpoint commits SHA-256 of these exact randomized ciphertext bytes. It never stores a plaintext digest. The assigned output context is a new context at revision one, with the unchanged input kind, account, device, line, interval and peer. The input context and exact input credential remain unchanged.
+
+The owner separately reviews and publishes those exact archive bytes using the existing binary owner context service. The owner creates a distinct encrypted role-3 projection and uses the current owner password/MFA ceremony at `/v1/auth/workflow-grants` to issue a fresh exact output grant. The server verifies current reader and scope authority but cannot prove that independently randomized archive and projection ciphertexts represent identical plaintext; that relationship is explicitly declared by the owner.
+
+Binding and resume require both independently current input and output scopes. The output credential must permit both content and proposal operations; it cannot widen or replace the input credential. Cross-account, connector, reader, line, contact, purpose, interval, revision or digest substitutions refuse. Fresh output routine generation is independently checked, rather than copied from the input generation. Resume registers only a sensitive proposal under the existing exact-action ledger. It creates no approval, message or delivery attempt. Owner approval, exact message binding and downstream effect authority remain separate.
+
+## Privacy and lifecycle
+
+No routine plaintext, model input, private key or credential is persisted in the server call ledger. Export is current-owner authenticated and paginated by an explicit metadata section. Context/contact erasure and bounded retention remove call/policy metadata while preserving the minimum consumed-budget and replay records until account erasure. The separately supplied executor must retain customer-local artifacts encrypted; byte-buffer clearing is best effort and cannot promise erasure of JavaScript strings, engine copies, storage pages or backups.
+
+Withdrawal stops admission and resume and irreversibly fences every separately published output routine linked to that policy. Existing owner takeover or stopping the input routine propagates through exact published-output links, including chains and cycles, before later output approval or preparation can proceed. Unbound call identities cannot stop unrelated routines. Erasure and retention stop linked outputs before deleting their association; they do not refund unknown work or renew authority.
+
+Foundation tests cover authenticated policy, current authority, admission, budget races and rollback, output binding, lifecycle fences and metadata retention. Customer-local sealing and the real HTTPS executor journey belong to the separate runtime layer. No deployment, physical-device or carrier delivery claim is made.

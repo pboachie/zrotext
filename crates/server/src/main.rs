@@ -95,6 +95,7 @@ struct Config {
     sealed_admission_enabled: bool,
     sealed_webhook_delivery_enabled: bool,
     workflow_tools_enabled: bool,
+    customer_routines_enabled: bool,
     retention: RetentionPolicy,
     draining: Arc<AtomicBool>,
     drain_notify: Arc<Notify>,
@@ -352,6 +353,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sealed_admission_enabled = optional_bool("SEALED_ADMISSION_ENABLED")?;
     let sealed_webhook_delivery_enabled = optional_bool("SEALED_WEBHOOK_DELIVERY_ENABLED")?;
     let sealed_dispatch_enabled = optional_bool("SEALED_DISPATCH_ENABLED")?;
+    let customer_routines_enabled = optional_bool("CUSTOMER_ROUTINES_ENABLED")?;
+    customer_routines_config_check(customer_routines_enabled, workflow_tools_enabled)?;
     // Independent-quorum failover executor and member-side reporting loop.
     // Disabled by default; when off (or absent) nothing further is read and
     // no thread, database or store access exists. When on, the validated
@@ -424,6 +427,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         sealed_admission_enabled,
         sealed_webhook_delivery_enabled,
         workflow_tools_enabled,
+        customer_routines_enabled,
         retention: RetentionPolicy::from_env()?,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
@@ -926,6 +930,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             database_url: config.database_url.clone(),
             hasher: auth_state.hasher.clone(),
         };
+        let routine_owner_state =
+            zrotext_server::http_owner_conversations::OwnerConversationsState {
+                database_url: config.database_url.clone(),
+                auth_hasher: auth_state.hasher.clone(),
+                canonical_origin: auth_state.canonical_origin.clone(),
+            };
         app = app
             .nest("/v1/auth", http_auth::router(auth_state))
             .nest("/v1/enrollment", http_enrollment::router(enrollment_state))
@@ -942,9 +952,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .merge(owner_ui::router())
             .merge(device_router);
         app = app.merge(zrotext_server::workflow_runtime::http::router(
-            workflow_state,
+            workflow_state.clone(),
             config.workflow_tools_enabled,
         ));
+        app = app
+            .merge(zrotext_server::workflow_runtime::routines::http::router(
+                workflow_state,
+                config.customer_routines_enabled,
+            ))
+            .merge(
+                zrotext_server::workflow_runtime::routines::http::owner_router(
+                    routine_owner_state,
+                    config.customer_routines_enabled,
+                ),
+            );
         if config.alpha_policy.enabled() {
             let message_state = MessagesHttpState::new(
                 config.database_url.clone(),
@@ -1166,6 +1187,17 @@ fn contacts_vault() -> Option<ContactFieldVault> {
         _ if secondary.is_none() => None,
         // A secondary key without the active pair cannot seal anything.
         _ => None,
+    }
+}
+
+fn customer_routines_config_check(
+    enabled: bool,
+    workflow_tools_enabled: bool,
+) -> Result<(), &'static str> {
+    if enabled && !workflow_tools_enabled {
+        Err("CUSTOMER_ROUTINES_ENABLED requires WORKFLOW_TOOLS_ENABLED")
+    } else {
+        Ok(())
     }
 }
 
@@ -1762,6 +1794,7 @@ mod tests {
             sealed_admission_enabled: false,
             sealed_webhook_delivery_enabled: false,
             workflow_tools_enabled: false,
+            customer_routines_enabled: false,
             retention: RetentionPolicy::default(),
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),
@@ -1769,6 +1802,19 @@ mod tests {
             failover_executor_healthy: None,
             readiness: Arc::new(ReadinessCache::new()),
         }
+    }
+
+    #[test]
+    fn customer_routines_are_disabled_by_default_and_require_workflow_tools() {
+        let config = unreachable_config();
+        assert!(!config.customer_routines_enabled);
+        assert!(customer_routines_config_check(false, false).is_ok());
+        assert!(customer_routines_config_check(false, true).is_ok());
+        assert_eq!(
+            customer_routines_config_check(true, false),
+            Err("CUSTOMER_ROUTINES_ENABLED requires WORKFLOW_TOOLS_ENABLED")
+        );
+        assert!(customer_routines_config_check(true, true).is_ok());
     }
 
     #[test]
@@ -1948,6 +1994,7 @@ mod tests {
             sealed_admission_enabled: false,
             sealed_webhook_delivery_enabled: false,
             workflow_tools_enabled: false,
+            customer_routines_enabled: false,
             retention: RetentionPolicy::default(),
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),
