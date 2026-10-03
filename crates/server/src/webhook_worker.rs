@@ -480,6 +480,33 @@ pub async fn dispatch_lane_batch(
     .await
 }
 
+fn worker_connect_failure(
+    error: crate::runtime_db::ConnectError,
+    phase: &'static str,
+) -> WorkerError {
+    // Preserve the production error boundary. Tests report only fixed categories,
+    // never connection strings, schemas, credentials or the transport error text.
+    #[cfg(test)]
+    {
+        use crate::runtime_db::ConnectError;
+        let category = match &error {
+            ConnectError::Capacity => "capacity",
+            ConnectError::Timeout => "connect_timeout",
+            ConnectError::Database(_) => "pg_connect",
+            ConnectError::Transport(zrotext_postgres_connection::ConnectError::Configuration(
+                _,
+            )) => "transport_config",
+            ConnectError::Transport(zrotext_postgres_connection::ConnectError::Database(_)) => {
+                "transport_pg"
+            }
+        };
+        eprintln!("worker_connect_failure phase={phase} category={category}");
+    }
+    #[cfg(not(test))]
+    let _ = (error, phase);
+    WorkerError::Database
+}
+
 /// The seam a test uses to exercise the probe, recovery and drain loop without
 /// external DNS. See `dispatch_lane_batch` for the lane contract.
 pub(crate) async fn dispatch_lane_batch_with<F, Fut>(
@@ -499,7 +526,7 @@ where
     {
         let mut probe = crate::runtime_db::connect_worker(database_url)
             .await
-            .map_err(|_| WorkerError::Database)?;
+            .map_err(|error| worker_connect_failure(error, "probe"))?;
         if !inbound::webhook_lane_has_work(&probe).await? {
             return Ok(0);
         }
@@ -563,7 +590,7 @@ where
 {
     let mut client = crate::runtime_db::connect_worker(database_url)
         .await
-        .map_err(|_| WorkerError::Database)?;
+        .map_err(|error| worker_connect_failure(error, "claim"))?;
     let Some(lease) = inbound::claim_webhook(&mut client, worker_id).await? else {
         return Ok(false);
     };
@@ -574,7 +601,7 @@ where
     let outcome = dispatch_payload_with(vault, &lease, &payload, sender).await;
     let mut client = crate::runtime_db::connect_worker(database_url)
         .await
-        .map_err(|_| WorkerError::Database)?;
+        .map_err(|error| worker_connect_failure(error, "finish"))?;
     let (result, status) = match outcome {
         Ok(response) if response.acknowledged => {
             (WebhookOutcome::Ack, Some(response.status as i16))
