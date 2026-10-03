@@ -33,6 +33,11 @@ export async function packageOutput(args) {
  if(output===repo||output.startsWith(repo+path.sep))throw Error("Browser generated assets belong outside source tree");
  return output;
 }
+export function confinedOutput(output, relative) {
+ const target=path.resolve(output,relative);
+ if(!target.startsWith(output+path.sep))throw Error("Browser asset escapes selected output");
+ return target;
+}
 async function main() {
 const output=await packageOutput(process.argv.slice(2));
 const sources=[[path.join(repo,"sdk/typescript/dist"),"sdk"],[path.join(repo,"sdk/typescript/node_modules/@hpke/core/esm"),"vendor/core"],[path.join(repo,"sdk/typescript/node_modules/@hpke/common/esm"),"vendor/common"]];
@@ -47,12 +52,12 @@ async function copy(source,target){
    code=code.replaceAll('"'+name+'"',JSON.stringify(relative)).replaceAll("'"+name+"'",JSON.stringify(relative));
   }
   code=browserModule(next,code);
-  const to=path.join(output,...next.split("/"));await mkdir(path.dirname(to),{recursive:true});await writeFile(to,code);
+  const to=confinedOutput(output,next);await mkdir(path.dirname(to),{recursive:true});await writeFile(to,code);
  }
 }
 for(const [source,target] of sources)await copy(source,target);
-for(const name of ["core","common"]){const directory=path.join(repo,"sdk/typescript/node_modules/@hpke",name);for(const entry of await readdir(directory)){if(/^(LICENSE|COPYING)/i.test(entry)){const to=path.join(output,"vendor",name,entry);await mkdir(path.dirname(to),{recursive:true});await writeFile(to,await readFile(path.join(directory,entry)));}}}
-await writeFile(path.join(output,"package.json"),JSON.stringify({private:true,type:"module"})+"\n");
+for(const name of ["core","common"]){const directory=path.join(repo,"sdk/typescript/node_modules/@hpke",name);for(const entry of await readdir(directory)){if(/^(LICENSE|COPYING)/i.test(entry)){const to=confinedOutput(output,path.join("vendor",name,entry));await mkdir(path.dirname(to),{recursive:true});await writeFile(to,await readFile(path.join(directory,entry)));}}}
+await writeFile(confinedOutput(output,"package.json"),JSON.stringify({private:true,type:"module"})+"\n");
 process.stdout.write("Packaged browser SDK and installed HPKE ESM graph. Mounting remains explicit.\n");
 
 }

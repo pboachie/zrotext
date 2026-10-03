@@ -4,7 +4,7 @@ import {CleanupFailure} from './owned-process-fixture.mjs';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
-import {packageOutput} from '../../../scripts/package_conversation_browser.mjs';
+import {packageOutput,confinedOutput} from '../../../scripts/package_conversation_browser.mjs';
 import {mkdtemp,writeFile,rm,readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {parseOptions,selectExecutable,ReadyParser,serverPassed,SERVER_TEST,capture,executableDigest,joinOwnedAcceptance,createBrowserPackage} from '../../../scripts/sealed_setup_ci_driver.mjs';
@@ -12,6 +12,11 @@ const id='11111111-1111-4111-8111-111111111111',root=path.resolve('fixture-root'
 function ready(){const paired=Buffer.alloc(65);paired[0]=4;return {version:1,synthetic:true,port:4444,controlToken:'07'.repeat(32),origin:'https://owner.example.test:4443',baseline:{accountId:id,userId:id,sessionId:id,deviceId:id,lineId:id,nextGeneration:'1',pairedPoint:paired.toString('hex'),pairedFingerprintHex:createHash('sha256').update(paired).digest('hex'),rootFactor:'fixture-factor'.padEnd(26,'x'),lineFactor:'fixture-factor'.padEnd(26,'y'),cookies:[{name:'__Host-zrotext_session',value:'fixture-session'},{name:'__Host-zrotext_csrf',value:'fixture-csrf'}],lease:{connectionEpoch:'1',deploymentEpoch:'1',siteId:'fixture-site',instanceId:'fixture-instance'}}};}
 const record=prefix=>prefix+JSON.stringify(ready())+'\n';
 const artifact=()=>({reason:'compiler-artifact',manifest_path:manifest,profile:{test:true},target:{name:'zrotext_server',kind:['lib']},executable:exe});
+test('packaged assets cannot escape the explicitly selected output',()=>{
+  const output=path.resolve('synthetic-output');
+  assert.equal(confinedOutput(output,'sdk/conversation.js'),path.join(output,'sdk/conversation.js'));
+  for(const selected of ['..','../sibling/asset.js','.',path.resolve('sibling','asset.js')])assert.throws(()=>confinedOutput(output,selected),/escapes selected/);
+});
 test('compile discovery requires one exact package/test/target artifact',()=>{assert.equal(selectExecutable(JSON.stringify(artifact()),manifest,'zrotext_server','lib'),exe);for(const change of [a=>a.profile.test=false,a=>a.target.kind=['bin'],a=>a.manifest_path=path.join(root,'other/Cargo.toml'),a=>a.executable=null]){const a=artifact();change(a);assert.throws(()=>selectExecutable(JSON.stringify(a),manifest,'zrotext_server','lib'));}assert.throws(()=>selectExecutable(JSON.stringify(artifact())+'\n'+JSON.stringify(artifact()),manifest,'zrotext_server','lib'));});
 test('explicit compiled overrides require absolute paths and independent source labels',()=>{const options=['--tools',root,'--server-executable',exe,'--server-source','1'.repeat(40)];assert.equal(parseOptions(options)['server-executable'],exe);assert.throws(()=>parseOptions(options.slice(0,4)));assert.throws(()=>parseOptions(['--tools',root,'--server-executable','relative.exe','--server-source','1'.repeat(40)]));assert.throws(()=>parseOptions(['--tools',root,'--tools',root]));});
 test('readiness supports actual selected libtest framing and chunked transport',()=>{for(const prefix of ['ZT_OWNER_SETUP_READY ',`test ${SERVER_TEST} ... ZT_OWNER_SETUP_READY `]){const parser=new ReadyParser(),raw=Buffer.from(record(prefix));assert.equal(parser.feed(raw.subarray(0,30)),null);assert.deepEqual(parser.feed(raw.subarray(30)),ready());}});
