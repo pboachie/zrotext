@@ -11,12 +11,18 @@ This switch does not enable conversation capture or SMS dispatch.
 The owner must explicitly create or select an existing supported custody bundle,
 perform the recovery check, and independently compare its account/origin-bound
 fingerprint. The existing offline owner tool supports `init`, `restore-check`
-and, in its explicit `unlock` build, signing an enrollment challenge. It does
-not yet expose the additional custody-transcript signature required by the
-HTTP completion route; that signing bridge remains an integration gap. Key
-creation must be initiated by the owner; operators must not generate owner keys
-or fabricate comparison evidence. Retain the recovery material outside the
-service. A login or device pairing is not this trust decision.
+and, in its explicit `unlock` build, the separate
+[`custody-sign` operation](offline-owner-cli.md#candidate-custody-signing-disabled-by-default).
+It verifies the existing encrypted bundle and exact enrollment challenge against
+the independently supplied account, origin and fingerprint before requesting
+recovery material. Explicit `CUSTODY` consent, authenticated recovery and a fresh
+expiry check are required before it emits the distinct enrollment and custody
+signatures. `UNLOCK` consent does not authorize custody publication. The command
+contacts no server and completes no enrollment; submit its public signatures only
+with the exact reviewed challenge and encrypted/public artifacts through the
+ceremony below. Key creation must be initiated by the owner; operators must not
+generate owner keys or fabricate comparison evidence. Retain the recovery
+material outside the service. A login or device pairing is not this trust decision.
 
 The authenticated owner submits the public root pin, encrypted backup and public
 card with the independently compared fingerprint to the challenge route. Completion requires signatures over that exact returned challenge and
