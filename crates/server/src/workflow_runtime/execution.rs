@@ -24,6 +24,7 @@ pub const IMMEDIATE_WINDOW_ID: &str = "immediate-v1";
 pub enum SendOutcome {
     WaitingOwnerBinding,
     WaitingWindow,
+    WaitingPhone,
     Prepared { message_id: Uuid, dispatch_id: Uuid },
 }
 
@@ -86,15 +87,27 @@ pub async fn send_action(
                 .await
                 .map_err(error)?
             {
-                let actual = schedule::begin_dispatch_core(&mut permit, &lease, message)
-                    .await
-                    .map_err(error)?;
-                if actual != dispatch {
-                    return Err(AuthError::Forbidden);
-                }
-                SendOutcome::Prepared {
-                    message_id: message,
-                    dispatch_id: dispatch,
+                // Absence of a live connection is a negative observation only.
+                // This does not assert sealed readiness or replace the phone's
+                // independent grant/fetch/intent authorization fences.
+                let device = permit.scope.header.device;
+                let connected: bool = tx.query_one("SELECT EXISTS(SELECT 1 FROM device_sessions WHERE account_id=$1 AND device_id=$2 AND lease_until>clock_timestamp())", &[&key.account_id,&device]).await?.get(0);
+                if !connected {
+                    schedule::defer_core(&mut permit, &lease, schedule::Unavailable::Phone)
+                        .await
+                        .map_err(error)?;
+                    SendOutcome::WaitingPhone
+                } else {
+                    let actual = schedule::begin_dispatch_core(&mut permit, &lease, message)
+                        .await
+                        .map_err(error)?;
+                    if actual != dispatch {
+                        return Err(AuthError::Forbidden);
+                    }
+                    SendOutcome::Prepared {
+                        message_id: message,
+                        dispatch_id: dispatch,
+                    }
                 }
             } else {
                 SendOutcome::WaitingWindow
@@ -110,6 +123,17 @@ pub async fn send_action(
             }
         }
     } else {
+        if let Some(occurrence) = occurrence
+            && let Some(lease) = schedule::claim_core(&mut permit, occurrence)
+                .await
+                .map_err(error)?
+        {
+            // Renderer means unavailable authorized ciphertext/binding, not
+            // a guessed provider or renderer-process health observation.
+            schedule::defer_core(&mut permit, &lease, schedule::Unavailable::Renderer)
+                .await
+                .map_err(error)?;
+        }
         SendOutcome::WaitingOwnerBinding
     };
     store::record_result(
