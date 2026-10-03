@@ -91,15 +91,34 @@ internal class SealedLineActivationProvider(private val selection: SealedLineAcc
 internal object SealedLineActivationMount {
     private var selection: SealedLineAcceptance? = null
     private var revision = 0L
-    @Synchronized fun enable(value: SealedLineAcceptance, explicitlyAccepted: Boolean = false): Boolean {
-        if (!explicitlyAccepted) return false
-        selection = value; revision += 1; return true
+    private var originalHostCurrent: () -> Boolean = { false }
+    fun enable(value: SealedLineAcceptance, explicitlyAccepted: Boolean = false,
+               originCurrent: () -> Boolean = { false }): Boolean =
+        enableOwned(value, explicitlyAccepted, originCurrent) != null
+    /** Closing an obsolete phone review cannot withdraw a newer explicit acceptance. */
+    fun enableOwned(value: SealedLineAcceptance, explicitlyAccepted: Boolean = false,
+                    originCurrent: () -> Boolean): AutoCloseable? {
+        if (!explicitlyAccepted || !runCatching(originCurrent).getOrDefault(false)) return null
+        val owner = synchronized(this) {
+            selection = value; originalHostCurrent = originCurrent; revision += 1; revision
+        }
+        return AutoCloseable {
+            synchronized(this) { if (revision == owner) disable() }
+        }
     }
-    @Synchronized fun disable() { selection = null; revision += 1 }
+    @Synchronized fun disable() { selection = null; originalHostCurrent = { false }; revision += 1 }
     private fun configured(): Pair<SealedLineAcceptance, Long>? = synchronized(this) {
         selection?.let { it to revision }
     }
-    private fun stillSelected(expected: Long) = synchronized(this) { selection != null && revision == expected }
+    private fun stillSelected(expected: Long): Boolean {
+        val guard = synchronized(this) {
+            if (selection == null || revision != expected) return false
+            originalHostCurrent
+        }
+        // Never invoke the service/host guard under the global mount monitor.
+        if (!runCatching(guard).getOrDefault(false)) return false
+        return synchronized(this) { selection != null && revision == expected && originalHostCurrent === guard }
+    }
     fun open(context: Context, keys: DeviceSigningKeyStore, account: UUID, deviceId: UUID,
              epoch: Long, sessionCurrent: () -> Boolean): SealedLineActivationProvider? {
         val (accepted, version) = configured() ?: return null // No preferences/DAO/Keystore read while disabled.
