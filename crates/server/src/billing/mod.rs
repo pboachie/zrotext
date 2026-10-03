@@ -21,6 +21,7 @@ pub mod risk;
 pub mod sessions;
 pub(crate) mod usage;
 pub mod usage_errors;
+pub mod usage_reconciliation;
 pub mod usage_review;
 pub mod worker;
 
