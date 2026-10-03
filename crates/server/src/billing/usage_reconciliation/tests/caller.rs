@@ -136,21 +136,18 @@ async fn tls(replies: Vec<Reply>) -> (TestUsageReconciler, tokio::task::JoinHand
             }
             let _ = stream.shutdown().await;
         }
-        if probe_redirect {
-            if let Ok(Ok((socket, _))) =
+        if probe_redirect
+            && let Ok(Ok((socket, _))) =
                 tokio::time::timeout(Duration::from_millis(250), listener.accept()).await
-            {
-                let mut stream = acceptor.accept(socket).await.unwrap();
-                let mut bytes = [0; 8192];
-                let n = stream.read(&mut bytes).await.unwrap();
-                assert!(n > 0);
-                paths.push("redirect_followed".into());
-                let _ = stream
-                    .write_all(
-                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
-                    )
-                    .await;
-            }
+        {
+            let mut stream = acceptor.accept(socket).await.unwrap();
+            let mut bytes = [0; 8192];
+            let n = stream.read(&mut bytes).await.unwrap();
+            assert!(n > 0);
+            paths.push("redirect_followed".into());
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                .await;
         }
         paths
     });
