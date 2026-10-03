@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
-import {mkdtemp,writeFile,rm} from 'node:fs/promises';
+import {mkdtemp,writeFile,rm,readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {parseOptions,selectExecutable,ReadyParser,serverPassed,SERVER_TEST,capture,executableDigest} from '../../../scripts/sealed_setup_ci_driver.mjs';
 const id='11111111-1111-4111-8111-111111111111',root=path.resolve('fixture-root'),manifest=path.join(root,'crates/server/Cargo.toml'),exe=path.join(root,'target/fixture.exe');
@@ -15,7 +15,20 @@ test('explicit compiled overrides require absolute paths and independent source 
 test('readiness supports actual selected libtest framing and chunked transport',()=>{for(const prefix of ['ZT_OWNER_SETUP_READY ',`test ${SERVER_TEST} ... ZT_OWNER_SETUP_READY `]){const parser=new ReadyParser(),raw=Buffer.from(record(prefix));assert.equal(parser.feed(raw.subarray(0,30)),null);assert.deepEqual(parser.feed(raw.subarray(30)),ready());}});
 for(const [name,raw]of [['duplicate',record('ZT_OWNER_SETUP_READY ')+record('ZT_OWNER_SETUP_READY ')],['lookalike',record('wrong prefix ZT_OWNER_SETUP_READY ')],['bad json','ZT_OWNER_SETUP_READY {invalid}\n'],['wrong fixture','ZT_OWNER_SETUP_READY '+JSON.stringify({...ready(),synthetic:false})+'\n'],['oversized','x'.repeat(1048577)]])test('readiness rejects '+name,()=>{assert.throws(()=>new ReadyParser().feed(Buffer.from(raw)));});
 test('terminal fixture result requires actual one-pass zero-fail zero-ignore summary',()=>{const summary='test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 20 filtered out; finished in 1.00s\n';assert.equal(serverPassed(summary),true);assert.equal(serverPassed(summary.replace('1 passed','0 passed')),false);assert.equal(serverPassed(summary.replace('0 ignored','1 ignored')),false);assert.equal(serverPassed(summary+summary),false);});
-test('subprocess diagnostic overflow rejects without returning raw material',async()=>{await assert.rejects(capture(process.execPath,['-e',"process.stdout.write('x'.repeat(2048))"],{maximum:1024,timeoutMs:2000}),/exceeded bound/);});
+test('subprocess diagnostic overflow rejects without returning raw material',async()=>{await assert.rejects(capture(process.execPath,['-e',"process.stdout.write('x'.repeat(2048));setInterval(()=>{},1000)"],{maximum:1024,timeoutMs:2000}),/exceeded bound/);});
 test('subprocess absolute deadline rejects a child that never terminates',async()=>{await assert.rejects(capture(process.execPath,['-e','setInterval(()=>{},1000)'],{timeoutMs:30}),/exceeded bound/);});
 
 test('binary digest records actual bytes and detects changed executable',async()=>{const directory=await mkdtemp(path.join(tmpdir(),'sealed-setup-digest-'));try{const file=path.join(directory,'fixture.exe');await writeFile(file,'first');const first=await executableDigest(file);assert.equal(first,createHash('sha256').update('first').digest('hex'));await writeFile(file,'second');assert.notEqual(await executableDigest(file),first);}finally{await rm(directory,{recursive:true,force:true});}});
+
+test('capture timeout terminates the owned grandchild before rejection',async()=>{
+  const directory=await mkdtemp(path.join(tmpdir(),'sealed-setup-tree-'));const heartbeat=path.join(directory,'heartbeat'),pidFile=path.join(directory,'pid');let grandchild;
+  try{
+    const leaf="const fs=require('node:fs');setInterval(()=>fs.appendFileSync(process.argv[1],'x'),40);";
+    const parent="const {spawn}=require('node:child_process');const fs=require('node:fs');const child=spawn(process.execPath,['-e',process.argv[1],process.argv[2]],{stdio:'ignore',detached:process.platform==='win32'});fs.writeFileSync(process.argv[3],String(child.pid));setInterval(()=>{},1000);";
+    await assert.rejects(capture(process.execPath,['-e',parent,leaf,heartbeat,pidFile],{timeoutMs:1500}),/exceeded bound/);
+    grandchild=Number(await readFile(pidFile,'utf8'));assert.ok(Number.isSafeInteger(grandchild)&&grandchild>0);
+    const before=await readFile(heartbeat,'utf8');assert.ok(before.length>0,'Grandchild ran before cancellation');
+    await new Promise(resolve=>setTimeout(resolve,200));assert.equal(await readFile(heartbeat,'utf8'),before,'Heartbeat must stop before timeout rejection');
+    assert.throws(()=>process.kill(grandchild,0),error=>error.code==='ESRCH','Owned grandchild no longer exists');
+  }finally{if(grandchild)try{process.kill(grandchild);}catch{}await rm(directory,{recursive:true,force:true});}
+});

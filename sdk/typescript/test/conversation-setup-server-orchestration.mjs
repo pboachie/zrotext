@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import https from 'node:https';
-import { spawn } from 'node:child_process';
+import {CleanupFailure,runOwnedProcess} from './owned-process-fixture.mjs';
 import { isAbsolute } from 'node:path';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
@@ -62,15 +62,8 @@ export async function invokeNativeFixture(executable,request){
   bytes(request,1,8192);
   const decoded=JSON.parse(Buffer.from(request,'hex'));const operation=decoded.operation;
   const test=nativeTest(operation);
-  return new Promise((resolve,reject)=>{
-    const child=spawn(executable,['--exact',test,'--nocapture','--test-threads=1'],{windowsHide:true,shell:false,env:{SystemRoot:process.env.SystemRoot,ZT_OWNER_SETUP_INTEROP_REQUEST_HEX:request}});
-    let output='',size=0,failed=false;
-    const fail=()=>{if(!failed){failed=true;child.kill();reject(Error('Native fixture refused or exceeded its execution bound'));}};
-    const timer=setTimeout(fail,60000);
-    child.stdout.on('data',chunk=>{size+=chunk.length;if(size>MAX_OUTPUT)fail();else output+=chunk.toString('utf8');});
-    child.stderr.on('data',chunk=>{size+=chunk.length;if(size>MAX_OUTPUT)fail();});
-    child.on('error',fail);child.on('close',code=>{clearTimeout(timer);if(failed)return;if(code!==0){fail();return;}try{resolve(parseNativeResult(output,operation));}catch{fail();}});
-  });
+  const output=await runOwnedProcess(executable,['--exact',test,'--nocapture','--test-threads=1'],{env:{SystemRoot:process.env.SystemRoot,ZT_OWNER_SETUP_INTEROP_REQUEST_HEX:request},timeoutMs:60000,maximum:MAX_OUTPUT});
+  return parseNativeResult(output,operation);
 }
 export function verifyIndependentScope(scope,expected,kind,challenge,now=Date.now()){
   const common=['account','origin','rootFingerprint','user','session','challenge','nonce','issued','expires'];
@@ -119,7 +112,7 @@ export function allowFrontendRequest(origin,url,headers){
 /** Invoke from a supported, escalated fixture tool process. No elevation or
  * console restrictions are bypassed here; native failures remain failures. */
 export async function runCompiledSetupAcceptance({browser,ready,nativeExecutable,tls}){
-  const r=validateReady(ready),control=fixtureControl(r);let frontend;
+  const r=validateReady(ready),control=fixtureControl(r);let frontend,failure;
   try{
     const prepared=await invokeNativeFixture(nativeExecutable,nativeRequest('prepareRootFixture',{account:r.baseline.accountId,origin:r.origin}));
     const artifacts=prepared.artifacts,pin=bytes(artifacts.rootPin,94);assert.equal(hex(pin.subarray(29)),rootPoint,'Independent literal fixture root required');assert.equal(hash(Buffer.from('ZTSE/root-pin/v2\0'),pin),artifacts.rootFingerprint);
@@ -130,5 +123,5 @@ export async function runCompiledSetupAcceptance({browser,ready,nativeExecutable
       signLineRegistration:async({unsigned,expected})=>{const parsed=parseRegistration(unsigned),scope=verifyIndependentScope((await control('line_sign_scope',parsed.challenge)).expected,expected,'line',parsed.challenge);const result=await invokeNativeFixture(nativeExecutable,nativeRequest('signLineRegistration',scope,artifacts,unsigned));assert.deepEqual(result.artifacts,artifacts);return bytes(result.signatures.rootSignature,64);},
       submitPhoneProof:async({challenge})=>{await control('submit_phone_proof',challenge.challenge_id);},acknowledgePhone:async({challenge})=>{await control('acknowledge_phone',challenge.challenge_id);}
     });
-  }finally{try{await frontend?.close();}finally{await control('finish');}}
+  }catch(error){failure=error;throw error;}finally{try{try{await frontend?.close();}finally{await control('finish');}}catch(error){if(!(failure instanceof CleanupFailure))throw error;}}
 }

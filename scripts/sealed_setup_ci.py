@@ -124,6 +124,36 @@ def cleanup_owned_directory(directory, cluster):
     shutil.rmtree(actual)
 
 
+class ProcessCleanupFailure(RuntimeError):
+    pass
+
+
+def launch_consumer(command, env, public_input, timeout=2400):
+    child = subprocess.Popen(command, cwd=ROOT, env=env, stdin=subprocess.PIPE, text=True)
+    try:
+        child.communicate(public_input, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # /PID targets this exact child; /T includes only its descendants. Never
+        # kill by image name. Require taskkill success AND the child's receipt.
+        try:
+            taskkill = Path(os.environ["SystemRoot"]) / "System32" / "taskkill.exe"
+            subprocess.run([str(taskkill), "/PID", str(child.pid), "/T", "/F"],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=15, check=True)
+            child.wait(timeout=10)
+        except (KeyError, OSError, subprocess.SubprocessError) as error:
+            raise ProcessCleanupFailure("Owned consumer termination unknown") from error
+        raise subprocess.TimeoutExpired(command[0], timeout) from None
+    if child.returncode == 2:
+        raise ProcessCleanupFailure("Consumer could not confirm owned process cleanup")
+    if child.returncode:
+        raise subprocess.CalledProcessError(child.returncode, command[0])
+
+
+def native_host_supported():
+    return os.name == "nt"
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tools", required=True)
@@ -134,8 +164,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     cluster = None
     failed = False
+    cleanup_safe = True
     try:
-        if os.name != "nt":
+        if not native_host_supported():
             raise ValueError("Protected native composition requires Windows")
         if not args.existing_database and not os.environ.get("RUNNER_TEMP"):
             raise ValueError("Owned CI PostgreSQL requires the runner temporary directory")
@@ -157,11 +188,14 @@ def main(argv=None):
                 value = getattr(args, name.replace("-", "_"))
                 if value:
                     command.extend(["--" + name, value])
-            subprocess.run(command, cwd=ROOT, env=env,
-                           input=json.dumps(tls_fixture()), text=True, timeout=2400, check=True)
+            launch_consumer(command, env, json.dumps(tls_fixture()))
+        except ProcessCleanupFailure:
+            cleanup_safe = False
+            raise
         finally:
-            cleanup_owned_directory(temporary, cluster)
-    except (ValueError, OSError, subprocess.SubprocessError):
+            if cleanup_safe:
+                cleanup_owned_directory(temporary, cluster)
+    except (ValueError, OSError, subprocess.SubprocessError, ProcessCleanupFailure):
         failed = True
         print("Explicit sealed setup fixture failed; private inputs withheld.")
     return 1 if failed else 0

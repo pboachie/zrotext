@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Explicit compiled fixtures, never a product launcher or Node root signer.
 import assert from 'node:assert/strict';
+import {CleanupFailure,terminateOwnedTree,runOwnedProcess} from '../sdk/typescript/test/owned-process-fixture.mjs';
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {createReadStream} from 'node:fs';
@@ -41,12 +42,7 @@ export class ReadyParser{
 }
 export function serverPassed(output){return [...output.matchAll(/^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9.]+s\r?$/gm)].length===1;}
 async function executable(value){assert.ok(path.isAbsolute(value)&&value.toLowerCase().endsWith('.exe'));const stat=await lstat(value);assert.ok(stat.isFile()&&!stat.isSymbolicLink());const actual=await realpath(value);assert.ok(samePath(actual,path.normalize(value)),'Linked executable refused');return actual;}
-export async function capture(command,args,{cwd=repo,env=process.env,timeoutMs=1200000,maximum=MAX_OUTPUT}={}){
-  return new Promise((resolve,reject)=>{const child=spawn(command,args,{cwd,env,windowsHide:true,shell:false,stdio:['ignore','pipe','pipe']});let size=0,output='',done=false;
-    const timer=setTimeout(()=>fail(),timeoutMs);function fail(){if(done)return;done=true;clearTimeout(timer);child.kill();reject(Error('Fixture subprocess failed or exceeded bound'));}
-    child.stdout.on('data',chunk=>{size+=chunk.length;if(size>maximum)fail();else output+=chunk.toString('utf8');});child.stderr.on('data',chunk=>{size+=chunk.length;if(size>maximum)fail();});child.on('error',fail);child.on('close',code=>{clearTimeout(timer);if(done)return;if(code!==0){fail();return;}done=true;resolve(output);});
-  });
-}
+export const capture=(command,args,options={})=>runOwnedProcess(command,args,{cwd:repo,...options});
 export async function executableDigest(value){const hash=createHash('sha256');for await(const chunk of createReadStream(value))hash.update(chunk);return hash.digest('hex');}
 async function compiled(options,kind){
   if(options[kind+'-executable'])return executable(options[kind+'-executable']);
@@ -57,7 +53,7 @@ async function tlsInput(){let size=0,parts=[];for await(const chunk of process.s
 async function reservePort(){const address=(await lookup('localhost',{family:4})).address;assert.ok(address.startsWith('127.'));const socket=net.createServer();await new Promise((resolve,reject)=>{socket.once('error',reject);socket.listen(0,address,resolve);});const port=socket.address().port;await new Promise(resolve=>socket.close(resolve));return port;}
 async function deadline(promise,milliseconds){let timer;try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Fixture deadline exceeded')),milliseconds);})]);}finally{clearTimeout(timer);}}
 export async function main(args=process.argv.slice(2)){
-  let stage='prerequisites',assets,server,browser,ready,serverExit,exited,overallTimer;const parser=new ReadyParser();let output='';
+  let stage='prerequisites',assets,server,browser,ready,serverExit,exited,overallTimer,unsafeCleanup=false,termination;const parser=new ReadyParser();let output='';
   try{
     const options=parseOptions(args);assert.equal(process.platform,'win32','Protected native consumer requires Windows');assert.ok(process.env.ZT_INBOUND_TEST_DATABASE_URL&&process.env.DATABASE_ALLOW_PLAINTEXT==='true','Explicit disposable database required');
     const driverSource=(await capture('git',['rev-parse','HEAD'],{timeoutMs:10000})).trim();assert.match(driverSource,/^[0-9a-f]{40}$/);
@@ -65,16 +61,17 @@ export async function main(args=process.argv.slice(2)){
     const serverSha256=await executableDigest(serverExecutable),nativeSha256=await executableDigest(nativeExecutable);
     stage='browser-package';assets=await mkdtemp(path.join(tmpdir(),'sealed-setup-browser-'));await capture(process.execPath,[path.join(repo,'scripts/package_conversation_browser.mjs'),assets],{timeoutMs:30000});
     const origin=`https://owner.example.test:${await reservePort()}`;stage='server-readiness';let resolveReady,rejectReady;const readiness=new Promise((resolve,reject)=>{resolveReady=resolve;rejectReady=reject;});
-    server=spawn(serverExecutable,['--exact',SERVER_TEST,'--ignored','--nocapture','--test-threads=1'],{cwd:repo,windowsHide:true,shell:false,stdio:['ignore','pipe','pipe'],env:{...process.env,ZT_OWNER_SETUP_FIXTURE_ORIGIN:origin,ZT_OWNER_SETUP_BROWSER_ASSETS:assets}});
+    server=spawn(serverExecutable,['--exact',SERVER_TEST,'--ignored','--nocapture','--test-threads=1'],{cwd:repo,windowsHide:true,shell:false,detached:process.platform!=='win32',stdio:['ignore','pipe','pipe'],env:{...process.env,ZT_OWNER_SETUP_FIXTURE_ORIGIN:origin,ZT_OWNER_SETUP_BROWSER_ASSETS:assets}});
     exited=new Promise(resolve=>server.once('close',code=>{serverExit=code;if(!ready)rejectReady(Error('Fixture exited before readiness'));resolve(code);}));server.once('error',()=>rejectReady(Error('Fixture launch failed')));
-    let size=0;const collect=(chunk,stdout)=>{size+=chunk.length;if(size>1048576){server.kill();rejectReady(Error('Fixture diagnostics exceeded bound'));return;}output+=chunk.toString('utf8');if(stdout)try{const value=parser.feed(chunk);if(value){ready=value;resolveReady(value);}}catch{server.kill();rejectReady(Error('Fixture readiness refused'));}};
+    const stopServer=()=>{termination??=terminateOwnedTree(server,exited).catch(()=>{unsafeCleanup=true;});return termination;};
+    let size=0;const collect=(chunk,stdout)=>{size+=chunk.length;if(size>1048576){void stopServer();rejectReady(Error('Fixture diagnostics exceeded bound'));return;}output+=chunk.toString('utf8');if(stdout)try{const value=parser.feed(chunk);if(value){ready=value;resolveReady(value);}}catch{void stopServer();rejectReady(Error('Fixture readiness refused'));}};
     server.stdout.on('data',chunk=>collect(chunk,true));server.stderr.on('data',chunk=>collect(chunk,false));ready=await deadline(readiness,60000);assert.equal(ready.origin,origin);
     stage='compiled-browser-native-consumption';const require=createRequire(import.meta.url);const {chromium}=require(require.resolve('playwright',{paths:[options.tools]}));browser=await chromium.launch({headless:true,args:[`--host-resolver-rules=MAP owner.example.test ${(await lookup('localhost',{family:4})).address}`,'--no-proxy-server']});
-    const acceptance=runCompiledSetupAcceptance({browser,ready,nativeExecutable,tls});overallTimer=setTimeout(()=>{browser?.close().catch(()=>{});server?.kill();},240000);const result=await deadline(acceptance,240000);clearTimeout(overallTimer);await browser.close();browser=null;
+    const acceptance=runCompiledSetupAcceptance({browser,ready,nativeExecutable,tls});overallTimer=setTimeout(()=>{browser?.close().catch(()=>{});void stopServer();},240000);const result=await deadline(acceptance,240000);clearTimeout(overallTimer);await browser.close();browser=null;
     stage='server-terminal';assert.equal(await deadline(exited,20000),0);assert.ok(serverPassed(output),'Compiled fixture assertions must pass');assert.deepEqual(new ReadyParser().feed(Buffer.from(output)),ready);
     assert.equal(await executableDigest(serverExecutable),serverSha256,'Server executable changed');assert.equal(await executableDigest(nativeExecutable),nativeSha256,'Native executable changed');
     console.log(JSON.stringify({stage:'PASS-COMPILED-SETUP-FIXTURE',result,driverSource,serverSourceLabel:options['server-source']||driverSource,nativeSourceLabel:options['native-source']||driverSource,serverSourceMode:options['server-executable']?'caller-supplied-source-label':'cargo-json-current-source',nativeSourceMode:options['native-executable']?'caller-supplied-source-label':'cargo-json-current-source',serverSha256,nativeSha256,physicalDevice:false,carrierSms:false}));return 0;
-  }catch{console.error(`Sealed setup fixture failed at ${stage}; private readiness and signing material withheld.`);return 1;}
-  finally{clearTimeout(overallTimer);await browser?.close().catch(()=>{});if(ready&&serverExit===undefined)await fixtureControl(ready)('finish').catch(()=>{});if(server&&serverExit===undefined){try{await deadline(exited,15000);}catch{server.kill();try{await deadline(exited,5000);}catch{throw Error('Owned fixture process did not stop');}}}if(assets){assert.ok(path.dirname(assets)===path.resolve(tmpdir())&&path.basename(assets).startsWith('sealed-setup-browser-'));await rm(assets,{recursive:true,force:true});}}
+  }catch(error){if(error instanceof CleanupFailure)unsafeCleanup=true;console.error(`Sealed setup fixture failed at ${stage}; private readiness and signing material withheld.`);return unsafeCleanup?2:1;}
+  finally{clearTimeout(overallTimer);await browser?.close().catch(()=>{});if(ready&&serverExit===undefined)await fixtureControl(ready)('finish').catch(()=>{});if(server&&serverExit===undefined){try{await deadline(exited,15000);}catch{try{await terminateOwnedTree(server,exited);}catch{unsafeCleanup=true;}}}await termination;if(unsafeCleanup){process.exitCode=2;throw new CleanupFailure('Owned processes not confirmed stopped; staging retained');}if(assets){assert.ok(path.dirname(assets)===path.resolve(tmpdir())&&path.basename(assets).startsWith('sealed-setup-browser-'));await rm(assets,{recursive:true,force:true});}}
 }
-if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))process.exitCode=await main();
+if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))try{process.exitCode=await main();}catch{console.error('Owned process cleanup failed; staging retained and private inputs withheld.');process.exitCode=2;}

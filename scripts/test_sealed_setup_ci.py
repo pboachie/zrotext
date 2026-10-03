@@ -95,6 +95,52 @@ class SetupCiTest(unittest.TestCase):
                 driver.cleanup_owned_directory(owned, cluster)
             self.assertFalse(owned.exists())
 
+    def test_outer_timeout_waits_for_pid_scoped_tree_termination(self):
+        child = unittest.mock.Mock(pid=123, returncode=-1)
+        child.communicate.side_effect = subprocess.TimeoutExpired("node", 1)
+        with patch.object(driver.subprocess, "Popen", return_value=child), \
+                patch.object(driver.subprocess, "run") as terminate, \
+                patch.dict(driver.os.environ, {"SystemRoot": str(Path("fixture-system").resolve())}):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                driver.launch_consumer(["node"], {}, "{}", timeout=1)
+            self.assertEqual(terminate.call_args.args[0][1:], ["/PID", "123", "/T", "/F"])
+            child.wait.assert_called_once_with(timeout=10)
+
+    def test_outer_termination_failure_requires_staging_preservation(self):
+        child = unittest.mock.Mock(pid=123)
+        child.communicate.side_effect = subprocess.TimeoutExpired("node", 1)
+        with patch.object(driver.subprocess, "Popen", return_value=child), \
+                patch.object(driver.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "taskkill")), \
+                patch.dict(driver.os.environ, {"SystemRoot": str(Path("fixture-system").resolve())}):
+            with self.assertRaises(driver.ProcessCleanupFailure):
+                driver.launch_consumer(["node"], {}, "{}", timeout=1)
+            child.wait.assert_not_called()
+
+    def test_consumer_unknown_cleanup_receipt_refuses_pg_cleanup(self):
+        child = unittest.mock.Mock(returncode=2)
+        with patch.object(driver.subprocess, "Popen", return_value=child):
+            with self.assertRaises(driver.ProcessCleanupFailure):
+                driver.launch_consumer(["node"], {}, "{}")
+
+    def test_main_preserves_pg_and_staging_on_consumer_cleanup_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            owned = Path(temporary) / "sealed-setup-ci-retained"
+            owned.mkdir()
+            marker = owned / "fixture-only"
+            marker.write_bytes(b"preserve")
+            cluster = unittest.mock.Mock()
+            cluster.start.return_value = "postgresql://fixture@localhost:4444/postgres"
+            with patch.dict(driver.os.environ, {"RUNNER_TEMP": temporary}), \
+                    patch.object(driver.tempfile, "mkdtemp", return_value=str(owned)), \
+                    patch.object(driver, "OwnedCluster", return_value=cluster), \
+                    patch.object(driver, "native_host_supported", return_value=True), \
+                    patch.object(driver, "tls_fixture", return_value={}), \
+                    patch.object(driver, "launch_consumer", side_effect=driver.ProcessCleanupFailure("fixture")):
+                self.assertEqual(driver.main(["--tools", temporary, "--pg-bin", temporary]), 1)
+            cluster.start.assert_called_once()
+            cluster.close.assert_not_called()
+            self.assertEqual(marker.read_bytes(), b"preserve")
+
 
 if __name__ == "__main__":
     unittest.main()
