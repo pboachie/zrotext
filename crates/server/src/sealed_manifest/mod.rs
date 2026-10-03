@@ -27,7 +27,7 @@ fn u64_be(data: &[u8]) -> Result<u64, &'static str> {
     Ok(value)
 }
 
-fn key_id(role: u8, point: &[u8]) -> [u8; 32] {
+pub(crate) fn key_id(role: u8, point: &[u8]) -> [u8; 32] {
     let algorithm = if role <= 3 { [0, 0x10] } else { [1, 1] };
     Sha256::digest([b"ZTSE/key/v1\0".as_slice(), &algorithm, point].concat()).into()
 }
