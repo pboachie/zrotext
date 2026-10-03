@@ -24,12 +24,29 @@ class SetupCiTest(unittest.TestCase):
                     patch.object(driver, "OwnedCluster", return_value=cluster), \
                     patch.object(driver, "cleanup_owned_directory") as cleanup, redirect_stdout(output):
                 self.assertEqual(driver.main(["--tools", temporary, "--pg-bin", temporary]), 1)
-            self.assertEqual(output.getvalue(), "Explicit sealed setup fixture failed at cluster-initialization; private inputs withheld.\n")
+            self.assertEqual(output.getvalue(), "Explicit sealed setup fixture failed at cluster-initialization (fixture-error); private inputs withheld.\n")
             cleanup.assert_called_once()
             # The mocked cleanup did not remove the newly owned empty fixture.
             owned = cleanup.call_args.args[0]
             self.assertEqual(owned.parent.resolve(), Path(tempfile.gettempdir()).resolve())
             owned.rmdir()
+
+    def test_tool_failure_reports_only_allowlisted_category(self):
+        for material, expected in ((b"private-fixture restricted token secret", "restricted-token"),
+                                   (b"private-fixture permission denied secret", "permission-denied"),
+                                   (b"private-fixture unknown secret", "tool-exit")):
+            result = subprocess.CompletedProcess([], 1, stdout=material)
+            with patch.object(driver.subprocess, "run", return_value=result):
+                with self.assertRaises(driver.FixtureToolFailure) as caught:
+                    driver.quiet(["fixture-tool"], classify_failure=True)
+            self.assertEqual(caught.exception.category, expected)
+            self.assertEqual(str(caught.exception), "Owned fixture tool failed")
+
+    def test_background_tool_keeps_output_handles_discarded(self):
+        with patch.object(driver.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
+            driver.quiet(["fixture-tool"])
+        self.assertEqual(run.call_args.kwargs["stdout"], subprocess.DEVNULL)
+        self.assertEqual(run.call_args.kwargs["stderr"], subprocess.DEVNULL)
 
     def test_database_is_explicit_credential_free_loopback(self):
         self.assertEqual(driver.database_url("postgresql://fixture@localhost:4444/postgres"),
@@ -93,7 +110,7 @@ class SetupCiTest(unittest.TestCase):
             for name in ("pg_ctl", "initdb"):
                 (tools / (name + (".exe" if os.name == "nt" else ""))).write_bytes(b"fixture")
             calls = []
-            with patch.object(driver, "quiet", side_effect=lambda command: calls.append(command)), \
+            with patch.object(driver, "quiet", side_effect=lambda command, **_options: calls.append(command)), \
                     patch.object(driver, "reserve_port", return_value=4444), \
                     patch.object(driver.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)):
                 cluster = driver.OwnedCluster(owned, tools)

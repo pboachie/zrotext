@@ -98,12 +98,42 @@ def reserve_port():
         return listener.getsockname()[1]
 
 
-def quiet(command, timeout=60):
+class FixtureToolFailure(ValueError):
+    def __init__(self, category):
+        self.category = category
+        super().__init__("Owned fixture tool failed")
+
+
+def tool_failure_category(output):
+    # Never return subprocess text, paths, identifiers or environment values.
+    text = output.lower()
+    for marker, category in (
+            (b"restricted token", "restricted-token"),
+            (b"permission denied", "permission-denied"),
+            (b"access is denied", "permission-denied"),
+            (b"invalid locale", "locale-unavailable"),
+            (b"could not find suitable text search configuration", "locale-unavailable"),
+            (b"no space left", "disk-capacity"),
+            (b"not enough space", "disk-capacity"),
+            (b"could not execute", "child-execution"),
+            (b"postgresql version", "tool-version")):
+        if marker in text:
+            return category
+    return "tool-exit"
+
+
+def quiet(command, timeout=60, classify_failure=False):
     # PostgreSQL setup output contains no credentials; withhold even filesystem
-    # paths on error. The bound is time, with diagnostics discarded entirely.
-    subprocess.run([str(value) for value in command], stdin=subprocess.DEVNULL,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                   timeout=timeout, check=True)
+    # paths on error. Only finite initdb output is classified in memory. Never
+    # pipe pg_ctl start: its background server can inherit an open output handle.
+    result = subprocess.run([str(value) for value in command], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE if classify_failure else subprocess.DEVNULL,
+                            stderr=subprocess.STDOUT if classify_failure else subprocess.DEVNULL,
+                            timeout=timeout, check=False)
+    if result.returncode:
+        if classify_failure:
+            raise FixtureToolFailure(tool_failure_category(result.stdout or b""))
+        raise subprocess.CalledProcessError(result.returncode, str(command[0]))
 
 
 class OwnedCluster:
@@ -116,7 +146,8 @@ class OwnedCluster:
         self.stage = "cluster-initialization"
 
     def start(self):
-        quiet([self.initialize, "-D", self.data, "-U", "fixture", "-A", "trust", "--no-locale"])
+        quiet([self.initialize, "-D", self.data, "-U", "fixture", "-A", "trust", "--no-locale"],
+              classify_failure=True)
         self.stage = "cluster-start"
         port = reserve_port()
         self.attempted = True
@@ -224,12 +255,13 @@ def main(argv=None):
         finally:
             if cleanup_safe:
                 cleanup_owned_directory(temporary, cluster)
-    except (ValueError, OSError, subprocess.SubprocessError, ProcessCleanupFailure):
+    except (ValueError, OSError, subprocess.SubprocessError, ProcessCleanupFailure) as error:
         failed = True
         # These fixed stage names contain no caller input or diagnostic material.
         if stage == "cluster-start" and cluster is not None:
             stage = cluster.stage
-        print(f"Explicit sealed setup fixture failed at {stage}; private inputs withheld.")
+        category = error.category if isinstance(error, FixtureToolFailure) else "fixture-error"
+        print(f"Explicit sealed setup fixture failed at {stage} ({category}); private inputs withheld.")
     return 1 if failed else 0
 
 
