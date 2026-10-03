@@ -28,7 +28,7 @@ class SetupCiTest(unittest.TestCase):
             cleanup.assert_called_once()
             # The mocked cleanup did not remove the newly owned empty fixture.
             owned = cleanup.call_args.args[0]
-            self.assertEqual(owned.parent, Path(tempfile.gettempdir()).resolve())
+            self.assertEqual(owned.parent.resolve(), Path(tempfile.gettempdir()).resolve())
             owned.rmdir()
 
     def test_database_is_explicit_credential_free_loopback(self):
