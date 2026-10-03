@@ -265,16 +265,17 @@ impl Scratch {
     }
 }
 #[test]
-fn repository_anchor_is_refused_without_creating_scratch() {
+fn repository_anchor_is_refused_without_creating_scratch() -> io::Result<()> {
     let root = fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap();
     assert!(Scratch::at(&root).is_err());
+    Ok(())
 }
 #[test]
-fn substituted_child_is_preserved_and_refused() {
+fn substituted_child_is_preserved_and_refused() -> io::Result<()> {
     let scratch = Scratch::create().unwrap();
     let path = scratch.path.to_str().unwrap().to_owned();
     if path.contains("..") {
-        panic!("traversing fixture test path");
+        return Err(io::Error::other("traversing fixture test path"));
     }
     fs::remove_dir_all(&path).unwrap();
     fs::create_dir(&path).unwrap();
@@ -282,23 +283,31 @@ fn substituted_child_is_preserved_and_refused() {
     assert!(scratch.remove().is_err());
     assert!(Path::new(&path).join("sentinel").exists());
     fs::remove_dir_all(path).unwrap();
+    Ok(())
 }
 
 #[test]
-fn owned_scratch_removes_only_its_child() {
+fn owned_scratch_removes_only_its_child() -> io::Result<()> {
     let scratch = Scratch::create().unwrap();
-    let child = scratch.path.clone();
-    let parent = scratch.anchor.clone();
+    let child = scratch.path.to_str().unwrap().to_owned();
+    if child.contains("..") {
+        return Err(io::Error::other("traversing fixture child"));
+    }
+    let parent = scratch.anchor.to_str().unwrap().to_owned();
+    if parent.contains("..") {
+        return Err(io::Error::other("traversing fixture parent"));
+    }
     scratch.remove().unwrap();
-    assert!(!child.exists());
-    assert!(parent.is_dir());
+    assert!(!Path::new(&child).exists());
+    assert!(Path::new(&parent).is_dir());
+    Ok(())
 }
 #[test]
-fn changed_marker_preserves_child() {
+fn changed_marker_preserves_child() -> io::Result<()> {
     let scratch = Scratch::create().unwrap();
     let path = scratch.path.to_str().unwrap().to_owned();
     if path.contains("..") {
-        panic!("traversing fixture test path");
+        return Err(io::Error::other("traversing fixture test path"));
     }
     fs::write(
         Path::new(&path).join(".fixture-owner"),
@@ -308,29 +317,32 @@ fn changed_marker_preserves_child() {
     assert!(scratch.remove().is_err());
     assert!(Path::new(&path).exists());
     fs::remove_dir_all(path).unwrap();
+    Ok(())
 }
 
 #[test]
-fn raw_traversal_and_relative_anchors_are_refused() {
+fn raw_traversal_and_relative_anchors_are_refused() -> io::Result<()> {
     assert!(Scratch::configured(Path::new("synthetic/../other")).is_err());
     assert!(Scratch::configured(Path::new("synthetic-relative")).is_err());
     let anchor = std::env::temp_dir();
     assert!(Scratch::configured(&anchor.join("..")).is_err());
+    Ok(())
 }
 #[test]
-fn filesystem_root_is_refused() {
+fn filesystem_root_is_refused() -> io::Result<()> {
     let scratch = Scratch::create().unwrap();
     let root = scratch.anchor.ancestors().last().unwrap();
     assert!(Scratch::at(root).is_err());
     scratch.remove().unwrap();
+    Ok(())
 }
 
 #[test]
-fn recreated_marker_with_identical_bytes_is_preserved_and_refused() {
+fn recreated_marker_with_identical_bytes_is_preserved_and_refused() -> io::Result<()> {
     let scratch = Scratch::create().unwrap();
     let path = scratch.path.to_str().unwrap().to_owned();
     if path.contains("..") {
-        panic!("traversing fixture test path");
+        return Err(io::Error::other("traversing fixture test path"));
     }
     let marker = Path::new(&path).join(".fixture-owner");
     fs::rename(&marker, Path::new(&path).join("retained-original-marker")).unwrap();
@@ -338,14 +350,15 @@ fn recreated_marker_with_identical_bytes_is_preserved_and_refused() {
     assert!(scratch.remove().is_err());
     assert!(marker.exists());
     fs::remove_dir_all(path).unwrap();
+    Ok(())
 }
 #[cfg(unix)]
 #[test]
-fn linked_marker_is_preserved_and_refused() {
+fn linked_marker_is_preserved_and_refused() -> io::Result<()> {
     let scratch = Scratch::create().unwrap();
     let path = scratch.path.to_str().unwrap().to_owned();
     if path.contains("..") {
-        panic!("traversing fixture test path");
+        return Err(io::Error::other("traversing fixture test path"));
     }
     let marker = Path::new(&path).join(".fixture-owner");
     let original = Path::new(&path).join("retained-original-marker");
@@ -359,10 +372,11 @@ fn linked_marker_is_preserved_and_refused() {
             .is_symlink()
     );
     fs::remove_dir_all(path).unwrap();
+    Ok(())
 }
 
 #[test]
-fn direct_filesystem_helpers_refuse_traversal_before_inspection() {
+fn direct_filesystem_helpers_refuse_traversal_before_inspection() -> io::Result<()> {
     let scratch = Scratch::create().unwrap();
     // The target exists: identity() would succeed without its lexical guard.
     // Path::join can normalize parent components for Windows verbatim paths.
@@ -378,19 +392,25 @@ fn direct_filesystem_helpers_refuse_traversal_before_inspection() {
     assert!(checked(Path::new("relative")).is_err());
     assert!(identity(Path::new(".")).is_err());
     scratch.remove().unwrap();
+    Ok(())
 }
 #[test]
-fn changed_child_path_cannot_remove_another_owned_scratch() {
+fn changed_child_path_cannot_remove_another_owned_scratch() -> io::Result<()> {
     let mut first = Scratch::create().unwrap();
     let second = Scratch::create().unwrap();
     let original = first.path.clone();
     first.path = second.path.clone();
     assert!(first.remove().is_err());
-    assert!(second.path.exists());
+    let second_path = second.path.to_str().unwrap().to_owned();
+    if second_path.contains("..") {
+        return Err(io::Error::other("traversing second fixture path"));
+    }
+    assert!(Path::new(&second_path).exists());
     second.remove().unwrap();
-    let text = original.to_str().unwrap();
+    let text = original.to_str().unwrap().to_owned();
     if text.contains("..") {
-        panic!("traversing fixture cleanup path");
+        return Err(io::Error::other("traversing fixture cleanup path"));
     }
     fs::remove_dir_all(text).unwrap();
+    Ok(())
 }
