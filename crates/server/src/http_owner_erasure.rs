@@ -129,6 +129,12 @@ pub(crate) const DELETE_PLAN: &[(&str, &str)] = &[
     (
         "managed_reader_keys",
         "DELETE FROM managed_reader_keys WHERE account_id=$1",
+        "provider_receipt_events",
+        "DELETE FROM provider_receipt_events WHERE account_id=$1",
+    ),
+    (
+        "provider_receipt_attempts",
+        "DELETE FROM provider_receipt_attempts WHERE account_id=$1",
     ),
     (
         "sealed_event_delivery_attempts",
@@ -857,6 +863,13 @@ async fn erase_account(
             return error_response(StatusCode::SERVICE_UNAVAILABLE,"unavailable");
         }
     }
+    // Proposal presence is inspected before the final proof: ordinary installs
+    // have neither table, while partial installation must fail closed.
+    let provider_receipts_installed =
+        match crate::provider_sms::receipts::lifecycle::installed(&tx).await {
+            Ok(value) => value,
+            Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+        };
     // FINAL AUTH FENCE. Ordering inside this transaction is deliberate:
     // every read that can wait on a row lock — all the blocked-table
     // preflight counts above — has already run, and this fence is the last
@@ -952,6 +965,9 @@ async fn erase_account(
     }
     for &(table, sql) in DELETE_PLAN {
         if crate::managed_ai::lifecycle::TABLES.contains(&table) && !managed_installed {
+        if ["provider_receipt_events", "provider_receipt_attempts"].contains(&table)
+            && !provider_receipts_installed
+        {
             continue;
         }
         if table == "conversation_execution_records" && !execution_installed {

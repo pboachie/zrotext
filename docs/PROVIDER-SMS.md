@@ -1,9 +1,10 @@
 # Dormant provider SMS contract
 
 `crates/server/src/provider_sms` is a pure candidate contract and Telnyx SMS-v2
-outbound-receipt verifier. It has no HTTP route, network sender, database access,
-provider account operations or runtime caller. Provider roadmap items remain
-open. This module does not enable another delivery route.
+outbound-receipt verifier, with dormant known-correlation receipt persistence.
+It has no provider HTTP route, network sender, provider account operations or
+production receipt caller. Provider roadmap items remain open. This module does
+not enable another delivery route.
 
 The [explicit transport proposal](../protocol/v1/provider-transport-proposal.md)
 settles the future route, authorized-reader, durable-intent, correlation and
@@ -40,7 +41,7 @@ check is not proof of ownership, registration, permitted country or capacity.
 The request digest binds this route, recipient and content digest. A future
 writer must store it with the existing account-scoped admission idempotency
 key and reject changed requests. The module only compares identities; it has
-no durable key ledger. It retains no plaintext body. `ProviderPlaintext` is an
+no admission key ledger. It retains no plaintext body. `ProviderPlaintext` is an
 explicit disclosure choice, not a classifier that can identify arbitrary
 ciphertext disguised as text. `SealedPhoneEnvelope` is rejected, and no phone
 envelope decoder or decryptor is called.
@@ -73,13 +74,63 @@ response correlation is returned as `AwaitingCorrelation`; no recipient/body/tim
 heuristic links it automatically. The model deduplicates up to 64 semantic event
 identities per attempt, ignores transport retry metadata and fails closed at
 capacity without evicting replay identities. This is bounded in-memory behavior,
-not durable or restart-safe deduplication. Different status events for the same
-message remain distinct. Late or conflicting evidence cannot erase `Delivered`.
+not durable or restart-safe deduplication by itself. The dormant ledger below
+persists these same semantics. Different status events for the same message
+remain distinct. Late or conflicting evidence cannot erase `Delivered`.
+
+Telnyx [message redaction](https://developers.telnyx.com/docs/messaging/messages/message-redaction)
+requires organization allowlisting; a profile update can be silently ignored
+without it. Enabled redaction masks the destination in finalized webhooks.
+This verifier requires the full recipient identity and therefore refuses those
+callbacks even with a valid signature. Supporting masked callbacks needs a
+separate reviewed correlation contract; removing recipient validation is not
+supported. Provider read-time redaction is not storage deletion and does not
+establish this application's provider erasure or retention policy.
+
+## Dormant durable known-correlation ledger
+
+`provider_sms::receipts` can apply a verified receipt only to an existing exact
+account/route/request/provider-message correlation from a future trusted
+committed intent. There is no production correlation creator, elected-writer
+permit issuer, webhook, sender or configuration switch. The opaque permit has
+private fields and no public constructor, default or deserializer; only test
+builds contain a synthetic factory. Site and epoch checks supplement writer
+authority and cannot elect a writer by themselves.
+
+The [storage proposal](../protocol/v1/provider-receipt-storage-proposal.sql) is
+**not auto-installed** by migrations. Without both proposal tables, receipt
+operations are unavailable; partial installation fails closed. Its future
+numbered promotion is coordinated separately after preceding migrations land.
+PostgreSQL tests explicitly install the unnumbered proposal in their own unique
+disposable schema. Their seeded correlations represent future authoritative
+intent, not an API available to callers.
+
+One transaction locks writer authority, the account and attempt, rehydrates the
+existing `Attempt` reducer, and commits event digest, fact and state together.
+It stores at most 64 exact events without eviction. Exact duplicates remain
+no-ops at capacity or the maximum version; new evidence requires checked
+version advancement. Conflicting evidence changes nothing. No body, recipient,
+sender, signature or callback JSON is stored. Correlation and semantic hashes
+are private linkage metadata rather than anonymous data.
+
+Disabling an extant account prevents future admission but does not reject valid
+metadata for an already irreversible known intent. Recording that evidence
+cannot restore account access, dispatch or suppression. Erasure clears all
+correlation, outcome and event metadata, retaining only an opaque attempt
+identity fence for the account's lifetime. A replay cannot recreate the erased
+attempt. Full owner erasure removes that fence with the account; real account
+locks serialize concurrent receipt writes. The owner export adds bounded
+metadata pages, omits erased attempts and excludes external IDs and digests.
+Absent proposal tables produce an empty page under the same final owner fence.
+
+This slice does not provide atomic admission/usage/submission intent, early
+callback quarantine, provider transport, suppression intake or delivery proof.
+Issue #760 remains open until those dependencies and activation gates pass.
 
 ## Gates before any live route
 
 A separate implementation and review must supply durable admission/idempotency,
-submission intent, receipt tombstones, secure early-callback correlation,
+submission intent, production receipt integration, secure early-callback correlation,
 transactional writer/account/session fences, and account-scoped shared
 suppression rechecks. Provider/carrier STOP handling stays enabled. Authenticated
 inbound suppression integration, stale START ordering and operator blocks are
