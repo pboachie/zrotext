@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { WorkflowToolClient, workflowTools } from '../dist/workflow-tool-client.js';
 import { ScheduledRunner } from '../../scheduler/runner.mjs';
+import { waitForFixturePoll } from '../../scheduler/service-fixture-wakeup.mjs';
+import { DatabaseSync } from 'node:sqlite';
 const uuid = n => `${String(n).repeat(8)}-${String(n).repeat(4)}-${String(n).repeat(4)}-${String(n).repeat(4)}-${String(n).repeat(12)}`;
 const key={account_id:uuid(1),action_id:uuid(2),revision:1,binding_digest:'ab'.repeat(32)};
 const policy={timezone:'UTC',first_local_date:'2027-01-01',opens_minute:500,closes_minute:600,repeat_every_days:null,max_occurrences:1,pacing_seconds:60};
@@ -153,5 +155,21 @@ test('disable after Send starts records its returned outcome without issuing ano
     f.client.call=async(method,params)=>{const response=await call(method,params);if(method==='workflow.action.send'){entered();await held;}return response;};
     const pending=runner.advance(key.action_id);await reached;runner.disable();release();assert.equal((await pending).state,'prepared');
     assert.equal(f.calls.filter(c=>c.method==='workflow.action.send').length,1);await assert.rejects(runner.advance(key.action_id),error=>error.code==='disabled');
+  }finally{runner?.close();await rm(directory,{recursive:true,force:true});}
+});
+
+
+test('TLS fixture observes the durable local poll deadline without rewriting it or sending early',async()=>{
+  const directory=await mkdtemp(join(tmpdir(),'zrotext-scheduler-'));let runner;
+  try{
+    const f=fixture(),filename=join(directory,'journal.sqlite');runner=new ScheduledRunner({client:f.client,filename,enabled:true});await runner.enqueue(f.params);await runner.advance(key.action_id);
+    const readDeadline=()=>{const db=new DatabaseSync(filename,{readOnly:true});try{return db.prepare('SELECT next_ms FROM scheduled_actions WHERE action_id=?').get(key.action_id).next_ms;}finally{db.close();}};
+    const deadline=readDeadline();assert.ok(deadline>Date.now());f.set({state:'prepared'});
+    // A real future journal wake returns the prior waiting observation, even
+    // when the remote server would now permit preparation.
+    assert.equal((await runner.advance(key.action_id)).state,'waiting');
+    assert.equal(f.calls.filter(c=>c.method==='workflow.action.send').length,1);
+    await waitForFixturePoll(filename,key.action_id);assert.equal(readDeadline(),deadline);assert.ok(Date.now()>=deadline);
+    assert.equal((await runner.advance(key.action_id)).state,'prepared');assert.equal(f.calls.filter(c=>c.method==='workflow.action.send').length,2);
   }finally{runner?.close();await rm(directory,{recursive:true,force:true});}
 });

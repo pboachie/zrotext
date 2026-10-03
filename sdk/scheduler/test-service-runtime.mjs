@@ -10,9 +10,12 @@ import { join } from 'node:path';
 import { WorkflowToolClient } from '../typescript/dist/workflow-tool-client.js';
 import { ScheduledRunner } from './runner.mjs';
 import { fixtureRequest } from './service-fixture-route.mjs';
+import { waitForFixturePoll } from './service-fixture-wakeup.mjs';
 let input='';for await(const chunk of process.stdin){input+=chunk;if(Buffer.byteLength(input)>65536)throw new Error('fixture too large');}
 const fixture=JSON.parse(input),directory=await mkdtemp(join(tmpdir(),'zrotext-scheduler-tls-'));
 const diagnosticPhase=['enqueue','advance','cancel'].includes(fixture.phase)?fixture.phase:'invalid';
+const diagnosticStage=fixture.phase==='advance'?(fixture.drop_send?'lost_send':fixture.expected_state==='prepared'?'restart_status':'waiting'):diagnosticPhase;
+let observedState='unavailable';
 let server,runner;
 try{
   const upstream=new URL(fixture.upstream);
@@ -40,16 +43,18 @@ try{
   const client=new WorkflowToolClient({origin:`https://localhost:${server.address().port}`,credential:fixture.credential,fetchImpl});
   runner=new ScheduledRunner({client,filename:fixture.journal,enabled:true});
   let result;
+  if(fixture.phase==='advance')await waitForFixturePoll(fixture.journal,fixture.action_id);
   if(fixture.phase==='enqueue')result=await runner.enqueue(fixture.params);
   else if(fixture.phase==='cancel')result=await runner.cancel(fixture.action_id,fixture.request_id);
   else if(fixture.drop_send){await assert.rejects(runner.advance(fixture.action_id),error=>error.state==='unknown');result=runner.inspect(fixture.action_id);assert.equal(result.state,'unknown');}
   else result=await runner.advance(fixture.action_id);
+  observedState=['waiting','unknown','prepared','cancelled','expired','blocked'].includes(result.state)?result.state:'invalid';
   assert.equal(result.state,fixture.expected_state);
   if(fixture.expected_message)assert.equal(result.result.message_id,fixture.expected_message);
   process.stdout.write(JSON.stringify(result));
 }catch(error){
   const code=typeof error?.code==='string'&&/^[A-Za-z_]{1,48}$/.test(error.code)?error.code:'refused';
-  process.stderr.write(`scheduler fixture phase=${diagnosticPhase} code=${code}\n`);process.exitCode=1;
+  process.stderr.write(`scheduler fixture phase=${diagnosticPhase} stage=${diagnosticStage} state=${observedState} code=${code}\n`);process.exitCode=1;
 }
 finally{
   runner?.close();if(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
