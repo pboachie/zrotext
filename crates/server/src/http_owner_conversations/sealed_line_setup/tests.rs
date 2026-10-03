@@ -41,6 +41,18 @@ impl Case {
         let line = Uuid::new_v4();
         let paired = SigningKey::generate_from_rng(&mut rand::rng());
         let approval = SigningKey::generate_from_rng(&mut rand::rng());
+        // This prerequisite-only manifest fixture does not replay the full inventory.
+        // Apply the actual draft migrations in their dependency order.
+        for sql in [
+            include_str!(
+                "../../../../../deploy/compose/migrations/086_sealed_line_key_registration.sql"
+            ),
+            include_str!(
+                "../../../../../deploy/compose/migrations/087_sealed_line_activation_exchanges.sql"
+            ),
+        ] {
+            owner.f.db.batch_execute(sql).await.unwrap();
+        }
         // Synthetic existing independently pinned v0 authority and real paired role.
         let rootfp = zrotext_root_material::sealed_root_enrollment::root_fingerprint(
             &owner.pin,
