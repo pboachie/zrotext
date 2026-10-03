@@ -225,22 +225,48 @@ impl Case {
         Self::with_signer(None).await
     }
     pub(super) async fn with_signer(signer_lifetime: Option<i64>) -> Self {
-        Self::with_fixture_lifetimes(signer_lifetime, 60000, 30000).await
+        Self::with_fixture_lifetimes(signer_lifetime, false, 60000, 30000).await
     }
-    // The multi-process customer routine ceremony needs a coherent bounded
-    // synthetic authority interval. Existing expiry fixtures keep their defaults.
+    pub(super) async fn with_signer_aligned(
+        signer_lifetime: Option<i64>,
+        future_window: bool,
+    ) -> Self {
+        Self::with_fixture_lifetimes(signer_lifetime, future_window, 60000, 30000).await
+    }
+    // Preserve the bounded multi-process routine fixture's original lifetimes.
     pub(super) async fn for_customer_routine(signer_lifetime: Option<i64>) -> Self {
-        Self::with_fixture_lifetimes(signer_lifetime, 120000, 90000).await
+        Self::with_fixture_lifetimes(signer_lifetime, false, 120000, 90000).await
     }
     async fn with_fixture_lifetimes(
         signer_lifetime: Option<i64>,
+        future_window: bool,
         authority_lifetime: i64,
         grant_lifetime: i64,
     ) -> Self {
         let password = Zeroizing::new(URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>()));
+        let hash = Argon2::default()
+            .hash_password(password.as_bytes())
+            .unwrap()
+            .to_string();
         let (mut f, owner, s) = pending().await;
         activate(&f, &s).await;
 
+        // Prepare storage and the password before aligning the actual clock.
+        // Only then mint the signed context/key lifetimes used by this test.
+        if future_window {
+            let started = tokio::time::Instant::now();
+            loop {
+                let second: i32 = f.db.query_one(
+                    "SELECT floor(extract(second FROM clock_timestamp() AT TIME ZONE 'UTC'))::integer",
+                    &[],
+                ).await.unwrap().get(0);
+                if (5..=35).contains(&second) {
+                    break;
+                }
+                assert!(started.elapsed() < std::time::Duration::from_secs(31));
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
         let now: i64 =
             f.db.query_one(
                 "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
@@ -317,10 +343,6 @@ impl Case {
         admission.context(&f.wanted()).await.unwrap();
         drop(admission);
         tx.commit().await.unwrap();
-        let hash = Argon2::default()
-            .hash_password(password.as_bytes())
-            .unwrap()
-            .to_string();
         f.db.execute(
             "UPDATE users SET password_hash=$2,mfa_enabled=true WHERE id=$1",
             &[&owner.user_id, &hash],

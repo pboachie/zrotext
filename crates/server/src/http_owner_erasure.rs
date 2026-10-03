@@ -94,6 +94,10 @@ const BLOCKED_TABLES: &[&str] = &[
     "sealed_root_receipts",
 ];
 
+// Proposal schemas may be absent on an ordinary migrated installation. They
+// remain erasure blockers whenever installed; absence is not a query failure.
+const OPTIONAL_BLOCKED_TABLES: &[&str] = &["sealed_line_activation_exchanges"];
+
 /// FK-safe deletion order: every table is emptied before the rows it
 /// references. Each statement takes the account UUID as `$1`; composite
 /// foreign keys make cross-account references impossible except where an
@@ -614,7 +618,22 @@ async fn erase_account(
     // references the account, the account row itself cannot be deleted and a
     // partial erasure must not be committed.
     let mut blocked = Vec::new();
-    for table in BLOCKED_TABLES {
+    for table in BLOCKED_TABLES.iter().chain(OPTIONAL_BLOCKED_TABLES.iter()) {
+        if *table == "sealed_line_activation_exchanges" {
+            let installed = match tx
+                .query_one(
+                    "SELECT to_regclass('sealed_line_activation_exchanges') IS NOT NULL",
+                    &[],
+                )
+                .await
+            {
+                Ok(r) => r.get::<_, bool>(0),
+                Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+            };
+            if !installed {
+                continue;
+            }
+        }
         let rows = match count(
             &tx,
             &format!("SELECT count(*) FROM {table} WHERE account_id=$1"),

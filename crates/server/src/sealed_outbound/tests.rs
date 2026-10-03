@@ -971,10 +971,18 @@ async fn candidate_queue_account_cap_and_message_collision_are_tenant_scoped() {
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn candidate_queue_rechecks_manifest_expiry_after_blocked_budget_write() {
-    let f = TestCase::with_manifest_lifetime(2000).await;
-    let deadline = u64::from_be_bytes(f.bytes[45..53].try_into().unwrap()) as i64;
+    blocked_manifest_expiry_case(false).await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn candidate_queue_manifest_expiry_wait_survives_slow_setup() {
+    blocked_manifest_expiry_case(true).await;
+}
+
+async fn blocked_manifest_expiry_case(slow_setup: bool) {
+    let mut f = TestCase::new().await;
     f.db.execute("INSERT INTO usage_periods(account_id,metric,period_start,period_end,limit_units) VALUES($1,'outbound_message',date_trunc('month',now() AT TIME ZONE 'UTC')::date,(date_trunc('month',now() AT TIME ZONE 'UTC')+interval '1 month')::date,1000)",&[&f.account]).await.unwrap();
-    let bytes = f.envelope(Uuid::new_v4()).await;
     let mut blocker = f.connect().await;
     let lock = blocker.transaction().await.unwrap();
     lock.query_one("SELECT account_id FROM usage_periods FOR UPDATE", &[])
@@ -986,9 +994,38 @@ async fn candidate_queue_rechecks_manifest_expiry_after_blocked_budget_write() {
         .await
         .unwrap()
         .get(0);
+    if slow_setup {
+        tokio::time::sleep(Duration::from_millis(2100)).await;
+    }
+    let mut manifest_db = f.connect().await;
+    let tx = manifest_db.transaction().await.unwrap();
+    let mut authority = outbound::lock_current(&tx, f.account).await.unwrap();
+    // Arm the same two-second boundary only after unrelated fixture work.
+    // Shorten the original authority; never refresh it while admission waits.
+    let original_deadline = u64::from_be_bytes(f.bytes[45..53].try_into().unwrap()) as i64;
+    let armed_at = now(&f.db).await;
+    let deadline = armed_at + 2000;
+    assert!(deadline <= original_deadline);
+    f.fixture.advance();
+    f.fixture.bytes[45..53].copy_from_slice(&(deadline as u64).to_be_bytes());
+    f.fixture.resign();
+    let snapshot = authority.next_snapshot(&f.bytes).await.unwrap();
+    tx.execute("UPDATE sealed_manifest_authorities SET version=$2,semantic_digest=$3,manifest=$4,accepted_at_ms=$5,last_verified_ms=$5 WHERE account_id=$1",
+        &[&f.account,&snapshot.version,&snapshot.digest.as_slice(),&snapshot.bytes,&snapshot.accepted_ms]).await.unwrap();
+    drop(authority);
+    tx.commit().await.unwrap();
+    let bytes = f.envelope(Uuid::new_v4()).await;
+    assert!(
+        now(&f.db).await < deadline,
+        "manifest is live before admission"
+    );
     let operation = admit_candidate02(&mut db, &f.principal, &f.hasher, f.writer(), &bytes);
     let release = async {
         waiting(&f, pid, "INSERT INTO usage_periods").await;
+        assert!(
+            now(&f.db).await < deadline,
+            "manifest is live at the observed budget wait"
+        );
         reach_clock(&f.db, deadline).await;
         lock.commit().await.unwrap();
     };

@@ -13,6 +13,7 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub(super) struct Policy {
     origin_hash: [u8; 32],
+    pub(super) sealed_line_setup: bool,
 }
 pub(super) struct Negotiated {
     phone_session: Uuid,
@@ -40,6 +41,7 @@ impl Policy {
         let canonical = format!("wss://{}:{port}", host.to_ascii_lowercase());
         Ok(Self {
             origin_hash: Sha256::digest(canonical.as_bytes()).into(),
+            sealed_line_setup: false,
         })
     }
     pub(super) fn negotiate(

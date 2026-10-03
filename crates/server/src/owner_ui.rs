@@ -120,6 +120,20 @@ pub fn conversation_router() -> Router {
             ),
         )
         .route(
+            "/owner/conversation-line-setup.js",
+            asset(
+                include_str!("../../../web/owner/conversation-line-setup.js"),
+                "text/javascript; charset=utf-8",
+            ),
+        )
+        .route(
+            "/owner/conversation-root-enrollment.js",
+            asset(
+                include_str!("../../../web/owner/conversation-root-enrollment.js"),
+                "text/javascript; charset=utf-8",
+            ),
+        )
+        .route(
             "/owner/conversation.js",
             asset(
                 include_str!("../../../web/owner/conversation.js"),
@@ -379,6 +393,43 @@ mod tests {
     use super::*;
     use axum::{body::Body, http::Request};
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn setup_assets_require_explicit_conversation_composition() {
+        for (path, source) in [
+            (
+                "/owner/conversation-root-enrollment.js",
+                include_str!("../../../web/owner/conversation-root-enrollment.js"),
+            ),
+            (
+                "/owner/conversation-line-setup.js",
+                include_str!("../../../web/owner/conversation-line-setup.js"),
+            ),
+        ] {
+            let response = router()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+            let response = conversation_router()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.headers()[header::CONTENT_TYPE],
+                "text/javascript; charset=utf-8"
+            );
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+            assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+            assert_eq!(response.headers()["referrer-policy"], "no-referrer");
+            assert_eq!(response.headers()[header::CONTENT_SECURITY_POLICY], CSP);
+            let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+                .await
+                .unwrap();
+            assert_eq!(bytes.as_ref(), source.as_bytes());
+        }
+    }
 
     #[tokio::test]
     async fn template_preview_has_no_submission_fallback_or_reflection() {

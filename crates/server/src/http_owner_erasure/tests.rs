@@ -373,6 +373,16 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "085_customer_routine_calls.sql",
         include_str!("../../../../deploy/compose/migrations/085_customer_routine_calls.sql"),
     ),
+    (
+        "086_sealed_line_key_registration.sql",
+        include_str!("../../../../deploy/compose/migrations/086_sealed_line_key_registration.sql"),
+    ),
+    (
+        "087_sealed_line_activation_exchanges.sql",
+        include_str!(
+            "../../../../deploy/compose/migrations/087_sealed_line_activation_exchanges.sql"
+        ),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in
@@ -516,6 +526,21 @@ async fn migrated_schema_with_execution(
     String,
     String,
 ) {
+    migrated_schema_with_optional_setup(label, execution, true).await
+}
+
+// Upgrade compatibility controls deliberately exercise a through-085 schema.
+// Ordinary fixtures always replay the complete migration inventory.
+async fn migrated_schema_with_optional_setup(
+    label: &str,
+    execution: bool,
+    setup: bool,
+) -> (
+    tokio_postgres::Client,
+    tokio_postgres::Client,
+    String,
+    String,
+) {
     let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
         .expect("set ZT_AUTH_TEST_DATABASE_URL for PostgreSQL-backed tests");
     let (admin, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
@@ -530,6 +555,14 @@ async fn migrated_schema_with_execution(
     let (db, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     for (file, migration) in MIGRATIONS {
+        if !setup
+            && matches!(
+                *file,
+                "086_sealed_line_key_registration.sql" | "087_sealed_line_activation_exchanges.sql"
+            )
+        {
+            continue;
+        }
         if !execution && *file == "082_conversation_execution_records.sql" {
             continue;
         }
@@ -3703,6 +3736,174 @@ async fn execution_partial_schema_erasure_fails_without_disabling_or_deleting_ac
         .unwrap()
         .get::<_, bool>(0)
     );
+    admin
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn optional_sealed_setup_absence_preserves_ordinary_account_erasure() {
+    let (admin, mut db, url, schema) =
+        migrated_schema_with_optional_setup("optional_setup_absent", true, false).await;
+    assert!(
+        !db.query_one(
+            "SELECT to_regclass('sealed_line_activation_exchanges') IS NOT NULL",
+            &[]
+        )
+        .await
+        .unwrap()
+        .get::<_, bool>(0)
+    );
+    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
+    let (a, session, _, _, app) = fixture(&mut db, &hasher, &url, None).await;
+    let response = app
+        .oneshot(erasure_post(
+            Some(&session.token),
+            Some(&session.csrf_token),
+            Some(ORIGIN),
+            &crate::test_keys::password(1),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        db.query_one(
+            "SELECT count(*) FROM accounts WHERE id=$1",
+            &[&a.account_id]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        0
+    );
+    admin
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn optional_sealed_setup_exchange_remains_an_erasure_blocker() {
+    use crate::http_owner_conversations::sealed_line_setup::tests::Case;
+    use crate::sealed_inbound::line_activation::sealed_exchange;
+    let c = Case::new().await;
+    let registration = c.register(1).await;
+    let (challenge, _) = sealed_exchange::open(
+        &mut c.owner.f.connect().await,
+        &c.owner.principal,
+        c.line,
+        c.device,
+        registration,
+    )
+    .await
+    .unwrap();
+    let password = crate::test_keys::password(1);
+    let mut db = c.owner.f.connect().await;
+    let verifier_source = register(
+        &mut db,
+        &c.owner.hasher,
+        "erasure-verifier@example.test",
+        &password,
+    )
+    .await
+    .unwrap();
+    let verifier: String = db
+        .query_one(
+            "SELECT password_hash FROM users WHERE id=$1",
+            &[&verifier_source.user_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    db.execute(
+        "UPDATE users SET password_hash=$1 WHERE id=$2",
+        &[&verifier, &c.owner.principal.user_id],
+    )
+    .await
+    .unwrap();
+    let owner = c.state().owner;
+    let app = router(OwnerErasureState {
+        database_url: owner.database_url,
+        auth_hasher: owner.auth_hasher,
+        canonical_origin: owner.canonical_origin,
+        mfa_cipher: None,
+    });
+    let factor = c.factor().await;
+    let response = app
+        .oneshot(erasure_post(
+            Some(&c.owner.token),
+            Some(&c.owner.csrf),
+            Some(crate::http_owner_conversations::sealed_line_setup::tests::ORIGIN),
+            &password,
+            Some(&factor),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        blocked_count(&body(response).await, "sealed_line_activation_exchanges"),
+        1
+    );
+    assert_eq!(
+        db.query_one(
+            "SELECT count(*) FROM accounts WHERE id=$1",
+            &[&c.owner.principal.tenant.account_id()]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        1
+    );
+    assert_eq!(
+        db.query_one(
+            "SELECT count(*) FROM sealed_line_activation_exchanges WHERE challenge_id=$1",
+            &[&challenge.id]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        1
+    );
+    c.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn optional_sealed_setup_malformed_relation_fails_erasure_closed() {
+    let (admin, mut db, url, schema) =
+        migrated_schema_with_optional_setup("optional_setup_malformed", true, false).await;
+    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
+    let (a, session, _, _, app) = fixture(&mut db, &hasher, &url, None).await;
+    db.batch_execute("CREATE TABLE sealed_line_activation_exchanges(wrong_column uuid)")
+        .await
+        .unwrap();
+    let response = app
+        .oneshot(erasure_post(
+            Some(&session.token),
+            Some(&session.csrf_token),
+            Some(ORIGIN),
+            &crate::test_keys::password(1),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    for (table, column) in [("accounts", "id"), ("messages", "account_id")] {
+        assert!(
+            db.query_one(
+                &format!("SELECT count(*) FROM {table} WHERE {column}=$1"),
+                &[&a.account_id]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0)
+                > 0
+        );
+    }
     admin
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await

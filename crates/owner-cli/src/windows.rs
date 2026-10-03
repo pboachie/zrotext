@@ -25,8 +25,12 @@ mod conversation_genesis;
 mod conversation_refresh;
 #[cfg(feature = "unlock")]
 mod custody_sign;
+#[cfg(feature = "unlock")]
+mod line_key_registration;
 #[cfg(all(test, feature = "unlock"))]
 mod native_fixture_path;
+#[cfg(all(test, feature = "unlock"))]
+mod setup_interop;
 
 type Result<T> = std::result::Result<T, ()>;
 const TIMEOUT: Duration = Duration::from_secs(300);
@@ -525,6 +529,10 @@ fn run_unlock(
 }
 
 pub(super) fn run(args: &[String]) -> Result<()> {
+    #[cfg(feature = "unlock")]
+    if args.first().map(String::as_str) == Some("line-key-registration") {
+        return line_key_registration::run(args, local_store_parent()?);
+    }
     #[cfg(feature = "unlock")]
     if args.first().map(String::as_str) == Some("archive-init") {
         return archive_init::run(args, local_store_parent()?);

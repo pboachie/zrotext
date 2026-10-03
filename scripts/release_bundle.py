@@ -50,6 +50,8 @@ WEB_FILES = (
     "web/owner/conversation-bootstrap.js",
     "web/owner/conversation-owner-adapter.js",
     "web/owner/conversation-owner-setup.js",
+    "web/owner/conversation-line-setup.js",
+    "web/owner/conversation-root-enrollment.js",
     "web/owner/conversation.css",
     "crates/server/static/billing-dashboard.html",
     "crates/server/static/billing-dashboard.js",

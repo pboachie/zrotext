@@ -86,6 +86,12 @@ class MainActivity : ComponentActivity() {
     private var comparisonCode by mutableStateOf("")
     private var signingFingerprint by mutableStateOf("")
     private var signingSecurity by mutableStateOf("")
+    private var sealedLineReviewOpen by mutableStateOf(false)
+    private var sealedLineReviewLine by mutableStateOf("")
+    private var sealedLineReviewGeneration by mutableStateOf("")
+    private var sealedLineReviewSnapshot by mutableStateOf<SealedLineReviewController.Review?>(null)
+    private var sealedLineReviewStatus by mutableStateOf("")
+    private var sealedLineReviewController: SealedLineReviewController? = null
     private var defaultSmsAppRcsRisk by mutableStateOf(DefaultSmsAppRcsRisk.Risk.UNAVAILABLE)
     private var permissionDisclosure by mutableStateOf<GatewayPermissionPurpose?>(null)
     // Separate read authority. Nothing here is persisted, saved in a Bundle,
@@ -187,6 +193,27 @@ class MainActivity : ComponentActivity() {
         setContent {
             GatewayTheme {
                 if (conversationEntryOpen) ConversationEntryContent()
+                if (sealedLineReviewOpen) SealedLineReviewPane(
+                    sealedLineReviewLine, sealedLineReviewGeneration,
+                    { value ->
+                        sealedLineReviewController?.cancel(); sealedLineReviewSnapshot = null
+                        sealedLineReviewLine = value.take(36); sealedLineReviewStatus = ""
+                    }, { value ->
+                        sealedLineReviewController?.cancel(); sealedLineReviewSnapshot = null
+                        sealedLineReviewGeneration = value.take(19); sealedLineReviewStatus = ""
+                    }, sealedLineReviewSnapshot, sealedLineReviewStatus,
+                    onPrepare = {
+                        sealedLineReviewSnapshot = sealedLineReviewController?.prepare(sealedLineReviewLine, sealedLineReviewGeneration)
+                        sealedLineReviewStatus = if (sealedLineReviewSnapshot == null)
+                            "Review unavailable. Check the authenticated session, existing hardware key, selected SIM and browser line details."
+                        else "Line details ready for your separate phone approval."
+                    }, onConfirm = { exact ->
+                        val accepted = sealedLineReviewController?.confirm(exact) == true
+                        sealedLineReviewSnapshot = null
+                        sealedLineReviewStatus = if (accepted)
+                            "Phone line choice accepted locally. Server verification and installation are still required; content transfer and replies remain separately controlled."
+                        else "Line approval was refused. Review again in the current session."
+                    }, onCancel = { closeSealedLineReview() })
                 permissionDisclosure?.let { purpose ->
                     Dialog(onDismissRequest = { permissionDisclosure = null }) {
                         Surface(shape = MaterialTheme.shapes.large) {
@@ -335,6 +362,16 @@ class MainActivity : ComponentActivity() {
                     }
                     if (page == GatewayPage.TOOLS) {
                         GatewaySectionTitle("Advanced pilots")
+                        GatewayButton(onClick = {
+                            closeSealedLineReview()
+                            sealedLineReviewController = SealedLineReviewController(
+                                ConversationSocketComposition::currentAuthenticatedIdentity,
+                                { selectedSim },
+                                { DeviceSigningKeyStore(applicationContext).existingConversationPublicPoint() },
+                                { acceptance, originalHostCurrent -> SealedLineActivationMount.enableOwned(
+                                    acceptance, explicitlyAccepted = true, originCurrent = originalHostCurrent) })
+                            sealedLineReviewOpen = true
+                        }) { Text("Review paired phone line") }
                         GatewayStatusText("Pilot status", AuthenticatedGatewayStatus.value)
                         Text("Connection credentials are configured on the Connection screen. These controls are for explicit, controlled tests.")
                         GatewaySectionTitle("Gateway connection test")
@@ -426,6 +463,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
+        closeSealedLineReview()
         revokeConversationForeground()
         summaryResumed = false
         clearSummaryReader(clearKey = true)
@@ -433,6 +471,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        closeSealedLineReview()
         pendingConversationPhoneExport = null
         pendingConversationExportUri = null
         closeConversationEntry()
@@ -444,6 +483,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        closeSealedLineReview()
         revokeConversationForeground()
         super.onStop()
     }
@@ -463,6 +503,16 @@ class MainActivity : ComponentActivity() {
         conversationReplyPending = false
         cancelConversationReplyImport()
         if (conversationPickEpoch == null && conversationEntryOpen) closeConversationEntry(preservePendingPublicFile = true)
+    }
+
+    private fun closeSealedLineReview() {
+        sealedLineReviewController?.close()
+        sealedLineReviewController = null
+        sealedLineReviewOpen = false
+        sealedLineReviewSnapshot = null
+        sealedLineReviewLine = ""
+        sealedLineReviewGeneration = ""
+        sealedLineReviewStatus = ""
     }
 
     internal fun acceptConversationSetupFile(uri: Uri?) {

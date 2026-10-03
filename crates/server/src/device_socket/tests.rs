@@ -175,8 +175,18 @@ fn stream_schema_examples_match_serde_frames() {
         "../../../../protocol/v1/device-stream.examples.json"
     ))
     .unwrap();
-    assert_eq!(examples.len(), 22);
-    for frame in &examples[..11] {
+    assert_eq!(examples.len(), 28);
+    let client_examples: Vec<_> = examples[..11]
+        .iter()
+        .chain(examples[22..].iter().filter(|frame| {
+            matches!(
+                frame["type"].as_str(),
+                Some("sealed_line_proof" | "sealed_line_installed")
+            )
+        }))
+        .collect();
+    assert_eq!(client_examples.len(), 13);
+    for frame in client_examples {
         let parsed: ClientFrame = serde_json::from_value(frame.clone()).unwrap();
         assert_eq!(frame["v"], 1);
         let variant = match parsed {
@@ -195,6 +205,8 @@ fn stream_schema_examples_match_serde_frames() {
             ClientFrame::InboundEvent { .. } => "inbound_event",
             ClientFrame::LineOptOut { .. } => "line_opt_out",
             ClientFrame::SmsLineProof { .. } => "sms_line_proof",
+            ClientFrame::SealedLineProof { .. } => "sealed_line_proof",
+            ClientFrame::SealedLineInstalled { .. } => "sealed_line_installed",
         };
         assert_eq!(frame["type"], variant);
     }
@@ -282,8 +294,8 @@ fn stream_schema_examples_match_serde_frames() {
             device_signature_sha256: "Ag".into(),
         },
     ];
-    assert_eq!(server_frames.len(), examples.len() - 11);
-    for (actual, documented) in server_frames.into_iter().zip(&examples[11..]) {
+    assert_eq!(server_frames.len(), examples[11..22].len());
+    for (actual, documented) in server_frames.into_iter().zip(&examples[11..22]) {
         let variant = match &actual {
             ServerFrame::Challenge { .. } => "challenge",
             ServerFrame::Session { .. } => "session",

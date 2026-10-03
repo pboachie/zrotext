@@ -9,6 +9,27 @@ except ImportError:
 
 
 class RuntimeReadsTest(unittest.TestCase):
+    def test_connection_diagnostic_is_excluded_only_in_its_test_module(self):
+        flags = {"ZT_RUNTIME_DB_TEST_DIAGNOSTIC"}
+        source = 'std::env::var("ZT_RUNTIME_DB_TEST_DIAGNOSTIC")'
+        fixture = "crates/server/src/runtime_db/test_diagnostic.rs"
+        self.assertEqual(env.runtime_reads(source, fixture), set())
+        for runtime in ["crates/server/src/runtime_db.rs",
+                        "crates/server/src/billing/sessions.rs",
+                        "crates/server/src/main.rs"]:
+            self.assertEqual(env.runtime_reads(source, runtime), flags)
+        module = Path(env.ROOT, "crates/server/src/runtime_db.rs").read_text(encoding="utf-8")
+        self.assertRegex(module, r'#\[cfg\(test\)\]\s*pub\(crate\) mod test_diagnostic;')
+
+    def test_setup_browser_flags_are_excluded_only_in_the_test_module(self):
+        flags = {"ZT_OWNER_SETUP_BROWSER_ASSETS", "ZT_OWNER_SETUP_FIXTURE_ORIGIN"}
+        source = ";".join(f'std::env::var("{flag}")' for flag in flags)
+        fixture = "crates/server/src/http_owner_conversations/sealed_line_setup/server_browser_fixture.rs"
+        self.assertEqual(env.runtime_reads(source, fixture), set())
+        self.assertEqual(env.runtime_reads(source, "crates/server/src/main.rs"), flags)
+        module = Path(env.ROOT, "crates/server/src/http_owner_conversations/sealed_line_setup/mod.rs").read_text(encoding="utf-8")
+        self.assertRegex(module, r'#\[cfg\(all\(test, feature = "conversation-simulator-tests"\)\)\]\s*mod server_browser_fixture;')
+
     def test_archive_init_markers_are_excluded_only_in_the_test_module(self):
         flags = {"TEMP", "ZT_ARCHIVE_INIT_NATIVE_CASE"}
         source = ";".join(f'std::env::var("{flag}")' for flag in flags)
@@ -18,6 +39,32 @@ class RuntimeReadsTest(unittest.TestCase):
                         "crates/server/src/main.rs"]:
             self.assertEqual(env.runtime_reads(source, runtime), flags)
         module = Path(env.ROOT, "crates/owner-cli/src/windows/archive_init.rs").read_text(encoding="utf-8")
+        self.assertRegex(module, r'#\[cfg\(test\)\]\s*mod tests;')
+
+    def test_owner_setup_callback_transport_is_excluded_only_in_the_cfg_test_helper(self):
+        flags = {"TEMP", "ZT_OWNER_SETUP_INTEROP_REQUEST_HEX", "ZT_OWNER_SETUP_INTEROP_CHILD"}
+        source = ";".join(f'std::env::var("{flag}")' for flag in flags)
+        fixture = "crates/owner-cli/src/windows/setup_interop.rs"
+        self.assertEqual(env.runtime_reads(source, fixture), set())
+        for runtime in ["crates/owner-cli/src/windows.rs",
+                        "crates/owner-cli/src/windows/setup_interop/tests.rs",
+                        "crates/owner-cli/src/windows/line_key_registration.rs",
+                        "crates/server/src/main.rs"]:
+            self.assertEqual(env.runtime_reads(source, runtime), flags)
+        module = Path(env.ROOT, "crates/owner-cli/src/windows.rs").read_text(encoding="utf-8")
+        self.assertRegex(module, r'#\[cfg\(all\(test, feature = "unlock"\)\)\]\s*mod setup_interop;')
+
+    def test_line_key_registration_markers_are_excluded_only_in_the_test_module(self):
+        flags = {"TEMP", "ZT_LINE_REGISTRATION_NATIVE_CASE"}
+        source = ";".join(f'std::env::var("{flag}")' for flag in flags)
+        fixture = "crates/owner-cli/src/windows/line_key_registration/tests.rs"
+        self.assertEqual(env.runtime_reads(source, fixture), set())
+        for runtime in ["crates/owner-cli/src/windows/line_key_registration.rs",
+                        "crates/owner-cli/src/windows/line_key_registration/native_tests.rs",
+                        "crates/root-material/src/line_key_registration.rs",
+                        "crates/server/src/main.rs"]:
+            self.assertEqual(env.runtime_reads(source, runtime), flags)
+        module = Path(env.ROOT, "crates/owner-cli/src/windows/line_key_registration.rs").read_text(encoding="utf-8")
         self.assertRegex(module, r'#\[cfg\(test\)\]\s*mod tests;')
 
     def test_genesis_markers_are_excluded_only_in_the_test_module(self):
