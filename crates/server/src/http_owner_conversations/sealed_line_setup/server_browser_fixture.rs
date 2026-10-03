@@ -220,8 +220,8 @@ async fn ordinary_setup_server_browser_fixture() {
     assert!(selected.port().is_some_and(|port| port > 0 && port != 443));
     let package = std::env::var_os("ZT_OWNER_SETUP_BROWSER_ASSETS")
         .expect("checked synthetic browser package");
-    let assets =
-        super::super::browser_assets::BrowserAssets::load(std::path::Path::new(&package)).unwrap();
+    let package = fixture_package(&package, &std::env::current_dir().unwrap()).unwrap();
+    let assets = super::super::browser_assets::BrowserAssets::load(&package).unwrap();
     assets.require_owner_setup().unwrap();
     let mut c = Case::without_root().await;
     let p = &c.owner.principal;
@@ -323,4 +323,28 @@ fn setup_fixture_control_refuses_unselected_fields_and_private_material() {
         assert!(serde_json::from_value::<Command>(command).is_err());
     }
     assert!(serde_json::from_value::<Command>(json!({"version":1,"operation":"snapshot"})).is_ok());
+}
+
+// The launcher creates this fixed checkout-owned package exclusively. An
+// environment marker confirms it; the marker never selects a filesystem path.
+fn fixture_package(
+    supplied: &std::ffi::OsStr,
+    checkout: &std::path::Path,
+) -> Result<std::path::PathBuf, &'static str> {
+    let package = checkout.join("target").join("sealed-setup-browser-fixture");
+    if supplied != package.as_os_str() {
+        return Err("Checkout-owned synthetic package required");
+    }
+    Ok(package)
+}
+
+#[test]
+fn fixture_marker_cannot_select_an_external_browser_package() {
+    let checkout = std::path::Path::new("synthetic-checkout");
+    let expected = checkout.join("target").join("sealed-setup-browser-fixture");
+    assert_eq!(
+        fixture_package(expected.as_os_str(), checkout).unwrap(),
+        expected
+    );
+    assert!(fixture_package(std::ffi::OsStr::new("other-checkout"), checkout).is_err());
 }

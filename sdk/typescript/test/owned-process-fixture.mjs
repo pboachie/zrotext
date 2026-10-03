@@ -2,14 +2,14 @@
 // Test-only PID-owned process lifetime; no product execution or credentials.
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
-import path from 'node:path';
+import {fileURLToPath} from 'node:url';
 async function deadline(promise,milliseconds){let timer;try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Owned process deadline exceeded')),milliseconds);})]);}finally{clearTimeout(timer);}}
 export class CleanupFailure extends Error{}
 export async function terminateOwnedTree(child,closed){
   assert.ok(Number.isSafeInteger(child.pid)&&child.pid>0,'Owned child PID required');
   if(process.platform==='win32'){
-    assert.ok(process.env.SystemRoot&&path.isAbsolute(process.env.SystemRoot));
-    await new Promise((resolve,reject)=>{const killer=spawn(path.join(process.env.SystemRoot,'System32','taskkill.exe'),['/PID',String(child.pid),'/T','/F'],{windowsHide:true,shell:false,stdio:'ignore'});const timer=setTimeout(()=>{killer.kill();reject(new CleanupFailure('Owned process tree termination failed'));},10000);killer.once('error',()=>{clearTimeout(timer);reject(new CleanupFailure('Owned process tree termination failed'));});killer.once('close',code=>{clearTimeout(timer);if(code===0)resolve();else reject(new CleanupFailure('Owned process tree termination failed'));});});
+    const cleanup=fileURLToPath(new URL('../../../scripts/owned_process_cleanup.py',import.meta.url));
+    await new Promise((resolve,reject)=>{const killer=spawn('python',[cleanup,String(child.pid)],{windowsHide:true,shell:false,stdio:'ignore'});const timer=setTimeout(()=>{killer.kill();reject(new CleanupFailure('Owned process tree termination failed'));},10000);killer.once('error',()=>{clearTimeout(timer);reject(new CleanupFailure('Owned process tree termination failed'));});killer.once('close',code=>{clearTimeout(timer);if(code===0)resolve();else reject(new CleanupFailure('Owned process tree termination failed'));});});
   }else{try{process.kill(-child.pid,'SIGKILL');}catch{throw new CleanupFailure('Owned process group termination failed');}}
   try{await deadline(closed,10000);}catch{throw new CleanupFailure('Owned process termination receipt missing');}
 }

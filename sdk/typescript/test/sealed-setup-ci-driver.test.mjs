@@ -6,7 +6,7 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {mkdtemp,writeFile,rm,readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {parseOptions,selectExecutable,ReadyParser,serverPassed,SERVER_TEST,capture,executableDigest,joinOwnedAcceptance} from '../../../scripts/sealed_setup_ci_driver.mjs';
+import {parseOptions,selectExecutable,ReadyParser,serverPassed,SERVER_TEST,capture,executableDigest,joinOwnedAcceptance,createBrowserPackage} from '../../../scripts/sealed_setup_ci_driver.mjs';
 const id='11111111-1111-4111-8111-111111111111',root=path.resolve('fixture-root'),manifest=path.join(root,'crates/server/Cargo.toml'),exe=path.join(root,'target/fixture.exe');
 function ready(){const paired=Buffer.alloc(65);paired[0]=4;return {version:1,synthetic:true,port:4444,controlToken:'07'.repeat(32),origin:'https://owner.example.test:4443',baseline:{accountId:id,userId:id,sessionId:id,deviceId:id,lineId:id,nextGeneration:'1',pairedPoint:paired.toString('hex'),pairedFingerprintHex:createHash('sha256').update(paired).digest('hex'),rootFactor:'fixture-factor'.padEnd(26,'x'),lineFactor:'fixture-factor'.padEnd(26,'y'),cookies:[{name:'__Host-zrotext_session',value:'fixture-session'},{name:'__Host-zrotext_csrf',value:'fixture-csrf'}],lease:{connectionEpoch:'1',deploymentEpoch:'1',siteId:'fixture-site',instanceId:'fixture-instance'}}};}
 const record=prefix=>prefix+JSON.stringify(ready())+'\n';
@@ -50,4 +50,13 @@ test('aggregate timeout joins an ordinary late rejection before returning failur
   const acceptance=new Promise((_,reject)=>setTimeout(()=>{settled=true;reject(Error('ordinary refused'));},30));
   await assert.rejects(joinOwnedAcceptance(acceptance,{timeoutMs:5,joinMs:100,cancel:()=>{}}),/deadline exceeded/);
   assert.equal(settled,true);
+});
+
+test('browser package creation refuses existing ownership and preserves its contents',async()=>{
+  const directory=await createBrowserPackage();
+  try{
+    const marker=path.join(directory,'synthetic-marker');await writeFile(marker,'preserve');
+    await assert.rejects(createBrowserPackage());
+    assert.equal(await readFile(marker,'utf8'),'preserve');
+  }finally{await rm(directory,{recursive:true,force:true});}
 });

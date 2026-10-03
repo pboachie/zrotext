@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import sealed_setup_ci as driver
@@ -19,6 +20,39 @@ class SetupCiTest(unittest.TestCase):
                       "postgresql://fixture@localhost:4444/other", "not-a-uri"):
             with self.assertRaises(ValueError):
                 driver.database_url(value)
+
+    def test_installed_tools_refuse_a_caller_selected_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            trusted = root / "PostgreSQL" / "17" / "bin"
+            trusted.mkdir(parents=True)
+            other = root / "other"
+            other.mkdir()
+            def known_folder(_owner, _id, _token, _flags, buffer):
+                buffer.value = str(root)
+                return 0
+            api = SimpleNamespace(shell32=SimpleNamespace(SHGetFolderPathW=known_folder))
+            with patch.object(driver.ctypes, "windll", api, create=True):
+                self.assertEqual(driver.installed_postgres_directory(trusted), trusted)
+                with self.assertRaises(ValueError):
+                    driver.installed_postgres_directory(other)
+
+    def test_system_cleanup_ignores_inherited_root_and_requires_kernel_receipt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            executable = root / ("taskkill.exe" if os.name == "nt" else "taskkill")
+            executable.write_bytes(b"fixture")
+            def system_directory(buffer, _capacity):
+                buffer.value = str(root)
+                return len(str(root))
+            api = SimpleNamespace(kernel32=SimpleNamespace(GetSystemDirectoryW=system_directory))
+            with patch.object(driver.ctypes, "windll", api, create=True), \
+                    patch.dict(driver.os.environ, {"SystemRoot": "untrusted-fixture-path"}):
+                self.assertEqual(driver.system_tree_killer(), executable)
+            api.kernel32.GetSystemDirectoryW = lambda _buffer, _capacity: 0
+            with patch.object(driver.ctypes, "windll", api, create=True):
+                with self.assertRaises(ValueError):
+                    driver.system_tree_killer()
 
     def test_confined_owned_child_refuses_sibling(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -45,7 +79,7 @@ class SetupCiTest(unittest.TestCase):
                 cluster = driver.OwnedCluster(owned, tools)
                 self.assertEqual(cluster.start(), "postgresql://fixture@localhost:4444/postgres")
                 cluster.close()
-            self.assertEqual([command[command.index("-D") + 1] for command in calls], [owned / "data"] * 3)
+            self.assertEqual([command[command.index("-D") + 1] for command in calls], [owned.resolve() / "data"] * 3)
             self.assertIn("stop", calls[-1])
             self.assertNotIn("register", [str(part) for command in calls for part in command])
 
@@ -100,7 +134,7 @@ class SetupCiTest(unittest.TestCase):
         child.communicate.side_effect = subprocess.TimeoutExpired("node", 1)
         with patch.object(driver.subprocess, "Popen", return_value=child), \
                 patch.object(driver.subprocess, "run") as terminate, \
-                patch.dict(driver.os.environ, {"SystemRoot": str(Path("fixture-system").resolve())}):
+                patch.object(driver, "system_tree_killer", return_value=Path("fixture-system") / "taskkill.exe"):
             with self.assertRaises(subprocess.TimeoutExpired):
                 driver.launch_consumer(["node"], {}, "{}", timeout=1)
             self.assertEqual(terminate.call_args.args[0][1:], ["/PID", "123", "/T", "/F"])
@@ -111,7 +145,7 @@ class SetupCiTest(unittest.TestCase):
         child.communicate.side_effect = subprocess.TimeoutExpired("node", 1)
         with patch.object(driver.subprocess, "Popen", return_value=child), \
                 patch.object(driver.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "taskkill")), \
-                patch.dict(driver.os.environ, {"SystemRoot": str(Path("fixture-system").resolve())}):
+                patch.object(driver, "system_tree_killer", return_value=Path("fixture-system") / "taskkill.exe"):
             with self.assertRaises(driver.ProcessCleanupFailure):
                 driver.launch_consumer(["node"], {}, "{}", timeout=1)
             child.wait.assert_not_called()
@@ -133,6 +167,7 @@ class SetupCiTest(unittest.TestCase):
             with patch.dict(driver.os.environ, {"RUNNER_TEMP": temporary}), \
                     patch.object(driver.tempfile, "mkdtemp", return_value=str(owned)), \
                     patch.object(driver, "OwnedCluster", return_value=cluster), \
+                    patch.object(driver, "installed_postgres_directory", return_value=Path(temporary)), \
                     patch.object(driver, "native_host_supported", return_value=True), \
                     patch.object(driver, "tls_fixture", return_value={}), \
                     patch.object(driver, "launch_consumer", side_effect=driver.ProcessCleanupFailure("fixture")):

@@ -23,6 +23,8 @@ RUN channel="$(grep '^channel = ' rust-toolchain.toml | cut -d '"' -f 2)" && \
 COPY about.toml about.hbs ./
 COPY crates ./crates
 COPY web/owner ./web/owner
+# Compile-time schema guards use the same migration sources as the migrator.
+COPY deploy/compose/migrations ./deploy/compose/migrations
 ARG GIT_COMMIT
 ARG RELEASE_VERSION
 ARG WEB_STATIC_SHA256

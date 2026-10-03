@@ -5,8 +5,7 @@ import {CleanupFailure,terminateOwnedTree,runOwnedProcess} from '../sdk/typescri
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {createReadStream} from 'node:fs';
-import {realpath,lstat,mkdtemp,rm} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
+import {realpath,lstat,mkdir,rm} from 'node:fs/promises';
 import path from 'node:path';
 import net from 'node:net';
 import {lookup} from 'node:dns/promises';
@@ -43,6 +42,16 @@ export class ReadyParser{
 export function serverPassed(output){return [...output.matchAll(/^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9.]+s\r?$/gm)].length===1;}
 async function executable(value){assert.ok(path.isAbsolute(value)&&value.toLowerCase().endsWith('.exe'));const stat=await lstat(value);assert.ok(stat.isFile()&&!stat.isSymbolicLink());const actual=await realpath(value);assert.ok(samePath(actual,path.normalize(value)),'Linked executable refused');return actual;}
 export const capture=(command,args,options={})=>runOwnedProcess(command,args,{cwd:repo,...options});
+export async function createBrowserPackage(){
+  const namespace=path.join(repo,'target');
+  try{await mkdir(namespace);}catch(error){if(error.code!=='EEXIST')throw error;}
+  const metadata=await lstat(namespace);assert.ok(metadata.isDirectory()&&!metadata.isSymbolicLink());
+  assert.ok(samePath(await realpath(namespace),namespace),'Linked fixture namespace refused');
+  const owned=path.join(namespace,'sealed-setup-browser-fixture');
+  await mkdir(owned); // Exclusive creation: never reuse or remove an existing package.
+  return owned;
+}
+
 export async function executableDigest(value){const hash=createHash('sha256');for await(const chunk of createReadStream(value))hash.update(chunk);return hash.digest('hex');}
 async function compiled(options,kind){
   if(options[kind+'-executable'])return executable(options[kind+'-executable']);
@@ -70,7 +79,7 @@ export async function main(args=process.argv.slice(2)){
     const driverSource=(await capture('git',['rev-parse','HEAD'],{timeoutMs:10000})).trim();assert.match(driverSource,/^[0-9a-f]{40}$/);
     const tls=await tlsInput(),serverExecutable=await compiled(options,'server'),nativeExecutable=await compiled(options,'native');
     const serverSha256=await executableDigest(serverExecutable),nativeSha256=await executableDigest(nativeExecutable);
-    stage='browser-package';assets=await mkdtemp(path.join(tmpdir(),'sealed-setup-browser-'));await capture(process.execPath,[path.join(repo,'scripts/package_conversation_browser.mjs'),assets],{timeoutMs:30000});
+    stage='browser-package';assets=await createBrowserPackage();await capture(process.execPath,[path.join(repo,'scripts/package_conversation_browser.mjs'),assets],{timeoutMs:30000});
     const origin=`https://owner.example.test:${await reservePort()}`;stage='server-readiness';let resolveReady,rejectReady;const readiness=new Promise((resolve,reject)=>{resolveReady=resolve;rejectReady=reject;});
     server=spawn(serverExecutable,['--exact',SERVER_TEST,'--ignored','--nocapture','--test-threads=1'],{cwd:repo,windowsHide:true,shell:false,detached:process.platform!=='win32',stdio:['ignore','pipe','pipe'],env:{...process.env,ZT_OWNER_SETUP_FIXTURE_ORIGIN:origin,ZT_OWNER_SETUP_BROWSER_ASSETS:assets}});
     exited=new Promise(resolve=>server.once('close',code=>{serverExit=code;if(!ready)rejectReady(Error('Fixture exited before readiness'));resolve(code);}));server.once('error',()=>rejectReady(Error('Fixture launch failed')));
@@ -83,6 +92,6 @@ export async function main(args=process.argv.slice(2)){
     assert.equal(await executableDigest(serverExecutable),serverSha256,'Server executable changed');assert.equal(await executableDigest(nativeExecutable),nativeSha256,'Native executable changed');
     console.log(JSON.stringify({stage:'PASS-COMPILED-SETUP-FIXTURE',result,driverSource,serverSourceLabel:options['server-source']||driverSource,nativeSourceLabel:options['native-source']||driverSource,serverSourceMode:options['server-executable']?'caller-supplied-source-label':'cargo-json-current-source',nativeSourceMode:options['native-executable']?'caller-supplied-source-label':'cargo-json-current-source',serverSha256,nativeSha256,physicalDevice:false,carrierSms:false}));return 0;
   }catch(error){if(error instanceof CleanupFailure)unsafeCleanup=true;console.error(`Sealed setup fixture failed at ${stage}; private readiness and signing material withheld.`);return unsafeCleanup?2:1;}
-  finally{await browser?.close().catch(()=>{});if(ready&&serverExit===undefined)await fixtureControl(ready)('finish').catch(()=>{});if(server&&serverExit===undefined){try{await deadline(exited,15000);}catch{try{await terminateOwnedTree(server,exited);}catch{unsafeCleanup=true;}}}await termination;if(unsafeCleanup){process.exitCode=2;throw new CleanupFailure('Owned processes not confirmed stopped; staging retained');}if(assets){assert.ok(path.dirname(assets)===path.resolve(tmpdir())&&path.basename(assets).startsWith('sealed-setup-browser-'));await rm(assets,{recursive:true,force:true});}}
+  finally{await browser?.close().catch(()=>{});if(ready&&serverExit===undefined)await fixtureControl(ready)('finish').catch(()=>{});if(server&&serverExit===undefined){try{await deadline(exited,15000);}catch{try{await terminateOwnedTree(server,exited);}catch{unsafeCleanup=true;}}}await termination;if(unsafeCleanup){process.exitCode=2;throw new CleanupFailure('Owned processes not confirmed stopped; staging retained');}if(assets){assert.ok(path.dirname(assets)===path.join(repo,'target')&&path.basename(assets)==='sealed-setup-browser-fixture');await rm(assets,{recursive:true,force:true});}}
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))try{process.exitCode=await main();}catch{console.error('Owned process cleanup failed; staging retained and private inputs withheld.');process.exitCode=2;}

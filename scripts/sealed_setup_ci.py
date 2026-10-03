@@ -6,6 +6,7 @@ Existing isolated database mode never initializes/stops a cluster. No credential
 ready records or TLS private material are printed or written as evidence.
 """
 import argparse
+import ctypes
 import datetime
 import ipaddress
 import json
@@ -52,6 +53,27 @@ def tls_fixture():
                                     serialization.PrivateFormat.PKCS8,
                                     serialization.NoEncryption()).decode("ascii"),
             "cert": cert.public_bytes(serialization.Encoding.PEM).decode("ascii")}
+
+
+def installed_postgres_directory(requested):
+    # Ask Windows for its protected installed-programs directory; do not select
+    # an executable from a caller-controlled path or inherited environment.
+    buffer = ctypes.create_unicode_buffer(32768)
+    result = ctypes.windll.shell32.SHGetFolderPathW(None, 0x26, None, 0, buffer)
+    if result != 0:
+        raise ValueError("Installed PostgreSQL directory unavailable")
+    trusted = (Path(buffer.value) / "PostgreSQL" / "17" / "bin").resolve(strict=True)
+    if requested.resolve(strict=True) != trusted:
+        raise ValueError("Installed PostgreSQL directory required")
+    return trusted
+
+
+def system_tree_killer():
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = ctypes.windll.kernel32.GetSystemDirectoryW(buffer, len(buffer))
+    if not 0 < length < len(buffer):
+        raise ValueError("System process cleanup tool unavailable")
+    return tool(Path(buffer.value), "taskkill")
 
 
 def tool(directory, name):
@@ -136,12 +158,12 @@ def launch_consumer(command, env, public_input, timeout=2400):
         # /PID targets this exact child; /T includes only its descendants. Never
         # kill by image name. Require taskkill success AND the child's receipt.
         try:
-            taskkill = Path(os.environ["SystemRoot"]) / "System32" / "taskkill.exe"
+            taskkill = system_tree_killer()
             subprocess.run([str(taskkill), "/PID", str(child.pid), "/T", "/F"],
                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL, timeout=15, check=True)
             child.wait(timeout=10)
-        except (KeyError, OSError, subprocess.SubprocessError) as error:
+        except (ValueError, OSError, subprocess.SubprocessError) as error:
             raise ProcessCleanupFailure("Owned consumer termination unknown") from error
         raise subprocess.TimeoutExpired(command[0], timeout) from None
     if child.returncode == 2:
@@ -170,14 +192,14 @@ def main(argv=None):
             raise ValueError("Protected native composition requires Windows")
         if not args.existing_database and not os.environ.get("RUNNER_TEMP"):
             raise ValueError("Owned CI PostgreSQL requires the runner temporary directory")
-        temporary = Path(tempfile.mkdtemp(prefix="sealed-setup-ci-", dir=os.environ.get("RUNNER_TEMP")))
+        temporary = Path(tempfile.mkdtemp(prefix="sealed-setup-ci-"))
         try:
             if args.existing_database:
                 uri = database_url(os.environ.get("ZT_INBOUND_TEST_DATABASE_URL", ""))
             else:
                 if not args.pg_bin:
                     raise ValueError("Explicit installed PostgreSQL directory required")
-                cluster = OwnedCluster(Path(temporary), args.pg_bin)
+                cluster = OwnedCluster(Path(temporary), installed_postgres_directory(args.pg_bin))
                 uri = cluster.start()
             env = dict(os.environ, DATABASE_ALLOW_PLAINTEXT="true")
             for name in ("ZT_AUTH_TEST_DATABASE_URL", "ZT_DELIVERY_TEST_DATABASE_URL",
