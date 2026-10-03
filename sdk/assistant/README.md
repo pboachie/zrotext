@@ -1,4 +1,4 @@
-# Customer-local deterministic routine candidate
+# Customer-local routine executor candidate
 
 `CustomerRoutineService` calls the authenticated HTTPS routine service. Configuration holds the selected input credential, optional distinct output credential and, only for explicit owner actions, a live owner cookie and CSRF token. These are not model parameters. Requests are bounded, redirects are refused, and uncertain responses are never automatically retried.
 
