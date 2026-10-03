@@ -717,7 +717,7 @@ async fn managed_grants_observed_account_wait_rechecks_expiry_and_owner_before_a
                             crate::http_owner_conversations::ConversationError::Forbidden
                         ))
                 ),
-                "fresh authority must refuse, rather than merely timing out: {result:?}"
+                "fresh authority must refuse, rather than merely timing out"
             );
             let expected = i64::from(replacing);
             for table in [
