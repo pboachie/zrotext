@@ -124,6 +124,8 @@ async fn owner_consent_withdrawal_permanently_fences_bound_authority_without_ref
     fixture.execute("INSERT INTO workflow_contexts SELECT (jsonb_populate_record(NULL::workflow_contexts,to_jsonb(c)||jsonb_build_object('id',$2::uuid))).* FROM workflow_contexts c WHERE c.account_id=$1 AND c.id=$3",&[&case.f.account,&output,&case.header.context]).await.unwrap();
     fixture.execute("INSERT INTO workflow_context_versions SELECT (jsonb_populate_record(NULL::workflow_context_versions,to_jsonb(v)||jsonb_build_object('context_id',$2::uuid,'id',$2::uuid,'request_id',$2::uuid))).* FROM workflow_context_versions v WHERE v.account_id=$1 AND v.context_id=$3 AND v.revision=1",&[&case.f.account,&output,&case.header.context]).await.unwrap();
     fixture.commit().await.unwrap();
+    case.f.db.execute("INSERT INTO workflow_contexts SELECT (jsonb_populate_record(NULL::workflow_contexts,to_jsonb(c)||jsonb_build_object('id',$2::uuid))).* FROM workflow_contexts c WHERE c.account_id=$1 AND c.id=$3",&[&case.f.account,&output,&case.header.context]).await.unwrap();
+    case.f.db.execute("INSERT INTO workflow_context_versions SELECT (jsonb_populate_record(NULL::workflow_context_versions,to_jsonb(v)||jsonb_build_object('context_id',$2::uuid,'id',$2::uuid,'request_id',$2::uuid))).* FROM workflow_context_versions v WHERE v.account_id=$1 AND v.context_id=$3 AND v.revision=1",&[&case.f.account,&output,&case.header.context]).await.unwrap();
     case.f
         .db
         .execute(
