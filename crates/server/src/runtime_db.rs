@@ -312,7 +312,7 @@ impl Drop for PooledClient {
 
 #[cfg(test)]
 pub(crate) fn diagnostic_connect_failure(stage: &'static str, error: &ConnectError) {
-    if std::env::var("ZT_RUNTIME_DB_TEST_DIAGNOSTIC").as_deref() != Ok("1") {
+    if !test_diagnostic::enabled() {
         return;
     }
     let category = match error {
@@ -329,7 +329,7 @@ pub(crate) fn diagnostic_auth_failure(
     stage: &'static str,
     error: &crate::http_auth::AuthHttpError,
 ) {
-    if std::env::var("ZT_RUNTIME_DB_TEST_DIAGNOSTIC").as_deref() != Ok("1") {
+    if !test_diagnostic::enabled() {
         return;
     }
     let category = match error {
@@ -342,7 +342,7 @@ pub(crate) fn diagnostic_auth_failure(
 
 #[cfg(test)]
 pub(crate) fn diagnostic_query_failure(stage: &'static str, error: &tokio_postgres::Error) {
-    if std::env::var("ZT_RUNTIME_DB_TEST_DIAGNOSTIC").as_deref() != Ok("1") {
+    if !test_diagnostic::enabled() {
         return;
     }
     let category = match error.code().map(|code| code.code()) {
@@ -355,6 +355,9 @@ pub(crate) fn diagnostic_query_failure(stage: &'static str, error: &tokio_postgr
     };
     eprintln!("fixture_query_failure stage={stage} category={category}");
 }
+
+#[cfg(test)]
+pub(crate) mod test_diagnostic;
 
 pub async fn connect(url: &str) -> Result<PooledClient, ConnectError> {
     acquire(&POOLS.requests, url).await.inspect_err(|_error| {
@@ -473,7 +476,7 @@ async fn open(
     .await
     .map_err(|_| {
         #[cfg(test)]
-        if std::env::var("ZT_RUNTIME_DB_TEST_DIAGNOSTIC").as_deref() == Ok("1") {
+        if test_diagnostic::enabled() {
             eprintln!(
                 "fixture_connect_deadline wall_ms={} tokio_ms={} available_slots={} resets_in_flight={}",
                 diagnostic_started.0.elapsed().as_millis(),

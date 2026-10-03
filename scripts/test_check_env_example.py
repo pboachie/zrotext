@@ -9,6 +9,18 @@ except ImportError:
 
 
 class RuntimeReadsTest(unittest.TestCase):
+    def test_connection_diagnostic_is_excluded_only_in_its_test_module(self):
+        flags = {"ZT_RUNTIME_DB_TEST_DIAGNOSTIC"}
+        source = 'std::env::var("ZT_RUNTIME_DB_TEST_DIAGNOSTIC")'
+        fixture = "crates/server/src/runtime_db/test_diagnostic.rs"
+        self.assertEqual(env.runtime_reads(source, fixture), set())
+        for runtime in ["crates/server/src/runtime_db.rs",
+                        "crates/server/src/billing/sessions.rs",
+                        "crates/server/src/main.rs"]:
+            self.assertEqual(env.runtime_reads(source, runtime), flags)
+        module = Path(env.ROOT, "crates/server/src/runtime_db.rs").read_text(encoding="utf-8")
+        self.assertRegex(module, r'#\[cfg\(test\)\]\s*pub\(crate\) mod test_diagnostic;')
+
     def test_setup_browser_flags_are_excluded_only_in_the_test_module(self):
         flags = {"ZT_OWNER_SETUP_BROWSER_ASSETS", "ZT_OWNER_SETUP_FIXTURE_ORIGIN"}
         source = ";".join(f'std::env::var("{flag}")' for flag in flags)

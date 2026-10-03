@@ -490,7 +490,7 @@ impl StripeClient {
     ) -> Result<Value, AuthHttpError> {
         let mut response = request.send().await.map_err(|_error| {
             #[cfg(test)]
-            if std::env::var("ZT_RUNTIME_DB_TEST_DIAGNOSTIC").as_deref() == Ok("1") {
+            if crate::runtime_db::test_diagnostic::enabled() {
                 let category = if _error.is_timeout() {
                     "timeout"
                 } else if _error.is_connect() {

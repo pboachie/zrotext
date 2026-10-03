@@ -49,6 +49,9 @@ def runtime_reads(source: str, relative_path: str) -> set[str]:
     """Exclude fixture markers only in their isolated cfg(test) source modules."""
     reads = set(READ.findall(source))
     fixture_reads = {
+        "crates/server/src/runtime_db/test_diagnostic.rs": {
+            "ZT_RUNTIME_DB_TEST_DIAGNOSTIC",
+        },
         "crates/server/src/http_owner_conversations/sealed_line_setup/server_browser_fixture.rs": {
             "ZT_OWNER_SETUP_BROWSER_ASSETS", "ZT_OWNER_SETUP_FIXTURE_ORIGIN",
         },
