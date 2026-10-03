@@ -42,7 +42,9 @@ The dormant authenticated server/frame adapter emits this reply. Its ordinary
 socket policy remains disabled; installing it requires explicit future composition.
 
 The adapter allows at most two seconds of round-trip time and uses the full RTT
-as conservative uncertainty added to server UTC. It advances by elapsed monotonic
+as conservative uncertainty added to server UTC. A faster renewal retains the
+previous elapsed upper bound; it does not extend a grant deadline. Authenticated
+samples below the elapsed lower bound refuse as rollback. It advances by elapsed monotonic
 time, expires after thirty seconds, and is unavailable after restart/session loss.
 No wall-clock fallback or persisted anchor exists. Nonce/session mismatch,
 regression, overflow and unavailable clocks fail closed. Root/session authority

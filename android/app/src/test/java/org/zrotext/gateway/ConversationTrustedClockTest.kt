@@ -23,4 +23,28 @@ class ConversationTrustedClockTest {
     @Test fun failedRequestOnLogoutCannotRestoreOldAnchor(){install();val prior=live;live=null;assertThrows(IllegalStateException::class.java){clock.beginRequest()};live=prior;assertNull(clock.nowMs())}
     @Test fun overflowingRenewalFloorCannotBypassRegression(){install();elapsed=Long.MAX_VALUE-1;val request=clock.beginRequest();assertThrows(ArithmeticException::class.java){clock.installAuthenticatedReply(request.challenge,request.session,100100)};assertNull(clock.nowMs())}
     @Test fun explicitInvalidationCannotResumeFromSavedAnchor(){install();clock.invalidate();assertNull(clock.nowMs())}
+    @Test fun fasterAuthenticatedRenewalPreservesConservativeTimeWithoutRefusingCurrentSession() {
+        install(100000)
+        elapsed += 1000
+        val request = clock.beginRequest()
+        elapsed += 10
+        // Server UTC advances correctly; the second sample has a shorter RTT.
+        clock.installAuthenticatedReply(request.challenge, request.session, 101010)
+        assertEquals(101110L, clock.nowMs())
+    }
+    @Test fun repeatedFasterRenewalsNeverReduceTheConservativeGrantDeadline() {
+        install(100000)
+        elapsed += 1000
+        val next = clock.beginRequest()
+        elapsed += 10
+        clock.installAuthenticatedReply(next.challenge, next.session, 101010)
+        assertEquals(101110L, clock.nowMs())
+        val renewal = clock.beginRequest()
+        elapsed += 5
+        clock.installAuthenticatedReply(renewal.challenge, renewal.session, 101015)
+        assertEquals(101115L, clock.nowMs())
+        elapsed += 100
+        assertEquals(101215L, clock.nowMs())
+        assertTrue(clock.nowMs()!! >= 101200L)
+    }
 }
