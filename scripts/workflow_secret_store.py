@@ -73,6 +73,11 @@ class WindowsCredentialStore:
         except (ValueError, UnicodeError):
             raise SecretStoreError("secret_store_unavailable") from None
         finally:
+            # Best effort on the native returned copy, before releasing OS memory.
+            # Python strings and Credential Manager's own copy remain outside this wipe.
+            size = result.contents.CredentialBlobSize
+            if result.contents.CredentialBlob and 0 < size <= 2560:
+                ctypes.memset(result.contents.CredentialBlob, 0, size)
             self.api.CredFree(result)
 
     def delete(self, name):
@@ -110,7 +115,21 @@ class SecretServiceStore:
             raise SecretStoreError("secret_store_unavailable") from None
 
     def delete(self, name):
-        self._run(["clear", "application", "zrotext", "reference", reference(name)])
+        attributes = ["application", "zrotext", "reference", reference(name)]
+        try:
+            cleared = subprocess.run([self.tool, "clear", *attributes], capture_output=True,
+                                     timeout=10, check=False)
+            if cleared.returncode not in (0, 1) or cleared.stdout or cleared.stderr:
+                raise SecretStoreError("secret_store_unavailable")
+            # clear returns 1 for no unlocked match as well as errors. An empty,
+            # successful all-item search independently confirms absence; locked
+            # or remaining matches refuse. Never print captured store output.
+            remaining = subprocess.run([self.tool, "search", "--all", *attributes],
+                                       capture_output=True, timeout=10, check=False)
+            if remaining.returncode or remaining.stdout or remaining.stderr:
+                raise SecretStoreError("secret_store_unavailable")
+        except (OSError, subprocess.SubprocessError):
+            raise SecretStoreError("secret_store_unavailable") from None
 
 
 def operating_system_store():

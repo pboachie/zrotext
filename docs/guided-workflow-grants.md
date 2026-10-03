@@ -28,8 +28,13 @@ scope and existing configuration digest and requires typed confirmation before
 owner authentication or mutation. Password and the login MFA factor are entered
 through hidden prompts; issuing a grant requires a separate fresh MFA factor.
 The owner session/cookies/CSRF stay in the setup process and are never supplied
-to the agent. Logout is attempted before exit; an unavailable logout cannot
-prove remote session revocation. Python strings and OS copies cannot be securely
+to the agent. A successful newly issued grant retains its remote creator session:
+the server deliberately requires that session to remain live. Local cookies are
+discarded and the HTTP connection is closed. Logging out that creator, revoking
+it, or its expiry invalidates the grant. Failed setup and newly authenticated
+resume/disconnect sessions attempt logout; an unavailable logout cannot prove
+remote session revocation. A nonsecret receipt records creator account, user and
+session IDs for deliberate cleanup. Python strings and OS copies cannot be securely
 zeroized.
 
 ## Credential custody and launcher
@@ -37,7 +42,11 @@ zeroized.
 Windows uses current-user generic Windows Credential Manager through its native
 API. POSIX requires an installed, unlocked desktop Secret Service and
 `secret-tool`; a headless/missing backend refuses, with no plaintext fallback.
-Synthetic tests do not access either real vault. Other users and privileged
+Recovery deletion confirms absence of matching Secret Service entries; locked,
+remaining or unavailable entries refuse custody cleanup. Synthetic tests do not
+access either real vault. The Windows ABI mock checks
+best-effort wiping of the returned native copy before release; this does not
+verify the real OS store or erase Python strings, pipes or OS-owned copies. Other users and privileged
 processes, desktop session compromise and same-user access remain OS trust
 boundaries. This is not hardware custody or process isolation.
 
@@ -55,7 +64,14 @@ Changed scope, launcher or origin refuses rather than silently widening or
 renewing it. Resume is configuration recovery, not a claim of current grant
 authority: every tool call rechecks the actual service. Expired/revoked grants
 must be explicitly disconnected and newly reviewed; no automatic retry or
-renewal occurs. Lost issuance responses remain unknown and require owner review.
+renewal occurs. An exclusive, flushed intent receipt is written before issuance. Lost issuance
+responses and custody/config failures retain that receipt and block another
+issuance, even if no grant ID was received. The receipt contains identifiers and
+fingerprints, never passwords, cookies or narrow credentials. POSIX also flushes the parent directory before issuance and refuses issuance
+if that flush fails. Windows does not provide a directory persistence guarantee
+through this implementation. File flushing is not a guarantee against filesystem damage or power-loss loss of directory
+metadata; the customer must protect the configuration directory and receipt.
+No automatic retry follows an ambiguous effect.
 
 Use `preview` with the installed nonsecret grant/reference and original launch
 arguments to obtain the disconnect review digest. `disconnect` authenticates
@@ -65,12 +81,24 @@ revocation is unavailable, configuration and custody remain. Failed installation
 attempts revoke the new grant; uncertain cleanup returns only its nonsecret
 grant/reference for deliberate recovery and never claims success.
 
+For an incomplete setup without an installed entry, run `recovery-preview` with
+`--config` to review the recorded creator and receipt digest. Then run `recover`
+with the same configuration and `--review-digest`. A fresh owner login must match
+the recorded origin, account and user. The authenticated, CSRF-protected exact-session
+DELETE revokes only that user's session; it does not sign out other users or
+bulk-revoke sessions. A confirmed idempotent response is required before deleting
+custody and the intent receipt. An unknown response preserves the receipt, so a
+later explicitly reviewed recovery can confirm revocation. Disconnect first if
+the entry was installed. Confirmed disconnect also revokes its recorded creator
+and clears the receipt; it never silently reconnects or renews.
+
 ## Verification limits
 
 Tests exercise actual stdio broker subprocess framing and redaction, synthetic
 owner login/MFA/closed grant requests, native Windows API structure, mocked
 Secret Service invocation, config preservation/rerun, rollback and revocation
-ordering. They do not prove a real vault write, live deployment setup, Android
+ordering. The composed real-router HTTPS/PostgreSQL and private-bootstrap fixture
+is authored but not yet run locally. They do not prove a real vault write, live deployment setup, Android
 pairing, current reader enrollment, physical-device operation or carrier delivery.
 The doctor still reports unknown/unavailable device and release prerequisites;
 this metadata connector cannot turn those prerequisites into authority.

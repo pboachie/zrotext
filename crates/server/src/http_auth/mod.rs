@@ -759,6 +759,7 @@ pub fn router(state: AuthHttpState) -> Router {
         .route("/logout", post(logout))
         .route("/session", get(session))
         .route("/sessions", get(list_sessions))
+        .route("/sessions/{session_id}", delete(revoke_selected_session))
         .route("/sessions/revoke-others", post(revoke_other_sessions))
         .route("/password", post(change_password))
         .route("/password/reset/request", post(request_password_reset))
@@ -1693,6 +1694,24 @@ async fn list_sessions(
         })
         .collect();
     Ok(Json(SessionsBody { sessions }))
+}
+
+// Revoking a known creator session also fences credentials bound to that session.
+// The existing library restricts targets to the authenticated account and user.
+async fn revoke_selected_session(
+    State(state): State<Arc<AuthHttpState>>,
+    MemberMutation(member, _slot): MemberMutation,
+    Path(session_id): Path<Uuid>,
+) -> Result<StatusCode, AuthHttpError> {
+    if session_id.is_nil() {
+        return Err(AuthHttpError::BadRequest);
+    }
+    let client = connect(&state.database_url).await?;
+    auth::revoke_session(&client, &member, session_id)
+        .await
+        .map_err(map_auth)?;
+    // Idempotent and does not disclose whether another user's target exists.
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]

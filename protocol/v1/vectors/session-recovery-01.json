@@ -1,0 +1,25 @@
+{
+  "confirmed": {
+    "method": "DELETE",
+    "session_id": "00000000-0000-4000-8000-000000000001",
+    "status": 204
+  },
+  "invalid": [
+    {
+      "method": "DELETE",
+      "session_id": "00000000-0000-4000-8000-000000000001",
+      "status": 204,
+      "revoke_all": true
+    },
+    {
+      "method": "POST",
+      "session_id": "00000000-0000-4000-8000-000000000001",
+      "status": 204
+    },
+    {
+      "method": "DELETE",
+      "session_id": "00000000-0000-0000-0000-000000000000",
+      "status": 204
+    }
+  ]
+}

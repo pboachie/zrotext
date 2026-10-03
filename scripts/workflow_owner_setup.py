@@ -51,13 +51,15 @@ class OwnerSession:
         self.connection = connection or http.client.HTTPSConnection(
             parsed.hostname, parsed.port or 443, timeout=10, context=ssl.create_default_context())
         self.cookies = {}
+        self.session_identity = None
+        self.retain_creator = False
 
     def request(self, method, path, body=None):
         allowed = {("POST", "/v1/auth/login"), ("POST", "/v1/auth/login/mfa"),
                    ("GET", "/v1/auth/session"), ("POST", "/v1/auth/logout"),
                    ("POST", "/v1/auth/workflow-grants")}
         if (method, path) not in allowed and not (
-                method == "DELETE" and re.fullmatch(r"/v1/auth/workflow-grants/[0-9a-f-]{36}", path)):
+                method == "DELETE" and re.fullmatch(r"/v1/auth/(?:workflow-grants|sessions)/[0-9a-f-]{36}", path)):
             raise OwnerSetupError("invalid_operation")
         encoded = None if body is None else json.dumps(body, separators=(",", ":")).encode()
         if encoded is not None and len(encoded) > 4096:
@@ -97,11 +99,14 @@ class OwnerSession:
         if status != 200:
             raise OwnerSetupError("owner_authentication_refused")
         status, data = self.request("GET", "/v1/auth/session")
-        if status != 200 or not isinstance(data, dict) or data.get("role") != "owner":
+        if (status != 200 or not isinstance(data, dict)
+                or set(data) != {"account_id", "user_id", "session_id", "role"}
+                or data.get("role") != "owner"):
             raise OwnerSetupError("owner_required")
         if not all(self.cookies.get(k) for k in ["__Host-zrotext_session", "__Host-zrotext_csrf"]):
             raise OwnerSetupError("invalid_session")
-        return identity(data["account_id"])
+        self.session_identity = {key: identity(data[key]) for key in ("account_id", "user_id", "session_id")}
+        return self.session_identity["account_id"]
 
     def create(self, selected, password, grant_code):
         body = scope(selected)
@@ -116,9 +121,21 @@ class OwnerSession:
         if status != 204:
             raise OwnerSetupError("revocation_unconfirmed")
 
+    def revoke_creator(self, creator):
+        if (not isinstance(creator, dict) or set(creator) != {"account_id", "user_id", "session_id"}
+                or self.session_identity is None):
+            raise OwnerSetupError("recovery_identity_refused")
+        for key in creator:
+            identity(creator[key])
+        if any(creator[key] != self.session_identity[key] for key in ("account_id", "user_id")):
+            raise OwnerSetupError("recovery_identity_refused")
+        status, _ = self.request("DELETE", "/v1/auth/sessions/" + creator["session_id"])
+        if status != 204:
+            raise OwnerSetupError("revocation_unconfirmed")
+
     def close(self):
         try:
-            if self.cookies:
+            if self.cookies and not self.retain_creator:
                 self.request("POST", "/v1/auth/logout")
         except OwnerSetupError:
             pass
