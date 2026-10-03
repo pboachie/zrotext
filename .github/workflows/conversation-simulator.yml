@@ -167,17 +167,18 @@ jobs:
           node --test sdk/typescript/test/sealed-setup-ci-driver.test.mjs
           if ($LASTEXITCODE -ne 0) { throw 'Consumer transport guards failed' }
       - name: Inspect fresh fixture ownership without identifiers
+        timeout-minutes: 2
         # Read-only metadata from an empty leaf created identically to the fixture.
         # No ACL, owner, token, account or privilege changes are performed.
         run: |
-          $leaf = & "$env:RUNNER_TEMP/sealed-setup-python/Scripts/python.exe" -c "import sys,tempfile; sys.path.insert(0,'scripts'); from sealed_setup_ci import owned_fixture_parent; print(tempfile.mkdtemp(prefix='sealed-setup-ci-acl-',dir=owned_fixture_parent()))"
+          $leaf = & "$env:RUNNER_TEMP/sealed-setup-python/Scripts/python.exe" -c "import sys,tempfile; sys.path.insert(0,'scripts'); from sealed_setup_ci import owned_fixture_parent; print(tempfile.mkdtemp(prefix='sealed-setup-ci-acl-',dir=owned_fixture_parent()))" 2>$null
           if ($LASTEXITCODE -ne 0) { throw 'Owned metadata fixture creation failed' }
           $parent = [IO.Path]::GetFullPath('target/sealed-setup-postgres-fixtures')
           $leaf = [IO.Path]::GetFullPath($leaf)
           if ([IO.Path]::GetDirectoryName($leaf) -ne $parent -or -not [IO.Path]::GetFileName($leaf).StartsWith('sealed-setup-ci-acl-')) { throw 'Owned metadata fixture fence failed' }
           try {
-            if ((Get-Item -LiteralPath $leaf).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Linked metadata fixture refused' }
-            $acl = Get-Acl -LiteralPath $leaf
+            if ((Get-Item -LiteralPath $leaf -ErrorAction Stop).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Linked metadata fixture refused' }
+            $acl = Get-Acl -LiteralPath $leaf -ErrorAction Stop
             $current = [Security.Principal.WindowsIdentity]::GetCurrent().User
             $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier])
             $admins = [Security.Principal.SecurityIdentifier]::new([Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null)
@@ -192,8 +193,10 @@ jobs:
             [ordered]@{ version=1; ownerIsCurrentUser=$owner.Equals($current); ownerIsAdministrators=$owner.Equals($admins); directCurrentUserAllow=$directAllow; ownerRightsAllow=$ownerRightsAllow } | ConvertTo-Json -Compress
           } catch { throw 'Owned fixture metadata inspection failed; identifiers withheld' }
           finally {
-            if ((Get-ChildItem -LiteralPath $leaf -Force).Count -ne 0) { throw 'Owned metadata fixture is not empty' }
-            Remove-Item -LiteralPath $leaf
+            try {
+              if ((Get-ChildItem -LiteralPath $leaf -Force -ErrorAction Stop).Count -ne 0) { throw 'Owned metadata fixture is not empty' }
+              Remove-Item -LiteralPath $leaf -ErrorAction Stop
+            } catch { throw 'Owned metadata fixture cleanup unconfirmed; identifiers withheld' }
           }
       - name: Require real compiled server, browser and protected native setup fixtures
         # Initializes and stops ONLY a new RUNNER_TEMP cluster using installed PG17.
