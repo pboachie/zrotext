@@ -12,6 +12,7 @@ struct Flow {
     principal: IntegrationPrincipal,
     action: ActionState,
     policy: WindowPolicy,
+    credential: zeroize::Zeroizing<String>,
 }
 async fn prepared(permissions: &[Operation], approve: bool) -> Flow {
     prepared_window(permissions, approve, false).await
@@ -99,6 +100,7 @@ async fn prepared_bounded(
         principal,
         action,
         policy,
+        credential: issued.token,
     }
 }
 
@@ -199,6 +201,9 @@ async fn exact_owner_binding_does_not_bypass_a_future_recipient_window() {
     assert_eq!(count, 0);
     flow.case.f.cleanup().await;
 }
+
+mod scheduler_service;
+mod scheduling;
 fn request() -> ScheduleRequest {
     ScheduleRequest {
         request_id: Uuid::new_v4(),
@@ -335,7 +340,7 @@ async fn integration_schedule_waits_for_exact_owner_binding_then_prepares_once_w
     ));
     let (bound, message) = flow
         .case
-        .bind_message(flow.action, occurrence.dispatch_id)
+        .bind_message(flow.action.clone(), occurrence.dispatch_id)
         .await;
     assert!(matches!(
         send_action(
@@ -376,6 +381,7 @@ async fn integration_schedule_waits_for_exact_owner_binding_then_prepares_once_w
         .is_err()
     );
     let id = Uuid::new_v4();
+    scheduling::retry_due(&flow, occurrence.id).await;
     for _ in 0..2 {
         assert!(
             matches!(send_action(&mut flow.case.f.connect().await, &flow.principal, id, bound.key, Some(occurrence.id)).await.unwrap(), SendOutcome::Prepared { message_id, dispatch_id } if message_id==message && dispatch_id==occurrence.dispatch_id)
