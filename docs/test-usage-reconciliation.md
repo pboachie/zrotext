@@ -29,6 +29,8 @@ complete empty provider summary represents zero observed units.
 
 Invoice comparison requires an existing immutable invoice-period binding with
 exactly the same boundaries. A missing compatible binding remains pending.
+Non-calendar subscription-anchored invoice periods are not reconciled here;
+their own immutable period attribution requires a separate implementation.
 The complete bounded TEST invoice must match its trusted customer and subscription.
 Only one non-prorated usage line with the same meter and period may supply the
 quantity. Transformed/tiered pricing and ambiguous usage lines are refused;

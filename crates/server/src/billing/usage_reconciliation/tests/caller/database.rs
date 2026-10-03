@@ -54,6 +54,56 @@ async fn authority_snapshot(db: &Database, account: Uuid) -> Value {
 }
 
 #[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; genuine invoice migration and synthetic TLS"]
+async fn non_calendar_invoice_binding_stays_pending_without_fetching_its_quantity() {
+    let mut f = invoice_fixture().await;
+    seed(
+        &f.db,
+        f.account,
+        f.device,
+        "cus_Synthetic",
+        "mtr_Synthetic",
+        false,
+    )
+    .await;
+    f.db.execute("INSERT INTO billing_reconciliations(account_id,stripe_customer_id,stripe_subscription_id,processed_generation) VALUES($1,'cus_Synthetic','sub_Synthetic',1)", &[&f.account]).await.unwrap();
+    f.db.execute("INSERT INTO billing_invoice_periods(id,account_id,subscription_id,invoice_id,line_id,item_id,start_ms,end_ms,original_price_id,original_limit) VALUES($1,$2,'sub_Synthetic','in_Synthetic','il_Synthetic','si_Synthetic',1705276800000,1707955200000,'price_Synthetic',100)", &[&Uuid::new_v4(),&f.account]).await.unwrap();
+    let before = authority_snapshot(&f.db, f.account).await;
+    let (worker, server) = tls(vec![
+        reply("/v1/billing/meters/mtr_Synthetic", meter()),
+        reply(
+            "/v1/billing/meters/mtr_Synthetic/event_summaries",
+            summary(1),
+        ),
+        reply(
+            "/v1/billing/meters/mtr_Synthetic/event_summaries",
+            summary(1),
+        ),
+    ])
+    .await;
+    assert_eq!(
+        worker
+            .reconcile_period(&mut f.db, f.account, 1, "2024-01-01", Uuid::new_v4())
+            .await
+            .unwrap(),
+        "pending"
+    );
+    assert_eq!(server.await.unwrap().len(), 3);
+    assert_eq!(
+        f.db.query_one(
+            "SELECT invoice_units FROM billing_usage_reconciliations WHERE account_id=$1",
+            &[&f.account]
+        )
+        .await
+        .unwrap()
+        .get::<_, Option<i64>>(0),
+        None
+    );
+    assert_eq!(authority_snapshot(&f.db, f.account).await, before);
+    f.cleanup().await;
+}
+
+#[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated schema and synthetic certificate-validated TLS only"]
 async fn actual_https_pg_observation_is_immutable_idempotent_and_cannot_credit_or_change_entitlement()
  {
