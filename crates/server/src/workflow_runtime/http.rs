@@ -42,7 +42,7 @@ async fn no_store(request: Request, next: Next) -> Response {
         .insert(header::PRAGMA, "no-cache".parse().expect("static header"));
     response
 }
-fn bearer(headers: &HeaderMap) -> Result<&str, AuthError> {
+pub(crate) fn bearer(headers: &HeaderMap) -> Result<&str, AuthError> {
     if headers.contains_key(header::COOKIE) || headers.contains_key(header::ORIGIN) {
         return Err(AuthError::Unauthorized);
     }
@@ -57,7 +57,7 @@ fn bearer(headers: &HeaderMap) -> Result<&str, AuthError> {
     }
     Ok(token)
 }
-fn refusal(error: AuthError) -> Response {
+pub(crate) fn refusal(error: AuthError) -> Response {
     let (status, code) = match error {
         AuthError::InvalidInput => (StatusCode::BAD_REQUEST, "invalid_request"),
         AuthError::Unauthorized | AuthError::InvalidCredentials | AuthError::MfaRequired { .. } => {
@@ -72,7 +72,7 @@ fn refusal(error: AuthError) -> Response {
     };
     (status, Json(serde_json::json!({"error":{"code":code}}))).into_response()
 }
-fn response(value: impl Serialize) -> Response {
+pub(crate) fn response(value: impl Serialize) -> Response {
     match serde_json::to_vec(&value) {
         Ok(body) if body.len() <= RESPONSE_LIMIT => {
             ([(header::CONTENT_TYPE, "application/json")], body).into_response()

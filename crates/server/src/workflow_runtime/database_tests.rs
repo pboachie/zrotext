@@ -225,6 +225,18 @@ impl Case {
         Self::with_signer(None).await
     }
     pub(super) async fn with_signer(signer_lifetime: Option<i64>) -> Self {
+        Self::with_fixture_lifetimes(signer_lifetime, 60000, 30000).await
+    }
+    // The multi-process customer routine ceremony needs a coherent bounded
+    // synthetic authority interval. Existing expiry fixtures keep their defaults.
+    pub(super) async fn for_customer_routine(signer_lifetime: Option<i64>) -> Self {
+        Self::with_fixture_lifetimes(signer_lifetime, 120000, 90000).await
+    }
+    async fn with_fixture_lifetimes(
+        signer_lifetime: Option<i64>,
+        authority_lifetime: i64,
+        grant_lifetime: i64,
+    ) -> Self {
         let password = Zeroizing::new(URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>()));
         let (mut f, owner, s) = pending().await;
         activate(&f, &s).await;
@@ -355,19 +367,19 @@ impl Case {
                         kind: registry::GrantKind::Read { directions: 8 },
                         line_id: f.line,
                         conversation_restriction: vec![s.interval],
-                        expires_ms: (now + 60000) as u64,
+                        expires_ms: (now + authority_lifetime) as u64,
                     }];
                     if signer.is_some() {
                         grants.push(registry::GrantRequest {
                             kind: registry::GrantKind::Send,
                             line_id: f.line,
                             conversation_restriction: vec![],
-                            expires_ms: (now + 60000) as u64,
+                            expires_ms: (now + authority_lifetime) as u64,
                         });
                     }
                     grants
                 },
-                expires_ms: (now + 60000) as u64,
+                expires_ms: (now + authority_lifetime) as u64,
             },
         )
         .await
@@ -390,7 +402,7 @@ impl Case {
             context: Uuid::new_v4(),
             binding_generation: 1,
             revision: 1,
-            expires_ms: now + 60000,
+            expires_ms: now + authority_lifetime,
             trust_generation: row.get(0),
             manifest_version: row.get(1),
             peer_digest: Sha256::digest(s.peer.as_bytes()).into(),
@@ -429,7 +441,7 @@ impl Case {
             purpose: Purpose::Operational,
             permissions: Permissions::new(&[Operation::ContextMetadata]).unwrap(),
             signer,
-            expires_ms: now + 30000,
+            expires_ms: now + grant_lifetime,
             content_envelope: None,
         };
         Self {
@@ -491,13 +503,17 @@ impl Case {
         )
         .await
     }
-    pub(super) async fn issue_another(&mut self) -> IssuedCredential {
+    pub(super) async fn fresh_factor(&mut self) -> String {
         self.factor = format!("zrc_{}", URL_SAFE_NO_PAD.encode(rand::random::<[u8; 16]>()));
         let hash = digest(
             b"mfa-recovery-v1",
             &format!("{}:{}:{}", self.f.account, self.owner.user_id, self.factor),
         );
         self.f.db.execute("INSERT INTO owner_mfa_recovery_codes(account_id,user_id,code_hash) VALUES($1,$2,$3)", &[&self.f.account,&self.owner.user_id,&hash.as_slice()]).await.unwrap();
+        self.factor.clone()
+    }
+    pub(super) async fn issue_another(&mut self) -> IssuedCredential {
+        self.fresh_factor().await;
         self.issue().await.unwrap()
     }
     pub(super) async fn projection(&self) -> Vec<u8> {

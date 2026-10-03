@@ -134,6 +134,7 @@ pub async fn erase_context(
     account: Uuid,
     context: Uuid,
 ) -> Result<(), tokio_postgres::Error> {
+    super::routines::lifecycle::erase_context(tx, account, context).await?;
     if !installed(tx).await? {
         return Ok(());
     }
@@ -154,9 +155,10 @@ pub async fn erase_context(
 /// Bounded expiry/revocation scrub. Removing old records is handled alongside
 /// their source context so replay identities cannot become reusable grants.
 pub async fn prune(client: &mut Client, limit: i64) -> Result<u64, tokio_postgres::Error> {
+    let routine_changes = super::routines::lifecycle::prune(client, limit).await?;
     let tx = client.transaction().await?;
     if !installed(&tx).await? {
-        return Ok(0);
+        return Ok(routine_changes);
     }
     let limit = limit.clamp(1, 500);
     let accounts = tx.query(&format!("SELECT a.id FROM accounts a WHERE EXISTS(SELECT 1 {CANDIDATE_FROM} AND g.account_id=a.id) ORDER BY a.id FOR UPDATE OF a SKIP LOCKED LIMIT $1"), &[&limit]).await?;
@@ -175,7 +177,7 @@ pub async fn prune(client: &mut Client, limit: i64) -> Result<u64, tokio_postgre
         }
     }
     tx.commit().await?;
-    Ok(changed)
+    Ok(changed + routine_changes)
 }
 
 /// Optional housekeeping only; authentication always requires the real schema.
@@ -198,6 +200,7 @@ pub async fn erase_contact(
     account: Uuid,
     contact: Uuid,
 ) -> Result<(), tokio_postgres::Error> {
+    super::routines::lifecycle::erase_contact(tx, account, contact).await?;
     if !installed(tx).await? {
         return Ok(());
     }

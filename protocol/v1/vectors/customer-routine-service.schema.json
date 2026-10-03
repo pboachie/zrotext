@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Customer routine integration request candidate",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "const": "current"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "context_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "not": {
+                "const": "00000000-0000-0000-0000-000000000000"
+              }
+            },
+            "policy_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "not": {
+                "const": "00000000-0000-0000-0000-000000000000"
+              }
+            }
+          },
+          "required": [
+            "context_id",
+            "policy_id"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "operation",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "const": "admit"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "not": {
+                "const": "00000000-0000-0000-0000-000000000000"
+              }
+            },
+            "policy_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "not": {
+                "const": "00000000-0000-0000-0000-000000000000"
+              }
+            },
+            "context_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "not": {
+                "const": "00000000-0000-0000-0000-000000000000"
+              }
+            },
+            "input_revision": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 128
+            },
+            "input_source_digest": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "direction": {
+              "enum": [
+                "owner_declared",
+                "inbound"
+              ]
+            }
+          },
+          "required": [
+            "request_id",
+            "policy_id",
+            "context_id",
+            "input_revision",
+            "input_source_digest",
+            "direction"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "operation",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "const": "produced"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "context_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "not": {
+                "const": "00000000-0000-0000-0000-000000000000"
+              }
+            },
+            "call_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "not": {
+                "const": "00000000-0000-0000-0000-000000000000"
+              }
+            },
+            "archive_ciphertext_digest": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "context_id",
+            "call_id",
+            "archive_ciphertext_digest"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "operation",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "const": "resume"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "call_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "not": {
+                "const": "00000000-0000-0000-0000-000000000000"
+              }
+            }
+          },
+          "required": [
+            "call_id"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "operation",
+        "params"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}
