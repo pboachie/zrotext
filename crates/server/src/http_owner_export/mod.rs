@@ -184,6 +184,7 @@ fn message_view(row: &Row) -> Result<MessageView, tokio_postgres::Error> {
 
 #[derive(Serialize)]
 struct ExportView {
+    sealed_line_setup: serde_json::Value,
     sealed_event_deliveries: crate::sealed_inbound::delivery::lifecycle::Export,
     execution_inventory:
         crate::http_owner_conversations::channel::execution::lifecycle::ExecutionInventory,
@@ -479,6 +480,16 @@ async fn export_account(
         Err(error) => return error.into_response(),
     };
     Json(ExportView {
+        sealed_line_setup:
+            match crate::http_owner_conversations::sealed_line_setup::lifecycle::inventory(
+                &mut client,
+                &principal,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+            },
         sealed_event_deliveries: match crate::sealed_inbound::delivery::lifecycle::export(
             &mut client,
             &principal,

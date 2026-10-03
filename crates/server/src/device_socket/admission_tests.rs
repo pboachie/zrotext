@@ -109,7 +109,14 @@ async fn receive_json(socket: &mut TestSocket) -> Value {
         .expect("socket response timed out")
         .expect("socket closed")
         .expect("socket read failed");
-    serde_json::from_str(frame.to_text().expect("expected a text frame")).unwrap()
+    match frame {
+        WsMessage::Text(text) => serde_json::from_str(text.as_str()).unwrap(),
+        WsMessage::Close(frame) => panic!(
+            "expected JSON text, received close code {:?}",
+            frame.map(|frame| u16::from(frame.code))
+        ),
+        _ => panic!("expected JSON text, received a non-text frame"),
+    }
 }
 
 #[tokio::test]
@@ -387,6 +394,50 @@ async fn expect_closed_within(socket: &mut TestSocket, limit: Duration) {
     })
     .await
     .expect("superseded socket stayed open");
+}
+
+#[tokio::test]
+async fn socket_closes_before_blocked_session_release() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let release = Arc::new(Notify::new());
+    let release_for_server = release.clone();
+    let started = Arc::new(Notify::new());
+    let entered = started.clone();
+    let completed = Arc::new(Notify::new());
+    let finished = completed.clone();
+    let route = axum::routing::get(move |upgrade: WebSocketUpgrade| {
+        let release_for_server = release_for_server.clone();
+        let entered = entered.clone();
+        let finished = finished.clone();
+        async move {
+            upgrade.on_upgrade(move |mut socket| async move {
+                close_socket_then_release(&mut socket, None, async move {
+                    entered.notify_one();
+                    release_for_server.notified().await;
+                    finished.notify_one();
+                })
+                .await;
+            })
+        }
+    });
+    let server = tokio::spawn(async move {
+        axum::serve(listener, Router::new().route("/v1/device-stream", route))
+            .await
+            .unwrap();
+    });
+    let mut socket = open(address).await;
+    // Cleanup is deliberately unable to complete, but the peer must already
+    // receive the close within the same bound as reconnect takeover.
+    expect_closed_within(&mut socket, Duration::from_secs(1)).await;
+    timeout(Duration::from_secs(1), started.notified())
+        .await
+        .unwrap();
+    release.notify_one();
+    timeout(Duration::from_secs(1), completed.notified())
+        .await
+        .unwrap();
+    server.abort();
 }
 
 #[tokio::test]

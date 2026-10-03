@@ -192,6 +192,23 @@ impl Drop for SweeperRegistration {
     }
 }
 
+/// Balance reset accounting even if the runtime cancels an unpolled task.
+struct ResetRegistration(Arc<ClassPool>);
+
+impl ResetRegistration {
+    fn new(pool: Arc<ClassPool>) -> Self {
+        pool.resets_in_flight.fetch_add(1, Ordering::AcqRel);
+        Self(pool)
+    }
+}
+
+impl Drop for ResetRegistration {
+    fn drop(&mut self) {
+        self.0.resets_in_flight.fetch_sub(1, Ordering::AcqRel);
+        self.0.returned.notify_waiters();
+    }
+}
+
 fn drain_expired(idle: &mut Vec<Idle>, now: Instant) -> Vec<Idle> {
     let mut expired = Vec::new();
     let mut index = 0;
@@ -273,8 +290,9 @@ impl Drop for PooledClient {
         let pool = self.pool.clone();
         let url = self.url.clone();
         let created = self.created;
-        pool.resets_in_flight.fetch_add(1, Ordering::AcqRel);
+        let registration = ResetRegistration::new(pool.clone());
         runtime.spawn(async move {
+            let _registration = registration;
             // DISCARD ALL runs after any statement still queued on this socket
             // and fails inside a transaction block. Either way an unready
             // socket is closed rather than handed to another caller. It also
@@ -288,20 +306,81 @@ impl Drop for PooledClient {
                 client.clear_type_cache();
                 pool.put(url, client, created);
             }
-            pool.resets_in_flight.fetch_sub(1, Ordering::AcqRel);
         });
     }
 }
 
+#[cfg(test)]
+pub(crate) fn diagnostic_connect_failure(stage: &'static str, error: &ConnectError) {
+    if !test_diagnostic::enabled() {
+        return;
+    }
+    let category = match error {
+        ConnectError::Capacity => "capacity",
+        ConnectError::Timeout => "connect_timeout",
+        ConnectError::Database(_) => "pg_connect",
+        ConnectError::Transport(_) => "transport",
+    };
+    eprintln!("fixture_database_failure stage={stage} category={category}");
+}
+
+#[cfg(test)]
+pub(crate) fn diagnostic_auth_failure(
+    stage: &'static str,
+    error: &crate::http_auth::AuthHttpError,
+) {
+    if !test_diagnostic::enabled() {
+        return;
+    }
+    let category = match error {
+        crate::http_auth::AuthHttpError::Unavailable => "unavailable",
+        crate::http_auth::AuthHttpError::Busy => "busy",
+        _ => "other",
+    };
+    eprintln!("fixture_auth_failure stage={stage} category={category}");
+}
+
+#[cfg(test)]
+pub(crate) fn diagnostic_query_failure(stage: &'static str, error: &tokio_postgres::Error) {
+    if !test_diagnostic::enabled() {
+        return;
+    }
+    let category = match error.code().map(|code| code.code()) {
+        Some("55P03") => "lock_timeout",
+        Some("57014") => "statement_timeout",
+        Some("42P01" | "42703" | "42883") => "missing_schema",
+        Some(code) if code.starts_with("23") => "constraint",
+        Some(_) => "pg_other",
+        None => "client",
+    };
+    eprintln!("fixture_query_failure stage={stage} category={category}");
+}
+
+#[cfg(test)]
+pub(crate) mod test_diagnostic;
+
 pub async fn connect(url: &str) -> Result<PooledClient, ConnectError> {
-    acquire(&POOLS.requests, url).await
+    acquire(&POOLS.requests, url).await.inspect_err(|_error| {
+        #[cfg(test)]
+        diagnostic_connect_failure("requests", _error);
+    })
 }
 pub async fn connect_device(url: &str) -> Result<PooledClient, ConnectError> {
-    acquire(&POOLS.devices, url).await
+    acquire(&POOLS.devices, url).await.inspect_err(|_error| {
+        #[cfg(test)]
+        diagnostic_connect_failure("devices", _error);
+    })
 }
 pub async fn connect_worker(url: &str) -> Result<PooledClient, ConnectError> {
-    acquire(&POOLS.workers, url).await
+    acquire(&POOLS.workers, url).await.inspect_err(|_error| {
+        #[cfg(test)]
+        diagnostic_connect_failure("workers", _error);
+    })
 }
+
+#[cfg(test)]
+#[path = "runtime_db/reset_tests.rs"]
+mod reset_tests;
 
 /// Test-only: how many idle worker-class sockets exist for `url`. An entry in
 /// the idle list is reusable by any worker acquire without a permit, so its
@@ -388,12 +467,26 @@ async fn open(
     // Preserve operator search_path options, but enforce deadlines last. These
     // start with the session and also apply after an HTTP future is cancelled.
     config.options(format!("{} -c statement_timeout=10000 -c lock_timeout=3000 -c idle_in_transaction_session_timeout=15000", config.get_options().unwrap_or_default()));
+    #[cfg(test)]
+    let diagnostic_started = (std::time::Instant::now(), Instant::now());
     let (client, connection) = timeout(
         CONNECT_DEADLINE,
         zrotext_postgres_connection::connect_config(config),
     )
     .await
-    .map_err(|_| ConnectError::Timeout)??;
+    .map_err(|_| {
+        #[cfg(test)]
+        if test_diagnostic::enabled() {
+            eprintln!(
+                "fixture_connect_deadline wall_ms={} tokio_ms={} available_slots={} resets_in_flight={}",
+                diagnostic_started.0.elapsed().as_millis(),
+                diagnostic_started.1.elapsed().as_millis(),
+                pool.slots.available_permits(),
+                pool.resets_in_flight.load(Ordering::Acquire),
+            );
+        }
+        ConnectError::Timeout
+    })??;
     tokio::spawn(async move {
         // A dropped request/client need not mean its query has stopped. Keep
         // the permit until the PostgreSQL driver actually releases the socket.

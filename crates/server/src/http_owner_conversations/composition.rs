@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Default-disabled startup composition. No credential, consent or trust provisioning.
+//! Default-disabled startup composition. The explicit sealed setup entry uses
+//! existing owner/MFA gates; it neither installs schema nor spawns its worker.
 use super::{OwnerConversationsState, browser_assets::BrowserAssets, confirmed_http, owner_host};
 use crate::device_socket::{self, DeviceSocketState};
 use axum::Router;
@@ -11,6 +12,41 @@ pub struct Startup {
 }
 
 impl Startup {
+    /// Explicit setup opt-in for a runtime that already owns the MFA cipher.
+    /// No schema is installed and no worker is spawned here. The caller must
+    /// include the returned retention lane in its worker budget and drain it.
+    pub async fn router_with_sealed_line_setup(
+        self,
+        owner: OwnerConversationsState,
+        socket: DeviceSocketState,
+        sockets_per_account: usize,
+        billing_enabled: bool,
+        mfa_cipher: std::sync::Arc<crate::auth::mfa::MfaCipher>,
+    ) -> Result<(Router, super::sealed_line_setup::Retention), &'static str> {
+        let mut client = crate::runtime_db::connect_worker(&owner.database_url)
+            .await
+            .map_err(|_| "Sealed setup schema unavailable")?;
+        let tx = crate::sealed_root_ceremony::begin(&mut client)
+            .await
+            .map_err(|_| "Sealed setup schema unavailable")?;
+        super::sealed_line_setup::lifecycle::require_installed(&tx)
+            .await
+            .map_err(|_| "Sealed setup schema unavailable")?;
+        tx.commit()
+            .await
+            .map_err(|_| "Sealed setup schema unavailable")?;
+        drop(client);
+        let retention = super::sealed_line_setup::Retention::new(owner.database_url.clone());
+        let setup = super::sealed_line_setup::router(super::sealed_line_setup::SetupState {
+            owner: owner.clone(),
+            mfa_cipher,
+        });
+        Ok((
+            self.router_with_setup(owner, socket, sockets_per_account, billing_enabled, true)?
+                .merge(setup),
+            retention,
+        ))
+    }
     /// Disabled startup performs no filesystem access and ignores stale optional configuration.
     /// Enabling requires a packaged SDK and an explicitly selected WSS endpoint; neither grants
     /// a browser root pin, a phone decision, content admission or dispatch authorization.
@@ -43,11 +79,30 @@ impl Startup {
         sockets_per_account: usize,
         billing_enabled: bool,
     ) -> Result<Router, &'static str> {
-        let device = device_socket::router_with_conversations_and_account_share(
-            socket.clone(),
-            &self.wss_origin,
-            sockets_per_account,
-        )?;
+        self.router_with_setup(owner, socket, sockets_per_account, billing_enabled, false)
+    }
+
+    fn router_with_setup(
+        self,
+        owner: OwnerConversationsState,
+        socket: DeviceSocketState,
+        sockets_per_account: usize,
+        billing_enabled: bool,
+        sealed_setup: bool,
+    ) -> Result<Router, &'static str> {
+        let device = if sealed_setup {
+            device_socket::router_with_sealed_line_setup(
+                socket.clone(),
+                &self.wss_origin,
+                sockets_per_account,
+            )?
+        } else {
+            device_socket::router_with_conversations_and_account_share(
+                socket.clone(),
+                &self.wss_origin,
+                sockets_per_account,
+            )?
+        };
         Ok(super::router_with_browser_sdk(owner.clone(), self.assets)
             .merge(owner_host::router(owner.clone()))
             .merge(confirmed_http::router(owner, socket, billing_enabled))
@@ -189,6 +244,18 @@ mod tests {
             drain_notify: Arc::new(tokio::sync::Notify::new()),
         };
         let router = startup.router(owner, socket, 1, false).unwrap();
+        let disabled_setup = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/owner/conversation/sealed-line/bootstrap")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(disabled_setup.status(), StatusCode::NOT_FOUND);
         for path in [
             "/owner/conversation",
             "/owner/conversation-owner-setup.js",
