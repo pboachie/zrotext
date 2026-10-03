@@ -79,7 +79,7 @@ export async function main(args=process.argv.slice(2)){
     const driverSource=(await capture('git',['rev-parse','HEAD'],{timeoutMs:10000})).trim();assert.match(driverSource,/^[0-9a-f]{40}$/);
     const tls=await tlsInput(),serverExecutable=await compiled(options,'server'),nativeExecutable=await compiled(options,'native');
     const serverSha256=await executableDigest(serverExecutable),nativeSha256=await executableDigest(nativeExecutable);
-    stage='browser-package';assets=await createBrowserPackage();await capture(process.execPath,[path.join(repo,'scripts/package_conversation_browser.mjs'),assets],{timeoutMs:30000});
+    stage='browser-package';assets=await createBrowserPackage();await capture(process.execPath,[path.join(repo,'scripts/package_conversation_browser.mjs'),'--owned-setup-fixture'],{timeoutMs:30000});
     const origin=`https://owner.example.test:${await reservePort()}`;stage='server-readiness';let resolveReady,rejectReady;const readiness=new Promise((resolve,reject)=>{resolveReady=resolve;rejectReady=reject;});
     server=spawn(serverExecutable,['--exact',SERVER_TEST,'--ignored','--nocapture','--test-threads=1'],{cwd:repo,windowsHide:true,shell:false,detached:process.platform!=='win32',stdio:['ignore','pipe','pipe'],env:{...process.env,ZT_OWNER_SETUP_FIXTURE_ORIGIN:origin,ZT_OWNER_SETUP_BROWSER_ASSETS:assets}});
     exited=new Promise(resolve=>server.once('close',code=>{serverExit=code;if(!ready)rejectReady(Error('Fixture exited before readiness'));resolve(code);}));server.once('error',()=>rejectReady(Error('Fixture launch failed')));

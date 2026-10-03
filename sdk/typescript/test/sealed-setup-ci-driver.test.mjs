@@ -4,6 +4,7 @@ import {CleanupFailure} from './owned-process-fixture.mjs';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
+import {packageOutput} from '../../../scripts/package_conversation_browser.mjs';
 import {mkdtemp,writeFile,rm,readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {parseOptions,selectExecutable,ReadyParser,serverPassed,SERVER_TEST,capture,executableDigest,joinOwnedAcceptance,createBrowserPackage} from '../../../scripts/sealed_setup_ci_driver.mjs';
@@ -55,7 +56,11 @@ test('aggregate timeout joins an ordinary late rejection before returning failur
 test('browser package creation refuses existing ownership and preserves its contents',async()=>{
   const directory=await createBrowserPackage();
   try{
+    assert.equal(await packageOutput(['--owned-setup-fixture']),directory);
+    await assert.rejects(packageOutput([directory]),/outside source tree/);
+    await assert.rejects(packageOutput(['--owned-setup-fixture',directory]),/Explicit/);
     const marker=path.join(directory,'synthetic-marker');await writeFile(marker,'preserve');
+    await assert.rejects(packageOutput(['--owned-setup-fixture']),/Empty owned/);
     await assert.rejects(createBrowserPackage());
     assert.equal(await readFile(marker,'utf8'),'preserve');
   }finally{await rm(directory,{recursive:true,force:true});}

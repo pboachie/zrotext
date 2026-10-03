@@ -220,7 +220,12 @@ async fn ordinary_setup_server_browser_fixture() {
     assert!(selected.port().is_some_and(|port| port > 0 && port != 443));
     let package = std::env::var_os("ZT_OWNER_SETUP_BROWSER_ASSETS")
         .expect("checked synthetic browser package");
-    let package = fixture_package(&package, &std::env::current_dir().unwrap()).unwrap();
+    // Bind this test executable to its compiled checkout, not the launcher's CWD.
+    let checkout = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .unwrap();
+    let package = fixture_package(&package, checkout).unwrap();
     let assets = super::super::browser_assets::BrowserAssets::load(&package).unwrap();
     assets.require_owner_setup().unwrap();
     let mut c = Case::without_root().await;

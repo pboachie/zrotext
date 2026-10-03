@@ -113,9 +113,11 @@ class OwnedCluster:
         self.control = tool(pg_bin, "pg_ctl")
         self.initialize = tool(pg_bin, "initdb")
         self.attempted = False
+        self.stage = "cluster-initialization"
 
     def start(self):
         quiet([self.initialize, "-D", self.data, "-U", "fixture", "-A", "trust", "--no-locale"])
+        self.stage = "cluster-start"
         port = reserve_port()
         self.attempted = True
         quiet([self.control, "-D", self.data, "-w", "-t", "30", "-o",
@@ -187,20 +189,25 @@ def main(argv=None):
     cluster = None
     failed = False
     cleanup_safe = True
+    stage = "host-validation"
     try:
         if not native_host_supported():
             raise ValueError("Protected native composition requires Windows")
         if not args.existing_database and not os.environ.get("RUNNER_TEMP"):
-            raise ValueError("Owned CI PostgreSQL requires the runner temporary directory")
+            raise ValueError("Explicit CI marker RUNNER_TEMP required")
+        stage = "owned-directory"
         temporary = Path(tempfile.mkdtemp(prefix="sealed-setup-ci-"))
         try:
             if args.existing_database:
                 uri = database_url(os.environ.get("ZT_INBOUND_TEST_DATABASE_URL", ""))
             else:
+                stage = "installed-tools"
                 if not args.pg_bin:
                     raise ValueError("Explicit installed PostgreSQL directory required")
                 cluster = OwnedCluster(Path(temporary), installed_postgres_directory(args.pg_bin))
+                stage = "cluster-start"
                 uri = cluster.start()
+            stage = "consumer"
             env = dict(os.environ, DATABASE_ALLOW_PLAINTEXT="true")
             for name in ("ZT_AUTH_TEST_DATABASE_URL", "ZT_DELIVERY_TEST_DATABASE_URL",
                          "ZT_INBOUND_TEST_DATABASE_URL", "ZT_FAILOVER_TEST_DATABASE_URL"):
@@ -219,7 +226,10 @@ def main(argv=None):
                 cleanup_owned_directory(temporary, cluster)
     except (ValueError, OSError, subprocess.SubprocessError, ProcessCleanupFailure):
         failed = True
-        print("Explicit sealed setup fixture failed; private inputs withheld.")
+        # These fixed stage names contain no caller input or diagnostic material.
+        if stage == "cluster-start" and cluster is not None:
+            stage = cluster.stage
+        print(f"Explicit sealed setup fixture failed at {stage}; private inputs withheld.")
     return 1 if failed else 0
 
 

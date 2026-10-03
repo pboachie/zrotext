@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 import os
+import io
+from contextlib import redirect_stdout
 from pathlib import Path
 import subprocess
 import tempfile
@@ -11,6 +13,24 @@ import sealed_setup_ci as driver
 
 
 class SetupCiTest(unittest.TestCase):
+    def test_failure_stage_withholds_exception_and_caller_material(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cluster = unittest.mock.Mock(stage="cluster-initialization")
+            cluster.start.side_effect = ValueError("private-fixture-diagnostic")
+            output = io.StringIO()
+            with patch.dict(driver.os.environ, {"RUNNER_TEMP": temporary}), \
+                    patch.object(driver, "native_host_supported", return_value=True), \
+                    patch.object(driver, "installed_postgres_directory", return_value=Path(temporary)), \
+                    patch.object(driver, "OwnedCluster", return_value=cluster), \
+                    patch.object(driver, "cleanup_owned_directory") as cleanup, redirect_stdout(output):
+                self.assertEqual(driver.main(["--tools", temporary, "--pg-bin", temporary]), 1)
+            self.assertEqual(output.getvalue(), "Explicit sealed setup fixture failed at cluster-initialization; private inputs withheld.\n")
+            cleanup.assert_called_once()
+            # The mocked cleanup did not remove the newly owned empty fixture.
+            owned = cleanup.call_args.args[0]
+            self.assertEqual(owned.parent, Path(tempfile.gettempdir()).resolve())
+            owned.rmdir()
+
     def test_database_is_explicit_credential_free_loopback(self):
         self.assertEqual(driver.database_url("postgresql://fixture@localhost:4444/postgres"),
                          "postgresql://fixture@localhost:4444/postgres")
