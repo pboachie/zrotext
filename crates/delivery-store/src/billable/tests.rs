@@ -883,23 +883,25 @@ async fn completion_waiting_for_outbox_lock_cannot_acknowledge_after_lease_expir
     let ClaimResult::Claim(claim) = claim_one(&mut db.client).await.unwrap() else {
         panic!("missing claim")
     };
-    db.client
-        .batch_execute(
-            "UPDATE billing_usage_outbox SET lease_until=clock_timestamp()+interval '5 seconds'",
-        )
-        .await
-        .unwrap();
+    // Connection setup is outside the deliberately short lease window; the
+    // observed row-lock wait below must still start while that lease is live.
     let mut holder = probe_connection(&db.schema).await;
-    let lock = holder.transaction().await.unwrap();
-    lock.query_one("SELECT 1 FROM billing_usage_outbox FOR UPDATE", &[])
-        .await
-        .unwrap();
     let mut worker = probe_connection(&db.schema).await;
     let pid: i32 = worker
         .query_one("SELECT pg_backend_pid()", &[])
         .await
         .unwrap()
         .get(0);
+    db.client
+        .batch_execute(
+            "UPDATE billing_usage_outbox SET lease_until=clock_timestamp()+interval '5 seconds'",
+        )
+        .await
+        .unwrap();
+    let lock = holder.transaction().await.unwrap();
+    lock.query_one("SELECT 1 FROM billing_usage_outbox FOR UPDATE", &[])
+        .await
+        .unwrap();
     let identifier = claim.request.identifier.clone();
     let lease = claim.lease;
     let task = tokio::spawn(async move {
