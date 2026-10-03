@@ -25,6 +25,7 @@ mod grant_http;
 mod grant_origin;
 mod guided_setup;
 
+mod original_reply;
 mod scope_expiry;
 pub(super) struct Case {
     pub(super) f: Fixture,
@@ -38,6 +39,7 @@ pub(super) struct Case {
     pub(super) header: wire::Header,
     pub(super) outbound: Option<SigningKey>,
     pub(super) phone_reader: Option<[u8; 32]>,
+    reader_key: SigningKey,
 }
 
 #[tokio::test]
@@ -227,23 +229,27 @@ impl Case {
         Self::with_signer(None).await
     }
     pub(super) async fn with_signer(signer_lifetime: Option<i64>) -> Self {
-        Self::with_fixture_lifetimes(signer_lifetime, false, 60000, 30000).await
+        Self::with_fixture_lifetimes(signer_lifetime, false, 60000, 30000, false).await
     }
     pub(super) async fn with_signer_aligned(
         signer_lifetime: Option<i64>,
         future_window: bool,
     ) -> Self {
-        Self::with_fixture_lifetimes(signer_lifetime, future_window, 60000, 30000).await
+        Self::with_fixture_lifetimes(signer_lifetime, future_window, 60000, 30000, false).await
     }
     // Preserve the bounded multi-process routine fixture's original lifetimes.
     pub(super) async fn for_customer_routine(signer_lifetime: Option<i64>) -> Self {
-        Self::with_fixture_lifetimes(signer_lifetime, false, 120000, 90000).await
+        Self::with_fixture_lifetimes(signer_lifetime, false, 120000, 90000, false).await
+    }
+    async fn for_original_reply() -> Self {
+        Self::with_fixture_lifetimes(Some(120000), false, 120000, 90000, true).await
     }
     async fn with_fixture_lifetimes(
         signer_lifetime: Option<i64>,
         future_window: bool,
         authority_lifetime: i64,
         grant_lifetime: i64,
+        unrestricted_original_read: bool,
     ) -> Self {
         let password = Zeroizing::new(URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>()));
         let hash = Argon2::default()
@@ -390,7 +396,11 @@ impl Case {
                     let mut grants = vec![registry::GrantRequest {
                         kind: registry::GrantKind::Read { directions: 8 },
                         line_id: f.line,
-                        conversation_restriction: vec![s.interval],
+                        conversation_restriction: if unrestricted_original_read {
+                            vec![]
+                        } else {
+                            vec![s.interval]
+                        },
                         expires_ms: (now + authority_lifetime) as u64,
                     }];
                     if signer.is_some() {

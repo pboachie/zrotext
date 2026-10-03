@@ -376,6 +376,11 @@ export class ReplyEventAdapter {
       if (reason === 'deletion') this.db.exec('DELETE FROM actions; DELETE FROM events; DELETE FROM requests; DELETE FROM consumers;');
     });
   }
+  /** Trusted-local gate for new automatic work; STOP persists separately from event retention. */
+  assertAutomaticCurrent() {
+    const now = this.now(); this.current(null, now);
+    if (this.db.prepare('SELECT stopped FROM scope WHERE id=1').get().stopped) fail('stopped');
+  }
   exportMetadata() {
     this.expire();
     this.current(null, this.now());

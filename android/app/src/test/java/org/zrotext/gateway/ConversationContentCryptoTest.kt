@@ -187,9 +187,45 @@ class ConversationContentCryptoTest {
         assertThrows(Exception::class.java){f.crypto().verify(ConversationContentCrypto.packConfirmedEvidence(parts.envelope,parts.confirmation,wrong))}
     }
 
-    private class Fixture(includeReply: Boolean = true):ConversationContentKeyOperations {
+    @Test fun selectedOriginalReaderAndArchiveOpenTheSameCekAndNoExtraReaderCanLookup() {
+        val f=Fixture(selectedReader=true);val envelope=f.crypto().sealCapture(f.capture("Selected original body"),1)
+        val n=ByteBuffer.wrap(envelope,8,2).short.toInt() and 65535
+        val protected=envelope.copyOfRange(10,10+n);val at=10+n
+        val length=ByteBuffer.wrap(envelope,at+12,4).int;val countAt=at+16+length
+        assertEquals(2,envelope[countAt].toInt())
+        fun openCek(index:Int,key:KeyPair,role:Int):ByteArray {
+            val start=countAt+1+index*146;assertEquals(role,envelope[start].toInt())
+            assertArrayEquals(id(key,role),envelope.copyOfRange(start+1,start+33))
+            val enc=envelope.copyOfRange(start+33,start+98)
+            val dh=KeyAgreement.getInstance("ECDH").run{init(key.private);doPhase(DevicePayloadKeyStore.decodePoint(enc),true);generateSecret()}
+            val secret=Draft02PublicJcaKeystoreHpke.deriveSharedSecret(dh,enc,point(key))
+            val material=Draft02PublicJcaKeystoreHpke.deriveKeyMaterial(secret,ascii("ZTSE/wrap/v2\u0000")+envelope.copyOfRange(0,10)+protected+byteArrayOf(role.toByte())+id(key,role))
+            return try { Cipher.getInstance("AES/GCM/NoPadding").run{init(Cipher.DECRYPT_MODE,SecretKeySpec(material.key,"AES"),GCMParameterSpec(128,material.nonce));doFinal(envelope.copyOfRange(start+98,start+146))} }
+            finally{material.clear();secret.fill(0);dh.fill(0)}
+        }
+        val archive=openCek(0,f.archive,2);val customer=openCek(1,f.integration,3)
+        try { assertArrayEquals(archive,customer) } finally {archive.fill(0);customer.fill(0)}
+        val readers=listOf(Draft02ManifestAuthority.Reader(2,f.archiveId),Draft02ManifestAuthority.Reader(3,id(f.integration,3)))
+        val context=f.authority.context(Draft02ManifestAuthority.Request(Draft02ManifestAuthority.Direction.INBOUND,
+            f.account,f.message,f.device,f.line,ascii("+12"),id(f.phone,4),readers),f.now)
+        assertArrayEquals(point(f.integration),f.authority.readerPoint(context,readers[1],f.now))
+        assertThrows(Exception::class.java) { f.authority.readerPoint(context,Draft02ManifestAuthority.Reader(3,ByteArray(32){9}),f.now) }
+        assertThrows(Exception::class.java) { f.authority.readerPoint(context,readers[1],f.now+60_000) }
+        f.onSign={f.live=null}
+        assertThrows(Exception::class.java) { f.crypto().sealCapture(f.capture("Withdraw while signing"),2) }
+    }
+
+    @Test fun revokedSelectedManifestReaderRefusesBeforeCaptureSigningWithoutRemovingArchiveRequirement() {
+        val f=Fixture(selectedReader=true)
+        val next=f.revokedIntegrationSuccessor()
+        f.live=ConversationCryptoCurrent(f.scope,next,point(f.archive),id(f.browser,5),id(f.phone,4),f.now)
+        assertThrows(Exception::class.java) { f.crypto().sealCapture(f.capture("Revoked reader"),1) }
+        assertEquals(0,f.signCalls)
+    }
+
+    private class Fixture(includeReply: Boolean = true, selectedReader: Boolean = false):ConversationContentKeyOperations {
         val account=ByteArray(16){1};val device=ByteArray(16){2};val line=ByteArray(16){3};val message=ByteArray(16){4}
-        val root=pair();val recipient=pair();val archive=pair();val phone=pair();val browser=pair()
+        val root=pair();val recipient=pair();val archive=pair();val integration=pair();val phone=pair();val browser=pair()
         val archiveId=id(archive,2);val recipientId=id(recipient,1)
         val now=1_893_456_001_000L
         val pin=ascii("ZTRP")+byteArrayOf(2)+account+long(1)+point(root)
@@ -201,14 +237,22 @@ class ConversationContentCryptoTest {
         var security=PayloadKeySecurity.TRUSTED_ENVIRONMENT;var lastCek:ByteArray?=null
         private var cek=ByteArray(32){7}
         init {
-            val records=(listOf(1 to recipient,2 to archive,4 to phone) + (if(includeReply) listOf(5 to browser) else emptyList()) + listOf(6 to root)).map{(role,key)->
+            val records=(listOf(1 to recipient,2 to archive) + (if(selectedReader) listOf(3 to integration) else emptyList()) + listOf(4 to phone) + (if(includeReply) listOf(5 to browser) else emptyList()) + listOf(6 to root)).map{(role,key)->
                 byteArrayOf(role.toByte())+id(key,role)+point(key)+(if(role==1||role==4)device else ByteArray(16))+
-                    (if(role==1||role==4||role==5)line else ByteArray(16))+ByteBuffer.allocate(2).putShort(when(role){1->4;2->12;4->2;5->1;else->0}.toShort()).array()+long(now-1000)+long(now+60_000)+byteArrayOf(1)}
+                    (if(role==1||role==4||role==5)line else ByteArray(16))+ByteBuffer.allocate(2).putShort(when(role){1->4;2->12;3->8;4->2;5->1;else->0}.toShort()).array()+long(now-1000)+long(now+60_000)+byteArrayOf(1)}
             val unsigned=ascii("ZTMA")+byteArrayOf(2)+account+long(1)+long(1)+long(now-1000)+long(now+60_000)+ByteArray(32)+point(root)+records.size.toByte()+records.fold(ByteArray(0)){a,b->a+b}
             manifest=unsigned+signature(root,ascii("ZTSE/manifest/v2\u0000")+int(unsigned.size)+unsigned)
             authority=Draft02ManifestAuthority.verify(pin,manifest,Draft02ManifestAuthority.Trust(account,sha(ascii("ZTSE/root-pin/v2\u0000")+pin),1,Draft02ManifestAuthority.Position.genesis(ByteArray(32))),now)
-            scope=ConversationCaptureScope(str(account),str(device),str(line),1,"+12",str(ByteArray(16){5}),str(ByteArray(16){6}),str(ByteArray(16){7}),"01".repeat(32),hex(archiveId),1,1,hex(authority.digest),"02".repeat(32))
+            scope=ConversationCaptureScope(str(account),str(device),str(line),1,"+12",str(ByteArray(16){5}),str(ByteArray(16){6}),str(ByteArray(16){7}),(if(selectedReader) ConversationActivationCodec.readerDisclosureDigest() else "01".repeat(32)),hex(archiveId),1,1,hex(authority.digest),"02".repeat(32),
+                ConversationReaderSelection(if(selectedReader) listOf(ConversationIntegrationReader(str(ByteArray(16){8}),str(ByteArray(16){9}),hex(id(integration,3)))) else emptyList()))
             live=ConversationCryptoCurrent(scope,authority,point(archive),if(includeReply) id(browser,5) else ByteArray(32),id(phone,4),now)
+        }
+        fun revokedIntegrationSuccessor():Draft02ManifestAuthority {
+            val records=manifest.copyOfRange(151,manifest.size-64).asList().chunked(149).map { it.toByteArray() }
+            val changed=records.map { record -> record.copyOf().also { if(it[0]==3.toByte()) it[148]=2 } }
+            val unsigned=ascii("ZTMA")+byteArrayOf(2)+account+long(1)+long(2)+long(now-1000)+long(now+60_000)+authority.digest+point(root)+changed.size.toByte()+changed.fold(ByteArray(0)){a,b->a+b}
+            val signed=unsigned+signature(root,ascii("ZTSE/manifest/v2\u0000")+int(unsigned.size)+unsigned)
+            return Draft02ManifestAuthority.verify(pin,signed,Draft02ManifestAuthority.Trust(account,sha(ascii("ZTSE/root-pin/v2\u0000")+pin),1,Draft02ManifestAuthority.Position.after(authority.version,authority.digest)),now)
         }
         fun replySuccessor(wrongPhone: Boolean = false): Draft02ManifestAuthority {
             val original = manifest.copyOfRange(151, manifest.size - 64).asList().chunked(149).map { it.toByteArray() }

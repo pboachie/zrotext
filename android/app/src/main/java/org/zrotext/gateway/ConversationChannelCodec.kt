@@ -26,7 +26,7 @@ internal object ConversationChannelCodec {
             out.writeLong(session.connectionEpoch);out.writeLong(session.deploymentEpoch);out.hex(session.originHash);out.id(challenge);body(out)
         };return bytes.toByteArray()
     }
-    private fun <T> read(bytes:ByteArray, kind:Int, authenticated:ConversationPhoneSession, maximum:Int=512, body:(DataInputStream,UUID)->T):T {
+    private fun <T> read(bytes:ByteArray, kind:Int, authenticated:ConversationPhoneSession, maximum:Int=1024, body:(DataInputStream,UUID)->T):T {
         require(bytes.size in 118..maximum)
         val input=DataInputStream(ByteArrayInputStream(bytes.copyOf()))
         return input.use {
@@ -41,12 +41,21 @@ internal object ConversationChannelCodec {
         writeLong(s.bindingGeneration);writeLong(s.trustGeneration);writeLong(s.activationVersion)
         listOf(s.disclosureDigest,s.readerKeyId,s.activationDigest,s.transcriptDigest).forEach {hex(it)}
         val peer=s.peer.toByteArray(Charsets.US_ASCII);writeByte(peer.size);write(peer)
+        if(s.selectedReaders.isNotEmpty()) {
+            require(s.disclosureDigest==ConversationActivationCodec.readerDisclosureDigest())
+            writeByte(s.selectedReaders.size)
+            s.selectedReaders.forEach { id(UUID.fromString(it.connectorId));id(UUID.fromString(it.readGrantId));hex(it.keyId) }
+        }
     }
     private fun DataInputStream.scope():ConversationCaptureScope {
         val ids=List(6){id().toString()};val generation=positive();val trust=positive();val version=positive()
         val digests=List(4){hex()};val size=readUnsignedByte();require(size in 3..16)
         val peer=ByteArray(size).also(::readFully);require(peer.all{it.toInt() in 33..126})
-        return ConversationCaptureScope(ids[0],ids[1],ids[2],generation,peer.toString(Charsets.US_ASCII),ids[3],ids[4],ids[5],digests[0],digests[1],trust,version,digests[2],digests[3])
+        val selected=if(digests[0]==ConversationActivationCodec.readerDisclosureDigest()) {
+            val count=readUnsignedByte();require(count in 1..6)
+            List(count) { ConversationIntegrationReader(id().toString(),id().toString(),hex()) }
+        } else emptyList()
+        return ConversationCaptureScope(ids[0],ids[1],ids[2],generation,peer.toString(Charsets.US_ASCII),ids[3],ids[4],ids[5],digests[0],digests[1],trust,version,digests[2],digests[3],ConversationReaderSelection(selected))
     }
     fun timeRequest(r:ConversationTrustedClock.Request)=write(1,r.session,r.challenge){}
     fun proposalRequest(session:ConversationPhoneSession,challenge:UUID,interval:UUID)=
@@ -98,8 +107,8 @@ internal object ConversationChannelCodec {
         return write(18,session,challenge){it.scope(bound(scope,session));it.id(message);it.id(attempt);it.write(digest)}
     }
     fun parseExecutionRequest(bytes:ByteArray,session:ConversationPhoneSession):ConversationExecutionRequest {
-        require(bytes.size in 434..447)
-        return read(bytes,18,session,447){input,nonce->
+        require(bytes.size in 434..832)
+        return read(bytes,18,session,832){input,nonce->
             ConversationExecutionRequest(nonce,bound(input.scope(),session),input.id(),input.id(),ByteArray(32).also(input::readFully))
         }
     }

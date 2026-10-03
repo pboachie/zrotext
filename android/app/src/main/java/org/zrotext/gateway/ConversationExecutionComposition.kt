@@ -78,7 +78,7 @@ internal class ConversationExecutionComposition(context: Context,
             val inbound = Draft02ManifestAuthority.Request(Draft02ManifestAuthority.Direction.INBOUND,
                 uuid(scope.accountId), uuid(scope.intervalId), uuid(scope.deviceId), uuid(scope.lineId),
                 scope.peer.toByteArray(Charsets.US_ASCII), final.phoneSignerKeyId,
-                listOf(Draft02ManifestAuthority.Reader(2, unhex(scope.readerKeyId))))
+                listOf(Draft02ManifestAuthority.Reader(2, unhex(scope.readerKeyId))) + scope.selectedReaders.map { Draft02ManifestAuthority.Reader(3,unhex(it.keyId)) })
             final.authority.context(inbound, now)
             final.authority.context(inbound, deadline - 1)
             val local = SealedDispatchExecutor.Local(nextLocal.first, reader.keyId, final.authority.generation,

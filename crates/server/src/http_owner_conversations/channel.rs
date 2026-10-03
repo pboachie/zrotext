@@ -52,24 +52,48 @@ fn request(
     if header(s, kind, nonce)? != bytes[..118] {
         return Err(ConversationError::Forbidden);
     }
-    if kind != 12 && bytes.len() > 1208
+    if kind != 12 && bytes.len() > 1720
         || kind == 12 && bytes.len() < 375
-        || kind == 14 && !(386..=399).contains(&bytes.len())
+        || kind == 14 && bytes.len() != 118 + scope_length(&bytes[118..])? + 16
         || kind == 16 && bytes.len() != 134
-        || kind == 18 && !(434..=447).contains(&bytes.len())
+        || kind == 18 && bytes.len() != 118 + scope_length(&bytes[118..])? + 64
         || kind == 1 && bytes.len() != 118
-        || kind == 3 && !(370..=383).contains(&bytes.len())
+        || kind == 3 && bytes.len() != 118 + scope_length(&bytes[118..])?
         || kind == 5
             && (bytes.len() < 500
                 || usize::from(u16::from_be_bytes([bytes[118], bytes[119]])) != bytes.len() - 120)
         || matches!(kind, 6 | 8)
             && (bytes.len() < 564
                 || usize::from(u16::from_be_bytes([bytes[118], bytes[119]])) + 184 != bytes.len())
-        || kind == 10 && !(370..=383).contains(&bytes.len())
+        || kind == 10 && bytes.len() != 118 + scope_length(&bytes[118..])?
     {
         return Err(ConversationError::Invalid);
     }
     Ok((kind, nonce))
+}
+
+/// Scope extension is present only under the distinct reader disclosure hash.
+/// It cannot consume the trailing message/attempt bytes as arbitrary readers.
+fn scope_length(bytes: &[u8]) -> Result<usize, ConversationError> {
+    let peer = usize::from(*bytes.get(248).ok_or(ConversationError::Invalid)?);
+    if !(3..=16).contains(&peer) {
+        return Err(ConversationError::Invalid);
+    }
+    let end = 249 + peer;
+    let disclosure = bytes.get(120..152).ok_or(ConversationError::Invalid)?;
+    if disclosure == Sha256::digest(activation::statement::DISCLOSURE_TEXT.as_bytes()).as_slice() {
+        Ok(end)
+    } else if disclosure
+        == Sha256::digest(activation::statement::READER_DISCLOSURE_TEXT.as_bytes()).as_slice()
+    {
+        let count = usize::from(*bytes.get(end).ok_or(ConversationError::Invalid)?);
+        if !(1..=6).contains(&count) || bytes.len() < end + 1 + count * 64 {
+            return Err(ConversationError::Invalid);
+        }
+        Ok(end + 1 + count * 64)
+    } else {
+        Err(ConversationError::Invalid)
+    }
 }
 pub(super) fn scope(statement: &activation::Statement) -> Result<Vec<u8>, ConversationError> {
     statement.encode()?;
@@ -91,14 +115,20 @@ pub(super) fn scope(statement: &activation::Statement) -> Result<Vec<u8>, Conver
     ] {
         out.extend_from_slice(&n.to_be_bytes());
     }
-    out.extend_from_slice(&Sha256::digest(
-        activation::statement::DISCLOSURE_TEXT.as_bytes(),
-    ));
+    out.extend_from_slice(&Sha256::digest(statement.disclosure().as_bytes()));
     out.extend_from_slice(&statement.reader);
     out.extend_from_slice(&statement.activation_digest);
     out.extend_from_slice(&statement.digest()?);
     out.push(statement.peer.len() as u8);
     out.extend_from_slice(statement.peer.as_bytes());
+    if !statement.integration_readers.is_empty() {
+        out.push(statement.integration_readers.len() as u8);
+        for reader in &statement.integration_readers {
+            out.extend(reader.connector_id.as_bytes());
+            out.extend(reader.read_grant_id.as_bytes());
+            out.extend(reader.key_id);
+        }
+    }
     Ok(out)
 }
 async fn live(tx: &Transaction<'_>, s: InboundSession<'_>) -> Result<(), ConversationError> {
