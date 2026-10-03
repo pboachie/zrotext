@@ -190,6 +190,14 @@ delivery (`409 replay_not_eligible` / `replay_limit`).
 
 Delivery and event semantics under the sealed profile:
 
+The selected conversation-event outbox implements the ciphertext payload and
+automatic retry slice below. It requires durable authenticated interval
+provenance and an independently selected enabled endpoint; a general HTTP
+upload does not establish conversation consent. Manual generation replay above
+remains unavailable for this separate sealed outbox. See
+[sealed event delivery](sealed-event-delivery.md) for gates and the irreversible
+send boundary. Legacy delivery history/replay routes remain metadata-only.
+
 - **Ciphertext-only fanout.** The sender POSTs one
   `SealedWebhookEventBody` per accepted sealed inbound event: JSON metadata
   (`v`, `type` `sealed.inbound_event`, `event_id`, `delivery_id`,

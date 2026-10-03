@@ -93,6 +93,7 @@ struct Config {
     collaboration_drafts_enabled: bool,
     mms_spike_policy: Arc<device_socket::MmsSpikePolicy>,
     sealed_admission_enabled: bool,
+    sealed_webhook_delivery_enabled: bool,
     workflow_tools_enabled: bool,
     retention: RetentionPolicy,
     draining: Arc<AtomicBool>,
@@ -320,6 +321,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Sealed v1 message admission. Disabled by default; off leaves the
     // route unmounted so no sealed code path runs.
     let sealed_admission_enabled = optional_bool("SEALED_ADMISSION_ENABLED")?;
+    let sealed_webhook_delivery_enabled = optional_bool("SEALED_WEBHOOK_DELIVERY_ENABLED")?;
     let sealed_dispatch_enabled = optional_bool("SEALED_DISPATCH_ENABLED")?;
     let workflow_tools_enabled = optional_bool("WORKFLOW_TOOLS_ENABLED")?;
     // Independent-quorum failover executor and member-side reporting loop.
@@ -392,6 +394,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         collaboration_drafts_enabled,
         mms_spike_policy,
         sealed_admission_enabled,
+        sealed_webhook_delivery_enabled,
         workflow_tools_enabled,
         retention: RetentionPolicy::from_env()?,
         draining: Arc::new(AtomicBool::new(false)),
@@ -512,6 +515,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let vault = Arc::new(vault);
             webhook_worker::spawn_endpoint_key_audit(config.database_url.clone(), vault.clone());
             app = app.merge(http_webhooks::router(WebhookHttpState {
+                sealed_delivery_enabled: config.sealed_webhook_delivery_enabled,
                 database_url: config.database_url.clone(),
                 auth_hasher: auth_state.hasher.clone(),
                 canonical_origin: auth_state.canonical_origin.clone(),
@@ -519,6 +523,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }));
             if webhook_delivery_enabled {
                 for lane in 0..webhook_dispatch_concurrency {
+                    let sealed_enabled = config.sealed_webhook_delivery_enabled;
                     let worker_database = config.database_url.clone();
                     let worker_draining = config.draining.clone();
                     let worker_notify = config.drain_notify.clone();
@@ -535,6 +540,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                         let mut unavailable_logged = false;
                         let mut ticks = 0_u32;
+                        let mut prefer_sealed = false;
                         loop {
                             // Producers wake the lane at once when a delivery
                             // is queued; the tick stays the cross-process
@@ -554,11 +560,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         let sent = if worker_draining.load(Ordering::Acquire) {
                                             0
                                         } else {
-                                            webhook_worker::dispatch_lane_batch(
+                                            webhook_worker::dispatch_lane_batch_with_sealed(
                                                 &worker_database,
                                                 &worker_vault,
                                                 &worker_id,
                                                 WEBHOOK_DELIVERIES_PER_TICK,
+                                                sealed_enabled,
+                                                &mut prefer_sealed,
+                                                &worker_draining,
                                             )
                                             .await
                                             .map_err(|_| "webhook dispatch failed")?
@@ -594,7 +603,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         let mut sent = 0;
                                         while sent < WEBHOOK_DELIVERIES_PER_TICK
                                             && !worker_draining.load(Ordering::Acquire)
-                                            && webhook_worker::dispatch_one(&worker_database, &worker_vault, &worker_id).await
+                                            && webhook_worker::dispatch_one_with_sealed(&worker_database, &worker_vault, &worker_id,sealed_enabled,&mut prefer_sealed).await
                                                 .map_err(|_| "webhook dispatch failed")?
                                         {
                                             sent += 1;
@@ -912,6 +921,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         || line_opt_out_enabled
         || config.sms_line_activation_enabled
         || config.sealed_admission_enabled
+        || config.sealed_webhook_delivery_enabled
         || config.sealed_dispatch_enabled
         || config.workflow_tools_enabled
         || webhook_delivery_enabled
@@ -1654,6 +1664,7 @@ mod tests {
             collaboration_drafts_enabled: false,
             mms_spike_policy: Arc::new(device_socket::MmsSpikePolicy::disabled()),
             sealed_admission_enabled: false,
+            sealed_webhook_delivery_enabled: false,
             workflow_tools_enabled: false,
             retention: RetentionPolicy::default(),
             draining: Arc::new(AtomicBool::new(false)),
@@ -1839,6 +1850,7 @@ mod tests {
             collaboration_drafts_enabled: false,
             mms_spike_policy: Arc::new(device_socket::MmsSpikePolicy::disabled()),
             sealed_admission_enabled: false,
+            sealed_webhook_delivery_enabled: false,
             workflow_tools_enabled: false,
             retention: RetentionPolicy::default(),
             draining: Arc::new(AtomicBool::new(false)),

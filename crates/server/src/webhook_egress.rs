@@ -177,7 +177,7 @@ static TLS_CONFIG_BUILDS: std::sync::atomic::AtomicUsize = std::sync::atomic::At
 /// A failed build is not cached, so a later attempt retries it. Session
 /// resumption is disabled so that, as with the former per-attempt config, no
 /// TLS session state is carried from one attempt (or tenant) to the next.
-async fn shared_tls_config() -> Result<&'static rustls::ClientConfig, EgressError> {
+pub(crate) async fn shared_tls_config() -> Result<&'static rustls::ClientConfig, EgressError> {
     TLS_CONFIG
         .get_or_try_init(|| async {
             #[cfg(test)]
