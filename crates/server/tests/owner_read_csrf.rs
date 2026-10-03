@@ -48,6 +48,7 @@ fn content_reads() -> Vec<(&'static str, Router, String)> {
         canonical_origin: ORIGIN.to_owned(),
     });
     let webhooks = http_webhooks::router(http_webhooks::WebhookHttpState {
+        sealed_delivery_enabled: false,
         database_url: NO_DATABASE.to_owned(),
         auth_hasher: hasher(),
         canonical_origin: ORIGIN.to_owned(),

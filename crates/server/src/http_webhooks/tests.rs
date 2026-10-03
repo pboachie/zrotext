@@ -6,6 +6,7 @@ use axum::{
 };
 use serde_json::{Value, json};
 use tower::ServiceExt;
+mod sealed_events;
 
 fn fixture_key() -> Vec<u8> {
     rand::random::<[u8; 32]>().to_vec()
@@ -184,6 +185,7 @@ async fn manual_replay_is_owner_scoped_csrf_protected_bounded_and_idempotent() {
     let separator = if root_url.contains('?') { '&' } else { '?' };
     let scoped_url = format!("{root_url}{separator}options=-csearch_path%3D{schema}");
     let app = router(WebhookHttpState {
+        sealed_delivery_enabled: false,
         database_url: scoped_url.clone(),
         auth_hasher: hasher,
         canonical_origin: "https://test.example".into(),
@@ -669,6 +671,7 @@ async fn delivery_history_is_bounded_tenant_scoped_and_content_free() {
     let separator = if root_url.contains('?') { '&' } else { '?' };
     let scoped_url = format!("{root_url}{separator}options=-csearch_path%3D{schema}");
     let app = router(WebhookHttpState {
+        sealed_delivery_enabled: false,
         database_url: scoped_url,
         auth_hasher: hasher,
         canonical_origin: "https://test.example".into(),
@@ -1058,6 +1061,7 @@ async fn endpoint_lifecycle_is_tenant_bound_and_retires_queued_deliveries() {
     let scoped_url = format!("{root_url}{separator}options=-csearch_path%3D{schema}");
     let vault = Arc::new(WebhookSecretVault::new(1, Zeroizing::new(fixture_key())).unwrap());
     let app = router(WebhookHttpState {
+        sealed_delivery_enabled: false,
         database_url: scoped_url,
         auth_hasher: hasher,
         canonical_origin: "https://test.example".into(),
