@@ -3,6 +3,7 @@
 import hashlib
 import contextlib
 import io
+import os
 from unittest.mock import patch
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -72,13 +73,14 @@ def run(fixture):
             finally:
                 connection.close()
         do_GET = do_POST = do_DELETE = handle_request
-    with tempfile.TemporaryDirectory(prefix='zrotext-guided-service-') as scratch:
+    with tempfile.TemporaryDirectory(prefix='zrotext-guided-service-') as scratch, contextlib.chdir(scratch):
         root = Path(scratch)
         subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
                         '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost',
                         '-keyout', 'key.pem', '-out', 'cert.pem'], cwd=root, check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        tls.minimum_version = ssl.TLSVersion.TLSv1_2
         tls.load_cert_chain(root / 'cert.pem', root / 'key.pem')
         server = ThreadingHTTPServer(('127.0.0.1', fixture['proxy_port']), Proxy)
         server.socket = tls.wrap_socket(server.socket, server_side=True)
@@ -137,7 +139,9 @@ def run(fixture):
                  patch.object(setup.getpass, 'getpass', side_effect=[fixture['password'], fixture['login_factor'], fixture['grant_factor']]), \
                  contextlib.redirect_stdout(captured):
                 assert setup.main() == 0
-            installed = json.loads(captured.getvalue().splitlines()[-1])
+            public = json.loads(captured.getvalue().splitlines()[-1])
+            assert public['status'] == 'completed' and public['operation'] == 'connect'
+            installed = setup.read_intent(config)
             owner = sessions[-1]
             assert fixture['password'] not in captured.getvalue()
             narrow = vault.get(installed['secret_reference'])

@@ -23,8 +23,9 @@ package installer is run. Supported client formats are `mcp-json` and
 Run `connect` with explicit `--client`, `--config`, `--broker`, `--sha256`,
 `--origin` and `--scope` arguments. The scope document contains only
 `connector_id`, `context_id`, `contact_id`, `purpose` and `expires_at_ms`.
-Use a reviewed HTTPS origin. The command previews the selected launcher,
-scope and existing configuration digest and requires typed confirmation before
+Use a reviewed HTTPS origin. Review the scope file and pinned launcher locally.
+The command prints their review digests and the existing configuration digest,
+and requires typed confirmation before
 owner authentication or mutation. Password and the login MFA factor are entered
 through hidden prompts; issuing a grant requires a separate fresh MFA factor.
 The owner session/cookies/CSRF stay in the setup process and are never supplied
@@ -36,6 +37,21 @@ resume/disconnect sessions attempt logout; an unavailable logout cannot prove
 remote session revocation. A nonsecret receipt records creator account, user and
 session IDs for deliberate cleanup. Python strings and OS copies cannot be securely
 zeroized.
+
+Launch from the deliberately selected private configuration directory. Config,
+scope and recovery files must be absolute paths within that directory or the
+home `.config` directory; the pinned broker may also be within the installed
+repository. A filesystem-volume root cannot serve as the launch capability.
+Normalized and canonical containment checks reject sibling escapes, aliases,
+reparse points and hardlinked leaves. Parent and target identity are rechecked
+after asynchronous owner/custody operations and before replacement or deletion.
+Custom directories remain supported by deliberately launching there; the tool
+does not infer a trusted root from a supplied file's parent. POSIX configuration
+anchors must be user-owned and not group/world writable. Windows requires a
+trusted directory ACL. These checks are not a sandbox and cannot prevent a
+privileged actor or a writer with access to a trusted ancestor from racing every
+filesystem operation. CLI status/error output contains no credential or creator
+IDs; those nonsecret recovery identities stay in the local receipt/config.
 
 ## Credential custody and launcher
 

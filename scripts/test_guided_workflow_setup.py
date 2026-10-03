@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 import json
+import contextlib
+import io
 import os
 import subprocess
 import sys
@@ -20,6 +22,9 @@ class GuidedSetup(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        previous = os.getcwd()
+        os.chdir(self.root)
+        self.addCleanup(os.chdir, previous)
         self.config = self.root / "client.json"
         self.config.write_text(json.dumps({"mcpServers": {"other": {"command": "synthetic"}}, "other": 1}))
         self.broker = self.root / "broker.mjs"
@@ -34,6 +39,105 @@ class GuidedSetup(unittest.TestCase):
         return setup.install(self.config, setup.local.digest(self.config.read_bytes()), self.owner,
                              SELECTED, "example", "example", self.store, "mcp-json",
                              self.broker, self.sha, "https://gateway.example")
+
+    def test_selected_custom_cwd_accepts_inside_and_refuses_sibling_and_traversal(self):
+        from workflow_paths import checked_path
+        self.assertEqual(checked_path(self.config), self.config)
+        sibling = self.root.with_name(self.root.name + "-foreign") / "client.json"
+        for value in (sibling, self.root / ".." / "foreign.json", Path("relative.json"), Path("//foreign/share/client.json")):
+            with self.assertRaisesRegex(ValueError, "guided_path_refused"):
+                checked_path(value)
+
+    def test_parent_replacement_after_remote_issuance_preserves_foreign_config(self):
+        moved = self.root / "selected"
+        moved.mkdir()
+        selected = moved / "client.json"
+        selected.write_text('{}')
+        prior = self.root / "old-selected"
+        def store_after_issuance(*_):
+            moved.rename(prior)
+            moved.mkdir()
+            selected.write_text('{"foreign":true}')
+        self.store.put.side_effect = store_after_issuance
+        with self.assertRaisesRegex(ValueError, "guided_path_refused"):
+            setup.install(selected, setup.local.digest(b'{}'), self.owner, SELECTED, "example", "example",
+                          self.store, "mcp-json", self.broker, self.sha, "https://gateway.example")
+        self.assertEqual(selected.read_text(), '{"foreign":true}')
+        self.owner.revoke.assert_called_once_with(ID)
+
+    def test_cli_fixed_status_never_prints_result_secret_canary(self):
+        output = io.StringIO()
+        with patch.object(sys, 'argv', ['guided_workflow_setup.py', 'simulator']), \
+             patch.object(setup.local, 'journey', return_value={'secret': 'synthetic-private-canary'}), \
+             contextlib.redirect_stdout(output):
+            self.assertEqual(setup.main(), 0)
+        self.assertNotIn('synthetic-private-canary', output.getvalue())
+        self.assertEqual(json.loads(output.getvalue())['status'], 'completed')
+
+    def test_cli_unknown_recovery_never_prints_exception_metadata_canary(self):
+        output = io.StringIO()
+        with patch.object(sys, 'argv', ['guided_workflow_setup.py', 'simulator']), \
+             patch.object(setup.local, 'journey', side_effect=setup.SetupRecovery('synthetic-private-canary', 'synthetic-private-canary')), \
+             contextlib.redirect_stderr(output):
+            self.assertEqual(setup.main(), 2)
+        self.assertNotIn('synthetic-private-canary', output.getvalue())
+        self.assertEqual(json.loads(output.getvalue())['state'], 'unknown')
+
+    def test_hardlinked_config_refuses_before_owner_effect_and_preserves_other_link(self):
+        target = self.root / 'foreign.json'
+        os.link(self.config, target)
+        before = target.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'guided_path_refused'):
+            self.install()
+        self.owner.create.assert_not_called()
+        self.assertEqual(target.read_bytes(), before)
+
+    @unittest.skipUnless(os.name == 'posix', 'requires POSIX mode enforcement')
+    def test_nested_world_writable_config_directory_refuses_before_grant(self):
+        nested = self.root / 'writable'
+        nested.mkdir(mode=0o777)
+        nested.chmod(0o777)
+        target = nested / 'client.json'
+        target.write_text('{}')
+        with self.assertRaisesRegex(ValueError, 'guided_path_refused'):
+            setup.install(target, setup.local.digest(b'{}'), self.owner, SELECTED, 'example', 'example',
+                          self.store, 'mcp-json', self.broker, self.sha, 'https://gateway.example')
+        self.owner.create.assert_not_called()
+
+    def test_staged_file_substitution_refuses_replace_and_preserves_foreign_file(self):
+        proposal, raw, encoded = setup.plan(self.config, 'mcp-json', self.broker, self.sha,
+                                           'https://gateway.example', ID, 'zrotext-workflow-' + 'a' * 32)
+        from workflow_paths import ParentGuard
+        guard = ParentGuard(self.config)
+        original_read = setup.local.read_config
+        calls = 0
+        foreign = None
+        def read(path):
+            nonlocal calls, foreign
+            calls += 1
+            if calls == 2:
+                foreign = next(self.root.glob('.zrotext-*'))
+                foreign.rename(self.root / 'owned-original-stage')
+                foreign.write_text('synthetic-foreign-stage')
+            return original_read(path)
+        before = self.config.read_bytes()
+        with patch.object(setup.local, 'read_config', side_effect=read):
+            with self.assertRaisesRegex(setup.local.SetupError, 'configuration_changed'):
+                setup.local.apply_plan(self.config, proposal, raw, encoded, proposal['reviewDigest'], path_check=guard.check)
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertEqual(foreign.read_text(), 'synthetic-foreign-stage')
+
+    @unittest.skipUnless(os.name == 'posix', 'requires POSIX symlink creation')
+    def test_alias_artifact_and_receipt_refused_without_reading_target(self):
+        from workflow_paths import checked_path
+        alias = self.root / 'alias.mjs'
+        alias.symlink_to(self.broker)
+        with self.assertRaisesRegex(ValueError, 'guided_path_refused'):
+            checked_path(alias, artifact=True)
+        receipt = setup.intent_path(self.config)
+        receipt.symlink_to(self.broker)
+        with self.assertRaisesRegex(ValueError, 'guided_path_refused'):
+            setup.read_intent(self.config)
 
     def test_actual_install_preserves_other_servers_and_never_stores_owner_or_narrow_secret_in_config(self):
         result = self.install()

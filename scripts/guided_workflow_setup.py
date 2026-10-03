@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import uuid
+from workflow_paths import checked_path, ParentGuard
 import agent_setup as local
 from workflow_owner_setup import OwnerSession, OwnerSetupError, scope, identity
 from workflow_secret_store import operating_system_store, SecretStoreError, reference
@@ -26,6 +27,8 @@ class SetupRecovery(OwnerSetupError):
 
 
 def plan(path, client, broker, expected, origin, grant, secret, remove=False, scope_digest=None):
+    path = checked_path(path)
+    broker = checked_path(broker, artifact=True)
     if client not in ("mcp-json", "claude-desktop"):
         raise local.SetupError("unsupported_client")
     broker = local.checked_artifact(broker, expected)
@@ -65,7 +68,8 @@ def plan(path, client, broker, expected, origin, grant, secret, remove=False, sc
 
 
 def intent_path(path):
-    return path.with_name(path.name + ".zrotext-grant-intent")
+    path = checked_path(path)
+    return checked_path(path.with_name(path.name + ".zrotext-grant-intent"))
 
 
 def validate_intent(value):
@@ -110,6 +114,7 @@ def read_intent(path):
     with os.fdopen(fd, "rb") as stream:
         info = os.fstat(stream.fileno())
         if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 4096
+                or (os.name == "posix" and info.st_mode & 0o077)
                 or receipt.is_symlink()):
             raise OwnerSetupError("setup_recovery_required")
         try:
@@ -131,6 +136,8 @@ def write_intent(stream, value):
 
 
 def preflight(path, client, broker, expected, origin, selected):
+    path = checked_path(path)
+    broker = checked_path(broker, artifact=True)
     scope(selected)
     if client not in ("mcp-json", "claude-desktop"):
         raise local.SetupError("unsupported_client")
@@ -160,6 +167,9 @@ def preflight(path, client, broker, expected, origin, selected):
 
 
 def install(path, reviewed, owner, selected, password, code, store, client, broker, expected, origin):
+    path = checked_path(path)
+    broker = checked_path(broker, artifact=True)
+    guard = ParentGuard(path)
     # Scope and artifact are validated before consuming the MFA factor.
     scope(selected)
     if client not in ("mcp-json", "claude-desktop"):
@@ -195,16 +205,19 @@ def install(path, reviewed, owner, selected, password, code, store, client, brok
     with os.fdopen(fd, "w+b") as stream:
         write_intent(stream, intent)
         persist_parent(receipt)
+        guard.check()
         grant, token = owner.create(selected, password, code)
         intent.update(state="issued", grant_id=grant)
         # Same exclusively created descriptor: never reopen an attacker-replaced receipt.
         write_intent(stream, intent)
     try:
         store.put(secret, token)
+        guard.check()
         proposal, original, encoded = plan(path, client, broker, expected, origin, grant, secret, scope_digest=scope_digest)
         if original != raw:
             raise local.SetupError("configuration_changed")
-        local.apply_plan(path, proposal, original, encoded, proposal["reviewDigest"])
+        guard.check()
+        local.apply_plan(path, proposal, original, encoded, proposal["reviewDigest"], path_check=guard.check)
     except Exception:
         # Keep narrow credential custody if remote revocation cannot be confirmed.
         try:
@@ -219,6 +232,8 @@ def install(path, reviewed, owner, selected, password, code, store, client, brok
 
 
 def recover(path, reviewed, owner, store):
+    path = checked_path(path)
+    guard = ParentGuard(path)
     # Deliberate recovery targets only the same user's recorded creator session.
     _, config = local.read_config(path)
     if ENTRY in config.get("mcpServers", {}):
@@ -228,6 +243,7 @@ def recover(path, reviewed, owner, store):
     with os.fdopen(fd, "rb") as stream:
         info = os.fstat(stream.fileno())
         if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 4096
+                or (os.name == "posix" and info.st_mode & 0o077)
                 or receipt.is_symlink()):
             raise OwnerSetupError("setup_recovery_required")
         raw = stream.read(4097)
@@ -242,16 +258,19 @@ def recover(path, reviewed, owner, store):
         current = os.stat(receipt, follow_symlinks=False)
         if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
             raise OwnerSetupError("setup_recovery_required")
-    receipt.unlink()
+    guard.check()
+    checked_path(receipt).unlink()
     return {"creatorSessionRevoked": True, "automaticRetry": False}
 
 
 def disconnect(path, client, broker, expected, origin, grant, secret, reviewed, owner, store):
+    path = checked_path(path)
+    guard = ParentGuard(path)
     proposal, raw, encoded = plan(path, client, broker, expected, origin, grant, secret, remove=True)
     if proposal["reviewDigest"] != reviewed:
         raise local.SetupError("review_required_or_configuration_changed")
     owner.revoke(grant)  # Never remove custody/config first and leave an active grant.
-    local.apply_plan(path, proposal, raw, encoded, reviewed)
+    local.apply_plan(path, proposal, raw, encoded, reviewed, path_check=guard.check)
     pending = read_intent(path)
     if pending is not None:
         if pending.get("grant_id") != grant or pending.get("secret_reference") != secret:
@@ -263,6 +282,7 @@ def disconnect(path, client, broker, expected, origin, grant, secret, reviewed, 
 
 
 def launch(broker, expected, origin, secret, store):
+    broker = checked_path(broker, artifact=True)
     broker = local.checked_artifact(broker, expected)
     node, _ = local.node_runtime()
     token = store.get(secret)
@@ -320,6 +340,10 @@ def main():
                     "recovery-preview": ("config",), "recover": ("config", "origin", "review_digest")}
         if any(getattr(args, name) is None for name in required[args.operation]):
             raise local.SetupError("missing_setup_arguments")
+        for name in ("config", "scope", "broker"):
+            value = getattr(args, name)
+            if value is not None:
+                setattr(args, name, checked_path(value, artifact=name == "broker"))
         if args.operation == "simulator":
             result = local.journey()
         elif args.operation == "stdio":
@@ -343,9 +367,10 @@ def main():
                 scope(selected)
                 local.checked_artifact(args.broker, args.sha256)
                 raw, configuration = preflight(args.config, args.client, args.broker, args.sha256, args.origin, selected)
-                print(json.dumps({"configurationDigest": local.digest(raw), "permissions": ["context_metadata", "status"],
-                                  "scope": selected, "pairingCreated": False, "sendAvailable": False,
-                                  "launch": [sys.executable, str(Path(__file__).resolve()), "stdio", "--broker", str(args.broker.resolve()), "--sha256", args.sha256]}))
+                print(json.dumps({"status": "confirmation_required", "configurationDigest": local.digest(raw),
+                                  "scopeDigest": local.digest(json.dumps(scope(selected), sort_keys=True).encode()),
+                                  "permissions": ["context_metadata", "status"],
+                                  "pairingCreated": False, "sendAvailable": False}))
                 if input("Type the displayed configuration digest to confirm: ") != local.digest(raw):
                     raise local.SetupError("review_required")
             if args.operation == "recover":
@@ -371,11 +396,14 @@ def main():
             else:
                 result = disconnect(args.config, args.client, args.broker, args.sha256, args.origin,
                                     args.grant, args.secret_reference, args.review_digest, owner, store)
-        print(json.dumps(result))
+        public = {"status": "completed", "operation": args.operation, "automaticRetry": False,
+                  "sendAvailable": False, "pairingCreated": False}
+        if args.operation in ("preview", "recovery-preview"):
+            public["reviewDigest"] = result["reviewDigest"]
+        print(json.dumps(public))
         return 0
     except SetupRecovery as error:
-        print(json.dumps({"code": "setup_incomplete_revocation_unconfirmed", "grant_id": error.grant,
-                          "secret_reference": error.secret, "state": "unknown", "automaticRetry": False}), file=sys.stderr)
+        print('{"code":"setup_incomplete_revocation_unconfirmed","state":"unknown","automaticRetry":false}', file=sys.stderr)
         return 2
     except (local.SetupError, OwnerSetupError, SecretStoreError, OSError, ValueError, TypeError) as error:
         print(json.dumps(refusal(error)), file=sys.stderr)
