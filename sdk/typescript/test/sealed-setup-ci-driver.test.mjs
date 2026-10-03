@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import test from 'node:test';
+import {CleanupFailure} from './owned-process-fixture.mjs';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {mkdtemp,writeFile,rm,readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {parseOptions,selectExecutable,ReadyParser,serverPassed,SERVER_TEST,capture,executableDigest} from '../../../scripts/sealed_setup_ci_driver.mjs';
+import {parseOptions,selectExecutable,ReadyParser,serverPassed,SERVER_TEST,capture,executableDigest,joinOwnedAcceptance} from '../../../scripts/sealed_setup_ci_driver.mjs';
 const id='11111111-1111-4111-8111-111111111111',root=path.resolve('fixture-root'),manifest=path.join(root,'crates/server/Cargo.toml'),exe=path.join(root,'target/fixture.exe');
 function ready(){const paired=Buffer.alloc(65);paired[0]=4;return {version:1,synthetic:true,port:4444,controlToken:'07'.repeat(32),origin:'https://owner.example.test:4443',baseline:{accountId:id,userId:id,sessionId:id,deviceId:id,lineId:id,nextGeneration:'1',pairedPoint:paired.toString('hex'),pairedFingerprintHex:createHash('sha256').update(paired).digest('hex'),rootFactor:'fixture-factor'.padEnd(26,'x'),lineFactor:'fixture-factor'.padEnd(26,'y'),cookies:[{name:'__Host-zrotext_session',value:'fixture-session'},{name:'__Host-zrotext_csrf',value:'fixture-csrf'}],lease:{connectionEpoch:'1',deploymentEpoch:'1',siteId:'fixture-site',instanceId:'fixture-instance'}}};}
 const record=prefix=>prefix+JSON.stringify(ready())+'\n';
@@ -31,4 +32,22 @@ test('capture timeout terminates the owned grandchild before rejection',async()=
     await new Promise(resolve=>setTimeout(resolve,200));assert.equal(await readFile(heartbeat,'utf8'),before,'Heartbeat must stop before timeout rejection');
     assert.throws(()=>process.kill(grandchild,0),error=>error.code==='ESRCH','Owned grandchild no longer exists');
   }finally{if(grandchild)try{process.kill(grandchild);}catch{}await rm(directory,{recursive:true,force:true});}
+});
+
+test('aggregate deadline joins late native CleanupFailure before cleanup',async()=>{
+  let canceled=false,settled=false;
+  const acceptance=new Promise((_,reject)=>setTimeout(()=>{settled=true;reject(new CleanupFailure('late native termination unknown'));},40));
+  await assert.rejects(joinOwnedAcceptance(acceptance,{timeoutMs:5,joinMs:100,cancel:()=>{canceled=true;}}),CleanupFailure);
+  assert.equal(canceled,true);assert.equal(settled,true,'Do not release PostgreSQL while native acceptance is pending');
+});
+test('unresolved aggregate cleanup join refuses ordinary teardown',async()=>{
+  let canceled=false;
+  await assert.rejects(joinOwnedAcceptance(new Promise(()=>{}),{timeoutMs:5,joinMs:20,cancel:()=>{canceled=true;}}),CleanupFailure);
+  assert.equal(canceled,true);
+});
+test('aggregate timeout joins an ordinary late rejection before returning failure',async()=>{
+  let settled=false;
+  const acceptance=new Promise((_,reject)=>setTimeout(()=>{settled=true;reject(Error('ordinary refused'));},30));
+  await assert.rejects(joinOwnedAcceptance(acceptance,{timeoutMs:5,joinMs:100,cancel:()=>{}}),/deadline exceeded/);
+  assert.equal(settled,true);
 });
