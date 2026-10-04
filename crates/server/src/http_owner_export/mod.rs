@@ -59,12 +59,19 @@ async fn no_store(request: Request, next: Next) -> Response {
 struct ExportQuery {
     original_reply_section: Option<crate::original_reply::lifecycle::Section>,
     original_reply_before: Option<String>,
+    managed_events_after: Option<String>,
+    managed_selections_after: Option<String>,
+    managed_versions_after: Option<String>,
+    managed_grants_after: Option<String>,
+    managed_policies_after: Option<String>,
+    managed_readers_after: Option<String>,
     sealed_deliveries_after: Option<Uuid>,
     templates_after: Option<Uuid>,
     template_versions_after: Option<Uuid>,
     invoice_periods_after: Option<Uuid>,
     invoice_usage_after: Option<Uuid>,
     invoice_audit_after: Option<i64>,
+    invoice_observations_after: Option<Uuid>,
     before: Option<Uuid>,
     sealed_before: Option<Uuid>,
     interval_before: Option<Uuid>,
@@ -193,7 +200,9 @@ struct ExportView {
         crate::http_owner_conversations::channel::execution::lifecycle::ExecutionInventory,
     workflow_schedule: crate::encrypted_schedule::lifecycle::ScheduleExport,
     workflow_integrations: crate::workflow_runtime::lifecycle::Export,
+    managed_reader_grants: crate::managed_ai::lifecycle::Export,
     invoice_billing: crate::billing::invoice::lifecycle::InvoiceExport,
+    invoice_observations: crate::billing::usage_reconciliation::lifecycle::Export,
     encrypted_templates: crate::workflow_templates::lifecycle::Export,
     workflow_context: crate::http_owner_conversations::context::lifecycle::WorkflowExport,
     confirmation_inventory: crate::http_owner_conversations::confirmation_records::ProofInventory,
@@ -518,8 +527,35 @@ async fn export_account(
         encrypted_templates,
         execution_inventory,
         workflow_integrations,
+        managed_reader_grants: match crate::managed_ai::lifecycle::export(
+            &mut client,
+            &principal,
+            [
+                query.managed_events_after,
+                query.managed_selections_after,
+                query.managed_versions_after,
+                query.managed_grants_after,
+                query.managed_policies_after,
+                query.managed_readers_after,
+            ],
+        )
+        .await
+        {
+            Ok(view) => view,
+            Err(error) => return error.into_response(),
+        },
         workflow_decisions,
         workflow_schedule,
+        invoice_observations: match crate::billing::usage_reconciliation::lifecycle::export(
+            &mut client,
+            &principal,
+            query.invoice_observations_after,
+        )
+        .await
+        {
+            Ok(view) => view,
+            Err(error) => return error.into_response(),
+        },
         invoice_billing: match crate::billing::invoice::lifecycle::export(
             &mut client,
             &principal,

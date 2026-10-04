@@ -207,6 +207,15 @@ export class OriginalReplyClient {
   }
   /** Returns transient original plaintext only after phone selection, accepted history and final current service proof. */
   async read(event: Uint8Array, acceptedManifestVersion?: bigint): Promise<string> {
+    return (await this.readVerified(event, acceptedManifestVersion)).plaintext;
+  }
+  /** Exact ciphertext identity accompanies the locally opened event. This result
+   * is a read proof; a separately authenticated routine admission remains required.
+   */
+  async readVerified(event: Uint8Array, acceptedManifestVersion?: bigint): Promise<Readonly<{
+    plaintext: string; event_id: string; event_envelope_digest: string;
+    accepted_manifest_version: number; authority: OriginalReplyAuthority;
+  }>> {
     if (this.#busy) unavailable(); this.#busy = true; const selectedEvent = Uint8Array.from(event);
     try {
       const baselineVersion = acceptedManifestVersion ?? Array.from(this.#history.keys()).find(v => this.#latest.version - v < BigInt(MAX_CHAIN));
@@ -217,9 +226,14 @@ export class OriginalReplyClient {
       const proof = await this.#proof(r.proof, baseline), historical = this.#history.get(integer(r.historical_manifest_version)), activation = this.#history.get(integer(r.activation_manifest_version));
       if (!historical || !activation) unavailable();
       const selection = await verifyOriginalReplySelection02(base64(r.statement_b64, 1536), base64(r.approval_signature_b64, 64), base64(r.installation_signature_b64, 64), activation, integer(r.accepted_at_ms), this.#scope);
-      let first = true;
-      return await openOriginalReply02(base64(r.envelope_b64, 34082), { scope: this.#scope, event: selectedEvent, privateKey: this.#privateKey, historical, selection,
-        readCurrent: async () => { if (first) { first = false; return proof; } return this.current(); } });
+      const envelope = base64(r.envelope_b64, 34082);
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", Uint8Array.from(envelope).buffer));
+      let first = true, authority = proof;
+      const plaintext = await openOriginalReply02(envelope, { scope: this.#scope, event: selectedEvent, privateKey: this.#privateKey, historical, selection,
+        readCurrent: async () => { if (first) { first = false; return proof; } authority = await this.current(); return authority; } });
+      return Object.freeze({ plaintext, event_id: uuidText(selectedEvent),
+        event_envelope_digest: Array.from(digest, n => n.toString(16).padStart(2, "0")).join(""),
+        accepted_manifest_version: Number(baseline.version), authority });
     } catch { unavailable(); } finally { this.#busy = false; }
   }
 }

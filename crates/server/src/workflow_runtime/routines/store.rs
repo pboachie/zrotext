@@ -92,19 +92,19 @@ pub(super) async fn admit(
     tx: &Transaction<'_>,
     input: &IntegrationPrincipal,
     p: &Policy,
-    v: &Invocation,
+    request_id: Uuid,
     hash: &[u8],
 ) -> Result<Call, AuthError> {
     let account = input.account_id();
     if tx
         .query_one(
             "SELECT EXISTS(SELECT 1 FROM workflow_routine_calls WHERE account_id=$1 AND id=$2)",
-            &[&account, &v.request_id],
+            &[&account, &request_id],
         )
         .await?
         .get::<_, bool>(0)
     {
-        let row = load(tx, account, v.request_id).await?;
+        let row = load(tx, account, request_id).await?;
         if row.get::<_, Uuid>(1) != p.policy_id || row.get::<_, Vec<u8>>(7) != hash {
             return Err(AuthError::Conflict);
         }
@@ -114,7 +114,7 @@ pub(super) async fn admit(
     // and tombstones survive removal of call metadata; no erasure refund.
     // The 1000-record replay ceiling is account-lifetime, not a daily allowance.
     // Exhaustion refuses new calls until full account erasure; no silent pruning.
-    if tx.query_one("SELECT EXISTS(SELECT 1 FROM workflow_routine_admission_tombstones WHERE account_id=$1 AND call_id=$2)",&[&account,&v.request_id]).await?.get::<_,bool>(0){return Err(AuthError::Conflict)}
+    if tx.query_one("SELECT EXISTS(SELECT 1 FROM workflow_routine_admission_tombstones WHERE account_id=$1 AND call_id=$2)",&[&account,&request_id]).await?.get::<_,bool>(0){return Err(AuthError::Conflict)}
     let day = activation::now(tx).await.map_err(error)? / 86_400_000;
     tx.execute("INSERT INTO workflow_routine_period_debits(account_id,utc_day,calls,units) VALUES($1,$2,0,0) ON CONFLICT DO NOTHING",&[&account,&day]).await?;
     tx.execute("INSERT INTO workflow_routine_turn_debits(account_id,context_id,turns) VALUES($1,$2,0) ON CONFLICT DO NOTHING",&[&account,&p.context_id]).await?;
@@ -137,11 +137,11 @@ pub(super) async fn admit(
     {
         return Err(AuthError::RateLimited);
     }
-    tx.execute("INSERT INTO workflow_routine_admission_tombstones(account_id,call_id,request_digest) VALUES($1,$2,$3)",&[&account,&v.request_id,&hash]).await?;
+    tx.execute("INSERT INTO workflow_routine_admission_tombstones(account_id,call_id,request_digest) VALUES($1,$2,$3)",&[&account,&request_id,&hash]).await?;
     tx.execute("UPDATE workflow_routine_period_debits SET calls=calls+1,units=units+$3 WHERE account_id=$1 AND utc_day=$2",&[&account,&day,&i64::from(p.units_per_call)]).await?;
     tx.execute("UPDATE workflow_routine_turn_debits SET turns=turns+1 WHERE account_id=$1 AND context_id=$2",&[&account,&p.context_id]).await?;
-    tx.execute("INSERT INTO workflow_routine_calls(account_id,id,policy_id,request_digest,units,phase,created_ms) VALUES($1,$2,$3,$4,$5,'unknown',floor(extract(epoch FROM clock_timestamp())*1000)::bigint)",&[&account,&v.request_id,&p.policy_id,&hash,&i64::from(p.units_per_call)]).await?;
-    let mut response = response(&load(tx, account, v.request_id).await?)?;
+    tx.execute("INSERT INTO workflow_routine_calls(account_id,id,policy_id,request_digest,units,phase,created_ms) VALUES($1,$2,$3,$4,$5,'unknown',floor(extract(epoch FROM clock_timestamp())*1000)::bigint)",&[&account,&request_id,&p.policy_id,&hash,&i64::from(p.units_per_call)]).await?;
+    let mut response = response(&load(tx, account, request_id).await?)?;
     response.execute_once = true;
     Ok(response)
 }

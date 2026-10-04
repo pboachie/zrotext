@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Owner-declared context routines only. Values describe requests, never authority.
+//! Explicit owner-configured routines. Values describe requests, never authority.
 use crate::encrypted_schedule::policy::WindowPolicy;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -27,6 +27,13 @@ pub enum Period {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct OriginalInput {
+    /// Exact independently owner-issued original-reader credential grant.
+    pub grant_id: Uuid,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Policy {
     pub request_id: Uuid,
     pub policy_id: Uuid,
@@ -35,6 +42,10 @@ pub struct Policy {
     pub generation: i64,
     pub kind: Kind,
     pub executor: Executor,
+    /// Absent preserves owner-declared input; original messages require explicit
+    /// owner approval and independent current original-reader authentication.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_input: Option<OriginalInput>,
     /// Explicit owner-approved local installation identity; never a model path.
     #[serde(default)]
     pub adapter_id: Option<String>,
@@ -75,6 +86,8 @@ impl Policy {
     pub fn validate(&self) -> bool {
         ![self.request_id,self.policy_id,self.context_id,self.routine_id].iter().any(Uuid::is_nil)
             && self.generation > 0 && self.expires_ms > 0 && self.valid_executor()
+            && self.original_input.as_ref().is_none_or(|original|
+                !original.grant_id.is_nil() && self.executor == Executor::LocalProcess)
             && (1..=100).contains(&self.call_limit)
             && (1..=1_000_000).contains(&self.unit_limit)
             && (1..=self.unit_limit).contains(&self.units_per_call)
@@ -94,6 +107,21 @@ pub struct Invocation {
     pub input_source_digest: String,
     pub direction: Direction,
 }
+/// Distinct original-event admission. Event digest/version are equality
+/// assertions, never substitutes for retained verified provenance or authority.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OriginalAdmit {
+    pub request_id: Uuid,
+    pub policy_id: Uuid,
+    pub context_id: Uuid,
+    pub input_revision: i64,
+    pub input_source_digest: String,
+    pub event_id: Uuid,
+    pub accepted_manifest_version: i64,
+    pub event_envelope_digest: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
@@ -176,6 +204,28 @@ mod tests {
         p.executor = Executor::DeterministicLocal;
         assert!(!p.validate());
     }
+    #[test]
+    fn original_input_requires_explicit_local_executor_and_exact_grant() {
+        let mut p = policy();
+        assert!(p.original_input.is_none());
+        assert!(
+            serde_json::to_value(&p)
+                .unwrap()
+                .get("original_input")
+                .is_none()
+        );
+        p.original_input = Some(OriginalInput {
+            grant_id: Uuid::new_v4(),
+        });
+        assert!(!p.validate());
+        p.executor = Executor::LocalProcess;
+        p.adapter_id = Some("customer_faq".into());
+        p.artifact_digest = Some("ab".repeat(32));
+        assert!(p.validate());
+        p.original_input.as_mut().unwrap().grant_id = Uuid::nil();
+        assert!(!p.validate());
+    }
+
     #[test]
     fn inbound_is_distinct_and_model_cannot_supply_owner_authority() {
         let id = Uuid::new_v4();
