@@ -349,7 +349,7 @@ def refusal(error):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=["simulator", "preview", "connect", "disconnect", "recovery-preview", "recover", "stdio"], default="simulator", nargs="?")
+    parser.add_argument("operation", choices=["simulator", "preview", "connect", "verify", "disconnect", "recovery-preview", "recover", "stdio"], default="simulator", nargs="?")
     for option in ["client", "origin", "grant", "secret-reference", "sha256", "review-digest", "scope-digest"]:
         parser.add_argument("--" + option)
     for option in ["broker", "config", "scope"]:
@@ -361,6 +361,7 @@ def main():
         required = {"simulator": (), "stdio": ("broker", "sha256", "origin", "secret_reference"),
                     "preview": ("client", "config", "broker", "sha256", "origin", "grant", "secret_reference"),
                     "connect": ("client", "config", "broker", "sha256", "origin", "scope"),
+                    "verify": ("client", "config", "broker", "sha256", "origin", "scope"),
                     "disconnect": ("client", "config", "broker", "sha256", "origin", "grant", "secret_reference", "review_digest"),
                     "recovery-preview": ("config",), "recover": ("config", "origin", "review_digest")}
         if any(getattr(args, name) is None for name in required[args.operation]):
@@ -377,6 +378,15 @@ def main():
             result = local.journey()
         elif args.operation == "stdio":
             return launch(broker_path, args.sha256, args.origin, args.secret_reference, operating_system_store(), selected_root)
+        elif args.operation == "verify":
+            from workflow_connector_verify import verify
+            if not scope_path.is_file() or scope_path.stat().st_size > 4096:
+                raise local.SetupError("invalid_scope")
+            selected = json.loads(scope_path.read_bytes(), object_pairs_hook=local.unique_object,
+                                  parse_constant=local.invalid_constant)
+            result = verify(config_path, args.client, broker_path, args.sha256, args.origin, selected)
+            print(json.dumps(result))
+            return 0 if result["status"] == "verified" else 2
         elif args.operation == "recovery-preview":
             pending = read_intent(config_path)
             if pending is None:
