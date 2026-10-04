@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 import guided_workflow_setup as setup
 import workflow_connector_verify as verify
-from workflow_connector_fixture import OwnedFixtureVault
+from workflow_connector_fixture import OwnedFixtureVault, windows_fixture_compiler
 from workflow_secret_store import WindowsCredentialStore, SecretStoreError
 
 ID = '00000000-0000-4000-8000-000000000001'
@@ -19,6 +19,28 @@ SELECTED = dict(connector_id=ID, context_id=ID, contact_id=ID, purpose='operatio
 
 
 class InstalledVerification(unittest.TestCase):
+    def test_fixture_compiler_uses_bounded_os_directory_without_environment_fallback(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / 'fixture-os'
+            compiler = directory / 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
+            compiler.parent.mkdir(parents=True)
+            compiler.write_text('synthetic fixture compiler')
+            api = Mock()
+            def native_directory(buffer, capacity):
+                self.assertEqual(capacity, 32768)
+                buffer.value = str(directory)
+                return len(buffer.value)
+            api.GetWindowsDirectoryW.side_effect = native_directory
+            with patch('workflow_connector_fixture.ctypes.WinDLL', return_value=api, create=True), \
+                 patch.dict(os.environ, {'SYSTEMROOT': str(directory / 'untrusted')}, clear=True):
+                self.assertEqual(windows_fixture_compiler(), compiler)
+                for refused in (0, 32768, 32769):
+                    api.GetWindowsDirectoryW.side_effect = None
+                    api.GetWindowsDirectoryW.return_value = refused
+                    with self.assertRaisesRegex(ValueError, 'fixture_compiler_unavailable'):
+                        windows_fixture_compiler()
+
     @unittest.skipUnless(os.name == 'nt', 'requires Windows fixture custody API shape')
     def test_unwritten_issuance_reference_cleanup_only_confirms_absence(self):
         from unittest.mock import Mock

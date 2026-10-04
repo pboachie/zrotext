@@ -12,6 +12,22 @@ import tempfile
 from workflow_secret_store import operating_system_store, SecretStoreError, reference
 
 
+def windows_fixture_compiler():
+    """Find the fixed fixture compiler from the OS, never a process environment."""
+    from ctypes import wintypes
+    api = ctypes.WinDLL('kernel32.dll', use_last_error=True)
+    api.GetWindowsDirectoryW.argtypes = [wintypes.LPWSTR, wintypes.UINT]
+    api.GetWindowsDirectoryW.restype = wintypes.UINT
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = api.GetWindowsDirectoryW(buffer, len(buffer))
+    if not 0 < length < len(buffer) or not os.path.isabs(buffer.value):
+        raise ValueError('fixture_compiler_unavailable')
+    compiler = Path(buffer.value) / 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
+    if not compiler.is_file() or compiler.is_symlink():
+        raise ValueError('fixture_compiler_unavailable')
+    return compiler
+
+
 class OwnedFixtureVault:
     """Only names first created by this fixture may be deleted, including on error."""
     def __init__(self):
@@ -87,7 +103,7 @@ def fixture_node(root, certificate, broker):
     directory.mkdir()
     children = directory / 'children.txt'
     if os.name == 'nt':
-        compiler = Path(os.environ['SYSTEMROOT']) / 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
+        compiler = windows_fixture_compiler()
         # No credential goes through this shim. Standard handles are inherited;
         # the SDK attempts Windows Job containment. Observe the fixture's
         # exact child IDs independently; never terminate a process by name.
