@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import time
 import xml.etree.ElementTree as ET
+import uuid
 
 from android_device_smoke import verify_results
 
@@ -21,6 +22,8 @@ APP = "org.zrotext.gateway.preparationprobe"
 TEST_APP = APP + ".test"
 RUNNER = "org.zrotext.gateway.PreparationProbeRunner"
 TEST = "org.zrotext.gateway.PreparationProbeDeviceTest"
+CUSTODY_METHOD = "payloadCustodyReloadNeverRecreatesLostOrRevokedIdentity"
+CUSTODY_TEST = TEST + "#" + CUSTODY_METHOD
 ANDROID = "{http://schemas.android.com/apk/res/android}"
 WINDOWS = os.name == "nt"
 # Fixed program names only; each must exist in its expected SDK directory before use.
@@ -183,15 +186,52 @@ def validate_manifest(xml, package, test=False):
 
 
 def validate_results(output):
-    verify_results(output, {TEST: 2})
+    verify_results(output, {TEST: 3})
     completed = set(re.findall(r"^INSTRUMENTATION_STATUS: test=(.+)$", output, re.MULTILINE))
     if completed != {"independentTinkWrapOpensThroughExistingKeystoreAndLostKeyCannotBeRecreated",
-                     "preparationRequiresActualReportedHardwareAndNeverProducesAlphaState"}:
+                     "preparationRequiresActualReportedHardwareAndNeverProducesAlphaState", CUSTODY_METHOD}:
         raise ValueError("Wrong probe methods")
     reports = re.findall(r"^INSTRUMENTATION_RESULT: preparationCustody=(.+)$", output, re.MULTILINE)
     if reports not in (["unsupported"], ["platform-reported-hardware"]):
         raise ValueError("Missing or ambiguous hardware result")
     return reports[0]
+
+
+def validate_custody_stage(output, baseline=False):
+    """Validate one selected test and bounded public key metadata; never publish raw output."""
+    verify_results(output, {TEST: 1})
+    if set(re.findall(r"^INSTRUMENTATION_STATUS: test=(.+)$", output, re.MULTILINE)) != {CUSTODY_METHOD}:
+        raise ValueError("Wrong custody method")
+    if not baseline:
+        return None
+    fields = {}
+    patterns = {"custodyKeyId": r"[0-9a-f]{64}",
+                "custodySecurity": r"STRONGBOX|TRUSTED_ENVIRONMENT|SOFTWARE|UNKNOWN_SECURE|UNKNOWN",
+                "custodyBootCount": r"0|[1-9][0-9]{0,9}"}
+    for name, pattern in patterns.items():
+        values = re.findall(r"^INSTRUMENTATION_RESULT: " + name + r"=(.*)$", output, re.MULTILINE)
+        if len(values) != 1 or not re.fullmatch(pattern, values[0]):
+            raise ValueError("Missing or ambiguous custody metadata")
+        fields[name] = values[0]
+    if fields["custodyKeyId"] == "0" * 64 or int(fields["custodyBootCount"]) > (1 << 31) - 1:
+        raise ValueError("Invalid custody metadata")
+    return fields
+
+
+def run_custody_lifecycle(device):
+    """Separate instrumentation invocations only: never reboot, clear data or alter device settings."""
+    session = uuid.uuid4().hex
+    pinned = {}
+    for stage in ("enroll", "reload", "lose", "revoke", "cleanup"):
+        arguments = ["shell", "am", "instrument", "-w", "-r", "-e", "isolatedPreparationProbe", "true",
+                     "-e", "class", CUSTODY_TEST, "-e", "custodySession", session, "-e", "custodyStage", stage]
+        for name, value in pinned.items():
+            arguments.extend(["-e", name, value])
+        output = device(*arguments, TEST_APP + "/" + RUNNER, timeout=120)
+        observed = validate_custody_stage(output, baseline=stage == "enroll")
+        if observed is not None:
+            pinned = observed
+    return pinned["custodySecurity"]
 
 
 def digest(path):
@@ -288,14 +328,19 @@ def main():
             for selector in [("-e", "isolatedPreparationProbe", "true", "-e", "class",
                               "org.zrotext.gateway.JournalDeviceUpgradeTest"),
                              ("-e", "class", TEST),
-                             ("-e", "isolatedPreparationProbe", "true", "-e", "package", "org.zrotext.gateway")]:
+                             ("-e", "isolatedPreparationProbe", "true", "-e", "package", "org.zrotext.gateway"),
+                             ("-e", "isolatedPreparationProbe", "true", "-e", "class", CUSTODY_TEST),
+                             ("-e", "isolatedPreparationProbe", "true", "-e", "class", CUSTODY_TEST,
+                              "-e", "custodyStage", "roundtrip", "-e", "custodySession", "ab" * 16)]:
                 rejected = device("shell", "am", "instrument", "-w", "-r", *selector, TEST_APP + "/" + RUNNER)
                 validate_rejection(rejected)
             output = device("shell", "am", "instrument", "-w", "-r", "-e", "isolatedPreparationProbe", "true",
                             "-e", "class", TEST, TEST_APP + "/" + RUNNER, timeout=420)
             (directory / "instrumentation.txt").write_text(output, encoding="utf-8")
             custody = validate_results(output)
-            print(f"Isolated probe: 2 tests; zero failures/skips; custody={custody}")
+            print(f"Isolated probe: 3 tests; zero failures/skips; custody={custody}")
+            level = run_custody_lifecycle(device)
+            print(f"Custody lifecycle: 5 separate instrumentation runs; zero failures/skips; reported-level={level}; no reboot")
         finally:
             for package in reversed(installed):
                 verify_installed(package)

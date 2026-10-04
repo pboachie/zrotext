@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::sync::Arc;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify, watch};
 use tower::ServiceExt;
 
 struct Simulator {
@@ -31,6 +31,7 @@ struct Simulator {
     owner: SessionPrincipal,
     statement: Statement,
     done: Arc<Notify>,
+    sockets: SocketTasks,
     token: String,
     phone_session: Uuid,
     origin_hash: [u8; 32],
@@ -38,6 +39,91 @@ struct Simulator {
     owner_token: String,
     owner_csrf: String,
 }
+
+// Axum's upgraded callbacks outlive HTTP graceful shutdown. A receiver registers ownership
+// before upgrade dispatch, including an upgrade that fails before invoking its callback.
+#[derive(Clone)]
+struct SocketTasks {
+    shutdown: watch::Sender<bool>,
+    active: watch::Sender<()>,
+}
+
+impl SocketTasks {
+    fn new() -> Self {
+        let (shutdown, _) = watch::channel(false);
+        let (active, _) = watch::channel(());
+        Self { shutdown, active }
+    }
+
+    fn register<T, R>(&self, state: Arc<T>, resource: R) -> Option<SocketTask<T, R>> {
+        if *self.shutdown.borrow() {
+            return None;
+        }
+        Some(SocketTask {
+            resource,
+            state,
+            _active: self.active.subscribe(),
+        })
+    }
+
+    fn stop(&self) {
+        self.shutdown.send_replace(true);
+    }
+
+    async fn wait(&self) {
+        self.active.closed().await;
+    }
+}
+
+struct SocketTask<T, R> {
+    // Rust drops fields in declaration order, also on cancellation/unwind: release the
+    // scoped connection and state before the final receiver permits fixture cleanup.
+    resource: R,
+    state: Arc<T>,
+    _active: watch::Receiver<()>,
+}
+
+impl<T, R> SocketTask<T, R> {
+    fn state(&self) -> &T {
+        &self.state
+    }
+
+    fn parts(&mut self) -> (&T, &mut R) {
+        (&self.state, &mut self.resource)
+    }
+}
+
+async fn socket_shutdown(receiver: &mut watch::Receiver<bool>) {
+    while !*receiver.borrow_and_update() {
+        if receiver.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+async fn finish_server(
+    server: &mut tokio::task::JoinHandle<()>,
+    sockets: &SocketTasks,
+    deadline: tokio::time::Instant,
+) -> Result<Result<(), tokio::task::JoinError>, tokio::time::error::Elapsed> {
+    let joined = match tokio::time::timeout_at(deadline, &mut *server).await {
+        Ok(joined) => joined,
+        Err(error) => {
+            sockets.stop();
+            server.abort();
+            let _ = server.await;
+            return Err(error);
+        }
+    };
+    // The HTTP join is consumed. Drain under its same deadline without polling it again.
+    if let Err(error) = tokio::time::timeout_at(deadline, sockets.wait()).await {
+        sockets.stop();
+        return Err(error);
+    }
+    Ok(joined)
+}
+
+mod lifecycle_tests;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Command {
@@ -67,13 +153,35 @@ async fn phone_channel(
     {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    // Complete cold scoped PG setup before the authenticated socket opens. It must not inflate
+    // only the bootstrap clock's RTT relative to a later independent runtime clock sample.
+    let client = {
+        let f = state.fixture.lock().await;
+        f.connect().await
+    };
+    let Some(mut task) = state.sockets.register(state.clone(), client) else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
     upgrade
         .on_upgrade(move |mut socket| async move {
-            while let Some(Ok(Message::Binary(bytes))) = socket.recv().await {
+            let mut shutdown = task.state().sockets.shutdown.subscribe();
+            // Every frame still holds the fixture lock and enters the unchanged transaction.
+            loop {
+                let received = tokio::select! {
+                    biased;
+                    _ = socket_shutdown(&mut shutdown) => {
+                        let _ = socket.close().await;
+                        break;
+                    }
+                    received = socket.recv() => received,
+                };
+                let Some(Ok(Message::Binary(bytes))) = received else {
+                    break;
+                };
+                let (state, client) = task.parts();
                 let f = state.fixture.lock().await;
-                let mut client = f.connect().await;
                 let result = super::super::channel::handle(
-                    &mut client,
+                    client,
                     &super::super::channel::AuthenticatedChannelSession {
                         device: f.session(),
                         phone_session: state.phone_session,
@@ -94,6 +202,7 @@ async fn phone_channel(
                     }
                 }
             }
+            drop(task);
         })
         .into_response()
 }
@@ -138,7 +247,18 @@ async fn command(
                 .map(|r|json!({"ok":true,"created":r.created,"event":r.event_id})).map_err(|_|ConversationError::Forbidden),
             None=>Err(ConversationError::Invalid),
         },
-        "history"=>match c.event {Some(event)=>read_history(&mut client,&state.owner,event).await.map(|b|json!({"ok":true,"envelope":STANDARD.encode(b)})),None=>Err(ConversationError::Invalid)},
+        "history"=>match c.event {
+            Some(event)=>match read_history(&mut client,&state.owner,event).await {
+                Ok(bytes)=>{
+                    // Scoped real PG identities, never a fixture-side or echoed success counter.
+                    let row=client.query_one("SELECT device_sequence FROM sealed_inbound_events WHERE account_id=$1 AND id=$2",&[&s.account,&event]).await.unwrap();
+                    let ids:Vec<Uuid>=client.query("SELECT id FROM sealed_event_deliveries WHERE account_id=$1 AND event_id=$2 AND interval_id=$3 ORDER BY id LIMIT 6",&[&s.account,&event,&s.interval]).await.unwrap().iter().map(|r|r.get(0)).collect();
+                    assert!(ids.len()<=5);
+                    let counts=client.query_one("SELECT (SELECT count(*) FROM conversation_inbound_provenance WHERE account_id=$1 AND interval_id=$2), (SELECT count(*) FROM sealed_event_deliveries WHERE account_id=$1 AND interval_id=$2)",&[&s.account,&s.interval]).await.unwrap();
+                    Ok(json!({"ok":true,"envelope":STANDARD.encode(bytes),"event":event,"sequence":row.get::<_,i64>(0),"deliveryIds":ids,"intervalEvents":counts.get::<_,i64>(0),"intervalDeliveries":counts.get::<_,i64>(1)}))
+                },Err(error)=>Err(error),
+            },None=>Err(ConversationError::Invalid),
+        },
         "browser_authority"=>active_lease(&mut client,session,s.interval,Uuid::new_v4()).await.map(|lease| json!({"ok":true,"phase":"active","validForMs":lease.valid_for_ms,"manifest":STANDARD.encode(&f.bytes),
             "scope":{"account":s.account,"session":s.originating_session,"interval":s.interval,"device":s.device,"line":s.line,"generation":s.generation.to_string(),"peer":s.peer,"reader":STANDARD.encode(s.reader),"manifest":STANDARD.encode(Sha256::digest(&f.bytes[..f.bytes.len()-64]))}})),
         "send"=>submit_confirmed(&state, &f, &c).await,
@@ -173,7 +293,7 @@ async fn command(
             if r.is_ok() {f.db.execute("UPDATE sessions SET revoked_at=clock_timestamp() WHERE id=$1",&[&state.owner.session_id]).await.unwrap();}
             r.map(|()|json!({"ok":true}))
         },
-        "finish"=>{state.done.notify_one();Ok(json!({"ok":true}))},
+        "finish"=>{state.sockets.stop();state.done.notify_one();Ok(json!({"ok":true}))},
         _=>Err(ConversationError::Invalid),
     };
     match result {
@@ -316,10 +436,110 @@ async fn owner_credentials(f: &Fixture, owner: &SessionPrincipal) -> (String, St
     (token, csrf)
 }
 
+// Called by the existing compiled simulator entry point, so emulator CI runs these real SQL cases.
+async fn assert_capture_ack_replay_authority() {
+    let (f, _, statement) = tests::pending().await;
+    tests::activate(&f, &statement).await;
+    let session = super::super::channel::AuthenticatedChannelSession {
+        device: f.session(),
+        phone_session: Uuid::new_v4(),
+        origin_hash: [9; 32],
+    };
+    let event = Uuid::new_v4();
+    let bytes = tests::capture(&f, &statement, event, 1, b"+12")
+        .await
+        .unwrap();
+    let request = |envelope: &[u8]| {
+        let mut out = b"ZTCW\x01\x0c".to_vec();
+        for id in [f.account, f.device, session.phone_session] {
+            out.extend(id.as_bytes());
+        }
+        out.extend(session.device.connection_epoch.to_be_bytes());
+        out.extend(session.device.deployment_epoch.to_be_bytes());
+        out.extend(session.origin_hash);
+        out.extend(Uuid::new_v4().as_bytes());
+        out.extend(super::super::channel::scope(&statement).unwrap());
+        out.extend((envelope.len() as u32).to_be_bytes());
+        out.extend(envelope);
+        out
+    };
+    let reply = super::super::channel::handle(&mut f.connect().await, &session, &request(&bytes))
+        .await
+        .unwrap();
+    assert_eq!(&reply[118..134], event.as_bytes());
+    assert_eq!(&reply[134..166], Sha256::digest(&bytes).as_slice());
+    assert_eq!(
+        reply[166], 0,
+        "Current exact protected-content replay receives a committed ACK"
+    );
+    f.db.execute(
+        "UPDATE sealed_inbound_events SET envelope=NULL WHERE account_id=$1 AND id=$2",
+        &[&f.account, &event],
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(
+            super::super::channel::handle(&mut f.connect().await, &session, &request(&bytes)).await,
+            Err(ConversationError::Forbidden)
+        ),
+        "Erased replay must never receive a capture ACK"
+    );
+    assert!(
+        f.db.query_one(
+            "SELECT envelope IS NULL FROM sealed_inbound_events WHERE account_id=$1 AND id=$2",
+            &[&f.account, &event]
+        )
+        .await
+        .unwrap()
+        .get::<_, bool>(0)
+    );
+    let unscoped = Uuid::new_v4();
+    let observed =
+        f.db.query_one(
+            "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0);
+    let raw = super::super::tests::envelope(&f, unscoped, 2, observed as u64, b"+12");
+    crate::sealed_inbound::ingest::ingest_candidate02(
+        &mut f.connect().await,
+        f.session(),
+        f.line,
+        1,
+        &f.bytes,
+        &raw,
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(
+            super::super::channel::handle(&mut f.connect().await, &session, &request(&raw)).await,
+            Err(ConversationError::Forbidden)
+        ),
+        "Unscoped replay cannot acquire provenance or receive a capture ACK"
+    );
+    assert_eq!(f.db.query_one("SELECT count(*) FROM conversation_inbound_provenance WHERE account_id=$1 AND event_id=$2",&[&f.account,&unscoped]).await.unwrap().get::<_,i64>(0),0);
+    assert_eq!(
+        f.db.query_one(
+            "SELECT envelope FROM sealed_inbound_events WHERE account_id=$1 AND id=$2",
+            &[&f.account, &unscoped]
+        )
+        .await
+        .unwrap()
+        .get::<_, Vec<u8>>(0),
+        raw
+    );
+    f.cleanup().await;
+}
+
 #[tokio::test]
 #[ignore = "requires explicitly selected conversation simulator runner, SDK and disposable PostgreSQL"]
 async fn loopback_journal_bridge() {
     assert!(std::env::var_os("ZT_CONVERSATION_SIM_DIR").is_some());
+    assert_capture_ack_replay_authority().await;
     let (mut f, owner) = super::super::tests::prepared().await;
     if !super::super::confirmation_records::installed(&f.db)
         .await
@@ -332,6 +552,17 @@ async fn loopback_journal_bridge() {
         .unwrap();
     }
     f.db.execute("INSERT INTO usage_quota_policies(account_id,metric,limit_units) VALUES($1,'outbound_message',1000)",&[&f.account]).await.unwrap();
+    // Queue one opted-in synthetic endpoint; this fixture starts no dispatcher or network callback.
+    let endpoint = Uuid::new_v4();
+    let vault = crate::webhook_worker::WebhookSecretVault::new(
+        1,
+        zeroize::Zeroizing::new(crate::test_keys::key(125).to_vec()),
+    )
+    .unwrap();
+    let secret = vault
+        .seal(f.account, endpoint, &crate::test_keys::key(126))
+        .unwrap();
+    f.db.execute("INSERT INTO webhook_endpoints(id,account_id,callback_url,signing_secret_ciphertext,signing_secret_key_version,enabled,sealed_events_enabled) VALUES($1,$2,'https://hooks.example.org/inbox',$3,1,true,true)",&[&endpoint,&f.account,&secret]).await.unwrap();
     let (owner_token, owner_csrf) = owner_credentials(&f, &owner).await;
     let queue_router = queue_router(&f);
     // Additional roles exist only in this fresh owner-signed synthetic manifest.
@@ -423,11 +654,13 @@ async fn loopback_journal_bridge() {
         "sdkTool":std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/typescript/test/conversation-simulator-envelope.mjs"),
         "browserTool":std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/typescript/test/conversation-browser-simulator.mjs")});
     let done = Arc::new(Notify::new());
+    let sockets = SocketTasks::new();
     let state = Arc::new(Simulator {
         fixture: Mutex::new(f),
         owner,
         statement,
         done: done.clone(),
+        sockets: sockets.clone(),
         token,
         phone_session,
         origin_hash,
@@ -450,11 +683,10 @@ async fn loopback_journal_bridge() {
     assert!(readiness.len() <= 16_384);
     println!("\nZT_CONVERSATION_SIM_READY_V1 {readiness}");
     std::io::stdout().flush().unwrap();
-    let result = tokio::time::timeout(std::time::Duration::from_secs(240), &mut server).await;
-    if result.is_err() {
-        server.abort();
-        let _ = server.await;
-    }
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(240);
+    let result = finish_server(&mut server, &sockets, deadline).await;
+    // A stuck callback fails closed; do not clean its still-owned fixture or cancel a TX
+    // merely to manufacture uniqueness. No additional grace period follows this budget.
     let state = Arc::try_unwrap(state).ok().expect("fixture server stopped");
     state.fixture.into_inner().cleanup().await;
     result
