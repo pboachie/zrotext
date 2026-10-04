@@ -252,6 +252,21 @@ pub async fn current(
 ) -> Result<Policy, AuthError> {
     current_with_original(client, input, None, context, policy).await
 }
+// Test builds emit fixed-stage timings; production builds preserve the result.
+macro_rules! current_stage {
+    ($phase:literal, $operation:expr) => {{
+        #[cfg(test)]
+        let started = std::time::Instant::now();
+        let result = $operation;
+        #[cfg(test)]
+        eprintln!(
+            "routine_current_stage phase={} elapsed_us={}",
+            $phase,
+            started.elapsed().as_micros().min(60000000)
+        );
+        result
+    }};
+}
 pub(crate) async fn current_with_original(
     client: &mut Client,
     input: &IntegrationPrincipal,
@@ -259,16 +274,22 @@ pub(crate) async fn current_with_original(
     context: Uuid,
     policy: Uuid,
 ) -> Result<Policy, AuthError> {
-    let tx = begin(client).await?;
-    let mut checked = scope::lock_scope(&tx, input, context, Operation::ContextContent).await?;
-    let p = store::policy(&tx, input, policy).await?;
+    let tx = current_stage!("begin", begin(client).await)?;
+    let mut checked = current_stage!(
+        "scope",
+        scope::lock_scope(&tx, input, context, Operation::ContextContent).await
+    )?;
+    let p = current_stage!("policy", store::policy(&tx, input, policy).await)?;
     if p.context_id != context {
         return Err(AuthError::Forbidden);
     }
-    live(&tx, &mut checked, &p).await?;
-    original::configure_check(&tx, input, original, &checked, &p).await?;
+    current_stage!("live", live(&tx, &mut checked, &p).await)?;
+    current_stage!(
+        "original",
+        original::configure_check(&tx, input, original, &checked, &p).await
+    )?;
     drop(checked);
-    tx.commit().await?;
+    current_stage!("commit", tx.commit().await)?;
     Ok(p)
 }
 
