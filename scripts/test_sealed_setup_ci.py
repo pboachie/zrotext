@@ -13,7 +13,106 @@ from unittest.mock import patch
 import sealed_setup_ci as driver
 
 
+def acl_receipt(count=4, ending=b"\r\n"):
+    return b"".join(b"ZT_SETUP_ACL:" + phase.encode("ascii") + ending
+                    for phase in driver.ACL_PHASES[:count])
+
+
 class SetupCiTest(unittest.TestCase):
+    def permission_call(self, result=None, error=None):
+        # Every subprocess and Windows lookup is mocked; no ACL/native tool runs.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            executable = root / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+            executable.parent.mkdir(parents=True)
+            executable.write_bytes(b"fixture")
+            def system_directory(buffer, _capacity):
+                buffer.value = str(root)
+                return len(str(root))
+            api = SimpleNamespace(kernel32=SimpleNamespace(GetSystemDirectoryW=system_directory))
+            selected = root / "sealed-setup-ci-private-input"
+            with patch.object(driver.ctypes, "windll", api, create=True), \
+                    patch.object(driver.subprocess, "run", return_value=result, side_effect=error) as run, \
+                    patch.object(driver.time, "monotonic", side_effect=[100.0, 115.25]), \
+                    redirect_stdout(io.StringIO()):
+                try:
+                    driver.grant_fixture_user_access(selected)
+                finally:
+                    run.assert_called_once()
+                    self.assertEqual(run.call_args.kwargs["timeout"], 15)
+                    self.assertTrue(run.call_args.kwargs["check"])
+                    self.assertEqual(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+                    self.assertEqual(run.call_args.kwargs["stderr"], subprocess.DEVNULL)
+
+    def test_acl_receipts_require_exact_complete_ordered_prefixes(self):
+        for count in range(5):
+            for ending in (b"\n", b"\r\n"):
+                with self.subTest(count=count, ending=ending):
+                    self.assertEqual(driver.acl_observed_phase(acl_receipt(count, ending)),
+                                     driver.ACL_PHASES[count - 1] if count else "no-received-marker")
+        for invalid in (None, "ZT_SETUP_ACL:script-entered\n", b"x" * 257,
+                        acl_receipt(1) * 2, acl_receipt()[::-1],
+                        acl_receipt(1) + b"private-path-or-SID\n", acl_receipt(1)[:-1],
+                        acl_receipt().replace(b"leaf-validated", b"leaf_validated"),
+                        acl_receipt().replace(b"\r\n", b"\n", 1), b"\xff\n"):
+            with self.subTest(invalid=invalid):
+                self.assertEqual(driver.acl_observed_phase(invalid), "diagnostic-unavailable")
+
+    def test_acl_timeout_reports_only_received_progress_and_static_elapsed(self):
+        for count in range(5):
+            with self.subTest(count=count), self.assertRaises(driver.FixtureAclFailure) as caught:
+                self.permission_call(error=subprocess.TimeoutExpired(
+                    "private-command", 15, output=acl_receipt(count), stderr=b"private-secret"))
+            self.assertEqual(caught.exception.phase,
+                             driver.ACL_PHASES[count - 1] if count else "no-received-marker")
+            self.assertEqual(caught.exception.outcome, "timeout-unknown")
+            self.assertEqual(caught.exception.elapsed_ms, 15250)
+            self.assertNotIn("private-command", str(caught.exception))
+            self.assertNotIn("private-secret", str(caught.exception))
+            self.assertFalse(hasattr(caught.exception, "output"))
+        with self.assertRaises(driver.FixtureAclFailure) as caught:
+            self.permission_call(error=subprocess.TimeoutExpired("private-command", 15))
+        self.assertEqual(caught.exception.phase, "no-received-marker")
+
+    def test_acl_nonzero_and_launch_failures_never_become_success(self):
+        for error, outcome, phase in (
+                (subprocess.CalledProcessError(5, "private-command", output=acl_receipt(3)),
+                 "nonzero-exit", "acl-call-entered"),
+                (subprocess.CalledProcessError(5, "private-command", output=b"private-path"),
+                 "nonzero-exit", "diagnostic-unavailable"),
+                (OSError("private-path"), "launch-error", "no-received-marker")):
+            with self.subTest(outcome=outcome, phase=phase), \
+                    self.assertRaises(driver.FixtureAclFailure) as caught:
+                self.permission_call(error=error)
+            self.assertEqual((caught.exception.outcome, caught.exception.phase), (outcome, phase))
+            self.assertNotIn("private-path", str(caught.exception))
+            self.assertNotIn("private-command", str(caught.exception))
+
+    def test_acl_normal_exit_requires_full_completed_receipt(self):
+        self.permission_call(result=subprocess.CompletedProcess([], 0, stdout=acl_receipt()))
+        for output in (b"", acl_receipt(1), acl_receipt(3), acl_receipt() + b"unexpected\n",
+                       b"x" * 257, None):
+            with self.subTest(output=output), self.assertRaises(driver.FixtureAclFailure) as caught:
+                self.permission_call(result=subprocess.CompletedProcess([], 0, stdout=output))
+            self.assertEqual(caught.exception.outcome, "invalid-completion-receipt")
+
+    def test_acl_diagnostic_failure_stops_before_cluster_and_withholds_inputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = io.StringIO()
+            with patch.object(driver.time, "monotonic", return_value=1.0):
+                failure = driver.FixtureAclFailure("timeout-unknown", b"private-SID-path", 0.0)
+            with patch.object(driver, "ROOT", Path(temporary).resolve()), \
+                    patch.dict(driver.os.environ, {"RUNNER_TEMP": temporary}), \
+                    patch.object(driver, "native_host_supported", return_value=True), \
+                    patch.object(driver, "grant_fixture_user_access", side_effect=failure), \
+                    patch.object(driver, "OwnedCluster") as cluster, redirect_stdout(output):
+                self.assertEqual(driver.main(["--tools", temporary, "--pg-bin", temporary]), 1)
+                self.assertEqual(list(driver.owned_fixture_parent().iterdir()), [])
+            cluster.assert_not_called()
+            self.assertEqual(output.getvalue(), str(failure) + "\nExplicit sealed setup fixture failed at "
+                             "owned-directory (fixture-error); private inputs withheld.\n")
+            self.assertNotIn("private-SID-path", output.getvalue())
+
     def test_owned_directory_permission_change_is_confined_and_precedes_initialization(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -47,7 +146,8 @@ class SetupCiTest(unittest.TestCase):
             api = SimpleNamespace(kernel32=SimpleNamespace(GetSystemDirectoryW=system_directory))
             selected = root / "sealed-setup-ci-literal-'$fixture"
             with patch.object(driver.ctypes, "windll", api, create=True), \
-                    patch.object(driver.subprocess, "run") as run:
+                    patch.object(driver.subprocess, "run", return_value=subprocess.CompletedProcess(
+                        [], 0, stdout=acl_receipt())) as run, redirect_stdout(io.StringIO()):
                 driver.grant_fixture_user_access(selected)
             command = run.call_args.args[0]
             self.assertEqual(command[:4], [str(executable), "-NoProfile", "-NonInteractive", "-EncodedCommand"])
@@ -58,7 +158,16 @@ class SetupCiTest(unittest.TestCase):
             self.assertIn("$acl.SetAccessRuleProtection($true, $false)", script)
             self.assertEqual(run.call_args.kwargs["env"]["ZT_SEALED_SETUP_OWNED_DIRECTORY"], str(selected))
             self.assertEqual(run.call_args.kwargs["stderr"], subprocess.DEVNULL)
+            self.assertEqual(run.call_args.kwargs["stdout"], subprocess.PIPE)
+            self.assertEqual(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+            self.assertEqual(run.call_args.kwargs["timeout"], 15)
             self.assertTrue(run.call_args.kwargs["check"])
+            indices = [script.index("ZT_SETUP_ACL:" + phase) for phase in driver.ACL_PHASES]
+            self.assertEqual(indices, sorted(indices))
+            self.assertLess(script.index("GetFileSystemInfos().Length"), indices[1])
+            self.assertLess(indices[2], script.index("$item.SetAccessControl($acl)"))
+            self.assertLess(script.index("$item.SetAccessControl($acl)"), indices[3])
+            self.assertEqual(script.count("[Console]::Out.Flush()"), 4)
 
     @unittest.skipUnless(os.name == "nt", "requires native Windows PostgreSQL tools")
     def test_real_postgres_initializes_starts_queries_and_stops_private_user_fixture(self):
