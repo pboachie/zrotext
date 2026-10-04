@@ -4,6 +4,9 @@
 //! These codecs do not provide enrollment authority, custody, file or terminal I/O,
 //! networking, recovery-kit lifecycle, rotation, reset or recovery policy.
 
+/// Closed account-only first manifest signing after independent identity review.
+#[cfg(feature = "unlock")]
+pub mod account_genesis;
 /// Existing-archive-only encrypted codec, default-off with offline custody.
 #[cfg(feature = "unlock")]
 pub mod archive_backup;
