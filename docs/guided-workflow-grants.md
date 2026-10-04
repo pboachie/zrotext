@@ -201,7 +201,10 @@ The dedicated `Guided connector verification / installed-connector` job selects
 It mandates actual SDK initialization, tool discovery, readiness and metadata
 through the installed launcher, and repeats verification after creator revocation.
 It checks unchanged configuration, intent and narrow custody. Linux CI owns an
-isolated Secret Service session; Windows local acceptance uses unique synthetic
+isolated Secret Service session with fresh data/runtime directories and a
+nonempty synthetic unlock password. It confirms its new login collection is
+unlocked and selects/verifies that collection's default alias before any store.
+Windows local acceptance uses unique synthetic
 Credential Manager entries. Its test-only PATH shim accepts only the version
 probe or exact reviewed broker and injects the loopback fixture CA before executing
 the real Node binary; production TLS and launcher environment
