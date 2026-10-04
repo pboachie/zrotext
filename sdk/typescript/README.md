@@ -416,3 +416,77 @@ adds a default-off customer-side proposal runner with durable provider budgets,
 selected-reader adapters and crash-safe uncertain outcomes. Live workflow and
 provider integration remains unavailable; generated actions always require
 separate exact owner confirmation.
+
+## Minimal client: synthetic-alpha plane and webhook verifier
+
+`src/index.ts` (built to `dist/index.js`, also the package `main`) exports a small,
+dependency-free client and a webhook signature verifier. Neither is published to npm.
+
+**Scope.** `AlphaClient` covers only the allowlisted synthetic-alpha test plane that
+the server actually implements: `POST /v1/alpha/messages`,
+`GET /v1/alpha/messages/{id}` and `POST /v1/alpha/messages/{id}/cancel`
+(see `protocol/v1/openapi/public-v1.json`). That plane is mounted only while
+`SYNTHETIC_ALPHA_ENABLED` admits your account and recipient, and the caller picks a
+short test-case identifier, never message content. A general `POST /v1/messages`
+does **not** exist yet, and this package does not assume a hosted service: point
+`baseUrl` at a server you operate.
+
+```ts
+import { AlphaClient, AlphaApiError, AlphaOutcomeUnknownError, requiresReconciliation } from "./dist/index.js";
+
+const client = new AlphaClient({ baseUrl: "https://zrotext.example.test", apiKey: token });
+
+// The Idempotency-Key is mandatory and caller-owned. Persist it with the
+// logical message BEFORE sending and reuse it verbatim on any retry.
+const idempotencyKey = "alpha-run-0001";
+try {
+  const { messageId, created } = await client.submit(
+    { clientMessageId, deviceId, recipientE164: "+15550100001", testCaseId: "smoke-1", expiresAtMs },
+    idempotencyKey,
+  );
+  const status = await client.getStatus(messageId);
+  if (requiresReconciliation(status.state)) { /* do not resend; reconcile */ }
+} catch (e) {
+  if (e instanceof AlphaOutcomeUnknownError) {
+    // The request may have been accepted. Resubmit the IDENTICAL request with
+    // the SAME key (an identical replay returns created:false), or poll status.
+  } else if (e instanceof AlphaApiError) {
+    // e.status, e.code (for example "rate_limited"), e.retryAfterSeconds
+  }
+}
+```
+
+Behavior that is deliberate:
+
+- **No automatic retries, ever.** Every call is a single attempt. `Retry-After` is
+  surfaced as advisory data.
+- **Explicit idempotency.** `submit` throws a `TypeError` before any request unless
+  the key matches `^[A-Za-z0-9._-]{1,128}$`; the client never generates one.
+  Reusing the same key and request is the only safe retry. A new key for the same
+  logical message could send a duplicate SMS.
+- **`unknown` is never retried.** `requiresReconciliation(state)` is true for
+  `unknown` and `delivery_unknown`: these mean the writer cannot prove whether the
+  SMS left the phone, so a resend can duplicate it. See
+  [`docs/DELIVERY-STATES.md`](../../docs/DELIVERY-STATES.md).
+- A network error, timeout or unparseable success body raises
+  `AlphaOutcomeUnknownError` rather than a guess.
+
+**Webhook verification.** `verifyWebhook` checks the `x-zrotext-timestamp` and
+`x-zrotext-signature` headers of a delivery: `v1=` plus lowercase hex of
+HMAC-SHA256 over `timestamp + "." + exact raw body bytes`, within a five-minute
+window, compared in constant time (WebCrypto `verify`). Pass the raw body, not
+re-serialized JSON, and decode the one-time secret with `secretFromBase64Url`.
+It does not deduplicate; keep the event ID inside the signed body to drop replays.
+
+```ts
+await verifyWebhook({
+  signingKey: secretFromBase64Url(signingSecretB64url),
+  timestamp: req.headers["x-zrotext-timestamp"],
+  signature: req.headers["x-zrotext-signature"],
+  body: rawBodyBytes,
+}); // throws WebhookVerificationError (reason: bad_timestamp, timestamp_out_of_window, bad_signature_format, signature_mismatch)
+```
+
+The vector in `test/webhook-verify.test.mjs` is the one pinned by
+`signature_uses_exact_raw_body_and_timestamp` in `crates/server/src/webhook_egress.rs`.
+A stdlib-only Python equivalent lives in [`sdk/python`](../python/README.md).
