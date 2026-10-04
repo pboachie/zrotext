@@ -534,7 +534,6 @@ async fn root_withdrawal_refuses_connect_and_owner_takeout_has_only_delivery_met
     // Resolve the maintained erasure statements by name. Optional proposal
     // tables may precede these entries and are absent in this fixture.
     let plan: Vec<_> = crate::http_owner_erasure::DELETE_PLAN
-    let sealed_deletes: Vec<_> = crate::http_owner_erasure::DELETE_PLAN
         .iter()
         .filter(|(table, _)| {
             matches!(
@@ -547,12 +546,6 @@ async fn root_withdrawal_refuses_connect_and_owner_takeout_has_only_delivery_met
     assert_eq!(plan[0].0, "sealed_event_delivery_attempts");
     assert_eq!(plan[1].0, "sealed_event_deliveries");
     for (_, sql) in plan {
-                "sealed_event_deliveries" | "sealed_event_delivery_attempts"
-            )
-        })
-        .collect();
-    assert_eq!(sealed_deletes.len(), 2);
-    for (_, sql) in sealed_deletes {
         let tx = &mut f.connect().await;
         tx.execute(*sql, &[&f.account]).await.unwrap();
     }
