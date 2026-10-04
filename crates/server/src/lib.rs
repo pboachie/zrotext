@@ -4,6 +4,7 @@ pub mod alpha_policy;
 pub mod api_json;
 pub mod auth;
 pub mod billing;
+pub mod contact_content_contract;
 pub mod contact_reader_statement;
 pub mod device_socket;
 pub mod encrypted_schedule;
