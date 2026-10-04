@@ -378,6 +378,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
             "../../../../deploy/compose/migrations/087_sealed_line_activation_exchanges.sql"
         ),
     ),
+    (
+        "088_original_reply_readers.sql",
+        include_str!("../../../../deploy/compose/migrations/088_original_reply_readers.sql"),
+    ),
 ];
 
 async fn apply_selected(db: &Client, skip_summary: bool) {

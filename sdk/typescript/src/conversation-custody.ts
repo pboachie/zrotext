@@ -6,6 +6,7 @@ import { canonicalSignature02, verifiedManifestIdentity02, verifiedManifestTrust
 import { openConversationInbound02, parseConversationInbound02 } from "./conversation-reader.js";
 import { type Draft02TrustStore } from "./draft02-trust-store.js";
 import type {ArchiveReaderLease02} from "./conversation-archive-custody.js";
+import type {OriginalReplySelection} from "./original-reply-selection.js";
 type Enrollment=Parameters<typeof createConversationEnrollment02>;
 export type ConversationOwnerScope02=Readonly<{account:string;session:string;interval:string;device:string;line:string;generation:string;peer:string;reader:string;manifest:string}>;
 export type ConversationCustodyOptions02=Readonly<{
@@ -16,6 +17,8 @@ export type ConversationCustodyOptions02=Readonly<{
  consumeOwnerDecision:Enrollment[3];signWithExistingRoot:Enrollment[4];installVerified:Enrollment[5];
  consumeConfirmation:(proofDigest:Uint8Array,bodyDigest:Uint8Array)=>Promise<void>;
  history?:Readonly<{trustStore:Draft02TrustStore;loadChain?:(manifestDigest:Uint8Array,currentDigest:Uint8Array)=>Promise<readonly Uint8Array[]>}>;
+ /** Returns a verified phone approval/install selection for this exact original capture. */
+ readSelection?:(eventEnvelope:Uint8Array)=>Promise<OriginalReplySelection>;
 }>;
 const same=(a:Uint8Array,b:Uint8Array)=>a.length===b.length&&a.every((v,i)=>v===b[i]);
 const b64=(v:Uint8Array)=>btoa(Array.from(v,b=>String.fromCharCode(b)).join(""));
@@ -83,7 +86,7 @@ export async function prepareConversationCustody02(options:ConversationCustodyOp
    authority:()=>operation(async()=>{const value=await current(),key=value.manifest.keys.find(k=>k.role===5&&same(k.keyId,signer!.keyId));if(!key||key.state!==1||value.nowMs>=key.untilMs)throw Error("Custody signer expired");return Object.freeze({phase:"active",scope:scopeFor(value),validForMs:Number(key.untilMs-value.nowMs>60000n?60000n:key.untilMs-value.nowMs)});}),
    prepare:(scope:ConversationOwnerScope02,body:string)=>operation(async()=>{await selected(scope);const review=await signer!.prepareReview(body);await selected(scope);const ticket=Object.freeze({});reviews.set(ticket,review);return ticket;}),
    signReviewed:(ticket:object,scope:ConversationOwnerScope02,body:string)=>operation(async()=>{const review=reviews.get(ticket);reviews.delete(ticket);if(!review||review.body!==body)throw Error("Custody review unavailable");await selected(scope);const signature=await signer!.signReviewed(review.proof,review.envelope,body,options.consumeConfirmation);await selected(scope);return Object.freeze({envelope:b64(review.envelope),confirmation:b64(review.proof),signature:b64(signature)});}),
-   openSealed:(bytes:Uint8Array,scope:ConversationOwnerScope02)=>{const owned=Uint8Array.from(bytes);return operation(async()=>{const value=await selected(scope),parsed=parseConversationInbound02(owned);let historic=history.get(b64(parsed.manifestDigest));if(!historic&&options.history){if(options.history.loadChain){const chain=await options.history.loadChain(Uint8Array.from(parsed.manifestDigest),Uint8Array.from(value.manifest.digest));historic=await options.history.trustStore.verifyHistory(chain,parsed.observedMs);}else historic=await options.history.trustStore.verifyStoredHistory(parsed.manifestDigest,parsed.observedMs);await selected(scope);}if(!historic||!same(historic.digest,parsed.manifestDigest))throw Error("Accepted history provenance unavailable");const open=(key:CryptoKey)=>openConversationInbound02(owned,{...binding,archivePrivateKey:key,historical:historic!,current:value.manifest,nowMs:value.nowMs});const text=lease?await lease.withKey(binding,open):await open(archive!);await selected(scope);return text;});}
+   openSealed:(bytes:Uint8Array,scope:ConversationOwnerScope02)=>{const owned=Uint8Array.from(bytes);return operation(async()=>{const value=await selected(scope),parsed=parseConversationInbound02(owned);let historic=history.get(b64(parsed.manifestDigest));if(!historic&&options.history){if(options.history.loadChain){const chain=await options.history.loadChain(Uint8Array.from(parsed.manifestDigest),Uint8Array.from(value.manifest.digest));historic=await options.history.trustStore.verifyHistory(chain,parsed.observedMs);}else historic=await options.history.trustStore.verifyStoredHistory(parsed.manifestDigest,parsed.observedMs);await selected(scope);}if(!historic||!same(historic.digest,parsed.manifestDigest))throw Error("Accepted history provenance unavailable");const selection=parsed.wraps.length>1?await options.readSelection?.(Uint8Array.from(owned)):undefined;if(parsed.wraps.length>1&&!selection)throw Error("Phone-approved selection unavailable");await selected(scope);const open=(key:CryptoKey)=>openConversationInbound02(owned,{...binding,archivePrivateKey:key,historical:historic!,current:value.manifest,nowMs:value.nowMs,selection});const text=lease?await lease.withKey(binding,open):await open(archive!);await selected(scope);return text;});}
   });
  }catch(e){close();throw e;}
 }

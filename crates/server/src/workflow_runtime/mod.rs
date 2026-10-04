@@ -19,6 +19,7 @@ mod contacts;
 mod proposals;
 mod status;
 pub use proposals::propose_action;
+pub(crate) use proposals::propose_held_in_transaction;
 pub use status::read_action_status;
 pub use status::{ActionStatus, DeliveryStatus, read_action_delivery_status};
 #[cfg(test)]

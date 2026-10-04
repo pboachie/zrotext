@@ -4,9 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex">
-  <title>Devices Â· ZROtext</title>
+  <title>Devices &middot; ZROtext</title>
   <link rel="stylesheet" href="/owner/devices.css">
   <script defer src="/owner/owner-shell.js"></script>
+  <script defer src="/owner/pairing-code.js"></script>
   <script defer src="/owner/devices.js"></script>
 </head>
 <body class="owner-shell" data-owner-page="devices">
@@ -27,10 +28,18 @@
   </aside>
   <main id="owner-main" tabindex="-1">
     <header>
-      <div><p class="eyebrow">ZROtext owner account</p><h1>Your fleet, at a glance.</h1></div>
+      <div><p class="eyebrow">ZROtext owner workspace</p><h1>Your phones and messages</h1><p class="page-intro">Connect a phone, finish its setup, then follow its status here.</p></div>
       <button id="logout" type="button" hidden>Sign out</button>
     </header>
     <p id="global-status" role="status" aria-live="polite"></p>
+    <nav class="setup-nav" aria-label="Setup steps">
+      <ol>
+        <li><a href="/owner/account"><span class="step-number" aria-hidden="true">1</span><span>Account <small>Create, verify or sign in</small></span></a></li>
+        <li><a href="#pair-phone" aria-current="step"><span class="step-number" aria-hidden="true">2</span><span>Connect a phone <small>Pair and compare</small></span></a></li>
+        <li><a href="/owner/sms-lines"><span class="step-number" aria-hidden="true">3</span><span>Set up an SMS line <small>Permissions, SIM and approval</small></span></a></li>
+        <li><a href="/owner/account#mfa-section"><span class="step-number" aria-hidden="true">4</span><span>Keep access safe <small>Authenticator and recovery</small></span></a></li>
+      </ol>
+    </nav>
 
     <section id="sign-in" hidden aria-labelledby="sign-in-title">
       <h2 id="sign-in-title">Sign in</h2>
@@ -80,15 +89,19 @@
 
     <div id="owner-content" hidden>
       <div class="owner-entry-actions"><a class="action-link" href="#pair-phone">Pair a phone</a><a href="#account-security">Security & sessions</a></div>
+      <div class="setup-note" role="note">
+        <strong>Setting up your first phone?</strong>
+        <p>Pair it below, then open <a href="/owner/sms-lines">SMS lines</a> to finish SIM and line approval. Save your <a href="/owner/account#mfa-section">account recovery codes</a> before relying on this account.</p>
+      </div>
       <section id="message-summary" aria-labelledby="summary-title">
         <div class="section-head"><h2 id="summary-title">Writer summary</h2><button id="refresh-summary" type="button" class="quiet">Refresh summary</button></div>
         <div class="summary-scope"><label for="summary-device">Summary scope</label>
         <select id="summary-device"><option value="">All devices in this account</option></select></div>
-        <p id="summary-status" role="status" aria-live="polite">Loading authoritative metadata…</p>
+        <p id="summary-status" role="status" aria-live="polite">Loading authoritative metadata&hellip;</p>
         <div class="summary-cards">
-          <div role="group" aria-labelledby="summary-submitted-label"><h3 id="summary-submitted-label">Submitted today (UTC)</h3><p class="summary-value" id="summary-submitted">Loading…</p><p>First complete successful sent-callback evidence received by the writer. Delivery is not established.</p></div>
-          <div role="group" aria-labelledby="summary-pending-label"><h3 id="summary-pending-label">Waiting or claimed</h3><p class="summary-value" id="summary-pending">Loading…</p><p>Accepted, queued and claimed writer states. Claimed work may already hold a grant; this is not ungranted queue depth.</p></div>
-          <div role="group" aria-labelledby="summary-flight-label"><h3 id="summary-flight-label">Submitting / awaiting receipt</h3><p class="summary-value" id="summary-flight">Loading…</p><p>Submitting and submitted writer states. Unknown and final outcomes are separate; connectivity does not prove sending.</p></div>
+          <div role="group" aria-labelledby="summary-submitted-label"><h3 id="summary-submitted-label">Submitted today (UTC)</h3><p class="summary-value" id="summary-submitted">Loading&hellip;</p><p>First complete successful sent-callback evidence received by the writer. Delivery is not established.</p></div>
+          <div role="group" aria-labelledby="summary-pending-label"><h3 id="summary-pending-label">Waiting or claimed</h3><p class="summary-value" id="summary-pending">Loading&hellip;</p><p>Accepted, queued and claimed writer states. Claimed work may already hold a grant; this is not ungranted queue depth.</p></div>
+          <div role="group" aria-labelledby="summary-flight-label"><h3 id="summary-flight-label">Submitting / awaiting receipt</h3><p class="summary-value" id="summary-flight">Loading&hellip;</p><p>Submitting and submitted writer states. Unknown and final outcomes are separate; connectivity does not prove sending.</p></div>
         </div>
       </section>
       <section id="approved-devices" aria-labelledby="devices-title">
@@ -171,22 +184,42 @@
       </section>
 
       <section id="pair-phone" aria-labelledby="pair-title">
+        <p class="eyebrow">Connect a phone</p>
         <h2 id="pair-title">Pair a phone</h2>
-        <p>Create a five-minute, one-use ticket. Enter the server origin, ID and token in the gateway app. The token is shown only now and stays on this page until you finish or leave.</p>
+        <p>Keep this page and the gateway app open together. Create a five-minute, one-use pairing code, then use it on the phone. You will compare both devices before approving access.</p>
+        <ol class="pairing-steps">
+          <li><strong>Name this phone.</strong> Choose a name you will recognize in your device list.</li>
+          <li><strong>Connect in the gateway app.</strong> Scan in a supported gateway app, or enter the details manually.</li>
+          <li><strong>Compare and approve.</strong> Check the comparison code and fingerprint on your phone against this page.</li>
+        </ol>
         <form id="create-form">
           <label for="display-name">Phone name</label>
           <input id="display-name" name="display_name" maxlength="64" autocomplete="off" required>
           <button type="submit">Create pairing</button>
         </form>
         <p id="pair-status" role="status" aria-live="polite"></p>
+        <button id="resolve-pairing" type="button" hidden>Check or cancel interrupted pairing</button>
         <p><a id="pair-cap-devices-link" href="#approved-devices" hidden>Choose devices to revoke</a></p>
         <div id="pair-ticket" hidden>
-          <dl>
-            <dt>Server origin</dt><dd><code id="server-origin"></code></dd>
-            <dt>Pairing ID</dt><dd><code id="pair-id"></code></dd>
-            <dt>One-use token</dt><dd><code id="pair-token"></code></dd>
-          </dl>
-          <p>Do not send the token in a link. If you leave this page, create a new pairing.</p>
+          <div id="pair-qr-panel" class="pair-qr-panel" hidden>
+            <canvas id="pair-qr" role="img" aria-label="One-use phone pairing code"></canvas>
+            <div class="pair-qr-copy">
+              <h3>Connect with your phone</h3>
+              <p>Scan in a supported gateway app, or enter the details manually.</p>
+            </div>
+          </div>
+          <p id="pair-expiry" role="status" aria-live="polite"></p>
+          <p id="pair-qr-status" role="status" aria-live="polite"></p>
+          <details id="pair-manual" class="pair-manual">
+            <summary>Enter pairing details manually</summary>
+            <p>Use these three values in the gateway app. Check that the server address is the one you intended to use.</p>
+            <dl>
+              <dt><label for="server-origin">Server origin</label></dt><dd><input id="server-origin" type="text" readonly autocomplete="off" spellcheck="false"></dd>
+              <dt><label for="pair-id">Pairing ID</label></dt><dd><input id="pair-id" type="text" readonly autocomplete="off" spellcheck="false"></dd>
+              <dt><label for="pair-token">One-use token</label></dt><dd><input id="pair-token" type="text" readonly autocomplete="off" spellcheck="false"></dd>
+            </dl>
+          </details>
+          <p class="setup-note">Keep the code and token private. Do not share a screenshot or put the token in a link. If this pairing expires or you leave the page, create a new one.</p>
           <div class="actions">
             <button id="check-proof" type="button">Check phone proof</button>
             <button id="cancel-pairing" type="button" class="quiet">Cancel pairing</button>
@@ -194,7 +227,7 @@
         </div>
         <form id="approve-form" hidden>
           <h3>Compare with the phone</h3>
-          <p>The phone has proved its key. Read both values on the phone and compare them with these browser values. Type the phone's values below to approve.</p>
+          <p>Read both values on the phone and compare them with the browser values below. Type the phone's values to approve only that phone. If they differ, cancel pairing and start again.</p>
           <dl>
             <dt>Browser comparison code</dt><dd><code id="browser-code"></code></dd>
             <dt>Browser key fingerprint</dt><dd><code id="browser-fingerprint" class="fingerprint"></code></dd>
@@ -207,6 +240,16 @@
           <button type="submit">Approve device</button>
         </form>
         <p id="approved-result" role="status" aria-live="polite"></p>
+        <details class="setup-help">
+          <summary>After pairing: permissions, SIM and connection</summary>
+          <ol>
+            <li>On the phone, review the gateway app's permission requests. If you denied a required permission, open the app's Android settings and choose whether to grant it; then return to the app.</li>
+            <li>In the gateway app, select the active physical SIM you intend to use. Check airplane mode and network service on the phone.</li>
+            <li>Open <a href="/owner/sms-lines">SMS lines</a>, create the browser approval key and review the phone's declaration before activating a line.</li>
+            <li>Check <a href="#approved-devices">device status</a>. Connected status alone does not prove that the phone can send or that a message was delivered.</li>
+          </ol>
+          <p>Pairing adds a phone to this account. Permission choices, line approval and consent are separate steps; pairing does not authorize a real SMS test.</p>
+        </details>
       </section>
 
       <section aria-labelledby="opt-out-review-title">
@@ -293,6 +336,6 @@
       </section>
     </div>
   </main>
-  <footer><a href="/source">Source code for this server</a> Â· <a href="/about/version">Build version</a></footer>
+  <footer><a href="/source">Source code for this server</a> &middot; <a href="/about/version">Build version</a></footer>
 </body>
 </html>

@@ -60,6 +60,7 @@ pub(crate) async fn contact(
     descriptor: &Descriptor,
     header: &wire::Header,
 ) -> Result<(), ConversationError> {
+    crate::original_reply::source::recheck(tx, descriptor).await?;
     let ids = descriptor.identities()?;
     let row = tx
         .query_opt(

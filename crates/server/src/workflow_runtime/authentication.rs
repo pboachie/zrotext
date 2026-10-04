@@ -70,7 +70,7 @@ pub async fn authenticate(
          AND s.revoked_at IS NULL AND s.expires_at>clock_timestamp() \
          AND c.purged_at IS NULL AND c.expires_at_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint \
          AND r.state='active' AND r.key_id=g.reader_key_id AND r.manifest_generation=g.trust_generation \
-         AND r.manifest_version=g.manifest_version AND r.manifest_digest=g.manifest_digest \
+         AND workflow_registry_binding_deadline(g.account_id,g.connector_id,g.reader_key_id,c.interval_id,g.trust_generation,g.manifest_version,g.manifest_digest,g.supplemental_original_grant_id)>floor(extract(epoch FROM clock_timestamp())*1000)::bigint \
          AND r.expires_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint \
          AND k.retired_ms IS NULL \
          AND k.valid_from_ms<=floor(extract(epoch FROM clock_timestamp())*1000)::bigint \

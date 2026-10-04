@@ -35,12 +35,16 @@ pub(crate) async fn check_capture(
         || claims.peer != s.peer.as_bytes()
         || claims.signer_key_id != s.signer
         || claims.keyset_version < s.activation_version as u64
-        || claims.wraps.len() != 1
-        || claims.wraps[0].role != 2
-        || claims.wraps[0].key_id != s.reader
+        || claims.wraps.len() != super::readers(&s).len()
+        || claims
+            .wraps
+            .iter()
+            .zip(super::readers(&s))
+            .any(|(wrap, reader)| wrap.role != reader.role || wrap.key_id != reader.key_id)
     {
         return Err(ConversationError::Forbidden);
     }
+    super::selected::check_grants(tx, &s).await?;
     Ok(s)
 }
 
