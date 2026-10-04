@@ -1459,7 +1459,7 @@ async fn completion_rechecks_real_source_after_last_write_and_rolls_back_revocat
     let f = Owner::new(true, true).await;
     let p = f.pending(f.input().await).await;
     let account = f.principal.tenant.account_id();
-    f.schema.db.batch_execute("CREATE SEQUENCE contact_test_stage_ms; CREATE FUNCTION contact_test_source_loss() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM setval('contact_test_stage_ms',NEW.terminal_ms,true); UPDATE sealed_manifest_authorities SET revoked_at=clock_timestamp() WHERE account_id=NEW.account_id; RETURN NEW; END $$; CREATE TRIGGER contact_test_source_loss AFTER INSERT ON contact_reader_receipts FOR EACH ROW EXECUTE FUNCTION contact_test_source_loss()").await.unwrap();
+    f.schema.db.batch_execute("CREATE SEQUENCE contact_test_stage_ms; CREATE FUNCTION contact_test_source_loss() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM setval('contact_test_stage_ms',floor(extract(epoch FROM clock_timestamp())*1000)::bigint,true); UPDATE sealed_manifest_authorities SET revoked_at=clock_timestamp() WHERE account_id=NEW.account_id; RETURN NEW; END $$; CREATE TRIGGER contact_test_source_loss AFTER INSERT ON contact_reader_receipts FOR EACH ROW EXECUTE FUNCTION contact_test_source_loss()").await.unwrap();
     assert!(
         lifecycle::complete(
             &mut f.schema.connect().await,
@@ -1513,7 +1513,7 @@ async fn completion_rechecks_actual_deadline_after_last_write_and_rolls_back() {
     let p = f.pending(c).await;
     // Bounded sleep occurs only after the actual last receipt write. No clock
     // injection, changed deadline, or shared statement-timeout override is used.
-    f.schema.db.batch_execute(&format!("CREATE SEQUENCE contact_test_stage_ms; CREATE FUNCTION contact_test_deadline_crossing() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM setval('contact_test_stage_ms',NEW.terminal_ms,true); PERFORM pg_sleep(GREATEST(0,({}::double precision-extract(epoch FROM clock_timestamp())*1000)/1000)); RETURN NEW; END $$; CREATE TRIGGER contact_test_deadline_crossing AFTER INSERT ON contact_reader_receipts FOR EACH ROW EXECUTE FUNCTION contact_test_deadline_crossing()", p.until_ms.0 + 50)).await.unwrap();
+    f.schema.db.batch_execute(&format!("CREATE SEQUENCE contact_test_stage_ms; CREATE FUNCTION contact_test_deadline_crossing() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM setval('contact_test_stage_ms',floor(extract(epoch FROM clock_timestamp())*1000)::bigint,true); PERFORM pg_sleep(GREATEST(0,({}::double precision-extract(epoch FROM clock_timestamp())*1000)/1000)); RETURN NEW; END $$; CREATE TRIGGER contact_test_deadline_crossing AFTER INSERT ON contact_reader_receipts FOR EACH ROW EXECUTE FUNCTION contact_test_deadline_crossing()", p.until_ms.0 + 50)).await.unwrap();
     assert!(
         actual_clock(&f).await < p.until_ms.0 - 500,
         "setup missed its real deadline; refuse a vacuous control"
@@ -1568,7 +1568,7 @@ async fn completion_rechecks_consumed_totp_current_at_after_last_write_and_rolls
     let code = totp.generate(selected_step as u64 * 30).to_string();
     let mut input = f.completion(&p, 0);
     input.code = Code(zeroize::Zeroizing::new(code));
-    f.schema.db.batch_execute(&format!("CREATE SEQUENCE contact_test_stage_ms; CREATE SEQUENCE contact_test_factor_step; CREATE FUNCTION contact_test_factor_crossing() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM setval('contact_test_stage_ms',NEW.terminal_ms,true); PERFORM setval('contact_test_factor_step',(SELECT last_accepted_step FROM owner_mfa WHERE account_id=NEW.account_id AND user_id=(SELECT user_id FROM memberships WHERE account_id=NEW.account_id AND role='owner')),true); PERFORM pg_sleep(GREATEST(0,({}::double precision-extract(epoch FROM clock_timestamp())*1000)/1000)); RETURN NEW; END $$; CREATE TRIGGER contact_test_factor_crossing AFTER INSERT ON contact_reader_receipts FOR EACH ROW EXECUTE FUNCTION contact_test_factor_crossing()", boundary + 50)).await.unwrap();
+    f.schema.db.batch_execute(&format!("CREATE SEQUENCE contact_test_stage_ms; CREATE SEQUENCE contact_test_factor_step; CREATE FUNCTION contact_test_factor_crossing() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM setval('contact_test_stage_ms',floor(extract(epoch FROM clock_timestamp())*1000)::bigint,true); PERFORM setval('contact_test_factor_step',(SELECT last_accepted_step FROM owner_mfa WHERE account_id=NEW.account_id AND user_id=(SELECT user_id FROM memberships WHERE account_id=NEW.account_id AND role='owner')),true); PERFORM pg_sleep(GREATEST(0,({}::double precision-extract(epoch FROM clock_timestamp())*1000)/1000)); RETURN NEW; END $$; CREATE TRIGGER contact_test_factor_crossing AFTER INSERT ON contact_reader_receipts FOR EACH ROW EXECUTE FUNCTION contact_test_factor_crossing()", boundary + 50)).await.unwrap();
     let now = actual_clock(&f).await;
     let wait = boundary - 2_500 - now;
     assert!(
