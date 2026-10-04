@@ -775,12 +775,10 @@ pub(crate) async fn cancel(
                 .receipts
                 .iter()
                 .find(|r| r.authorization == id && r.generation == input.generation.0)
+                && (r.request != input.create_request.0
+                    || r.unsigned_digest != input.unsigned_digest.0)
             {
-                if r.request != input.create_request.0
-                    || r.unsigned_digest != input.unsigned_digest.0
-                {
-                    return Err(Error::Conflict);
-                }
+                return Err(Error::Conflict);
             }
             let value = a.known(id, input.generation.0, now);
             encode(&value)?;

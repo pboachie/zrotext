@@ -7,7 +7,7 @@ fn create() -> Create {
     Create {
         create_request: Id(Uuid::from_bytes([1; 16])),
         expected_revision: Number(0),
-        prior: Prior::Empty,
+        prior: Prior::Empty {},
         selected_reader_id: Fixed([2; 32]),
         compared_root_fingerprint: Fixed([3; 32]),
         requested_until_ms: Number(700),
@@ -825,7 +825,7 @@ async fn full_receipt_ring_rotates_one_slot_without_unbounded_identity_growth() 
         let c = Create {
             create_request: Id(request),
             expected_revision: Number(expected),
-            prior: Prior::Empty,
+            prior: Prior::Empty {},
             selected_reader_id: Fixed(f.reader),
             compared_root_fingerprint: Fixed(f.fingerprint),
             requested_until_ms: Number(now + 120_000),
@@ -1045,7 +1045,7 @@ async fn optional_child_first_erasure_rolls_back_with_later_failure_and_rejects_
             Create {
                 create_request: Id(Uuid::new_v4()),
                 expected_revision: Number(0),
-                prior: Prior::Empty,
+                prior: Prior::Empty {},
                 selected_reader_id: Fixed(f.reader),
                 compared_root_fingerprint: Fixed(f.fingerprint),
                 requested_until_ms: Number(i64::MAX)
