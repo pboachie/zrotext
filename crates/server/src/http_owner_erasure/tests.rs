@@ -3269,7 +3269,16 @@ async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeo
         );
         let tx = db.transaction().await.unwrap();
         let started = std::time::Instant::now();
-        for &(_, sql) in DELETE_PLAN {
+        let provider_receipts_installed = crate::provider_sms::receipts::lifecycle::installed(&tx)
+            .await
+            .unwrap();
+        assert!(!provider_receipts_installed, "ordinary migrated fixture");
+        for &(table, sql) in DELETE_PLAN {
+            if ["provider_receipt_events", "provider_receipt_attempts"].contains(&table)
+                && !provider_receipts_installed
+            {
+                continue;
+            }
             tx.execute(sql, &[&a.account_id]).await.unwrap();
         }
         eprintln!(
