@@ -128,3 +128,103 @@ This opt-in remains a candidate prerequisite. Genuine durable issuer state,
 current owner MFA/root signing, current field storage/predecessor/deletion CAS,
 independent restore/no-reuse admission, cold second-device checkpoint, retained
 reader custody and enrolled-account erasure are not supplied by this page.
+
+## Paired owner intent and offline signature review
+
+The same private page controller can review an original contact-reader intent.
+Its inputs include an independently retained, nonzero 16-byte kit ID as 32
+lowercase hexadecimal characters, reader ID and public point, and requested end
+time. The kit ID is not derived from the public card's backup digest. Account,
+origin and full root fingerprint remain independent inputs. A genuine accepted
+local history connection is required; saved JSON, a server observation, status
+projection or exported acceptance boolean cannot substitute for it.
+
+The page reads only `GET /v1/owner/export?contact_reader_only=state`, with actual
+browser-managed Cookie authentication and the current CSRF cookie **value** in
+`x-zrotext-csrf`. It does not fetch private owner takeout. The closed 4096-byte
+UTF-8 response is `{kind:"contact_reader_state",state:null|State}`. Null, absent,
+corrupt or unavailable state refuses creation; none means revision zero. State
+has root_pin_b64, root_fingerprint_b64, trust_generation, last_mutation_ms,
+current and signed_statement. Current has phase, mutation_revision,
+allocation_generation and observed_ms; active/withdrawn also have authorization,
+generation and statement_digest. Only active carries a whole signed statement.
+The original active packet must verify through the real retained history and
+statement helper before it can supply the previous identity.
+
+Creation captures exactly create_request, expected_revision, prior,
+selected_reader_id, compared_root_fingerprint and requested_until_ms. Prior is
+either `{phase:"empty"}` or the exact active/withdrawn phase, authorization,
+generation and digest. The independent root, reader point/intervals and current
+tuple are compared before approval. Revisions without room for allocation and
+completion refuse. The canonical input digest uses the maintained issuer
+version/account/origin/Create transcript; it excludes a reconciling session.
+
+All issuer responses use a duplicate-aware bounded JSON parser before objects
+are materialized. Only closed object/string/null DTOs are accepted, with at most
+eight nested levels and 256 members. Escaped key aliases, duplicate members,
+arrays, numbers, booleans, extra fields and trailing data refuse. Decimal fields
+are canonical signed-63-bit decimal strings, with zero accepted only in fields
+that allow it. Binary fields use canonical padded standard base64 with exact
+fixed widths or the maintained bounded packet widths. General responses are at
+most 20 KiB UTF-8; proposal/recovery files are at most 32 KiB.
+
+One approval starts its absolute 60-second monotonic deadline before owner state
+review. Original signed source and requested-end bounds can only shorten it.
+Exactly three positive transport attempts are shared by CREATE and COMPLETE;
+the slot is consumed immediately before calling fetch. CREATE retry is explicit
+and sends the same frozen original bytes and identity. A Pending ACK, signature
+import, session sample, exported file, error or read-only reconciliation never
+renews time or capacity. Each File or HTTP operation has an outward bound of
+at most ten seconds, also shortened by the operation/approval deadline. Crypto
+and IndexedDB work race lifecycle/deadline cancellation without an underlying
+settlement guarantee. All underlying jobs share the existing module-global
+four-unsettled-job bound through actual settlement, including after close.
+
+Pending binds the original commitment, allocation revision, authorization,
+generation, unsigned digest/bytes, original creator/session and immutable
+historical creation source. The page verifies the actual stored manifest chain
+at that source's original observation time, compares all reader/root records,
+and invokes the genuine unsigned encoder. This is not a live current source
+brand. Drift, missing/pruned history or mismatched observations refuses positive
+handoff. Final owner/session checks surround positive publication.
+The source's signed_until_ms is the independently verified minimum of manifest,
+reader and root-writer expiries; it is not the requested intent end time. Pending
+until_ms must equal the original requested_until_ms and may be strictly shorter
+than that source ceiling. A forged expanded/contracted ceiling or an interval
+changed from the original owner intent refuses.
+
+The public proposal download has exactly create and pending, preserving the
+original Create and bounded Pending JSON. The displayed `contact-reader-sign`
+template uses the real offline command's account/origin/bundle/proposal/output/
+reader/reader-point/until arguments. The full independently compared fingerprint
+is displayed for the separate hidden-console ceremony. This page neither
+recovers RootSecret nor proves completion of that ceremony. Import requires the
+whole signed packet to match the original unsigned bytes, genuine retained
+history, independent expected identity and the helper's private verified result.
+Another signature cannot silently replace the imported packet.
+
+Completion requires a freshly entered factor. The input is cleared immediately;
+the factor is not put in proposal/recovery files or retained outcome metadata.
+Only an exact whole-packet receipt acknowledges completion. An adverse response
+or late/lost ACK ends positive approval and retains the original uncertainty;
+there is no automatic COMPLETE retry, new identity, reset or replacement CAS.
+Decline, expiry, input/session drift, pagehide or hidden-page teardown disables
+positive actions and releases the local store. Engine/transport internal copies
+are outside a complete zeroization claim.
+
+Read-only original lookup, exact cancellation and exact withdrawal use a fresh
+ordinary owner observation and the real CSRF value. They do not require retained
+root history or MFA and do not recreate approval. Historical Pending/receipt
+content is metadata only; unavailable/pruned does not prove no effect. A public
+recovery file retains only account, origin, kit ID, reader point, original Create,
+input digest, nullable Pending and nullable whole packet. Import recomputes the
+original commitment and permits only read-only reconciliation. It cannot restore
+local history, verified brands, current authority or a positive attempt budget.
+
+The page asset remains an opt-in candidate. Missing admitted aggregate/genesis,
+independent restore frontier, configured authenticated issuer or custody gates
+leave the ordinary flow unavailable. Rendered tests use synthetic Cookie/issuer
+transport with genuine SDK signatures and IndexedDB; they do not prove actual
+server DTO-to-offline-parser execution, owner MFA, private custody or end-to-end
+runtime admission. The three-module package and server/auth/schema/export/erase
+contracts are unchanged by this page cut.
