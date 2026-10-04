@@ -93,6 +93,37 @@ fn original_wire_and_nested_request_refuse_normalized_aliases_and_invalid_fields
 }
 
 #[test]
+fn shared_final_newline_string_suffixes_refuse_standalone_and_nested_wire() {
+    let vectors = vectors();
+    let cases = vectors["negative_string_suffix"].as_array().unwrap();
+    assert_eq!(cases.len(), 6);
+    assert_eq!(
+        vectors["string_suffixes"],
+        serde_json::json!(["\n", "\r", "\r\n", "\t", "\u{2028}", "\u{2029}"])
+    );
+    let mut count = 0;
+    for vector in cases {
+        let section = vector["field"][0].as_str().unwrap();
+        let field = vector["field"][1].as_str().unwrap();
+        let original = vector["input"][section][field].as_str().unwrap();
+        let base = original.strip_suffix('\n').unwrap();
+        for suffix in vectors["string_suffixes"].as_array().unwrap() {
+            let mut input = vector["input"].clone();
+            input[section][field] = Value::String(format!("{base}{}", suffix.as_str().unwrap()));
+            let bytes = String::from_utf8(canonical(&input))
+                .unwrap()
+                .replace('\u{2028}', "\\u2028")
+                .replace('\u{2029}', "\\u2029")
+                .into_bytes();
+            assert!(ProposedDescriptor::parse_wire(&bytes).is_err());
+            assert!(ProposedDescriptor::parse_owner_proposal_wire(&proposal(&bytes)).is_err());
+            count += 1;
+        }
+    }
+    assert_eq!(count, 36);
+}
+
+#[test]
 fn whole_request_refuses_separator_whitespace_outer_aliases_duplicates_and_cap() {
     let vectors = vectors();
     let wire = vectors["positives"][0]["canonical"].as_str().unwrap();

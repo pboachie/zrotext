@@ -39,42 +39,54 @@
           "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
           "not": {
             "const": "00000000-0000-0000-0000-000000000000"
-          }
+          },
+          "minLength": 36,
+          "maxLength": 36
         },
         "action_id": {
           "type": "string",
           "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
           "not": {
             "const": "00000000-0000-0000-0000-000000000000"
-          }
+          },
+          "minLength": 36,
+          "maxLength": 36
         },
         "line_id": {
           "type": "string",
           "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
           "not": {
             "const": "00000000-0000-0000-0000-000000000000"
-          }
+          },
+          "minLength": 36,
+          "maxLength": 36
         },
         "recipient_id": {
           "type": "string",
           "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
           "not": {
             "const": "00000000-0000-0000-0000-000000000000"
-          }
+          },
+          "minLength": 36,
+          "maxLength": 36
         },
         "content_ref": {
           "type": "string",
           "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
           "not": {
             "const": "00000000-0000-0000-0000-000000000000"
-          }
+          },
+          "minLength": 36,
+          "maxLength": 36
         },
         "routine_id": {
           "type": "string",
           "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
           "not": {
             "const": "00000000-0000-0000-0000-000000000000"
-          }
+          },
+          "minLength": 36,
+          "maxLength": 36
         },
         "revision": {
           "type": "integer",
@@ -95,7 +107,9 @@
         },
         "content_digest": {
           "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 64,
+          "maxLength": 64
         },
         "not_before": {
           "type": "integer",
@@ -112,11 +126,29 @@
           "pattern": "^[!-~]{1,64}$",
           "not": {
             "const": "unknown"
-          }
+          },
+          "minLength": 1,
+          "maxLength": 64,
+          "allOf": [
+            {
+              "not": {
+                "pattern": "[^!-~]"
+              }
+            }
+          ]
         },
         "window_id": {
           "type": "string",
-          "pattern": "^[!-~]{1,128}$"
+          "pattern": "^[!-~]{1,128}$",
+          "minLength": 1,
+          "maxLength": 128,
+          "allOf": [
+            {
+              "not": {
+                "pattern": "[^!-~]"
+              }
+            }
+          ]
         },
         "authority_generation": {
           "type": "integer",
@@ -156,42 +188,54 @@
           "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
           "not": {
             "const": "00000000-0000-0000-0000-000000000000"
-          }
+          },
+          "minLength": 36,
+          "maxLength": 36
         },
         "organization_id": {
           "type": "string",
           "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
           "not": {
             "const": "00000000-0000-0000-0000-000000000000"
-          }
+          },
+          "minLength": 36,
+          "maxLength": 36
         },
         "messaging_profile_id": {
           "type": "string",
           "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
           "not": {
             "const": "00000000-0000-0000-0000-000000000000"
-          }
+          },
+          "minLength": 36,
+          "maxLength": 36
         },
         "sender_config_id": {
           "type": "string",
           "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
           "not": {
             "const": "00000000-0000-0000-0000-000000000000"
-          }
+          },
+          "minLength": 36,
+          "maxLength": 36
         },
         "eligibility_policy_id": {
           "type": "string",
           "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
           "not": {
             "const": "00000000-0000-0000-0000-000000000000"
-          }
+          },
+          "minLength": 36,
+          "maxLength": 36
         },
         "exposure_route_policy_id": {
           "type": "string",
           "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
           "not": {
             "const": "00000000-0000-0000-0000-000000000000"
-          }
+          },
+          "minLength": 36,
+          "maxLength": 36
         },
         "route_version": {
           "type": "integer",
@@ -221,11 +265,15 @@
         },
         "route_fingerprint": {
           "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 64,
+          "maxLength": 64
         },
         "eligibility_digest": {
           "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 64,
+          "maxLength": 64
         }
       }
     },
@@ -248,7 +296,9 @@
               "pattern": "^[0-9a-f]{64}$",
               "not": {
                 "const": "0000000000000000000000000000000000000000000000000000000000000000"
-              }
+              },
+              "minLength": 64,
+              "maxLength": 64
             },
             "trust_generation": {
               "type": "integer",
@@ -265,7 +315,9 @@
               "pattern": "^[0-9a-f]{64}$",
               "not": {
                 "const": "0000000000000000000000000000000000000000000000000000000000000000"
-              }
+              },
+              "minLength": 64,
+              "maxLength": 64
             },
             "kind": {
               "const": "owner_local"
@@ -295,7 +347,9 @@
               "pattern": "^[0-9a-f]{64}$",
               "not": {
                 "const": "0000000000000000000000000000000000000000000000000000000000000000"
-              }
+              },
+              "minLength": 64,
+              "maxLength": 64
             },
             "trust_generation": {
               "type": "integer",
@@ -312,7 +366,9 @@
               "pattern": "^[0-9a-f]{64}$",
               "not": {
                 "const": "0000000000000000000000000000000000000000000000000000000000000000"
-              }
+              },
+              "minLength": 64,
+              "maxLength": 64
             },
             "kind": {
               "const": "customer_selected"
@@ -326,7 +382,9 @@
               "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
               "not": {
                 "const": "00000000-0000-0000-0000-000000000000"
-              }
+              },
+              "minLength": 36,
+              "maxLength": 36
             },
             "grant_version": {
               "type": "integer",
@@ -354,11 +412,15 @@
           "pattern": "^[0-9a-f]{64}$",
           "not": {
             "const": "0000000000000000000000000000000000000000000000000000000000000000"
-          }
+          },
+          "minLength": 64,
+          "maxLength": 64
         },
         "request_digest": {
           "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 64,
+          "maxLength": 64
         }
       }
     }

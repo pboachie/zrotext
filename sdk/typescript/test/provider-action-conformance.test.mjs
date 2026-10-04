@@ -57,6 +57,24 @@ test('whole request refuses outer whitespace, escaped and duplicated aliases and
   assert.equal(cases.length,7);
   for(const wire of cases) assert.throws(()=>proposalParse(wire));
 });
+test('shared final-newline string suffixes refuse standalone and nested wire',()=>{
+  assert.equal(vectors.negative_string_suffix.length,6);
+  assert.deepEqual(vectors.string_suffixes,['\n','\r','\r\n','\t','\u2028','\u2029']);
+  let count=0;
+  for(const vector of vectors.negative_string_suffix){
+    const [section,field]=vector.field;
+    assert.ok(vector.input[section][field].endsWith('\n'));
+    for(const suffix of vectors.string_suffixes){
+      const input=structuredClone(vector.input);
+      input[section][field]=input[section][field].slice(0,-1)+suffix;
+      const wire=canonical(input).replaceAll('\u2028',String.raw`\u2028`).replaceAll('\u2029',String.raw`\u2029`);
+      assert.throws(()=>rawParse(wire),vector.name);
+      assert.throws(()=>proposalParse(nested(wire)),vector.name);
+      count++;
+    }
+  }
+  assert.equal(count,36);
+});
 test('actual legacy SDK descriptor and workflow tool validators reject the proposed profile',()=>{
   for(const v of vectors.positives){
     assert.throws(()=>canonicalWorkflowAction(v.descriptor));

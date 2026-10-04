@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Independent proposed-wire conformance; no production authority or sender."""
 import hashlib
+import copy
 import json
 from pathlib import Path
 import unittest
@@ -42,6 +43,39 @@ def parse(raw):
 
 
 class ProposedProviderActionTest(unittest.TestCase):
+    def test_final_newline_suffixes_refuse_in_schema_and_original_wire(self):
+        vectors = VECTORS['negative_string_suffix']
+        self.assertEqual(len(vectors), 6)
+        self.assertEqual(VECTORS['string_suffixes'], ['\n', '\r', '\r\n', '\t', '\u2028', '\u2029'])
+        maximum = copy.deepcopy(VECTORS['positives'][0]['descriptor'])
+        maximum['action']['timezone'] = 'T' * 64
+        maximum['action']['window_id'] = 'W' * 128
+        self.assertEqual(parse(canonical(maximum)), maximum)
+        for vector in vectors:
+            section, field = vector['field']
+            self.assertTrue(vector['input'][section][field].endswith('\n'))
+            for suffix in VECTORS['string_suffixes']:
+                changed = copy.deepcopy(vector['input'])
+                changed[section][field] = changed[section][field][:-1] + suffix
+                with self.subTest(name=vector['name'], suffix=repr(suffix)):
+                    with self.assertRaises(jsonschema.ValidationError):
+                        jsonschema.validate(changed, SCHEMA)
+                    with self.assertRaises(jsonschema.ValidationError):
+                        parse(canonical(changed))
+        # Exercise every string field in both closed reader variants, including
+        # schema patterns whose normal value is shorter than its maximum length.
+        for positive in VECTORS['positives']:
+            for section in ['action', 'route', 'reader', 'disclosure']:
+                for field, value in positive['descriptor'][section].items():
+                    if not isinstance(value, str):
+                        continue
+                    for suffix in VECTORS['string_suffixes']:
+                        changed = copy.deepcopy(positive['descriptor'])
+                        changed[section][field] += suffix
+                        with self.subTest(reader=positive['name'], field=field, suffix=repr(suffix)):
+                            with self.assertRaises(jsonschema.ValidationError):
+                                jsonschema.validate(changed, SCHEMA)
+
     def test_canonical_bytes_hashes_and_every_bound_mutation_match(self):
         vectors = VECTORS['positives'] + VECTORS['binding_mutations']
         self.assertEqual(len(vectors), 37)

@@ -16,6 +16,14 @@ The binding digest is lowercase SHA-256 of the complete canonical descriptor. Th
 
 UUIDs are nonnil lowercase canonical 36-character UUIDs. Digests are exactly 64 lowercase hexadecimal characters. Identity digests for keys, manifests and recipient commitments must be nonzero. Positive integers range from 1 through 9007199254740991; action and content revisions range from 1 through 128. Epoch seconds range from 0 through 9007199254740 so multiplication by 1000 remains exactly representable in JavaScript; expiry is positive and strictly greater than not-before. Booleans, floats, nulls and arrays cannot substitute for these fields.
 
+String constraints cover the entire value, including its actual end. A final
+newline or any other control/separator suffix is invalid even when escaped in
+canonical JSON. Fixed-width schema strings have exact length constraints;
+variable printable strings also explicitly exclude any character outside ASCII
+33..126. Those constraints do not rely on engines where `$` can match before a
+final newline. Shared negative vectors exercise the same string rejection in
+every conformance model.
+
 | Object | Exact fields and types |
 | --- | --- |
 | action | UUID account_id, action_id, line_id, recipient_id, content_ref, routine_id; revision and content_version in 1..128; existing purpose_id UUID ending 001/002/003 for transactional/operational/marketing; content_digest; not_before and expires_at seconds; timezone ASCII 33..126, length 1..64 excluding `unknown`; window_id ASCII 33..126, length 1..128; positive authority_generation; commitment `informational` or `sensitive` |
