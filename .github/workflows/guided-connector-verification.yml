@@ -1,0 +1,89 @@
+name: Guided connector verification
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  installed-connector:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:18.6-bookworm
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 3s --health-retries 12
+    env:
+      ZT_INBOUND_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/postgres
+      ZT_GUIDED_VERIFY_TEST: '1'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.16.0'
+      - name: Install optional official client and disposable fixture prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsecret-tools gnome-keyring dbus-x11 libglib2.0-bin ripgrep
+          python -m venv "$RUNNER_TEMP/connector-venv"
+          "$RUNNER_TEMP/connector-venv/bin/python" -m pip install --disable-pip-version-check -r sdk/mcp/verify-requirements.txt
+          echo "$RUNNER_TEMP/connector-venv/bin" >> "$GITHUB_PATH"
+          rustup toolchain install 1.97.1 --profile minimal
+      - name: Build actual broker SDK
+        working-directory: sdk/typescript
+        run: npm ci --ignore-scripts && npm run build
+      - name: Verify current and revoked grants through actual installed launcher
+        run: |
+          export XDG_DATA_HOME="$(mktemp -d "$RUNNER_TEMP/connector-data.XXXXXX")"
+          export XDG_RUNTIME_DIR="$(mktemp -d "$RUNNER_TEMP/connector-runtime.XXXXXX")"
+          unset GNOME_KEYRING_CONTROL
+          dbus-run-session -- bash -euo pipefail <<'CONNECTOR_FIXTURE'
+            test "${ZT_GUIDED_VERIFY_TEST:-}" = "1"
+            mkdir -m 700 "$XDG_RUNTIME_DIR/keyring"
+            # Empty stdin means no password to this daemon. Create/unlock only
+            # the fresh fixture collection, with a synthetic nonempty password.
+            if ! printf "%s" "disposable-connector-fixture" | timeout 10s gnome-keyring-daemon \
+              --unlock --components=secrets --control-directory="$XDG_RUNTIME_DIR/keyring" >/dev/null 2>&1; then
+              echo "fixture keyring initialization refused" >&2
+              exit 1
+            fi
+            # The daemon releases its parent before initializing Secret Service.
+            # Wait for this owned session's name without activating another daemon.
+            if ! timeout 10s gdbus wait --session --timeout 10 org.freedesktop.secrets >/dev/null 2>&1; then
+              echo "fixture Secret Service readiness refused" >&2
+              exit 1
+            fi
+            if ! timeout 10s gdbus call --session --dest org.freedesktop.secrets \
+              --object-path /org/freedesktop/secrets/collection/login --method org.freedesktop.DBus.Properties.Get \
+              org.freedesktop.Secret.Collection Locked 2>/dev/null | rg -Fqx '(<false>,)'; then
+              echo "fixture collection unavailable or locked" >&2
+              exit 1
+            fi
+            if ! timeout 10s gdbus call --session --dest org.freedesktop.secrets \
+              --object-path /org/freedesktop/secrets --method org.freedesktop.Secret.Service.SetAlias \
+              default /org/freedesktop/secrets/collection/login >/dev/null 2>&1; then
+              echo "fixture default alias refused" >&2
+              exit 1
+            fi
+            if ! timeout 10s gdbus call --session --dest org.freedesktop.secrets \
+              --object-path /org/freedesktop/secrets --method org.freedesktop.Secret.Service.ReadAlias \
+              default 2>/dev/null | rg -Fqx "(objectpath '/org/freedesktop/secrets/collection/login',)"; then
+              echo "fixture default alias unavailable" >&2
+              exit 1
+            fi
+            python -m unittest discover -s scripts -p test_workflow_connector_verify.py
+            cargo test --locked -p zrotext-server guided_setup_retains_creator_after_teardown_and_recovery_fences_current_credentials -- --ignored --test-threads=1 --nocapture | tee "$RUNNER_TEMP/connector-proof.txt"
+            rg -q "GUIDED_INSTALLED_CONNECTOR_METADATA_VERIFIED" "$RUNNER_TEMP/connector-proof.txt"
+          CONNECTOR_FIXTURE
