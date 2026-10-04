@@ -59,6 +59,8 @@ lettre = { version = "0.11.23", default-features = false, features = ["builder",
 lettre = { version = "0.11.23", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls"] }
 
 [dev-dependencies]
+# Already locked through Tokio; reset only a disposable pre-upgrade client without deprecated APIs.
+socket2 = "=0.6.5"
 # Ephemeral certificates prove the real post-handshake gate without changing OS trust.
 rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "ring"] }
 tokio = { version = "1.47.1", features = ["test-util", "process"] }
