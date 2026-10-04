@@ -2,7 +2,6 @@
 use super::network::{
     capture, configuration, issued_request, source_request_with_owner, submit_issued_request,
 };
-use super::network::{capture, configuration, issued_request, source_request_with_owner};
 use super::*;
 use crate::workflow_runtime::routines::tests::service::scratch::Scratch;
 use std::time::Duration;
