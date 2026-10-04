@@ -13,6 +13,14 @@ use std::{
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL, Python, Node 22+, built SDK and OpenSSL; real guided HTTPS setup"]
 async fn guided_setup_retains_creator_after_teardown_and_recovery_fences_current_credentials() {
+    // The dedicated read-only connector job requires the actual installed
+    // launcher with its optional SDK and disposable OS custody. It cannot skip
+    // or fall back when this explicit fixture mode is selected.
+    let verify_installed = match std::env::var("ZT_GUIDED_VERIFY_TEST") {
+        Err(std::env::VarError::NotPresent) => false,
+        Ok(value) if value == "1" => true,
+        _ => panic!("invalid guided verification fixture mode"),
+    };
     let mut case = Case::for_customer_routine(None).await;
     let login_factor = case.fresh_factor().await;
     let grant_factor = case.fresh_factor().await;
@@ -94,7 +102,7 @@ async fn guided_setup_retains_creator_after_teardown_and_recovery_fences_current
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let input = json!({"upstream":format!("http://{address}"),"proxy_port":proxy_port,"email":email,"password":case.password.as_str(),
+    let input = json!({"verify_installed":verify_installed,"upstream":format!("http://{address}"),"proxy_port":proxy_port,"email":email,"password":case.password.as_str(),
         "login_factor":login_factor,"grant_factor":grant_factor,"recovery_login_factor":recovery_login_factor,
         "second_grant_factor":second_grant_factor,"unknown_grant_factor":unknown_grant_factor,"final_login_factor":final_login_factor,
         "foreign_session":foreign_session,"other_account_session":other_account_session,
@@ -128,6 +136,9 @@ async fn guided_setup_retains_creator_after_teardown_and_recovery_fences_current
                         | "teardown"
                         | "teardown_readiness"
                         | "bootstrap"
+                        | "installed_verify"
+                        | "timeout_verify"
+                        | "revoked_verify"
                         | "recovery_login"
                         | "missing_csrf"
                         | "foreign_revoke"
@@ -163,9 +174,24 @@ async fn guided_setup_retains_creator_after_teardown_and_recovery_fences_current
             .as_u64()
             .filter(|v| *v <= 599)
             .unwrap_or(0);
+        let verification = value["failed"]["verification"]
+            .as_str()
+            .filter(|value| {
+                matches!(
+                    *value,
+                    "deadline_exceeded"
+                        | "connection_unknown"
+                        | "unauthorized"
+                        | "owned_launcher_still_running"
+                        | "owned_node_still_running"
+                        | "metadata_not_waiting"
+                        | "timeout_too_slow"
+                )
+            })
+            .unwrap_or("unknown");
         assert!(
             output.status.success(),
-            "guided HTTPS fixture refused at {stage} ({operation}:{status})"
+            "guided HTTPS fixture refused at {stage} ({operation}:{status}, {verification})"
         );
         value
     })
@@ -175,6 +201,10 @@ async fn guided_setup_retains_creator_after_teardown_and_recovery_fences_current
     let result = result.unwrap();
     assert_eq!(result["after_teardown"], true);
     assert_eq!(result["bootstrap_current"], true);
+    assert_eq!(result["installed_verified"], verify_installed);
+    if verify_installed {
+        println!("GUIDED_INSTALLED_CONNECTOR_METADATA_VERIFIED");
+    }
     assert_eq!(result["recovery_fenced"], true);
     assert_eq!(result["creator_logout_fenced"], true);
     assert_eq!(result["unknown_recovered"], true);

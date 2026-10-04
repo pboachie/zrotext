@@ -9,12 +9,16 @@
 
 ZROtext is an open-source Android SMS gateway. It is designed to connect a dedicated Android phone and its SIM to an API for sending, receiving, and tracking SMS. You can run the gateway yourself; a managed hosting service is planned.
 
-<p align="center"><img src="docs/assets/android-app-concept.png" alt="ZROtext Android gateway app design concept with sample status and message counts" width="360"></p>
-<p align="center"><sub>Android app design concept · sample data · not a live connection</sub></p>
+<p align="center"><img src="docs/assets/ui/phone-home.png" alt="Gateway Home on a fresh emulator: connection paused, zero connections and message counts unavailable" width="360"></p>
+<p align="center"><sub>Actual Android UI from current source · fresh emulator · no SIM, account or SMS activity</sub></p>
 
 ## Project status
 
 ZROtext is in active development. The repository includes a Rust server, PostgreSQL migrations, a delivery simulator, and an Android app. The local stack is for development. Some phone and billing flows are limited to controlled tests; a hosted SMS service is not available. See the [roadmap](docs/ROADMAP.md) for planned product work.
+
+[v0.1.6](https://github.com/pboachie/zrotext/releases/tag/v0.1.6) publishes Android APK/AAB artifacts from `e54a306e`, with version code 10. It remains a restricted pilot. Artifact publication does not establish Google Play approval, hosted deployment, physical hardware custody or carrier delivery. Development `main` can contain later work; use the release's receipts and limitations when evaluating a downloaded artifact. Normal onboarding integration is still in progress; a tested mobile custody component does not establish a complete supported setup journey.
+
+The [current interface guide](docs/INTERFACE.md) shows real Android screens and the rendered owner dashboard with synthetic responses. It distinguishes these captures from the design studies below.
 
 ## How it is designed
 
@@ -81,7 +85,7 @@ The proposed product direction is **your number, connected to your business, you
 Explore [all proposed use cases](docs/USE-CASES.md), including event invitations and RSVPs, repair updates, appointment waitlists and volunteer coordination. The [product implementation plan](docs/PRODUCT-PLAN.md) connects them to ordered development work and acceptance criteria.
 
 <!-- roadmap:overview -->
-<p align="center"><a href="docs/ROADMAP.md"><img src="docs/assets/roadmap-overview.svg" alt="Roadmap at a glance: 25 capabilities in five tracks. Four are in a restricted pilot, nine are being built, three are in design and nine are planned. None has reached general release." width="820"></a></p>
+<p align="center"><a href="docs/ROADMAP.md"><img src="docs/assets/roadmap-overview.svg" alt="Roadmap at a glance: 25 capabilities in five tracks. Four are in a restricted pilot, eighteen are being built, one is in design and two are planned. None has reached general release." width="820"></a></p>
 <!-- /roadmap:overview -->
 
 ## Design preview
@@ -111,6 +115,7 @@ To create the first owner, follow the [local bootstrap steps](docs/SELF-HOSTING.
 
 ## Documentation
 
+- [Current interfaces and setup boundaries](docs/INTERFACE.md)
 - [Architecture and API contracts](docs/ARCHITECTURE.md)
 - [Two-location routing and failover design](docs/MULTI-LOCATION.md)
 - [Security design](docs/SECURITY-DESIGN.md)
