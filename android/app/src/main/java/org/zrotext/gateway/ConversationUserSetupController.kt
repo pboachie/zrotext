@@ -77,8 +77,8 @@ internal class ConversationUserSetupController(
                 val now = checkNotNull(clock.nowMs()); check(now in 1 until parsed.expiresMs)
                 val shown = ConversationPhoneReview(UUID.randomUUID().toString(), parsed.scope.intervalId,
                     parsed.scope.lineId, parsed.scope.bindingGeneration, parsed.scope.peer,
-                    ConversationActivationCodec.DISCLOSURE, "conversation-content-v1", parsed.scope.disclosureDigest,
-                    (parsed.expiresMs - now).coerceAtMost(60000))
+                    (if(parsed.scope.selectedReaders.isEmpty()) ConversationActivationCodec.DISCLOSURE else ConversationActivationCodec.READER_DISCLOSURE), "conversation-content-v1", parsed.scope.disclosureDigest,
+                    (parsed.expiresMs - now).coerceAtMost(60000), parsed.scope.integrationSelection)
                 bundle = retrieved; prepared = parsed; review = shown
                 ConversationConnectionProposal(retrieved.statement(), shown)
             }, { session ->
@@ -127,7 +127,8 @@ internal class ConversationUserSetupController(
                                 uuid(parsed.scope.lineId), parsed.scope.peer.toByteArray(Charsets.US_ASCII),
                                 if (inbound) parsed.signerId else selection.bindings.outboundSigner,
                                 (if (inbound) emptyList() else listOf(Draft02ManifestAuthority.Reader(1, recipient.keyId))) +
-                                    Draft02ManifestAuthority.Reader(2, hex(parsed.scope.readerKeyId)))
+                                    Draft02ManifestAuthority.Reader(2, hex(parsed.scope.readerKeyId)) +
+                                    (if(inbound) parsed.scope.selectedReaders.map { Draft02ManifestAuthority.Reader(3,hex(it.keyId)) } else emptyList()))
                             authority.context(request(true), now())
                             authority.requireDeviceReader(uuid(parsed.scope.accountId), uuid(parsed.scope.deviceId),
                                 uuid(parsed.scope.lineId), recipient.keyId, now())
@@ -211,7 +212,8 @@ internal class ConversationUserSetupController(
                         uuid(scope.accountId), uuid(scope.intervalId), uuid(scope.deviceId), uuid(scope.lineId),
                         scope.peer.toByteArray(Charsets.US_ASCII), if (inbound) before.phoneSignerKeyId else signer,
                         (if (inbound) emptyList() else listOf(Draft02ManifestAuthority.Reader(1, reader.keyId))) +
-                            Draft02ManifestAuthority.Reader(2, hex(scope.readerKeyId)))
+                            Draft02ManifestAuthority.Reader(2, hex(scope.readerKeyId)) +
+                            (if(inbound) scope.selectedReaders.map { Draft02ManifestAuthority.Reader(3,hex(it.keyId)) } else emptyList()))
                     val inbound = request(true); val outbound = request(false)
                     val checkAt: (Long) -> Unit = { time ->
                         authority.requireDeviceReader(uuid(scope.accountId), uuid(scope.deviceId), uuid(scope.lineId), reader.keyId, time)

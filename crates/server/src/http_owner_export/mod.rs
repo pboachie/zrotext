@@ -57,6 +57,14 @@ async fn no_store(request: Request, next: Next) -> Response {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExportQuery {
+    original_reply_section: Option<crate::original_reply::lifecycle::Section>,
+    original_reply_before: Option<String>,
+    managed_events_after: Option<String>,
+    managed_selections_after: Option<String>,
+    managed_versions_after: Option<String>,
+    managed_grants_after: Option<String>,
+    managed_policies_after: Option<String>,
+    managed_readers_after: Option<String>,
     sealed_deliveries_after: Option<Uuid>,
     templates_after: Option<Uuid>,
     template_versions_after: Option<Uuid>,
@@ -184,12 +192,14 @@ fn message_view(row: &Row) -> Result<MessageView, tokio_postgres::Error> {
 
 #[derive(Serialize)]
 struct ExportView {
+    original_replies: crate::original_reply::lifecycle::Export,
     sealed_line_setup: serde_json::Value,
     sealed_event_deliveries: crate::sealed_inbound::delivery::lifecycle::Export,
     execution_inventory:
         crate::http_owner_conversations::channel::execution::lifecycle::ExecutionInventory,
     workflow_schedule: crate::encrypted_schedule::lifecycle::ScheduleExport,
     workflow_integrations: crate::workflow_runtime::lifecycle::Export,
+    managed_reader_grants: crate::managed_ai::lifecycle::Export,
     invoice_billing: crate::billing::invoice::lifecycle::InvoiceExport,
     encrypted_templates: crate::workflow_templates::lifecycle::Export,
     workflow_context: crate::http_owner_conversations::context::lifecycle::WorkflowExport,
@@ -479,7 +489,19 @@ async fn export_account(
         Ok(view) => view,
         Err(error) => return error.into_response(),
     };
+    let original_replies = match crate::original_reply::lifecycle::export(
+        &mut client,
+        &principal,
+        query.original_reply_section.unwrap_or_default(),
+        query.original_reply_before,
+    )
+    .await
+    {
+        Ok(view) => view,
+        Err(error) => return error.into_response(),
+    };
     Json(ExportView {
+        original_replies,
         sealed_line_setup:
             match crate::http_owner_conversations::sealed_line_setup::lifecycle::inventory(
                 &mut client,
@@ -503,6 +525,23 @@ async fn export_account(
         encrypted_templates,
         execution_inventory,
         workflow_integrations,
+        managed_reader_grants: match crate::managed_ai::lifecycle::export(
+            &mut client,
+            &principal,
+            [
+                query.managed_events_after,
+                query.managed_selections_after,
+                query.managed_versions_after,
+                query.managed_grants_after,
+                query.managed_policies_after,
+                query.managed_readers_after,
+            ],
+        )
+        .await
+        {
+            Ok(view) => view,
+            Err(error) => return error.into_response(),
+        },
         workflow_decisions,
         workflow_schedule,
         invoice_billing: match crate::billing::invoice::lifecycle::export(

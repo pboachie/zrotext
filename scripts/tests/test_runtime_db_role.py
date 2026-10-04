@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Exercise role provisioning in a new disposable local PostgreSQL container."""
 
+import json
 import os
+import re
 from pathlib import Path
 import secrets
 import subprocess
@@ -15,20 +17,49 @@ sys.path.insert(0, str(COMPOSE))
 from fresh_install_smoke import ensure_local_docker  # noqa: E402
 
 
+OWNER_LABEL = "org.zrotext.runtime-role-test"
+
+
+def remove_owned_container(name, owner):
+    """Resolve an exact name, then verify ownership and remove only its immutable ID."""
+    listed = subprocess.run(
+        ["docker", "container", "ls", "--all", "--no-trunc", "--filter",
+         "name=^/" + name + "$", "--format", "{{.ID}}"],
+        check=True, capture_output=True, text=True, timeout=60)
+    identity = listed.stdout.strip()
+    if not identity:
+        return  # A successful listing proves no matching container exists.
+    if not re.fullmatch(r"[0-9a-f]{64}", identity):
+        raise RuntimeError("unexpected disposable container identity")
+    inspected = subprocess.run(
+        ["docker", "container", "inspect", "--format", "{{json .Config.Labels}}", identity],
+        check=True, capture_output=True, text=True, timeout=60)
+    if len(inspected.stdout) > 4096:
+        raise RuntimeError("unexpected disposable container ownership")
+    try:
+        labels = json.loads(inspected.stdout)
+    except (ValueError, TypeError):
+        raise RuntimeError("invalid disposable container ownership") from None
+    if not isinstance(labels, dict) or labels.get(OWNER_LABEL) != owner:
+        raise RuntimeError("disposable container ownership mismatch")
+    subprocess.run(["docker", "rm", "-f", "-v", identity], check=True,
+                   capture_output=True, timeout=60)
+
+
 class RuntimeRoleTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         ensure_local_docker()
         cls.container = "zt-role-test-" + secrets.token_hex(8)
+        owner = secrets.token_hex(32)
+        cls.addClassCleanup(remove_owned_container, cls.container, owner)
         cls.env = dict(os.environ, POSTGRES_PASSWORD=secrets.token_hex(32),
                        RUNTIME_DATABASE_PASSWORD=secrets.token_hex(32))
         subprocess.run(["docker", "run", "--detach", "--name", cls.container,
+                        "--label", OWNER_LABEL + "=" + owner,
                         "-e", "POSTGRES_PASSWORD", "-e", "POSTGRES_USER=zrotext",
                         "-e", "POSTGRES_DB=zrotext", "postgres:18.6-bookworm"],
                        env=cls.env, check=True, capture_output=True, timeout=60)
-        cls.addClassCleanup(lambda: subprocess.run(
-            ["docker", "rm", "-f", "-v", cls.container], check=True,
-            capture_output=True, timeout=60))
         for _ in range(60):
             ready = subprocess.run(["docker", "exec", cls.container, "pg_isready",
                                     "-h", "127.0.0.1", "-U", "zrotext"],

@@ -46,6 +46,12 @@ pub fn router(state: OwnerConversationsState) -> Router {
 struct ActivationRequest {
     consent: ConversationConsent,
     next_manifest: String,
+    #[serde(default)]
+    integration_readers: Vec<activation::SelectedReader>,
+    #[serde(default)]
+    integration_transfer_confirmed: bool,
+    #[serde(default)]
+    integration_disclosure_version: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -285,9 +291,32 @@ async fn begin(
     let mut db = crate::runtime_db::connect(&state.database_url)
         .await
         .map_err(|_| ConversationError::Unavailable)?;
-    let statement = activation::begin(&mut db, &owner, &request.consent, &manifest).await?;
+    if (!request.integration_readers.is_empty()
+        && (!request.integration_transfer_confirmed
+            || request.integration_disclosure_version.as_deref() != Some("customer-readers-v2")))
+        || (request.integration_readers.is_empty()
+            && (request.integration_transfer_confirmed
+                || request.integration_disclosure_version.is_some()))
+    {
+        return Err(ConversationError::Invalid);
+    }
+    let statement = activation::begin_selected(
+        &mut db,
+        &owner,
+        &request.consent,
+        &manifest,
+        &request.integration_readers,
+    )
+    .await?;
     Ok((
-        [(header::CONTENT_TYPE, STATEMENT_CONTENT_TYPE)],
+        [(
+            header::CONTENT_TYPE,
+            if statement.integration_readers.is_empty() {
+                STATEMENT_CONTENT_TYPE
+            } else {
+                "application/vnd.zrotext.conversation-statement.v2"
+            },
+        )],
         statement.encode()?,
     )
         .into_response())

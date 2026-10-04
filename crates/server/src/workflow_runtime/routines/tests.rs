@@ -2,6 +2,8 @@
 use super::*;
 use crate::workflow_runtime::{Permissions, authenticate, database_tests::Case};
 
+mod consent;
+
 async fn prepared() -> (Case, IntegrationPrincipal, Policy, Invocation) {
     prepared_with_signer(false).await
 }
@@ -644,4 +646,4 @@ fn auth_hash(domain: &[u8], value: &str) -> Vec<u8> {
     mac.finalize().into_bytes().to_vec()
 }
 
-mod service;
+pub(crate) mod service;

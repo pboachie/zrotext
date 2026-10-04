@@ -31,8 +31,13 @@ an emoji uses two units:
 | Rendered output | 8,192 |
 
 Unpaired Unicode surrogates are refused. These are editor bounds, not SMS
-carrier limits. The tool gives no segment, cost, encoding or delivery estimate;
-it does not validate the Android gateway's segment cap.
+carrier limits. A successful preview also shows the rendered text's encoding,
+length and part count using the
+[shared bounded composition estimate](../protocol/v1/sms-segment-estimate.md).
+GSM extension characters count as two septets; non-GSM text switches to UCS-2
+code units. The estimate refuses more than six parts. It is a composition aid,
+not a carrier, cost or delivery guarantee: the selected Android subscription
+re-checks the real segment bounds before dispatch.
 
 ## Sign-in and text lifetime
 
@@ -48,15 +53,18 @@ check, not by a push notification.
 
 Text is held only in the page's DOM and short-lived JavaScript values. The app
 uses no storage, analytics or content requests. The only API calls are the existing
-session check and optional sign-out (which has no body). Inputs and output clear
-on sign-out, navigation, or a detected session change/loss. Switching tabs suspends
-polling and hides and disables the editor and output, retaining the draft only in
+session check and optional sign-out (which has no body). Inputs, output and the
+estimate clear on sign-out, navigation, or a detected session change/loss.
+Switching tabs suspends polling and disables the editor while hiding it, the
+output and the estimate, retaining the draft only in
 page memory. Returning rechecks access before showing anything: only the exact
 same account, owner, session and CSRF cookie can retain that draft. A changed or
 failed session check clears it before unlocking or showing the page. Returning
 from browser history starts empty and rechecks access; older asynchronous results
 cannot restore text from a previous owner. This is application-level clearing,
 not a secure erasure guarantee for browser or operating-system memory.
+Editing either input immediately clears the output, estimate and preview status;
+a new preview is required to describe the changed draft.
 
 ## Verification and scope
 
@@ -66,7 +74,7 @@ session/lifecycle races. Existing owner-browser CI discovers these files.
 `cargo test --locked -p zrotext-server owner_ui::tests` covers static asset
 headers, restrictive CSP, disabled controls and rejected native submission.
 
-Reusable saved templates, segment previews, recipient-local scheduling, expiry,
+Reusable saved templates, recipient-local scheduling, expiry,
 cancellation and delivery remain separate open roadmap work. This tool grants no
 SMS permission and changes no account, message or Android state beyond an explicit
 sign-out of the current session.

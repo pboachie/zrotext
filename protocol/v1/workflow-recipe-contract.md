@@ -16,7 +16,7 @@ surface additionally mounts these routes under `/v1/auth`:
 
 Creation has a closed body: `current_password`, `code`, `connector_id`,
 `context_id`, `contact_id`, `purpose`, `permissions`, `expires_at_ms`, and
-optional `signer_key_id` and `content_envelope_base64url`. Purpose is one of
+optional `signer_key_id`, `content_envelope_base64url`, and `original_grant_id`. Purpose is one of
 `transactional`, `operational`, `marketing`. Permissions use the existing seven
 independent operation names; empty/duplicate/unknown permissions are refused.
 Approval and takeover are not integration permissions. A signer key ID is the

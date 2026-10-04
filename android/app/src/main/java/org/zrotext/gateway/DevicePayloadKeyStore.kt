@@ -44,11 +44,10 @@ class DevicePayloadPublic internal constructor(
 class DevicePayloadKeyStore(context: Context, private val alias: String) {
     private val lifecycle = PayloadKeyLifecycle(PayloadKeyLifecycleFileStore(context, alias))
     /** Creation is allowed only during explicit enrollment. A missing receive key is never replaced here. */
-    @Synchronized
-    fun getOrCreateForEnrollment(): DevicePayloadPublic {
+    fun getOrCreateForEnrollment(): DevicePayloadPublic = PayloadKeyCustodyEntry.withDeviceMonitor(this) {
         requireSupportedSdk(Build.VERSION.SDK_INT)
         if (Build.VERSION.SDK_INT < 31) error("Sealed payload keys require Android API 31+")
-        return lifecycle.enroll(exists = { openStore().containsAlias(alias) }, create = {
+        lifecycle.enroll(exists = { openStore().containsAlias(alias) }, create = {
             val spec = KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_AGREE_KEY)
                 .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
                 .setUserAuthenticationRequired(false)
@@ -61,17 +60,15 @@ class DevicePayloadKeyStore(context: Context, private val alias: String) {
     }
 
     /** Looks up the pinned recipient identity without creating a replacement key. */
-    @Synchronized
-    fun existingPublic(): DevicePayloadPublic {
+    fun existingPublic(): DevicePayloadPublic = PayloadKeyCustodyEntry.withDeviceMonitor(this) {
         requireSupportedSdk(Build.VERSION.SDK_INT)
         if (Build.VERSION.SDK_INT < 31) error("Sealed payload keys require Android API 31+")
-        return lifecycle.existing(null, { loadExisting() }, { it.second.keyId }) { it.second }
+        lifecycle.existing(null, { loadExisting() }, { it.second.keyId }) { it.second }
     }
 
     /** Local denial only, not a server/root revocation grant. The durable tombstone
      * survives alias deletion and prevents reuse of this enrolled identity. */
-    @Synchronized
-    fun revokeExisting(pinnedKeyId: ByteArray) {
+    fun revokeExisting(pinnedKeyId: ByteArray): Unit = PayloadKeyCustodyEntry.withDeviceMonitor(this) {
         requireSupportedSdk(Build.VERSION.SDK_INT)
         if (Build.VERSION.SDK_INT < 31) error("Sealed payload keys require Android API 31+")
         lifecycle.revoke(pinnedKeyId)
@@ -81,13 +78,12 @@ class DevicePayloadKeyStore(context: Context, private val alias: String) {
      * One validated ECDH operation for a future reviewed RFC 9180 receiver provider.
      * The caller must zero the returned secret. A wrong pinned key ID or lost key fails closed.
      */
-    @Synchronized
-    internal fun agreeExisting(enc: ByteArray, pinnedKeyId: ByteArray): ByteArray {
+    internal fun agreeExisting(enc: ByteArray, pinnedKeyId: ByteArray): ByteArray = PayloadKeyCustodyEntry.withDeviceMonitor(this) {
         requireSupportedSdk(Build.VERSION.SDK_INT)
         if (Build.VERSION.SDK_INT < 31) error("Sealed payload keys require Android API 31+")
         require(pinnedKeyId.size == 32) { "Invalid payload key ID" }
         val peer = decodePoint(enc)
-        return lifecycle.existing(pinnedKeyId, { loadExisting() }, { it.second.keyId }) { (privateKey, _) ->
+        lifecycle.existing(pinnedKeyId, { loadExisting() }, { it.second.keyId }) { (privateKey, _) ->
             KeyAgreement.getInstance("ECDH", "AndroidKeyStore").run {
                 init(privateKey)
                 doPhase(peer, true)
@@ -100,6 +96,25 @@ class DevicePayloadKeyStore(context: Context, private val alias: String) {
             }
         }
     }
+
+    /** Local-only custody observation. No profile, decryption or application authority. */
+    internal fun <R> withExistingCustody(pinnedKeyId: ByteArray,
+                                       operation: (ScopedPayloadRecipient) -> R): R =
+        PayloadKeyCustodyEntry.withDeviceMonitor(this) {
+            requireSupportedSdk(Build.VERSION.SDK_INT)
+            if (Build.VERSION.SDK_INT < 31) error("Sealed payload keys require Android API 31+")
+            val source = object : PayloadKeyCustodySource<Pair<PrivateKey, DevicePayloadPublic>> {
+                override fun load() = loadExisting()
+                override fun keyId(material: Pair<PrivateKey, DevicePayloadPublic>) = material.second.keyId
+                override fun requireSameIdentity(initial: Pair<PrivateKey, DevicePayloadPublic>,
+                                                 current: Pair<PrivateKey, DevicePayloadPublic>) {
+                    requireSamePublicIdentity(initial.second, current.second)
+                }
+            }
+            lifecycle.scopedExisting(pinnedKeyId, source) { material, scope ->
+                operation(ScopedPayloadRecipient(scope, material.second))
+            }
+        }
 
     @RequiresApi(31)
     private fun loadExisting(): Pair<PrivateKey, DevicePayloadPublic> {
@@ -140,6 +155,13 @@ class DevicePayloadKeyStore(context: Context, private val alias: String) {
 
         internal fun requireSupportedSdk(sdk: Int) {
             require(sdk >= 31) { "Sealed payload keys require Android API 31+" }
+        }
+
+        internal fun requireSamePublicIdentity(initial: DevicePayloadPublic, current: DevicePayloadPublic) {
+            check(MessageDigest.isEqual(initial.keyId, current.keyId) &&
+                MessageDigest.isEqual(initial.point, current.point) && initial.security == current.security) {
+                "Payload recipient identity changed"
+            }
         }
 
         internal fun keyId(point: ByteArray): ByteArray {
