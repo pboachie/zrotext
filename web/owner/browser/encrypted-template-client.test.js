@@ -57,6 +57,7 @@ async function fixture(mode,run){
      if(req.headers['x-zrotext-csrf']!=='synthetic-csrf'){res.writeHead(403).end();return;}
      const chunks=[];for await(const chunk of req)chunks.push(chunk);const body=Buffer.concat(chunks);
      posts.push({id:req.headers['idempotency-key'],revision:req.headers['x-zrotext-template-revision'],body});stored=Uint8Array.from(body);
+     if(mode.startsWith('hidden-')){if(posts.length===1){res.socket.destroy();return;}res.writeHead(Number(mode.slice(7))).end();return;}
      // Persist, then refuse acknowledgement deterministically. Chromium may
      // retry an empty socket response itself, obscuring that boundary.
      if(['unknown','contradictory','unknown-401','unknown-403'].includes(mode)&&posts.length===1){res.writeHead(503).end();return;}
@@ -102,4 +103,8 @@ test('Chromium contradictory same revision acknowledgement preserves unknown and
 for(const status of [401,403])test(`Chromium authorization ${status} after unknown prevents another POST despite stale host claims`,async()=>fixture(`unknown-${status}`,async({page,posts})=>{
  const result=await page.evaluate(async()=>{const c=createTemplateClient();const t=await c.prepareSave(templateWrite());try{await c.commit(t);}catch{}const pending=c.pending();try{await c.retryUnknown(t);}catch{}let state;try{await c.retryUnknown(t);}catch(e){state=e.state;}const result={state,pendingUnchanged:JSON.stringify(c.pending())===JSON.stringify(pending)};c.close();return result;});
  assert.deepEqual(result,{state:'unknown',pendingUnchanged:true});assert.equal(posts.length,2);assert.deepEqual(posts[0],posts[1]);
+}));
+for(const status of [401,403])test(`Chromium hidden exact retry after durable write into ${status} retains unknown and closes authority`,{timeout:15000},async()=>fixture(`hidden-${status}`,async({page,posts})=>{
+ const result=await page.evaluate(async()=>{const c=createTemplateClient();const t=await c.prepareSave(templateWrite());let state;try{await c.commit(t);}catch(e){state=e.state;}const pending=c.pending();let retryState;try{await c.retryUnknown(t);}catch(e){retryState=e.state;}const result={state,retryState,pending:!!pending,pendingUnchanged:JSON.stringify(c.pending())===JSON.stringify(pending)};c.close();return result;});
+ assert.deepEqual(result,{state:'unknown',retryState:'unknown',pending:true,pendingUnchanged:true});assert.equal(posts.length,2);assert.deepEqual(posts[0],posts[1]);
 }));

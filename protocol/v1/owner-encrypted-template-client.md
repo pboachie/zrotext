@@ -81,6 +81,11 @@ there are at most three POST attempts in total. A later refusal cannot erase an
 earlier ambiguous effect. No automatic retry is requested by the client. Browser
 or network infrastructure may itself retry a request, so backend exact-request
 idempotency remains essential.
+Every refusal received after dispatch remains unknown, including a refusal on
+the first explicit fetch: the browser can commit an earlier identical request,
+retry beneath that fetch, and expose only the retry's refusal. A final status
+cannot prove that no earlier effect occurred. Validation before dispatch still
+refuses without creating an unknown submission.
 An authorization refusal closes the client and destroys its retry buffer even
 after an earlier unknown effect; the unknown metadata remains. A contradictory
 same-revision acknowledgement cannot overwrite an observed ciphertext digest or
@@ -138,7 +143,8 @@ Playwright and Chromium. It runs the compiled module in actual Chromium against
 an owned local HTTPS fixture with synthetic Secure/HttpOnly owner cookies and
 CSRF, real opaque request bytes and current-host exchanges. It checks save/read,
 ambiguous persisted response plus exact retry, contradictory same-revision
-acknowledgements, authorization refusals after unknown, post-response owner
+acknowledgements, authorization refusals after unknown, hidden exact-request
+retries after a durable write into 401/403, post-response owner
 revocation and a stalled body that actually reaches the deadline. Its unique self-signed
 certificate is accepted only by its isolated browser test context; production
 TLS is unchanged. All temporary server connections, context and certificate

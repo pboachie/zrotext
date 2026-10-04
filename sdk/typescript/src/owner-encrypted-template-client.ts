@@ -132,10 +132,10 @@ export class OwnerEncryptedTemplateClient {
    this.#deadline(r,await this.#current(r.scope,r.deadline,r.csrf));this.#live(r.deadline);r.attempts++;r.unknown=true;attempted=true;this.#pending=this.#identity(r);
    const response=await this.#response(true,r.deadline,r.csrf,r);
    if([400,401,403,404,409,413,429].includes(response.status)){void response.body?.cancel().catch(()=>{});
-    // An auth refusal invalidates this host lifetime even when an earlier effect
-    // remains unknown. Keep its metadata, but destroy the live retry capability.
-    if(wasUnknown){if(response.status===401||response.status===403)this.close();throw new OwnerTemplateError('response_unknown','unknown');}
-    this.#forget(r);if(response.status===401||response.status===403)this.close();throw new OwnerTemplateError('save_refused','refused');}
+    // A browser may invisibly retry a committed request before this refusal.
+    // Retain unknown metadata even on the first explicit fetch. Auth refusals
+    // also destroy the live retry capability and invalidate this host lifetime.
+    if(response.status===401||response.status===403)this.close();throw new OwnerTemplateError('response_unknown','unknown');}
    if(response.status!==200||!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(response.headers.get('content-type')??'')){void response.body?.cancel().catch(()=>{});throw new OwnerTemplateError('response_unknown','unknown');}
    const body=await this.#body(response,256,r.deadline);templateSaveReceipt(r.request,body);if(new TextDecoder('utf-8',{fatal:true}).decode(body)!==JSON.stringify({revision:r.request.revision}))throw new OwnerTemplateError('response_unknown','unknown');
    this.#deadline(r,await this.#current(r.scope,r.deadline,r.csrf));
