@@ -65,6 +65,14 @@ struct ExportQuery {
     managed_grants_after: Option<String>,
     managed_policies_after: Option<String>,
     managed_readers_after: Option<String>,
+    provider_receipts_after: Option<Uuid>,
+    openings_after: Option<Uuid>,
+    opening_offers_after: Option<Uuid>,
+    opening_allocations_after: Option<Uuid>,
+    opening_requests_after: Option<Uuid>,
+    provider_configurations_after: Option<Uuid>,
+    provider_configuration_versions_after: Option<String>,
+    provider_configuration_mutations_after: Option<Uuid>,
     sealed_deliveries_after: Option<Uuid>,
     templates_after: Option<Uuid>,
     template_versions_after: Option<Uuid>,
@@ -97,6 +105,7 @@ struct ExportQuery {
     schedule_series_before: Option<Uuid>,
     schedule_occurrences_before: Option<Uuid>,
     schedule_audit_before: Option<Uuid>,
+    contacts_before: Option<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -194,6 +203,9 @@ fn message_view(row: &Row) -> Result<MessageView, tokio_postgres::Error> {
 #[derive(Serialize)]
 struct ExportView {
     original_replies: crate::original_reply::lifecycle::Export,
+    provider_receipts: crate::provider_sms::receipts::lifecycle::Page,
+    opening_capacity: crate::workflow_runtime::openings::export::Export,
+    provider_configurations: crate::provider_config::lifecycle::Export,
     sealed_line_setup: serde_json::Value,
     sealed_event_deliveries: crate::sealed_inbound::delivery::lifecycle::Export,
     execution_inventory:
@@ -496,6 +508,15 @@ async fn export_account(
         &principal,
         query.original_reply_section.unwrap_or_default(),
         query.original_reply_before,
+    let opening_capacity = match crate::workflow_runtime::openings::export::export(
+        &mut client,
+        &principal,
+        [
+            query.openings_after,
+            query.opening_offers_after,
+            query.opening_allocations_after,
+            query.opening_requests_after,
+        ],
     )
     .await
     {
@@ -504,6 +525,27 @@ async fn export_account(
     };
     Json(ExportView {
         original_replies,
+        provider_receipts: match crate::provider_sms::receipts::lifecycle::export(
+            &mut client,
+            &principal,
+            query.provider_receipts_after,
+        )
+        .await
+        {
+            Ok(page) => page,
+        provider_configurations: match crate::provider_config::lifecycle::export(
+            &mut client,
+            &principal,
+            query.provider_configurations_after,
+            query.provider_configuration_versions_after.as_deref(),
+            query.provider_configuration_mutations_after,
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(error) => return error.into_response(),
+        },
+        opening_capacity,
         sealed_line_setup:
             match crate::http_owner_conversations::sealed_line_setup::lifecycle::inventory(
                 &mut client,
@@ -626,7 +668,7 @@ async fn export_contacts(
         {
             Ok(Some(row)) => Some((row.get(0), before)),
             Ok(None) => return Err(FieldError::MissingContactCursor),
-            Err(_) => return Err(FieldError::Unreadable),
+            Err(_) => return Err(FieldError::Database),
         }
     } else {
         None
@@ -651,7 +693,7 @@ async fn export_contacts(
         .await
     {
         Ok(rows) => rows,
-        Err(_) => return Err(FieldError::Unreadable),
+        Err(_) => return Err(FieldError::Database),
     };
     let truncated = rows.len() > EXPORT_CONTACT_LIMIT;
     let page: Vec<&Row> = rows.iter().take(EXPORT_CONTACT_LIMIT).collect();
@@ -693,7 +735,7 @@ async fn export_contacts(
         .await
         {
             Ok(history) => history,
-            Err(_) => return Err(FieldError::Unreadable),
+            Err(_) => return Err(FieldError::Database),
         };
         let consents = crate::http_owner_contacts::consents::consent_states(&history, now_ms);
         contacts.push(ContactExportView {

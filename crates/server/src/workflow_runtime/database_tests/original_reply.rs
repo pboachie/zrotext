@@ -13,6 +13,9 @@ struct OriginalCase {
 }
 impl OriginalCase {
     async fn new() -> Self {
+        Self::with_conversation_key_deadline(None).await
+    }
+    async fn with_conversation_key_deadline(role: Option<u8>) -> Self {
         let mut case = Case::for_original_reply().await;
         // This new fixture exercises the full account-erasure table plan and
         // genuine execution-issued source messages, unlike older partial cases.
@@ -35,6 +38,26 @@ impl OriginalCase {
         let read_grant: Uuid = row.get(0);
         let reader:[u8;32]=case.f.db.query_one("SELECT key_id FROM connector_registrations WHERE account_id=$1 AND connector_id=$2",&[&case.f.account,&case.request.connector]).await.unwrap().get::<_,Vec<u8>>(0).try_into().unwrap();
         case.f.advance();
+        if let Some(role) = role {
+            assert!(matches!(role, 2 | 4));
+            let now: i64 = case
+                .f
+                .db
+                .query_one(
+                    "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+                    &[],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            let at = (0..usize::from(case.f.bytes[150]))
+                .map(|index| 151 + 149 * index)
+                .find(|at| case.f.bytes[*at] == role)
+                .unwrap();
+            case.f.bytes[at + 140..at + 148]
+                .copy_from_slice(&((now + 60_000) as u64).to_be_bytes());
+            case.f.resign();
+        }
         let consent = ConversationConsent {
             device_id: case.f.device,
             line_id: case.f.line,
@@ -281,3 +304,6 @@ mod join_order;
 mod races;
 mod registry_binding;
 mod routines;
+
+mod join_order;
+mod key_deadlines;

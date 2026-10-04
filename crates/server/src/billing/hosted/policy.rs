@@ -123,6 +123,10 @@ pub struct Projection {
     pub(super) issued_at: i64,
     pub(super) valid_until: i64,
     pub(super) first_failure_at: Option<i64>,
+    pub(super) invoice: String,
+    pub(super) price: String,
+    pub(super) period_start: i64,
+    pub(super) period_end: i64,
 }
 
 impl Projection {
@@ -148,6 +152,41 @@ impl Projection {
 
     pub fn device_limit(&self) -> u64 {
         self.device_limit
+    }
+
+    /// Exact current provider obligation, never inferred from the grant lease.
+    pub fn invoice(&self) -> &str {
+        &self.invoice
+    }
+
+    pub fn price(&self) -> &str {
+        &self.price
+    }
+
+    /// Provider period bounds in seconds; consumers using milliseconds must
+    /// convert with checked arithmetic and compare the exact persisted bounds.
+    pub fn period_start(&self) -> i64 {
+        self.period_start
+    }
+
+    pub fn period_end(&self) -> i64 {
+        self.period_end
+    }
+
+    pub(super) fn has_valid_provenance(&self) -> bool {
+        valid_external_id(&self.invoice)
+            && valid_external_id(&self.price)
+            && self.period_start >= 0
+            && self.period_start <= self.issued_at
+            && self.period_end > self.issued_at
+            && self.valid_until <= self.period_end
+    }
+
+    pub(super) fn has_empty_provenance(&self) -> bool {
+        self.invoice.is_empty()
+            && self.price.is_empty()
+            && self.period_start == 0
+            && self.period_end == 0
     }
 }
 
@@ -195,6 +234,7 @@ pub fn reconcile(input: Reconciliation<'_>) -> Result<Projection, Refusal> {
     if let Some(prior) = previous {
         binding.check(&prior.scope)?;
         if prior.generation >= observation.generation || now < prior.issued_at {
+        if prior.generation >= observation.generation {
             return Err(Refusal::StaleObservation);
         }
     }
@@ -208,6 +248,10 @@ pub fn reconcile(input: Reconciliation<'_>) -> Result<Projection, Refusal> {
         issued_at: now,
         valid_until: now,
         first_failure_at: previous.and_then(|prior| prior.first_failure_at),
+        invoice: String::new(),
+        price: String::new(),
+        period_start: 0,
+        period_end: 0,
     };
     if !observation.complete {
         return Ok(result);
@@ -220,6 +264,12 @@ pub fn reconcile(input: Reconciliation<'_>) -> Result<Projection, Refusal> {
         && observation.period_start <= now
         && observation.period_end > now
         && observation.revalidate_at > now;
+    if current_period {
+        result.invoice = observation.invoice.clone();
+        result.price = observation.price.clone();
+        result.period_start = observation.period_start;
+        result.period_end = observation.period_end;
+    }
     let current_failure_start = if current_period
         && observation.status == SubscriptionStatus::PastDue
         && let Some(failure) = &observation.failure
@@ -294,8 +344,22 @@ pub fn reconcile(input: Reconciliation<'_>) -> Result<Projection, Refusal> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Purpose {
-    Outbound { units: u64, consumed: u64 },
-    EnrollDevice { active_devices: u64 },
+    Outbound {
+        units: u64,
+        consumed: u64,
+    },
+    /// Postwrite/replay only. The adapter must independently prove the exact
+    /// original ledger attribution; this variant never pre-admits a new unit.
+    OutboundRecorded {
+        consumed: u64,
+    },
+    EnrollDevice {
+        active_devices: u64,
+    },
+    /// Postwrite only, after proving the device under the same account lock.
+    DeviceRecorded {
+        active_devices: u64,
+    },
 }
 
 /// Must run under the existing tenant/quota transaction lock, before reservation
@@ -331,8 +395,11 @@ pub fn admit(
         });
     }
     if projection.generation != fence.dirty_generation
+        || !projection.has_valid_provenance()
         || now < 0
         || now < projection.issued_at
+        || now < projection.period_start
+        || now >= projection.period_end
         || now >= projection.valid_until
     {
         return Err(Refusal::Pending);
@@ -349,6 +416,16 @@ pub fn admit(
         }
         Purpose::EnrollDevice { active_devices } => {
             if active_devices >= projection.device_limit {
+                return Err(Refusal::DeviceCapExceeded);
+            }
+        }
+        Purpose::OutboundRecorded { consumed } => {
+            if consumed > projection.outbound_limit {
+                return Err(Refusal::QuotaExceeded);
+            }
+        }
+        Purpose::DeviceRecorded { active_devices } => {
+            if active_devices > projection.device_limit {
                 return Err(Refusal::DeviceCapExceeded);
             }
         }

@@ -740,6 +740,35 @@ their consent records with everything else. The default-off workflow services
 check current purpose consent alongside their exact owner approval and other
 authority fences. Ordinary message admission retains its existing suppression
 and hold checks.
+their consent records with everything else. The contacts and consent
+records do not gate message sending; admission and suppression checks are
+unchanged by this data.
+
+## Owner-confirmed capacity foundation
+
+The single-opening capacity library is dormant. Its unnumbered
+`deploy/compose/migration-candidates/owner_opening_capacity.sql` is excluded
+from normal installation and is applied explicitly by disposable tests. No
+mutation route, SDK caller, appointment, volunteer or acknowledgment journey
+is enabled by this library. Production migration promotion and application
+acceptance remain separately required.
+
+Pending reservations and confirmed allocations consume capacity. The owner
+confirms business meaning after local decryption; delivery or ciphertext does
+not establish a booking. Consent withdrawal and takeover stop future admission
+and cancel pending reservations. Confirmed occupancy remains until explicit
+owner release or cancellation, including after contact/source deletion.
+
+When the candidate tables are present, existing contact deletion and source
+retention hooks scrub their related authority and receipt fields; owner takeout
+includes bounded pages of the remaining metadata. Current owners can release
+an occupied unit using its opening/allocation identity without deleted contact
+or source data. Account erasure deletes all four tables child-first and reports
+their counts; a partial candidate installation or later delete failure rolls
+the entire erasure back. Full application and device/provider acceptance is
+not established by disposable database proof. The exact authority, lifecycle
+and storage bounds are in
+[`owner-opening-capacity-foundation.md`](../protocol/v1/owner-opening-capacity-foundation.md).
 
 ## Source for modified deployments
 

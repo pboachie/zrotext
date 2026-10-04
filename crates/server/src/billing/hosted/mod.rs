@@ -2,6 +2,7 @@
 //! Provider-neutral hosted billing checks. Disabled until explicitly mounted
 //! by the runtime owner; no credentials, provider calls or default commercial plan.
 
+pub mod admission;
 pub mod namespace;
 pub mod policy;
 pub mod store;

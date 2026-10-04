@@ -9,6 +9,9 @@ mod store;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+pub(crate) mod hosted_fixture;
+
 use super::{BillingError, SubscriptionSnapshot, TestQuotaPlan};
 use tokio_postgres::{GenericClient, Transaction};
 use uuid::Uuid;
