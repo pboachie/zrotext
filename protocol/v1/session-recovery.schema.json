@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Exact creator-session recovery exchange",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "method",
+    "session_id",
+    "status"
+  ],
+  "properties": {
+    "method": {
+      "const": "DELETE"
+    },
+    "session_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    "status": {
+      "enum": [
+        204,
+        403,
+        401,
+        503
+      ]
+    }
+  }
+}
