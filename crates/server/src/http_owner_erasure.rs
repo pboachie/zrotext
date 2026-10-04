@@ -264,6 +264,7 @@ pub(crate) const DELETE_PLAN: &[(&str, &str)] = &[
         "conversation_confirmation_records",
         "DELETE FROM conversation_confirmation_records WHERE account_id=$1",
     ),
+const DELETE_PLAN: &[(&str, &str)] = &[
     // Contacts and their append-only consent history: erasable account
     // records (unlike the schema-protected opt-out planes), deleted before
     // the memberships their recorder foreign keys point at.
