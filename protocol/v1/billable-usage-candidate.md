@@ -90,8 +90,14 @@ and period, with an optional independently attributed invoice quantity. Missing
 invoice quantities remain pending; mismatches remain divergent. Immutable snapshot identities reject changed replay; differing
 totals or outstanding errors remain divergent. Matching totals are merely an
 observation, not individual-event validation or an entitlement. No dashboard
-or admission path polls Stripe. Invoice-line retrieval and attribution are
-unavailable until the invoice policy and provider bridge are reviewed.
+or admission path polls Stripe. The existing default-off
+[read-only TEST reconciliation worker](../../docs/test-usage-reconciliation.md)
+retrieves bounded meter summaries and invoice quantities using trusted committed
+customer, meter, policy and exact period bindings. Its invoice observation path
+uses the [invoice-bound TEST billing candidate](../../docs/invoice-bound-test-billing.md)
+for exact invoice attribution; missing, mismatched or unavailable evidence cannot
+be treated as a settled quantity. This implemented TEST source does not establish
+production billing acceptance or a reviewed financial adjustment policy.
 
 An unmounted owner review helper requires exact origin/CSRF, current password,
 MFA where enabled, and a final locked live-owner/session fence. It records one

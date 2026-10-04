@@ -139,8 +139,14 @@ version sums finalized usage for that same period; recovery does not replenish
 it. Every new period also sums all outstanding older liability. Overlapping
 different intervals are refused, so moving a period boundary cannot reset
 consumed budget. Current configuration is operator-supplied TEST policy, not
-proof of a subscription invoice or renewal. The authoritative invoice-bound
-eligibility bridge is pending #675.
+proof of a subscription invoice or renewal. When an account's invoice-bound
+TEST policy is enabled, the existing
+[invoice-bound TEST billing candidate](invoice-bound-test-billing.md) checks
+current invoice eligibility and requires the tenant exposure window to match
+that independently verified period, both at reservation and at the final
+first-intent policy check. Its account policy is disabled by default.
+Operator-provisioned self-host usage policies retain their existing behavior.
+This source integration does not establish production billing or runtime acceptance.
 
 The ledger contains opaque scope/action/actor identities, policy versions,
 counts, times, digests and lifecycle state. It copies no recipient number,
@@ -153,9 +159,14 @@ Tenant erasure removes reservation mappings, reservations and local policies
 before their workflow/device dependencies. Deployment aggregate units contain
 no tenant identity and remain conservatively counted after erasure; deletion
 cannot manufacture available exposure from an uncertain effect. Production
-financial retention and reconciliation policy still require review. Owner
-dashboard/export projection is pending #676; these library receipts are not
-an account-wide public usage endpoint.
+financial retention and reconciliation policy still require review. The existing
+[owner billing status projection](invoice-bound-test-billing.md#owner-status-snapshots)
+reports local TEST forwarding counts and the current tenant exposure policy's
+period, soft and hard caps, outstanding liability and finalized units. Missing
+or expired policies remain unavailable; these informational snapshots grant no
+spend authority. These library receipts are not an account-wide public usage
+endpoint. The status projection does not establish rendered dashboard or
+exposure export acceptance, or complete #676 acceptance.
 
 Stripe processes usage asynchronously, so external aggregates are unsuitable
 as a real-time admission counter. This candidate uses the local transaction
