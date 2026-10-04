@@ -27,3 +27,7 @@ The owner dashboard at `/owner/devices` and its API record two kinds of durable 
 Recording a new hold or a signed opt-out also cancels queued and claimed messages that have no radio grant, returning their reserved usage once. The writer checks both kinds of block again before issuing a grant under the same account lock. A grant that wins that lock first may already be in progress and is not reported as cancelled. A later START never resurrects cancelled messages. The hold creation response includes `cancelled_messages`; list pages contain metadata only.
 
 Neither path establishes consent or lifts a block. A non-allowlisted route still requires production line activation and end-to-end device evidence. Keep the general route closed until those gaps are resolved.
+
+## Restricted pilot behavior
+
+Only send messages to recipients for whom you have an appropriate basis to send that type of SMS. Keep consent records, honor withdrawal and opt-out requests, and check the rules for your recipients' locations and your carrier or mobile plan. The restricted synthetic pilot suppresses recognized opt-out replies and lets owners record withdrawals received through other channels. Holds block admission and new send grants, and cancel queued work before a grant. Owner review decisions do not lift blocks. Production line activation, general inbound content and end-to-end device evidence remain incomplete, so do not use it for general or bulk sending. See [SMS compliance and current limits](docs/SMS-COMPLIANCE.md).
