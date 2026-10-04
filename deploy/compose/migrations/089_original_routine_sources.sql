@@ -54,8 +54,11 @@ CREATE CONSTRAINT TRIGGER workflow_routine_original_delete AFTER DELETE ON workf
 
 -- Sample each volatile original-reader deadline once. Later effects retain the
 -- same independently owner-configured input policy and content-read authority.
+-- This exact-key authority query deliberately retains its explicit inner-join
+-- order. Bound planner join enumeration locally; every independent predicate,
+-- materialized deadline sample and final fresh-clock check remains unchanged.
 CREATE FUNCTION workflow_routine_original_deadline(wanted_account uuid,wanted_call uuid) RETURNS bigint
-LANGUAGE sql VOLATILE SET search_path FROM CURRENT AS $$
+LANGUAGE sql VOLATILE SET search_path FROM CURRENT SET join_collapse_limit = 1 AS $$
 WITH candidate AS MATERIALIZED (
  SELECT original_reply_grant_deadline(s.account_id,s.original_grant_id) AS original_deadline,
  workflow_registry_binding_deadline(s.account_id,s.connector_id,s.reader_key_id,s.interval_id,
