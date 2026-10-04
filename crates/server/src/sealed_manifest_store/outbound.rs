@@ -84,6 +84,43 @@ pub(crate) async fn lock_current<'tx, 'connection>(
 }
 
 impl CurrentAuthority<'_, '_> {
+    /// Copies account-only public records at actual current database time.
+    /// This is neither envelope authority nor permission for a later effect.
+    pub(crate) async fn account_contact_observation(
+        &mut self,
+        reader: &[u8; 32],
+        compared_fingerprint: &[u8; 32],
+    ) -> Result<
+        (
+            PublicCandidate,
+            sealed_manifest::AccountArchiveStatementRecords,
+        ),
+        AdmissionError,
+    > {
+        if reader == &[0; 32] || compared_fingerprint != &self.trust.root_fingerprint {
+            return Err("contact observation selection".into());
+        }
+        let now = self.rechecked_time(false).await?;
+        let records = self
+            .manifest
+            .account_archive_statement_records(reader, now)?;
+        Ok((
+            PublicCandidate {
+                pin: self.pin.clone(),
+                fingerprint: self.trust.root_fingerprint,
+                snapshot: ManifestSnapshot {
+                    generation: self.generation(),
+                    version: self.manifest.version() as i64,
+                    digest: *self.manifest.digest(),
+                    bytes: self.bytes.clone(),
+                    // Observation time only: this does not accept a new manifest.
+                    accepted_ms: now as i64,
+                },
+            },
+            records,
+        ))
+    }
+
     pub(crate) async fn next_snapshot(
         &mut self,
         bytes: &[u8],
