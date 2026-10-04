@@ -40,3 +40,18 @@ event pump from resending a sealed intent after restart.
 JVM fixtures replace hardware custody and the platform driver; they do not send
 SMS and do not prove hardware or carrier behavior. A physical-device run requires
 separate explicit opt-in on a controlled device.
+
+The internal existing-key custody scope keeps one payload lifecycle record access
+and its file lock through the operation and a final fresh key/public-identity
+reload. It checks the pinned key ID, public point and observed security level,
+then expires on every exit. Its facade exposes only copied public metadata and
+local revalidation, with no private handle or decryption operation. Nested
+key-store entry refuses before a device monitor is acquired; scope use from
+another thread or after completion refuses. Enrollment and revocation continue
+to use the ordinary device-to-record lock order.
+
+This scope is a local custody observation. It does not check owner, manifest,
+consent, capture or execution authority, release plaintext, select an HPKE
+profile, or install a receiver provider. AndroidKeyStore agreement still
+requires API 31 or later; the application's API 28 floor is unchanged. Provider
+integration and physical key-custody acceptance remain separate gates.

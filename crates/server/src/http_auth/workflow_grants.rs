@@ -31,6 +31,7 @@ pub(super) struct CreateBody {
     signer_key_id: Option<String>,
     expires_at_ms: i64,
     content_envelope_base64url: Option<String>,
+    original_grant_id: Option<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -89,6 +90,7 @@ impl CreateBody {
             signer,
             expires_ms: self.expires_at_ms,
             content_envelope,
+            original_grant_id: self.original_grant_id,
         })
     }
 }

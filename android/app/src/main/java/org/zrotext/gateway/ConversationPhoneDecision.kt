@@ -24,7 +24,7 @@ internal class ConversationPhoneDecision(
         require(scope.accountId == session.account.toString() && scope.deviceId == session.device.toString())
         require(review.intervalId == scope.intervalId && review.lineId == scope.lineId &&
             review.lineGeneration == scope.bindingGeneration && review.peer == scope.peer &&
-            review.disclosureDigest == scope.disclosureDigest)
+            review.disclosureDigest == scope.disclosureDigest && review.integrationSelection == scope.integrationSelection)
     }
     /** Subscribe to the actual domain; callers cannot arm a decision with a predicted counter. */
     fun observePresentation(presentation: ConversationPresentationPort) {

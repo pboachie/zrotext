@@ -15,7 +15,7 @@ use crate::{
     sealed_manifest_store::{AdmissionError, outbound::lock_current},
 };
 use axum::{
-    Router,
+    Json, Router,
     extract::{DefaultBodyLimit, Path, Request, State},
     http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
@@ -77,6 +77,10 @@ pub fn router(state: OwnerConversationsState) -> Router {
     Router::new()
         .route("/v1/owner/conversation", post(enable).delete(revoke))
         .route("/v1/owner/conversation/events/{event_id}", get(read))
+        .route(
+            "/v1/owner/conversation/events/{event_id}/selection",
+            get(read_selection),
+        )
         .layer(DefaultBodyLimit::max(1024))
         .layer(middleware::from_fn(no_store))
         .with_state(Arc::new(state))
@@ -396,9 +400,37 @@ async fn read(
         Ok(owner) => owner,
         Err(error) => return error.into_response(),
     };
-    match read_event(&mut client, &owner, event).await {
+    let result = match read_event(&mut client, &owner, event).await {
+        Err(ConversationError::NotFound) => {
+            activation::read_history(&mut client, &owner, event).await
+        }
+        other => other,
+    };
+    match result {
         Ok(bytes) => ([(header::CONTENT_TYPE, CONTENT_TYPE)], bytes).into_response(),
         Err(error) => error.into_response(),
+    }
+}
+
+async fn read_selection(
+    State(state): State<Arc<OwnerConversationsState>>,
+    headers: HeaderMap,
+    Path(event): Path<Uuid>,
+) -> Response {
+    if let Err(e) = http_auth::require_owner_read_headers(&headers) {
+        return e.into_response();
+    }
+    let mut client = match crate::runtime_db::connect(&state.database_url).await {
+        Ok(c) => c,
+        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    };
+    let owner = match http_auth::require_owner_read(&client, &state.auth_hasher, &headers).await {
+        Ok(o) => o,
+        Err(e) => return e.into_response(),
+    };
+    match activation::read_history_with_selection(&mut client, &owner, event).await {
+        Ok((_, proof)) => Json(proof).into_response(),
+        Err(e) => e.into_response(),
     }
 }
 

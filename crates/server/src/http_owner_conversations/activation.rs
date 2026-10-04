@@ -18,7 +18,10 @@ use tokio_postgres::{Client, Transaction};
 use uuid::Uuid;
 
 pub mod statement;
+pub use statement::SelectedReader;
 pub use statement::Statement;
+mod selected;
+pub(crate) use selected::check_readers;
 mod capture;
 pub use capture::CaptureInterval;
 pub(crate) use capture::{check_capture, save_provenance};
@@ -102,11 +105,22 @@ pub(crate) fn wanted<'a>(
         recipients: readers,
     }
 }
-pub(crate) fn readers(s: &Statement) -> [ExpectedRecipient; 1] {
-    [ExpectedRecipient {
+pub(crate) fn readers(s: &Statement) -> Vec<ExpectedRecipient> {
+    let mut readers = vec![ExpectedRecipient {
         role: 2,
         key_id: s.reader,
-    }]
+    }];
+    let mut integrations: Vec<_> = s
+        .integration_readers
+        .iter()
+        .map(|r| ExpectedRecipient {
+            role: 3,
+            key_id: r.key_id,
+        })
+        .collect();
+    integrations.sort_by_key(|r| r.key_id);
+    readers.extend(integrations);
+    readers
 }
 
 fn verify_phone(
@@ -130,6 +144,16 @@ pub async fn begin(
     owner: &SessionPrincipal,
     consent: &ConversationConsent,
     next_manifest: &[u8],
+) -> Result<Statement, ConversationError> {
+    begin_selected(client, owner, consent, next_manifest, &[]).await
+}
+
+pub async fn begin_selected(
+    client: &mut Client,
+    owner: &SessionPrincipal,
+    consent: &ConversationConsent,
+    next_manifest: &[u8],
+    integration_readers: &[SelectedReader],
 ) -> Result<Statement, ConversationError> {
     if !consent.valid() {
         return Err(ConversationError::Invalid);
@@ -196,6 +220,7 @@ pub async fn begin(
         expires_ms: now(&tx).await? + 300_000,
         peer: consent.peer.clone(),
         reader,
+        integration_readers: integration_readers.to_vec(),
         signer,
         trust_generation: next.generation,
         predecessor_version: next.version - 1,
@@ -209,6 +234,8 @@ pub async fn begin(
         connection_epoch: device.get(2),
         deployment_epoch: device.get(3),
     };
+    s.encode()?;
+    check_readers(&tx, &s, &mut authority).await?;
     let r = readers(&s);
     let w = wanted(&s, s.interval, &r);
     let predecessor = authority.snapshot(&w).await?;
@@ -223,6 +250,7 @@ pub async fn begin(
     tx.execute("INSERT INTO conversation_intervals(account_id,id,receipt_id,device_id,line_id,binding_generation,initiating_session_id,statement,statement_digest,manifest,trust_generation,activation_version,activation_digest,expires_at_ms) \
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)", &[&s.account,&s.interval,&s.receipt,&s.device,&s.line,&s.generation,&s.originating_session,&bytes,&s.digest()?.as_slice(),&next.bytes,&s.trust_generation,&s.activation_version,&s.activation_digest.as_slice(),&s.expires_ms]).await?;
     fresh_owner(&tx, owner).await?;
+    check_readers(&tx, &s, &mut authority).await?;
     let r = readers(&s);
     let w = wanted(&s, s.interval, &r);
     authority.inbound_context(&w).await?;
@@ -273,6 +301,7 @@ pub async fn approve(
     origin(&tx, &s).await?;
     device_live(&tx, session, &s).await?;
     let row = load(&tx, session.account_id, s.interval).await?;
+    selected::check_grants(&tx, &s).await?;
     if row.statement != s || current.generation() != s.trust_generation {
         return Err(ConversationError::Forbidden);
     }
@@ -320,6 +349,7 @@ pub async fn approve(
         current.inbound_context(&w).await?;
         drop(current);
     }
+    selected::check_grants(&tx, &s).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -341,6 +371,7 @@ pub async fn installed(
     origin(&tx, &s).await?;
     device_live(&tx, session, &s).await?;
     let row = load(&tx, session.account_id, s.interval).await?;
+    selected::check_grants(&tx, &s).await?;
     if row.statement != s
         || authority.generation() != s.trust_generation
         || !matches!(row.phase.as_str(), "install_pending" | "active")
@@ -365,6 +396,7 @@ pub async fn installed(
         return Err(ConversationError::Forbidden);
     }
     drop(authority);
+    selected::check_grants(&tx, &s).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -394,6 +426,7 @@ pub async fn active_lease(
     let origin_until = origin(&tx, &s).await?;
     device_live(&tx, session, &s).await?;
     let row = load(&tx, session.account_id, interval).await?;
+    selected::check_grants(&tx, &s).await?;
     if row.phase != "active" || authority.generation() != s.trust_generation {
         return Err(ConversationError::Forbidden);
     }
@@ -404,7 +437,8 @@ pub async fn active_lease(
     origin(&tx, &s).await?;
     device_live(&tx, session, &s).await?;
     authority.inbound_context(&w).await?;
-    let remaining = until.min(phone_until).min(origin_until) - now(&tx).await?;
+    let selected_until = selected::deadline(&tx, &s).await?;
+    let remaining = until.min(phone_until).min(origin_until).min(selected_until) - now(&tx).await?;
     if remaining <= 0 {
         return Err(ConversationError::Forbidden);
     }
@@ -415,6 +449,7 @@ pub async fn active_lease(
         valid_for_ms: remaining.min(60_000),
     };
     drop(authority);
+    selected::check_grants(&tx, &s).await?;
     tx.commit().await?;
     Ok(result)
 }
@@ -453,11 +488,30 @@ pub async fn close(
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+pub struct SelectionProof {
+    pub v: u8,
+    pub statement: String,
+    pub approval_signature: String,
+    pub installation_signature: String,
+    pub activation_manifest_version: String,
+    pub activation_manifest_digest: String,
+    pub accepted_at_ms: String,
+}
 pub async fn read_history(
     client: &mut Client,
     owner: &SessionPrincipal,
     event: Uuid,
 ) -> Result<Vec<u8>, ConversationError> {
+    read_history_with_selection(client, owner, event)
+        .await
+        .map(|r| r.0)
+}
+pub async fn read_history_with_selection(
+    client: &mut Client,
+    owner: &SessionPrincipal,
+    event: Uuid,
+) -> Result<(Vec<u8>, SelectionProof), ConversationError> {
     let tx = client.transaction().await?;
     let mut authority = lock_current(&tx, owner.tenant.account_id()).await?;
     lock_owner(&tx, owner).await?;
@@ -473,9 +527,13 @@ pub async fn read_history(
     let bytes: Vec<u8> = row.get(6);
     let claims = sealed_envelope::parse(&bytes, Profile::Draft02Candidate)
         .map_err(|_| ConversationError::Forbidden)?;
-    if claims.wraps.len() != 1
-        || claims.wraps[0].role != 2
-        || claims.wraps[0].key_id != s.reader
+    let selected = readers(&s);
+    if claims.wraps.len() != selected.len()
+        || claims
+            .wraps
+            .iter()
+            .zip(&selected)
+            .any(|(w, r)| w.role != r.role || w.key_id != r.key_id)
         || claims.keyset_version < s.activation_version as u64
     {
         return Err(ConversationError::Forbidden);
@@ -495,9 +553,33 @@ pub async fn read_history(
     authority.verify_history(&w, &snapshot, &bytes).await?;
     fresh_owner(&tx, owner).await?;
     authority.inbound_context(&w).await?;
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let signatures=tx.query_one("SELECT approval_signature,installation_signature,accepted_at_ms FROM conversation_intervals WHERE account_id=$1 AND id=$2",&[&s.account,&s.interval]).await?;
+    let proof = SelectionProof {
+        v: 1,
+        statement: STANDARD.encode(s.encode()?),
+        approval_signature: STANDARD.encode(
+            signatures
+                .get::<_, Option<Vec<u8>>>(0)
+                .ok_or(ConversationError::Forbidden)?,
+        ),
+        installation_signature: STANDARD.encode(
+            signatures
+                .get::<_, Option<Vec<u8>>>(1)
+                .ok_or(ConversationError::Forbidden)?,
+        ),
+        activation_manifest_version: s.activation_version.to_string(),
+        activation_manifest_digest: STANDARD.encode(s.activation_digest),
+        accepted_at_ms: signatures
+            .get::<_, Option<i64>>(2)
+            .ok_or(ConversationError::Forbidden)?
+            .to_string(),
+    };
+    fresh_owner(&tx, owner).await?;
+    authority.inbound_context(&w).await?;
     drop(authority);
     tx.commit().await?;
-    Ok(bytes)
+    Ok((bytes, proof))
 }
 
 #[cfg(all(test, feature = "conversation-simulator-tests"))]

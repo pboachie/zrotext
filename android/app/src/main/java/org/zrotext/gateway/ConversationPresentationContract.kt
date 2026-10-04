@@ -25,12 +25,13 @@ internal enum class ConversationPresentationFailure { AUTHORITY_UNAVAILABLE, STO
 internal data class ConversationPhoneReview(
     val requestId: String, val intervalId: String, val lineId: String, val lineGeneration: Long,
     val peer: String, val disclosure: String, val disclosureRevision: String, val disclosureDigest: String,
-    val remainingMs: Long
+    val remainingMs: Long,
+    val integrationSelection: ConversationReaderSelection = ConversationReaderSelection(emptyList())
 ) {
     init {
         listOf(requestId, intervalId, lineId).forEach { require(UUID.fromString(it).toString() == it && UUID.fromString(it) != UUID(0, 0)) }
         require(lineGeneration > 0 && remainingMs in 1..60000 && Regex("\\+[1-9][0-9]{1,14}").matches(peer))
-        require(disclosure == ConversationActivationCodec.DISCLOSURE && disclosureRevision == "conversation-content-v1")
+        require(disclosure == (if(integrationSelection.values.isEmpty()) ConversationActivationCodec.DISCLOSURE else ConversationActivationCodec.READER_DISCLOSURE) && disclosureRevision == "conversation-content-v1")
         require(disclosureDigest == Draft02OutboundPreparation.hash(disclosure.toByteArray(Charsets.UTF_8)))
     }
     override fun toString() = "ConversationPhoneReview(redacted)"

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex">
-  <title>Account Â· ZROtext</title>
+  <title>Account &middot; ZROtext</title>
   <link rel="stylesheet" href="/owner/devices.css">
   <script defer src="/owner/owner-shell.js"></script>
   <script defer src="/owner/account.js"></script>
@@ -27,28 +27,58 @@
   </aside>
   <main id="owner-main" tabindex="-1">
     <header>
-      <div><p class="eyebrow">ZROtext owner account</p><h1>Account setup</h1></div>
-      <a href="/owner/devices">Devices and sign in</a>
+      <div><p class="eyebrow">Start with your account</p><h1>Account setup</h1><p class="page-intro">Use the server your operator gave you, then keep a way to recover access.</p></div>
+      <a class="action-link" href="/owner/devices#sign-in">Sign in</a>
     </header>
-    <p><a href="/owner/template-preview">Local template preview</a> Â· Preview personalized text without sending or saving it.</p>
     <p id="account-status" role="status" aria-live="polite"></p>
+    <nav class="setup-nav" aria-label="Setup steps">
+      <ol>
+        <li><a href="/owner/account" aria-current="step"><span class="step-number" aria-hidden="true">1</span><span>Account <small>Create, verify or sign in</small></span></a></li>
+        <li><a href="/owner/devices#pair-phone"><span class="step-number" aria-hidden="true">2</span><span>Connect a phone <small>Pair and compare</small></span></a></li>
+        <li><a href="/owner/sms-lines"><span class="step-number" aria-hidden="true">3</span><span>Set up an SMS line <small>Permissions, SIM and approval</small></span></a></li>
+        <li><a href="#mfa-section"><span class="step-number" aria-hidden="true">4</span><span>Keep access safe <small>Authenticator and recovery</small></span></a></li>
+      </ol>
+    </nav>
 
-    <section aria-labelledby="register-title">
+    <section id="service-choice" aria-labelledby="service-choice-title">
+      <p class="eyebrow">Choose your service</p>
+      <h2 id="service-choice-title">Hosted or self-hosted?</h2>
+      <div class="service-options">
+        <article aria-labelledby="hosted-path-title">
+          <h3 id="hosted-path-title">Hosted</h3>
+          <p>Use a server managed by an operator. If you have an invitation, use the account address and invite they supplied.</p>
+          <p class="availability-note">Public hosted signup and live checkout are not available in this owner workspace.</p>
+          <a href="#register">Use an invitation</a>
+        </article>
+        <article aria-labelledby="self-hosted-path-title">
+          <h3 id="self-hosted-path-title">Self-hosted</h3>
+          <p>Your operator runs the server and creates its first owner with the local operator command. Additional owners register here when invited.</p>
+          <a href="#register">Create an invited account</a>
+        </article>
+      </div>
+      <p class="section-next">Already have an account on this server? <a href="/owner/devices#sign-in">Sign in and continue to your phones</a>.</p>
+    </section>
+
+    <section id="register" aria-labelledby="register-title">
+      <p class="eyebrow">Account &middot; create</p>
       <h2 id="register-title">Register an invited owner</h2>
-      <p>Your operator may need to open registration and give you an address-bound invite token. The first owner is created with the local operator command.</p>
+      <p>Use the email address on your invitation. Your operator must allow registration and may require an invite token for that address.</p>
       <form id="register-form" method="post" action="/v1/auth/register">
         <label for="register-email">Email</label>
         <input id="register-email" name="email" type="email" autocomplete="email" required>
         <label for="register-password">New password</label>
-        <input id="register-password" name="password" type="password" autocomplete="new-password" minlength="12" required>
+        <input id="register-password" name="password" type="password" autocomplete="new-password" minlength="12" aria-describedby="register-password-help" required>
+        <p id="register-password-help" class="field-help">Use at least 12 characters. Save your password somewhere you can access securely.</p>
         <label for="register-token">Invite token, if your operator supplied one</label>
         <input id="register-token" name="invite" type="text" autocomplete="off" spellcheck="false">
         <button type="submit">Request registration</button>
       </form>
       <p id="register-status" role="status" aria-live="polite"></p>
+      <p class="section-next">After registration, <a href="#verify">verify your email below</a>. If the request is interrupted, try again or ask your operator to confirm your invitation.</p>
     </section>
 
     <section id="verify" aria-labelledby="verify-title">
+      <p class="eyebrow">Account &middot; verify</p>
       <h2 id="verify-title">Verify your email</h2>
       <p>Enter the code from your ZROtext verification email together with the password you chose at sign-up. Keep the code out of links and URLs. If you did not sign up, ignore the email.</p>
       <form id="verify-form" method="post" action="/v1/auth/verify-email">
@@ -68,10 +98,13 @@
         <button type="submit">Request another code</button>
       </form>
       <p id="resend-status" role="status" aria-live="polite"></p>
+      <p class="section-next">Email verified? <a href="/owner/devices#sign-in">Sign in to connect your phone</a>.</p>
     </section>
 
     <section id="mfa-section" aria-labelledby="mfa-title" hidden>
+      <p class="eyebrow">Keep access safe</p>
       <h2 id="mfa-title">Authenticator and recovery codes</h2>
+      <p>Add an authenticator, confirm its code, then save your recovery codes. Keep them somewhere you can reach if you lose your phone. A recovery code is used only once.</p>
       <p id="mfa-status" role="status" aria-live="polite"></p>
       <form id="mfa-enroll-form" method="post" action="/v1/auth/mfa/enroll">
         <label for="mfa-enroll-password">Current password</label>
@@ -102,8 +135,10 @@
         <input id="mfa-disable-code" name="code" type="text" autocomplete="one-time-code" required>
         <button type="submit">Disable authenticator</button>
       </form>
+      <p class="section-next">Review where you are signed in under <a href="/owner/devices#account-security">Security &amp; sessions</a>. Your SMS line approval key is managed separately on <a href="/owner/sms-lines">SMS lines</a>.</p>
     </section>
+    <p class="utility-note"><a href="/owner/template-preview">Local template preview</a> &middot; Preview personalized text without sending or saving it.</p>
   </main>
-  <footer><a href="/source">Source code for this server</a> Â· <a href="/about/version">Build version</a></footer>
+  <footer><a href="/source">Source code for this server</a> &middot; <a href="/about/version">Build version</a></footer>
 </body>
 </html>

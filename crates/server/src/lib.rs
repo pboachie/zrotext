@@ -4,6 +4,7 @@ pub mod alpha_policy;
 pub mod api_json;
 pub mod auth;
 pub mod billing;
+pub mod contact_reader_statement;
 pub mod device_socket;
 pub mod encrypted_schedule;
 pub mod enrollment;
@@ -44,6 +45,7 @@ pub mod sealed_outbound;
 pub mod sealed_root_ceremony;
 pub mod sealed_root_custody;
 pub use zrotext_root_material::sealed_root_enrollment;
+pub mod original_reply;
 pub mod wakeups;
 pub mod webhook_egress;
 pub mod webhook_worker;
@@ -188,4 +190,5 @@ pub(crate) mod outbox_test_support {
 #[cfg(test)]
 mod sealed_root_roles_tests;
 
+pub mod managed_reader_policy;
 pub mod workflow_templates;
