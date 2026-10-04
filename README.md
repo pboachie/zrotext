@@ -12,6 +12,17 @@ ZROtext is an open-source Android SMS gateway. It is designed to connect a dedic
 <p align="center"><img src="docs/assets/ui/phone-home.png" alt="Gateway Home on a fresh emulator: connection paused, zero connections and message counts unavailable" width="360"></p>
 <p align="center"><sub>Actual Android UI from current source · fresh emulator · no SIM, account or SMS activity</sub></p>
 
+## Let your AI send a text
+
+Give your own agent, assistant or script a way to text you with its work, then review what it proposes before anything else goes out. Today this runs **only against the delivery simulator**: it sends no SMS, needs no phone, SIM, account or credentials, and contacts nobody. Real sending through a connected phone is not available yet.
+
+```sh
+cd sdk/typescript && npm ci --ignore-scripts && npm run build && cd ../..
+python scripts/agent_setup.py journey
+```
+
+This needs Node.js 22+ and Python 3.12+. It walks a scripted agent that queues a task-completion text, receives a reply that grants it no authority, and holds its next action for owner approval. For the underlying delivery decisions, run `cargo run --locked -p zrotext-device-sim`. Read the [agent texting quickstart](docs/AGENT-QUICKSTART.md) for each step and what it does not prove. A direct HTTP send example is not offered here because the dev stack needs an owner account and an enrolled phone first.
+
 ## Project status
 
 ZROtext is in active development. The repository includes a Rust server, PostgreSQL migrations, a delivery simulator, and an Android app. The local stack is for development. Some phone and billing flows are limited to controlled tests; a hosted SMS service is not available. See the [roadmap](docs/ROADMAP.md) for planned product work.
@@ -28,45 +39,13 @@ The [current interface guide](docs/INTERFACE.md) shows real Android screens and 
 - **Managed option.** Hosted accounts, device monitoring, backups, upgrades, and billing are planned as an operated service built from the public application source.
 - **Two-location architecture.** The design supports routing API and device connections across sites while keeping one authoritative database writer and fenced device ownership.
 
-<details>
-<summary><b>Delivery state model</b></summary>
-
-Each state change needs evidence from the phone or a timeout. An ambiguous radio submission becomes `unknown` and is never retried automatically, because a retry could send a duplicate SMS. A conflicting callback in any active state also moves the message to `unknown`. See [message semantics](docs/ARCHITECTURE.md#message-semantics-and-the-duplicate-send-problem).
-
-```mermaid
-stateDiagram-v2
-    direction LR
-    [*] --> accepted
-    accepted --> queued: enqueue
-    queued --> claimed: device claims
-    claimed --> submitting: submit intent saved
-    submitting --> submitted: sent callback OK
-    submitting --> failed: sent callback failed
-    submitting --> unknown: crash, timeout or partial
-    claimed --> unknown: grant timeout
-    unknown --> submitted: late sent callback
-    unknown --> failed: late failure callback
-    claimed --> queued: proven no submit
-    submitting --> queued: proven no submit
-    unknown --> queued: proven no submit
-    submitted --> delivered: delivery callback
-    submitted --> delivery_unknown: no receipt in time
-    delivery_unknown --> delivered: late receipt
-    accepted --> cancelled
-    queued --> cancelled
-    claimed --> cancelled
-    accepted --> expired
-    queued --> expired
-    claimed --> expired
-```
-
-</details>
+**Honest delivery states** are summarized above; the full [delivery state model](docs/DELIVERY-STATES.md) shows every transition. An ambiguous submission becomes `unknown` and is never retried automatically, so an AI cannot cause a duplicate text.
 
 The architecture describes intended behavior. Check the current code and release notes before relying on a capability.
 
 ## Sending responsibly
 
-Only send messages to recipients for whom you have an appropriate basis to send that type of SMS. Keep consent records, honor withdrawal and opt-out requests, and check the rules for your recipients' locations and your carrier or mobile plan. The restricted synthetic pilot suppresses recognized opt-out replies and lets owners record withdrawals received through other channels. Holds block admission and new send grants, and cancel queued work before a grant. Owner review decisions do not lift blocks. Production line activation, general inbound content and end-to-end device evidence remain incomplete, so do not use it for general or bulk sending. See [SMS compliance and current limits](docs/SMS-COMPLIANCE.md).
+Only message recipients you have an appropriate basis to text, keep consent records, and honor opt-outs. Production line activation, general inbound content and end-to-end device evidence remain incomplete, so do not use ZROtext for general or bulk sending. See [SMS compliance and current limits](docs/SMS-COMPLIANCE.md).
 
 ## Roadmap
 
@@ -117,6 +96,8 @@ To create the first owner, follow the [local bootstrap steps](docs/SELF-HOSTING.
 
 - [Current interfaces and setup boundaries](docs/INTERFACE.md)
 - [Architecture and API contracts](docs/ARCHITECTURE.md)
+- [Delivery state model](docs/DELIVERY-STATES.md)
+- [Agent texting quickstart (simulator)](docs/AGENT-QUICKSTART.md)
 - [Two-location routing and failover design](docs/MULTI-LOCATION.md)
 - [Security design](docs/SECURITY-DESIGN.md)
 - [SMS compliance and current limits](docs/SMS-COMPLIANCE.md)
