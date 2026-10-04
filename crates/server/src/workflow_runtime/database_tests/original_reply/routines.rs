@@ -9,6 +9,7 @@ use crate::workflow_runtime::routines::{
 };
 use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
+mod acceptance;
 
 struct RoutineCase {
     f: OriginalCase,
