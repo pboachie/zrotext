@@ -293,6 +293,17 @@ pub fn verify(
     })
 }
 
+/// The archive reader and phone conversation signer the reply path depends
+/// on, with each key's cryptographic deadline already capped by the
+/// manifest's own expiry.
+#[derive(Clone, Copy)]
+pub(crate) struct ConversationKeys {
+    pub(crate) reader: [u8; 32],
+    pub(crate) signer: [u8; 32],
+    pub(crate) archive_until: u64,
+    pub(crate) signer_until: u64,
+}
+
 impl VerifiedManifest {
     pub fn digest(&self) -> &[u8; 32] {
         &self.digest
@@ -361,6 +372,22 @@ impl VerifiedManifest {
         line: &[u8; 16],
         now: u64,
     ) -> Result<([u8; 32], [u8; 32]), &'static str> {
+        let keys = self.conversation_keys_with_deadlines(device, line, now)?;
+        Ok((keys.reader, keys.signer))
+    }
+
+    /// [`Self::conversation_keys`] plus each selected key's cryptographic
+    /// deadline (`archive_until`, `signer_until`), already capped by the
+    /// manifest's own expiry. Reply grants and proofs must not outlive
+    /// either deadline: the archive reader decrypts the sealed history and
+    /// the phone signer proves the conversation, so a credential accepted
+    /// past either key's deadline would rely on expired authority.
+    pub(crate) fn conversation_keys_with_deadlines(
+        &self,
+        device: &[u8; 16],
+        line: &[u8; 16],
+        now: u64,
+    ) -> Result<ConversationKeys, &'static str> {
         freshness(self.issued, self.expires, now)?;
         let reader = self
             .roles
@@ -375,7 +402,12 @@ impl VerifiedManifest {
         if signers.next().is_some() {
             return Err("ambiguous conversation signer");
         }
-        Ok((reader.id, signer.id))
+        Ok(ConversationKeys {
+            reader: reader.id,
+            signer: signer.id,
+            archive_until: reader.until.min(self.expires),
+            signer_until: signer.until.min(self.expires),
+        })
     }
 
     pub(crate) fn admission_deadline(

@@ -157,7 +157,8 @@ pub async fn erase_context(
 /// Bounded expiry/revocation scrub. Removing old records is handled alongside
 /// their source context so replay identities cannot become reusable grants.
 pub async fn prune(client: &mut Client, limit: i64) -> Result<u64, tokio_postgres::Error> {
-    let routine_changes = super::routines::lifecycle::prune(client, limit).await?;
+    let routine_changes = super::routines::lifecycle::prune(client, limit).await?
+        + crate::original_reply::lifecycle::prune(client, limit).await?;
     let tx = client.transaction().await?;
     if !installed(&tx).await? {
         return Ok(routine_changes);

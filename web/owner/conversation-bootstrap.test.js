@@ -1,9 +1,50 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 "use strict";
 const {test}=require("node:test"),assert=require("node:assert/strict");
-const {createHttp,requestFileSignature,requestArchiveUnlock,requestPhoneFile}=require("./conversation-bootstrap.js");
+const {createHttp,requestFileSignature,requestArchiveUnlock,requestPhoneFile,parseReaderSelections}=require("./conversation-bootstrap.js");
 const selected={device_id:"11111111-1111-4111-8111-111111111111",line_id:"22222222-2222-4222-8222-222222222222",binding_generation:1,peer:"+12",disclosure_version:1,content_transfer_confirmed:true};
 const manifest=new Uint8Array(218),cookie={cookie:"__Host-zrotext_csrf=synthetic-csrf"};
+const readerLine=(connector=selected.device_id,grant=selected.line_id,key="11".repeat(32))=>`${connector}, ${grant}, ${key}`;
+test("reader selection requires a separate decision and copies a canonical bounded tuple list",()=>{
+ assert.deepEqual(parseReaderSelections("",false),[]);
+ assert.throws(()=>parseReaderSelections(readerLine(),false),/consent/);
+ const readers=parseReaderSelections(readerLine(),true);
+ assert.equal(readers.length,1);assert.equal(readers[0].connector_id,selected.device_id);
+ assert.deepEqual(readers[0].key_id,Array(32).fill(17));
+ assert.ok(Object.isFrozen(readers)&&Object.isFrozen(readers[0])&&Object.isFrozen(readers[0].key_id));
+ assert.throws(()=>{readers[0].key_id[0]=2;},TypeError);
+});
+test("reader selection refuses duplicate grants, connectors, keys and malformed identifiers",()=>{
+ for(const input of [readerLine()+"\n"+readerLine(),readerLine("foreign"),readerLine(selected.device_id,selected.line_id,"00".repeat(32)),readerLine()+", extra",readerLine()+"\n",Array(7).fill(readerLine()).join("\n")]){
+  // A trailing newline is ordinary text entry; an interior empty reader is not.
+  if(input===readerLine()+"\n")assert.equal(parseReaderSelections(input,true).length,1);
+  else assert.throws(()=>parseReaderSelections(input,true));
+ }
+});
+test("selected activation sends exact reader consent and requires the v2 statement type",async()=>{
+ const readers=parseReaderSelections(readerLine(),true);let sent;
+ const c=createHttp({enabled:true,document:cookie,fetch:async(path,options)=>{sent=JSON.parse(options.body);return new Response(Uint8Array.of(2),{headers:{"Content-Type":"application/vnd.zrotext.conversation-statement.v2"}});}});
+ await c.activate({...selected,integration_readers:readers,integration_transfer_confirmed:true,integration_disclosure_version:"customer-readers-v2"},manifest);
+ assert.deepEqual(sent.integration_readers,readers);assert.equal(sent.integration_transfer_confirmed,true);assert.equal(sent.integration_disclosure_version,"customer-readers-v2");assert.deepEqual(sent.consent,selected);
+ const old=createHttp({enabled:true,document:cookie,fetch:async()=>new Response(Uint8Array.of(1),{headers:{"Content-Type":"application/vnd.zrotext.conversation-statement.v1"}})});
+ await assert.rejects(old.activate({...selected,integration_readers:readers,integration_transfer_confirmed:true,integration_disclosure_version:"customer-readers-v2"},manifest),/statement refused/);
+});
+test("invalid selected activation refuses before authenticated HTTP",async()=>{
+ let calls=0;const c=createHttp({enabled:true,document:cookie,fetch:async()=>{calls++;}}),readers=parseReaderSelections(readerLine(),true);
+ for(const change of [{integration_transfer_confirmed:false},{integration_disclosure_version:"conversation-content-v1"},{integration_readers:[{...readers[0],public_point:[]}]},{integration_readers:[{...readers[0],key_id:Array(32).fill(0)}]}])await assert.rejects(c.activate({...selected,integration_readers:readers,integration_transfer_confirmed:true,integration_disclosure_version:"customer-readers-v2",...change},manifest));
+ assert.equal(calls,0);
+});
+test("six independently distinct readers are sorted by fingerprint and duplicate tuple identities refuse",()=>{
+ const rows=Array.from({length:6},(_,i)=>readerLine(`${i+1}`.repeat(8)+"-1111-4111-8111-111111111111",`${i+1}`.repeat(8)+"-2222-4222-8222-222222222222",`${i+1}${i+1}`.repeat(32))).reverse();
+ const selectedReaders=parseReaderSelections(rows.join("\n"),true);assert.equal(selectedReaders.length,6);assert.deepEqual(selectedReaders.map(r=>r.key_id[0]),[17,34,51,68,85,102]);
+ const [first,second]=rows.slice().reverse();for(const index of [0,1,2]){const fields=second.split(","),other=first.split(",");fields[index]=other[index];assert.throws(()=>parseReaderSelections(first+"\n"+fields.join(","),true),/Duplicate/);}
+});
+function selectionProjection(){return {v:1,statement:Buffer.alloc(380).toString("base64"),approval_signature:Buffer.alloc(64).toString("base64"),installation_signature:Buffer.alloc(64).toString("base64"),activation_manifest_digest:Buffer.alloc(32).toString("base64"),activation_manifest_version:"7",accepted_at_ms:"2000"};}
+test("owner selection request is bounded, cookie scoped, closed and never retries",async()=>{
+ let request;const c=createHttp({enabled:true,document:cookie,fetch:async(path,options)=>{request={path,options};return Response.json(selectionProjection());}});
+ assert.deepEqual(await c.selection(selected.device_id),selectionProjection());assert.equal(request.path,`/v1/owner/conversation/events/${selected.device_id}/selection`);assert.equal(request.options.credentials,"same-origin");assert.equal(request.options.redirect,"error");assert.equal(request.options.cache,"no-store");
+ for(const change of [{authority:true},{accepted_at_ms:"02000"},{approval_signature:"invalid"},{statement:Buffer.alloc(1537).toString("base64")}]){let calls=0;const bad=createHttp({enabled:true,document:cookie,fetch:async()=>{calls++;return Response.json({...selectionProjection(),...change});}});await assert.rejects(bad.selection(selected.device_id));assert.equal(calls,1);}
+});
 function projection(){const out={...selected,binding_generation:"1",v:1,trust_candidate:true,owner_session_live:true,consent_live:false,account_id:selected.device_id,session_id:selected.line_id,phase:"unprepared",interval_id:null,server_now_ms:"1",manifest_version:"1",trust_generation:"1"};for(const name of ["root_pin","root_fingerprint","current_manifest","manifest_digest","phone_reader_id","phone_reader_point","archive_reader_id","archive_reader_point","phone_signer_id","phone_signer_point"])out[name]=Buffer.alloc(name.endsWith("point")?65:name==="root_pin"?94:name==="current_manifest"?218:32).toString("base64");return out;}
 test("authenticated exact projection remains explicitly untrusted",async()=>{let path;const c=createHttp({enabled:true,document:cookie,fetch:async p=>{path=p;return Response.json(projection());}});const r=await c.bootstrap(selected);assert.equal(path,"/v1/owner/conversation/bootstrap");assert.equal(r.trusted,false);assert.equal(r.candidate.root_pin,projection().root_pin);});
 test("foreign scope and noncanonical projection are refused",async()=>{for(const change of [{peer:"+13"},{server_now_ms:"01"},{root_pin:"noncanonical"}]){const c=createHttp({enabled:true,document:cookie,fetch:async()=>Response.json({...projection(),...change})});await assert.rejects(c.bootstrap(selected),/projection/);}});
@@ -34,7 +75,7 @@ function archiveContext(){return {binding:{account:new Uint8Array(16),session:ne
 test("activation public wrapper downloads distinctly and rejects unsigned substitution",async()=>{const d=dom(),unsigned=new Uint8Array(154),typed=new Uint8Array(161);typed.set([90,84,67,65,1,0,154]);const approval=requestFileSignature({...d,review:{unsigned},typedProposal:typed});assert.equal(d.nodes.find(n=>n.tag==="a").download,"conversation-activation-proposal.bin");const rejected=assert.rejects(approval.result,/closed/);approval.close();await rejected;typed[160]=1;assert.throws(()=>requestFileSignature({...dom(),review:{unsigned},typedProposal:typed}),/differs/);});
 
 function publicPhone(kind,length){const tail=kind==="setup"?97:32,out=new Uint8Array(7+length+tail);out.set(kind==="setup"?[90,84,80,83,1]:[90,84,80,82,1]);new DataView(out.buffer).setUint16(5,length);return out;}
-for(const [kind,min,max] of [["setup",380,1024],["reply",218,16384]])test(`public ${kind} file has strict bounds, distinct magic and exact EOF`,async()=>{for(const n of [min,max]){const d=dom(),controller=new AbortController(),content=publicPhone(kind,n);let blob;d.URL.createObjectURL=value=>{blob=value;return "blob:synthetic";};const file=requestPhoneFile({...d,signal:controller.signal,kind,content});content[7]^=1;assert.notDeepEqual(new Uint8Array(await blob.arrayBuffer()),content);assert.equal(d.nodes.find(n=>n.tag==="a").download,`conversation-phone-${kind==="setup"?"setup":"reply-authority"}.bin`);controller.abort();assert.equal(d.host.child.removed,true);assert.equal(d.revoked(),1);file.close();assert.equal(d.revoked(),1);}for(const content of [publicPhone(kind,min-1),publicPhone(kind,max+1),new Uint8Array(publicPhone(kind,min).length+1)])assert.throws(()=>requestPhoneFile({...dom(),signal:new AbortController().signal,kind,content}));const wrong=publicPhone(kind,min);wrong[3]^=1;assert.throws(()=>requestPhoneFile({...dom(),signal:new AbortController().signal,kind,content:wrong}));});
+for(const [kind,min,max] of [["setup",380,1536],["reply",218,16384]])test(`public ${kind} file has strict bounds, distinct magic and exact EOF`,async()=>{for(const n of [min,max]){const d=dom(),controller=new AbortController(),content=publicPhone(kind,n);let blob;d.URL.createObjectURL=value=>{blob=value;return "blob:synthetic";};const file=requestPhoneFile({...d,signal:controller.signal,kind,content});content[7]^=1;assert.notDeepEqual(new Uint8Array(await blob.arrayBuffer()),content);assert.equal(d.nodes.find(n=>n.tag==="a").download,`conversation-phone-${kind==="setup"?"setup":"reply-authority"}.bin`);controller.abort();assert.equal(d.host.child.removed,true);assert.equal(d.revoked(),1);file.close();assert.equal(d.revoked(),1);}for(const content of [publicPhone(kind,min-1),publicPhone(kind,max+1),new Uint8Array(publicPhone(kind,min).length+1)])assert.throws(()=>requestPhoneFile({...dom(),signal:new AbortController().signal,kind,content}));const wrong=publicPhone(kind,min);wrong[3]^=1;assert.throws(()=>requestPhoneFile({...dom(),signal:new AbortController().signal,kind,content:wrong}));});
 test("closed public handoff never creates a URL or download",()=>{const d=dom(),controller=new AbortController();controller.abort();d.URL.createObjectURL=()=>{throw Error("must not create");};assert.throws(()=>requestPhoneFile({...d,signal:controller.signal,kind:"setup",content:publicPhone("setup",380)}),/unavailable/);assert.equal(d.nodes.length,0);});
 test("public handoff closure removes controls even when URL cleanup throws",()=>{const d=dom(),controller=new AbortController();d.URL.revokeObjectURL=()=>{throw Error("Synthetic cleanup failure");};requestPhoneFile({...d,signal:controller.signal,kind:"reply",content:publicPhone("reply",218)});controller.abort();assert.equal(d.host.child.removed,true);});
 

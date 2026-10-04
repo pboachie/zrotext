@@ -156,6 +156,11 @@ internal fun FutureConversationPane(
             Text("Phone line: ${label ?: "Unverified"}")
             Text("Conversation with: ${review.peer}")
             Text(review.disclosure)
+            review.integrationSelection.values.forEach { selected ->
+                Text("Customer reader connector: ${selected.connectorId}")
+                Text("Read grant: ${selected.readGrantId}")
+                Text("Reader key: ${selected.keyId}")
+            }
             if (label == null) Text("The selected phone line could not be verified. Refresh before approving.")
             Button(onClick = { submit { port.approvePhoneReview(review.requestId, current.version) } },
                 enabled = !pending && label != null, modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) {

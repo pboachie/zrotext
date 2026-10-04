@@ -73,7 +73,7 @@ internal class ConversationSocketWire(private val socket: WebSocket,
     }
     fun acceptReply(session:ConversationPhoneSession, bytes:ByteArray):Boolean = synchronized(lock) {
         val pending=waiting ?: return@synchronized false
-        val maximum=when(pending.replyKind){15->40122;17->10897;19->2168;else->512}
+        val maximum=when(pending.replyKind){15->40122;17->10897;19->2168;else->1024}
         if(closed || session!=pending.session || authenticatedSession()!=session || bytes.size !in 118..maximum) return@synchronized false
         val challenge=runCatching {
             when(pending.replyKind) {

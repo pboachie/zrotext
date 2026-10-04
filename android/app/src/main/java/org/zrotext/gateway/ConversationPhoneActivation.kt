@@ -25,7 +25,7 @@ internal class ConversationPhoneActivation(statement:ByteArray,private val trust
         if(authority.version==scope.activationVersion)check(authority.digest.contentEquals(hex(scope.activationDigest)))
         return authority.context(Draft02ManifestAuthority.Request(Draft02ManifestAuthority.Direction.INBOUND,
             uuid(scope.accountId),uuid(scope.intervalId),uuid(scope.deviceId),uuid(scope.lineId),scope.peer.toByteArray(Charsets.US_ASCII),
-            parsed.signerId,listOf(Draft02ManifestAuthority.Reader(2,hex(scope.readerKeyId)))),trustedNow())
+            parsed.signerId,listOf(Draft02ManifestAuthority.Reader(2,hex(scope.readerKeyId))) + scope.selectedReaders.map { Draft02ManifestAuthority.Reader(3,hex(it.keyId)) }),trustedNow())
     }
     @Synchronized override fun verifiedPreparation(evidence:ByteArray):ConversationCaptureScope {
         check(MessageDigest.isEqual(evidence,original));check(trustedNow() in 1 until parsed.expiresMs);context();return parsed.scope
@@ -39,10 +39,10 @@ internal class ConversationPhoneActivation(statement:ByteArray,private val trust
         accepted=null;acceptedChallenge=null
         check(request.intervalId==parsed.scope.intervalId);verifiedPreparation(original)
         val session=checkNotNull(wire.currentSession());val nonce=UUID.randomUUID()
-        val approved=signExisting(ConversationActivationCodec.APPROVE_DOMAIN,original.copyOf(),context().signerPoint)
+        val approved=signExisting(ConversationActivationCodec.approveDomain(parsed.scope),original.copyOf(),context().signerPoint)
         val approval=ConversationChannelCodec.parseApprovalReply(exchange(ConversationChannelCodec.activationRequest(session,6,nonce,original,approved),session),session)
         check(approval.first==nonce && approval.second==parsed.scope);verifiedPreparation(original)
-        val installed=signExisting(ConversationActivationCodec.INSTALL_DOMAIN,original.copyOf(),context().signerPoint)
+        val installed=signExisting(ConversationActivationCodec.installDomain(parsed.scope),original.copyOf(),context().signerPoint)
         val challenge=UUID.fromString(request.challenge)
         val evidence=exchange(ConversationChannelCodec.activationRequest(session,8,challenge,original,installed),session)
         val lease=ConversationChannelCodec.parseLeaseReply(evidence,session)

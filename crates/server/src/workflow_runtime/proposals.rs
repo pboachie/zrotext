@@ -32,11 +32,16 @@ fn authorization(error: AuthError) -> ConversationError {
         _ => ConversationError::Forbidden,
     }
 }
-struct IntegrationProposal<'tx, 'connection> {
+pub(crate) struct IntegrationProposal<'tx, 'connection> {
     tx: &'tx Transaction<'connection>,
     scope: CheckedScope<'tx, 'connection>,
     descriptor: Descriptor,
     actor: Actor,
+}
+impl IntegrationProposal<'_, '_> {
+    pub(crate) async fn recheck_current(&mut self) -> Result<(), AuthError> {
+        self.recheck().await.map_err(error)
+    }
 }
 impl<'connection> ProposalFence<'connection> for IntegrationProposal<'_, 'connection> {
     fn transaction(&self) -> &Transaction<'connection> {
@@ -77,13 +82,39 @@ pub async fn propose_action(
     descriptor: Descriptor,
 ) -> Result<ActionState, AuthError> {
     principal.require(Operation::Propose)?;
-    let context = descriptor.identities().map_err(error)?.content;
     let tx = client.transaction().await?;
     tx.batch_execute("SET LOCAL lock_timeout='3s'; SET LOCAL statement_timeout='5s'")
         .await?;
-    let scope = scope::lock_scope(&tx, principal, context, Operation::Propose).await?;
+    let result = propose_in_transaction(&tx, principal, request, descriptor).await?;
+    tx.commit().await?;
+    Ok(result)
+}
+
+/// Crate-private composition only; the same current Propose scope is held through
+/// the caller's original-event consumption transaction. No read grant is upgraded.
+pub(crate) async fn propose_in_transaction(
+    tx: &Transaction<'_>,
+    principal: &IntegrationPrincipal,
+    request: uuid::Uuid,
+    descriptor: Descriptor,
+) -> Result<ActionState, AuthError> {
+    let (result, permit) = propose_held_in_transaction(tx, principal, request, descriptor).await?;
+    drop(permit);
+    Ok(result)
+}
+/// Keeps the actual output Propose authority borrowed until composed writes
+/// finish; callers must recheck and drop it immediately before committing.
+pub(crate) async fn propose_held_in_transaction<'tx, 'connection>(
+    tx: &'tx Transaction<'connection>,
+    principal: &IntegrationPrincipal,
+    request: uuid::Uuid,
+    descriptor: Descriptor,
+) -> Result<(ActionState, IntegrationProposal<'tx, 'connection>), AuthError> {
+    principal.require(Operation::Propose)?;
+    let context = descriptor.identities().map_err(error)?.content;
+    let scope = scope::lock_scope(tx, principal, context, Operation::Propose).await?;
     let mut permit = IntegrationProposal {
-        tx: &tx,
+        tx,
         scope,
         descriptor,
         actor: Actor::Integration(principal.grant_id()),
@@ -98,7 +129,5 @@ pub async fn propose_action(
         .record_access(request, result.key.action_id, &digest)
         .await?;
     permit.recheck().await.map_err(error)?;
-    drop(permit);
-    tx.commit().await?;
-    Ok(result)
+    Ok((result, permit))
 }
