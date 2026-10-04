@@ -17,6 +17,8 @@ const refresh = document.getElementById("refresh");
 const checkoutKey = crypto.randomUUID();
 let statusGeneration = 0;
 let checkoutBlocked = false;
+let statusReady = false;
+let portalAvailable = false;
 
 const entitlementReasons = {
   active: "active subscription",
@@ -60,8 +62,28 @@ function csrfToken() {
   return entry ? entry.slice("__Host-zrotext_csrf=".length) : "";
 }
 
+function statusUnavailable(message) {
+  statusReady = false;
+  portalAvailable = false;
+  checkout.disabled = true;
+  portal.disabled = true;
+  list.replaceChildren();
+  state.textContent = "Billing status unavailable.";
+  localUsage.textContent = "Local usage unavailable. Refresh after signing in again; old usage is not shown.";
+  invoicePeriod.textContent = "Invoice status unavailable; old observations are not shown.";
+  usageSynchronization.textContent = "Billing synchronization unavailable; old observations are not shown.";
+  exposureCap.textContent = "Tenant exposure caps unavailable; old observations are not shown.";
+  entitlementStatus.textContent = "";
+  deviceCapStatus.textContent = "";
+  manageDevices.hidden = true;
+  error.textContent = message;
+}
+
 async function loadStatus() {
   const generation = ++statusGeneration;
+  statusReady = false;
+  portalAvailable = false;
+  checkout.disabled = true;
   list.replaceChildren();
   error.textContent = "";
   state.textContent = "Loading billing status…";
@@ -174,24 +196,19 @@ async function loadStatus() {
       item.textContent = "More subscriptions exist; this page displays the latest 20.";
       list.append(item);
     }
+    statusReady = true;
+    portalAvailable = result.customerBound === true;
     checkout.disabled = checkoutBlocked;
-    portal.disabled = !result.customerBound;
+    portal.disabled = !portalAvailable;
   } catch (cause) {
     if (generation !== statusGeneration) return;
-    list.replaceChildren();
-    state.textContent = "Billing status unavailable.";
-    localUsage.textContent = "Local usage unavailable. Refresh after signing in again; old usage is not shown.";
-    invoicePeriod.textContent = "Invoice status unavailable; old observations are not shown.";
-    usageSynchronization.textContent = "Billing synchronization unavailable; old observations are not shown.";
-    exposureCap.textContent = "Tenant exposure caps unavailable; old observations are not shown.";
-    entitlementStatus.textContent = "";
-    deviceCapStatus.textContent = "";
-    manageDevices.hidden = true;
-    error.textContent = cause.message;
+    statusUnavailable(cause.message);
   }
 }
 
 async function openHosted(path) {
+  if (!statusReady || (path === "checkout" ? checkout.disabled : portal.disabled)) return;
+  const generation = statusGeneration;
   error.textContent = "";
   const csrf = csrfToken();
   if (!csrf) {
@@ -199,7 +216,6 @@ async function openHosted(path) {
     return;
   }
   checkout.disabled = true;
-  const portalWasEnabled = !portal.disabled;
   portal.disabled = true;
   let conflict = false;
   try {
@@ -208,12 +224,19 @@ async function openHosted(path) {
     const response = await fetch(`/v1/billing/${path}`, {
       method: "POST", credentials: "same-origin", cache: "no-store", headers,
     });
+    if (generation !== statusGeneration) return;
+    if (response.status === 401 || response.status === 403) {
+      ++statusGeneration;
+      statusUnavailable("Billing authorization expired or was refused. Sign in again and refresh status to continue.");
+      return;
+    }
     if (response.status === 409 && path === "checkout") {
       conflict = true;
       throw new Error("A subscription already exists for this account. Use the customer portal to manage it.");
     }
     if (!response.ok) throw new Error("Could not open Stripe test billing. Refresh status and retry.");
     const result = await response.json();
+    if (generation !== statusGeneration) return;
     const destination = new URL(result.url);
     const expectedHost = path === "checkout" ? "checkout.stripe.com" : "billing.stripe.com";
     if (destination.protocol !== "https:" || destination.host !== expectedHost) {
@@ -221,14 +244,18 @@ async function openHosted(path) {
     }
     window.location.assign(destination.href);
   } catch (cause) {
+    if (generation !== statusGeneration) return;
     if (conflict) {
       // loadStatus clears the error line, so refresh the state first and
       // apply the guidance after the refreshed page has rendered.
+      const refreshedGeneration = statusGeneration + 1;
       await loadStatus();
+      if (refreshedGeneration !== statusGeneration) return;
+      if (!statusReady) return;
     }
     error.textContent = cause.message;
-    checkout.disabled = checkoutBlocked;
-    portal.disabled = !portalWasEnabled;
+    checkout.disabled = !statusReady || checkoutBlocked;
+    portal.disabled = !statusReady || !portalAvailable;
   }
 }
 
