@@ -47,7 +47,7 @@ class RoadmapTest(unittest.TestCase):
         self.assertEqual(
             roadmap.alt_text(self.data),
             "Roadmap at a glance: 25 capabilities in five tracks. Four are in a restricted "
-            "pilot, eighteen are being built, two are in design and one is planned. None has "
+            "pilot, eighteen are being built and three are in design. None has "
             "reached general release.",
         )
 

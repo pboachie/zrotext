@@ -85,7 +85,7 @@ The proposed product direction is **your number, connected to your business, you
 Explore [all proposed use cases](docs/USE-CASES.md), including event invitations and RSVPs, repair updates, appointment waitlists and volunteer coordination. The [product implementation plan](docs/PRODUCT-PLAN.md) connects them to ordered development work and acceptance criteria.
 
 <!-- roadmap:overview -->
-<p align="center"><a href="docs/ROADMAP.md"><img src="docs/assets/roadmap-overview.svg" alt="Roadmap at a glance: 25 capabilities in five tracks. Four are in a restricted pilot, eighteen are being built, two are in design and one is planned. None has reached general release." width="820"></a></p>
+<p align="center"><a href="docs/ROADMAP.md"><img src="docs/assets/roadmap-overview.svg" alt="Roadmap at a glance: 25 capabilities in five tracks. Four are in a restricted pilot, eighteen are being built and three are in design. None has reached general release." width="820"></a></p>
 <!-- /roadmap:overview -->
 
 ## Design preview
