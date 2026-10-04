@@ -37,6 +37,12 @@ now authenticates the owner, stores only a metadata/status credential in the
 customer OS secret store, and previews a private broker entry. It does not pair
 a phone, grant content/send access or replace the simulator-first flow below.
 
+The explicit `guided_workflow_setup.py verify` operation checks an already
+reviewed metadata connector through its exact OS-custody launcher with the
+official MCP Python client. It performs authenticated readiness and same-scope
+context metadata without reinstalling, changing configuration or authenticating
+an owner. See [connection verification and its limits](guided-workflow-grants.md#verify-the-installed-connection).
+
 To try the complete bounded fixture journey without a client configuration,
 build the SDK and run `python scripts/agent_setup.py journey` from the checkout
 root. See [the synthetic quickstart](AGENT-QUICKSTART.md#launch) for prerequisites,
