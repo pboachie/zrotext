@@ -158,7 +158,7 @@ class PreparationProbeTest(unittest.TestCase):
 
     def test_exact_methods_counts_and_hardware_marker_required(self):
         methods = ['independentTinkWrapOpensThroughExistingKeystoreAndLostKeyCannotBeRecreated',
-                   'preparationRequiresActualReportedHardwareAndNeverProducesAlphaState']
+                   'preparationRequiresActualReportedHardwareAndNeverProducesAlphaState', probe.CUSTODY_METHOD]
         output = ''.join(f'INSTRUMENTATION_STATUS: class={probe.TEST}\nINSTRUMENTATION_STATUS: test={m}\n'
                          'INSTRUMENTATION_STATUS_CODE: 0\n' for m in methods)
         output += 'INSTRUMENTATION_RESULT: preparationCustody=unsupported\nINSTRUMENTATION_CODE: -1\n'
@@ -169,6 +169,46 @@ class PreparationProbeTest(unittest.TestCase):
                     output.replace('INSTRUMENTATION_CODE: -1', 'INSTRUMENTATION_CODE: 0')]:
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 probe.validate_results(bad)
+
+    def custody_result(self, **fields):
+        output = (f'INSTRUMENTATION_STATUS: class={probe.TEST}\n'
+                  f'INSTRUMENTATION_STATUS: test={probe.CUSTODY_METHOD}\nINSTRUMENTATION_STATUS_CODE: 0\n')
+        return output + ''.join(f'INSTRUMENTATION_RESULT: {k}={v}\n' for k, v in fields.items()) + 'INSTRUMENTATION_CODE: -1\n'
+
+    def test_custody_baseline_rejects_missing_duplicate_invalid_or_unbounded_metadata(self):
+        fields = {'custodyKeyId': 'ab' * 32, 'custodySecurity': 'SOFTWARE', 'custodyBootCount': '2'}
+        good = self.custody_result(**fields)
+        self.assertEqual(fields, probe.validate_custody_stage(good, baseline=True))
+        bad_outputs = [good + 'INSTRUMENTATION_RESULT: custodyKeyId=' + 'ab' * 32 + '\n',
+                       good.replace(probe.CUSTODY_METHOD, 'unrelatedPassingTest')]
+        for key, invalid in [('custodyKeyId', '0' * 64), ('custodyKeyId', 'ab' * 33),
+                             ('custodySecurity', 'ATTESTED'), ('custodyBootCount', '-1'),
+                             ('custodyBootCount', str(1 << 31)), ('custodyBootCount', '02')]:
+            bad_outputs.append(self.custody_result(**dict(fields, **{key: invalid})))
+        for key in fields:
+            bad_outputs.append(self.custody_result(**{k: v for k, v in fields.items() if k != key}))
+        for output in bad_outputs:
+            with self.assertRaises(ValueError): probe.validate_custody_stage(output, baseline=True)
+
+    def test_custody_stages_pin_baseline_and_stop_on_any_failure_without_reboot(self):
+        fields = {'custodyKeyId': 'ab' * 32, 'custodySecurity': 'SOFTWARE', 'custodyBootCount': '2'}
+        responses = [self.custody_result(**fields)] + [self.custody_result()] * 4
+        device = mock.Mock(side_effect=responses)
+        self.assertEqual('SOFTWARE', probe.run_custody_lifecycle(device))
+        calls = [list(call.args) for call in device.call_args_list]
+        self.assertEqual(['enroll', 'reload', 'lose', 'revoke', 'cleanup'],
+                         [args[args.index('custodyStage') + 1] for args in calls])
+        sessions = {args[args.index('custodySession') + 1] for args in calls}
+        self.assertEqual(1, len(sessions))
+        for args in calls:
+            self.assertNotIn('reboot', args)
+            self.assertNotIn('clear', args)
+            self.assertIn(probe.CUSTODY_TEST, args)
+        for args in calls[1:]:
+            for name, value in fields.items(): self.assertEqual(value, args[args.index(name) + 1])
+        device = mock.Mock(side_effect=[responses[0], self.custody_result().replace('CODE: 0', 'CODE: -3')])
+        with self.assertRaises(ValueError): probe.run_custody_lifecycle(device)
+        self.assertEqual(2, device.call_count)
 
 
 INSTALLED = '/data/app/~~AbC-_12==/org.zrotext.gateway.preparationprobe-Xy_9-==/base.apk'
