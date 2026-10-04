@@ -2,9 +2,9 @@
 // Real packaged Chromium/IDB; session transport is an explicitly synthetic observation.
 import {test} from 'node:test';import assert from 'node:assert/strict';
 import {readFile,mkdtemp,rm} from 'node:fs/promises';import path from 'node:path';import os from 'node:os';import {createRequire} from 'node:module';import {fileURLToPath} from 'node:url';
-import {refreshFixture,signFixtureSuccessor02,join} from './conversation-refresh-fixture.mjs';
-import {canonicalSignature02} from '../dist/draft02-manifest.js';
-import {encodeContactReaderStatementUnsigned01} from '../dist/contact-reader-statement.js';
+import {refreshFixture,signFixtureSuccessor02,join} from '../../../sdk/typescript/test/conversation-refresh-fixture.mjs';
+import {canonicalSignature02} from '../../../sdk/typescript/dist/draft02-manifest.js';
+import {encodeContactReaderStatementUnsigned01} from '../../../sdk/typescript/dist/contact-reader-statement.js';
 import {packageAccountRootTrust,files} from '../../../scripts/package_account_root_trust_browser.mjs';
 const repo=fileURLToPath(new URL('../../../',import.meta.url)),require=createRequire(path.join(repo,'web/owner/package.json'));
 async function fixture(){
