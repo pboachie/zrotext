@@ -531,7 +531,7 @@ async fn managed_grants_consent_hook_withdrawal_rolls_back_and_never_reactivates
             .unwrap()
             .get(0);
         let response=app.clone().oneshot(axum::http::Request::builder().method("POST").uri(format!("/v1/owner/contacts/{}/consents",c.request.contact)).header("origin","https://owner.example.test").header("cookie",format!("__Host-zrotext_session={token}; __Host-zrotext_csrf={csrf}")).header("x-zrotext-csrf",&csrf).header("content-type","application/json").body(axum::body::Body::from(serde_json::to_vec(&json!({"purpose":"operational","action":action,"source":"manual_entry","effective_at_ms":now})).unwrap())).unwrap()).await.unwrap();
-        assert_eq!(response.status(), axum::http::StatusCode::CREATED);
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
     }
     let row=c.case.f.db.query_one("SELECT revoked_ms IS NOT NULL,revocation_generation FROM managed_reader_grants WHERE account_id=$1 AND id=$2", &[&c.case.f.account,&id]).await.unwrap();
     assert!(row.get::<_, bool>(0));

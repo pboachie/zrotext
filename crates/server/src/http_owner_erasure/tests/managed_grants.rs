@@ -54,7 +54,7 @@ async fn history(db: &mut tokio_postgres::Client, owner: &crate::auth::SessionPr
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated managed history erasure schema"]
 async fn managed_grants_mounted_owner_erasure_reports_counts_and_rolls_back_later_failure() {
     for fail_later in [false, true] {
-        let (admin, mut db, url, schema) = migrated_schema("managed_grants").await;
+        let (_admin, mut db, url, schema) = migrated_schema("managed_grants").await;
         let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(23)).unwrap());
         let (a, session, b, other_session, app) = fixture(&mut db, &hasher, &url, None).await;
         let owner = principal_of(&db, &hasher, &session).await;
@@ -132,7 +132,7 @@ async fn managed_grants_mounted_owner_erasure_reports_counts_and_rolls_back_late
             .unwrap()
             .get(0);
         assert_eq!(accounts, i64::from(fail_later));
-        crate::sealed_manifest_store::tests::cleanup::drop_fixture(&admin, &schema)
+        crate::sealed_manifest_store::tests::cleanup::drop_fixture(&db, &schema)
             .await
             .unwrap();
     }
@@ -142,7 +142,7 @@ async fn managed_grants_mounted_owner_erasure_reports_counts_and_rolls_back_late
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated optional managed proposal schema"]
 async fn managed_grants_absence_preserves_owner_erasure_and_partial_schema_fails_preflight() {
     for partial in [false, true] {
-        let (admin, mut db, url, schema) = migrated_schema("managed_optional").await;
+        let (_admin, mut db, url, schema) = migrated_schema("managed_optional").await;
         let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(23)).unwrap());
         let (a, session, _, _, app) = fixture(&mut db, &hasher, &url, None).await;
         if partial {
@@ -205,7 +205,7 @@ async fn managed_grants_absence_preserves_owner_erasure_and_partial_schema_fails
                     .starts_with("managed_reader_")
             }));
         }
-        crate::sealed_manifest_store::tests::cleanup::drop_fixture(&admin, &schema)
+        crate::sealed_manifest_store::tests::cleanup::drop_fixture(&db, &schema)
             .await
             .unwrap();
     }
