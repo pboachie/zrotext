@@ -105,8 +105,10 @@ export class OwnerWorkflowContextClient {
     if(performance.now()>=deadline){this.#expire();throw new OwnerContextError('expired','refused');}
   }
   async #race<T>(promise: Promise<T>,deadline: number): Promise<T> {
-    this.#live(deadline);let timer: ReturnType<typeof setTimeout>|undefined,abort:()=>void=()=>{};
-    try{return await Promise.race([promise,new Promise<never>((_,reject)=>{
+    const observed=Promise.resolve(promise);
+    try{this.#live(deadline);}catch(error){void observed.catch(()=>{});throw error;}
+    let timer: ReturnType<typeof setTimeout>|undefined,abort:()=>void=()=>{};
+    try{return await Promise.race([observed,new Promise<never>((_,reject)=>{
       abort=()=>reject(new OwnerContextError(this.#expired?'expired':'closed','refused'));this.#controller.signal.addEventListener('abort',abort,{once:true});
       timer=setTimeout(()=>{reject(new OwnerContextError('expired','refused'));this.#expire();},Math.max(0,deadline-performance.now()));
     })]);}finally{if(timer!==undefined)clearTimeout(timer);this.#controller.signal.removeEventListener('abort',abort);}
@@ -143,6 +145,7 @@ export class OwnerWorkflowContextClient {
   }
   #clearTimer(r: RecordWrite): void {if(r.timer!==undefined){clearTimeout(r.timer);r.timer=undefined;}}
   #deadline(r: RecordWrite,deadline: number): void {
+    this.#live(deadline);
     // One idle expiry timer; authority may shorten it but no attempt renews it.
     if(deadline>r.deadline)invalid();
     if(r.timer!==undefined&&deadline===r.deadline)return;
@@ -157,8 +160,9 @@ export class OwnerWorkflowContextClient {
     if(!validUuid(d.requestId)||!Number.isSafeInteger(d.expectedRevision)||d.expectedRevision<0||d.expectedRevision>127||scope.revision!==BigInt(d.expectedRevision+1)||!(d.envelope instanceof Uint8Array)||d.envelope.length<headerLength+17||d.envelope.length>maxEnvelope)invalid();
     const envelope=Uint8Array.from(d.envelope);parseScope(envelope);if(!equal(envelope.slice(0,222),workflowContextAad(scope)))invalid();
     const r: RecordWrite={ticket:Object.freeze({}),requestId:d.requestId,expectedRevision:d.expectedRevision,scope,envelope,digest:'',csrf:this.#csrf(),deadline:performance.now()+this.#timeout,attempts:0,verifies:0,unknown:false};
-    this.#busy=true;this.#record=r;this.#deadline(r,r.deadline);
+    this.#busy=true;this.#record=r;
     try{
+      this.#deadline(r,r.deadline);
       this.#deadline(r,await this.#current(scope,r.deadline,r.csrf));
       await this.#race(crypto.subtle.importKey('raw',Uint8Array.from(envelope.slice(222,287)).buffer,{name:'ECDH',namedCurve:'P-256'},false,[]),r.deadline);
       r.digest=hex(new Uint8Array(await this.#race(crypto.subtle.digest('SHA-256',Uint8Array.from(envelope).buffer),r.deadline)));
@@ -178,6 +182,7 @@ export class OwnerWorkflowContextClient {
   }
   async #fetchResponse(r: RecordWrite,post: boolean): Promise<Response> {
     this.#live(r.deadline);if(this.#csrf()!==r.csrf){this.close();throw new OwnerContextError('owner_changed','refused');}
+    this.#live(r.deadline);
     const url=this.#origin+'/v1/owner/workflow/contexts'+(post?'':'/'+uuid(r.scope.contextId));
     const response=await this.#race(this.#fetch(url,{method:post?'POST':'GET',credentials:'same-origin',mode:'same-origin',redirect:'error',cache:'no-store',signal:this.#controller.signal,
       headers:{Accept:post?'application/json':'application/vnd.zrotext.workflow-context.v1','x-zrotext-csrf':r.csrf,...(post?{'Content-Type':'application/vnd.zrotext.workflow-context.v1','idempotency-key':r.requestId,'x-zrotext-context-revision':String(r.expectedRevision)}:{})},...(post?{body:Uint8Array.from(r.envelope).buffer}:{})}),r.deadline);

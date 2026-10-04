@@ -186,3 +186,28 @@ test('CSRF or current owner changes during review prevent HTTP and cannot substi
     let f;f=await fixture({consumeWriteReview:async()=>mutation(f)});try{await assert.rejects(f.client.prepare(f.input));assert.equal(f.state.calls.length,0);}finally{f.client.close();}
   }
 });
+
+test('valid CSRF returned after initial publication or final-read abort cannot publish or retain a ticket',async()=>{
+  for(const abortAt of [1,5,8]){
+    let f,calls=0;f=await fixture({currentCsrf:()=>{if(++calls===abortAt)f.controller.abort();return 'synthetic-csrf';}});
+    if(abortAt===1){await rejects(f.client.prepare(f.input),'closed');await rejects(f.client.prepare(f.input),'closed');assert.equal(f.state.reviews.length,0);assert.equal(f.state.calls.length,0);}
+    else{
+      const ticket=await f.client.prepare(f.input);await rejects(f.client.commit(ticket),'response_unknown','unknown');
+      assert.equal(f.state.calls.length,abortAt===5?0:2);assert.ok(f.client.pending());await rejects(f.client.retryUnknown(ticket),'closed','unknown');
+    }
+    f.client.close();
+  }
+});
+
+test('synchronous callback abort with rejected promise is observed without unhandled rejection',async()=>{
+  const unhandled=[],observe=e=>unhandled.push(e);process.on('unhandledRejection',observe);
+  try{
+    for(const phase of ['authority','transport']){
+      let f;const rejection=()=>{f.controller.abort();return Promise.reject(Error('Synthetic rejected closed callback'));};
+      f=await fixture(phase==='authority'?{readCurrent:rejection}:{fetchImpl:rejection});
+      if(phase==='authority'){await rejects(f.client.prepare(f.input),'closed');assert.equal(f.client.pending(),null);}
+      else{await rejects(f.client.commit(await f.client.prepare(f.input)),'response_unknown','unknown');assert.ok(f.client.pending());}
+      await delay(0);assert.deepEqual(unhandled,[]);f.client.close();
+    }
+  }finally{process.removeListener('unhandledRejection',observe);}
+});
