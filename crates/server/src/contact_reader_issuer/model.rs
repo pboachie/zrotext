@@ -103,7 +103,7 @@ impl<const MIN: usize, const MAX: usize> Serialize for Packed<MIN, MAX> {
 #[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "phase", rename_all = "lowercase", deny_unknown_fields)]
 pub(crate) enum Prior {
-    Empty,
+    Empty {},
     Active {
         authorization: Id,
         generation: Number,
@@ -118,7 +118,7 @@ pub(crate) enum Prior {
 impl Prior {
     pub(crate) fn tuple(&self) -> (&'static str, Option<Uuid>, Option<i64>, Option<[u8; 32]>) {
         match self {
-            Self::Empty => ("EMPTY", None, None, None),
+            Self::Empty {} => ("EMPTY", None, None, None),
             Self::Active {
                 authorization,
                 generation,
