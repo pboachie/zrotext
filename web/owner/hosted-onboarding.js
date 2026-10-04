@@ -56,6 +56,7 @@
     let selection = null;
     let challenge = null;
     let session = null;
+    let availability = null;
     let view = Object.freeze({ phase: "choose_hosting", productionReady: false });
 
     function publish(next) {
@@ -74,13 +75,15 @@
       if (!["hosted", "self_hosted"].includes(mode)) throw new Error("Choose a hosting option.");
       epoch += 1;
       clear();
+      availability = null;
       selection = mode;
-      return publish({ phase: mode === "hosted" ? "account_setup" : "self_hosted", hosting: mode });
+      return publish({ phase: mode === "hosted" ? "availability_unknown" : "self_hosted", hosting: mode });
     }
 
     function invalidate() {
       epoch += 1;
       clear();
+      availability = null;
       selection = null;
       return publish({ phase: "choose_hosting" });
     }
@@ -168,6 +171,7 @@
     async function refreshWithin(guard) {
       const before = await ownerSession();
       guard();
+      await availabilityWithin(guard);
       const billing = await request("/v1/billing/status");
       guard();
       await sameSession(before);
@@ -175,15 +179,43 @@
       const next = billingView(billing);
       session = before;
       challenge = null;
-      return publish({ hosting: "hosted", ...next });
+      return publish({ hosting: "hosted", ...next,
+        checkoutAvailable: next.checkoutAvailable && availability.billing === "test" && availability.checkout_available });
+    }
+
+    async function availabilityWithin(guard) {
+      availability = null;
+      const value = await request("/v1/service/availability");
+      guard();
+      if (!value || value.schema_version !== 1 ||
+          !["hosted", "self_hosted"].includes(value.deployment) ||
+          !["closed", "invite_only", "open"].includes(value.registration) ||
+          !["disabled", "test", "live"].includes(value.billing) ||
+          typeof value.checkout_available !== "boolean" || typeof value.plan_catalog_available !== "boolean" ||
+          (value.checkout_available && (value.billing === "disabled" || !value.plan_catalog_available)) ||
+          (value.deployment === "self_hosted" && (value.billing !== "disabled" || value.checkout_available || value.plan_catalog_available))) {
+        throw new Error("Service availability could not be verified. Sign-in and recovery remain available.");
+      }
+      availability = Object.freeze({ ...value });
+      return availability;
     }
 
     return Object.freeze({
       view: () => view,
       select,
       invalidate,
+      availability: () => run(async (guard) => {
+        const value = await availabilityWithin(guard);
+        return publish({ hosting: "hosted", phase: value.deployment === "hosted" && value.registration !== "closed"
+          ? "account_setup" : "registration_closed", registration: value.registration });
+      }),
       register: (email, password, invite = "") => run(async (guard) => {
         clear();
+        const value = await availabilityWithin(guard);
+        if (value.deployment !== "hosted" || value.registration === "closed") {
+          throw new Error("Registration is closed. Sign-in and recovery remain available.");
+        }
+        if (value.registration === "invite_only" && !invite.trim()) throw new Error("An invitation is required.");
         await request("/v1/auth/register", "POST", { email, password },
           invite ? { "x-zrotext-registration-token": invite.trim() } : {});
         guard();
@@ -227,6 +259,12 @@
           : kind === "portal" ? view.portalAvailable : false;
         return run(async (guard) => {
           if (!permitted) throw new Error("Refresh billing before requesting this handoff.");
+          if (kind === "checkout") {
+            const value = await availabilityWithin(guard);
+            if (value.deployment !== "hosted" || value.billing !== "test" || !value.checkout_available) {
+              throw new Error("Checkout is unavailable on this server.");
+            }
+          }
           await sameSession(expected);
           guard();
           const headers = kind === "checkout" ? { "idempotency-key": randomUUID() } : {};

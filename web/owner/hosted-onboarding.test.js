@@ -14,11 +14,14 @@ const active = () => billing({ customerBound: true, nonterminalSubscriptions: 1,
   projectedEntitlement: { reason: "active", outboundLimit: 19, deviceCap: 1, paymentHold: false } });
 const response = (body, status = 200) => ({ ok: status >= 200 && status < 300, status,
   json: async () => body });
+const available = (changes = {}) => ({ schema_version: 1, deployment: "hosted", registration: "open",
+  billing: "test", checkout_available: true, plan_catalog_available: true, ...changes });
 
 function fixture(overrides = {}) {
   const calls = [];
   let snapshot = billing();
   const routes = {
+    "/v1/service/availability": () => response(available()),
     "/v1/auth/register": () => response(null, 202),
     "/v1/auth/resend-verification": () => response(null, 202),
     "/v1/auth/verify-email": () => response(null, 204),
@@ -46,7 +49,7 @@ function fixture(overrides = {}) {
 
 test("hosted signup, verification, sign-in and TEST checkout wait for local reconciliation", async () => {
   const f = fixture();
-  assert.equal(f.controller.select("hosted").phase, "account_setup");
+  assert.equal(f.controller.select("hosted").phase, "availability_unknown");
   await f.controller.register("owner@example.test", "synthetic-password", "synthetic-invite");
   assert.equal(f.controller.view().phase, "verification_requested");
   assert.match(f.controller.view().message, /If registration is open/);
@@ -227,6 +230,7 @@ test("cookie replacement immediately before POST sends the original session's CS
         // Existing server rejects a token from A paired with B's cookies.
         return response(null, sent === csrf ? 200 : 403);
       }
+      if (path === "/v1/service/availability") return response(available());
       return response(path.endsWith("/session") ? owner : billing());
     } });
   controller.select("hosted");
@@ -251,9 +255,10 @@ test("duplicate signup submits cannot create parallel requests", async () => {
   f.controller.select("hosted");
   const first = f.controller.register("owner@example.test", "synthetic-password");
   await assert.rejects(f.controller.register("owner@example.test", "synthetic-password"), /already running/);
+  await new Promise(setImmediate);
   resolve(response(null, 202));
   await first;
-  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls.filter((call) => call.path === "/v1/auth/register").length, 1);
 });
 
 test("changing to self hosting discards an in-flight hosted result", async () => {
@@ -261,6 +266,7 @@ test("changing to self hosting discards an in-flight hosted result", async () =>
   const f = fixture({ "/v1/auth/register": () => new Promise((done) => { resolve = done; }) });
   f.controller.select("hosted");
   const pending = f.controller.register("owner@example.test", "synthetic-password");
+  await new Promise(setImmediate);
   f.controller.select("self_hosted");
   resolve(response(null, 202));
   await assert.rejects(pending, /Onboarding changed/);
@@ -272,4 +278,49 @@ test("registration failures never expose raw provider bodies", async () => {
   f.controller.select("hosted");
   await assert.rejects(f.controller.register("owner@example.test", "synthetic-password"), /Too many attempts/);
   assert.doesNotMatch(JSON.stringify(f.controller.view()), /synthetic-provider-detail/);
+});
+
+test("registration availability must be verified before account creation", async () => {
+  for (const value of [null, {}, available({ schema_version: 2 }),
+    available({ billing: "disabled" }), available({ plan_catalog_available: false }),
+    available({ deployment: "self_hosted" }), available({ registration: "closed" })]) {
+    const f = fixture({ "/v1/service/availability": () => response(value) });
+    assert.equal(f.controller.select("hosted").phase, "availability_unknown");
+    await assert.rejects(f.controller.register("owner@example.test", "synthetic-password"));
+    assert.equal(f.calls.some((call) => call.path === "/v1/auth/register"), false);
+    assert.equal(f.controller.view().checkoutAvailable, undefined);
+  }
+});
+
+test("invite-only setup requires an invitation while closed registration permits existing sign-in", async () => {
+  const f = fixture({ "/v1/service/availability": () => response(available({ registration: "invite_only" })) });
+  f.controller.select("hosted");
+  assert.equal((await f.controller.availability()).phase, "account_setup");
+  await assert.rejects(f.controller.register("owner@example.test", "synthetic-password"), /invitation/);
+  assert.equal(f.calls.some((call) => call.path === "/v1/auth/register"), false);
+  await f.controller.register("owner@example.test", "synthetic-password", "synthetic-invite");
+  const closed = fixture({ "/v1/service/availability": () => response(available({ registration: "closed" })) });
+  closed.controller.select("hosted");
+  assert.equal((await closed.controller.availability()).phase, "registration_closed");
+  await closed.controller.login("owner@example.test", "synthetic-password");
+  assert.equal(closed.controller.view().phase, "choose_test_subscription");
+});
+
+test("checkout rechecks deployment availability immediately before the handoff", async () => {
+  let value = available();
+  const f = fixture({ "/v1/service/availability": () => response(value) });
+  f.controller.select("hosted");
+  await f.controller.refresh();
+  value = available({ checkout_available: false });
+  await assert.rejects(f.controller.handoff("checkout"), /Checkout is unavailable/);
+  assert.equal(f.calls.some((call) => call.path === "/v1/billing/checkout"), false);
+});
+
+test("live availability never authorizes this TEST-only controller to checkout", async () => {
+  const f = fixture({ "/v1/service/availability": () => response(available({ billing: "live" })) });
+  f.controller.select("hosted");
+  await f.controller.refresh();
+  assert.equal(f.controller.view().checkoutAvailable, false);
+  await assert.rejects(f.controller.handoff("checkout"), /Refresh billing/);
+  assert.equal(f.calls.some((call) => call.path === "/v1/billing/checkout"), false);
 });

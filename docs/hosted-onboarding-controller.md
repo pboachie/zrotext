@@ -22,6 +22,16 @@ presentation results. Call `invalidate()` on page exit, sign-out or account
 replacement. An accepted server action may still complete after invalidation;
 invalidation discards its browser result rather than claiming server rollback.
 
+Hosted selection starts at `availability_unknown`. Call `availability()` to
+read the coarse `/v1/service/availability` contract before showing signup.
+Registration also rechecks it before submitting. Closed or unverified signup
+leaves sign-in and existing recovery available; invite-only signup requires an
+invitation. Refresh and checkout recheck availability, and checkout needs an
+explicit TEST mode and enabled checkout capability. A LIVE capability does not
+upgrade this TEST-only controller. The runtime must mount the availability
+route before integrating this component; missing or contradictory responses
+remove actionable controls.
+
 The hosted sequence uses these existing APIs:
 
 1. `register(email, password, invite)` requests registration. The optional
