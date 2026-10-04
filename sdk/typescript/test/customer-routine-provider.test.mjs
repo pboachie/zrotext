@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import test from 'node:test';import assert from 'node:assert/strict';
-import {mkdtempSync,writeFileSync,readFileSync,rmSync,realpathSync,existsSync,chmodSync} from 'node:fs';
+import {mkdtempSync,writeFileSync,readFileSync,realpathSync,existsSync,chmodSync} from 'node:fs';
+import {rm} from 'node:fs/promises';
 import {join,sep} from 'node:path';import {tmpdir} from 'node:os';import {createHash,randomUUID} from 'node:crypto';
 import {LocalProvider} from '../../assistant/local-provider.mjs';
 import {customerRoutineDiagnostic} from '../../assistant/customer-routines.mjs';
@@ -29,7 +30,7 @@ test('authority readiness refuses an already settled invocation instead of hangi
  await waitForAuthorityCallback(Promise.resolve(),new Promise(()=>{}));
 });
 function fixture(t,body){const anchor=realpathSync(tmpdir()),dir=mkdtempSync(join(anchor,'zt-routine-child-'));chmodSync(dir,0o700);const canonical=realpathSync(dir);
- t.after(()=>{assert.equal(realpathSync(dir),canonical);assert.ok(canonical.startsWith(anchor+sep));rmSync(canonical,{recursive:true});});
+ t.after(async()=>{assert.equal(realpathSync(dir),canonical);assert.ok(canonical.startsWith(anchor+sep));await rm(canonical,{recursive:true,maxRetries:3,retryDelay:50});});
  const script=join(dir,'child.mjs'),marker=join(dir,'invocations'),pid=join(dir,'owned-pid');
  const code=String.raw`import fs from 'node:fs';import {dirname} from 'node:path';import {fileURLToPath} from 'node:url';
 const mode=JSON.parse(fs.readFileSync(new URL('./mode.json',import.meta.url),'utf8'));let text='';
