@@ -20,6 +20,7 @@ pub mod http_messages;
 pub mod http_observer;
 pub mod http_owner_contact_issuance;
 pub mod http_owner_contact_observation;
+pub mod http_owner_account_root_trust;
 pub mod http_owner_contacts;
 pub mod http_owner_conversations;
 pub mod http_owner_erasure;

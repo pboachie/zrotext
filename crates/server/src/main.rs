@@ -200,6 +200,8 @@ fn validate_sealed_setup_prerequisites(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let account_root_trust_enabled = optional_bool("ACCOUNT_ROOT_TRUST_ENABLED")?;
+    let account_root_trust_directory = env::var_os("ACCOUNT_ROOT_TRUST_SDK_DIRECTORY");
     let conversation_enabled = optional_bool("CONVERSATION_ENABLED")?;
     let sealed_setup_enabled = optional_bool("SEALED_LINE_SETUP_ENABLED")?;
     if sealed_setup_enabled && !conversation_enabled {
@@ -546,7 +548,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let mut quotas_reset = false;
     let mut billing_auth_state = None;
-    if let Some((auth_state, enrollment_state)) = account_routes(&config).await? {
+    let configured_accounts = account_routes(&config).await?;
+    let account_root_trust_router =
+        zrotext_server::http_owner_account_root_trust::configured_router(
+            account_root_trust_enabled,
+            account_root_trust_directory
+                .as_deref()
+                .map(std::path::Path::new),
+            configured_accounts.is_some(),
+        )?;
+    if let Some((auth_state, enrollment_state)) = configured_accounts {
+        app = app.merge(account_root_trust_router);
         billing_auth_state = Some(auth_state.clone());
         if config.original_reply_enabled {
             let db = zrotext_server::runtime_db::connect(&config.database_url).await?;
