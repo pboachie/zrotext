@@ -964,6 +964,14 @@ async fn erase_account(
         ),
         Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
     }
+    match crate::workflow_runtime::openings::lifecycle::erase_account(&tx, account_id).await {
+        Ok(counts) => deleted.extend(
+            counts
+                .into_iter()
+                .map(|(table, rows)| TableCount { table, rows }),
+        ),
+        Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+    }
     for &(table, sql) in DELETE_PLAN {
         if crate::managed_ai::lifecycle::TABLES.contains(&table) && !managed_installed {
         if ["provider_receipt_events", "provider_receipt_attempts"].contains(&table)

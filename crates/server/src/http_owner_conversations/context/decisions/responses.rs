@@ -12,6 +12,7 @@ use super::{
 use serde::{Deserialize, Serialize};
 use tokio_postgres::{Client, Transaction};
 use uuid::Uuid;
+pub(crate) mod source;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -144,6 +145,9 @@ pub async fn takeover(
         return Ok(result);
     }
     if tx.execute("INSERT INTO workflow_context_fences(account_id,context_id,stopped_at,actor_user_id) VALUES($1,$2,clock_timestamp(),$3) ON CONFLICT(account_id,context_id) DO UPDATE SET stopped_at=EXCLUDED.stopped_at,actor_user_id=EXCLUDED.actor_user_id WHERE workflow_context_fences.stopped_at IS NULL",&[&account,&context,&owner.user_id]).await?!=1 {return Err(ConversationError::Conflict);}
+    // Business occupancy is separate from message/routine counts in this wire
+    // response. Preserve confirmed units; only pending allocation is stopped.
+    crate::workflow_runtime::openings::lifecycle::stop_context(&tx, account, context).await?;
     let (stopped_routines, cancelled_messages, irreversible_messages) =
         stop(&tx, account, context, None).await?;
     let result = TakeoverResult {
@@ -226,30 +230,7 @@ pub async fn correlate_reply(
         tx.commit().await?;
         return Ok(result);
     }
-    let event=tx.query_opt("SELECT p.trust_generation,p.manifest_version,p.manifest_digest,p.verified_manifest,p.accepted_at_ms,e.envelope FROM conversation_inbound_provenance p JOIN sealed_inbound_events e ON (e.account_id,e.id)=(p.account_id,p.event_id) WHERE p.account_id=$1 AND p.event_id=$2 AND p.interval_id=$3 AND e.device_id=$4 AND e.line_id=$5 AND e.binding_generation=$6 FOR SHARE OF p,e",
-        &[&account,&input.event_id,&h.interval,&h.device,&h.line,&h.binding_generation]).await?.ok_or(ConversationError::NotFound)?;
-    let interval = activation::load(&tx, account, h.interval).await?;
-    let source: Vec<u8> = event
-        .get::<_, Option<Vec<u8>>>(5)
-        .ok_or(ConversationError::NotFound)?;
-    let claims =
-        crate::sealed_envelope::parse(&source, crate::sealed_envelope::Profile::Draft02Candidate)
-            .map_err(|_| ConversationError::Forbidden)?;
-    let readers = activation::readers(&interval.statement);
-    let wanted = activation::wanted(&interval.statement, input.event_id, &readers);
-    let snapshot = crate::sealed_manifest_store::outbound::ManifestSnapshot {
-        generation: event.get(0),
-        version: event.get(1),
-        digest: event
-            .get::<_, Vec<u8>>(2)
-            .try_into()
-            .map_err(|_| ConversationError::Forbidden)?,
-        bytes: event.get(3),
-        accepted_ms: event.get(4),
-    };
-    authority
-        .verify_history(&wanted, &snapshot, &source)
-        .await?;
+    let event = source::verify(&tx, &mut authority, &h, input.event_id).await?;
     if let Some(row)=tx.query_opt("SELECT request_digest,request_id FROM workflow_reply_correlations WHERE account_id=$1 AND event_id=$2",&[&account,&input.event_id]).await? {
         if row.get::<_,Vec<u8>>(0)!=digest{return Err(ConversationError::Conflict);}
         let original:Uuid=row.get(1);let result=replay(&tx,account,original,&digest).await?.ok_or(ConversationError::Unavailable)?;
@@ -277,7 +258,7 @@ pub async fn correlate_reply(
             d.not_before * 1000,
             d.expires_at_ms()?,
             issued,
-            claims.observed_ms as i64,
+            event.observed_ms,
             activation::now(&tx).await?,
         );
         if disposition == ReplyDisposition::Qualifying && stopped {

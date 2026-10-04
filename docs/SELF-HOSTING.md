@@ -744,6 +744,32 @@ their consent records with everything else. The contacts and consent
 records do not gate message sending; admission and suppression checks are
 unchanged by this data.
 
+## Owner-confirmed capacity foundation
+
+The single-opening capacity library is dormant. Its unnumbered
+`deploy/compose/migration-candidates/owner_opening_capacity.sql` is excluded
+from normal installation and is applied explicitly by disposable tests. No
+mutation route, SDK caller, appointment, volunteer or acknowledgment journey
+is enabled by this library. Production migration promotion and application
+acceptance remain separately required.
+
+Pending reservations and confirmed allocations consume capacity. The owner
+confirms business meaning after local decryption; delivery or ciphertext does
+not establish a booking. Consent withdrawal and takeover stop future admission
+and cancel pending reservations. Confirmed occupancy remains until explicit
+owner release or cancellation, including after contact/source deletion.
+
+When the candidate tables are present, existing contact deletion and source
+retention hooks scrub their related authority and receipt fields; owner takeout
+includes bounded pages of the remaining metadata. Current owners can release
+an occupied unit using its opening/allocation identity without deleted contact
+or source data. Account erasure deletes all four tables child-first and reports
+their counts; a partial candidate installation or later delete failure rolls
+the entire erasure back. Full application and device/provider acceptance is
+not established by disposable database proof. The exact authority, lifecycle
+and storage bounds are in
+[`owner-opening-capacity-foundation.md`](../protocol/v1/owner-opening-capacity-foundation.md).
+
 ## Source for modified deployments
 
 The server's HTML pages link to `/source`. Published release images point this link to the exact upstream commit used for the build. If you modify ZROtext and let people use your server over a network, set `SOURCE_URL` to a downloadable copy of the full corresponding source for **your running version**, including your changes and applicable build instructions. A link to the unmodified upstream repository is insufficient for a modified deployment. See [AGPL-3.0 section 13](https://www.gnu.org/licenses/agpl-3.0.en.html). Review the license for your situation.
