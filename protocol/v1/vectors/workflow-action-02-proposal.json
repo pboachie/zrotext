@@ -2743,7 +2743,7 @@
           "not_before": 2000000000,
           "expires_at": 2000000300,
           "timezone": "UTC",
-          "window_id": "\u00c3\u00a9",
+          "window_id": "\u00e9",
           "routine_id": "00000000-0000-0000-0000-00000000000e",
           "authority_generation": 1,
           "commitment": "sensitive"

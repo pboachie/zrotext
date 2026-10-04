@@ -9,8 +9,8 @@ import jsonschema
 from workflow_contract_model import binding
 
 ROOT = Path(__file__).resolve().parents[1]
-VECTORS = json.loads((ROOT / 'vectors/workflow-action-02-proposal.json').read_text())
-SCHEMA = json.loads((ROOT / 'workflow-action-02-proposal.schema.json').read_text())
+VECTORS = json.loads((ROOT / 'vectors/workflow-action-02-proposal.json').read_text(encoding='utf-8'))
+SCHEMA = json.loads((ROOT / 'workflow-action-02-proposal.schema.json').read_text(encoding='utf-8'))
 
 
 def canonical(value):
