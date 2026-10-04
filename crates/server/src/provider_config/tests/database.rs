@@ -18,10 +18,8 @@ use uuid::Uuid;
 
 const ORIGIN: &str = "https://test.example";
 const COLLECTION: &str = "/v1/owner/provider-configurations";
-const PROPOSAL: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../protocol/v1/provider-configuration-storage-proposal.sql"
-));
+const PROPOSAL: &str =
+    include_str!("../../../../../protocol/v1/provider-configuration-storage-proposal.sql");
 
 struct Fixture {
     admin: Client,
