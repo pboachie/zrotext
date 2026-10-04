@@ -91,6 +91,28 @@ class ConversationJournalStoresTest {
         assertEquals(0, handles.sends.count())
     }
 
+    @Test fun productionOpenMigratesVersionTwoPendingBytesWithoutInferringUploadAck() = worker {
+        legacyCapture()
+        val body=byteArrayOf(1,2,3);val envelope=byteArrayOf(4,5,6);val nonce=ByteArray(12){7}
+        SQLiteDatabase.openOrCreateDatabase(captureFile,null).use { db ->
+            db.execSQL("CREATE TABLE conversation_wire_captures (sequence INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, token TEXT NOT NULL, captureId TEXT NOT NULL, intervalId TEXT NOT NULL, protectedEnvelope BLOB, nonce BLOB)")
+            db.execSQL("CREATE UNIQUE INDEX index_conversation_wire_captures_token ON conversation_wire_captures(token)")
+            db.execSQL("UPDATE conversation_receipts SET captureId='synthetic-event',intervalId='synthetic-closed-interval',protectedCapture=?,nonce=?",arrayOf(body,nonce))
+            db.execSQL("INSERT INTO conversation_wire_captures VALUES(7,'synthetic-legacy-receipt','synthetic-event','synthetic-closed-interval',?,?)",arrayOf(envelope,nonce))
+            db.version=2
+        }
+        val stores=newStores();val handles=stores.openForUserAction()
+        assertArrayEquals(body,handles.capture.receipt("synthetic-legacy-receipt")!!.protectedCapture)
+        val pending=handles.capture.wireCapture("synthetic-legacy-receipt")!!
+        assertEquals(7L,pending.sequence);assertArrayEquals(envelope,pending.protectedEnvelope)
+        assertArrayEquals(nonce,pending.nonce);assertNull(pending.acknowledgedDigest)
+        assertEquals(1,handles.capture.contentCount());assertEquals(1,handles.capture.isClosed("synthetic-closed-interval"))
+        stores.close()
+        val reopened=newStores().openForUserAction()
+        assertArrayEquals(envelope,reopened.capture.wireCapture("synthetic-legacy-receipt")!!.protectedEnvelope)
+        assertNull(reopened.capture.wireCapture("synthetic-legacy-receipt")!!.acknowledgedDigest)
+    }
+
     @Test fun unsupportedSecondSchemaPublishesNoHandlesAndNeverDestructivelyResetsEitherFile() = worker {
         legacyCapture()
         SQLiteDatabase.openOrCreateDatabase(sendFile, null).use { db ->
@@ -107,7 +129,7 @@ class ConversationJournalStoresTest {
             }
         }
         SQLiteDatabase.openDatabase(captureFile.path, null, SQLiteDatabase.OPEN_READONLY).use { db ->
-            assertEquals(2, db.version)
+            assertEquals(3, db.version)
             db.rawQuery("SELECT token FROM conversation_receipts", null).use { rows ->
                 assertTrue(rows.moveToFirst()); assertEquals("synthetic-legacy-receipt", rows.getString(0))
             }

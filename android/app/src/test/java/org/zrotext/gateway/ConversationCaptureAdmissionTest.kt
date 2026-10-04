@@ -29,6 +29,7 @@ class ConversationCaptureAdmissionTest {
     @Volatile private var now = 100L
     @Volatile private var allowed = true
     private var sealHook: (() -> Unit)? = null
+    private var diskName: String? = null
     private val scope = ConversationCaptureScope(
         uuid(), uuid(), uuid(), 3, "+12025550199", uuid(), uuid(), uuid(),
         "11".repeat(32), "22".repeat(32), 2, 8, "33".repeat(32), "44".repeat(32))
@@ -43,7 +44,10 @@ class ConversationCaptureAdmissionTest {
         journal = db.journal()
         gate = newGate()
     }
-    @After fun cleanup() { db.close() }
+    @After fun cleanup() {
+        db.close()
+        diskName?.let { RuntimeEnvironment.getApplication().deleteDatabase(it) }
+    }
 
     private fun newGate() = ConversationCaptureAdmission(journal, authority, object : ConversationJournalProtection {
         override fun seal(value: String, aad: String): InboundVault.Sealed {
@@ -134,6 +138,148 @@ class ConversationCaptureAdmissionTest {
         assertNull(gate.retry(token(1)))
     }
 
+    private fun packet(n: Int = 1): Pair<ConversationCapturedBody, ByteArray> =
+        checkNotNull(gate.sealedCapture(token(n)) { _,sequence -> "synthetic packet $sequence".toByteArray() })
+    private fun ack(value: Pair<ConversationCapturedBody,ByteArray>) = ConversationCaptureAck(
+        UUID.randomUUID(),UUID.fromString(value.first.captureId),Draft02OutboundPreparation.hash(value.second),true)
+
+    @Test fun exactAckRetiresOnlyItsBodyAndWireAndDuplicateCannotResealOrReplay() {
+        prepare();activate();observe();observe(2)
+        val value=packet();val original=journal.wireCapture(token(1))!!
+        gate.acknowledgeCapture(token(1),value.first,value.second,ack(value))
+        assertEquals(1,journal.contentCount());assertEquals(2,journal.receiptCount())
+        val tombstone=journal.wireCapture(token(1))!!
+        assertEquals(original.sequence,tombstone.sequence);assertEquals(original.captureId,tombstone.captureId)
+        assertEquals(ack(value).digest,tombstone.acknowledgedDigest)
+        assertNull(tombstone.protectedEnvelope);assertNull(tombstone.nonce)
+        assertNull(journal.receipt(token(1))!!.protectedCapture);assertNull(journal.receipt(token(1))!!.nonce)
+        assertNotNull(journal.receipt(token(2))!!.protectedCapture)
+        gate.acknowledgeCapture(token(1),value.first,value.second,ack(value))
+        assertTrue(gate.captureAcknowledged(token(1)))
+        assertNull(gate.sealedCapture(token(1)){_,_->error("Acknowledged capture cannot reseal")})
+        assertEquals(ConversationObservation.DUPLICATE,observe())
+        gate.close(scope.intervalId);assertFalse(gate.captureAcknowledged(token(1)))
+        assertEquals(ack(value).digest,journal.wireCapture(token(1))!!.acknowledgedDigest)
+    }
+
+    @Test fun ackMismatchOrUnknownOutcomeCannotReleasePendingCapacity() {
+        prepare();activate();observe();observe(2)
+        val value=packet();val other=packet(2)
+        val before=journal.wireCapture(token(1))!!
+        for ((tokenValue,body,envelope,response) in listOf(
+            AckAttempt(token(2),value.first,value.second,ack(value)),
+            AckAttempt(token(1),value.first,value.second,ack(value).copy(event=UUID.randomUUID())),
+            AckAttempt(token(1),value.first,value.second,ack(value).copy(digest="00".repeat(32))),
+            AckAttempt(token(1),value.first,other.second,ack(value).copy(digest=Draft02OutboundPreparation.hash(other.second)))
+        )) {
+            activate()
+            assertThrows(IllegalStateException::class.java) {gate.acknowledgeCapture(tokenValue,body,envelope,response)}
+            assertEquals(2,journal.contentCount());assertNull(journal.wireCapture(token(1))!!.acknowledgedDigest)
+            assertArrayEquals(before.protectedEnvelope,journal.wireCapture(token(1))!!.protectedEnvelope)
+        }
+        activate();assertArrayEquals(value.second,packet().second)
+        assertFalse(gate.captureAcknowledged(token(1)))
+    }
+    private data class AckAttempt(val token:String,val body:ConversationCapturedBody,
+                                  val envelope:ByteArray,val response:ConversationCaptureAck)
+
+    @Test fun ackFinalizationAuthorityLossAfterWritesRollsBackBothCiphertextsAndMarker() {
+        prepare();activate();observe();val value=packet();val before=journal.wireCapture(token(1))!!
+        var checks=0
+        assertThrows(IllegalStateException::class.java) {
+            journal.acknowledgeCapture(before,value.first.firstObservedAtMs,ack(value).digest) {
+                checks++
+                if(checks==2) {allowed=false;error("Synthetic withdrawal after writes")}
+            }
+        }
+        assertEquals(2,checks);assertEquals(1,journal.contentCount())
+        assertNull(journal.wireCapture(token(1))!!.acknowledgedDigest)
+        assertArrayEquals(before.protectedEnvelope,journal.wireCapture(token(1))!!.protectedEnvelope)
+        assertNotNull(journal.receipt(token(1))!!.protectedCapture)
+        assertThrows(IllegalStateException::class.java) {gate.acknowledgeCapture(token(1),value.first,value.second,ack(value))}
+        assertEquals(1,journal.contentCount())
+    }
+
+    @Test fun lateAckCannotFinalizeAfterGenerationRootReaderSessionPermissionOrClockLoss() {
+        prepare()
+        val losses:List<()->Unit> = listOf({currentLineGeneration++},{currentRoot++},
+            {currentReader=uuid()},{originatingSessionLive=false},{allowed=false},{now=1100},{now=99})
+        losses.forEachIndexed {index,lose ->
+            now=100;allowed=true;originatingSessionLive=true;currentReader=scope.readerKeyId
+            currentRoot=scope.trustGeneration;currentLineGeneration=scope.bindingGeneration
+            gate=newGate();activate();observe(index+1);val value=packet(index+1)
+            lose()
+            assertThrows(IllegalStateException::class.java) {
+                gate.acknowledgeCapture(token(index+1),value.first,value.second,ack(value))
+            }
+            assertNull(journal.wireCapture(token(index+1))!!.acknowledgedDigest)
+            assertNotNull(journal.wireCapture(token(index+1))!!.protectedEnvelope)
+            assertNotNull(journal.receipt(token(index+1))!!.protectedCapture)
+        }
+        assertEquals(losses.size,journal.contentCount())
+    }
+
+    @Test fun acknowledgedRowsSurviveRealRoomReopenWithoutRestoringAdmission() {
+        val context=RuntimeEnvironment.getApplication()
+        val name="conversation-ack-test.db";diskName=name;context.deleteDatabase(name)
+        db.close();db=Room.databaseBuilder(context,ConversationCaptureDatabase::class.java,name).allowMainThreadQueries().build()
+        journal=db.journal();gate=newGate();prepare();activate();observe();observe(2)
+        val value=packet();val pending=packet(2)
+        gate.acknowledgeCapture(token(1),value.first,value.second,ack(value))
+        db.close();db=Room.databaseBuilder(context,ConversationCaptureDatabase::class.java,name).allowMainThreadQueries().build()
+        journal=db.journal();gate=newGate()
+        assertFalse(gate.captureEligible());assertFalse(gate.captureAcknowledged(token(1)))
+        assertNull(gate.retry(token(2)));assertEquals(1,journal.contentCount());assertEquals(2,journal.receiptCount())
+        assertEquals(ack(value).digest,journal.wireCapture(token(1))!!.acknowledgedDigest)
+        // Explicit authenticated recovery in this admission primitive still retains original identities.
+        activate();assertTrue(gate.captureAcknowledged(token(1)))
+        assertEquals(ConversationObservation.DUPLICATE,observe())
+        assertArrayEquals(pending.second,packet(2).second)
+    }
+
+    @Test fun versionTwoMigrationPreservesUnacknowledgedBytesUntilExactAckAndReopen() {
+        prepare();activate();observe();val value=packet()
+        val installation=journal.installation()!!;val receipt=journal.receipt(token(1))!!;val wire=journal.wireCapture(token(1))!!
+        val context=RuntimeEnvironment.getApplication()
+        val name="conversation-v2-test.db";diskName=name;context.deleteDatabase(name)
+        context.getDatabasePath(name).parentFile!!.mkdirs()
+        context.openOrCreateDatabase(name,android.content.Context.MODE_PRIVATE,null).use { legacy ->
+            legacy.execSQL("CREATE TABLE conversation_closed_intervals (intervalId TEXT NOT NULL PRIMARY KEY)")
+            legacy.execSQL("CREATE TABLE conversation_installation (slot INTEGER NOT NULL PRIMARY KEY, intervalId TEXT NOT NULL, receiptId TEXT NOT NULL, transcriptDigest TEXT NOT NULL, protectedScope BLOB NOT NULL, nonce BLOB NOT NULL, state TEXT NOT NULL)")
+            legacy.execSQL("CREATE TABLE conversation_receipts (token TEXT NOT NULL PRIMARY KEY, firstObservedAtMs INTEGER NOT NULL, captureId TEXT, intervalId TEXT, protectedCapture BLOB, nonce BLOB)")
+            legacy.execSQL("CREATE TABLE conversation_wire_captures (sequence INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, token TEXT NOT NULL, captureId TEXT NOT NULL, intervalId TEXT NOT NULL, protectedEnvelope BLOB, nonce BLOB)")
+            legacy.execSQL("CREATE UNIQUE INDEX index_conversation_wire_captures_token ON conversation_wire_captures(token)")
+            legacy.execSQL("INSERT INTO conversation_installation VALUES (?,?,?,?,?,?,?)",arrayOf<Any>(1,installation.intervalId,installation.receiptId,installation.transcriptDigest,installation.protectedScope,installation.nonce,installation.state))
+            legacy.execSQL("INSERT INTO conversation_receipts VALUES (?,?,?,?,?,?)",arrayOf<Any>(receipt.token,receipt.firstObservedAtMs,receipt.captureId!!,receipt.intervalId!!,receipt.protectedCapture!!,receipt.nonce!!))
+            legacy.execSQL("INSERT INTO conversation_wire_captures VALUES (?,?,?,?,?,?)",arrayOf<Any>(wire.sequence,wire.token,wire.captureId,wire.intervalId,wire.protectedEnvelope!!,wire.nonce!!))
+            legacy.version=2
+        }
+        db.close();db=Room.databaseBuilder(context,ConversationCaptureDatabase::class.java,name)
+            .addMigrations(ConversationCaptureDatabase.MIGRATION_2_3).allowMainThreadQueries().build()
+        journal=db.journal();gate=newGate()
+        assertNull(journal.wireCapture(token(1))!!.acknowledgedDigest)
+        assertEquals(1,journal.contentCount());assertFalse(gate.captureEligible())
+        assertArrayEquals(receipt.protectedCapture,journal.receipt(token(1))!!.protectedCapture)
+        assertArrayEquals(wire.protectedEnvelope,journal.wireCapture(token(1))!!.protectedEnvelope)
+        activate();assertArrayEquals(value.second,packet().second)
+        gate.acknowledgeCapture(token(1),value.first,value.second,ack(value))
+        assertEquals(0,journal.contentCount());assertEquals(wire.sequence,journal.wireCapture(token(1))!!.sequence)
+        db.close();db=Room.databaseBuilder(context,ConversationCaptureDatabase::class.java,name).allowMainThreadQueries().build()
+        journal=db.journal();assertEquals(ack(value).digest,journal.wireCapture(token(1))!!.acknowledgedDigest)
+        assertNull(journal.receipt(token(1))!!.protectedCapture)
+    }
+
+    @Test fun ackReleasesCapacityWithoutEvictingPermanentReceiptFences() {
+        prepare();activate()
+        repeat(ConversationCaptureDao.CONTENT_CAPACITY){assertEquals(ConversationObservation.CAPTURED,observe(it+1))}
+        assertEquals(ConversationObservation.DISCARDED,observe(129))
+        val value=packet();gate.acknowledgeCapture(token(1),value.first,value.second,ack(value))
+        assertEquals(ConversationObservation.DUPLICATE,observe(129))
+        assertEquals(ConversationObservation.CAPTURED,observe(130))
+        assertEquals(ConversationCaptureDao.CONTENT_CAPACITY,journal.contentCount())
+        assertEquals(130,journal.receiptCount())
+    }
+
     @Test fun explicitVersionOneMigrationPreservesReceiptAndClosedIntervalFences() {
         val context=RuntimeEnvironment.getApplication()
         val name="conversation-migration-test.db"
@@ -148,7 +294,8 @@ class ConversationCaptureAdmissionTest {
             legacy.version=1
         }
         val migrated=Room.databaseBuilder(context,ConversationCaptureDatabase::class.java,name)
-            .addMigrations(ConversationCaptureDatabase.MIGRATION_1_2).allowMainThreadQueries().build()
+            .addMigrations(ConversationCaptureDatabase.MIGRATION_1_2,
+                ConversationCaptureDatabase.MIGRATION_2_3).allowMainThreadQueries().build()
         try {
             assertEquals(1,migrated.journal().isClosed(scope.intervalId))
             assertEquals(1234L,migrated.journal().receipt(token(1))!!.firstObservedAtMs)
