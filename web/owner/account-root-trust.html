@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Review account root</title></head>
+<body><main><h1>Review account root</h1><p>Compare the account, origin and full fingerprint with your independently retained public kit. This page stores public trust history locally. It does not recover a key or grant contact access.</p>
+<form id="inputs"><fieldset><legend>Independent public kit</legend>
+<label>Account <input id="account" required autocomplete="off"></label>
+<label>Kit origin <input id="origin" required autocomplete="off"></label>
+<label>Full root fingerprint <input id="fingerprint" required autocomplete="off"></label>
+<label>Public card <input id="card" type="file" required></label>
+<label>Signed manifest <input id="manifest" type="file" required></label>
+<button id="review" type="submit" disabled>Review public trust</button></fieldset></form>
+<section id="decision" hidden><h2>Compare before accepting</h2><pre id="tuple"></pre><button id="accept" disabled>Accept this local history</button><button id="decline">Decline</button></section>
+<p id="status" role="status">Preparing local review.</p><button id="reconcile" hidden>Read local outcome</button>
+<details><summary>Review an existing reader statement</summary><p>Enter the complete expected identity from your independently reviewed owner intent. The signed statement cannot supply its own expected identity.</p><label>Expected intent JSON <textarea id="expected"></textarea></label><label>Signed reader statement <input id="statement" type="file"></label><button id="verify-statement" disabled>Review historical integrity</button></details>
+<p><a href="/owner/account">Back to account</a></p></main><script type="module" src="/owner/account/root-trust.js"></script></body></html>
