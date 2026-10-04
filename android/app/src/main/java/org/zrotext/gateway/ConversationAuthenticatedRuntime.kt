@@ -51,6 +51,7 @@ internal class ConversationAuthenticatedRuntime(
     private fun requireWitness(value: TimeWitness) {
         check(timeWitness.get() === value && epoch.get() == value.epoch && selected.get() == value.session)
         value.beforeDeadline(elapsedMillis)
+        check(wire.currentSession() == value.session) { "Authenticated session changed" }
     }
     private fun current(scope: ConversationCaptureScope) {
         check(!blocked.get()) { "Admission suspended" }
@@ -94,6 +95,7 @@ internal class ConversationAuthenticatedRuntime(
                 synchronized(bindingLock) {
                     check(epoch.get() == ticket) { "Proposal cancelled by lifecycle" }
                     candidate.beforeDeadline(elapsedMillis)
+                    check(wire.currentSession() == session) { "Authenticated session changed" }
                     selected.set(session); timeWitness.set(candidate); blocked.set(false)
                 }
                 domain.propose(review, owned)
@@ -154,6 +156,7 @@ internal class ConversationAuthenticatedRuntime(
                         requireWitness(witness)
                         if (witness.beforeDeadline(elapsedMillis) >= originalLeaseDeadline) throw TimeUnavailable()
                         if (refreshed.beforeDeadline(elapsedMillis) >= originalLeaseDeadline) throw TimeUnavailable()
+                        check(wire.currentSession() == witness.session) { "Authenticated session changed" }
                         timeWitness.set(refreshed)
                     }
                 }
@@ -174,6 +177,7 @@ internal class ConversationAuthenticatedRuntime(
                         val liveWitness = checkNotNull(completedWitness)
                         requireWitness(liveWitness)
                         check(liveWitness.beforeDeadline(elapsedMillis) < originalLeaseDeadline)
+                        check(wire.currentSession() == liveWitness.session) { "Authenticated session changed" }
                     }.isSuccess
             }
         } } catch (_: Exception) {

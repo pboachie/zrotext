@@ -33,6 +33,7 @@ class ConversationAuthenticatedRuntimeTest {
     private var duringContent: () -> Unit = {}
     private var duringTime: () -> Unit = {}
     private var duringAuthority: () -> Unit = {}
+    private var duringElapsed: () -> Unit = {}
     private var leaseDuration = 10000L
     private var authorityUntil = 110000L
     private var timeReplies = 0
@@ -100,7 +101,7 @@ class ConversationAuthenticatedRuntimeTest {
                 return ConversationAuthenticatedWire.Reply(current,bytes)
             }
         }
-        assembly=ConversationAuthenticatedRuntime(db.journal(),sendDb.sends(),verifier,protection,wire,{elapsed},
+        assembly=ConversationAuthenticatedRuntime(db.journal(),sendDb.sends(),verifier,protection,wire,{duringElapsed();elapsed},
             { selected,utc -> duringAuthority();check(selected==scope && utc in 100000 until authorityUntil && permission && consent) },
             {check(it==scope);decisions++}, {exchanges++;duringInstall();byteArrayOf(2)},worker,delivery)
         assembly.presentation.observe {snapshots.add(it)}
@@ -207,6 +208,22 @@ class ConversationAuthenticatedRuntimeTest {
         activateLongLease();elapsed=10000;var result:Boolean?=null
         assembly.maintainAuthenticatedTime(scope){result=it};worker.drain()
         elapsed=40000;delivery.drain();assertEquals(false,result);assertFalse(assembly.captureEligible());drain()
+    }
+    @Test fun wireSessionRotationAfterWorkerSuccessRefusesDelayedMaintenanceCompletion() {
+        activateLongLease();elapsed=10000;var result:Boolean?=null
+        assembly.maintainAuthenticatedTime(scope){result=it};worker.drain()
+        session=phone.copy(connectionEpoch=2)
+        delivery.drain();assertEquals(false,result);assertFalse(assembly.captureEligible());drain()
+        assertEquals(1,decisions);assertEquals(1,exchanges);assertEquals(2,timeReplies)
+    }
+    @Test fun wireSessionRotationAtLastDeliverySampleRefusesMaintenanceCompletion() {
+        activateLongLease();elapsed=10000;var result:Boolean?=null
+        assembly.maintainAuthenticatedTime(scope){result=it};worker.drain()
+        var samples=0
+        duringElapsed={if(++samples==2){duringElapsed={};session=phone.copy(connectionEpoch=2)}}
+        delivery.drain();duringElapsed={}
+        assertEquals(2,samples);assertEquals(false,result);assertFalse(assembly.captureEligible());drain()
+        assertEquals(1,decisions);assertEquals(1,exchanges);assertEquals(2,timeReplies)
     }
     @Test fun rejectedMaintenanceDeliveryClosesWithoutInventingCompletion() {
         activateLongLease();elapsed=10000;var result:Boolean?=null
