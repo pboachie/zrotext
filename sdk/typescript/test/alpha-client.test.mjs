@@ -130,6 +130,38 @@ test("bare 503 without a JSON body is an API error with no code", async () => {
   }
 });
 
+for (const [label, respond] of [
+  ["408 deadline", (res) => { res.writeHead(408); res.end(); }],
+  ["bare 502 from a proxy", (res) => { res.writeHead(502); res.end(); }],
+  ["bare 503 admission refusal", (res) => { res.writeHead(503, { "retry-after": "1" }); res.end(); }],
+  ["500 without a JSON error body", (res) => { res.writeHead(500); res.end("oops"); }],
+]) {
+  test(`submit ending in ${label} is an unknown outcome and is not retried`, async () => {
+    const s = await stub((_, res) => respond(res));
+    try {
+      await assert.rejects(
+        s.client.submit(REQUEST, "k"),
+        (e) => e instanceof AlphaOutcomeUnknownError && e.operation === "submit",
+      );
+      assert.equal(s.seen.length, 1);
+    } finally {
+      await s.close();
+    }
+  });
+}
+
+test("submit 503 carrying the server's JSON code is a definitive refusal", async () => {
+  const s = await stub((_, res) => json(res, 503, { code: "billing_pending" }, { "retry-after": "10" }));
+  try {
+    await assert.rejects(
+      s.client.submit(REQUEST, "k"),
+      (e) => e instanceof AlphaApiError && e.status === 503 && e.code === "billing_pending",
+    );
+  } finally {
+    await s.close();
+  }
+});
+
 test("transport failure on submit is an unknown outcome and is not retried", async () => {
   const s = await stub((_, res) => res.socket.destroy());
   try {

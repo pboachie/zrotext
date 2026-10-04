@@ -243,7 +243,14 @@ export class AlphaClient {
       throw new AlphaOutcomeUnknownError(operation, cause);
     }
     if (response.status !== okStatus) {
-      throw await apiError(response);
+      const failure = await apiError(response);
+      // A submit that ends in a deadline (408) or a 5xx without the server's JSON
+      // error body (a proxy or crash) may still have been accepted: the outcome is
+      // unknown, so the only safe move is the identical request with the same key.
+      if (operation === "submit" && (response.status === 408 || (response.status >= 500 && failure.code === undefined))) {
+        throw new AlphaOutcomeUnknownError(operation);
+      }
+      throw failure;
     }
     if (okStatus === 204) return undefined;
     try {

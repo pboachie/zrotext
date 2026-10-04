@@ -201,7 +201,14 @@ class AlphaClient:
                 status = response.status
                 payload = response.read()
         except urllib.error.HTTPError as error:
-            raise _api_error(error) from None
+            failure = _api_error(error)
+            # A submit that ends in a deadline (408) or a 5xx without the server's
+            # JSON error body may still have been accepted: the outcome is unknown.
+            if operation == "submit" and (
+                failure.status == 408 or (failure.status >= 500 and failure.code is None)
+            ):
+                raise OutcomeUnknownError(operation) from None
+            raise failure from None
         except (urllib.error.URLError, OSError, ValueError) as error:
             raise OutcomeUnknownError(operation) from error
         if status != ok_status:

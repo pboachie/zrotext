@@ -142,6 +142,24 @@ class AlphaClientTest(unittest.TestCase):
             s.client.get_status(MESSAGE)
         self.assertEqual((ctx.exception.status, ctx.exception.code, ctx.exception.retry_after_seconds), (503, None, 1))
 
+    def test_submit_deadline_or_bare_5xx_is_unknown_outcome(self):
+        for status in (408, 500, 502, 503):
+            def handler(r, h, status=status):
+                h.send_response(status)
+                h.send_header("Content-Length", "0")
+                h.end_headers()
+
+            s = self.stub(handler)
+            with self.assertRaises(OutcomeUnknownError, msg=str(status)):
+                s.client.submit(idempotency_key="k", **REQUEST)
+            self.assertEqual(len(s.seen), 1)
+
+    def test_submit_503_with_json_code_is_a_definitive_refusal(self):
+        s = self.stub(lambda r, h: reply_json(h, 503, {"code": "billing_pending"}, {"Retry-After": "10"}))
+        with self.assertRaises(AlphaApiError) as ctx:
+            s.client.submit(idempotency_key="k", **REQUEST)
+        self.assertEqual((ctx.exception.status, ctx.exception.code), (503, "billing_pending"))
+
     def test_transport_failure_is_unknown_outcome_and_not_retried(self):
         s = self.stub(lambda r, h: h.connection.close())
         with self.assertRaises(OutcomeUnknownError) as ctx:
