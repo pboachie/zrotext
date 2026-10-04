@@ -156,6 +156,8 @@ impl Projection {
 /// Every read needs a newer local sequence; durable duplicate events are a
 /// store no-op rather than another reconciliation of the same generation.
 /// `now` must be trusted database time, never a caller/provider timestamp.
+/// A new projection cannot rewind the stored issue-time lower bound during a
+/// database clock rollback or from an older transaction timestamp.
 pub struct Reconciliation<'a> {
     pub gate: &'a Gate,
     pub marker: &'a Marker,
@@ -192,7 +194,7 @@ pub fn reconcile(input: Reconciliation<'_>) -> Result<Projection, Refusal> {
     }
     if let Some(prior) = previous {
         binding.check(&prior.scope)?;
-        if prior.generation >= observation.generation {
+        if prior.generation >= observation.generation || now < prior.issued_at {
             return Err(Refusal::StaleObservation);
         }
     }

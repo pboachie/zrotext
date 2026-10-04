@@ -791,3 +791,31 @@ fn admission_clock_rollback_before_projection_issue_time_fails_closed() {
         assert_eq!(send(Some(&projection), 0, 1, 200), Ok(()));
     }
 }
+
+#[test]
+fn newer_generation_cannot_rewind_the_stored_projection_issue_time() {
+    for mut read in [observation(), past_due(180)] {
+        let prior = project(&read, None).unwrap();
+        read.generation = 2;
+        for now in [150, 199] {
+            assert_eq!(
+                reconcile(Reconciliation {
+                    gate: &gate(),
+                    marker: &marker(),
+                    binding: &scope(),
+                    fence: fence(2),
+                    previous: Some(&prior),
+                    observation: &read,
+                    plan: &plan(),
+                    now,
+                }),
+                Err(Refusal::StaleObservation)
+            );
+        }
+        let current = project(&read, Some(&prior)).unwrap();
+        assert_eq!(current.issued_at(), prior.issued_at());
+        assert_eq!(current.phase(), prior.phase());
+        assert_eq!(current.valid_until(), prior.valid_until());
+        assert_eq!(current.first_failure_at(), prior.first_failure_at());
+    }
+}
