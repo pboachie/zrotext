@@ -149,38 +149,15 @@ async fn wrong_source_head_digest_peer_or_signature_has_no_allocation_effect() {
     let created = opening(&c, 1).await;
     let offered = offered(&c, created.receipt.opening).await;
     let wrong_event = Uuid::new_v4();
-    let observed: i64 = c
-        .base
-        .f
-        .db
-        .query_one(
-            "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
-            &[],
-        )
-        .await
-        .unwrap()
-        .get(0);
     // A second peer cannot acquire this active interval. Exercise an actually
     // signed wrong-peer packet through maintained capture admission instead.
-    let bytes = crate::http_owner_conversations::tests::envelope(
-        &c.base.f,
-        wrong_event,
-        1,
-        observed as u64,
-        b"+13",
-    );
     assert!(matches!(
-        crate::sealed_inbound::ingest::ingest_conversation(
-            &mut c.base.f.connect().await,
-            c.base.f.session(),
-            c.base.f.line,
+        crate::http_owner_conversations::activation::tests::capture(
+            &c.base.f,
+            &c.base.s,
+            wrong_event,
             1,
-            &c.base.f.bytes,
-            &bytes,
-            crate::http_owner_conversations::activation::CaptureInterval {
-                interval: c.base.s.interval,
-                activation_digest: c.base.s.activation_digest,
-            },
+            b"+13",
         )
         .await,
         Err(crate::sealed_inbound::ingest::IngestError::Conversation(
@@ -197,10 +174,9 @@ async fn wrong_source_head_digest_peer_or_signature_has_no_allocation_effect() {
         offer: offered.receipt.offer.unwrap(),
         allocation_id: Uuid::new_v4(),
         event_id: wrong_event,
-        event_digest: Sha256::digest(bytes)
-            .iter()
-            .map(|v| format!("{v:02x}"))
-            .collect(),
+        // Admission refused the signed packet, so no retained digest exists.
+        // Any nonzero claimed digest must still fail exact event lookup.
+        event_digest: "ab".repeat(32),
     };
     assert!(matches!(
         reserve(&mut c.base.f.connect().await, &c.base.owner, wrong).await,
