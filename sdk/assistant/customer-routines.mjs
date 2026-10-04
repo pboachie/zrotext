@@ -25,7 +25,8 @@ export function configuration(path){
 }
 export function customerRoutineDiagnostic(error){
   const known=['invalid_configuration','invalid_request','storage_unavailable','forbidden','conflict','authority_unavailable','unknown','timeout','invalid_response','executor_unavailable','artifact_changed','invalid_invocation','replay_conflict','unknown_no_retry','not_executable','withdrawn','provider_unknown','invalid_output'];
-  return known.includes(error?.code)?error.code:'unavailable';
+  try{const code=error?.code;return typeof code==='string'&&known.includes(code)?code:'unavailable';}
+  catch{return 'unavailable';}
 }
 export function customerReaderKey(jwk){
   // Software JWK already contains exportable secret material in customer

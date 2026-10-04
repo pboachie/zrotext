@@ -9,6 +9,13 @@ test('CLI diagnostic exposes only closed codes and never exception text',()=>{
  assert.equal(customerRoutineDiagnostic({code:'artifact_changed',message:canary,stack:canary}),'artifact_changed');
  for(const error of [Error(canary),{code:canary,message:canary},{code:'artifact_changed\n'+canary},null])assert.equal(customerRoutineDiagnostic(error),'unavailable');
 });
+test('CLI diagnostic samples changing getters once and refuses hostile getters and non-string codes',()=>{
+ const canary='synthetic private output';let reads=0;
+ const changing={get code(){return ++reads===1?'artifact_changed':canary;}};
+ assert.equal(customerRoutineDiagnostic(changing),'artifact_changed');assert.equal(reads,1);
+ assert.equal(customerRoutineDiagnostic({get code(){throw Error(canary);}}),'unavailable');
+ for(const code of [Symbol(canary),{toString(){throw Error(canary);}},[canary],42])assert.equal(customerRoutineDiagnostic({code}),'unavailable');
+});
 const hash=v=>createHash('sha256').update(v).digest('hex');
 const response='response';
 async function waitForAuthorityCallback(ready,outcome){
