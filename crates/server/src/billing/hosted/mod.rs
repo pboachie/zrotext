@@ -4,6 +4,7 @@
 
 pub mod namespace;
 pub mod policy;
+pub mod store;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Refusal {
@@ -46,3 +47,6 @@ pub fn for_deployment(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod store_tests;
