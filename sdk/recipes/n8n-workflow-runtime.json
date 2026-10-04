@@ -8,18 +8,30 @@
     },
     {
       "parameters": {
+        "mode": "raw",
+        "jsonOutput": "{\"operation\":\"preview\",\"params\":{\"request_id\":\"10000000-0000-4000-8000-000000000001\"}}",
+        "options": {}
+      },
+      "id": "runtime_operation", "name": "Select closed recipe operation",
+      "type": "n8n-nodes-base.set", "typeVersion": 3.4, "position": [260, 0]
+    },
+    {
+      "parameters": {
         "method": "POST", "url": "http://localhost:37620/recipe",
         "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth",
         "sendBody": true, "contentType": "raw", "rawContentType": "application/json",
-        "body": "{\"operation\":\"preview\",\"params\":{\"request_id\":\"10000000-0000-4000-8000-000000000001\"}}",
+        "body": "={{ JSON.stringify($json) }}",
         "options": { "timeout": 15000, "redirect": { "redirect": { "followRedirects": false } } }
       },
-      "id": "runtime_preview", "name": "Preview exact selected source",
-      "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [260, 0],
+      "id": "runtime_preview", "name": "Call customer local recipe",
+      "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [520, 0],
       "credentials": { "httpHeaderAuth": { "id": "zrotextLocalRecipe", "name": "ZROtext local recipe authority" } }
     }
   ],
-  "connections": { "Manual controlled test": { "main": [[{ "node": "Preview exact selected source", "type": "main", "index": 0 }]] } },
+  "connections": {
+    "Manual controlled test": { "main": [[{ "node": "Select closed recipe operation", "type": "main", "index": 0 }]] },
+    "Select closed recipe operation": { "main": [[{ "node": "Call customer local recipe", "type": "main", "index": 0 }]] }
+  },
   "settings": { "executionOrder": "v1", "saveDataErrorExecution": "none", "saveDataSuccessExecution": "none", "saveManualExecutions": false, "saveExecutionProgress": false, "executionTimeout": 30 },
   "pinData": {}, "tags": [], "id": "zrotextControlledRuntime"
 }
