@@ -219,7 +219,7 @@ pub async fn write(
     Ok(h.revision)
 }
 
-async fn load(
+pub(crate) async fn load(
     tx: &Transaction<'_>,
     account: Uuid,
     id: Uuid,

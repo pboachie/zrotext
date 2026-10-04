@@ -12,6 +12,8 @@ pub(crate) async fn withdraw(
     purpose: &str,
 ) -> Result<(), tokio_postgres::Error> {
     crate::managed_ai::lifecycle::withdraw(tx, account, contact, purpose).await?;
+    crate::workflow_runtime::openings::lifecycle::withdraw_contact(tx, account, contact, purpose)
+        .await?;
     if !super::installed(tx).await? {
         return Ok(());
     }

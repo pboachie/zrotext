@@ -14,6 +14,7 @@ use tower::ServiceExt;
 mod managed_grants;
 #[path = "provider_receipts_tests.rs"]
 mod provider_receipts;
+mod opening_capacity;
 
 const ORIGIN: &str = "https://test.example";
 

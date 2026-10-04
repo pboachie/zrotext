@@ -123,6 +123,7 @@ pub async fn scrub_context(
     account: Uuid,
     context: Uuid,
 ) -> Result<u64, tokio_postgres::Error> {
+    super::openings::lifecycle::erase_context(tx, account, context).await?;
     if !installed(tx).await? {
         return Ok(0);
     }
@@ -136,6 +137,7 @@ pub async fn erase_context(
     account: Uuid,
     context: Uuid,
 ) -> Result<(), tokio_postgres::Error> {
+    super::openings::lifecycle::erase_context(tx, account, context).await?;
     super::routines::lifecycle::erase_context(tx, account, context).await?;
     if !installed(tx).await? {
         return Ok(());
@@ -203,6 +205,7 @@ pub async fn erase_contact(
     account: Uuid,
     contact: Uuid,
 ) -> Result<(), tokio_postgres::Error> {
+    super::openings::lifecycle::erase_contact(tx, account, contact).await?;
     super::routines::lifecycle::erase_contact(tx, account, contact).await?;
     if !installed(tx).await? {
         return Ok(());
