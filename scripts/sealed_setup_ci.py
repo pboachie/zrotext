@@ -17,10 +17,38 @@ import socket
 import shutil
 import subprocess
 import tempfile
+import time
 from urllib.parse import urlsplit
 
 
 ROOT = Path(__file__).resolve().parent.parent
+
+ACL_PHASES = ("script-entered", "leaf-validated", "acl-call-entered", "acl-applied")
+ACL_DIAGNOSTIC_LIMIT = 256
+
+
+def acl_observed_phase(output):
+    # This bounds interpretation, not subprocess.run's internal PIPE collection.
+    # Only complete, exact, uniformly terminated fixed-marker prefixes qualify.
+    if not isinstance(output, bytes) or len(output) > ACL_DIAGNOSTIC_LIMIT:
+        return "diagnostic-unavailable"
+    for count in range(len(ACL_PHASES) + 1):
+        for ending in (b"\n", b"\r\n"):
+            expected = b"".join(b"ZT_SETUP_ACL:" + phase.encode("ascii") + ending
+                                for phase in ACL_PHASES[:count])
+            if output == expected:
+                return ACL_PHASES[count - 1] if count else "no-received-marker"
+    return "diagnostic-unavailable"
+
+
+class FixtureAclFailure(ValueError):
+    def __init__(self, outcome, output, started):
+        self.phase = acl_observed_phase(b"" if output is None else output)
+        self.outcome = outcome
+        self.elapsed_ms = max(0, int((time.monotonic() - started) * 1000))
+        # No child bytes, command, path, SID or raw exception is retained.
+        super().__init__(f"Owned fixture ACL observation: {self.phase}; "
+                         f"{outcome}; elapsed-ms={self.elapsed_ms}; private inputs withheld.")
 
 
 def database_url(value):
@@ -119,10 +147,14 @@ def grant_fixture_user_access(directory):
         raise ValueError("System fixture permission tool unavailable")
     script = """
 $ErrorActionPreference = 'Stop'
+[Console]::Out.WriteLine('ZT_SETUP_ACL:script-entered')
+[Console]::Out.Flush()
 $path = $env:ZT_SEALED_SETUP_OWNED_DIRECTORY
 $item = [IO.DirectoryInfo]::new($path)
 if (-not $item.Exists -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Fixture directory refused' }
 if ($item.GetFileSystemInfos().Length -ne 0) { throw 'Nonempty fixture refused' }
+[Console]::Out.WriteLine('ZT_SETUP_ACL:leaf-validated')
+[Console]::Out.Flush()
 $user = [Security.Principal.WindowsIdentity]::GetCurrent().User
 $system = [Security.Principal.SecurityIdentifier]::new([Security.Principal.WellKnownSidType]::LocalSystemSid, $null)
 $acl = [Security.AccessControl.DirectorySecurity]::new()
@@ -133,13 +165,29 @@ foreach ($sid in @($user, $system)) {
   $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid, [Security.AccessControl.FileSystemRights]::FullControl, $inherit, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
   $acl.AddAccessRule($rule)
 }
+[Console]::Out.WriteLine('ZT_SETUP_ACL:acl-call-entered')
+[Console]::Out.Flush()
 $item.SetAccessControl($acl)
+[Console]::Out.WriteLine('ZT_SETUP_ACL:acl-applied')
+[Console]::Out.Flush()
 """
-    subprocess.run([str(executable), "-NoProfile", "-NonInteractive", "-EncodedCommand",
-                    base64.b64encode(script.encode("utf-16-le")).decode("ascii")],
-                   env=dict(os.environ, ZT_SEALED_SETUP_OWNED_DIRECTORY=str(directory)),
-                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                   stderr=subprocess.DEVNULL, timeout=15, check=True)
+    print("Owned fixture ACL launch observed; private inputs withheld.", flush=True)
+    started = time.monotonic()
+    try:
+        result = subprocess.run(
+            [str(executable), "-NoProfile", "-NonInteractive", "-EncodedCommand",
+             base64.b64encode(script.encode("utf-16-le")).decode("ascii")],
+            env=dict(os.environ, ZT_SEALED_SETUP_OWNED_DIRECTORY=str(directory)),
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, timeout=15, check=True)
+    except subprocess.TimeoutExpired as error:
+        raise FixtureAclFailure("timeout-unknown", error.output, started) from None
+    except subprocess.CalledProcessError as error:
+        raise FixtureAclFailure("nonzero-exit", error.output, started) from None
+    except OSError:
+        raise FixtureAclFailure("launch-error", b"", started) from None
+    if result.returncode != 0 or acl_observed_phase(result.stdout) != "acl-applied":
+        raise FixtureAclFailure("invalid-completion-receipt", result.stdout, started)
 
 
 def prepare_owned_directory(directory):
@@ -336,6 +384,8 @@ def main(argv=None):
                 cleanup_owned_directory(temporary, cluster)
     except (ValueError, OSError, subprocess.SubprocessError, ProcessCleanupFailure) as error:
         failed = True
+        if isinstance(error, FixtureAclFailure):
+            print(str(error))
         # These fixed stage names contain no caller input or diagnostic material.
         if stage == "cluster-start" and cluster is not None:
             stage = cluster.stage
