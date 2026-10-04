@@ -305,5 +305,4 @@ mod races;
 mod registry_binding;
 mod routines;
 
-mod join_order;
 mod key_deadlines;
