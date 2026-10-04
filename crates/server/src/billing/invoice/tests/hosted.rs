@@ -10,6 +10,122 @@ use crate::billing::hosted::{
 use tokio_postgres::Transaction;
 use uuid::Uuid;
 
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated hosted invoice schema"]
+async fn hosted_admission_fences_signed_subscription_invalidation_until_commit() {
+    use hmac::{Hmac, KeyInit, Mac};
+    use sha2::Sha256;
+    for subscription in ["sub_invoice2", "sub_invoice1"] {
+        let (mut case, gate, _) = installed().await;
+        let mut ingress = case.connect().await;
+        let observer = case.connect().await;
+        let pid: i32 = ingress
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        let body = serde_json::to_vec(&serde_json::json!({
+            "id":"evt_hostedfence1", "object":"event", "livemode":false,
+            "type":"customer.subscription.updated",
+            "data":{"object":{"id":subscription,"customer":"cus_invoice1"}}
+        }))
+        .unwrap();
+        let secret = format!("whsec_{}", Uuid::new_v4().simple());
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(b"1750000000.");
+        mac.update(&body);
+        let signature = mac
+            .finalize()
+            .into_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        let event = crate::billing::verify_event(
+            &body,
+            &format!("t=1750000000,v1={signature}"),
+            &secret,
+            1_750_000_000,
+        )
+        .unwrap();
+        let tx = case.db.transaction().await.unwrap();
+        let admission_pid: i32 = tx
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        let prepared = admission::prepare(&tx, &gate, case.account).await.unwrap();
+        let message = Uuid::new_v4();
+        admission::outbound(&tx, &gate, &prepared, message, false)
+            .await
+            .unwrap();
+        write_existing_ledger(&tx, case.account, case.device, message).await;
+        // Match the delivery store's existing reconciliation-row guards. A
+        // previously absent subscription cannot be protected by these locks.
+        tx.query(
+            "SELECT 1 FROM billing_reconciliations WHERE account_id=$1 FOR SHARE",
+            &[&case.account],
+        )
+        .await
+        .unwrap();
+        admission::outbound(&tx, &gate, &prepared, message, true)
+            .await
+            .unwrap();
+        let task = tokio::spawn(async move { crate::billing::ingest(&mut ingress, &event).await });
+        let until = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            assert!(
+                !task.is_finished(),
+                "signed invalidation escaped admission's commit fence"
+            );
+            let waiting: bool = observer.query_one(
+                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity a JOIN pg_locks l ON l.pid=a.pid JOIN pg_locks held ON (held.locktype,held.database,held.classid,held.objid,held.objsubid)=(l.locktype,l.database,l.classid,l.objid,l.objsubid) WHERE a.pid=$1 AND a.wait_event_type='Lock' AND a.wait_event='advisory' AND l.locktype='advisory' AND NOT l.granted AND held.pid=$2 AND held.granted)", &[&pid,&admission_pid]
+            ).await.unwrap().get(0);
+            if waiting {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < until,
+                "ingress never reached the customer advisory fence"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        admission::final_with_deadline(&tx, &gate, &prepared, i64::MAX)
+            .await
+            .unwrap();
+        drop(prepared);
+        tx.commit().await.unwrap();
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            crate::billing::IngestResult::Queued
+        );
+        let dirty: bool = case.db.query_one("SELECT dirty_generation>processed_generation FROM billing_reconciliations WHERE stripe_subscription_id=$1", &[&subscription]).await.unwrap().get(0);
+        assert!(dirty);
+        let tx = case.db.transaction().await.unwrap();
+        let prepared = admission::prepare(&tx, &gate, case.account).await.unwrap();
+        assert_eq!(
+            admission::device(&tx, &gate, &prepared, None).await,
+            Err(store::StoreError::Refused(
+                crate::billing::hosted::Refusal::Pending
+            ))
+        );
+        drop(prepared);
+        tx.rollback().await.unwrap();
+        assert_eq!(
+            case.db
+                .query_one("SELECT reserved_units FROM billing_invoice_periods", &[])
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            1
+        );
+        case.cleanup().await;
+    }
+}
+
 async fn installed() -> (Case, Gate, Scope) {
     installed_horizon(3600).await
 }
