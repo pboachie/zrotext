@@ -10,11 +10,13 @@ const known=new Map([
  ['ZTSE draft-02 envelope prep: recipient key id','recipient_identity'],
  ['ZTSE draft-02 envelope prep: wrap order/duplicate','recipient_order'],
 ]);
-export function originalRoutineDiagnostic(stage,error){
+const settlements=new Set(['pending','aborted','transport_failed','http_200','http_400','http_401','http_403','http_409','http_429','http_503','other_status']);
+export function originalRoutineDiagnostic(stage,error,settlement){
  const selected=typeof stage==='string'&&stages.has(stage)?stage:'unavailable';
  let code='unavailable';
  try{const candidateCode=error?.code;
  if(typeof candidateCode==='string'&&codes.has(candidateCode))code=candidateCode;
  else{const candidateMessage=error?.message;if(typeof candidateMessage==='string')code=known.get(candidateMessage)??code;}}catch{/* Untrusted getters cannot escape fixed diagnostics. */}
+ if(code==='response_unknown'&&settlement!==undefined)code=typeof settlement==='string'&&settlements.has(settlement)?settlement:'unavailable';
  return `original reply fixture phase=${selected};code=${code}\n`;
 }

@@ -33,3 +33,11 @@ test('changing getters are sampled once and non-string values never enter stderr
   assert.equal(originalRoutineDiagnostic(value,{code:value,message:value}),'original reply fixture phase=unavailable;code=unavailable\n');
  }
 });
+
+test('unknown response exposes only fixed settlement states and never spoofed transport data',()=>{
+ for(const state of ['pending','aborted','transport_failed','http_200','http_400','http_401','http_403','http_409','http_429','http_503','other_status']){
+  assert.equal(originalRoutineDiagnostic('call_current',{code:'response_unknown',message:canary},state),`original reply fixture phase=call_current;code=${state}\n`);
+ }
+ for(const state of [canary,'http_200;'+canary,{},[],Symbol(canary)])assert.equal(originalRoutineDiagnostic('call_current',{code:'response_unknown'},state),'original reply fixture phase=call_current;code=unavailable\n');
+ assert.equal(originalRoutineDiagnostic('call_current',{code:'forbidden'},'http_403'),'original reply fixture phase=call_current;code=forbidden\n');
+});

@@ -137,6 +137,17 @@ fn refusal_diagnostic(bytes: &[u8]) -> &'static str {
             "invalid_invocation" => "invalid_invocation",
             "not_executable" => "not_executable",
             "clock_unavailable" => "clock_unavailable",
+            "pending" => "pending",
+            "aborted" => "aborted",
+            "transport_failed" => "transport_failed",
+            "http_200" => "http_200",
+            "http_400" => "http_400",
+            "http_401" => "http_401",
+            "http_403" => "http_403",
+            "http_409" => "http_409",
+            "http_429" => "http_429",
+            "http_503" => "http_503",
+            "other_status" => "other_status",
 
             _ => "unavailable",
         };
@@ -182,6 +193,17 @@ fn refusal_stage(bytes: &[u8]) -> &'static str {
             "invalid_invocation",
             "not_executable",
             "clock_unavailable",
+            "pending",
+            "aborted",
+            "transport_failed",
+            "http_200",
+            "http_400",
+            "http_401",
+            "http_403",
+            "http_409",
+            "http_429",
+            "http_503",
+            "other_status",
         ]
         .contains(&code)
         {
@@ -220,6 +242,20 @@ fn refusal_stage(bytes: &[u8]) -> &'static str {
 }
 #[test]
 fn routine_diagnostics_accept_fixed_stage_and_code_but_refuse_child_canary() {
+    assert_eq!(
+        refusal_stage(b"original reply fixture phase=call_current;code=http_200\n"),
+        "call_current"
+    );
+    assert_eq!(
+        refusal_diagnostic(b"original reply fixture phase=call_current;code=aborted\n"),
+        "aborted"
+    );
+    assert_eq!(
+        refusal_stage(
+            b"original reply fixture phase=call_current;code=http_200;synthetic-private-canary\n"
+        ),
+        "unavailable"
+    );
     assert_eq!(
         refusal_stage(b"original reply fixture phase=produced;code=forbidden\n"),
         "produced"

@@ -56,16 +56,19 @@ function transport(f){
       reject(Error());return;}
     let operation;try{operation=JSON.parse(init.body);}catch{operation={};}
     const labels=endpoint.pathname==='/v1/reply-events'?{current:'original_current',read:'original_read',page:'original_page'}:endpoint.pathname==='/v1/workflow/tools'?{'workflow.context.metadata':'context_metadata','workflow.context.content':'context_content'}:{current:'routine_current',admit_original:'original_admit',current_original:'call_current',produced:'produced'};
-    stage=labels[operation.operation??operation.method]??'transport';
+    stage=labels[operation.operation??operation.method]??'transport';settlement='pending';
+    const aborted=()=>{settlement='aborted';};init.signal?.addEventListener('abort',aborted,{once:true});
+    const failed=error=>{init.signal?.removeEventListener('abort',aborted);if(settlement==='pending')settlement='transport_failed';reject(error);};
     const req=request({hostname:origin.hostname,port,path:endpoint.pathname,method:'POST',ca:f.ca_pem,headers:init.headers,
       signal:init.signal,rejectUnauthorized:true},response=>{
-      const chunks=[];let size=0;response.on('error',reject);
-      response.on('data',chunk=>{size+=chunk.length;if(size>524288){req.destroy();reject(Error());}else chunks.push(chunk);});
-      response.on('end',()=>resolve(new Response(Buffer.concat(chunks),{status:response.statusCode,headers:response.headers})));
-    });req.on('error',reject);req.end(init.body);
+      settlement=[200,400,401,403,409,429,503].includes(response.statusCode)?`http_${response.statusCode}`:'other_status';
+      const chunks=[];let size=0;response.on('error',failed);
+      response.on('data',chunk=>{size+=chunk.length;if(size>524288){req.destroy();failed(Error());}else chunks.push(chunk);});
+      response.on('end',()=>{init.signal?.removeEventListener('abort',aborted);resolve(new Response(Buffer.concat(chunks),{status:response.statusCode,headers:response.headers}));});
+    });req.on('error',failed);req.end(init.body);
   });return {origin:origin.origin,fetch};
 }
-let stage='input',wire='',engine,provider,store;
+let stage='input',settlement='pending',wire='',engine,provider,store;
 try{
   for await(const chunk of process.stdin){wire+=chunk;if(Buffer.byteLength(wire)>262144)throw Error();}
   const f=JSON.parse(wire);wire='';assert.ok(['seed_context','exercise_original','recover_original'].includes(f.phase));
@@ -101,5 +104,5 @@ try{
     process.stdout.write(JSON.stringify(result));
   }
 }catch(error){
-  process.stderr.write(originalRoutineDiagnostic(stage,error));process.exitCode=1;
+  process.stderr.write(originalRoutineDiagnostic(stage,error,settlement));process.exitCode=1;
 }finally{engine?.withdraw();provider?.close();store?.close();}
