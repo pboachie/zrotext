@@ -9,6 +9,10 @@ Thanks for helping improve ZROtext. Application code is licensed under `AGPL-3.0
 - Use synthetic phone numbers and message content in tests and examples. Never post credentials, real message bodies, phone numbers, device identifiers, or private infrastructure details.
 - Install the opt-in [public privacy hooks](docs/public-privacy-guard.md) with `python scripts/install_privacy_hooks.py`. They protect all worktrees of this repository without replacing existing hooks.
 
+## Ask questions and share ideas
+
+Use [GitHub Discussions](https://github.com/pboachie/zrotext/discussions) for questions, proposals and design ideas (Q&A, Ideas, Show and tell), and issues for bugs and device reports. Keep both free of real phone numbers, message content, device identifiers and credentials; use synthetic data. Report vulnerabilities only through the private channel above.
+
 ## Submit a change
 
 1. Fork the repository and create a branch from `main`.

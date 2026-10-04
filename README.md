@@ -114,6 +114,6 @@ To create the first owner, follow the [local bootstrap steps](docs/SELF-HOSTING.
 
 ## Contributing
 
-Issues and discussions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for the development checks, sign-off requirement, and pull request process. Report vulnerabilities through the private channel in [SECURITY.md](SECURITY.md).
+Questions, ideas and show-and-tell go in [GitHub Discussions](https://github.com/pboachie/zrotext/discussions); bugs and device reports go in [issues](https://github.com/pboachie/zrotext/issues). Do not post phone numbers, message content, device identifiers or credentials in either. Read [CONTRIBUTING.md](CONTRIBUTING.md) for the development checks, sign-off requirement, and pull request process. Report vulnerabilities through the private channel in [SECURITY.md](SECURITY.md).
 
 ZROtext is licensed under [AGPL-3.0-only](LICENSE). Contributors retain their copyright under the terms described in [CONTRIBUTING.md](CONTRIBUTING.md).
