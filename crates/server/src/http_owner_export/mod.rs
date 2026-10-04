@@ -66,6 +66,10 @@ struct ExportQuery {
     managed_policies_after: Option<String>,
     managed_readers_after: Option<String>,
     provider_receipts_after: Option<Uuid>,
+    openings_after: Option<Uuid>,
+    opening_offers_after: Option<Uuid>,
+    opening_allocations_after: Option<Uuid>,
+    opening_requests_after: Option<Uuid>,
     sealed_deliveries_after: Option<Uuid>,
     templates_after: Option<Uuid>,
     template_versions_after: Option<Uuid>,
@@ -197,6 +201,7 @@ fn message_view(row: &Row) -> Result<MessageView, tokio_postgres::Error> {
 struct ExportView {
     original_replies: crate::original_reply::lifecycle::Export,
     provider_receipts: crate::provider_sms::receipts::lifecycle::Page,
+    opening_capacity: crate::workflow_runtime::openings::export::Export,
     sealed_line_setup: serde_json::Value,
     sealed_event_deliveries: crate::sealed_inbound::delivery::lifecycle::Export,
     execution_inventory:
@@ -499,6 +504,15 @@ async fn export_account(
         &principal,
         query.original_reply_section.unwrap_or_default(),
         query.original_reply_before,
+    let opening_capacity = match crate::workflow_runtime::openings::export::export(
+        &mut client,
+        &principal,
+        [
+            query.openings_after,
+            query.opening_offers_after,
+            query.opening_allocations_after,
+            query.opening_requests_after,
+        ],
     )
     .await
     {
@@ -517,6 +531,7 @@ async fn export_account(
             Ok(page) => page,
             Err(error) => return error.into_response(),
         },
+        opening_capacity,
         sealed_line_setup:
             match crate::http_owner_conversations::sealed_line_setup::lifecycle::inventory(
                 &mut client,

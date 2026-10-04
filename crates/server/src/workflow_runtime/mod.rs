@@ -29,6 +29,7 @@ mod execution_tests;
 mod grants;
 pub mod http;
 pub(crate) mod lifecycle;
+pub mod openings;
 mod readiness;
 mod reads;
 pub mod routines;
