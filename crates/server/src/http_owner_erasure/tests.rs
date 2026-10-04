@@ -11,6 +11,7 @@ use axum::body::{Body, to_bytes};
 use serde_json::{Value, json};
 use totp_rs::{Builder, Secret};
 use tower::ServiceExt;
+mod managed_grants;
 
 const ORIGIN: &str = "https://test.example";
 
@@ -386,6 +387,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "088_original_reply_readers.sql",
         include_str!("../../../../deploy/compose/migrations/088_original_reply_readers.sql"),
+    // Explicit fixture-only proposal. The production migrator never discovers it.
+    (
+        "../migration-candidates/managed_reader_grants.sql",
+        include_str!("../../../../deploy/compose/migration-candidates/managed_reader_grants.sql"),
     ),
 ];
 
