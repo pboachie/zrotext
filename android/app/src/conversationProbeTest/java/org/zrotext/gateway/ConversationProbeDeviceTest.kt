@@ -204,28 +204,39 @@ class ConversationProbeDeviceTest {
             assertEquals(0,db.journal().contentCount())
             assertNull(db.journal().wireCapture(token)!!.protectedEnvelope)
             assertNotNull(db.journal().wireCapture(token)!!.acknowledgedDigest)
-            // More than one body-capacity window through the actual receiver/runtime/WebSocket/PG.
-            // Every durable upload ACK releases its slot; permanent receipt and sequence fences stay.
-            for(index in 2..129) {
+            // Batch only fixture crypto to avoid per-packet Node startups consuming the unchanged
+            // authenticated-clock age. All 128 bodies pass actual receipt admission and its cap.
+            val captures=(2..129).map { index ->
                 val receipt=index.toString(16).padStart(64,'0')
                 val content="Synthetic acknowledged capture $index"
                 syntheticReceipt(receipt,content)
-                assertEquals(ConversationObservation.CAPTURED,ConversationProbeSession.observation.get())
+                assertEquals("Current synthetic receipt $index",ConversationObservation.CAPTURED,ConversationProbeSession.observation.get())
+                assertEquals(index-1,db.journal().contentCount())
+                Triple(receipt,checkNotNull(runtime.retryCapture(receipt)),index.toLong())
+            }
+            assertEquals(ConversationCaptureDao.CONTENT_CAPACITY,db.journal().contentCount())
+            System.err.println("Synthetic capture batch admitted at ${TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-start)}ms")
+            val packets=fixture.envelopes(captures.map {it.second to it.third})
+            System.err.println("Synthetic capture batch prepared at ${TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-start)}ms")
+            // Every upload still uses actual Room reservation/persistence, authenticated WS and PG.
+            captures.forEachIndexed {position,(receipt,capture,expectedSequence) ->
                 val done=java.util.concurrent.CountDownLatch(1)
                 val committed=java.util.concurrent.atomic.AtomicBoolean(false)
                 runtime.uploadCapture(receipt,{value,sequence ->
-                    assertEquals(index.toLong(),sequence)
-                    decode(fixture.envelope(value.body,value.captureId,value.firstObservedAtMs,sequence).getString("envelope"))
+                    assertEquals(capture,value);assertEquals(expectedSequence,sequence)
+                    packets[position].copyOf()
                 }) {accepted->committed.set(accepted);done.countDown()}
-                assertTrue(done.await(30,TimeUnit.SECONDS));assertTrue("Exact durable upload ACK $index",committed.get())
-                assertEquals(0,db.journal().contentCount());assertEquals(index,db.journal().receiptCount())
+                assertTrue(done.await(30,TimeUnit.SECONDS));assertTrue("Exact durable upload ACK $expectedSequence at ${TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-start)}ms",committed.get())
+                assertEquals(127-position,db.journal().contentCount());assertEquals(129,db.journal().receiptCount())
                 val retained=db.journal().wireCapture(receipt)!!
-                assertEquals(index.toLong(),retained.sequence)
+                assertEquals(expectedSequence,retained.sequence)
                 assertNotNull(retained.acknowledgedDigest);assertNull(retained.protectedEnvelope);assertNull(retained.nonce)
                 assertNull(runtime.retryCapture(receipt))
-                syntheticReceipt(receipt,content)
-                assertEquals(ConversationObservation.DUPLICATE,ConversationProbeSession.observation.get())
+                packets[position].fill(0)
             }
+            syntheticReceipt(captures.last().first,captures.last().second.body)
+            assertEquals(ConversationObservation.DUPLICATE,ConversationProbeSession.observation.get())
+            assertEquals(0,db.journal().contentCount())
             assertEquals(129,db.journal().receiptCount())
             val encrypted=checkNotNull(sealed.get())
             val event=UUID.fromString(captured.captureId)

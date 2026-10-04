@@ -69,9 +69,14 @@ async fn phone_channel(
     }
     upgrade
         .on_upgrade(move |mut socket| async move {
+            // One scoped real PG connection for this authenticated synthetic socket. Every frame
+            // still holds the fixture lock and enters the unchanged transactional channel handler.
+            let mut client = {
+                let f = state.fixture.lock().await;
+                f.connect().await
+            };
             while let Some(Ok(Message::Binary(bytes))) = socket.recv().await {
                 let f = state.fixture.lock().await;
-                let mut client = f.connect().await;
                 let result = super::super::channel::handle(
                     &mut client,
                     &super::super::channel::AuthenticatedChannelSession {
