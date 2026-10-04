@@ -78,7 +78,7 @@ class OwnedFixtureVault:
 
 
 @contextlib.contextmanager
-def fixture_node(root, certificate):
+def fixture_node(root, certificate, broker):
     """Add the fixture's CA only in its PATH shim; launch() remains unchanged."""
     node = shutil.which('node')
     if not node:
@@ -95,21 +95,15 @@ def fixture_node(root, certificate):
         source.write_text('''using System;
 using System.Diagnostics;
 using System.IO;
-using System.Text;
 class NodeFixture {
-  static string Quote(string value) {
-    var output = new StringBuilder("\\\""); int slashes = 0;
-    foreach (char c in value) {
-      if (c == '\\\\') { slashes++; continue; }
-      output.Append('\\\\', slashes * (c == '\\"' ? 2 : 1)); slashes = 0;
-      if (c == '\\"') output.Append('\\\\'); output.Append(c);
-    }
-    output.Append('\\\\', slashes * 2); return output.Append('\\"').ToString();
-  }
   static int Main(string[] args) {
-    var command = new StringBuilder("--dns-result-order=ipv4first ");
-    foreach (string value in args) command.Append(Quote(value)).Append(' ');
-    var start = new ProcessStartInfo(__NODE_PATH__, command.ToString());
+    if (args.Length != 1) return 2;
+    string command;
+    if (args[0] == "--version") command = "--dns-result-order=ipv4first --version";
+    else if (args[0] == __BROKER_PATH__) command = __BROKER_COMMAND__;
+    else return 2;
+    // Only generated fixed arguments reach the actual Node process.
+    var start = new ProcessStartInfo(__NODE_PATH__, command);
     start.UseShellExecute = false;
     start.EnvironmentVariables["NODE_EXTRA_CA_CERTS"] = __CERT_PATH__;
     using (var child = Process.Start(start)) {
@@ -118,12 +112,17 @@ class NodeFixture {
     }
   }
 }'''.replace('__NODE_PATH__', json.dumps(node)).replace('__CERT_PATH__', json.dumps(str(certificate)))
+              .replace('__BROKER_PATH__', json.dumps(str(broker)))
+              .replace('__BROKER_COMMAND__', json.dumps('--dns-result-order=ipv4first ' + subprocess.list2cmdline([str(broker)])))
               .replace('__CHILD_PATH__', json.dumps(str(children))))
         subprocess.run([str(compiler), '/nologo', '/out:' + str(directory / 'node.exe'), str(source)],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
     else:
         shim = directory / 'node'
-        shim.write_text('#!/bin/sh\nprintf "%s\\n" "$$" >> ' + shlex.quote(str(children)) + '\nNODE_EXTRA_CA_CERTS=' + shlex.quote(str(certificate)) +
+        shim.write_text('#!/bin/sh\n[ "$#" = 1 ] || exit 2\ncase "$1" in\n' +
+                        '--version) set -- --version ;;\n' + shlex.quote(str(broker)) + ') set -- ' +
+                        shlex.quote(str(broker)) + ' ;;\n*) exit 2 ;;\nesac\n' +
+                        'printf "%s\\n" "$$" >> ' + shlex.quote(str(children)) + '\nNODE_EXTRA_CA_CERTS=' + shlex.quote(str(certificate)) +
                         ' exec ' + shlex.quote(node) + ' --dns-result-order=ipv4first "$@"\n')
         shim.chmod(0o700)
     original = os.environ.get('PATH', '')

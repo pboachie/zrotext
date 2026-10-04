@@ -170,7 +170,14 @@ def run(fixture):
                 return code, result
             shim = contextlib.ExitStack()
             if fixture.get('verify_installed'):
-                child_receipt = shim.enter_context(fixture_node(root, root / 'cert.pem'))
+                exact_broker = setup.local.checked_artifact(setup.checked_path(broker, artifact=True,
+                    approved_artifact_root=setup.setup_artifact_root(broker)), setup.local.digest(broker.read_bytes()))
+                child_receipt = shim.enter_context(fixture_node(root, root / 'cert.pem', exact_broker))
+                # Fixture forwarding is closed: no eval, extra option or other artifact.
+                for rejected in (['--eval', 'process.exit(0)'], ['--version', '--inspect'],
+                                 [str(exact_broker), '--inspect'], [str(root / 'other.mjs')]):
+                    refused = subprocess.run(['node', *rejected], capture_output=True, timeout=5)
+                    assert refused.returncode == 2 and not child_receipt.exists()
             preview_digest = setup.local.digest(config.read_bytes())
             arguments = ['guided_workflow_setup.py', 'connect', '--client', 'mcp-json',
                          '--config', str(config), '--scope', str(scope_file), '--broker', str(broker),
@@ -200,7 +207,9 @@ def run(fixture):
             # Actual private bootstrap -> MCP -> HTTPS current-authority request.
             env = dict(__import__('os').environ, NODE_EXTRA_CA_CERTS=str(root / 'cert.pem'))
             DIAGNOSTIC["stage"] = "bootstrap"
-            child = subprocess.run(['node', '--dns-result-order=ipv4first', str(broker)], input=(json.dumps({'v': 1, 'origin': origin, 'credential': narrow}) + '\n' +
+            bootstrap = (['node', str(exact_broker)] if fixture.get('verify_installed')
+                         else ['node', '--dns-result-order=ipv4first', str(broker)])
+            child = subprocess.run(bootstrap, input=(json.dumps({'v': 1, 'origin': origin, 'credential': narrow}) + '\n' +
                 json.dumps({'jsonrpc': '2.0', 'id': 0, 'method': 'initialize', 'params': {'protocolVersion': '2025-11-25', 'capabilities': {}, 'clientInfo': {'name': 'synthetic-guided', 'version': '1'}}}) + '\n' +
                 json.dumps({'jsonrpc': '2.0', 'method': 'notifications/initialized'}) + '\n' +
                 json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call', 'params': {'name': 'zrotext_readiness', 'arguments': {}}}) + '\n').encode(),
@@ -219,7 +228,9 @@ def run(fixture):
                 hold_metadata.set()
                 started = time.monotonic()
                 try:
-                    with patch('workflow_connector_verify.DEADLINE_SECONDS', 2):
+                    # Leave bounded startup time to reach the actual metadata
+                    # block; production's thirty-second deadline is unchanged.
+                    with patch('workflow_connector_verify.DEADLINE_SECONDS', 5):
                         code, result = verify_installed()
                     elapsed = time.monotonic() - started
                     if not metadata_waiting.is_set():

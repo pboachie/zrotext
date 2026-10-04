@@ -202,8 +202,9 @@ It mandates actual SDK initialization, tool discovery, readiness and metadata
 through the installed launcher, and repeats verification after creator revocation.
 It checks unchanged configuration, intent and narrow custody. Linux CI owns an
 isolated Secret Service session; Windows local acceptance uses unique synthetic
-Credential Manager entries. Its test-only PATH shim injects the loopback fixture
-CA before executing the real Node binary; production TLS and launcher environment
+Credential Manager entries. Its test-only PATH shim accepts only the version
+probe or exact reviewed broker and injects the loopback fixture CA before executing
+the real Node binary; production TLS and launcher environment
 filtering remain unchanged. The default PostgreSQL test exercises its original
 in-memory scenario and does not claim installed verification ran.
 
