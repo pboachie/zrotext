@@ -666,6 +666,30 @@ async fn stale_real_owner_and_same_transaction_source_change_cannot_publish() {
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; genuine owner and isolated synthetic current root"]
 async fn genuine_observer_is_refused_and_request_slot_errors_release_their_guard() {
     let f = OwnerFixture::new().await;
+    assert_eq!(
+        f.schema
+            .db
+            .query_one("SELECT current_schema()", &[])
+            .await
+            .unwrap()
+            .get::<_, String>(0),
+        f.schema.schema
+    );
+    f.schema
+        .db
+        .batch_execute(include_str!(
+            "../../../../deploy/compose/migrations/053_observer_seat_invitations.sql"
+        ))
+        .await
+        .unwrap();
+    assert!(
+        f.schema
+            .db
+            .query_one("SELECT to_regclass('seat_invitations') IS NOT NULL", &[])
+            .await
+            .unwrap()
+            .get::<_, bool>(0)
+    );
     let hasher = state(String::new()).auth_hasher;
     let owner = auth::authenticate_session(&f.schema.db, &hasher, &f.credentials.token)
         .await
