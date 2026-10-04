@@ -111,7 +111,7 @@ export function allowFrontendRequest(origin,url,headers){
 }
 /** Invoke from a supported, escalated fixture tool process. No elevation or
  * console restrictions are bypassed here; native failures remain failures. */
-export async function runCompiledSetupAcceptance({browser,ready,nativeExecutable,tls}){
+export async function runCompiledSetupAcceptance({browser,ready,nativeExecutable,tls,consumePublishedRoot}){
   const r=validateReady(ready),control=fixtureControl(r);let frontend,failure;
   try{
     const prepared=await invokeNativeFixture(nativeExecutable,nativeRequest('prepareRootFixture',{account:r.baseline.accountId,origin:r.origin}));
@@ -121,7 +121,18 @@ export async function runCompiledSetupAcceptance({browser,ready,nativeExecutable
     return await runSetupServerAcceptance({browser,fixture,snapshot:async()=> (await control('snapshot')).counters,
       signRootCustody:async({unsigned,expected})=>{assert.ok(unsigned.length>=151&&unsigned.length<=663);const challenge=uuid(unsigned.subarray(53,69));const scope=verifyIndependentScope((await control('root_sign_scope',challenge)).expected,expected,'root',challenge);const result=await invokeNativeFixture(nativeExecutable,nativeRequest('signCustody',scope,artifacts,unsigned));assert.deepEqual(result.artifacts,artifacts);return new TextEncoder().encode(`Enrollment signature: ${result.signatures.enrollmentSignature}\nCustody signature: ${result.signatures.custodySignature}\n`);},
       signLineRegistration:async({unsigned,expected})=>{const parsed=parseRegistration(unsigned),scope=verifyIndependentScope((await control('line_sign_scope',parsed.challenge)).expected,expected,'line',parsed.challenge);const result=await invokeNativeFixture(nativeExecutable,nativeRequest('signLineRegistration',scope,artifacts,unsigned));assert.deepEqual(result.artifacts,artifacts);return bytes(result.signatures.rootSignature,64);},
-      submitPhoneProof:async({challenge})=>{await control('submit_phone_proof',challenge.challenge_id);},acknowledgePhone:async({challenge})=>{await control('acknowledge_phone',challenge.challenge_id);}
+      submitPhoneProof:async({challenge})=>{await control('submit_phone_proof',challenge.challenge_id);},acknowledgePhone:async({challenge})=>{await control('acknowledge_phone',challenge.challenge_id);},
+      consumePublishedRoot:async({published,expected})=>{
+        const decode=(name,min,max)=>{const v=published[name];assert.equal(typeof v,'string');const b=Buffer.from(v,'base64');assert.equal(b.toString('base64'),v);assert.ok(b.length>=min&&b.length<=max);return Uint8Array.from(b);};
+        assert.equal(published.account_id,expected.accountId);assert.equal(published.generation,1);
+        const {verifyPublishedRootBundle}=await import('../dist/root-custody.js');
+        const bundle={rootPin:decode('root_pin_b64',94,94),encryptedBackup:decode('encrypted_backup_b64',237,748),publicCard:decode('public_card_b64',134,645),unsignedEnrollment:decode('unsigned_enrollment_b64',151,663),custodySignature:decode('custody_signature_b64',64,64)};
+        const verified=await verifyPublishedRootBundle(expected.rootPin,Uint8Array.from(Buffer.from(expected.rootFingerprintHex,'hex')),expected.origin,bundle);
+        assert.equal(verified.trust.generation,1n);assert.equal(hex(verified.trust.accountId),expected.accountId.replaceAll('-',''));assert.deepEqual(verified.rootPin,expected.rootPin);
+        for(const changed of [{...bundle,rootPin:Uint8Array.from(bundle.rootPin, (v,i)=>i===5?v^1:v)},{...bundle,custodySignature:Uint8Array.from(bundle.custodySignature,(v,i)=>i===0?v^1:v)}])await assert.rejects(verifyPublishedRootBundle(expected.rootPin,Uint8Array.from(Buffer.from(expected.rootFingerprintHex,'hex')),expected.origin,changed));
+        assert.equal(typeof consumePublishedRoot,'function','Actual phone consumer required');
+        await consumePublishedRoot({accountId:expected.accountId,rootPin:Buffer.from(verified.rootPin).toString('base64'),comparedFingerprint:expected.rootFingerprintHex,port:r.port,controlToken:r.controlToken});
+      }
     });
   }catch(error){failure=error;throw error;}finally{try{try{await frontend?.close();}finally{await control('finish');}}catch(error){if(!(failure instanceof CleanupFailure))throw error;}}
 }
