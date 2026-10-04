@@ -5,7 +5,7 @@ ZROtext is an open-source Android SMS gateway in active development. This page s
 <!-- Generated regions come from docs/roadmap.json. Edit that file, then run `python3 scripts/roadmap.py`. -->
 
 <!-- roadmap:overview -->
-<p align="center"><img src="assets/roadmap-overview.svg" alt="Roadmap at a glance: 25 capabilities in five tracks. Four are in a restricted pilot, nine are being built, three are in design and nine are planned. None has reached general release." width="900"></p>
+<p align="center"><img src="assets/roadmap-overview.svg" alt="Roadmap at a glance: 25 capabilities in five tracks. Four are in a restricted pilot, eighteen are being built, one is in design and two are planned. None has reached general release." width="900"></p>
 <!-- /roadmap:overview -->
 
 > [!NOTE]
@@ -45,18 +45,18 @@ Priority is delivery order, not availability or a release date. These outcomes a
 pie showData
     title Capabilities by stage (25 tracked)
     "Restricted pilot" : 4
-    "Build" : 9
-    "Design" : 3
-    "Planned" : 9
+    "Build" : 18
+    "Design" : 1
+    "Planned" : 2
 ```
 
 | Track | General release | Restricted pilot | Build | Design | Planned |
 |---|:---:|:---:|:---:|:---:|:---:|
 | [Gateway messaging](#gateway-messaging) |  | 4 | 1 |  |  |
-| [Self-hosting and integrations](#self-hosting-and-integrations) |  |  | 3 | 1 | 3 |
-| [Privacy and account controls](#privacy-and-account-controls) |  |  | 2 | 1 |  |
+| [Self-hosting and integrations](#self-hosting-and-integrations) |  |  | 7 |  |  |
+| [Privacy and account controls](#privacy-and-account-controls) |  |  | 3 |  |  |
 | [Managed service and resilience](#managed-service-and-resilience) |  |  | 2 | 1 | 2 |
-| [Workflows and AI](#workflows-and-ai) |  |  | 1 |  | 4 |
+| [Workflows and AI](#workflows-and-ai) |  |  | 5 |  |  |
 <!-- /roadmap:summary -->
 
 ## Path to general sending
@@ -124,7 +124,7 @@ flowchart LR
     subgraph t_privacy["Privacy and account controls"]
         direction TB
         c_accounts["Accounts, MFA, API keys<br/>· build"]:::build
-        c_sealed["Sealed-content protocol<br/>· design"]:::design
+        c_sealed["Sealed-content protocol<br/>· build"]:::build
         c_export["Export and deletion<br/>· build"]:::build
         c_accounts --> c_export
     end
@@ -133,11 +133,11 @@ flowchart LR
         direction TB
         c_compose["Compose deployment<br/>· build"]:::build
         c_releases["Signed releases and SBOMs<br/>· build"]:::build
-        c_api["Stable API v1 and SDK<br/>· design"]:::design
+        c_api["Stable API v1 and SDK<br/>· build"]:::build
         c_diagnostics["Setup diagnostics<br/>· build"]:::build
-        c_mcp["MCP messaging tools<br/>· planned"]:::planned
-        c_agenttools["Agent adapters and replies<br/>· planned"]:::planned
-        c_agentsetup["Guided agent setup<br/>· planned"]:::planned
+        c_mcp["MCP messaging tools<br/>· build"]:::build
+        c_agenttools["Agent adapters and replies<br/>· build"]:::build
+        c_agentsetup["Guided agent setup<br/>· build"]:::build
         c_compose --> c_releases
         c_api --> c_mcp
         c_api --> c_agenttools
@@ -149,10 +149,10 @@ flowchart LR
     subgraph t_workflows["Workflows and AI"]
         direction TB
         c_contacts["Contacts and conversations<br/>· build"]:::build
-        c_scheduling["Templates and scheduling<br/>· planned"]:::planned
-        c_approvals["Approvals and reply tracking<br/>· planned"]:::planned
-        c_integrations["Workflow integrations<br/>· planned"]:::planned
-        c_assistant["Customer-controlled assistant<br/>· planned"]:::planned
+        c_scheduling["Templates and scheduling<br/>· build"]:::build
+        c_approvals["Approvals and reply tracking<br/>· build"]:::build
+        c_integrations["Workflow integrations<br/>· build"]:::build
+        c_assistant["Customer-controlled assistant<br/>· build"]:::build
         c_contacts --> c_scheduling
         c_contacts --> c_approvals
         c_approvals --> c_scheduling
@@ -223,7 +223,7 @@ Connect a dedicated Android phone and SIM, send and receive SMS through the serv
 - [x] One radio operation at a time, with an execution grant bound to device, attempt and recipient
 - [x] Ambiguous submissions become `unknown` and are never retried automatically ([state model](ARCHITECTURE.md#message-semantics-and-the-duplicate-send-problem))
 - [x] Allowlisted synthetic send route (`/v1/alpha/messages`)
-- [ ] Planned public `/v1/messages` route that accepts sealed content
+- [ ] Complete candidate `/v1/sealed/messages` execution and stable public aliases after the sealed profile, custody and physical-device gates
 - [ ] Open to any account, after the [path to general sending](#path-to-general-sending) is complete
 
 </details>
@@ -255,9 +255,10 @@ Connect a dedicated Android phone and SIM, send and receive SMS through the serv
 - [x] Durable webhook outbox with HMAC signatures, retries and bounded manual replay
 - [x] Webhook signing secrets encrypted at rest, with key rotation ([runbook](WEBHOOK-KEK-ROTATION.md))
 - [x] Retention limits for inbound content and delivery history
-- [ ] General unsolicited message-content capture and conversation routing beyond the pilot reply window; the line-bound STOP path carries metadata only
+- [x] Default-off consent-bound conversation capture and selected sealed event delivery with durable consumer checkpoints ([#710](https://github.com/pboachie/zrotext/pull/710), [#745](https://github.com/pboachie/zrotext/pull/745))
+- [ ] Enabled unsolicited message-content capture and authorized customer-reader journeys beyond the pilot reply window; the line-bound STOP path carries metadata only
 - [ ] Reliable inbound when senders use RCS ([details](ANDROID-TESTING.md))
-- [ ] Sealed inbound content delivered to customer decryptors
+- [ ] Original encrypted reply provenance integrated with agent and routine consumers; selected event transport alone is not complete reply tracking
 
 </details>
 
@@ -292,11 +293,11 @@ Make ZROtext practical to run, upgrade and build against.
 |---|---|---|
 | Compose deployment and upgrade guides | Build | [#35](https://github.com/pboachie/zrotext/pull/35), [#105](https://github.com/pboachie/zrotext/pull/105), [#173](https://github.com/pboachie/zrotext/pull/173), [#183](https://github.com/pboachie/zrotext/pull/183), [#259](https://github.com/pboachie/zrotext/pull/259), [#275](https://github.com/pboachie/zrotext/pull/275)<br/>**Release gate:** The listed deployment and upgrade work is complete for restricted development and pilot use. General production support and deployment acceptance are not established. |
 | Signed release artifacts and SBOMs | Build | [#86](https://github.com/pboachie/zrotext/pull/86), [#135](https://github.com/pboachie/zrotext/pull/135), [#169](https://github.com/pboachie/zrotext/pull/169), [#197](https://github.com/pboachie/zrotext/pull/197), [v0.1.6-rc.2](https://github.com/pboachie/zrotext/releases/tag/v0.1.6-rc.2) |
-| Stable public API v1 and client SDK | Design | [API outline](ARCHITECTURE.md#planned-api-v1-outline), [sealed SDK preparation](../sdk/typescript/README.md), [#569](https://github.com/pboachie/zrotext/pull/569), [TypeScript SDK #537](https://github.com/pboachie/zrotext/issues/537), [non-UI implementation boundaries](non-ui-implementation.md) |
+| Stable public API v1 and client SDK | Build | [candidate SDK](../sdk/typescript/README.md), [OpenAPI contract](../protocol/v1/openapi/public-v1.json), [#569](https://github.com/pboachie/zrotext/pull/569), [#691](https://github.com/pboachie/zrotext/pull/691), [#698](https://github.com/pboachie/zrotext/pull/698), [#707](https://github.com/pboachie/zrotext/pull/707), [#735](https://github.com/pboachie/zrotext/pull/735) |
 | Setup diagnostics and device guidance | Build | [#81](https://github.com/pboachie/zrotext/pull/81), [#189](https://github.com/pboachie/zrotext/pull/189), [#268](https://github.com/pboachie/zrotext/pull/268), [#313](https://github.com/pboachie/zrotext/pull/313), [#462](https://github.com/pboachie/zrotext/pull/462), [Android review](ANDROID-ACCESSIBILITY.md) Earlier accessibility review covers the legacy scrolling screen. Merged native Home/Setup/Connection/Tools and guided setup (#603/#604/#648) require their own integrated #612 acceptance; actual assistive-technology validation remains open<br/>**Release gate:** The listed setup diagnostics and device guidance work is complete for restricted pilot use. The compatibility matrix records virtual, host-simulator, and one manual physical record only; no physical device or carrier is proven supported, and the linked physical no-radio and opt-in radio procedures have not been executed on any listed phone. |
-| MCP tools for customer-controlled agents | Planned | [agent integration proposal](PRODUCT-PLAN.md#agent-messaging-tools), [#615](https://github.com/pboachie/zrotext/issues/615), [#616](https://github.com/pboachie/zrotext/issues/616) planned work only; issues are acceptance criteria, not runtime or release evidence |
-| Agent SDK adapters and reply events | Planned | [agent integration proposal](PRODUCT-PLAN.md#agent-messaging-tools), [#617](https://github.com/pboachie/zrotext/issues/617), [#619](https://github.com/pboachie/zrotext/issues/619) planned work only; issues are acceptance criteria, not runtime or release evidence |
-| Guided agent setup and simulator quickstart | Planned | [agent integration proposal](PRODUCT-PLAN.md#agent-messaging-tools), [#618](https://github.com/pboachie/zrotext/issues/618), [#621](https://github.com/pboachie/zrotext/issues/621) planned work only; issues are acceptance criteria, not runtime or release evidence |
+| MCP tools for customer-controlled agents | Build | [local connector setup](SELF-HOSTING.md#experimental-local-agent-setup), [#702](https://github.com/pboachie/zrotext/pull/702), [#729](https://github.com/pboachie/zrotext/pull/729), [#740](https://github.com/pboachie/zrotext/pull/740) customer-run stdio and authorized workflow transport are implemented; remote transport and real-message availability remain separately gated |
+| Agent SDK adapters and reply events | Build | [agent integration plan](PRODUCT-PLAN.md#agent-messaging-tools), [#728](https://github.com/pboachie/zrotext/pull/728), [#745](https://github.com/pboachie/zrotext/pull/745) Python/function adapters use the shared authorized transport; selected sealed event delivery exists, while original-reply consumer composition remains open |
+| Guided agent setup and simulator quickstart | Build | [local connector setup](SELF-HOSTING.md#experimental-local-agent-setup), [#724](https://github.com/pboachie/zrotext/pull/724), [#747](https://github.com/pboachie/zrotext/pull/747) guided synthetic notification/reply/approval exchange and quickstart validation are merged; complete authenticated custody and supported-client setup acceptance remain open |
 
 <a id="cap-compose"></a>
 <details>
@@ -326,15 +327,14 @@ Make ZROtext practical to run, upgrade and build against.
 
 <a id="cap-api"></a>
 <details>
-<summary><b>Stable public API v1 and client SDK</b> · design</summary>
+<summary><b>Stable public API v1 and client SDK</b> · build</summary>
 
-- [x] Route outline and sealed send shape ([outline](ARCHITECTURE.md#planned-api-v1-outline))
-- [x] Versioned device stream schema aligned with the wire format
-- [x] OpenAPI contract distinguishing implemented restricted routes and planned public aliases ([contract](../protocol/v1/openapi/public-v1.json))
-- [x] TypeScript production envelope composition and shared vectors; no enabled general send or sealed lifecycle implied ([#569](https://github.com/pboachie/zrotext/pull/569))
-- [x] Default-off negotiated grants, device-bound payload fetch and dispatch metadata are merged (#698); Android service routing remains unintegrated
-- [ ] Integrate negotiated dispatch into the maintained Android service and complete scoped usage projections (#626/#627/#631); public aliases remain planned
-- [ ] Integrated SDK/runtime compatibility after sealed provisioning and key-lifecycle gates
+- [x] Versioned device stream schema and OpenAPI contract distinguishing implemented restricted routes from planned public aliases
+- [x] TypeScript envelope composition, exact-byte submission, scoped lifecycle/device/usage clients and cross-client vectors
+- [x] Default-off negotiated grants and device-bound payload fetch ([#698](https://github.com/pboachie/zrotext/pull/698))
+- [x] Maintained Android service connects authenticated sealed dispatch to the journaled executor when explicit process-local authority is installed; no cold-start activation ([#735](https://github.com/pboachie/zrotext/pull/735))
+- [ ] Supported SDK/runtime compatibility with the selected sealed profile, root provisioning, recipient custody and physical-device acceptance
+- [ ] Stable general API and public aliases after general-send gates; candidate `/v1/sealed/*` routes remain default-off
 
 </details>
 
@@ -358,31 +358,35 @@ Make ZROtext practical to run, upgrade and build against.
 
 <a id="cap-mcp"></a>
 <details>
-<summary><b>MCP tools for customer-controlled agents</b> · planned</summary>
+<summary><b>MCP tools for customer-controlled agents</b> · build</summary>
 
-- [ ] Customer-run stdio server with typed readiness, preview, permitted send, status and cancellation tools
-- [ ] Separate read and send grants; enforce recipient scope, approvals, budgets, suppression and revocation outside the model
-- [ ] Two-client simulator verification; remote transport requires a separate authorization and deployment decision
+- [x] Typed readiness, preview, permitted submission, status and cancellation tools with distinct integration grants
+- [x] Exact owner-approved dispatch and current scope, consent, suppression, budget, revocation and takeover checks outside the model
+- [x] Canonical delivery metadata exposed through scoped workflow status; delivery is not acknowledgment
+- [ ] Supported-client acceptance and complete selected original-reply journey
+- [ ] Remote transport requires a separate authorization/deployment decision; controlled phone/SIM and general-send gates remain open
 
 </details>
 
 <a id="cap-agenttools"></a>
 <details>
-<summary><b>Agent SDK adapters and reply events</b> · planned</summary>
+<summary><b>Agent SDK adapters and reply events</b> · build</summary>
 
-- [ ] Python and provider-neutral function adapters over the shared sealed API and tool schemas; reuse the TypeScript SDK in #537
-- [ ] Selected-content reply events with signature verification, durable checkpoints and event deduplication
-- [ ] Conversation isolation, bounded agent turns and owner review for ambiguous replies
+- [x] Python and provider-neutral function adapters over the shared authorized workflow transport ([#728](https://github.com/pboachie/zrotext/pull/728))
+- [x] Signature-verified selected sealed inbound delivery with durable receipt/checkpoint primitives ([#745](https://github.com/pboachie/zrotext/pull/745))
+- [ ] Bridge original encrypted reply provenance into the selected integration reader and its durable consumption/STOP path (#617)
+- [ ] Complete conversation isolation, bounded turns and owner review through the actual agent consumer
 
 </details>
 
 <a id="cap-agentsetup"></a>
 <details>
-<summary><b>Guided agent setup and simulator quickstart</b> · planned</summary>
+<summary><b>Guided agent setup and simulator quickstart</b> · build</summary>
 
-- [ ] One guided setup command and supported client installers with scoped pairing, secret storage and reversible configuration
-- [ ] Synthetic first exchange before controlled Android phone and SIM activation; show unavailable readiness gates
-- [ ] Measure clean-install steps; preserve fingerprint and permission checks, reconnect diagnostics and revocation
+- [x] Composed guided synthetic first exchange and reproducible scope, replay, revocation, opt-out and unknown-outcome cases
+- [x] Mechanical quickstart checklist and output verification; simulation has no SMS or AI-provider effects
+- [ ] Complete authenticated guided setup, scoped pairing, OS credential custody, configuration preservation and disconnect (#618)
+- [ ] Measure supported clean-install journeys and preserve fingerprint, Android permission and reconnect checks before controlled phone/SIM acceptance
 
 </details>
 
@@ -393,7 +397,7 @@ Keep message content out of reach of the server, and give owners control of thei
 | Capability | Stage | Evidence |
 |---|---|---|
 | Owner accounts, MFA and scoped API keys | Build | [#43](https://github.com/pboachie/zrotext/pull/43), [#172](https://github.com/pboachie/zrotext/pull/172), [#175](https://github.com/pboachie/zrotext/pull/175), [MFA operations](MFA-OPERATIONS.md), [#240](https://github.com/pboachie/zrotext/pull/240), [#207](https://github.com/pboachie/zrotext/pull/207), [#217](https://github.com/pboachie/zrotext/pull/217), [Recovery tests](../crates/server/src/auth/account/tests.rs) |
-| Sealed-content protocol (client-side keys) | Design | [Draft 01](../protocol/drafts/zt-sealed-draft-01.md), [draft 02 proposal](../protocol/drafts/zt-sealed-draft-02-proposal.md), [#159](https://github.com/pboachie/zrotext/pull/159), [#162](https://github.com/pboachie/zrotext/pull/162), [#260](https://github.com/pboachie/zrotext/pull/260), [#464](https://github.com/pboachie/zrotext/pull/464), [#525](https://github.com/pboachie/zrotext/pull/525), [non-UI implementation boundaries](non-ui-implementation.md) |
+| Sealed-content protocol (client-side keys) | Build | [authoritative decisions](../protocol/drafts/zt-009-decision-log.md), [recipient profile gate](../protocol/drafts/android-recipient-lifecycle-01.md), [#525](https://github.com/pboachie/zrotext/pull/525), [#667](https://github.com/pboachie/zrotext/pull/667), [#735](https://github.com/pboachie/zrotext/pull/735), [#737](https://github.com/pboachie/zrotext/pull/737), [#745](https://github.com/pboachie/zrotext/pull/745), [#754](https://github.com/pboachie/zrotext/pull/754) |
 | Data export and account deletion | Build | [Data retention](SELF-HOSTING.md#data-retention), [#267](https://github.com/pboachie/zrotext/pull/267), [#271](https://github.com/pboachie/zrotext/pull/271), [#320](https://github.com/pboachie/zrotext/pull/320), [#450](https://github.com/pboachie/zrotext/pull/450) retention evidence covers history pruning only |
 
 <a id="cap-accounts"></a>
@@ -413,19 +417,17 @@ Keep message content out of reach of the server, and give owners control of thei
 
 <a id="cap-sealed"></a>
 <details>
-<summary><b>Sealed-content protocol (client-side keys)</b> · design</summary>
+<summary><b>Sealed-content protocol (client-side keys)</b> · build</summary>
 
-- [x] Draft protocol and validation gates
-- [x] TypeScript and Android test vectors, including signed manifests and root rotation
-- [x] Test-only envelope parser and Android Keystore boundary
-- [x] Q1-Q11 decisions recorded with cross-client manifest vectors ([#260](https://github.com/pboachie/zrotext/pull/260))
-- [x] Recorded Q1-Q11 decisions re-verified against the evidence each row lists in the [protocol decision log](../protocol/drafts/zt-009-decision-log.md) ([#464](https://github.com/pboachie/zrotext/pull/464)); the Q9 Rust receiver gap it found is closed ([#525](https://github.com/pboachie/zrotext/pull/525))
-- [x] Sealed v1 message admission route (`POST /v1/sealed/messages`) mounted behind the default-off `SEALED_ADMISSION_ENABLED` flag; acceptance stores exact envelope bytes and queues toward the bound device, never carrier evidence ([#538](https://github.com/pboachie/zrotext/issues/538))
-- [x] Default-off sealed inbound upload and dormant protected conversation consent/read/capture groundwork (#613/#650/#651/#652/#655/#657), not general customer conversation delivery
-- [x] Shared cross-client and adversarial vectors are delivered groundwork; runtime downgrade/leakage acceptance remains separately gated
-- [ ] Integrated runtime downgrade/leakage acceptance (#632), beyond shared vector groundwork
-- [ ] Recovery and unlock flows (first increment recorded as evidence only: offline unlock signing behind a disabled-by-default owner-CLI build feature, no server enablement)
-- [ ] Root custody/provisioning, maintained Android provider, negotiated grants and consent-bound customer inbound delivery (#623/#625/#626/#629) before enabling real messages
+- [x] Draft protocol, recorded Q1-Q11 decisions, strict server receiver and shared cross-client/adversarial vectors
+- [x] Default-off exact-envelope admission, negotiated dispatch, scoped lifecycle and inbound upload
+- [x] Explicit owner custody and initial conversation authority; composed server/browser/CLI sealed line setup and lifecycle ([#737](https://github.com/pboachie/zrotext/pull/737), [#754](https://github.com/pboachie/zrotext/pull/754))
+- [x] Maintained Android dispatch and foreground conversation callers with current authority, journal, teardown and no-replay fences ([#735](https://github.com/pboachie/zrotext/pull/735))
+- [x] Consent-bound selected inbound event delivery and durable local receipt/checkpoint handling ([#745](https://github.com/pboachie/zrotext/pull/745))
+- [ ] Resolve the production Android recipient/profile gate: candidate empty HPKE AAD does not satisfy the required distinct nonempty info/AAD transcript (#625)
+- [ ] Complete same-root/generation provisioning across server/browser/CLI and maintained Android consumer, supported custody and recovery acceptance (#623)
+- [ ] Exercise actual selected-reader/agent/routine consumers, current consent and integrated downgrade/leakage/crash/replay acceptance before enabling real messages
+- [ ] Controlled physical-device enrollment, send, reply, opt-out, reboot and revocation evidence; vectors and emulator runs do not prove carrier delivery
 
 </details>
 
@@ -505,63 +507,78 @@ Offer an operated service built from the same public code, and keep it available
 
 ## Workflows and AI
 
-Build useful conversations for local service operators and individuals through the dashboard and integrations. These capabilities are proposed and unavailable; they depend on the general messaging foundation.
+Build useful conversations for local service operators and individuals through the dashboard and integrations. Merged candidate services exist; complete customer journeys remain unavailable and depend on the general messaging foundation.
 
 | Capability | Stage | Evidence |
 |---|---|---|
-| Contacts, consent and conversations | Build | [owner contacts API](SELF-HOSTING.md#contacts-and-consent), [product proposal](PRODUCT-PLAN.md#business-inbox) owner API provides account-scoped contacts, encrypted fields, bounded CSV import, purpose-specific consent history and takeout/erasure; workflow sending and conversations remain unavailable |
-| Templates and scheduled follow-ups | Planned | [product proposal](PRODUCT-PLAN.md#business-inbox), [Local preview only](TEMPLATE-PREVIEW.md) browser-only personalized text preview; no saved templates, segment estimate or scheduling implementation |
-| Approvals and reply tracking | Planned | [product proposal](PRODUCT-PLAN.md#business-inbox), [synthetic demo PR #244](https://github.com/pboachie/zrotext/pull/244), [exact action contract](../protocol/v1/workflow-action-contract.md) exact-action authority/state contract and synthetic conformance vectors; scripted demo in #244; no runtime implementation |
-| Workflow connector and integrations | Planned | [product proposal](PRODUCT-PLAN.md#customer-controlled-assistant), [non-UI implementation boundaries](non-ui-implementation.md) product proposal; dormant connector registration/key-lifecycle contract in crates/server/src/sealed_connector_registry (line-scoped read/send grants, independent approval, rotation, revocation, audit) with no runtime route enabled |
-| Customer-controlled AI assistant | Planned | [product proposal](PRODUCT-PLAN.md#customer-controlled-assistant) proposal only; no runtime implementation |
+| Contacts, consent and conversations | Build | [contacts and consent API](SELF-HOSTING.md#contacts-and-consent), [#671](https://github.com/pboachie/zrotext/pull/671), [#710](https://github.com/pboachie/zrotext/pull/710), [#703](https://github.com/pboachie/zrotext/pull/703) owner contacts/consent API and default-off encrypted conversation/context callers exist; contact vault encryption is server-side and does not establish client sealing |
+| Templates and scheduled follow-ups | Build | [local preview boundary](TEMPLATE-PREVIEW.md), [#664](https://github.com/pboachie/zrotext/pull/664), [#709](https://github.com/pboachie/zrotext/pull/709), [#730](https://github.com/pboachie/zrotext/pull/730), [#746](https://github.com/pboachie/zrotext/pull/746) bounded preview/segment libraries, encrypted template persistence and default-off scheduling callers are merged; the local preview page itself does not save or schedule |
+| Approvals and reply tracking | Build | [exact action contract](../protocol/v1/workflow-action-contract.md), [#708](https://github.com/pboachie/zrotext/pull/708), [#702](https://github.com/pboachie/zrotext/pull/702), [#714](https://github.com/pboachie/zrotext/pull/714) durable exact-action decisions, reply correlation and takeover exist behind disabled workflow/conversation callers; original-reply reader integration remains open |
+| Workflow connector and integrations | Build | [agent integration plan](PRODUCT-PLAN.md#agent-messaging-tools), [#714](https://github.com/pboachie/zrotext/pull/714), [#728](https://github.com/pboachie/zrotext/pull/728), [#729](https://github.com/pboachie/zrotext/pull/729), [#742](https://github.com/pboachie/zrotext/pull/742), [#745](https://github.com/pboachie/zrotext/pull/745) default-off shared workflow HTTP services, customer-local adapters and scoped recipe callers are implemented; complete original-reply composition and release acceptance remain open |
+| Customer-controlled AI assistant | Build | [customer-controlled assistant plan](PRODUCT-PLAN.md#customer-controlled-assistant), [#704](https://github.com/pboachie/zrotext/pull/704), [#752](https://github.com/pboachie/zrotext/pull/752), [#753](https://github.com/pboachie/zrotext/pull/753) default-off owner-granted routine admission and customer-local execution are merged; owner-declared context is not original inbound SMS provenance and no managed AI is enabled |
 
 <a id="cap-contacts"></a>
 <details>
 <summary><b>Contacts, consent and conversations</b> · build</summary>
 
-- [x] Account-scoped contacts with duplicate handling, encrypted fields and bounded CSV import
-- [x] Append-only per-purpose consent records with coherent transitions, expiry, withdrawal and explicit re-grant
+- [x] Account-scoped contacts with duplicate handling, optional server-vault encrypted fields and bounded CSV import
+- [x] Append-only per-purpose consent records with expiry, withdrawal and explicit re-grant
 - [x] Owner takeout and account erasure include contacts and consent history
-- [ ] Conversation history and eligible-recipient enforcement in future workflow sending
-- [ ] Owner-entered job or appointment details and an exceptions inbox, with locally decrypted content
+- [x] Default-off consent-bound conversation capture, client-encrypted context revisions and exception metadata
+- [ ] Client-sealed contact fields using an existing reviewed envelope and selected-reader contract (#634)
+- [ ] Complete owner-facing contacts/conversation/context and exception journeys with current downstream consent and line/reader checks
 
 </details>
 
 <a id="cap-scheduling"></a>
 <details>
-<summary><b>Templates and scheduled follow-ups</b> · planned</summary>
+<summary><b>Templates and scheduled follow-ups</b> · build</summary>
 
-- [ ] Personalized templates, segment preview, recipient-local timing and explicit expiry
-- [ ] Paced scheduling with suppression rechecks, cancellation and honest unknown outcomes
+- [x] Bounded personalization and GSM/Unicode segment estimates with shared vectors
+- [x] Immutable client-encrypted template versions with account/reader scope and lifecycle handling ([#730](https://github.com/pboachie/zrotext/pull/730))
+- [x] Recipient-local timing, explicit expiry, pacing and default-off durable schedule execution through shared workflow authority ([#709](https://github.com/pboachie/zrotext/pull/709), [#746](https://github.com/pboachie/zrotext/pull/746))
+- [ ] Complete customer scheduler journal lifecycle and original-reply-driven follow-up cancellation through actual consumers (#639/#617)
+- [ ] Owner-facing template/schedule journey and available authorized rendering/encryption; changes require fresh exact-action approval
+- [ ] Controlled-device expiry, suppression and unknown-outcome acceptance before real scheduled traffic
 
 </details>
 
 <a id="cap-approvals"></a>
 <details>
-<summary><b>Approvals and reply tracking</b> · planned</summary>
+<summary><b>Approvals and reply tracking</b> · build</summary>
 
-- [ ] Durable owner decisions tied to the exact recipient and proposed action
-- [ ] Reply correlation, human takeover and follow-up cancellation after a response
+- [x] Durable authenticated decisions bound to exact recipient, immutable encrypted content, revision, timing and routine generation
+- [x] Current authority checked through transaction-bound approved permits and shared workflow submission
+- [x] Reply correlation and human takeover fence pending automatic work; ambiguous and replayed outcomes remain conservative
+- [ ] Compose original encrypted replies with selected reader, active request and durable follow-up cancellation (#617/#620)
+- [ ] Complete authenticated owner approval/exception journeys and physical-device evidence without treating delivery as acknowledgment
 
 </details>
 
 <a id="cap-integrations"></a>
 <details>
-<summary><b>Workflow connector and integrations</b> · planned</summary>
+<summary><b>Workflow connector and integrations</b> · build</summary>
 
-- [ ] Shared services for dashboard actions, SDK tools and signed workflow events
-- [ ] Authorized encryption/decryption connector with signature verification and event deduplication
-- [ ] An n8n recipe for connecting the shared messaging services; application templates have separate use-case acceptance criteria
+- [x] Separate scoped read/send grants and shared readiness/proposal/schedule/send/status/cancel services with current authority checks
+- [x] Customer-local TypeScript, Python/function and MCP adapters over the same authorized transport
+- [x] Service-connected task-completion, owner-proposal and reply recipe groundwork ([#742](https://github.com/pboachie/zrotext/pull/742))
+- [x] Selected sealed event verification and durable consumption primitives ([#745](https://github.com/pboachie/zrotext/pull/745))
+- [ ] Connect selected original encrypted replies to actual recipe consumers, preserving STOP, request identity and takeover (#620/#617)
+- [ ] Supported connector custody/setup, independent reader trust and customer-controlled encryption/decryption acceptance
+- [ ] Complete n8n and use-case journeys without inferring authority from generic HTTP nodes or synthetic projections
 
 </details>
 
 <a id="cap-assistant"></a>
 <details>
-<summary><b>Customer-controlled AI assistant</b> · planned</summary>
+<summary><b>Customer-controlled AI assistant</b> · build</summary>
 
-- [ ] Selected conversations decrypted only by an authorized customer-controlled connector
-- [ ] Two-way owner conversations and automatic replies within approved routines
-- [ ] Escalate commitments and unusual requests; enforce budgets, scope, revocation and human takeover
+- [x] Durable owner-approved routine policies with selected scope, time/turn/budget limits and revocation/takeover fences
+- [x] Default-off server admission and customer-local execution using explicitly owner-selected local providers ([#752](https://github.com/pboachie/zrotext/pull/752), [#753](https://github.com/pboachie/zrotext/pull/753))
+- [x] Model output remains a proposed exact action subject to current shared authority; ambiguous effects retain reconciliation identity
+- [ ] Compose distinct original encrypted input and selected-reader consumption with automatic approved routines (#642/#617)
+- [ ] Complete two-way owner conversation, exception escalation and authenticated configuration journeys
+- [ ] Controlled real-device and customer-provider acceptance, conservative actual call-cost reservations and hosted gates before availability
 
 </details>
 <!-- /roadmap:tracks -->
