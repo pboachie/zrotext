@@ -56,12 +56,18 @@ class ProposedProviderActionTest(unittest.TestCase):
 
     def test_malformed_original_wire_and_closed_fields_refuse(self):
         vectors = VECTORS['negative_grammar'] + VECTORS['negative_wire']
-        self.assertEqual(len(vectors), 26)
+        self.assertEqual(len(vectors), 24)
         for vector in vectors:
             with self.subTest(name=vector['name']):
-                raw = ''.join(vector['raw_parts']) if 'raw_parts' in vector else vector['raw'] if 'raw' in vector else canonical(vector['input'])
+                raw = vector['raw'] if 'raw' in vector else canonical(vector['input'])
                 with self.assertRaises((ValueError, jsonschema.ValidationError)):
                     parse(raw)
+        wire = VECTORS['positives'][0]['canonical']
+        for raw in [wire[:-1] + r',"\u0070rofile":"workflow-action-02"}',
+                    wire.replace('"profile":', r'"\u0070rofile":', 1)]:
+            with self.assertRaises(ValueError):
+                parse(raw)
+        self.assertEqual(len(vectors) + 2, 26)
 
     def test_actual_legacy_oracle_rejects_profile_and_retains_vector(self):
         legacy = json.loads((ROOT / 'vectors/workflow-action-01.json').read_text())

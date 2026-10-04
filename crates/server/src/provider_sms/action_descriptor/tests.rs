@@ -12,15 +12,6 @@ fn vectors() -> Value {
     .unwrap()
 }
 fn raw(v: &Value, member: &str) -> Vec<u8> {
-    if let Some(parts) = v.get("raw_parts") {
-        return parts
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap())
-            .collect::<String>()
-            .into_bytes();
-    }
     v.get("raw")
         .or_else(|| v.get("canonical"))
         .and_then(Value::as_str)
@@ -83,6 +74,21 @@ fn original_wire_and_nested_request_refuse_normalized_aliases_and_invalid_fields
             count += 1;
         }
     }
+    assert_eq!(count, 24);
+    let wire = vectors["positives"][0]["canonical"].as_str().unwrap();
+    for bytes in [
+        format!(
+            r#"{},"\u0070rofile":"workflow-action-02"}}"#,
+            &wire[..wire.len() - 1]
+        ),
+        wire.replacen("\"profile\":", r#""\u0070rofile":"#, 1),
+    ] {
+        assert!(ProposedDescriptor::parse_wire(bytes.as_bytes()).is_err());
+        assert!(
+            ProposedDescriptor::parse_owner_proposal_wire(&proposal(bytes.as_bytes())).is_err()
+        );
+        count += 1;
+    }
     assert_eq!(count, 26);
 }
 
@@ -134,6 +140,17 @@ fn actual_legacy_action_and_generic_workflow_tool_consumers_reject_proposed_prof
             }
         });
         assert!(serde_json::from_value::<WorkflowRequest>(request).is_err());
+        let legacy_action = vector["descriptor"]["action"].clone();
+        assert!(serde_json::from_value::<LegacyDescriptor>(legacy_action.clone()).is_ok());
+        let legacy_request = serde_json::from_value::<WorkflowRequest>(serde_json::json!({
+            "method":"workflow.action.propose",
+            "params":{
+                "request_id":"00000000-0000-0000-0000-000000000001",
+                "descriptor":legacy_action,
+            }
+        }))
+        .unwrap();
+        assert!(legacy_request.validate().is_ok());
     }
     let legacy: Value = serde_json::from_str(include_str!(
         "../../../../../protocol/v1/vectors/workflow-action-01.json"

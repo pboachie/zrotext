@@ -25,9 +25,19 @@ test('proposed provider descriptor and whole request match independent canonical
 test('original standalone and nested wire refuse aliases, fields, numbers and size limits',()=>{
   let count=0;
   for(const v of [...vectors.negative_grammar,...vectors.negative_wire]){
-    const wire=v.raw_parts?.join('') ?? v.raw ?? canonical(v.input);
+    const wire=v.raw ?? canonical(v.input);
     assert.throws(()=>rawParse(wire),v.name);
     assert.throws(()=>proposalParse(nested(wire)),v.name);
+    count++;
+  }
+  assert.equal(count,24);
+  const base=vectors.positives[0].canonical;
+  for(const wire of [
+    base.slice(0,-1)+String.raw`,"\u0070rofile":"workflow-action-02"}`,
+    base.replace('"profile":',String.raw`"\u0070rofile":`),
+  ]){
+    assert.throws(()=>rawParse(wire));
+    assert.throws(()=>proposalParse(nested(wire)));
     count++;
   }
   assert.equal(count,26);
@@ -52,6 +62,10 @@ test('actual legacy SDK descriptor and workflow tool validators reject the propo
     assert.throws(()=>canonicalWorkflowAction(v.descriptor));
     assert.throws(()=>validateWorkflowRequest('workflow.action.propose',{
       request_id:'00000000-0000-0000-0000-000000000001',descriptor:v.descriptor,
+    }));
+    assert.doesNotThrow(()=>canonicalWorkflowAction(v.descriptor.action));
+    assert.doesNotThrow(()=>validateWorkflowRequest('workflow.action.propose',{
+      request_id:'00000000-0000-0000-0000-000000000001',descriptor:v.descriptor.action,
     }));
   }
 });
