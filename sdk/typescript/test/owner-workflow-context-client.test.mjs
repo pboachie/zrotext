@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import {createHash,createECDH} from 'node:crypto';
 import {test} from 'node:test';
+import {setTimeout as delay} from 'node:timers/promises';
 import {refreshFixture,signFixtureSuccessor02} from './conversation-refresh-fixture.mjs';
 import {verifyManifest02,verifiedManifestTrust02} from '../dist/draft02-manifest.js';
 import {sealWorkflowContext,sealIntegrationWorkflowContext} from '../dist/workflow-context.js';
@@ -144,6 +145,34 @@ test('finite original deadline and identical retry ceiling cannot be renewed',as
   const pause=deferred(),short=await fixture({timeoutMs:20,consumeWriteReview:async()=>pause.promise});const rejected=rejects(short.client.prepare(short.input),'expired');await rejected;pause.resolve();assert.equal(short.state.calls.length,0);short.client.close();
   const f=await fixture({fetchImpl:async()=>{throw Error('Synthetic unknown');}});
   try{const t=await f.client.prepare(f.input);await assert.rejects(f.client.commit(t));await assert.rejects(f.client.retryUnknown(t));await assert.rejects(f.client.retryUnknown(t));await rejects(f.client.retryUnknown(t),'attempts_exhausted','unknown');assert.ok(f.client.pending());}finally{f.client.close();}
+});
+
+test('idle prepared ciphertext expires without a later operation',async()=>{
+  const f=await fixture({timeoutMs:1000}),nativeClose=f.client.close.bind(f.client);let closes=0;
+  f.client.close=()=>{closes++;nativeClose();};
+  const ticket=await f.client.prepare(f.input);
+  await delay(1100);assert.equal(closes,1);assert.equal(f.state.calls.length,0);assert.equal(f.client.pending(),null);
+  await rejects(f.client.commit(ticket),'invalid_ticket');await rejects(f.client.prepare(f.input),'expired');
+});
+
+test('idle unknown expiry aborts transport without renewing on retry or erasing identity',async()=>{
+  let signal,calls=0;const f=await fixture({timeoutMs:1000,fetchImpl:async(_url,init)=>{signal=init.signal;calls++;throw Error('Synthetic unknown');}});
+  const ticket=await f.client.prepare(f.input);await rejects(f.client.commit(ticket),'response_unknown','unknown');const pending=f.client.pending();
+  await delay(350);await rejects(f.client.retryUnknown(ticket),'response_unknown','unknown');assert.equal(signal.aborted,false);
+  await delay(800);assert.equal(signal.aborted,true);assert.equal(calls,2);assert.deepEqual(f.client.pending(),pending);
+  await rejects(f.client.retryUnknown(ticket),'expired','unknown');await rejects(f.client.prepare(f.input),'pending_write');
+});
+
+test('authentic active line signer expiry caps idle lifetime even with cached authenticated time',async()=>{
+  let signal;const f=await fixture({fetchImpl:async(_url,init)=>{signal=init.signal;throw Error('Synthetic unknown');}});
+  const unsigned=Uint8Array.from(f.f.review.unsigned);
+  // Role4 is the third ordered record; its signed untilMs is the shortest authority.
+  new DataView(unsigned.buffer).setBigUint64(449+140,f.f.nowMs+1500n);
+  const manifest=await verifyManifest02(await signFixtureSuccessor02(f.f,unsigned),verifiedManifestTrust02(f.f.predecessor,f.f.nowMs),f.f.nowMs);
+  f.state.current={...f.state.current,manifest};const input=await f.revision(1,manifest),ticket=await f.client.prepare({...input,requestId:request,expectedRevision:0});
+  await rejects(f.client.commit(ticket),'response_unknown','unknown');const pending=f.client.pending();
+  await delay(1600);assert.equal(f.state.current.nowMs,f.f.nowMs);assert.equal(signal.aborted,true);assert.deepEqual(f.client.pending(),pending);
+  await rejects(f.client.retryUnknown(ticket),'expired','unknown');
 });
 test('single operation, opaque client-owned ticket and bounded latest stream refuse unsafe publication',async()=>{
   const pause=deferred(),f=await fixture({consumeWriteReview:async()=>pause.promise});const pending=f.client.prepare(f.input);await rejects(f.client.prepare(f.input),'pending_write');pause.resolve();const t=await pending;

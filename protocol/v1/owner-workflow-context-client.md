@@ -123,7 +123,10 @@ One client has at most one prepared/pending write and one operation in flight;
 there is no implicit queue. The operation has a single absolute monotonic
 deadline, at most 10 seconds, beginning at preparation and covering authority,
 crypto, review, transport and streamed reads. Authenticated lease, manifest,
-reader and context expiry can only shorten it. Attempts do not renew it.
+reader, selected active role-4 device/line signer and context expiry can only
+shorten it. One owned record timer enforces that deadline even while a prepared
+or unknown operation is idle; it is cleared on consumption or close. Attempts
+and verification do not renew it.
 
 `close()`, signal abort, deadline expiry, or loss of current owner/CSRF authority
 aborts the owned transport and scrubs its ciphertext buffer. Late review,

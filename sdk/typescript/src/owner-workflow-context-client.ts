@@ -68,12 +68,12 @@ function parseScope(envelope: Uint8Array): WorkflowContextScope {
 interface RecordWrite {
   ticket: object; requestId: string; expectedRevision: number; scope: WorkflowContextScope;
   envelope: Uint8Array; digest: string; csrf: string; deadline: number;
-  attempts: number; verifies: number; unknown: boolean;
+  attempts: number; verifies: number; unknown: boolean; timer?: ReturnType<typeof setTimeout>;
 }
 /** Requires an independently supplied authenticated current owner adapter. No cookie/key/bearer input. */
 export class OwnerWorkflowContextClient {
   #origin: string; #selection: OwnerContextSelection; #options: OwnerContextOptions;
-  #fetch: typeof fetch; #timeout: number; #closed: boolean; #busy=false; #controller=new AbortController();
+  #fetch: typeof fetch; #timeout: number; #closed: boolean; #expired=false; #busy=false; #controller=new AbortController();
   #record: RecordWrite|null=null; #pending: OwnerContextPending|null=null;
   #root: Uint8Array|null=null; #generation=0n; #version=0n; #manifestDigest: Uint8Array|null=null; #now=0n;
   constructor(input: OwnerContextOptions) {
@@ -89,7 +89,9 @@ export class OwnerWorkflowContextClient {
     if(this.#closed)this.close();
   }
   #abort=()=>this.close();
+  #expire(): void {this.#expired=true;this.close();}
   close(): void {
+    if(this.#record)this.#clearTimer(this.#record);
     this.#closed=true;this.#controller.abort();this.#options.signal.removeEventListener('abort',this.#abort);
     this.#record?.envelope.fill(0);this.#record=null;
   }
@@ -99,14 +101,14 @@ export class OwnerWorkflowContextClient {
     catch {this.close();throw new OwnerContextError('owner_changed','refused');}
   }
   #live(deadline: number): void {
-    if(this.#closed||this.#options.signal.aborted)throw new OwnerContextError('closed','refused');
-    if(performance.now()>=deadline){this.close();throw new OwnerContextError('expired','refused');}
+    if(this.#closed||this.#options.signal.aborted)throw new OwnerContextError(this.#expired?'expired':'closed','refused');
+    if(performance.now()>=deadline){this.#expire();throw new OwnerContextError('expired','refused');}
   }
   async #race<T>(promise: Promise<T>,deadline: number): Promise<T> {
     this.#live(deadline);let timer: ReturnType<typeof setTimeout>|undefined,abort:()=>void=()=>{};
     try{return await Promise.race([promise,new Promise<never>((_,reject)=>{
-      abort=()=>reject(new OwnerContextError('closed','refused'));this.#controller.signal.addEventListener('abort',abort,{once:true});
-      timer=setTimeout(()=>{reject(new OwnerContextError('expired','refused'));this.close();},Math.max(0,deadline-performance.now()));
+      abort=()=>reject(new OwnerContextError(this.#expired?'expired':'closed','refused'));this.#controller.signal.addEventListener('abort',abort,{once:true});
+      timer=setTimeout(()=>{reject(new OwnerContextError('expired','refused'));this.#expire();},Math.max(0,deadline-performance.now()));
     })]);}finally{if(timer!==undefined)clearTimeout(timer);this.#controller.signal.removeEventListener('abort',abort);}
   }
   async #current(scope: WorkflowContextScope,deadline: number,csrf: string): Promise<number> {
@@ -125,7 +127,8 @@ export class OwnerWorkflowContextClient {
       if(!equal(peer,scope.peerDigest)||scope.expiresMs<=c.nowMs||scope.expiresMs-c.nowMs>30n*86400000n)invalid();
       authorizeWorkflowContext02(manifest,{accountId:scope.accountId,deviceId:scope.deviceId,lineId:scope.lineId,readerId:scope.readerId,generation:scope.trustGeneration,version:scope.manifestVersion,digest:scope.manifestDigest},c.nowMs);
       const reader=manifest.keys.find(k=>k.role===2&&equal(k.keyId,scope.readerId));if(!reader)invalid();
-      const remaining=[scope.expiresMs,manifest.expiresMs,reader.untilMs].reduce((a,b)=>a<b?a:b)-c.nowMs;
+      const signer=manifest.keys.find(k=>k.role===4&&k.state===1&&k.fromMs<=c.nowMs&&c.nowMs<k.untilMs&&equal(k.deviceId,scope.deviceId)&&equal(k.lineId,scope.lineId));if(!signer)invalid();
+      const remaining=[scope.expiresMs,manifest.expiresMs,reader.untilMs,signer.untilMs].reduce((a,b)=>a<b?a:b)-c.nowMs;
       const capped=Math.min(deadline,started+c.validForMs,started+Number(remaining));this.#live(capped);
       if(this.#csrf()!==csrf)invalid();
       this.#root=Uint8Array.from(id.rootPoint);this.#generation=id.generation;this.#version=id.version;this.#manifestDigest=Uint8Array.from(id.digest);this.#now=c.nowMs;
@@ -134,11 +137,19 @@ export class OwnerWorkflowContextClient {
   }
   #owned(ticket: object): RecordWrite {
     if(this.#busy)throw new OwnerContextError('busy','refused');
-    if(this.#closed&&this.#pending)throw new OwnerContextError('closed','unknown');
+    if(this.#closed&&this.#pending)throw new OwnerContextError(this.#expired?'expired':'closed','unknown');
     const r=this.#record;if(!r||r.ticket!==ticket)throw new OwnerContextError('invalid_ticket','refused');
     try{this.#live(r.deadline);}catch(error){if(this.#pending)throw new OwnerContextError('expired','unknown');throw error;}return r;
   }
-  #forget(r: RecordWrite): void {r.envelope.fill(0);if(this.#record===r)this.#record=null;this.#pending=null;}
+  #clearTimer(r: RecordWrite): void {if(r.timer!==undefined){clearTimeout(r.timer);r.timer=undefined;}}
+  #deadline(r: RecordWrite,deadline: number): void {
+    // One idle expiry timer; authority may shorten it but no attempt renews it.
+    if(deadline>r.deadline)invalid();
+    if(r.timer!==undefined&&deadline===r.deadline)return;
+    this.#clearTimer(r);r.deadline=deadline;
+    r.timer=setTimeout(()=>{r.timer=undefined;if(this.#record===r)this.#expire();},Math.max(0,deadline-performance.now()));
+  }
+  #forget(r: RecordWrite): void {this.#clearTimer(r);r.envelope.fill(0);if(this.#record===r)this.#record=null;this.#pending=null;}
   async prepare(input: OwnerContextWrite): Promise<OwnerContextTicket> {
     if(this.#busy||this.#record||this.#pending)throw new OwnerContextError('pending_write','refused');
     this.#live(performance.now()+this.#timeout);
@@ -146,15 +157,15 @@ export class OwnerWorkflowContextClient {
     if(!validUuid(d.requestId)||!Number.isSafeInteger(d.expectedRevision)||d.expectedRevision<0||d.expectedRevision>127||scope.revision!==BigInt(d.expectedRevision+1)||!(d.envelope instanceof Uint8Array)||d.envelope.length<headerLength+17||d.envelope.length>maxEnvelope)invalid();
     const envelope=Uint8Array.from(d.envelope);parseScope(envelope);if(!equal(envelope.slice(0,222),workflowContextAad(scope)))invalid();
     const r: RecordWrite={ticket:Object.freeze({}),requestId:d.requestId,expectedRevision:d.expectedRevision,scope,envelope,digest:'',csrf:this.#csrf(),deadline:performance.now()+this.#timeout,attempts:0,verifies:0,unknown:false};
-    this.#busy=true;this.#record=r;
+    this.#busy=true;this.#record=r;this.#deadline(r,r.deadline);
     try{
-      r.deadline=await this.#current(scope,r.deadline,r.csrf);
+      this.#deadline(r,await this.#current(scope,r.deadline,r.csrf));
       await this.#race(crypto.subtle.importKey('raw',Uint8Array.from(envelope.slice(222,287)).buffer,{name:'ECDH',namedCurve:'P-256'},false,[]),r.deadline);
       r.digest=hex(new Uint8Array(await this.#race(crypto.subtle.digest('SHA-256',Uint8Array.from(envelope).buffer),r.deadline)));
       const review=Object.freeze({...this.#identity(r),expectedRevision:r.expectedRevision,scope:scopeCopy(r.scope)});
       await this.#race(this.#options.consumeWriteReview(review),r.deadline);
-      r.deadline=await this.#current(r.scope,r.deadline,r.csrf);return r.ticket;
-    }catch(error){r.envelope.fill(0);if(this.#record===r)this.#record=null;throw error;}finally{this.#busy=false;}
+      this.#deadline(r,await this.#current(r.scope,r.deadline,r.csrf));return r.ticket;
+    }catch(error){this.#clearTimer(r);r.envelope.fill(0);if(this.#record===r)this.#record=null;throw error;}finally{this.#busy=false;}
   }
   #identity(r: RecordWrite): OwnerContextPending {return Object.freeze({requestId:r.requestId,contextId:uuid(r.scope.contextId),revision:Number(r.scope.revision),envelopeDigest:r.digest});}
   async #body(response: Response,limit: number,deadline: number): Promise<Uint8Array> {
@@ -173,12 +184,12 @@ export class OwnerWorkflowContextClient {
     if(response.redirected||response.url&&response.url!==url){void response.body?.cancel().catch(()=>{});throw new OwnerContextError('response_unknown','unknown');}return response;
   }
   async #latest(r: RecordWrite,acknowledged: boolean): Promise<OwnerContextReceipt> {
-    r.deadline=await this.#current(r.scope,r.deadline,r.csrf);
+    this.#deadline(r,await this.#current(r.scope,r.deadline,r.csrf));
     const response=await this.#fetchResponse(r,false);
     if(response.status!==200||response.headers.get('content-type')!=='application/vnd.zrotext.workflow-context.v1'){void response.body?.cancel().catch(()=>{});throw new OwnerContextError('response_unknown','unknown');}
     const returned=await this.#body(response,maxEnvelope,r.deadline);this.#live(r.deadline);
     if(equal(returned,r.envelope)){
-      r.deadline=await this.#current(r.scope,r.deadline,r.csrf);const receipt=Object.freeze({...this.#identity(r),state:'verified_current_snapshot' as const,requestAcknowledged:acknowledged});
+      this.#deadline(r,await this.#current(r.scope,r.deadline,r.csrf));const receipt=Object.freeze({...this.#identity(r),state:'verified_current_snapshot' as const,requestAcknowledged:acknowledged});
       // A byte-identical GET proves current content, not this request's durable acknowledgement.
       if(acknowledged)this.#forget(r);return receipt;
     }
@@ -187,7 +198,7 @@ export class OwnerWorkflowContextClient {
       for(const n of ['accountId','deviceId','lineId','intervalId','contextId','peerDigest','readerId'] as const)if(!equal(newer[n],r.scope[n]))invalid();
       if(newer.kind!==r.scope.kind||newer.bindingGeneration!==r.scope.bindingGeneration||newer.trustGeneration!==r.scope.trustGeneration||newer.revision<=r.scope.revision)invalid();
       await this.#race(crypto.subtle.importKey('raw',Uint8Array.from(returned.slice(222,287)).buffer,{name:'ECDH',namedCurve:'P-256'},false,[]),r.deadline);
-      r.deadline=await this.#current(newer,r.deadline,r.csrf);
+      this.#deadline(r,await this.#current(newer,r.deadline,r.csrf));
     }catch{throw new OwnerContextError('response_unknown','unknown');}
     if(acknowledged){this.#forget(r);throw new OwnerContextError('head_changed','not_current');}
     throw new OwnerContextError('response_unknown','unknown');
@@ -197,7 +208,7 @@ export class OwnerWorkflowContextClient {
     if(r.attempts>=3)throw new OwnerContextError('attempts_exhausted',r.unknown?'unknown':'refused');
     this.#busy=true;const priorUnknown=r.unknown;let attempted=false;
     try{
-      r.deadline=await this.#current(r.scope,r.deadline,r.csrf);this.#live(r.deadline);
+      this.#deadline(r,await this.#current(r.scope,r.deadline,r.csrf));this.#live(r.deadline);
       r.attempts++;r.unknown=true;attempted=true;this.#pending=this.#identity(r);
       const response=await this.#fetchResponse(r,true);
       if([400,401,403,404,409,413,429].includes(response.status)){
