@@ -17,6 +17,8 @@ from conversation_simulator import MAX_STARTUP_LOG_BYTES, READY_MARKER, read_rea
 
 APP = "org.zrotext.gateway.conversationprobe"
 TEST = "org.zrotext.gateway.ConversationProbeDeviceTest"
+SCENARIOS = ("roundtrip", "capture-ack", "stop-install", "loss-install")
+CAPTURE_ACK_COMPLETE = "ZT_CAPTURE_ACK_129_PG_STOP_WITHDRAWAL_COMPLETE"
 
 
 def run(command, **kwargs):
@@ -48,6 +50,19 @@ def require_fixture_exit(server, log, ready):
         )
 
 
+def require_probe_result(output, scenario):
+    if scenario not in SCENARIOS:
+        raise ValueError("Explicit supported scenario required")
+    lines = output.splitlines()
+    complete = any(line in (CAPTURE_ACK_COMPLETE,
+        "INSTRUMENTATION_STATUS: stream=" + CAPTURE_ACK_COMPLETE) for line in lines)
+    passed = any(line == "OK (1 test)" for line in lines)
+    failed = ("FAILURES!!!" in output or "INSTRUMENTATION_FAILED" in output
+        or any(re.fullmatch(r"INSTRUMENTATION_STATUS_CODE: -[12]", line) for line in lines))
+    if not passed or failed or scenario == "capture-ack" and not complete:
+        raise RuntimeError("Emulator probe failed:\n" + output[-6000:])
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--serial", required=True)
@@ -55,7 +70,7 @@ def main():
     parser.add_argument("--toolchain")
     parser.add_argument("--aapt", required=True, help="Installed aapt for pre-install APK isolation verification")
     parser.add_argument("--skip-build", action="store_true")
-    parser.add_argument("--scenario", choices=("roundtrip", "stop-install", "loss-install"), default="roundtrip")
+    parser.add_argument("--scenario", choices=SCENARIOS, required=True)
     args = parser.parse_args()
     if not args.serial.startswith("emulator-") or not args.serial[9:].isdigit():
         parser.error("Only an explicitly selected emulator is allowed")
@@ -149,8 +164,7 @@ def main():
                 run(adb + ["push", str(prepared), device_path])
                 result = run(adb + ["shell", "am", "instrument", "-w", "-r", "-e", "class", TEST, "-e", "fixturePath", device_path, "-e", "scenario", args.scenario,
                     APP + ".test/androidx.test.runner.AndroidJUnitRunner"])
-                if "OK (1 test)" not in result.stdout or "FAILURES!!!" in result.stdout or "INSTRUMENTATION_FAILED" in result.stdout:
-                    raise RuntimeError("Emulator probe failed:\n" + result.stdout[-6000:])
+                require_probe_result(result.stdout, args.scenario)
                 require_fixture_exit(server, folder / "server.log", server_ready)
                 if read_ready(folder / "server.log") != server_ready:
                     raise RuntimeError("Fixture readiness changed")
@@ -188,6 +202,8 @@ def main():
                         raise RuntimeError("Fixture cleanup incomplete")
         evidence = ("compiled isolated APK, actual consent UI, bound service/synthetic receiver, production content-channel capture ACK and confirmed-packet delivery with fixture crypto, real Chromium incoming text/exact review/cancel, one synthetic reply, UNKNOWN replay fence, Stop/withdrawal; hardware content crypto and connection factory not exercised"
             if args.scenario == "roundtrip" else
+            "compiled isolated APK, actual phone consent and 129 receiver/runtime/authenticated-WebSocket/PG capture ACKs, exact lost-ACK retry, permanent receipt fences, stable history/outbox identities, Stop/withdrawal; fixture crypto, no carrier dispatch"
+            if args.scenario == "capture-ack" else
             "compiled isolated APK, authenticated installation ACK held until " + args.scenario + ", no late activation or content capture")
         print("PASS-EMULATOR " + profile + " [" + args.scenario + "]: " + evidence)
 

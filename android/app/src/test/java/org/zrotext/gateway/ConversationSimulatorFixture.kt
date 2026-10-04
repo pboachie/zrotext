@@ -126,6 +126,26 @@ internal class ConversationSimulatorFixture(private val ready: JSONObject) : Con
 
     fun envelope(body: String, capture: String, observed: Long, sequence: Long): JSONObject = sdk(
         JSONObject().put("op", "prepare").put("body", body).put("capture", capture).put("observed", observed).put("sequence", sequence))
+    /** Batch fixture crypto only; each caller still persists and uploads through the actual runtime. */
+    fun envelopes(captures: List<Pair<ConversationCapturedBody,Long>>): List<ByteArray> {
+        require(captures.size in 1..ConversationCaptureDao.CONTENT_CAPACITY)
+        require(captures.map {it.first.captureId}.distinct().size==captures.size &&
+            captures.map {it.second}.distinct().size==captures.size)
+        val requests=org.json.JSONArray()
+        captures.forEach { (capture,sequence) ->
+            require(capture.scope==parsed.scope && sequence>0)
+            requests.put(JSONObject().put("body",capture.body).put("capture",capture.captureId)
+                .put("observed",capture.firstObservedAtMs).put("sequence",sequence))
+        }
+        val prepared=sdk(JSONObject().put("op","batch").put("captures",requests)).getJSONArray("envelopes")
+        check(prepared.length()==captures.size)
+        return captures.mapIndexed {index,(capture,sequence) ->
+            val value=prepared.getJSONObject(index)
+            check(value.getString("capture")==capture.captureId && value.getLong("observed")==capture.firstObservedAtMs &&
+                value.getLong("sequence")==sequence && value.getString("opened")==capture.body)
+            bytes(value.getString("envelope"))
+        }
+    }
     fun open(envelope: String): JSONObject = sdk(JSONObject().put("op", "open").put("envelope", envelope))
     fun browser(event: UUID, inbound: String): JSONObject = sdk(JSONObject().put("event", event.toString()).put("inbound", inbound).put("closeDuringDecrypt", System.getenv("ZT_CONVERSATION_SIM_MODE") == "send_close"), ready.getString("browserTool"))
     fun verifiedSend(evidence: ByteArray, closeAfterDecrypt: Boolean = false): VerifiedConversationSend {
