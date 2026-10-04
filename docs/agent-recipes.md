@@ -28,8 +28,18 @@ grant. This setup does not approve an action or create its message binding.
 See the [closed setup and recipe contract](../protocol/v1/workflow-recipe-contract.md).
 
 Import [the runtime workflow](../sdk/recipes/n8n-workflow-runtime.json) only into a
-fresh disposable n8n instance. It is disabled and contains a manual read-only
-preview with a credential-store reference. The
+fresh disposable n8n instance. It is disabled and starts with a manual read-only
+preview with a credential-store reference. Edit the **Select closed recipe
+operation** node's JSON to choose an operation from the
+[callable schema](../sdk/recipes/callable-workflow-runtime.json), keeping its
+exact `operation` and `params` shape. Task completion and owner proposal accept
+only a stable `request_id`; both create proposals for independent owner review.
+Use a new read identity for status. Verified reply routing accepts the existing
+adapter's `event_id` and stable action `request_id`; it cannot mark a reply as
+verified, approve a proposal or select a recipient. The HTTP node forwards this
+closed request to the local bridge, which rejects extra authority fields.
+Keep effect identities stable after uncertainty and inspect status before any
+further action. The
 [callable descriptor](../sdk/recipes/callable-workflow-runtime.json) also exposes
 closed task-completion, owner-proposal, status, exact preparation and verified
 reply operations through the same local adapter. Review and configure these
@@ -44,6 +54,12 @@ routing is unavailable. A caller's `verified` or `approved` boolean is never
 accepted. STOP metadata produces no proposal; other eligible replies can propose
 the fixed action, but cannot approve it or send. Interrupted effects remain
 unknown and are not automatically retried. No model provider is configured.
+
+The original sealed profile-02 reply reader is a separate #617 dependency. This
+recipe currently accepts the existing `ReplyEventAdapter`; its simulator reader
+does not prove original-event provenance or profile-02 source/reader enrollment.
+This manual JSON configuration also does not complete the nontechnical guided
+grant/recipient setup tracked in #618. Both dependencies remain open.
 
 These customer-controlled examples are **synthetic previews; production activation
 is unavailable**. They cover task completion, an owner-reviewed proposal and
@@ -125,3 +141,31 @@ malformed checkpoints, credential rejection, disabled exports and actual local
 HTTP are covered. n8n import/export/execute is an additional compatibility check.
 No physical device, carrier, external account, production grants or live AI call
 is claimed.
+
+## Reproduce runtime workflow compatibility
+
+The SDK test suite checks the disabled export and default preview in ordinary CI.
+To also import, export and execute it in a separately installed n8n **2.41.4**, use
+Node.js **24** to invoke the test and set `ZT_N8N_CLI` to that installation's
+absolute `node_modules/n8n/bin/n8n` file. This is trusted, operator-selected test
+configuration. The child uses the same Node executable as the test; configuration
+cannot replace the executable. The test checks the path shape and exact CLI
+version inside its disposable instance, and Node options end before its script
+argument. Child processes do not use a shell.
+From `sdk/typescript`, after building the SDK:
+
+```sh
+node --test test/n8n-workflow.test.mjs
+```
+
+The opt-in check creates a new disposable n8n instance and a random local
+credential. It actually imports and exports the disabled workflow for each
+operation, executes the manual trigger, and verifies preview, completion/proposal,
+status, waiting for independent owner binding, signed fixture replies, duplicate
+replay across an adapter restart, offline request expiry, metadata STOP, missing
+grants and teardown. It uses the same certificate-validated HTTPS policy simulator
+as the SDK runtime tests. It makes no external provider call. Its current source
+and reader callbacks are synthetic; these checks establish connector compatibility
+and local routing boundaries, not real gateway or carrier acceptance. The fixture
+deletes its temporary credential, SQLite ledger and n8n instance when it exits.
+Fresh n8n database initialization may take several minutes.
