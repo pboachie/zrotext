@@ -6,6 +6,25 @@ inbound event. It never substitutes an owner-declared workflow projection or
 an archive wrap for integration-reader authority. Webhook authentication and
 public envelope syntax alone do not authorize plaintext access.
 
+## Explicit workflow authorization after selection
+
+Phone selection can advance the accepted signed manifest while retaining the
+same connector generation and reader key. Ordinary workflow credentials keep
+their exact registration-manifest requirement. The owner may instead name an
+exact `original_grant_id` in the existing password/MFA workflow-grant ceremony.
+The server requires that independently issued original grant to be current and
+match the context's account, connector, reader, interval, root generation,
+manifest version and digest. The requested workflow expiration cannot exceed
+that original authority's effective deadline.
+
+The workflow grant permanently records this supplemental identity. Issuance,
+authentication, locked scope checks and later effect checks continue to require
+that exact original grant; issuing another original grant cannot revive a
+withdrawn one. This adds no workflow permission: proposing and sending still
+require their separately granted permissions, current scopes and exact owner
+action approval. The extension schema describes only the optional field; it
+does not replace the complete owner DTO or prove authority.
+
 ## Explicit phone selection
 
 An archive-only activation retains its exact `ZTCA` version-1 statement and

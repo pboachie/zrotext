@@ -144,7 +144,10 @@ export class CustomerRoutineService {
   }
   /** Explicit live-owner password/MFA ceremony. Never invoked by the executor. */
   async issueOutputGrant(value) {
-    const v=closed(value,['current_password','code','connector_id','context_id','contact_id','purpose','permissions','signer_key_id','expires_at_ms','content_envelope_base64url']);
+    const fields=['current_password','code','connector_id','context_id','contact_id','purpose','permissions','signer_key_id','expires_at_ms','content_envelope_base64url'];
+    const selected=value&&Object.hasOwn(value,'original_grant_id');
+    const v=closed(value,selected?[...fields,'original_grant_id']:fields);
+    if(selected&&v.original_grant_id!==null&&!id(v.original_grant_id))fail('invalid_request');
     if(!id(v.connector_id)||!id(v.context_id)||!id(v.contact_id)||!['transactional','operational','marketing'].includes(v.purpose)||
       typeof v.current_password!=='string'||!v.current_password||v.current_password.length>1024||typeof v.code!=='string'||!v.code||v.code.length>128||
       !Array.isArray(v.permissions)||v.permissions.length<1||v.permissions.length>7||new Set(v.permissions).size!==v.permissions.length||

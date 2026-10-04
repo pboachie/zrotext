@@ -34,10 +34,12 @@ impl Prepared {
         let mut config = configuration(&f, event).await;
         capture(&f, &mut config, &scratch, event).await;
         let read = f.issue().await;
+        f.bind_workflow_request(read.grant_id).await;
         // Prepare connections before imposing a short grant deadline.
         let caller = f.case.f.connect().await;
         let blocker = f.case.f.connect().await;
-        f.case.request.permissions = Permissions::new(&[Operation::Propose]).unwrap();
+        f.case.request.permissions =
+            Permissions::new(&[Operation::Propose, Operation::ContextContent]).unwrap();
         f.case.request.content_envelope = Some(f.case.projection().await);
         f.case.request.expires_ms = f
             .case
@@ -50,6 +52,7 @@ impl Prepared {
             .await
             .unwrap()
             .get(0);
+        f.bind_workflow_request(read.grant_id).await;
         let output = f.case.issue_another().await;
         let mut descriptor = f.case.descriptor().await;
         let deadline:i64=f.case.f.db.query_one("SELECT LEAST(g.expires_ms,r.expires_ms) FROM original_reply_grants g JOIN original_reply_requests r ON r.account_id=g.account_id WHERE g.account_id=$1 AND g.grant_id=$2 AND r.request_id=$3", &[&f.case.f.account,&read.grant_id,&request]).await.unwrap().get(0);

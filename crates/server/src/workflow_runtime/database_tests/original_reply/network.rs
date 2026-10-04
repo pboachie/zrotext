@@ -6,6 +6,70 @@ use serde_json::{Value, json};
 use std::{net::Ipv4Addr, path::Path, process::Stdio, sync::Arc, time::Duration};
 use tokio::{io::AsyncWriteExt, net::TcpListener, process::Command};
 
+// Node's entrypoint resolver does not accept Rust's Windows verbatim spelling.
+// Only a canonical local drive path may lose that prefix; UNC/device paths
+// remain unsupported rather than acquiring a different filesystem meaning.
+fn node_script_path(path: &Path) -> Result<std::path::PathBuf, &'static str> {
+    let raw = path.to_str().ok_or("unsupported fixture script path")?;
+    if !path.is_absolute() || raw.contains("..") {
+        return Err("unsupported fixture script path");
+    }
+    if cfg!(windows) {
+        let candidate = raw.strip_prefix(r"\\?\").unwrap_or(raw);
+        let bytes = candidate.as_bytes();
+        if bytes.len() < 3
+            || !bytes[0].is_ascii_alphabetic()
+            || bytes[1] != b':'
+            || !matches!(bytes[2], b'\\' | b'/')
+        {
+            return Err("unsupported fixture script path");
+        }
+        return Ok(candidate.into());
+    }
+    Ok(path.into())
+}
+
+#[test]
+fn node_entrypoint_preserves_canonical_local_file_and_refuses_namespace_aliases() {
+    let canonical = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src/workflow_runtime/database_tests/original_reply/network.rs")
+        .canonicalize()
+        .unwrap();
+    let normal = node_script_path(&canonical).unwrap();
+    assert_eq!(normal.canonicalize().unwrap(), canonical);
+    assert_eq!(node_script_path(&normal).unwrap(), normal);
+    if cfg!(windows) {
+        assert!(!normal.to_str().unwrap().starts_with(r"\\?\"));
+        for raw in [
+            r"\\?\UNC\synthetic\owned",
+            r"\\.\synthetic",
+            r"\\?\Volume{synthetic}\owned",
+            r"\\?\synthetic",
+        ] {
+            assert!(node_script_path(Path::new(raw)).is_err());
+        }
+    }
+    assert!(node_script_path(Path::new("relative-fixture")).is_err());
+}
+
+fn jwk(key: &SigningKey) -> Value {
+    let point = key.verifying_key().to_sec1_point(false);
+    json!({"kty":"EC","crv":"P-256","x":URL_SAFE_NO_PAD.encode(point.x().unwrap()),"y":URL_SAFE_NO_PAD.encode(point.y().unwrap()),"d":URL_SAFE_NO_PAD.encode(key.to_bytes()),"ext":true})
+}
+fn known_runtime_stderr(bytes: &[u8]) -> bool {
+    if bytes.len() > 512 {
+        return false;
+    }
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    text.lines().all(|line|{
+   if line=="(Use `node --trace-warnings ...` to show where the warning was created)" {return true}
+   let Some(rest)=line.strip_prefix("(node:")else{return false};
+   let Some((pid,warning))=rest.split_once(") ")else{return false};
+   !pid.is_empty()&&pid.bytes().all(|b|b.is_ascii_digit())&&warning=="ExperimentalWarning: SQLite is an experimental feature and might change at any time"
+ })
+}
 fn jwk(key: &SigningKey) -> Value {
     let point = key.verifying_key().to_sec1_point(false);
     json!({"kty":"EC","crv":"P-256","x":URL_SAFE_NO_PAD.encode(point.x().unwrap()),"y":URL_SAFE_NO_PAD.encode(point.y().unwrap()),"d":URL_SAFE_NO_PAD.encode(key.to_bytes()),"ext":true})
@@ -46,8 +110,10 @@ async fn driver(input: Value, cwd: &Path) -> Value {
             command.env(name, value);
         }
     }
+    let node_script = node_script_path(&script).unwrap();
+    assert_eq!(node_script.canonicalize().unwrap(), script);
     let mut child = command
-        .arg(script)
+        .arg(node_script)
         .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -358,7 +424,9 @@ async fn original_reply_unique_issued_request_proposes_once_and_restart_only_rec
     let mut input = configuration(&f, event).await;
     capture(&f, &mut input, &scratch, event).await;
     let read = f.issue().await;
-    f.case.request.permissions = Permissions::new(&[Operation::Propose]).unwrap();
+    f.bind_workflow_request(read.grant_id).await;
+    f.case.request.permissions =
+        Permissions::new(&[Operation::Propose, Operation::ContextContent]).unwrap();
     f.case.request.content_envelope = Some(f.case.projection().await);
     let output = f.case.issue_another().await;
     let mut descriptor = f.case.descriptor().await;

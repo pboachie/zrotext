@@ -476,6 +476,7 @@ impl Case {
             signer,
             expires_ms: now + grant_lifetime,
             content_envelope: None,
+            original_grant_id: None,
         };
         Self {
             f,

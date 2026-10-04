@@ -90,6 +90,21 @@ impl OriginalCase {
     async fn issue(&mut self) -> service::IssuedCredential {
         self.issue_with_lifetime(60000).await
     }
+    async fn bind_workflow_request(&mut self, original: Uuid) {
+        self.case.request.original_grant_id = Some(original);
+        let expires: i64 = self
+            .case
+            .f
+            .db
+            .query_one(
+                "SELECT expires_ms FROM original_reply_grants WHERE account_id=$1 AND grant_id=$2",
+                &[&self.case.f.account, &original],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        self.case.request.expires_ms = self.case.request.expires_ms.min(expires);
+    }
     async fn issue_with_lifetime(&mut self, lifetime: i64) -> service::IssuedCredential {
         let reader = self.statement.integration_readers[0].key_id;
         let now: i64 = self
@@ -263,3 +278,4 @@ async fn original_source_tombstones_refuse_partial_source_and_action_deletion() 
 mod network;
 
 mod races;
+mod registry_binding;

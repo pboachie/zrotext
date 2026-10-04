@@ -151,6 +151,36 @@ CREATE TRIGGER original_reply_request_guard BEFORE UPDATE ON original_reply_requ
  FOR EACH ROW EXECUTE FUNCTION original_reply_request_guard();
 
 -- Preserve all existing 641 fences for both exact signed statement versions.
+ALTER TABLE workflow_integration_grants ADD COLUMN supplemental_original_grant_id uuid;
+
+-- A selected-reader successor is an explicit owner choice, permanently bound
+-- to one independently issued original grant. A replacement cannot revive it.
+-- PL/pgSQL resolves the original deadline helper after this migration installs
+-- it below; there is no dependency on workflow grant/action authorization.
+CREATE FUNCTION workflow_registry_binding_deadline(wanted_account uuid,wanted_connector uuid,wanted_reader bytea,wanted_interval uuid,wanted_generation bigint,wanted_version bigint,wanted_digest bytea,wanted_original uuid) RETURNS bigint
+LANGUAGE plpgsql VOLATILE SET search_path FROM CURRENT AS $$
+DECLARE registration_deadline bigint; original_deadline bigint;
+BEGIN
+ SELECT LEAST(r.expires_ms,k.valid_until_ms) INTO registration_deadline
+ FROM connector_registrations r JOIN connector_keys k
+ ON (k.account_id,k.connector_id,k.key_id)=(r.account_id,r.connector_id,r.key_id)
+ WHERE (r.account_id,r.connector_id,r.key_id)=(wanted_account,wanted_connector,wanted_reader)
+ AND r.state='active' AND r.revoked_ms IS NULL AND r.manifest_generation=wanted_generation
+ AND r.expires_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint
+ AND k.retired_ms IS NULL AND k.valid_from_ms<=floor(extract(epoch FROM clock_timestamp())*1000)::bigint
+ AND k.valid_until_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint
+ AND (wanted_original IS NOT NULL OR (r.manifest_version,r.manifest_digest)=(wanted_version,wanted_digest));
+ IF registration_deadline IS NULL THEN RETURN NULL; END IF;
+ IF wanted_original IS NULL THEN RETURN registration_deadline; END IF;
+ IF NOT EXISTS(SELECT 1 FROM original_reply_grants g
+ WHERE (g.account_id,g.grant_id,g.connector_id,g.reader_key_id,g.interval_id,g.trust_generation,g.manifest_version,g.manifest_digest)
+ =(wanted_account,wanted_original,wanted_connector,wanted_reader,wanted_interval,wanted_generation,wanted_version,wanted_digest)) THEN RETURN NULL; END IF;
+ original_deadline := original_reply_grant_deadline(wanted_account,wanted_original);
+ IF original_deadline IS NULL THEN RETURN NULL; END IF;
+ RETURN LEAST(registration_deadline,original_deadline);
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION workflow_integration_grant_current(wanted_account uuid,wanted_grant uuid,wanted_action uuid,wanted_permission integer) RETURNS boolean
 LANGUAGE sql VOLATILE SET search_path FROM CURRENT AS $$
 SELECT wanted_permission IN (8,32,64) AND EXISTS(
@@ -186,7 +216,7 @@ SELECT wanted_permission IN (8,32,64) AND EXISTS(
       AND origin_membership.role='owner' AND origin_membership.revoked_at IS NULL AND origin_owner.email_verified_at IS NOT NULL
       AND root.revoked_at IS NULL AND (root.generation,root.version,root.semantic_digest)=(g.trust_generation,g.manifest_version,g.manifest_digest)
       AND registration.state='active' AND registration.expires_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint
-      AND (registration.manifest_generation,registration.manifest_version,registration.manifest_digest)=(g.trust_generation,g.manifest_version,g.manifest_digest)
+      AND workflow_registry_binding_deadline(g.account_id,g.connector_id,g.reader_key_id,context.interval_id,g.trust_generation,g.manifest_version,g.manifest_digest,g.supplemental_original_grant_id)>floor(extract(epoch FROM clock_timestamp())*1000)::bigint
       AND reader.retired_ms IS NULL AND reader.valid_from_ms<=floor(extract(epoch FROM clock_timestamp())*1000)::bigint
       AND reader.valid_until_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint
       AND device.revoked_at IS NULL AND device_key.revoked_at IS NULL
@@ -218,7 +248,8 @@ $$;
 -- Propose-origin deadlines, not a newly invented original interval deadline.
 CREATE FUNCTION original_reply_integration_origin_deadline(wanted_account uuid,wanted_grant uuid,wanted_action uuid) RETURNS bigint
 LANGUAGE sql VOLATILE SET search_path FROM CURRENT AS $$
-    SELECT LEAST(g.expires_ms, floor(extract(epoch FROM creator.expires_at)*1000)::bigint, floor(extract(epoch FROM origin.expires_at)*1000)::bigint, registration.expires_ms, reader.valid_until_ms, context.expires_at_ms, interval.expires_at_ms) FROM workflow_integration_grants g
+    SELECT LEAST(g.expires_ms, floor(extract(epoch FROM creator.expires_at)*1000)::bigint, floor(extract(epoch FROM origin.expires_at)*1000)::bigint, registration.expires_ms, reader.valid_until_ms, context.expires_at_ms, interval.expires_at_ms,
+     COALESCE(workflow_registry_binding_deadline(g.account_id,g.connector_id,g.reader_key_id,context.interval_id,g.trust_generation,g.manifest_version,g.manifest_digest,g.supplemental_original_grant_id),0)) FROM workflow_integration_grants g
     JOIN accounts tenant ON tenant.id=g.account_id
     JOIN sessions creator ON (creator.account_id,creator.user_id,creator.id)=(g.account_id,g.created_by_user,g.created_session)
     JOIN memberships membership ON (membership.account_id,membership.user_id)=(g.account_id,g.created_by_user)
@@ -250,7 +281,7 @@ LANGUAGE sql VOLATILE SET search_path FROM CURRENT AS $$
       AND origin_membership.role='owner' AND origin_membership.revoked_at IS NULL AND origin_owner.email_verified_at IS NOT NULL
       AND root.revoked_at IS NULL AND (root.generation,root.version,root.semantic_digest)=(g.trust_generation,g.manifest_version,g.manifest_digest)
       AND registration.state='active' AND registration.expires_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint
-      AND (registration.manifest_generation,registration.manifest_version,registration.manifest_digest)=(g.trust_generation,g.manifest_version,g.manifest_digest)
+      AND registration.manifest_generation=g.trust_generation
       AND reader.retired_ms IS NULL AND reader.valid_from_ms<=floor(extract(epoch FROM clock_timestamp())*1000)::bigint
       AND reader.valid_until_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint
       AND device.revoked_at IS NULL AND device_key.revoked_at IS NULL
