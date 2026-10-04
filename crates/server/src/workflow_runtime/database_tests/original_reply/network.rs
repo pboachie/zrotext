@@ -396,6 +396,73 @@ async fn issued_request_with_owner(
     request
 }
 
+// Only multi-outbound fixtures need to release the occupied device slot.
+// Synthetic submission receipts use the real attempt lifecycle; they neither
+// report delivery nor close the independently registered reply request.
+pub(super) async fn submit_issued_request(f: &OriginalCase, request: Uuid) {
+    use zrotext_delivery_store::{DeliveryStore, RadioEvent};
+    use zrotext_domain::{Evidence, MessageState};
+
+    let row = f.case.f.db.query_one(
+        "SELECT fence.device_id,fence.message_id,fence.attempt_id FROM original_reply_requests request JOIN dispatch_fences fence ON (fence.account_id,fence.message_id)=(request.account_id,request.message_id) WHERE request.account_id=$1 AND request.request_id=$2 AND fence.outcome='granted'",
+        &[&f.case.f.account, &request],
+    ).await.unwrap();
+    let intent = RadioEvent {
+        event_id: Uuid::new_v4(),
+        account_id: f.case.f.account,
+        device_id: row.get(0),
+        message_id: row.get(1),
+        attempt_id: row.get(2),
+        evidence: Evidence::DurableSubmitIntent,
+        observed_at_ms: f
+            .case
+            .f
+            .db
+            .query_one(
+                "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0),
+        segment_index: None,
+        segment_count: None,
+    };
+    let mut delivery_client = f.case.f.connect().await;
+    let mut store = DeliveryStore::new(&mut delivery_client);
+    assert_eq!(
+        store.record_radio_event(intent).await.unwrap(),
+        MessageState::Submitting
+    );
+    let sent = RadioEvent {
+        event_id: Uuid::new_v4(),
+        evidence: Evidence::SentCallbackOk,
+        observed_at_ms: f
+            .case
+            .f
+            .db
+            .query_one(
+                "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0),
+        segment_index: Some(0),
+        segment_count: Some(1),
+        ..intent
+    };
+    assert_eq!(
+        store.record_radio_event(sent).await.unwrap(),
+        MessageState::Submitted
+    );
+    let retained: bool = f.case.f.db.query_one(
+        "SELECT EXISTS(SELECT 1 FROM original_reply_requests WHERE account_id=$1 AND request_id=$2 AND stopped_ms IS NULL)",
+        &[&f.case.f.account, &request],
+    ).await.unwrap().get(0);
+    assert!(retained, "submission must retain the active reply request");
+}
+
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; actual original proposal HTTPS/SDK/PG"]
 async fn original_reply_unique_issued_request_proposes_once_and_restart_only_recovers_receipt() {

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-use super::network::{capture, configuration, issued_request, source_request_with_owner};
+use super::network::{
+    capture, configuration, issued_request, source_request_with_owner, submit_issued_request,
+};
 use super::*;
 use crate::workflow_runtime::routines::tests::service::scratch::Scratch;
 use std::time::Duration;
@@ -207,6 +209,7 @@ async fn original_consumption_rolls_back_when_independent_request_owner_expires_
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; actual two-generation original authority deadline"]
 async fn original_lineage_rechecks_earlier_deadline_after_observed_later_hop_wait() {
     let mut flow = Prepared::new(60000).await;
+    submit_issued_request(&flow.f, flow.request).await;
     let first = flow.consume().await.unwrap().action.unwrap();
     let version: i64 = flow
         .f
@@ -357,6 +360,7 @@ async fn original_lineage_rechecks_earlier_deadline_after_observed_later_hop_wai
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; exact multiple qualifying original requests"]
 async fn original_reply_ambiguous_active_requests_require_owner_review_without_debit_or_proposal() {
     let mut flow = Prepared::new(60000).await;
+    submit_issued_request(&flow.f, flow.request).await;
     // A second independently approved/issued request is genuinely eligible for the
     // same interval and observation. Supplying one ID must not choose for the owner.
     let owner = flow.f.case.owner.clone();
