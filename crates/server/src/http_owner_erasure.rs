@@ -931,6 +931,14 @@ async fn erase_account(
         Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
     };
     let mut deleted = Vec::new();
+    match crate::provider_config::lifecycle::erase_account(&tx, account_id).await {
+        Ok(counts) => deleted.extend(
+            counts
+                .into_iter()
+                .map(|(table, rows)| TableCount { table, rows }),
+        ),
+        Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+    }
     match crate::workflow_templates::lifecycle::erase(&tx, account_id).await {
         Ok(counts) => deleted.extend(
             counts
