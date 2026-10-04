@@ -2,6 +2,8 @@
 use super::*;
 use crate::workflow_runtime::{Permissions, authenticate, database_tests::Case};
 
+mod consent;
+
 async fn prepared() -> (Case, IntegrationPrincipal, Policy, Invocation) {
     prepared_with_signer(false).await
 }

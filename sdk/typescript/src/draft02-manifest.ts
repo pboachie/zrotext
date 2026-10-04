@@ -361,6 +361,24 @@ export function verifiedManifestTrust02(manifest: Manifest02, nowMs: bigint): Ma
   if (!snapshot) fail("trust requires a just-verified manifest");
   return copyTrust(snapshot.after);
 }
+/** Public historical record inspection only. This does not install contact
+ * access, prove custody or authorize any side effect. Caller projections are
+ * never the source of the returned records. Generation-one candidate only. */
+export function verifiedAccountArchiveStatementRecords02(manifest: Manifest02, readerId: Uint8Array, comparisonMs: bigint) {
+  if (typeof comparisonMs !== 'bigint' || comparisonMs < 1n || comparisonMs > maxSigned) fail("statement comparison range");
+  const selected = Uint8Array.from(readerId), bound = verifiedSnapshots.get(manifest)?.authority;
+  if (!bound || selected.length !== 32 || bound.generation !== 1n) fail("statement requires accepted genesis history");
+  timeWindow(bound.issuedMs, bound.expiresMs, comparisonMs);
+  const active = (k: ManifestKey02) => k.state === 1 && k.fromMs <= comparisonMs && comparisonMs < k.untilMs;
+  const reader = bound.keys.find(k => k.role === 2 && same(k.keyId, selected) && active(k));
+  const root = bound.keys.find(k => k.role === 6 && active(k));
+  if (!reader || reader.scope !== 12 || !root || root.scope !== 0) fail("statement public records");
+  return {accountId: Uint8Array.from(bound.accountId), generation: bound.generation, version: bound.version,
+    digest: Uint8Array.from(bound.digest), issuedMs: bound.issuedMs, expiresMs: bound.expiresMs,
+    rootPoint: Uint8Array.from(root.point), rootWriterId: Uint8Array.from(root.keyId), rootFromMs: root.fromMs,
+    rootUntilMs: root.untilMs, readerId: Uint8Array.from(reader.keyId), readerPoint: Uint8Array.from(reader.point),
+    readerFromMs: reader.fromMs, readerUntilMs: reader.untilMs};
+}
 /** Reuse profile key-ID derivation for explicit role-5 enrollment. No storage/root creation. */
 export async function browserSignerKeyId02(point: Uint8Array): Promise<Uint8Array> {
  const owned=Uint8Array.from(point);

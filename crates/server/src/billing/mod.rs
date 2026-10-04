@@ -9,8 +9,10 @@ use thiserror::Error;
 use tokio_postgres::{Client, Transaction};
 use uuid::Uuid;
 
+pub mod availability;
 pub mod drain;
 pub mod exposure;
+pub mod hosted;
 pub mod http;
 pub(crate) mod invoice;
 pub mod meter_transport;

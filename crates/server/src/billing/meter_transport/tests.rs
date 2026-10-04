@@ -209,6 +209,56 @@ async fn exact_test_ack_echoes_original_wire_idempotency_and_customer() {
     assert!(text.contains("timestamp=1700000000"));
 }
 #[tokio::test]
+async fn hundred_character_identifier_preserves_exact_tls_ack_and_idempotency() {
+    let mut submitted = request();
+    submitted.identifier = "a".repeat(100);
+    submitted.idempotency_key = submitted.identifier.clone();
+    let mut acknowledged = ack();
+    acknowledged["identifier"] = Value::String(submitted.identifier.clone());
+    let (transport, listener) = fixture(
+        serde_json::to_vec(&acknowledged).unwrap(),
+        "200 OK",
+        "",
+        Duration::ZERO,
+    );
+    assert_eq!(
+        transport.submit(submitted.clone()).await,
+        MeterResponse::Acknowledged {
+            identifier: submitted.identifier.clone(),
+            livemode: false,
+        }
+    );
+    let wire = String::from_utf8(listener.join().unwrap()).unwrap();
+    assert!(
+        wire.to_ascii_lowercase()
+            .contains(&format!("idempotency-key: {}\r\n", submitted.identifier))
+    );
+    assert!(wire.contains(&format!("identifier={}&", submitted.identifier)));
+}
+
+#[tokio::test]
+async fn hundred_one_character_identifier_is_refused_before_network() {
+    let mut submitted = request();
+    submitted.identifier = "a".repeat(101);
+    submitted.idempotency_key = submitted.identifier.clone();
+    let mut acknowledged = ack();
+    acknowledged["identifier"] = Value::String(submitted.identifier.clone());
+    let (transport, listener) = fixture(
+        serde_json::to_vec(&acknowledged).unwrap(),
+        "200 OK",
+        "",
+        Duration::ZERO,
+    );
+    let result = transport.submit(submitted).await;
+    let wire = listener.join().unwrap();
+    assert_eq!(result, MeterResponse::InvalidResponse);
+    assert!(
+        wire.is_empty(),
+        "unsupported identifier reached the TLS listener"
+    );
+}
+
+#[tokio::test]
 async fn foreign_or_live_ack_is_never_accepted_as_test_usage() {
     for field in [
         "identifier",

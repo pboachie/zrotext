@@ -14,6 +14,9 @@ mapping and the stored event name. Meter configuration must match those names.
 Credentials never come from a model, request or tenant routing pointer. The
 transport does not follow redirects, use ambient proxies or automatically retry.
 A four-second response/body deadline and sixteen-KiB response bound apply.
+Before HTTP, identifiers must contain at most 100 ASCII letters, digits,
+underscores or hyphens, and must match the idempotency key exactly.
+Existing generated ledger identifiers remain within this bound.
 
 The existing worker first commits its durable claim and releases transaction
 locks before HTTP. Its stable meter identifier is also the idempotency key;
