@@ -53,6 +53,7 @@ fn node_entrypoint_preserves_canonical_local_file_and_refuses_namespace_aliases(
 }
 
 pub(super) fn jwk(key: &SigningKey) -> Value {
+fn jwk(key: &SigningKey) -> Value {
     let point = key.verifying_key().to_sec1_point(false);
     json!({"kty":"EC","crv":"P-256","x":URL_SAFE_NO_PAD.encode(point.x().unwrap()),"y":URL_SAFE_NO_PAD.encode(point.y().unwrap()),"d":URL_SAFE_NO_PAD.encode(key.to_bytes()),"ext":true})
 }
@@ -430,6 +431,12 @@ pub(super) async fn run_driver(input: Value, cwd: &Path, fixture: Driver) -> Val
         .unwrap();
     let node_script = node_script_path(&script).unwrap();
     assert_eq!(node_script.canonicalize().unwrap(), script);
+}
+async fn driver(input: Value, cwd: &Path) -> Value {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../sdk/typescript/test/original-reply-service-driver.mjs")
+        .canonicalize()
+        .unwrap();
     let mut command = Command::new("node");
     command.env_clear();
     for name in ["PATH", "SystemRoot", "TEMP", "TMP"] {
@@ -441,6 +448,8 @@ pub(super) async fn run_driver(input: Value, cwd: &Path, fixture: Driver) -> Val
     assert_eq!(node_script.canonicalize().unwrap(), script);
     let mut child = command
         .arg(node_script)
+    let mut child = command
+        .arg(script)
         .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -468,6 +477,7 @@ pub(super) async fn run_driver(input: Value, cwd: &Path, fixture: Driver) -> Val
         routine_timing(&output.stderr),
         request_histogram(&output.stderr),
     );
+    assert!(output.status.success(), "original reader driver refused");
     assert!(
         known_runtime_stderr(&output.stderr),
         "unexpected original reader diagnostic"
@@ -533,6 +543,13 @@ pub(super) struct Https {
 }
 impl Https {
     pub(super) async fn start(app: axum::Router) -> Self {
+struct Https {
+    origin: String,
+    ca: String,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+}
+impl Https {
+    async fn start(app: axum::Router) -> Self {
         let plain = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let upstream = plain.local_addr().unwrap();
         let http = tokio::spawn(async move { axum::serve(plain, app).await.unwrap() });
@@ -564,6 +581,10 @@ impl Https {
                      if let Ok(Ok(mut tls))=tokio::time::timeout(Duration::from_secs(5),acceptor.accept(socket)).await
                        && let Ok(mut plain)=tokio::net::TcpStream::connect(upstream).await {
                          let _=tokio::time::timeout(Duration::from_secs(15),tokio::io::copy_bidirectional(&mut tls,&mut plain)).await;
+                     if let Ok(Ok(mut tls))=tokio::time::timeout(Duration::from_secs(5),acceptor.accept(socket)).await {
+                       if let Ok(mut plain)=tokio::net::TcpStream::connect(upstream).await {
+                         let _=tokio::time::timeout(Duration::from_secs(15),tokio::io::copy_bidirectional(&mut tls,&mut plain)).await;
+                       }
                      }
                    });},
                    _=children.join_next(),if !children.is_empty()=>{}
@@ -585,6 +606,7 @@ impl Https {
         }
     }
     pub(super) async fn close(self) {
+    async fn close(self) {
         for task in self.tasks {
             task.abort();
             let _ = task.await;
@@ -830,6 +852,7 @@ async fn original_reply_unique_issued_request_proposes_once_and_restart_only_rec
     f.bind_workflow_request(read.grant_id).await;
     f.case.request.permissions =
         Permissions::new(&[Operation::Propose, Operation::ContextContent]).unwrap();
+    f.case.request.permissions = Permissions::new(&[Operation::Propose]).unwrap();
     f.case.request.content_envelope = Some(f.case.projection().await);
     let output = f.case.issue_another().await;
     let mut descriptor = f.case.descriptor().await;

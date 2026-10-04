@@ -250,6 +250,7 @@ CREATE FUNCTION original_reply_integration_origin_deadline(wanted_account uuid,w
 LANGUAGE sql VOLATILE SET search_path FROM CURRENT AS $$
     SELECT LEAST(g.expires_ms, floor(extract(epoch FROM creator.expires_at)*1000)::bigint, floor(extract(epoch FROM origin.expires_at)*1000)::bigint, registration.expires_ms, reader.valid_until_ms, context.expires_at_ms, interval.expires_at_ms,
      COALESCE(workflow_registry_binding_deadline(g.account_id,g.connector_id,g.reader_key_id,context.interval_id,g.trust_generation,g.manifest_version,g.manifest_digest,g.supplemental_original_grant_id),0)) FROM workflow_integration_grants g
+    SELECT LEAST(g.expires_ms, floor(extract(epoch FROM creator.expires_at)*1000)::bigint, floor(extract(epoch FROM origin.expires_at)*1000)::bigint, registration.expires_ms, reader.valid_until_ms, context.expires_at_ms, interval.expires_at_ms) FROM workflow_integration_grants g
     JOIN accounts tenant ON tenant.id=g.account_id
     JOIN sessions creator ON (creator.account_id,creator.user_id,creator.id)=(g.account_id,g.created_by_user,g.created_session)
     JOIN memberships membership ON (membership.account_id,membership.user_id)=(g.account_id,g.created_by_user)
@@ -282,6 +283,7 @@ LANGUAGE sql VOLATILE SET search_path FROM CURRENT AS $$
       AND root.revoked_at IS NULL AND (root.generation,root.version,root.semantic_digest)=(g.trust_generation,g.manifest_version,g.manifest_digest)
       AND registration.state='active' AND registration.expires_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint
       AND registration.manifest_generation=g.trust_generation
+      AND (registration.manifest_generation,registration.manifest_version,registration.manifest_digest)=(g.trust_generation,g.manifest_version,g.manifest_digest)
       AND reader.retired_ms IS NULL AND reader.valid_from_ms<=floor(extract(epoch FROM clock_timestamp())*1000)::bigint
       AND reader.valid_until_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint
       AND device.revoked_at IS NULL AND device_key.revoked_at IS NULL
@@ -313,6 +315,7 @@ CREATE FUNCTION original_reply_grant_deadline(wanted_account uuid,wanted_grant u
 -- Start with the exact grant key and retain the declared authority joins.
 -- Keep planner configuration local to this function; do not change deadlines.
 LANGUAGE sql VOLATILE SET search_path FROM CURRENT SET join_collapse_limit = 1 AS $$
+LANGUAGE sql VOLATILE SET search_path FROM CURRENT AS $$
 SELECT LEAST(g.expires_ms, floor(extract(epoch FROM creator.expires_at)*1000)::bigint, floor(extract(epoch FROM origin.expires_at)*1000)::bigint, registration.expires_ms, reader.valid_until_ms, permission.expires_ms) FROM original_reply_grants g
  JOIN accounts a ON a.id=g.account_id
  JOIN sessions creator ON (creator.account_id,creator.user_id,creator.id)=(g.account_id,g.created_by_user,g.created_session)
