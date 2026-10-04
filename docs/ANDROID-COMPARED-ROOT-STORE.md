@@ -1,16 +1,17 @@
-# Dormant compared-root persistence
+# Compared-root persistence
 
 `Draft02RootComparison`, `Draft02TrustStore` and `Draft02AtomicRootStorage` are
-candidate-02 building blocks in the Android main source set. Nothing in the live
-app, service, enrollment or grant flows calls them. They accept only generation-one
-root pins and do not enable sealed sending or receiving.
+candidate-02 building blocks used by explicit Android conversation enrollment.
+`ConversationAndroidEnrollment` and the foreground setup screen bind enrollment
+to the current selected account/device context. They accept only generation-one
+root pins; comparison and persistence alone grant no sealed send or receive authority.
 
 The comparison controller accepts an exact 94-byte root pin bound to a separately
 selected account. It displays the full domain-separated SHA-256 fingerprint and
 requires a separately supplied full fingerprint plus deliberate human confirmation.
 The resulting receipt is single-use and cancellation invalidates it, including
-before a pending atomic commit. A future UI must cancel on backgrounding, account,
-session or candidate changes and must explain the independent comparison channel.
+before a pending atomic commit. The foreground enrollment session cancels on
+backgrounding or selected-context loss and requires a separate comparison input.
 Equal strings do **not** prove that a human compared independently obtained values.
 This module provides no scanner, UI, owner-signing-key ceremony or trust bootstrap.
 
@@ -91,3 +92,17 @@ isolated synthetic namespaces. Existing aliases, app flows, physical devices and
 SMS are untouched. These tests do not establish power-loss durability, cross-process
 crash behavior, hardware availability on other devices, human provenance, recovery,
 carrier delivery or roadmap capability completion.
+
+## Composed synthetic provisioning check
+
+The Windows sealed-setup consumer runs the compiled owner custody CLI, real server
+and browser publication ceremony, verifies the actual signed export with the SDK,
+and admits that exact public pin through Android `ConversationEnrollmentSession`
+and `Draft02TrustStore`. The comparison checkpoint is retained independently of the
+server export. Substitution, declined comparison and an actual creator-session
+revocation refuse new phone enrollment. The stored root remains `NeedsFreshness`.
+
+This JVM consumer encrypts its test record with the existing AES-GCM codec and a
+synthetic software key. It proves protocol and storage composition, not Android
+Keystore or physical-device custody, carrier delivery, independent human behavior,
+backup decryption or authorization to transfer conversation content.
