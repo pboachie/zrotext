@@ -105,6 +105,10 @@ for(const status of [401,403])test(`Chromium authorization ${status} after unkno
  assert.deepEqual(result,{state:'unknown',pendingUnchanged:true});assert.equal(posts.length,2);assert.deepEqual(posts[0],posts[1]);
 }));
 for(const status of [401,403])test(`Chromium hidden exact retry after durable write into ${status} retains unknown and closes authority`,{timeout:15000},async()=>fixture(`hidden-${status}`,async({page,posts})=>{
- const result=await page.evaluate(async()=>{const c=createTemplateClient();const t=await c.prepareSave(templateWrite());let state;try{await c.commit(t);}catch(e){state=e.state;}const pending=c.pending();let retryState;try{await c.retryUnknown(t);}catch(e){retryState=e.state;}const result={state,retryState,pending:!!pending,pendingUnchanged:JSON.stringify(c.pending())===JSON.stringify(pending)};c.close();return result;});
- assert.deepEqual(result,{state:'unknown',retryState:'unknown',pending:true,pendingUnchanged:true});assert.equal(posts.length,2);assert.deepEqual(posts[0],posts[1]);
+ const first=await page.evaluate(async()=>{const c=window.hiddenClient=createTemplateClient();const t=window.hiddenTicket=await c.prepareSave(templateWrite());let state;try{await c.commit(t);}catch(e){state=e.state;}window.hiddenPending=c.pending();return {state,pending:!!window.hiddenPending};});
+ assert.deepEqual(first,{state:'unknown',pending:true});assert.equal(posts.length,2);assert.deepEqual(posts[0],posts[1]);
+ // Both identical wire writes must belong to commit alone. A manual retry
+ // cannot substitute for the browser's invisible retry in this proof.
+ const second=await page.evaluate(async()=>{const c=window.hiddenClient;try{let state;try{await c.retryUnknown(window.hiddenTicket);}catch(e){state=e.state;}return {state,pendingUnchanged:JSON.stringify(c.pending())===JSON.stringify(window.hiddenPending)};}finally{c.close();}});
+ assert.deepEqual(second,{state:'unknown',pendingUnchanged:true});assert.equal(posts.length,2);assert.deepEqual(posts[0],posts[1]);
 }));
