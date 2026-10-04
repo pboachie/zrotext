@@ -53,6 +53,16 @@ enables the local recipe. Readiness hints are not effect permits: every remote
 operation still authenticates and checks current authority. Local activation
 does not change any server or release gate.
 
+The manual **Select closed recipe operation** node defaults to `preview` and
+passes its JSON unchanged through the credential-bound HTTP node. Configure only
+an exact operation/params pair from the callable schema; the local bridge remains
+the authority for validation. Exported inputs cannot change the immutable action,
+recipient or descriptor. Completion and proposal remain owner-reviewed proposals;
+the verified-reply operation names an already ingested adapter event. It does not
+verify arbitrary caller-supplied reply text or grant approval. The current recipe
+accepts `ReplyEventAdapter`; original sealed profile-02 source/reader routing
+remains a separate integration dependency.
+
 Local disable invalidates pending activation and work before transport, including
 digest calculation and reply consumption. A later activation cannot revive that
 work. It does not retract a request already submitted. A reply reserved before
