@@ -786,6 +786,224 @@
         }
       }
     },
+    "/v1/webhooks/{endpoint_id}/sealed-events": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "operationId": "selectWebhookSealedEvents",
+        "summary": "Select or disable future opaque sealed-event transfer for one endpoint",
+        "x-implemented": true,
+        "x-runtime-gate": {
+          "environmentVariable": "SEALED_WEBHOOK_DELIVERY_ENABLED",
+          "default": false,
+          "disabledStatus": 404
+        },
+        "description": "Implemented in crates/server/src/http_webhooks.rs select_sealed_events only when SEALED_WEBHOOK_DELIVERY_ENABLED is true; the gate defaults to false and the route is otherwise absent (404). Requires the current owner session cookie, double-submit CSRF cookie/header and exact configured HTTPS Origin; bearer API keys are not owner authority. Authentication and the per-account four-request in-flight slot are checked before the body is read. The closed JSON body has a 4096-byte limit. Enabling requires encrypted_transfer_confirmed=true, disclosure_version=sealed-events-v1 and an enabled endpoint in the owner account; at most five enabled endpoints per account may select sealed events. Disabling still requires the fixed disclosure version but not positive transfer confirmation. The transaction locks the owner and endpoint and rechecks the live owner before commit. This selection creates no reader or key authority, enables no capture or decryption, and grants no send authority. Existing conversation, capture and sender gates retain their independent defaults. Legacy webhook history and replay do not expose the separate sealed outbox. See protocol/v1/sealed-event-delivery.md.",
+        "security": [
+          {
+            "ownerSession": [],
+            "ownerCsrf": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "endpoint_id",
+            "in": "path",
+            "required": true,
+            "description": "The webhook endpoint identity.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "description": "The exact configured HTTPS origin of the owner deployment; mutations reject a missing or mismatched Origin.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Closed selection request; all three members are required. The total JSON body is limited to 4096 bytes.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhookSealedSelectionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Selection persisted; empty response. Enabling selects future eligible opaque captures only, not historical replay or sending authority.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_webhook_endpoint: nil endpoint identity, unsupported disclosure version, enabling without encrypted-transfer confirmation, or enabling selection on a disabled endpoint. ApiJson instead returns invalid_request for malformed JSON, incorrect Content-Type, unknown or missing members, or incorrect member types. A malformed path UUID is a framework plain-text 400 before authentication.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "invalidSelection": {
+                    "value": {
+                      "code": "invalid_webhook_endpoint"
+                    }
+                  },
+                  "invalidJson": {
+                    "value": {
+                      "code": "invalid_request"
+                    }
+                  }
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized: missing session cookie or unknown, expired or revoked session.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "code": "unauthorized"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden: missing or mismatched CSRF proof, or a missing or mismatched Origin.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "code": "forbidden"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The route is absent when SEALED_WEBHOOK_DELIVERY_ENABLED is disabled; that framework 404 need not contain a JSON envelope. When mounted, not_found is the JSON response for an endpoint outside the current owner account or an unknown endpoint.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "code": "not_found"
+                }
+              }
+            }
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestDeadlineExceeded"
+          },
+          "409": {
+            "description": "endpoint_limit: five other enabled endpoints in this account already select sealed events.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "code": "endpoint_limit"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The selection request body exceeded 4096 bytes. The framework's plain-text 413 is kept verbatim; it is not the JSON error envelope.",
+            "headers": {
+              "Cache-Control": { "$ref": "#/components/headers/NoStore" }
+            },
+            "content": {
+              "text/plain": {
+                "schema": { "type": "string" }
+              }
+            }
+          },
+          "429": {
+            "description": "rate_limited: the account already holds its cap of four authenticated body-carrying requests in flight in this process (the per-account admission slot taken after the session, CSRF and Origin checks succeed). JSON error document without a Retry-After header.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "code": "rate_limited"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "unavailable: owner lookup or selection storage is unavailable. A failure at transaction commit does not establish that the selection was unchanged. The shared bare admission 503 (empty body, Retry-After: 1) can also replace this response; see components/responses/AdmissionUnavailable.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "code": "unavailable"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/owner/messages": {
       "get": {
         "tags": ["owner-messages"],
@@ -1726,6 +1944,53 @@
             "description": "Stable machine-readable reason code for the failure."
           }
         }
+      },
+      "WebhookSealedSelectionRequest": {
+        "type": "object",
+        "description": "The SealedSelection body in crates/server/src/http_webhooks.rs; unknown members are rejected.",
+        "additionalProperties": false,
+        "required": [
+          "enabled",
+          "encrypted_transfer_confirmed",
+          "disclosure_version"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Select future eligible opaque events, or disable this endpoint selection."
+          },
+          "encrypted_transfer_confirmed": {
+            "type": "boolean",
+            "description": "Must be true when enabling; either boolean is accepted when disabling."
+          },
+          "disclosure_version": {
+            "type": "string",
+            "enum": [
+              "sealed-events-v1"
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "enabled": {
+                  "const": true
+                }
+              },
+              "required": [
+                "enabled"
+              ]
+            },
+            "then": {
+              "properties": {
+                "encrypted_transfer_confirmed": {
+                  "const": true
+                }
+              }
+            }
+          }
+        ]
       },
       "WebhookCreateRequest": {
         "type": "object",
