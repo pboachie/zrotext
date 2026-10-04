@@ -18,6 +18,8 @@ use zrotext_root_terminal::{Session, verify_process_eligibility};
 #[cfg(feature = "unlock")]
 mod archive_init;
 #[cfg(feature = "unlock")]
+mod contact_reader_signing;
+#[cfg(feature = "unlock")]
 mod conversation_activation;
 #[cfg(feature = "unlock")]
 mod conversation_genesis;
@@ -529,6 +531,10 @@ fn run_unlock(
 }
 
 pub(super) fn run(args: &[String]) -> Result<()> {
+    #[cfg(feature = "unlock")]
+    if args.first().map(String::as_str) == Some("contact-reader-sign") {
+        return contact_reader_signing::run(args, local_store_parent()?);
+    }
     #[cfg(feature = "unlock")]
     if args.first().map(String::as_str) == Some("line-key-registration") {
         return line_key_registration::run(args, local_store_parent()?);
