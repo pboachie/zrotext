@@ -580,6 +580,27 @@ pub async fn project_withdrawn(
     Ok(rows.len() as u64)
 }
 
+/// Called only after the authenticated owner transaction irreversibly stops
+/// the selected routine(s). Metadata cancellation shares that transaction;
+/// dispatched/unknown effects retain their original reconciliation identity.
+pub(crate) async fn cancel_stopped(
+    tx: &Transaction<'_>,
+    account: Uuid,
+    context: Uuid,
+    routine: Option<Uuid>,
+) -> Result<u64, ConversationError> {
+    let rows = tx.query("SELECT o.id FROM workflow_schedule_occurrences o JOIN workflow_schedule_series s ON (s.account_id,s.id)=(o.account_id,o.series_id) JOIN workflow_routines r ON (r.account_id,r.id)=(s.account_id,s.routine_id) WHERE o.account_id=$1 AND s.context_id=$2 AND ($3::uuid IS NULL OR s.routine_id=$3) AND r.stopped_at IS NOT NULL AND o.phase IN ('owner_review','waiting_window','waiting_renderer','waiting_phone','claimed') ORDER BY o.id LIMIT 256 FOR UPDATE OF o", &[&account,&context,&routine]).await?;
+    // Never roll back the safety stop for historical schedule capacity.
+    // Stopped authority already fences every remaining occurrence; the existing
+    // bounded project_withdrawn worker drains additional metadata batches.
+    for row in &rows {
+        let id: Uuid = row.get(0);
+        tx.execute("UPDATE workflow_schedule_occurrences SET phase='cancelled',lease_id=NULL,lease_until_ms=NULL,updated_at=clock_timestamp() WHERE account_id=$1 AND id=$2", &[&account,&id]).await?;
+        audit(tx, account, id, None, "cancel", "cancelled", None).await?;
+    }
+    Ok(rows.len() as u64)
+}
+
 pub async fn schedule(
     permit: &mut LockedAction<'_, '_>,
     request: ScheduleRequest,

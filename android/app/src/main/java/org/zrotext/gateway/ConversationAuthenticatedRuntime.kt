@@ -113,11 +113,12 @@ internal class ConversationAuthenticatedRuntime(
         try { serial.execute {
             var packet: ByteArray? = null
             val result = runCatching {
+                if (admission.captureAcknowledged(token)) return@runCatching
                 val (capture, raw) = checkNotNull(admission.sealedCapture(token,seal))
                 packet=raw
                 admission.withCurrentScope(capture.scope) { it() }
-                contentTransport.upload(capture,raw)
-                admission.withCurrentScope(capture.scope) { it() }
+                val ack = contentTransport.upload(capture,raw)
+                admission.acknowledgeCapture(token,capture,raw,ack)
             }.isSuccess
             packet?.fill(0)
             runCatching { delivery.execute { runCatching { complete(result) } } }

@@ -117,6 +117,10 @@ android {
             it.testLogging.exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
             // Keep native JNI registration isolated between mixed-SDK test classes.
             it.forkEvery = 1
+            if (providers.gradleProperty("composedRootFixture").orNull == "true") {
+                it.systemProperty("zrotext.composedRootRequired", "true")
+                it.testLogging.showStandardStreams = true
+            }
         }
     }
     // The same signature corpus runs in CI's JVM suite and on an Android device.

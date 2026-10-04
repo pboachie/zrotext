@@ -1,6 +1,6 @@
 # Product implementation plan
 
-**Proposal; no customer workflow in this document is available yet.** This plan connects the [technical roadmap](ROADMAP.md) to the [use-case catalog](USE-CASES.md). It adds delivery order and acceptance criteria without changing the current API, enabling SMS, or accepting an unfinished sealed-content protocol.
+**Implementation plan; customer workflows remain unavailable.** Merged candidate services and customer-local tools are described below; enabled customer journeys still require their acceptance gates. This plan connects the [technical roadmap](ROADMAP.md) to the [use-case catalog](USE-CASES.md). It adds delivery order and acceptance criteria without changing the current API, enabling SMS, or accepting an unfinished sealed-content protocol.
 
 The first complete experiences are a text receptionist for local service operators and a personal assistant that works in both directions. Nontechnical owners use the dashboard; developers and automation tools use the same services. The initial deployment uses a dedicated Android phone and SIM, one owner per account, small contact lists and an authorized customer-controlled connector.
 
@@ -12,19 +12,26 @@ The gateway has restricted send/inbound pilots, signed webhook delivery, account
 - A [default-off line-bound opt-out stream](../protocol/v1/line-opt-out-contract.md) with durable Android upload/replay identity. It carries STOP/review metadata; it is not general inbound message content.
 - An [owner review queue](SMS-COMPLIANCE.md#gate-for-general-sending) for ambiguous SMS holds, with merged off-channel holds/review decisions (#242) and dashboard controls/pre-grant queued-message cancellation (#245). A decision does not manually lift suppression; already granted work may finish.
 
-General inbound content, enabled sealed execution and the stable general API remain open. Quota-only usage plans and expiring owner-registration invite tokens are implemented default-off prerequisites; they are not live payments or hosted launch readiness. Observer seats/invitations already exist. The [device compatibility record](DEVICE-COMPATIBILITY.md) describes limited controlled evidence, not a supported-device or capacity guarantee. The [sealed decision log](../protocol/drafts/zt-009-decision-log.md) remains authoritative for Q1-Q11; external paid review is not a prerequisite replacing those technical gates.
+Default-off conversation capture, selected sealed inbound delivery and sealed dispatch callers are implemented; enabled general messaging and the stable general API remain open. Quota-only usage plans and expiring owner-registration invite tokens are implemented default-off prerequisites; they are not live payments or hosted launch readiness. Observer seats/invitations already exist. The [device compatibility record](DEVICE-COMPATIBILITY.md) describes limited controlled evidence, not a supported-device or capacity guarantee. The [sealed decision log](../protocol/drafts/zt-009-decision-log.md) remains authoritative for Q1-Q11; external paid review is not a prerequisite replacing those technical gates.
 
 ## Delivered groundwork and remaining gates
 
-The following slices are merged groundwork. Their limited scope does not advance the roadmap's release stages or general-send gates. See the [concept/state matrix](CONCEPT-IMPLEMENTATION.md) for owner/Android presentation requirements and #612 integrated visual acceptance, and the [non-UI implementation map](non-ui-implementation.md) for #622 source owners, actual callers, dependencies and remaining acceptance.
+The following slices are merged groundwork. The roadmap uses **Build** for merged and tested candidate code, including dormant callers. Build does not establish customer availability, restricted-pilot acceptance for a new path, or completion of any general-send gate. See the [concept/state matrix](CONCEPT-IMPLEMENTATION.md) for owner/Android presentation requirements and #612 integrated visual acceptance, and the [non-UI implementation map](non-ui-implementation.md) for #622 source owners, actual callers, dependencies and remaining acceptance.
 
 | Slice | Merged evidence | Scope and remaining boundary |
 |---|---|---|
 | Off-channel holds and review decisions | [#242](https://github.com/pboachie/zrotext/pull/242) | Durable owner API and audit records; neither decision manually lifts suppression. |
 | Owner controls and queued-message cancellation | [#245](https://github.com/pboachie/zrotext/pull/245) | Dashboard forms, cancellation before a radio grant, usage refunds, and suppression recheck at grant time. Already granted work may finish. |
 | Synthetic workflow demo | [#244](https://github.com/pboachie/zrotext/pull/244) | Service inquiry, wedding RSVP, and personal reminder simulations with draft approval, handoff, opt-out, and honest delivery states. Scripted drafts only; no SMS or AI provider connected. |
+| Sealed dispatch and line setup | [#735](https://github.com/pboachie/zrotext/pull/735), [#737](https://github.com/pboachie/zrotext/pull/737), [#754](https://github.com/pboachie/zrotext/pull/754) | Maintained Android executor and composed server/browser/CLI setup with current authority and lifecycle fences. Default-off setup and explicit process-local Android installation do not settle the recipient profile, complete same-root Android provisioning, or establish physical-device acceptance. |
+| Selected inbound events | [#710](https://github.com/pboachie/zrotext/pull/710), [#745](https://github.com/pboachie/zrotext/pull/745) | Consent-bound capture, verified selected sealed delivery and durable receipt/checkpoint primitives. Agent original-reply reader/consumption and STOP composition remain open. |
+| Decisions, templates and schedules | [#708](https://github.com/pboachie/zrotext/pull/708), [#730](https://github.com/pboachie/zrotext/pull/730), [#746](https://github.com/pboachie/zrotext/pull/746) | Durable exact-action approval, immutable encrypted templates and default-off shared scheduling execution. Complete customer scheduler lifecycle, original-reply cancellation and owner-facing journeys remain separate. |
+| Authorized tools and recipes | [#728](https://github.com/pboachie/zrotext/pull/728), [#729](https://github.com/pboachie/zrotext/pull/729), [#742](https://github.com/pboachie/zrotext/pull/742), [#747](https://github.com/pboachie/zrotext/pull/747) | Shared Python/function/MCP transport, scoped service-connected recipes and guided synthetic exchange. Complete authenticated custody/setup, supported-client acceptance and original-reply composition remain open. |
+| Customer-local routines | [#752](https://github.com/pboachie/zrotext/pull/752), [#753](https://github.com/pboachie/zrotext/pull/753) | Durable owner-granted admission and local execution with owner-selected providers. Distinct original encrypted input/reader composition and actual call-cost reservations remain gates; this adds no managed AI service. |
 
-The signed restricted rc.2 Android candidate is published; it is not general release or concept-fidelity acceptance for the next candidate. Native Home/navigation/motion and guided setup are merged (#603/#604/#648); #611 adds remaining observations and #612 verifies the integrated owner/Android tree. TypeScript sealed envelope preparation and shared cross-client/adversarial vectors are merged groundwork, not a complete enabled runtime. `POST /v1/sealed/messages` admission and `POST /v1/sealed/inbound-events` upload are mounted behind the off-by-default sealed-admission flag; negotiated dispatch/fetch is separately mounted behind the default-off sealed-dispatch gate, and scoped lifecycle/device/usage surfaces share the sealed-admission gate. Android service routing still does not offer sealed negotiation. Canonical `/v1/sealed/*` is the existing candidate family; proposed `/v1/messages` is not a competing implemented plaintext route. Conversation consent/read and protected phone-journal groundwork (#613/#650/#651/#652/#655) is merged and dormant, not a complete general conversation product. Library-only durable workflow services, provisioning/key lifecycle caller integration and real-device evidence remain runtime gates.
+Signed restricted Android candidates do not establish general release or integrated concept acceptance. Native Home/navigation/motion and guided setup are merged (#603/#604/#648); #611/#612 retain final human, authenticated-network and physical-device acceptance. Candidate `POST /v1/sealed/messages` admission, inbound upload and scoped lifecycle/device/usage surfaces are mounted behind default-off sealed admission; negotiated dispatch/fetch has a separate default-off dispatch gate. The maintained Android service now consumes negotiated grants through the journaled executor when an explicit process-local owner authority is installed (#735); missing installation, pause or cold start leaves that route unavailable. Canonical `/v1/sealed/*` remains the candidate family; proposed `/v1/messages` is not a competing implemented plaintext route.
+
+Conversation capture and owner review are composed behind `CONVERSATION_ENABLED`; sealed line setup additionally requires `SEALED_LINE_SETUP_ENABLED`, existing root custody and current owner/MFA prerequisites (#754). Workflow tools and scheduled execution remain behind `WORKFLOW_TOOLS_ENABLED`; owner-granted routines additionally require `CUSTOMER_ROUTINES_ENABLED` (#752). These defaults stay off. The production Android recipient/profile decision, supported root custody and same-root/generation Android provisioning, original encrypted reply/input consumer integration and controlled-device evidence remain open. A successful synthetic setup or provider-local routine does not close those gates.
 
 The owner concept foundation now includes the merged shared shell, selected
 fleet details, outbound activity and authoritative writer summaries
@@ -52,9 +59,9 @@ flowchart LR
 
 ### Messaging readiness
 
-Complete authenticated SMS line activation using the merged owner-key ceremony and Android proof groundwork. Bind the selected subscription, pause on uncertain SIM identity, and exercise revocation and generation changes. Finish off-channel withdrawal intake and durable review decisions; the read-only queue alone does not complete this work.
+Complete authenticated SMS line activation using the merged owner-key ceremony and Android proof groundwork. Bind the selected subscription, pause on uncertain SIM identity, and exercise revocation and generation changes. Validate the merged off-channel holds, durable review decisions and pre-grant cancellation through the enabled physical-device flow; an owner decision never manually lifts suppression.
 
-Resolve the remaining sealed profile decisions and implement interoperable outbound and unsolicited inbound content. Publish the stable API and TypeScript SDK with client-side encryption, authenticated integration scope and signed webhooks. Preserve the distinction between metadata-only STOP events and decrypted customer replies.
+Resolve the production recipient/profile decision and complete supported custody, same-root Android provisioning and actual original-content consumer integration around the merged candidate outbound/inbound callers. Establish the stable API and supported TypeScript SDK acceptance with client-side encryption, authenticated integration scope and signed delivery. Preserve the distinction between metadata-only STOP events and decrypted customer replies.
 
 **Exit criteria:** a controlled real-device cycle covers enrollment, activation, send, reply, opt-out, reconnect, replay and revocation. Sealed-content, recovery and leakage checks pass. Publish supported-device limitations and route-specific capacity evidence before admitting customer workflows. Do not infer a general release from one controlled run.
 
@@ -76,7 +83,7 @@ The scheduler stores approved encrypted work plus minimal routing/timing metadat
 
 ### Customer-controlled assistant
 
-Add an authorized connector that decrypts selected inbound conversations, calls the customer's chosen AI, and encrypts outbound content through the SDK. Use existing line-restricted integration authority; finish its registration, expiry, revocation and recovery gates before runtime use. Sending permission and reading permission are separate grants.
+Complete the authorized connector journey around the merged scoped workflow tools and customer-local routine runtime. The remaining original encrypted input/reply path must authenticate selected-reader provenance before calling the customer's chosen AI or encrypting outbound content through the SDK. Preserve current registration, expiry, revocation and recovery checks throughout the actual caller. Sending permission and reading permission are separate grants.
 
 The dashboard lets the owner configure contacts, service facts, hours, allowed routines, message/AI budgets and escalation rules. The first assistant can answer its owner, capture notes and reminders, ask approved intake questions, and answer approved FAQs. The same connector can serve an existing assistant through scoped tools.
 
@@ -93,7 +100,7 @@ Treat model output as a proposed action. Enforce permissions outside the model, 
 
 ### Agent messaging tools
 
-**Planned; unavailable.** [Agent integration track #614](https://github.com/pboachie/zrotext/issues/614) extends the customer-controlled connector so an existing agent can notify its owner, receive selected replies and request review. It uses the owner-provided Android phone and SIM. It does not provision a new number, bypass messaging readiness, or provide emergency delivery.
+**Candidate tools are implemented; customer availability remains closed.** [Agent integration track #614](https://github.com/pboachie/zrotext/issues/614) extends the customer-controlled connector so an existing agent can notify its owner, receive selected replies and request review. It uses the owner-provided Android phone and SIM. It does not provision a new number, bypass messaging readiness, or provide emergency delivery.
 
 | Work | Intended outcome | Tracking |
 |---|---|---|
@@ -105,7 +112,7 @@ Treat model output as a proposed action. Enforce permissions outside the model, 
 | Workflow recipes | Importable task-completion, owner-approval and reply-routing recipes using shared services and a customer-controlled content reader. | [#620](https://github.com/pboachie/zrotext/issues/620) |
 | Simulator quickstart | A synthetic first exchange and reproducible scope, replay, revocation, opt-out and unknown-submission cases. | [#621](https://github.com/pboachie/zrotext/issues/621) |
 
-Implement policy and the existing sealed SDK first, then MCP and reply adapters, then guided setup and recipes. A synthetic service-contract prototype may run sooner when clearly labeled. The simulator must not send real SMS or consume AI-provider credits. Client compatibility is established by tests against named versions; merely generating a configuration file does not prove support.
+Scoped policy, authorized Python/function/MCP adapters, service-connected recipe groundwork and the guided synthetic exchange are merged. Complete original-reply consumer composition, authenticated custody/setup and supported-client acceptance before claiming the whole track. A synthetic service-contract prototype may run sooner when clearly labeled. The simulator must not send real SMS or consume AI-provider credits. Client compatibility is established by tests against named versions; merely generating a configuration file does not prove support.
 
 The intended setup takes one guided command plus a supported client install action. Phone/SIM selection, Android permissions, key-fingerprint comparison and owner authorization remain explicit steps. Measure the actual path before claiming setup speed. Reuse the active Android setup work [#603](https://github.com/pboachie/zrotext/pull/603); this track does not replace its navigation or permission design.
 
@@ -119,7 +126,7 @@ Start with owner-entered jobs, appointments, availability and groups. External c
 
 Provide an n8n recipe using its documented [Webhook](https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.webhook/) and [HTTP Request](https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.httprequest/) nodes. The authorized connector verifies the webhook signature and event identity, decrypts selected content, and signs/encrypts permitted outbound work. A generic HTTP node is not a substitute for the SDK's encryption or authorization. Clearly document which customer processes and chosen providers can read content.
 
-**Exit criteria:** templates configure existing services rather than inventing separate message queues or bypassing suppression. Concurrent acceptances cannot overbook. Batch previews identify duplicates and segments, keep recipients private, and show per-message outcomes. RSVP export depends on the planned export capability.
+**Exit criteria:** templates configure existing services rather than inventing separate message queues or bypassing suppression. Concurrent acceptances cannot overbook. Batch previews identify duplicates and segments, keep recipients private, and show per-message outcomes. RSVP export needs a scoped implemented RSVP record and authorized-reader export; existing account metadata export alone does not establish that journey.
 
 ### Managed AI and larger campaigns
 
@@ -137,9 +144,9 @@ These are independent later additions, not prerequisites for the customer-contro
 
 **Exit criteria:** demonstrate each new service or route independently with its trust boundary and limits. Publish capacity only after testing the actual route. Keep phone-based workflows usable without requiring these optional services.
 
-## Planned interfaces and data boundaries
+## Interfaces and data boundaries
 
-These are capability contracts for later implementation, not new live routes or database migrations.
+These are capability contracts for complete customer journeys. Contacts and candidate conversation, decision, template, schedule and integration services already have implementations; the table is not a claim that their enabled owner-facing journeys are complete, or a proposal to create duplicate routes.
 
 | Surface | Minimum capability |
 |---|---|
@@ -150,7 +157,7 @@ These are capability contracts for later implementation, not new live routes or 
 | Integration tools | Read authorized events, propose permitted actions, and query status with distinct read/send grants and line scope. |
 | Workflow events | Stable event identity and signed delivery for received replies, action state changes and approval outcomes; consumers deduplicate. |
 
-Dashboard and integration clients use the same account-scoped services and admission rules. Keep contact names, conversation text, template content and job details encrypted to authorized readers; store only the necessary routing, timing, consent and workflow metadata at the relay, with explicit retention. Public SMS transport and visible phone-number metadata remain subject to the [security design](SECURITY-DESIGN.md). An AI connection expands the set of content readers only through an explicit grant.
+Dashboard and integration clients use the same account-scoped services and admission rules. The client-sealed target keeps contact names, conversation text, template content and job details encrypted to authorized readers, with only necessary routing, timing, consent and workflow metadata at the relay and explicit retention. Current optional contact-field encryption uses a server-held vault key; it does not meet the client-sealing target (#634). Conversation, context and template candidates use their scoped client-encrypted contracts. Public SMS transport and visible phone-number metadata remain subject to the [security design](SECURITY-DESIGN.md). An AI connection expands the set of content readers only through an explicit grant.
 
 ## Validation and release evidence
 

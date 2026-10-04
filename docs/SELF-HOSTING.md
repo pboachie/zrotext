@@ -4,7 +4,7 @@ The repository includes a local Docker Compose stack for development and evaluat
 
 ## Local setup
 
-Install Docker and Docker Compose, copy [`.env.example`](../.env.example) to `.env`, and replace the example PostgreSQL password in both `POSTGRES_PASSWORD` and `DATABASE_URL` with the same local value. From the repository root:
+Install Docker and Docker Compose, copy [`.env.example`](../.env.example) to `.env`, and replace the example PostgreSQL password in both `POSTGRES_PASSWORD` and `DATABASE_URL` with the same local value. Independently generate 32 random bytes as 64 hexadecimal characters for `RUNTIME_DATABASE_PASSWORD` (for example, `openssl rand -hex 32`). The API uses this restricted runtime role; the migration role remains separate. From the repository root:
 
 ```sh
 docker compose --env-file .env -f deploy/compose/compose.yaml up -d --build
@@ -13,6 +13,15 @@ curl http://127.0.0.1:8080/readyz
 ```
 
 The [Compose guide](../deploy/compose/README.md) covers migrations, volumes, shutdown, and the optional second local API instance. Local health checks establish process and database availability, not SMS delivery.
+
+### From a healthy stack to a phone
+
+1. Configure the exact HTTPS account origin and verification mail, then follow [owner registration](#owner-registration). Open `/owner/account` for account and MFA controls and `/owner/devices` for the fleet overview.
+2. Create a one-use pairing request in the owner dashboard. On the phone, use the gear menu to open **Setup**, review access purposes separately, and enter the pairing values. Compare the phone and browser before owner approval. Pairing can proceed without a SIM or SMS access; connection controls currently require a selected SIM.
+3. Treat **Connection** as an explicit test/control surface. A socket connection or heartbeat does not establish SMS readiness. The controlled SMS pilot requires its separate documented authority and a recipient you control; do not enable it merely to evaluate the UI.
+4. Treat sealed conversation onboarding as ongoing integration work. Phone custody, enrollment and browser components have bounded test coverage; these do not establish a complete production provisioning path. Follow the exact release limitations and [current interface guide](INTERFACE.md).
+
+For a packaged Android artifact, start at the [published releases](https://github.com/pboachie/zrotext/releases), review the matching receipts and checksums, and use the [release bundle procedure](RELEASE-BUNDLE.md). A local build of development `main` can differ from the published app even when the displayed version name matches.
 
 For a disposable fresh-install check, run `python deploy/compose/fresh_install_smoke.py` from the repository root (`python3` on systems where that is the Python command). It creates a separate Compose project with a generated local database password and an available loopback port, checks migrations and both health endpoints, runs the logical restore rehearsal, and removes its containers, volume, and temporary credentials. It never uses your `.env` or sends SMS.
 
