@@ -55,7 +55,8 @@ internal class ConversationConnectionFactory(
     private val inputsForSession: (ConversationPhoneSession) -> ConversationConnectionInputs,
     private val publish: (Connection) -> Unit,
     private val mount: ConversationRuntimeMount = ConversationProcessMount.runtime,
-    private val dispatchForConnection: ((ConversationExecutionComposition.Connection) -> ConversationSendTransport)? = null
+    private val dispatchForConnection: ((ConversationExecutionComposition.Connection) -> ConversationSendTransport)? = null,
+    private val timeMaintenanceScheduler: java.util.concurrent.ScheduledExecutorService? = null
 ) {
     init { require(listOf(site, instance).all { it.length in 1..64 && it.all { ch -> ch.code in 33..126 } }) }
 
@@ -158,7 +159,12 @@ internal class ConversationConnectionFactory(
                         checkNotNull(dispatchForConnection.invoke(ConversationExecutionComposition.Connection(
                             runtime, crypto, wire, session, inputs, ::authority)))
                     val content = ConversationContentSession(runtime, crypto, dispatch, mount)
-                    candidate = Connection(runtime, content, activation, ::requireSession, inputs::releaseResources)
+                    candidate = Connection(runtime, content, activation, ::requireSession, inputs::releaseResources,
+                        timeMaintenanceScheduler?.let { scheduler ->
+                            ConversationTimeMaintenance(runtime.presentation, parsed.scope, scheduler,
+                                { runtime.lifecycleLost(ConversationStopReason.WORKER_SHUTDOWN) },
+                                runtime::maintainAuthenticatedTime)
+                        })
                     guard()
                     synchronized(gate) {
                         check(!closed)
@@ -198,7 +204,8 @@ internal class ConversationConnectionFactory(
         private val content: ConversationContentSession,
         private val activation: ConversationPhoneActivation,
         private val guard: () -> Unit,
-        private val releaseResources: () -> Unit
+        private val releaseResources: () -> Unit,
+        private val timeMaintenance: ConversationTimeMaintenance? = null
     ) : AutoCloseable {
         private val closed = AtomicBoolean(false)
         internal fun requireLive() { check(!closed.get()); guard(); check(!closed.get()) }
@@ -211,9 +218,11 @@ internal class ConversationConnectionFactory(
         }
         @Synchronized override fun close() {
             if (!closed.compareAndSet(false, true)) return
-            try { content.close() } finally {
-                try { runtime.lifecycleLost(ConversationStopReason.PHONE_SESSION_LOST, releaseResources) }
-                finally { activation.close() }
+            try { timeMaintenance?.close() } finally {
+                try { content.close() } finally {
+                    try { runtime.lifecycleLost(ConversationStopReason.PHONE_SESSION_LOST, releaseResources) }
+                    finally { activation.close() }
+                }
             }
         }
         override fun toString() = "ConversationConnection(redacted)"
