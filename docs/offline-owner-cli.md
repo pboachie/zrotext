@@ -227,6 +227,36 @@ no phone, archive, recovery or root credentials. Fixture tests pin the shared
 public proposal/manifest digests and exercise changed framing, points, scopes,
 wrong roots, expiry during token entry and output overwrite refusal.
 
+## Offline account-contact reader signature (explicit `unlock` build)
+
+`contact-reader-sign` accepts, in order, `--account --origin --bundle --proposal
+--output --reader --reader-point --until`. Independently select the account,
+canonical HTTPS origin, existing bundle, reader ID/point and deadline. The public
+proposal is the bounded copied original CREATE plus pending response described in
+[the signing proposal](../protocol/v1/contact-reader-offline-signing-proposal.md).
+Its producer, issuer aggregate and actual browser completion remain unavailable
+prerequisites; synthetic fixture input is not a current server grant.
+
+The private console consumes an independent kit fingerprint, then a separate full
+review with `APPROVE-READER` or `DECLINE`, then a separate no-echo recovery token.
+A fourth acquisition holds the same eligible output session across existing-root
+recovery, signature, create-new public output and receipt. Decline performs no
+recovery. The existing encrypted bundle is never rewritten. The complete root,
+reader, historical manifest, original operation/CAS/actor and deadline facts are
+displayed without truncation in bounded chunks. Historical evidence does not
+establish current access, accepted history, custody or issuance permission.
+
+The output is the original unsigned statement followed by one canonical low-S
+P256 signature. A ten-second post-token clock bounds eligibility for success;
+it does not interrupt synchronous crypto or file I/O. A late/failed write or sync
+may leave partial or whole valid public output, and no success receipt is issued
+after the clock or session becomes invalid. Preserve and inspect the original
+operation and whole selected output; do not automatically resign, overwrite or
+retry. The receipt explicitly says server completion is not acknowledged. Actual
+completion requires the separate genuine authenticated issuer and fresh current
+checks. This candidate creates no key, performs no HTTP request and enables no
+contact storage, purpose, SEND or provider action.
+
 ## Automated verification
 
 Native tests use hidden, exclusively owned child consoles, unique temporary
