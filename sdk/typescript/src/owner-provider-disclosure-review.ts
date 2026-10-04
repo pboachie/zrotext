@@ -95,8 +95,10 @@ class LocalReview {
   constructor(input:OwnerProviderDisclosureOptions) {
     const o=data(input,['enabled','origin','host','binding','source','configuration','archiveLease','readCurrent','currentCsrf','onSetupClose','onCustodyClose','signal'],['timeoutMs','observationMs','fetchImpl']);
     const source=data(o.source,['scope','envelopeDigest']),config=data(o.configuration,['configId','configVersion','recordVersion']);
-    const doc=o.host?.ownerDocument,win=doc?.defaultView,url=new URL(o.origin);
-    if(!doc||!win||!(o.host instanceof win.HTMLElement)||o.host.nodeType!==1||o.host.isConnected!==true||typeof o.host.replaceChildren!=='function'||win.location.origin!==o.origin||url.protocol!=='https:'||url.origin!==o.origin||o.origin.length>512||/[^\x21-\x7e]/.test(o.origin)||typeof o.enabled!=='boolean'||!(o.signal instanceof AbortSignal))refused();
+    const doc=o.host?.ownerDocument,win=doc?.defaultView;
+    if(typeof o.origin!=='string'||o.origin.length<1||o.origin.length>512||/[^\x21-\x7e]/.test(o.origin)||!doc||!win||win.location.origin!==o.origin)refused();
+    let url:URL;try{url=new URL(o.origin);}catch{refused();}
+    if(!(o.host instanceof win.HTMLElement)||o.host.nodeType!==1||o.host.isConnected!==true||typeof o.host.replaceChildren!=='function'||url.protocol!=='https:'||url.origin!==o.origin||typeof o.enabled!=='boolean'||!(o.signal instanceof AbortSignal))refused();
     if(!['readCurrent','currentCsrf','onSetupClose','onCustodyClose'].every(k=>typeof o[k]==='function')||!['withKey','close','onClose'].every(k=>typeof o.archiveLease?.[k]==='function')||o.fetchImpl!==undefined&&typeof o.fetchImpl!=='function')refused();
     if(!digest(source.envelopeDigest)||!validUuid(config.configId)||!integer(config.configVersion,1,16)||!integer(config.recordVersion)||!integer(o.timeoutMs??10000,1,10000)||!integer(o.observationMs??1000,1,1000))refused();
     this.#binding=binding(o.binding);this.#scope=scope(source.scope);this.#window=win;this.#document=doc;

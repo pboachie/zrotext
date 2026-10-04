@@ -53,6 +53,20 @@ test('closed options reject accessors, foreign origin and unavailable adapters w
     const off=createOwnerProviderDisclosureReview({...f.options,enabled:false});await assert.rejects(off.prepare(body));assert.equal(f.state.calls.length,0);off.close();
   }finally{f.close();}
 });
+test('invalid origin scalars refuse before coercion or any application callback',async()=>{
+  const f=await fixture();f.local.close();let coercions=0,callbacks=0;
+  const called=()=>{callbacks++;assert.fail('Invalid origin invoked an application callback');};
+  const options={...f.options,readCurrent:called,currentCsrf:called,onSetupClose:called,onCustodyClose:called,fetchImpl:called,archiveLease:{withKey:called,onClose:called,close:called}};
+  try{
+    const object={toString(){coercions++;return f.options.origin;}};
+    for(const origin of [object,null,1,'','not-a-url','https://[','https://other.invalid','https://other.invalid/path',f.options.origin+'\n','x'.repeat(513)])
+      assert.throws(()=>createOwnerProviderDisclosureReview({...options,origin}),/^Error: Local provider review unavailable$/);
+    // A malformed matching location is a unit shim only, and exercises parser-error normalization.
+    f.window.location.origin='https://[';
+    assert.throws(()=>createOwnerProviderDisclosureReview({...options,origin:'https://['}),/^Error: Local provider review unavailable$/);
+    assert.equal(coercions,0);assert.equal(callbacks,0);assert.equal(f.state.calls.length,0);assert.equal(f.state.keyCalls,0);
+  }finally{f.close();}
+});
 test('unknown, withdrawn, changed, alias and malformed configuration responses never open plaintext',async()=>{
   for(const mutate of [r=>r.replace('telnyx-sms-v2','telnyx_sms_v2'),r=>r.replace('"state":"draft"','"state":"withdrawn"'),r=>r.replace('"record_version":1','"record_version":2'),r=>r.replace('"config_version":1','"config_version":1e0'),r=>r.replace('{','{"state":"draft",'),r=>r.replace('"sender"','"sen\\u0064er"'),r=>r.replace('"retention_policy_ref":null','"retention_policy_ref":""'),r=>r.replace('"sender":"+15550100001"','"sender":"+15550100001\\n"')]){
     const f=await fixture();try{f.state.raw=mutate(f.state.raw);await assert.rejects(f.local.prepare(body));assert.equal(f.state.keyCalls,0);assert.equal(f.local.state().phase,'closed');assert.equal(f.host.children[1].children.length,0);}finally{f.close();}
