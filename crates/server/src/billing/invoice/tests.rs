@@ -17,6 +17,7 @@ struct Case {
     setup: Client,
     schema: String,
     account: Uuid,
+    customer: String,
     device: Uuid,
     start: i64,
     end: i64,
@@ -55,8 +56,11 @@ impl Case {
             .await
             .unwrap();
         let account = signup.account_id;
+        // Advisory customer locks are database-wide, even with schema-local
+        // tables. Parallel fixtures must represent distinct customers.
+        let customer = format!("cus_{}", account.simple());
         let device = Uuid::new_v4();
-        billing::bind_customer(&mut db, account, "cus_invoice1")
+        billing::bind_customer(&mut db, account, &customer)
             .await
             .unwrap();
         db.execute(
@@ -76,6 +80,7 @@ impl Case {
             setup,
             schema,
             account,
+            customer,
             device,
             start: now - 60,
             end: now + 3600,
@@ -103,12 +108,12 @@ impl Case {
         invoice_id: &str,
     ) -> CurrentInvoice {
         let subscription = json!({"id":"sub_invoice1","object":"subscription","livemode":false,
-            "customer":"cus_invoice1","status":status,"latest_invoice":invoice_id,
+            "customer":&self.customer,"status":status,"latest_invoice":invoice_id,
             "cancel_at":null,"cancel_at_period_end":false,
             "items":{"object":"list","has_more":false,"data":[{"id":"si_invoice1","quantity":1,
                 "price":{"id":price},"current_period_start":self.start,"current_period_end":self.end}]}});
         let invoice = json!({"id":invoice_id,"object":"invoice","livemode":false,
-            "customer":"cus_invoice1","status":invoice_status,"billing_reason":reason,
+            "customer":&self.customer,"status":invoice_status,"billing_reason":reason,
             "parent":{"type":"subscription_details","subscription_details":{"subscription":"sub_invoice1"}},
             "lines":{"object":"list","has_more":false,"data":[{"id":"il_invoice1",
                 "parent":{"type":"subscription_item_details","subscription_item_details":{"subscription_item":"si_invoice1","proration":false}},
@@ -125,7 +130,7 @@ impl Case {
     async fn observe(&mut self, proof: &CurrentInvoice) -> Result<(), BillingError> {
         self.generation += 1;
         let event = json!({"id":format!("evt_invoice{}",self.generation),"object":"event","livemode":false,
-            "type":"customer.subscription.updated","data":{"object":{"id":"sub_invoice1","customer":"cus_invoice1"}}});
+            "type":"customer.subscription.updated","data":{"object":{"id":"sub_invoice1","customer":&self.customer}}});
         let body = serde_json::to_vec(&event).unwrap();
         let secret = format!("whsec_{}", Uuid::new_v4().simple());
         let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();

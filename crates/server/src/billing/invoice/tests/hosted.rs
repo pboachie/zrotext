@@ -27,7 +27,7 @@ async fn hosted_admission_fences_signed_subscription_invalidation_until_commit()
         let body = serde_json::to_vec(&serde_json::json!({
             "id":"evt_hostedfence1", "object":"event", "livemode":false,
             "type":"customer.subscription.updated",
-            "data":{"object":{"id":subscription,"customer":"cus_invoice1"}}
+            "data":{"object":{"id":subscription,"customer":&case.customer}}
         }))
         .unwrap();
         let secret = format!("whsec_{}", Uuid::new_v4().simple());
@@ -164,7 +164,7 @@ async fn installed_horizon(horizon: i64) -> (Case, Gate, Scope) {
     let scope = Scope::new(
         namespace,
         case.account.into_bytes(),
-        "cus_invoice1",
+        &case.customer,
         "sub_invoice1",
     )
     .unwrap();
@@ -176,8 +176,14 @@ async fn installed_horizon(horizon: i64) -> (Case, Gate, Scope) {
         )
         .await
         .unwrap();
-    case.db.execute("INSERT INTO hosted_billing_projections(namespace_id,account_id,customer_id,subscription_id,policy_revision,dirty_generation,processed_generation,per_read_sequence,payment_hold,review_required,phase,outbound_limit,device_limit,issued_at,valid_until) VALUES($1,$2,'cus_invoice1','sub_invoice1',1,0,0,0,false,false,'pending',0,0,0,0)",&[&ns,&case.account]).await.unwrap();
-    case.db.execute("INSERT INTO hosted_billing_ledger_bindings VALUES($1,$2,'cus_invoice1','sub_invoice1','test')",&[&case.account,&ns]).await.unwrap();
+    case.db.execute("INSERT INTO hosted_billing_projections(namespace_id,account_id,customer_id,subscription_id,policy_revision,dirty_generation,processed_generation,per_read_sequence,payment_hold,review_required,phase,outbound_limit,device_limit,issued_at,valid_until) VALUES($1,$2,$3,'sub_invoice1',1,0,0,0,false,false,'pending',0,0,0,0)",&[&ns,&case.account,&case.customer]).await.unwrap();
+    case.db
+        .execute(
+            "INSERT INTO hosted_billing_ledger_bindings VALUES($1,$2,$3,'sub_invoice1','test')",
+            &[&case.account, &ns, &case.customer],
+        )
+        .await
+        .unwrap();
     let tx = case.db.transaction().await.unwrap();
     let claim = store::claim_read(&tx, &gate, &scope).await.unwrap();
     tx.commit().await.unwrap();
