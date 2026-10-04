@@ -148,7 +148,7 @@ checks, state SHARE, actual clock, final point-in-time owner and commit ACK.
 ## Storage, erasure and unavailable prerequisites
 
 The companion SQL remains unnumbered/uninstalled. Exact columns, nullability,
-keys, validated CHECKs, typed predicate bodies/signatures/search path and
+keys, validated CHECK constraints, typed predicate bodies/signatures/search path and
 transition/immutable/deferred closure triggers are required. Trigger bindings
 must use the exact validated current-schema function OID and cover every
 mutation, without column-limited UPDATE predicates. Absent returns
