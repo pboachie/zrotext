@@ -310,7 +310,9 @@ LANGUAGE sql VOLATILE SET search_path FROM CURRENT AS $$
 $$;
 
 CREATE FUNCTION original_reply_grant_deadline(wanted_account uuid,wanted_grant uuid) RETURNS bigint
-LANGUAGE sql VOLATILE SET search_path FROM CURRENT AS $$
+-- Start with the exact grant key and retain the declared authority joins.
+-- Keep planner configuration local to this function; do not change deadlines.
+LANGUAGE sql VOLATILE SET search_path FROM CURRENT SET join_collapse_limit = 1 AS $$
 SELECT LEAST(g.expires_ms, floor(extract(epoch FROM creator.expires_at)*1000)::bigint, floor(extract(epoch FROM origin.expires_at)*1000)::bigint, registration.expires_ms, reader.valid_until_ms, permission.expires_ms) FROM original_reply_grants g
  JOIN accounts a ON a.id=g.account_id
  JOIN sessions creator ON (creator.account_id,creator.user_id,creator.id)=(g.account_id,g.created_by_user,g.created_session)
