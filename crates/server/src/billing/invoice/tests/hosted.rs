@@ -617,3 +617,48 @@ async fn hosted_device_last_slot_and_final_hold_refuse_atomically() {
     );
     case.cleanup().await;
 }
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated hosted invoice schema"]
+async fn hosted_final_invoice_read_cannot_extend_original_hosted_lease() {
+    let (mut case, gate, _) = installed().await;
+    // Only this disposable schema changes. Preserve the actual eligibility
+    // predicate, but delay returning its row until the hosted lease expires.
+    case.db.batch_execute(
+        "ALTER FUNCTION current_billing_invoice_period(uuid) RENAME TO hosted_original_current_period;
+         CREATE FUNCTION current_billing_invoice_period(p_account uuid)
+         RETURNS TABLE(period_id uuid,start_ms bigint,end_ms bigint)
+         LANGUAGE plpgsql COST 1000000 ROWS 1 AS $$ BEGIN
+           RETURN QUERY SELECT * FROM hosted_original_current_period(p_account);
+           PERFORM pg_sleep(3);
+         END $$;"
+    ).await.unwrap();
+    let tx = case.db.transaction().await.unwrap();
+    let prepared = admission::prepare(&tx, &gate, case.account).await.unwrap();
+    tx.execute("UPDATE hosted_billing_projections SET valid_until=floor(extract(epoch FROM clock_timestamp()))::bigint+2", &[]).await.unwrap();
+    assert_eq!(
+        admission::outbound(&tx, &gate, &prepared, Uuid::new_v4(), false).await,
+        Err(store::StoreError::Refused(
+            crate::billing::hosted::Refusal::Pending
+        ))
+    );
+    drop(prepared);
+    tx.rollback().await.unwrap();
+    assert_eq!(
+        case.db
+            .query_one("SELECT count(*) FROM messages", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+    assert_eq!(
+        case.db
+            .query_one("SELECT count(*) FROM usage_ledger", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+    case.cleanup().await;
+}
