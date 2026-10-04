@@ -190,16 +190,17 @@ export async function openContactLocalHistory01(input: Readonly<{expectedAccount
   s.onAbort=()=>close(s);s.onVisibility=()=>{if(document.visibilityState!=='visible')close(s);};
   s.signal.addEventListener('abort',s.onAbort,{once:true});if(typeof document!=='undefined')document.addEventListener('visibilitychange',s.onVisibility);
   s.timer=setTimeout(()=>close(s),operationMs);
-  try {
+  try {return await operation<ContactLocalHistory01>(s,async()=>{
     const enrolled=await enrollRootPin02(pin,fingerprint);live(s);if(enrolled.generation!==1n||!same(enrolled.accountId,account))refuse();s.header.rootPoint=Uint8Array.from(enrolled.rootPoint);
     await ownedOpen(s,openDatabase(),db=>{s.db=db;});live(s);
     const exists=await transaction(s,'readonly',(h,_,done)=>done(h));live(s);
     if(s.mode==='local_reduction'&&!exists)refuse('unobserved');
     if(s.mode==='history'){
       const root=await ownedOpen(s,Draft02TrustStore.open(),value=>{s.root=value;});live(s);
-      if(!exists){const before=rootSnapshot(s,await root.read()),verified=await root.verifyStoredHistory(before.trust.digest,before.lastTrustedTimeMs);
+      if(!exists){const initial=await root.read();live(s);const before=rootSnapshot(s,initial);
+        const verified=await root.verifyStoredHistory(before.trust.digest,before.lastTrustedTimeMs);live(s);
         const actual=verifiedManifestIdentity02(verified,before.lastTrustedTimeMs);if(actual.generation!==1n||!same(actual.rootPoint,s.header.rootPoint)||!same(actual.accountId,account))refuse();
-        const after=rootSnapshot(s,await root.read());if(!equal(before,after))refuse('root changed');live(s);
+        const final=await root.read();live(s);const after=rootSnapshot(s,final);if(!equal(before,after))refuse('root changed');
         await transaction(s,'readwrite',(h,_,done)=>{if(!h)s.tx!.objectStore('header').put(clone(s.header),headerKey);done(undefined);});}
     }
     live(s);if(s.timer!==null)clearTimeout(s.timer);s.timer=setTimeout(()=>close(s),Math.max(0,s.until-performance.now()));s.opening=false;const api: ContactLocalHistory01=Object.freeze({close(this:ContactLocalHistory01){close(ownedAdapter(this));},
@@ -240,5 +241,6 @@ export async function openContactLocalHistory01(input: Readonly<{expectedAccount
         catch(e){if(attempted&&s.closed)return {kind:'write_unknown' as const};throw e;}finally{wipe(prior);}
       }});
     adapterRecords.set(api,s);return api;
+  });
   }catch(e){close(s);throw e;}finally{s.opening=false;if(s.closed)release(s);wipe(pin);}
 }

@@ -92,6 +92,11 @@ the adapter's absolute lifetime is thirty minutes. Retries cannot renew lifetime
 Explicit close, abort, visibility loss and deadline invalidate transient metadata,
 abort its active contact transaction and close only its owned connections.
 Late promises are observed and cannot publish an adapter, receipt or token.
+The outward open promise races lifecycle closure throughout initial root-pin
+crypto, stored-history verification and root reads. Closure rejects outward open
+without waiting for those tasks to finish; their late results remain observed and
+cannot initialize a header or publish a handle. Unresolved owned database opens
+continue to charge their permit until their late handles close.
 
 ## Local privacy reduction and availability limits
 

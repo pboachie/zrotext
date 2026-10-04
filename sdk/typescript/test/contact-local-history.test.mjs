@@ -209,4 +209,29 @@ test('closure after contact commit reports unknown and exact lookup reconciles w
     const reconciled=await store.lookup(f.contact);assert.equal(reconciled.kind,'accepted_local_history');assert.equal(reconciled.metadata.revision,1n);
     await assert.rejects(store.accept({expected:null,transition:f.first,statement:f.statement}),/stale local CAS/);
   }finally{Draft02TrustStore.prototype.read=original;IDBDatabase.prototype.transaction=tx;store.close();f.close();}});
+test('initial real crypto wait rejects outward open at its absolute ten-second deadline',async()=>{
+  const f=await prepareContactHistoryFixture(),original=crypto.subtle.digest;let began,release,timer;
+  const entered=new Promise(resolve=>{began=resolve;}),held=new Promise((_,reject)=>{release=reject;});
+  try{crypto.subtle.digest=function(){began();return held;};const start=performance.now(),opening=openContactLocalHistory01(f.options);
+    const refusal=assert.rejects(Promise.race([opening,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('control did not settle opening')),13_000);})]),/closed/);
+    await entered;await refusal;assert.ok(performance.now()-start>=9900);clearTimeout(timer);
+    release(Error('late initial crypto failure'));await new Promise(resolve=>setTimeout(resolve,0));
+    crypto.subtle.digest=original;const fresh=await openContactLocalHistory01({...f.options,signal:new AbortController().signal});fresh.close();
+  }finally{clearTimeout(timer);crypto.subtle.digest=original;release?.(Error('control cleanup'));f.close();}});
+for(const phase of ['initial_read','stored_history','final_read'])test('abort settles outward open during genuine initial '+phase+' without late header writes',async()=>{
+  const f=await prepareContactHistoryFixture(),read=Draft02TrustStore.prototype.read,verify=Draft02TrustStore.prototype.verifyStoredHistory;
+  let began,release,timer,heldOnce=false,verified=false;const entered=new Promise(resolve=>{began=resolve;});
+  const hold=async(value)=>{heldOnce=true;began();await new Promise(resolve=>{release=resolve;});return value;};
+  try{Draft02TrustStore.prototype.read=async function(){const value=await read.call(this);
+      if(!heldOnce&&(phase==='initial_read'||phase==='final_read'&&verified))return hold(value);return value;};
+    Draft02TrustStore.prototype.verifyStoredHistory=async function(...args){const value=await verify.apply(this,args);verified=true;
+      if(phase==='stored_history'&&!heldOnce)return hold(value);return value;};
+    const opening=openContactLocalHistory01(f.options),refusal=assert.rejects(Promise.race([opening,new Promise((_,reject)=>{
+      timer=setTimeout(()=>reject(Error('control did not settle opening')),1000);})]),/closed/);
+    await entered;f.controller.abort();await refusal;clearTimeout(timer);release();await new Promise(resolve=>setTimeout(resolve,0));
+    const saved=await rawLocal((tx,done)=>{const h=tx.objectStore('header').get('scope'),rows=tx.objectStore('contacts').getAll();rows.onsuccess=()=>done({header:h.result,rows:rows.result});});
+    assert.equal(saved.header,undefined);assert.deepEqual(saved.rows,[]);
+    Draft02TrustStore.prototype.read=read;Draft02TrustStore.prototype.verifyStoredHistory=verify;
+    const fresh=await openContactLocalHistory01({...f.options,signal:new AbortController().signal});fresh.close();
+  }finally{clearTimeout(timer);release?.();Draft02TrustStore.prototype.read=read;Draft02TrustStore.prototype.verifyStoredHistory=verify;f.close();}});
 }
