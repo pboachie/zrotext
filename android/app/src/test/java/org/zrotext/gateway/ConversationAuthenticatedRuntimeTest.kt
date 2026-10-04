@@ -31,6 +31,11 @@ class ConversationAuthenticatedRuntimeTest {
     private var exchanges = 0
     private var duringInstall: () -> Unit = {}
     private var duringContent: () -> Unit = {}
+    private var duringTime: () -> Unit = {}
+    private var duringAuthority: () -> Unit = {}
+    private var leaseDuration = 10000L
+    private var authorityUntil = 110000L
+    private var timeReplies = 0
     private var captureReplies = 0
     private var captureCreated = true
     private var alterCaptureReply: (ByteArray) -> ByteArray = { it }
@@ -66,7 +71,7 @@ class ConversationAuthenticatedRuntimeTest {
         val verifier=object:ConversationActivationVerifier {
             override fun verifiedPreparation(evidence:ByteArray):ConversationCaptureScope {check(evidence.contentEquals(byteArrayOf(1)));return scope}
             override fun verifiedActiveLease(scope:ConversationCaptureScope,challenge:String,evidence:ByteArray):Long {
-                check(scope==this@ConversationAuthenticatedRuntimeTest.scope && UUID.fromString(challenge)!=UUID(0,0) && evidence.contentEquals(byteArrayOf(2)));return 10000
+                check(scope==this@ConversationAuthenticatedRuntimeTest.scope && UUID.fromString(challenge)!=UUID(0,0) && evidence.contentEquals(byteArrayOf(2)));return leaseDuration
             }
         }
         val wire=object:ConversationAuthenticatedWire {
@@ -75,7 +80,9 @@ class ConversationAuthenticatedRuntimeTest {
                 val current=checkNotNull(session)
                 val bytes=if(request[5].toInt()==1) {
                     val time=ConversationChannelCodec.parseTimeRequest(request,current)
-                    ConversationChannelCodec.timeReply(ConversationTimeReply(current,if(tamperTime) UUID.randomUUID() else time.challenge,100000))
+                    val utc=100000+elapsed
+                    timeReplies++;duringTime()
+                    ConversationChannelCodec.timeReply(ConversationTimeReply(current,if(tamperTime) UUID.randomUUID() else time.challenge,utc))
                 } else if(request[5].toInt()==12) {
                     val (nonce,selected,envelope)=ConversationChannelCodec.parseCaptureRequest(request,current)
                     captureReplies++
@@ -94,7 +101,7 @@ class ConversationAuthenticatedRuntimeTest {
             }
         }
         assembly=ConversationAuthenticatedRuntime(db.journal(),sendDb.sends(),verifier,protection,wire,{elapsed},
-            { selected,utc -> check(selected==scope && utc in 100000..109999 && permission && consent) },
+            { selected,utc -> duringAuthority();check(selected==scope && utc in 100000 until authorityUntil && permission && consent) },
             {check(it==scope);decisions++}, {exchanges++;duringInstall();byteArrayOf(2)},worker,delivery)
         assembly.presentation.observe {snapshots.add(it)}
         delivery.drain()
@@ -103,6 +110,115 @@ class ConversationAuthenticatedRuntimeTest {
     private fun drain() {worker.drain();delivery.drain()}
     private fun propose() {assembly.propose(review,byteArrayOf(1));drain()}
     private fun activate() {propose();val value=snapshots.last();assembly.presentation.approvePhoneReview(review.requestId,value.version);drain();assertTrue(assembly.captureEligible())}
+    private fun activateLongLease() {leaseDuration=60000;authorityUntil=200000;activate()}
+    private fun maintain():Boolean? {var result:Boolean?=null;assembly.maintainAuthenticatedTime(scope){result=it};drain();return result}
+    @Test fun genuineMaintenanceBeforeOldBoundaryPreservesOriginalAdmissionDeadline() {
+        activateLongLease();val deadline=assembly.executionDeadline(scope)
+        elapsed=20000;assertEquals(true,maintain())
+        assertEquals(deadline,assembly.executionDeadline(scope));assertEquals(1,decisions);assertEquals(1,exchanges)
+        elapsed=40000;assertEquals(true,maintain());assertTrue(assembly.captureEligible())
+        elapsed=60000;assertFalse(assembly.captureEligible());assertEquals(false,maintain())
+        assertEquals(1,decisions);assertEquals(1,exchanges);assertEquals(0,captureReplies)
+    }
+    @Test fun oldAnchorExpiryDuringGenuineRefreshCannotBeRevivedByFreshInstalledTime() {
+        activateLongLease();elapsed=29900;duringTime={elapsed=30100}
+        assertEquals(false,maintain());assertFalse(assembly.captureEligible())
+        assertEquals(ConversationStopReason.LEASE_EXPIRED,snapshots.last().stopReason)
+        assertEquals(0,db.journal().contentCount());assertEquals(0,captureReplies)
+    }
+    @Test fun originalAnchorDeadlineEqualityRefusesEvenWithValidReply() {
+        activateLongLease();elapsed=29900;duringTime={elapsed=30000}
+        assertEquals(false,maintain());assertFalse(assembly.captureEligible())
+    }
+    @Test fun finalAuthorityWaitCannotSpendOldDeadlineOrPromoteFirstReceiptFromNewClock() {
+        activateLongLease();elapsed=29900;var sampled=false;var refreshed=false
+        duringTime={refreshed=true}
+        duringAuthority={
+            if(refreshed && !sampled) {
+                elapsed=30000
+                sampled=true
+                val boundary=assembly.firstReceiptBoundary()
+                assertEquals(ConversationObservation.DISCARDED,assembly.observeAtBoundary(boundary,
+                    "55".repeat(32),scope.peer,scope.lineId,1,"synthetic"))
+            }
+        }
+        assertEquals(false,maintain());assertTrue(sampled);assertFalse(assembly.captureEligible())
+        assertEquals(0,db.journal().contentCount())
+    }
+    @Test fun queuedMaintenanceAfterOldAgeExpiresNeverStartsTimeExchange() {
+        activateLongLease();var result:Boolean?=null
+        assembly.maintainAuthenticatedTime(scope){result=it};elapsed=30000;drain()
+        assertEquals(false,result);assertEquals(1,timeReplies);assertFalse(assembly.captureEligible())
+    }
+    @Test fun maintenanceWrongAuthenticatedNonceClosesExistingAdmission() {
+        activateLongLease();elapsed=10000;tamperTime=true
+        assertEquals(false,maintain());assertFalse(assembly.captureEligible())
+        assertEquals(1,decisions);assertEquals(1,exchanges)
+    }
+    @Test fun lifecycleDuringMaintenanceCannotPublishLateSuccess() {
+        activateLongLease();elapsed=10000;duringTime={assembly.lifecycleLost(ConversationStopReason.USER_STOP)}
+        assertEquals(false,maintain());assertFalse(assembly.captureEligible())
+    }
+    @Test fun sessionRotationDuringMaintenanceCannotPublishLateSuccess() {
+        activateLongLease();elapsed=10000;duringTime={session=phone.copy(connectionEpoch=2)}
+        assertEquals(false,maintain());assertFalse(assembly.captureEligible())
+    }
+    @Test fun lostAuthorityDuringMaintenanceCannotReopenExistingScope() {
+        activateLongLease();elapsed=10000;duringTime={consent=false}
+        assertEquals(false,maintain());assertFalse(assembly.captureEligible());assertEquals(0,captureReplies)
+    }
+    @Test fun overlappingMaintenanceHasOnlyOneExchangeAndNoReplacementRequest() {
+        activateLongLease();elapsed=10000;var first:Boolean?=null;var second:Boolean?=null
+        assembly.maintainAuthenticatedTime(scope){first=it};assembly.maintainAuthenticatedTime(scope){second=it}
+        drain();assertEquals(true,first);assertEquals(false,second);assertEquals(2,timeReplies)
+    }
+    @Test fun serialDiscardRetainsOnePendingUntilOwnerEpochRetirementWithoutFakeCompletion() {
+        activateLongLease();var first:Boolean?=null;var second:Boolean?=null
+        duringAuthority={throw AssertionError("Synthetic preceding worker failure")}
+        assembly.presentation.refresh();assembly.maintainAuthenticatedTime(scope){first=it}
+        assertThrows(AssertionError::class.java){worker.drain()}
+        duringAuthority={};assembly.maintainAuthenticatedTime(scope){second=it};delivery.drain()
+        assertNull(first);assertEquals(false,second);assertEquals(1,timeReplies)
+        assembly.lifecycleLost(ConversationStopReason.WORKER_SHUTDOWN);drain()
+        assertFalse(assembly.captureEligible());assertNull(first)
+    }
+    @Test fun closeBeforeQueuedMaintenanceRunsRefusesWithoutTimeExchange() {
+        activateLongLease();var result:Boolean?=null
+        assembly.maintainAuthenticatedTime(scope){result=it}
+        assembly.lifecycleLost(ConversationStopReason.PHONE_SESSION_LOST);drain()
+        assertEquals(false,result);assertEquals(1,timeReplies);assertFalse(assembly.captureEligible())
+    }
+    @Test fun monotonicRegressionDuringRefreshRefusesRatherThanWrappingOldDeadline() {
+        activateLongLease();elapsed=10000;duringTime={elapsed=9999}
+        assertEquals(false,maintain());assertFalse(assembly.captureEligible())
+    }
+    @Test fun initialProposalWithoutRepresentableConservativeDeadlineRefusesInstallation() {
+        elapsed=Long.MAX_VALUE-100;propose()
+        assertFalse(assembly.captureEligible());assertNull(db.journal().installation());assertEquals(0,timeReplies)
+    }
+    @Test fun separateAuthenticatedClockCannotRefreshThisRuntimeWitness() {
+        activateLongLease();elapsed=29000
+        val other=ConversationTrustedClock({elapsed},{session});val request=other.beginRequest()
+        other.installAuthenticatedReply(request.challenge,phone,129000)
+        elapsed=30000;assertNotNull(other.nowMs());assertEquals(false,maintain())
+        assertEquals(1,timeReplies);assertFalse(assembly.captureEligible())
+    }
+    @Test fun delayedDeliveryBeyondRefreshedWitnessCannotPublishSuccess() {
+        activateLongLease();elapsed=10000;var result:Boolean?=null
+        assembly.maintainAuthenticatedTime(scope){result=it};worker.drain()
+        elapsed=40000;delivery.drain();assertEquals(false,result);assertFalse(assembly.captureEligible());drain()
+    }
+    @Test fun rejectedMaintenanceDeliveryClosesWithoutInventingCompletion() {
+        activateLongLease();elapsed=10000;var result:Boolean?=null
+        delivery.beforeSubmit={throw java.util.concurrent.RejectedExecutionException()}
+        assembly.maintainAuthenticatedTime(scope){result=it};worker.drain()
+        assertNull(result);assertFalse(assembly.captureEligible());delivery.beforeSubmit={};drain()
+    }
+    @Test fun throwingCompletionCannotRetainReservationOrRetryPreviousExchange() {
+        activateLongLease();elapsed=10000
+        assembly.maintainAuthenticatedTime(scope){error("Synthetic caller failure")};drain()
+        elapsed=20000;assertEquals(true,maintain());assertEquals(3,timeReplies)
+    }
     @Test fun proposalAndSeparatePhoneDecisionRequiredBeforeEncryptedReceipt() {
         propose();assertFalse(assembly.captureEligible());assertEquals(0,decisions)
         val value=snapshots.last();assertEquals(ConversationPresentationPhase.AWAITING_PHONE_REVIEW,value.phase)
