@@ -94,6 +94,34 @@ async fn control(
             let r = db.query_one("SELECT (SELECT count(*) FROM sealed_root_receipts WHERE account_id=$1),(SELECT count(*) FROM sealed_line_key_receipts WHERE account_id=$1),(SELECT count(*) FROM sealed_line_key_receipts WHERE account_id=$1 AND activated_ms IS NOT NULL),(SELECT count(*) FROM sealed_line_activation_exchanges WHERE account_id=$1 AND ack_sent_at IS NOT NULL)", &[&account]).await.unwrap();
             response["counters"] = json!({"rootCompletions":r.get::<_,i64>(0),"lineRegistrations":r.get::<_,i64>(1),"lineApprovals":r.get::<_,i64>(2),"phoneAcknowledgments":r.get::<_,i64>(3)});
         }
+        "root_current" if command.challenge_id.is_none() => {
+            let fingerprint = db
+                .query_opt(
+                    "SELECT root_fingerprint FROM sealed_root_custody WHERE account_id=$1",
+                    &[&account],
+                )
+                .await
+                .unwrap()
+                .map(|r| r.get::<_, Vec<u8>>(0));
+            let current = if let Some(bytes) = fingerprint {
+                let compared: [u8; 32] = bytes.try_into().unwrap();
+                matches!(
+                    crate::sealed_root_custody::export(&mut db, p, &f.origin, &compared).await,
+                    Ok(Some(_))
+                )
+            } else {
+                false
+            };
+            response["current"] = json!(current);
+        }
+        "revoke_creator" if command.challenge_id.is_none() => {
+            assert!(
+                crate::auth::revoke_session(&db, p, p.session_id)
+                    .await
+                    .unwrap()
+            );
+            response["ok"] = json!(true);
+        }
         "root_sign_scope" => {
             let Some(id) = command.challenge_id else {
                 return fail();
