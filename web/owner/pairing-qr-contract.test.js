@@ -5,7 +5,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const pairingCode = require("./pairing-code.js");
-const decodeProposal = pairingCode.decode;
+const decodeProposal = text => pairingCode.decode(text, "https://gateway.example.invalid");
 
 const sample = () => ({ type: "zrotext-pairing", v: 1, origin: "https://gateway.example.invalid", pairing_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", token: "ztp_" + "A".repeat(43) });
 
@@ -61,18 +61,27 @@ test("pairing QR binds a scan to the independently selected server", () => {
   assert.throws(() => pairingCode.decode(text, payload.origin + "/"), /Pairing code is not valid/);
 });
 
+test("pairing QR requires an independently established origin for every decode", () => {
+  const payload = sample();
+  const text = pairingCode.encodePairingPayload(payload.origin, payload.pairing_id, payload.token);
+  for (const missing of [undefined, null, ""]) {
+    assert.throws(() => pairingCode.decodePairingPayload(text, missing), /Pairing code is not valid/);
+  }
+  assert.deepEqual(pairingCode.decodePairingPayload(text, payload.origin), payload);
+});
+
 test("pairing QR rejects reordered, missing, nested and escaped fields", () => {
   const payload = sample();
-  assert.throws(() => pairingCode.decode(JSON.stringify({ v: payload.v, ...payload })), /Pairing code is not valid/);
+  assert.throws(() => decodeProposal(JSON.stringify({ v: payload.v, ...payload })), /Pairing code is not valid/);
   delete payload.token;
-  assert.throws(() => pairingCode.decode(JSON.stringify(payload)), /Pairing code is not valid/);
-  assert.throws(() => pairingCode.decode(JSON.stringify({ ...sample(), token: { value: "synthetic" } })), /Pairing code is not valid/);
-  assert.throws(() => pairingCode.decode(JSON.stringify(sample()).replace('"v":1', '"\\u0076":1')), /Pairing code is not valid/);
+  assert.throws(() => decodeProposal(JSON.stringify(payload)), /Pairing code is not valid/);
+  assert.throws(() => decodeProposal(JSON.stringify({ ...sample(), token: { value: "synthetic" } })), /Pairing code is not valid/);
+  assert.throws(() => decodeProposal(JSON.stringify(sample()).replace('"v":1', '"\\u0076":1')), /Pairing code is not valid/);
 });
 
 test("pairing QR failure messages never reflect scanned secrets", () => {
   const text = JSON.stringify({ ...sample(), recovery: "PRIVATE_RECOVERY_CANARY" });
-  try { pairingCode.decode(text); assert.fail("unexpected acceptance"); }
+  try { decodeProposal(text); assert.fail("unexpected acceptance"); }
   catch (error) { assert.equal(error.message.includes("PRIVATE_RECOVERY_CANARY"), false); }
 });
 

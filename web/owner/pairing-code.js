@@ -852,7 +852,7 @@ function canonicalOrigin(value) {
         url.pathname !== "/" || url.search || url.hash) throw invalidPairingCode();
     return value;
 }
-function decode(text, expectedOrigin) {
+function validatePayload(text) {
     if (typeof text !== "string" || text.length > 512) throw invalidPairingCode();
     let value;
     try { value = JSON.parse(text); } catch { throw invalidPairingCode(); }
@@ -866,14 +866,21 @@ function decode(text, expectedOrigin) {
     // Canonical origins are ASCII (IDNs are punycode); other accepted fields are
     // ASCII too. Reject escaped/noncanonical bytes and duplicate JSON keys.
     if (!/^[\x20-\x7e]+$/.test(text) || JSON.stringify(value) !== text) throw invalidPairingCode();
-    if (expectedOrigin !== undefined && value.origin !== canonicalOrigin(expectedOrigin)) {
+    return Object.freeze(value);
+}
+function decode(text, expectedOrigin) {
+    // Caller must establish the server independently of this scanned payload.
+    // Validation alone is not trust and must never substitute its own origin.
+    const origin = canonicalOrigin(expectedOrigin);
+    const value = validatePayload(text);
+    if (value.origin !== origin) {
         throw new Error("This pairing belongs to a different server. Check the server before continuing.");
     }
-    return Object.freeze(value);
+    return value;
 }
 function encode(origin, pairingId, token) {
     const text = JSON.stringify({ type: "zrotext-pairing", v: 1, origin, pairing_id: pairingId, token });
-    decode(text);
+    validatePayload(text);
     return text;
 }
 function clear(canvas) {
@@ -885,7 +892,7 @@ function clear(canvas) {
     canvas.height = 1;
 }
 function render(canvas, text) {
-    decode(text);
+    validatePayload(text);
     if (!canvas || typeof canvas.getContext !== "function") throw invalidPairingCode();
     const context = canvas.getContext("2d");
     if (!context) throw invalidPairingCode();
@@ -903,7 +910,8 @@ function render(canvas, text) {
         if (qr.getModule(x, y)) context.fillRect((x + border) * scale, (y + border) * scale, scale, scale);
     }
 }
-const pairingCode = Object.freeze({ encode, decode, render, clear });
+const pairingCode = Object.freeze({ encode, decode, render, clear,
+    encodePairingPayload: encode, decodePairingPayload: decode });
 if (typeof module !== "undefined" && module.exports) module.exports = pairingCode;
 else root.ZrotextPairingCode = pairingCode;
 

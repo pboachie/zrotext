@@ -23,8 +23,10 @@ existing `ztp_` prefix followed by a canonical unpadded base64url encoding of
 32 bytes. Encoded payloads are bounded to 512 bytes.
 
 `ZrotextPairingCode.encode(origin, pairingId, token)` creates the payload;
-`decode(text, expectedOrigin)` validates it and optionally binds it to the
-independently selected canonical server. The decoder rejects unknown, missing,
+`decode(text, expectedOrigin)` validates it and requires binding to the
+independently selected canonical server; missing origins are refused.
+`encodePairingPayload` and `decodePairingPayload` export the same operations for
+scanner adapters. The decoder rejects unknown, missing,
 nested, duplicate and reordered fields, unsupported versions and noncanonical
 serialization. Errors never include encoded fields. Decoding performs no I/O.
 `render(canvas, text)` draws an opaque black/white byte-mode QR with M error
@@ -32,8 +34,9 @@ correction and a four-module quiet zone. `clear(canvas)` discards its bitmap.
 
 An Android decoder must apply the same strict bounds and field rules. It must
 not interpret the scan as a URL or launch it. Confirm the decoded server with
-the user before any request; when a server was independently selected, refuse
-a mismatch. A successful scan supplies only the existing `PairingClient`
+the user before any request. Require an independently established server for
+every scan and refuse a mismatch; echoing the scanned origin is not independent
+trust. A successful scan supplies only the existing `PairingClient`
 origin, pairing ID and token arguments. Serialize scans while claim/proof is in
 progress and reconcile unknown outcomes rather than automatically submitting
 again.
