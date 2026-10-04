@@ -1,0 +1,50 @@
+name: Public npm package checks
+on:
+  pull_request:
+    paths:
+      - 'sdk/npm/**'
+      - 'sdk/typescript/**'
+      - 'scripts/*npm*'
+      - '.github/workflows/npm-*.yml'
+      - 'LICENSE'
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  npm-package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.13.0'
+      - name: Pin the npm client without release caching
+        run: npm install --global npm@11.21.0 --ignore-scripts
+      - name: Test package and approval safeguards
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_package_npm.py'
+          python3 -m unittest discover -s scripts -p 'test_npm_*.py'
+      - name: Install and audit the locked SDK build graph
+        working-directory: sdk/typescript
+        run: |
+          npm ci --ignore-scripts
+          npm audit --audit-level=high --ignore-scripts
+      - name: Build and test the existing alpha surface
+        working-directory: sdk/typescript
+        run: |
+          npm run build
+          node --test test/alpha-client.test.mjs test/webhook-verify.test.mjs
+      - name: Compile and stage only the reviewed public entry point
+        run: |
+          node sdk/typescript/node_modules/typescript/bin/tsc -p sdk/npm/tsconfig.json --outDir "$RUNNER_TEMP/npm-build"
+          python3 scripts/package_npm.py stage --compiled "$RUNNER_TEMP/npm-build" --out "$RUNNER_TEMP/npm-package"
+      - name: Pack and exercise the exact artifact in a clean consumer
+        run: |
+          npm pack "$RUNNER_TEMP/npm-package" --ignore-scripts --json --pack-destination "$RUNNER_TEMP" > "$RUNNER_TEMP/npm-pack.json"
+          tarball="$RUNNER_TEMP/$(python3 -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"]+"/npm-pack.json"))[0]["filename"])')"
+          python3 scripts/package_npm.py verify-tarball "$tarball"
+          node scripts/test_npm_consumer.mjs "$tarball" "$GITHUB_WORKSPACE/sdk/typescript/node_modules/typescript/bin/tsc"

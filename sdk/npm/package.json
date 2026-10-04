@@ -1,0 +1,22 @@
+{
+  "name": "zrotext",
+  "version": "0.0.0-development",
+  "private": true,
+  "description": "Dependency-free client and webhook verifier for the ZROtext synthetic-alpha test plane",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist/index.js", "dist/index.d.ts", "dist/alpha-client.js", "dist/alpha-client.d.ts", "dist/webhook-verify.js", "dist/webhook-verify.d.ts", "README.md", "LICENSE", "CHANGELOG.md"],
+  "engines": {"node": ">=24"},
+  "publishConfig": {"access": "public", "registry": "https://registry.npmjs.org/", "provenance": true},
+  "repository": {"type": "git", "url": "git+https://github.com/pboachie/zrotext.git", "directory": "sdk/npm"},
+  "bugs": {"url": "https://github.com/pboachie/zrotext/issues"},
+  "homepage": "https://github.com/pboachie/zrotext#readme"
+}
