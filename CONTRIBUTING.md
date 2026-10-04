@@ -11,7 +11,7 @@ Thanks for helping improve ZROtext. Application code is licensed under `AGPL-3.0
 
 ## Ask questions and share ideas
 
-Use [GitHub Discussions](https://github.com/pboachie/zrotext/discussions) for questions, proposals and design ideas (Q&A, Ideas, Show and tell), and issues for bugs and device reports. Keep both free of real phone numbers, message content, device identifiers and credentials; use synthetic data. Report vulnerabilities only through the private channel above.
+Use [GitHub Discussions](https://github.com/pboachie/zrotext/discussions) for questions, proposals and design ideas (Q&A, Ideas, Show and tell), the community [Discord](https://discord.gg/DugVBzpngQ) for informal chat, and issues for bugs and device reports. Decisions and design agreements are recorded in issues, discussions or ADRs, not only in chat. Keep all of them free of real phone numbers, message content, device identifiers and credentials; use synthetic data. Report vulnerabilities only through the private channel above.
 
 ## Submit a change
 
