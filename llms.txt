@@ -1,0 +1,31 @@
+# ZROtext
+
+> Public documentation for the Android SMS gateway, in canonical Markdown.
+
+This index is generated from a fixed public-document allowlist. Follow each
+document's availability, authorization and verification limits. Simulator
+examples send no real SMS. An index or published artifact does not establish
+physical-device, carrier or provider acceptance.
+
+## Current status
+
+ZROtext is in active development. The repository includes a Rust server, PostgreSQL migrations, a delivery simulator, and an Android app. The local stack is for development. Some phone and billing flows are limited to controlled tests; a hosted SMS service is not available. See the [roadmap](docs/ROADMAP.md) for planned product work.
+
+## Documentation
+
+- [Project overview](https://raw.githubusercontent.com/pboachie/zrotext/main/README.md)
+- [Agent texting quickstart (simulator)](https://raw.githubusercontent.com/pboachie/zrotext/main/docs/AGENT-QUICKSTART.md)
+- [Local agent setup](https://raw.githubusercontent.com/pboachie/zrotext/main/docs/agent-local-setup.md)
+- [Local MCP tools](https://raw.githubusercontent.com/pboachie/zrotext/main/docs/mcp-local-tools.md)
+- [Agent recipes](https://raw.githubusercontent.com/pboachie/zrotext/main/docs/agent-recipes.md)
+- [Architecture and delivery outcomes](https://raw.githubusercontent.com/pboachie/zrotext/main/docs/ARCHITECTURE.md)
+- [Self-hosting](https://raw.githubusercontent.com/pboachie/zrotext/main/docs/SELF-HOSTING.md)
+- [SMS consent and compliance](https://raw.githubusercontent.com/pboachie/zrotext/main/docs/SMS-COMPLIANCE.md)
+- [Sealed API contract](https://raw.githubusercontent.com/pboachie/zrotext/main/protocol/v1/sealed-api-v1.md)
+- [Contributing](https://raw.githubusercontent.com/pboachie/zrotext/main/CONTRIBUTING.md)
+
+## Maintaining this index
+
+Run `python scripts/generate_llms.py` to regenerate, or add `--check`
+to verify the checked-in index. The linked Markdown files remain the
+canonical documentation; this index adds no API or execution authority.
