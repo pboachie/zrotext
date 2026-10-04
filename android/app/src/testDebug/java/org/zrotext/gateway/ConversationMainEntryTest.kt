@@ -402,11 +402,10 @@ class ConversationMainEntryTest {
             ConversationMessageReceiveController.Outcome.RECEIVING, fieldValue("conversationMessageOutcome"))
         assertNotNull("The synthetic receive must reach the deferred transport", completion.get())
         compose.waitForIdle()
-        if (compose.onAllNodesWithText("Receiving and verifying the confirmed message.").fetchSemanticsNodes().isEmpty()) {
-            val roots = compose.onAllNodes(isRoot(), useUnmergedTree = true)
-            roots.fetchSemanticsNodes().indices.forEach { println(roots[it].printToString()) }
-        }
-        compose.onNodeWithText("Receiving and verifying the confirmed message.").assertExists()
+        val pendingStatus = compose.onNodeWithText("Receiving and verifying the confirmed message.", useUnmergedTree = true)
+        pendingStatus.assertExists()
+        assertEquals(androidx.compose.ui.semantics.LiveRegionMode.Polite,
+            pendingStatus.fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.LiveRegion])
         compose.runOnIdle { field("conversationPickEpoch", fieldValue("conversationUiEpoch")) }
         compose.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
         assertEquals("", fieldValue("conversationMessageReference"))
