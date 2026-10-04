@@ -50,8 +50,8 @@ class ConversationProbeDeviceTest {
         val ready=JSONObject(java.io.File(file).readText(Charsets.UTF_8))
         val fixture=ConversationSimulatorFixture(ready)
         fun decode(value:String)=java.util.Base64.getDecoder().decode(value)
-        val scenario=InstrumentationRegistry.getArguments().getString("scenario") ?: "roundtrip"
-        require(scenario in setOf("roundtrip","stop-install","loss-install"))
+        val scenario=checkNotNull(InstrumentationRegistry.getArguments().getString("scenario"))
+        require(scenario in setOf("roundtrip","capture-ack","stop-install","loss-install"))
         val installationReply=java.util.concurrent.CountDownLatch(1)
         val releaseInstallation=java.util.concurrent.CountDownLatch(1)
         val client=okhttp3.OkHttpClient()
@@ -94,7 +94,7 @@ class ConversationProbeDeviceTest {
             override fun currentSession()=socketWire.currentSession()
             override fun exchange(request:ByteArray):ConversationAuthenticatedWire.Reply {
                 val reply=socketWire.exchange(request)
-                if(scenario!="roundtrip" && request[5].toInt()==8) {
+                if(scenario in setOf("stop-install","loss-install") && request[5].toInt()==8) {
                     installationReply.countDown() // Actual server installation already committed.
                     check(releaseInstallation.await(10,TimeUnit.SECONDS))
                 }
@@ -147,7 +147,7 @@ class ConversationProbeDeviceTest {
             context.startActivity(Intent(context,ConversationProbeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             instrumentation.waitForIdleSync()
             click("Agree and continue")
-            if(scenario!="roundtrip") {
+            if(scenario in setOf("stop-install","loss-install")) {
                 assertTrue(installationReply.await(10,TimeUnit.SECONDS))
                 instrumentation.waitForIdleSync()
                 assertEquals(ConversationPresentationPhase.PREPARING,snapshots.last().phase)
@@ -204,44 +204,47 @@ class ConversationProbeDeviceTest {
             assertEquals(0,db.journal().contentCount())
             assertNull(db.journal().wireCapture(token)!!.protectedEnvelope)
             assertNotNull(db.journal().wireCapture(token)!!.acknowledgedDigest)
-            // Batch only fixture crypto to avoid per-packet Node startups consuming the unchanged
-            // authenticated-clock age. All 128 bodies pass actual receipt admission and its cap.
-            val captures=(2..129).map { index ->
-                val receipt=index.toString(16).padStart(64,'0')
-                val content="Synthetic acknowledged capture $index"
-                syntheticReceipt(receipt,content)
-                assertEquals("Current synthetic receipt $index",ConversationObservation.CAPTURED,ConversationProbeSession.observation.get())
-                assertEquals(index-1,db.journal().contentCount())
-                Triple(receipt,checkNotNull(runtime.retryCapture(receipt)),index.toLong())
+            if(scenario=="capture-ack") {
+                // Batch only fixture crypto to avoid per-packet Node startups consuming the unchanged
+                // authenticated-clock age. All 128 bodies pass actual receipt admission and its cap.
+                val captures=(2..129).map { index ->
+                    val receipt=index.toString(16).padStart(64,'0')
+                    val content="Synthetic acknowledged capture $index"
+                    syntheticReceipt(receipt,content)
+                    assertEquals("Current synthetic receipt $index",ConversationObservation.CAPTURED,ConversationProbeSession.observation.get())
+                    assertEquals(index-1,db.journal().contentCount())
+                    Triple(receipt,checkNotNull(runtime.retryCapture(receipt)),index.toLong())
+                }
+                assertEquals(ConversationCaptureDao.CONTENT_CAPACITY,db.journal().contentCount())
+                System.err.println("Synthetic capture batch admitted at ${TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-start)}ms")
+                val packets=fixture.envelopes(captures.map {it.second to it.third})
+                System.err.println("Synthetic capture batch prepared at ${TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-start)}ms")
+                // Every upload still uses actual Room reservation/persistence, authenticated WS and PG.
+                captures.forEachIndexed {position,(receipt,capture,expectedSequence) ->
+                    val done=java.util.concurrent.CountDownLatch(1)
+                    val committed=java.util.concurrent.atomic.AtomicBoolean(false)
+                    runtime.uploadCapture(receipt,{value,sequence ->
+                        assertEquals(capture,value);assertEquals(expectedSequence,sequence)
+                        packets[position].copyOf()
+                    }) {accepted->committed.set(accepted);done.countDown()}
+                    assertTrue(done.await(30,TimeUnit.SECONDS));assertTrue("Exact durable upload ACK $expectedSequence at ${TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-start)}ms",committed.get())
+                    assertEquals(127-position,db.journal().contentCount());assertEquals(129,db.journal().receiptCount())
+                    val retained=db.journal().wireCapture(receipt)!!
+                    assertEquals(expectedSequence,retained.sequence)
+                    assertNotNull(retained.acknowledgedDigest);assertNull(retained.protectedEnvelope);assertNull(retained.nonce)
+                    assertNull(runtime.retryCapture(receipt))
+                    packets[position].fill(0)
+                }
+                syntheticReceipt(captures.last().first,captures.last().second.body)
+                assertEquals(ConversationObservation.DUPLICATE,ConversationProbeSession.observation.get())
+                assertEquals(0,db.journal().contentCount())
+                assertEquals(129,db.journal().receiptCount())
             }
-            assertEquals(ConversationCaptureDao.CONTENT_CAPACITY,db.journal().contentCount())
-            System.err.println("Synthetic capture batch admitted at ${TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-start)}ms")
-            val packets=fixture.envelopes(captures.map {it.second to it.third})
-            System.err.println("Synthetic capture batch prepared at ${TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-start)}ms")
-            // Every upload still uses actual Room reservation/persistence, authenticated WS and PG.
-            captures.forEachIndexed {position,(receipt,capture,expectedSequence) ->
-                val done=java.util.concurrent.CountDownLatch(1)
-                val committed=java.util.concurrent.atomic.AtomicBoolean(false)
-                runtime.uploadCapture(receipt,{value,sequence ->
-                    assertEquals(capture,value);assertEquals(expectedSequence,sequence)
-                    packets[position].copyOf()
-                }) {accepted->committed.set(accepted);done.countDown()}
-                assertTrue(done.await(30,TimeUnit.SECONDS));assertTrue("Exact durable upload ACK $expectedSequence at ${TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-start)}ms",committed.get())
-                assertEquals(127-position,db.journal().contentCount());assertEquals(129,db.journal().receiptCount())
-                val retained=db.journal().wireCapture(receipt)!!
-                assertEquals(expectedSequence,retained.sequence)
-                assertNotNull(retained.acknowledgedDigest);assertNull(retained.protectedEnvelope);assertNull(retained.nonce)
-                assertNull(runtime.retryCapture(receipt))
-                packets[position].fill(0)
-            }
-            syntheticReceipt(captures.last().first,captures.last().second.body)
-            assertEquals(ConversationObservation.DUPLICATE,ConversationProbeSession.observation.get())
-            assertEquals(0,db.journal().contentCount())
-            assertEquals(129,db.journal().receiptCount())
             val encrypted=checkNotNull(sealed.get())
             val event=UUID.fromString(captured.captureId)
             val before=fixture.command("history",event=event)
-            assertEquals(129,before.getInt("intervalEvents"));assertEquals(129,before.getInt("intervalDeliveries"))
+            val expectedEvents=if(scenario=="capture-ack")129 else 1
+            assertEquals(expectedEvents,before.getInt("intervalEvents"));assertEquals(expectedEvents,before.getInt("intervalDeliveries"))
             assertEquals(committedFirst.getString("envelope"),before.getString("envelope"))
             assertEquals(committedFirst.getJSONArray("deliveryIds").toString(),before.getJSONArray("deliveryIds").toString())
             assertEquals(body,fixture.open(before.getString("envelope")).getString("opened"))
@@ -249,6 +252,31 @@ class ConversationProbeDeviceTest {
             val after=fixture.command("history",event=event)
             assertEquals(before.getString("envelope"),after.getString("envelope"))
             assertEquals(before.getJSONArray("deliveryIds").toString(),after.getJSONArray("deliveryIds").toString())
+            fun stopAndWithdraw() {
+                runtime.lifecycleLost(ConversationStopReason.OWNER_SESSION_LOST)
+                assertFalse(runtime.captureEligible());drain()
+                assertEquals(ConversationPresentationPhase.DURABLY_CLOSED,snapshots.last().phase)
+                assertFalse(fixture.command("lease",challenge=UUID.randomUUID()).getBoolean("ok"))
+                assertFalse(fixture.command("capture",data=encrypted.getString("envelope")).getBoolean("ok"))
+                assertFalse(fixture.command("browser_authority").getBoolean("ok"))
+                assertNull(runtime.retryCapture(token))
+
+                val reconciled=java.util.concurrent.atomic.AtomicBoolean(false)
+                runtime.reconcileClosed{reconciled.set(it)};drain()
+                assertTrue(reconciled.get());assertFalse(runtime.captureEligible())
+                // Stop retains eligible history; explicit withdrawal revokes access without claiming deletion.
+                assertTrue(fixture.command("history",event=event).getBoolean("ok"))
+                assertTrue(fixture.command("withdraw").getBoolean("ok"))
+                assertFalse(fixture.command("history",event=event).getBoolean("ok"))
+            }
+            if(scenario=="capture-ack") {
+                stopAndWithdraw()
+                // Fixed proof marker is emitted only after actual PG identity and Stop/withdrawal.
+                instrumentation.sendStatus(2,Bundle().apply {
+                    putString("stream","ZT_CAPTURE_ACK_129_PG_STOP_WITHDRAWAL_COMPLETE\n")
+                })
+                return
+            }
             val browser=fixture.browser(event,body)
             assertEquals(2,browser.getInt("signed"));assertEquals(1,browser.getInt("verified"));assertEquals(0,browser.getInt("midFlightSubmissions"))
             val packet=browser.getJSONObject("packet")
@@ -282,21 +310,7 @@ class ConversationProbeDeviceTest {
             assertEquals(1,submissions)
             assertThrows(IllegalStateException::class.java) {runtime.confirmedSender(verifier,transport).submitConfirmed(packet.getString("message"))}
             assertEquals(1,submissions)
-            runtime.lifecycleLost(ConversationStopReason.OWNER_SESSION_LOST)
-            assertFalse(runtime.captureEligible());drain()
-            assertEquals(ConversationPresentationPhase.DURABLY_CLOSED,snapshots.last().phase)
-            assertFalse(fixture.command("lease",challenge=UUID.randomUUID()).getBoolean("ok"))
-            assertFalse(fixture.command("capture",data=encrypted.getString("envelope")).getBoolean("ok"))
-            assertFalse(fixture.command("browser_authority").getBoolean("ok"))
-            assertNull(runtime.retryCapture(token))
-
-            val reconciled=java.util.concurrent.atomic.AtomicBoolean(false)
-            runtime.reconcileClosed{reconciled.set(it)};drain()
-            assertTrue(reconciled.get());assertFalse(runtime.captureEligible())
-            // Stop retains eligible history; explicit withdrawal revokes access without claiming deletion.
-            assertTrue(fixture.command("history",event=event).getBoolean("ok"))
-            assertTrue(fixture.command("withdraw").getBoolean("ok"))
-            assertFalse(fixture.command("history",event=event).getBoolean("ok"))
+            stopAndWithdraw()
         } finally {
             releaseInstallation.countDown()
             context.unbindService(connection);instrumentation.waitForIdleSync();drain()

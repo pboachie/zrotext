@@ -67,14 +67,15 @@ async fn phone_channel(
     {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    // Complete cold scoped PG setup before the authenticated socket opens. It must not inflate
+    // only the bootstrap clock's RTT relative to a later independent runtime clock sample.
+    let mut client = {
+        let f = state.fixture.lock().await;
+        f.connect().await
+    };
     upgrade
         .on_upgrade(move |mut socket| async move {
-            // One scoped real PG connection for this authenticated synthetic socket. Every frame
-            // still holds the fixture lock and enters the unchanged transactional channel handler.
-            let mut client = {
-                let f = state.fixture.lock().await;
-                f.connect().await
-            };
+            // Every frame still holds the fixture lock and enters the unchanged transaction.
             while let Some(Ok(Message::Binary(bytes))) = socket.recv().await {
                 let f = state.fixture.lock().await;
                 let result = super::super::channel::handle(
