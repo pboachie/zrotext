@@ -689,7 +689,6 @@ async fn delete_contact(
     crate::http_auth::preauth::OwnerMutation(owner, _slot): crate::http_auth::preauth::OwnerMutation,
 ) -> Response {
     let Ok(mut client) = crate::runtime_db::connect(&state.database_url).await else {
-    let Ok(client) = crate::runtime_db::connect(&state.database_url).await else {
         return unavailable();
     };
     let account_id = owner.tenant.account_id();
@@ -708,7 +707,6 @@ async fn delete_contact(
         return unavailable();
     }
     let deleted = tx
-    let deleted = client
         .query_opt(
             "DELETE FROM contacts WHERE account_id=$1 AND id=$2 RETURNING id",
             &[&account_id, &contact_id],
@@ -727,7 +725,6 @@ async fn delete_contact(
             }
             StatusCode::NO_CONTENT.into_response()
         }
-        Ok(Some(_)) => StatusCode::NO_CONTENT.into_response(),
         Ok(None) => error(StatusCode::NOT_FOUND, "not_found"),
         Err(_) => unavailable(),
     }
