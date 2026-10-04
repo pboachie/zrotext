@@ -13,7 +13,7 @@ async fn signed_foreign_account_or_api_context_is_durable_unsupported_without_en
     ] {
         let mut payload = json!({"id":format!("evt_context{index}"),"object":"event","livemode":false,
             "api_version":billing::risk::STRIPE_API_VERSION,"type":"invoice.paid",
-            "data":{"object":{"id":"in_invoice1","customer":"cus_invoice1","parent":{"subscription_details":{"subscription":"sub_invoice1"}}}}});
+            "data":{"object":{"id":"in_invoice1","customer":&case.customer,"parent":{"subscription_details":{"subscription":"sub_invoice1"}}}}});
         payload[field] = value;
         let body = serde_json::to_vec(&payload).unwrap();
         let secret = format!("whsec_{}", Uuid::new_v4().simple());

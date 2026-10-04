@@ -69,7 +69,7 @@ impl ReadClaim {
 
 // Cap database work without replacing a stricter caller-configured deadline.
 // These are transaction-local settings; an error requires caller rollback.
-async fn bound_waits(tx: &Transaction<'_>) -> Result<(), StoreError> {
+pub(super) async fn bound_waits(tx: &Transaction<'_>) -> Result<(), StoreError> {
     let rows = tx
         .query(
             "SELECT set_config(name, least(CASE WHEN setting::bigint=0 THEN ceiling ELSE setting::bigint END, ceiling)::text || 'ms', true) FROM (SELECT name,setting,CASE WHEN name='lock_timeout' THEN 3000 ELSE 5000 END AS ceiling FROM pg_settings WHERE name IN ('lock_timeout','statement_timeout')) AS limits",
@@ -202,6 +202,7 @@ fn validate_projection(projection: &Projection) -> Result<(), StoreError> {
         || projection.generation == 0
         || projection.issued_at < 0
         || projection.valid_until < projection.issued_at
+        || (!projection.has_empty_provenance() && !projection.has_valid_provenance())
         || projection
             .first_failure_at
             .is_some_and(|at| at < 0 || at > projection.issued_at)
@@ -211,6 +212,7 @@ fn validate_projection(projection: &Projection) -> Result<(), StoreError> {
     match projection.phase {
         Phase::Active | Phase::Grace => {
             if projection.outbound_limit == 0
+                || !projection.has_valid_provenance()
                 || projection.device_limit == 0
                 || projection.valid_until <= projection.issued_at
                 || (projection.phase == Phase::Active && projection.first_failure_at.is_some())
@@ -245,7 +247,7 @@ pub async fn load_locked(
     let account_id = Uuid::from_bytes(binding.owner());
     let row = tx
         .query_opt(
-            "SELECT namespace_id,account_id,left(customer_id,129) AS customer_id,left(subscription_id,129) AS subscription_id,policy_revision,dirty_generation,processed_generation,per_read_sequence,payment_hold,review_required,left(phase,16) AS phase,outbound_limit,device_limit,issued_at,valid_until,first_failure_at,read_token FROM hosted_billing_projections WHERE namespace_id=$1 AND account_id=$2 FOR UPDATE",
+            "SELECT namespace_id,account_id,left(customer_id,129) AS customer_id,left(subscription_id,129) AS subscription_id,policy_revision,dirty_generation,processed_generation,per_read_sequence,payment_hold,review_required,left(phase,16) AS phase,outbound_limit,device_limit,issued_at,valid_until,first_failure_at,read_token,left(invoice_id,129) AS invoice_id,left(price_id,129) AS price_id,period_start,period_end FROM hosted_billing_projections WHERE namespace_id=$1 AND account_id=$2 FOR UPDATE",
             &[&namespace_id, &account_id],
         )
         .await
@@ -302,6 +304,14 @@ pub async fn load_locked(
         first_failure_at: row
             .try_get("first_failure_at")
             .map_err(|_| StoreError::MalformedState)?,
+        invoice: text(&row, "invoice_id")?,
+        price: text(&row, "price_id")?,
+        period_start: row
+            .try_get("period_start")
+            .map_err(|_| StoreError::MalformedState)?,
+        period_end: row
+            .try_get("period_end")
+            .map_err(|_| StoreError::MalformedState)?,
     };
     let projection = if processed_generation == 0 {
         if projection.phase != Phase::Pending
@@ -310,6 +320,7 @@ pub async fn load_locked(
             || projection.issued_at < 0
             || projection.valid_until != projection.issued_at
             || projection.first_failure_at.is_some()
+            || !projection.has_empty_provenance()
         {
             return Err(StoreError::MalformedState);
         }
@@ -427,7 +438,7 @@ pub async fn commit_observation(
     let account_id = Uuid::from_bytes(binding.owner());
     let changed = tx
         .execute(
-            "UPDATE hosted_billing_projections SET policy_revision=$5,processed_generation=$6,phase=$8,outbound_limit=$9,device_limit=$10,issued_at=$11,valid_until=$12,first_failure_at=$13 WHERE namespace_id=$1 AND account_id=$2 AND customer_id=$3 AND subscription_id=$4 AND dirty_generation=$6 AND per_read_sequence=$7 AND read_token=$14",
+            "UPDATE hosted_billing_projections SET policy_revision=$5,processed_generation=$6,phase=$8,outbound_limit=$9,device_limit=$10,issued_at=$11,valid_until=$12,first_failure_at=$13,invoice_id=$15,price_id=$16,period_start=$17,period_end=$18 WHERE namespace_id=$1 AND account_id=$2 AND customer_id=$3 AND subscription_id=$4 AND dirty_generation=$6 AND per_read_sequence=$7 AND read_token=$14",
             &[
                 &namespace_id,
                 &account_id,
@@ -443,6 +454,10 @@ pub async fn commit_observation(
                 &projection.valid_until,
                 &projection.first_failure_at,
                 &claim.token,
+                &projection.invoice,
+                &projection.price,
+                &projection.period_start,
+                &projection.period_end,
             ],
         )
         .await
@@ -527,12 +542,16 @@ mod tests {
             issued_at: 200,
             valid_until: 300,
             first_failure_at: None,
+            invoice: "in_fixture".into(),
+            price: "price_fixture".into(),
+            period_start: 100,
+            period_end: 400,
         }
     }
 
     #[test]
     fn malformed_projection_hydration_cannot_restore_capacity() {
-        for case in 0..8 {
+        for case in 0..14 {
             let mut value = projected();
             match case {
                 0 => value.generation = 0,
@@ -542,7 +561,13 @@ mod tests {
                 4 => value.phase = Phase::Grace,
                 5 => value.outbound_limit = 0,
                 6 => value.phase = Phase::Restricted,
-                _ => value.policy_revision = 0,
+                7 => value.policy_revision = 0,
+                8 => value.invoice.clear(),
+                9 => value.price = "price invalid".into(),
+                10 => value.period_start = 201,
+                11 => value.period_end = 299,
+                12 => value.period_start = -1,
+                _ => value.period_end = 100,
             }
             assert_eq!(validate_projection(&value), Err(StoreError::MalformedState));
         }
