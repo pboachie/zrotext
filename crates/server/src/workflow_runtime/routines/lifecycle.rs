@@ -74,7 +74,7 @@ pub async fn export(
 }
 /// Caller holds account serialization; stop only already-created outputs of
 /// this exact policy before removing its metadata or granting a later effect.
-pub(super) async fn stop_outputs(
+pub(in crate::workflow_runtime) async fn stop_outputs(
     tx: &Transaction<'_>,
     account: Uuid,
     policy: Uuid,
