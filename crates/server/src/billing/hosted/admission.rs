@@ -189,11 +189,11 @@ async fn final_current_invoice(
 ) -> Result<(), StoreError> {
     let account = Uuid::from_bytes(prepared.scope.owner());
     let namespace = Uuid::from_bytes(prepared.scope.namespace().id());
-    // One final statement checks both independent authority deadlines AFTER
-    // preceding waits. Checking invoice and hosted lease in separate roundtrips
-    // would let the latter expire while the former was being checked.
+    // Depend on the matching current invoice row before sampling the clock.
+    // A WHERE clock predicate can otherwise be evaluated on h before a slow
+    // invoice function/join. Materialization prevents that predicate pushdown.
     if tx.query_opt(
-        "SELECT 1 FROM current_billing_invoice_period($1) w JOIN billing_invoice_entitlements e ON e.account_id=$1 AND e.period_id=w.period_id JOIN hosted_billing_projections h ON h.account_id=$1 AND h.namespace_id=$2 WHERE e.mode='test' AND e.customer_id=h.customer_id AND e.subscription_id=h.subscription_id AND e.observed_invoice_id=h.invoice_id AND e.effective_price_id=h.price_id AND e.effective_limit=h.outbound_limit AND ((e.phase='active' AND h.phase='active') OR (e.phase='grace' AND h.phase='grace')) AND w.start_ms=h.period_start*1000 AND w.end_ms=h.period_end*1000 AND NOT h.payment_hold AND NOT h.review_required AND h.dirty_generation=h.processed_generation AND h.issued_at<=floor(extract(epoch FROM clock_timestamp()))::bigint AND h.valid_until>floor(extract(epoch FROM clock_timestamp()))::bigint",
+        "WITH invoice AS MATERIALIZED (SELECT w.start_ms,w.end_ms,e.cancel_at_ms,e.grace_until_ms,e.phase AS provider_phase,h.issued_at,h.valid_until FROM current_billing_invoice_period($1) w JOIN billing_invoice_entitlements e ON e.account_id=$1 AND e.period_id=w.period_id JOIN hosted_billing_projections h ON h.account_id=$1 AND h.namespace_id=$2 WHERE e.mode='test' AND e.customer_id=h.customer_id AND e.subscription_id=h.subscription_id AND e.observed_invoice_id=h.invoice_id AND e.effective_price_id=h.price_id AND e.effective_limit=h.outbound_limit AND ((e.phase='active' AND h.phase='active') OR (e.phase='grace' AND h.phase='grace')) AND w.start_ms=h.period_start*1000 AND w.end_ms=h.period_end*1000 AND NOT h.payment_hold AND NOT h.review_required AND h.dirty_generation=h.processed_generation), observed AS MATERIALIZED (SELECT invoice.*,floor(extract(epoch FROM clock_timestamp())*1000)::bigint AS now_ms FROM invoice) SELECT 1 FROM observed WHERE now_ms>=issued_at*1000 AND now_ms<valid_until*1000 AND now_ms>=start_ms AND now_ms<end_ms AND (cancel_at_ms IS NULL OR cancel_at_ms>now_ms) AND (provider_phase<>'grace' OR grace_until_ms>now_ms)",
         &[&account,&namespace],
     ).await.map_err(|_|StoreError::Unavailable)?.is_none(){return Err(pending());}
     Ok(())
