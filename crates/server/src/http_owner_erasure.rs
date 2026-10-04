@@ -107,6 +107,30 @@ const OPTIONAL_BLOCKED_TABLES: &[&str] = &["sealed_line_activation_exchanges"];
 /// counts stay honest.
 pub(crate) const DELETE_PLAN: &[(&str, &str)] = &[
     (
+        "managed_reader_events",
+        "DELETE FROM managed_reader_events WHERE account_id=$1",
+    ),
+    (
+        "managed_reader_selections",
+        "DELETE FROM managed_reader_selections WHERE account_id=$1",
+    ),
+    (
+        "managed_reader_grant_versions",
+        "DELETE FROM managed_reader_grant_versions WHERE account_id=$1",
+    ),
+    (
+        "managed_reader_grants",
+        "DELETE FROM managed_reader_grants WHERE account_id=$1",
+    ),
+    (
+        "managed_reader_policies",
+        "DELETE FROM managed_reader_policies WHERE account_id=$1",
+    ),
+    (
+        "managed_reader_keys",
+        "DELETE FROM managed_reader_keys WHERE account_id=$1",
+    ),
+    (
         "sealed_event_delivery_attempts",
         "DELETE FROM sealed_event_delivery_attempts WHERE delivery_id IN (SELECT id FROM sealed_event_deliveries WHERE account_id=$1)",
     ),
@@ -769,6 +793,11 @@ async fn erase_account(
     {
         return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
     }
+    // Inspect optional proposal storage before the final owner/MFA fence.
+    let managed_installed = match crate::managed_ai::lifecycle::installed(&tx).await {
+        Ok(value) => value,
+        Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+    };
     // Inspect proof storage before the final fence: schema preparation can wait.
     let confirmation_installed =
         match crate::http_owner_conversations::confirmation_records::installed(&tx).await {
@@ -922,6 +951,9 @@ async fn erase_account(
         Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
     }
     for &(table, sql) in DELETE_PLAN {
+        if crate::managed_ai::lifecycle::TABLES.contains(&table) && !managed_installed {
+            continue;
+        }
         if table == "conversation_execution_records" && !execution_installed {
             continue;
         }
