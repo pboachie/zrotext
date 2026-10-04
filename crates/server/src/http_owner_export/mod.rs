@@ -70,6 +70,9 @@ struct ExportQuery {
     opening_offers_after: Option<Uuid>,
     opening_allocations_after: Option<Uuid>,
     opening_requests_after: Option<Uuid>,
+    provider_configurations_after: Option<Uuid>,
+    provider_configuration_versions_after: Option<String>,
+    provider_configuration_mutations_after: Option<Uuid>,
     sealed_deliveries_after: Option<Uuid>,
     templates_after: Option<Uuid>,
     template_versions_after: Option<Uuid>,
@@ -202,6 +205,7 @@ struct ExportView {
     original_replies: crate::original_reply::lifecycle::Export,
     provider_receipts: crate::provider_sms::receipts::lifecycle::Page,
     opening_capacity: crate::workflow_runtime::openings::export::Export,
+    provider_configurations: crate::provider_config::lifecycle::Export,
     sealed_line_setup: serde_json::Value,
     sealed_event_deliveries: crate::sealed_inbound::delivery::lifecycle::Export,
     execution_inventory:
@@ -529,6 +533,16 @@ async fn export_account(
         .await
         {
             Ok(page) => page,
+        provider_configurations: match crate::provider_config::lifecycle::export(
+            &mut client,
+            &principal,
+            query.provider_configurations_after,
+            query.provider_configuration_versions_after.as_deref(),
+            query.provider_configuration_mutations_after,
+        )
+        .await
+        {
+            Ok(value) => value,
             Err(error) => return error.into_response(),
         },
         opening_capacity,
