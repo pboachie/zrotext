@@ -11,6 +11,7 @@ use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 mod acceptance;
 mod diagnostics;
+mod transport;
 use diagnostics::{deadline_diagnostic, refusal_class};
 
 struct RoutineCase {
@@ -535,15 +536,8 @@ async fn original_reply_child_keeps_first_question_source_fence_after_genuine_is
 async fn first_original_question_runs_pinned_customer_process_over_https_and_restart_never_executes_twice()
  {
     let mut f = RoutineCase::with_crypto_context(true).await;
-    let separator = if f.f.case.f.url.contains('?') {
-        '&'
-    } else {
-        '?'
-    };
-    let database_url = format!(
-        "{}{separator}options=-csearch_path%3D{}",
-        f.f.case.f.url, f.f.case.f.schema
-    );
+    let database_url = transport::database_url_with_schema(&f.f.case.f.url, &f.f.case.f.schema)
+        .expect("valid owned fixture database URL");
     let hasher = std::sync::Arc::new(TokenHasher::new(crate::test_keys::key(84)).unwrap());
     let workflow = crate::workflow_runtime::http::WorkflowHttpState {
         database_url: database_url.clone(),
