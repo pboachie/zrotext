@@ -5,6 +5,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use serde_json::json;
 use sha2::Sha256;
 use tokio_postgres::{Client, NoTls};
+mod hosted;
 mod lifecycle;
 mod races;
 mod recovery;

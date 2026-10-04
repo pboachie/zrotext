@@ -140,7 +140,13 @@ async fn persisted_projection_survives_new_connection_and_admits_exact_caps() {
     let mut restarted = f.connect().await;
     let tx = restarted.transaction().await.unwrap();
     let loaded = store::load_locked(&tx, &f.gate, &f.scope).await.unwrap();
-    assert_eq!(loaded.projection.unwrap(), projected);
+    let restored = loaded.projection.unwrap();
+    assert_eq!(restored.invoice(), "in_fixture");
+    assert_eq!(restored.price(), "price_fixture");
+    assert_eq!(restored.period_start(), projected.period_start());
+    assert_eq!(restored.period_end(), projected.period_end());
+    assert!(restored.valid_until() < restored.period_end());
+    assert_eq!(restored, projected);
     store::admit_locked(
         &tx,
         &f.gate,
@@ -174,6 +180,28 @@ async fn persisted_projection_survives_new_connection_and_admits_exact_caps() {
         )
         .await,
         Err(StoreError::Refused(Refusal::DeviceCapExceeded))
+    ));
+    tx.rollback().await.unwrap();
+    f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated hosted billing schema"]
+async fn malformed_persisted_period_cannot_hydrate_cached_capacity() {
+    let mut f = Fixture::new().await;
+    f.active().await;
+    // Structurally valid SQL bounds still cannot move a cached grant into a
+    // different future period while retaining its otherwise valid lease.
+    f.db.execute(
+        "UPDATE hosted_billing_projections SET period_start=issued_at+1,period_end=valid_until+500",
+        &[],
+    )
+    .await
+    .unwrap();
+    let tx = f.db.transaction().await.unwrap();
+    assert!(matches!(
+        store::load_locked(&tx, &f.gate, &f.scope).await,
+        Err(StoreError::MalformedState)
     ));
     tx.rollback().await.unwrap();
     f.cleanup().await;
