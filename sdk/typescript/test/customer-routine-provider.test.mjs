@@ -9,8 +9,25 @@ test('CLI diagnostic exposes only closed codes and never exception text',()=>{
  assert.equal(customerRoutineDiagnostic({code:'artifact_changed',message:canary,stack:canary}),'artifact_changed');
  for(const error of [Error(canary),{code:canary,message:canary},{code:'artifact_changed\n'+canary},null])assert.equal(customerRoutineDiagnostic(error),'unavailable');
 });
+test('CLI diagnostic samples changing getters once and refuses hostile getters and non-string codes',()=>{
+ const canary='synthetic private output';let reads=0;
+ const changing={get code(){return ++reads===1?'artifact_changed':canary;}};
+ assert.equal(customerRoutineDiagnostic(changing),'artifact_changed');assert.equal(reads,1);
+ assert.equal(customerRoutineDiagnostic({get code(){throw Error(canary);}}),'unavailable');
+ for(const code of [Symbol(canary),{toString(){throw Error(canary);}},[canary],42])assert.equal(customerRoutineDiagnostic({code}),'unavailable');
+});
 const hash=v=>createHash('sha256').update(v).digest('hex');
 const response='response';
+async function waitForAuthorityCallback(ready,outcome){
+ let timer;
+ try{await Promise.race([ready,outcome.then(()=>{throw new Error('provider_settled_before_authority_callback');}),new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('authority_callback_not_reached')),6000);})]);}
+ finally{clearTimeout(timer);}
+}
+test('authority readiness refuses an already settled invocation instead of hanging',async()=>{
+ await assert.rejects(waitForAuthorityCallback(new Promise(()=>{}),Promise.resolve()),{message:'provider_settled_before_authority_callback'});
+ await assert.rejects(waitForAuthorityCallback(new Promise(()=>{}),Promise.reject(new Error('fixed_invocation_failure'))),{message:'fixed_invocation_failure'});
+ await waitForAuthorityCallback(Promise.resolve(),new Promise(()=>{}));
+});
 function fixture(t,body){const anchor=realpathSync(tmpdir()),dir=mkdtempSync(join(anchor,'zt-routine-child-'));chmodSync(dir,0o700);const canonical=realpathSync(dir);
  t.after(()=>{assert.equal(realpathSync(dir),canonical);assert.ok(canonical.startsWith(anchor+sep));rmSync(canonical,{recursive:true});});
  const script=join(dir,'child.mjs'),marker=join(dir,'invocations'),pid=join(dir,'owned-pid');
@@ -46,7 +63,7 @@ test('real SIGTERM-handler child reaches timeout and direct owned PID exits',asy
 test('hung authority callback and withdrawal cannot hold returned plaintext',async t=>{
  const f=fixture(t,response),c=new AbortController();let entered,observed;const ready=new Promise(r=>entered=r);
  const outcome=assert.rejects(f.provider.run({...f.request,signal:c.signal,postReturn:({signal})=>{observed=signal;entered();return new Promise(()=>{});}}),{code:'provider_unknown'});
- await ready;c.abort();await outcome;assert.equal(observed.aborted,true);await assert.rejects(f.provider.run(f.request),{code:'unknown_no_retry'});f.provider.close();
+ await waitForAuthorityCallback(ready,outcome);c.abort();await outcome;assert.equal(observed.aborted,true);await assert.rejects(f.provider.run(f.request),{code:'unknown_no_retry'});f.provider.close();
 });
 test('expired preInvoke and policy mismatch launch zero children',async t=>{
  const f=fixture(t,response);await assert.rejects(f.provider.run({...f.request,policyArtifactDigest:'0'.repeat(64)}),{code:'invalid_invocation'});
@@ -66,12 +83,12 @@ test('actual changed approved script refuses before any child launch',async t=>{
 });
 test('withdrawal during deferred preInvoke never launches child',async t=>{
  const f=fixture(t,response),c=new AbortController();let entered;const ready=new Promise(r=>entered=r);
- const pending=assert.rejects(f.provider.run({...f.request,signal:c.signal,preInvoke:()=>{entered();return new Promise(()=>{});}}),{code:'provider_unknown'});await ready;c.abort();await pending;assert.equal(existsSync(f.marker),false);f.provider.close();
+ const pending=assert.rejects(f.provider.run({...f.request,signal:c.signal,preInvoke:()=>{entered();return new Promise(()=>{});}}),{code:'provider_unknown'});await waitForAuthorityCallback(ready,pending);c.abort();await pending;assert.equal(existsSync(f.marker),false);f.provider.close();
 });
 test('postReturn completing after remaining deadline never returns plaintext or permits retry',async t=>{
  const f=fixture(t,response);let late;const authority=new Promise(r=>late=r);let reached;const ready=new Promise(r=>reached=r);
  const pending=assert.rejects(f.provider.run({...f.request,timeoutMs:3000,postReturn:()=>{reached();return authority;}}),{code:'provider_unknown'});
- await ready;await pending;late();await new Promise(r=>setTimeout(r,10));await assert.rejects(f.provider.run(f.request),{code:'unknown_no_retry'});f.provider.close();
+ await waitForAuthorityCallback(ready,pending);await pending;late();await new Promise(r=>setTimeout(r,10));await assert.rejects(f.provider.run(f.request),{code:'unknown_no_retry'});f.provider.close();
 });
 test('POSIX inherited pipe cannot delay bounded return and exact synthetic descendant cleanup', {skip:process.platform==='win32'},async t=>{
  const f=fixture(t,'descendant'),receipt=join(f.artifact.cwd,'descendant');

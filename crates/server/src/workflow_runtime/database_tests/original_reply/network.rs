@@ -52,7 +52,7 @@ fn node_entrypoint_preserves_canonical_local_file_and_refuses_namespace_aliases(
     assert!(node_script_path(Path::new("relative-fixture")).is_err());
 }
 
-fn jwk(key: &SigningKey) -> Value {
+pub(super) fn jwk(key: &SigningKey) -> Value {
     let point = key.verifying_key().to_sec1_point(false);
     json!({"kty":"EC","crv":"P-256","x":URL_SAFE_NO_PAD.encode(point.x().unwrap()),"y":URL_SAFE_NO_PAD.encode(point.y().unwrap()),"d":URL_SAFE_NO_PAD.encode(key.to_bytes()),"ext":true})
 }
@@ -70,6 +70,312 @@ fn known_runtime_stderr(bytes: &[u8]) -> bool {
    !pid.is_empty()&&pid.bytes().all(|b|b.is_ascii_digit())&&warning=="ExperimentalWarning: SQLite is an experimental feature and might change at any time"
  })
 }
+fn refusal_diagnostic(bytes: &[u8]) -> &'static str {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return "unavailable";
+    };
+    if bytes.len() > 1024 {
+        return "unavailable";
+    }
+    for line in text.lines() {
+        let Some(fields) = line.strip_prefix("original reply fixture phase=") else {
+            continue;
+        };
+        let Some((phase, code)) = fields.split_once(";code=") else {
+            return "unavailable";
+        };
+        if ![
+            "input",
+            "history",
+            "scope",
+            "seed_prepare",
+            "transport",
+            "client",
+            "receiver",
+            "page",
+            "read",
+            "consume",
+            "recover",
+            "installation",
+            "original_current",
+            "original_read",
+            "original_page",
+            "context_metadata",
+            "context_content",
+            "routine_current",
+            "original_admit",
+            "call_current",
+            "produced",
+            "engine_execute",
+            "result_assert",
+        ]
+        .contains(&phase)
+        {
+            return "unavailable";
+        }
+        return match code {
+            "manifest_chain" => "manifest_chain",
+            "manifest_time" => "manifest_time",
+            "reader_authority" => "reader_authority",
+            "signer_authority" => "signer_authority",
+            "recipient_identity" => "recipient_identity",
+            "recipient_order" => "recipient_order",
+            "forbidden" => "forbidden",
+            "response_unknown" => "response_unknown",
+            "authority_unavailable" => "authority_unavailable",
+            "scope_denied" => "scope_denied",
+            "invalid_scope" => "invalid_scope",
+            "invalid_content" => "invalid_content",
+            "invalid_configuration" => "invalid_configuration",
+            "executor_unavailable" => "executor_unavailable",
+            "provider_unknown" => "provider_unknown",
+            "invalid_output" => "invalid_output",
+            "artifact_changed" => "artifact_changed",
+            "storage_unavailable" => "storage_unavailable",
+            "artifact_unavailable" => "artifact_unavailable",
+            "unknown_no_retry" => "unknown_no_retry",
+            "invalid_invocation" => "invalid_invocation",
+            "not_executable" => "not_executable",
+            "clock_unavailable" => "clock_unavailable",
+            "pending" => "pending",
+            "aborted" => "aborted",
+            "transport_failed" => "transport_failed",
+            "http_200" => "http_200",
+            "http_400" => "http_400",
+            "http_401" => "http_401",
+            "http_403" => "http_403",
+            "http_409" => "http_409",
+            "http_429" => "http_429",
+            "http_503" => "http_503",
+            "other_status" => "other_status",
+
+            _ => "unavailable",
+        };
+    }
+    "unavailable"
+}
+fn refusal_stage(bytes: &[u8]) -> &'static str {
+    if bytes.len() > 1024 {
+        return "unavailable";
+    }
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return "unavailable";
+    };
+    for line in text.lines() {
+        let Some(fields) = line.strip_prefix("original reply fixture phase=") else {
+            continue;
+        };
+        let Some((phase, code)) = fields.split_once(";code=") else {
+            return "unavailable";
+        };
+        if ![
+            "unavailable",
+            "manifest_chain",
+            "manifest_time",
+            "reader_authority",
+            "signer_authority",
+            "recipient_identity",
+            "recipient_order",
+            "forbidden",
+            "response_unknown",
+            "authority_unavailable",
+            "scope_denied",
+            "invalid_scope",
+            "invalid_content",
+            "invalid_configuration",
+            "executor_unavailable",
+            "provider_unknown",
+            "invalid_output",
+            "artifact_changed",
+            "storage_unavailable",
+            "artifact_unavailable",
+            "unknown_no_retry",
+            "invalid_invocation",
+            "not_executable",
+            "clock_unavailable",
+            "pending",
+            "aborted",
+            "transport_failed",
+            "http_200",
+            "http_400",
+            "http_401",
+            "http_403",
+            "http_409",
+            "http_429",
+            "http_503",
+            "other_status",
+        ]
+        .contains(&code)
+        {
+            return "unavailable";
+        }
+        return match phase {
+            "input" => "input",
+            "history" => "history",
+            "scope" => "scope",
+            "seed_prepare" => "seed_prepare",
+            "transport" => "transport",
+            "client" => "client",
+            "receiver" => "receiver",
+            "page" => "page",
+            "read" => "read",
+            "consume" => "consume",
+            "recover" => "recover",
+            "installation" => "installation",
+            "original_current" => "original_current",
+            "original_read" => "original_read",
+            "original_page" => "original_page",
+            "context_metadata" => "context_metadata",
+            "context_content" => "context_content",
+            "routine_current" => "routine_current",
+            "original_admit" => "original_admit",
+            "call_current" => "call_current",
+            "produced" => "produced",
+
+            "engine_execute" => "engine_execute",
+            "result_assert" => "result_assert",
+
+            _ => "unavailable",
+        };
+    }
+    "unavailable"
+}
+fn routine_timing(bytes: &[u8]) -> Option<(u32, u32, u32)> {
+    if bytes.len() > 1024 {
+        return None;
+    }
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut records = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("original routine timing request_ms="));
+    let record = records.next()?;
+    if records.next().is_some() {
+        return None;
+    }
+    let (request, rest) = record.split_once(" total_ms=")?;
+    let (total, remaining) = rest.split_once(" remaining_ms=")?;
+    fn number(text: &str, maximum: u32) -> Option<u32> {
+        let parsed = text.parse::<u32>().ok()?;
+        (parsed <= maximum && parsed.to_string() == text).then_some(parsed)
+    }
+    Some((
+        number(request, 60000)?,
+        number(total, 60000)?,
+        number(remaining, 10000)?,
+    ))
+}
+#[test]
+fn routine_timing_accepts_only_canonical_bounded_numbers() {
+    assert_eq!(
+        routine_timing(b"original routine timing request_ms=15 total_ms=9999 remaining_ms=1\n"),
+        Some((15, 9999, 1))
+    );
+    for input in [b"original routine timing request_ms=synthetic-private-canary total_ms=10 remaining_ms=1\n".as_slice(), b"original routine timing request_ms=01 total_ms=10 remaining_ms=1\n".as_slice(), b"original routine timing request_ms=60001 total_ms=10 remaining_ms=1\n".as_slice(), b"original routine timing request_ms=1 total_ms=10 remaining_ms=1;synthetic-private-canary\n".as_slice(), b"original routine timing request_ms=1 total_ms=10 remaining_ms=1\noriginal routine timing request_ms=1 total_ms=10 remaining_ms=1\n".as_slice()]{assert_eq!(routine_timing(input),None);}
+}
+fn provider_refusal(bytes: &[u8]) -> &'static str {
+    if bytes.len() > 1024 {
+        return "unavailable";
+    }
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return "unavailable";
+    };
+    let mut lines = text
+        .lines()
+        .filter(|line| line.starts_with("original reply fixture phase="));
+    lines.next(); // Preserve the separate outer diagnostic, parsed above.
+    let Some(line) = lines.next() else {
+        return "unavailable";
+    };
+    if lines.next().is_some()
+        || !line.starts_with("original reply fixture phase=engine_execute;code=")
+    {
+        return "unavailable";
+    }
+    match refusal_diagnostic(line.as_bytes()) {
+        "artifact_changed" => "artifact_changed",
+        "invalid_configuration" => "invalid_configuration",
+        "invalid_invocation" => "invalid_invocation",
+        "invalid_output" => "invalid_output",
+        "not_executable" => "not_executable",
+        "provider_unknown" => "provider_unknown",
+        "replay_conflict" => "replay_conflict",
+        "unknown_no_retry" => "unknown_no_retry",
+        "withdrawn" => "withdrawn",
+        _ => "unavailable",
+    }
+}
+fn provider_invocations(bytes: &[u8]) -> &'static str {
+    if bytes.len() > 1024 {
+        return "unavailable";
+    }
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return "unavailable";
+    };
+    let mut lines = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("original routine invocations="));
+    let Some(count) = lines.next() else {
+        return "unavailable";
+    };
+    if lines.next().is_some() {
+        return "unavailable";
+    }
+    match count {
+        "0" => "0",
+        "1" => "1",
+        "2" => "2",
+        _ => "unavailable",
+    }
+}
+#[test]
+fn secondary_provider_diagnostics_and_counts_refuse_unknown_or_injected_fields() {
+    let fixed=b"original reply fixture phase=call_current;code=provider_unknown\noriginal reply fixture phase=engine_execute;code=invalid_output\noriginal routine invocations=1\n";
+    assert_eq!(provider_refusal(fixed), "invalid_output");
+    assert_eq!(provider_invocations(fixed), "1");
+    for count in ["0", "2", "unavailable"] {
+        let line = format!("original routine invocations={count}\n");
+        assert_eq!(provider_invocations(line.as_bytes()), count);
+    }
+    for input in [b"original reply fixture phase=call_current;code=provider_unknown\noriginal reply fixture phase=engine_execute;code=synthetic-private-canary\n".as_slice(), b"original reply fixture phase=call_current;code=provider_unknown\noriginal reply fixture phase=synthetic-private-canary;code=invalid_output\n".as_slice()] {
+        assert_eq!(provider_refusal(input), "unavailable");
+    }
+    for input in [
+        b"original routine invocations=1;synthetic-private-canary\n".as_slice(),
+        b"original routine invocations=1\noriginal routine invocations=2\n".as_slice(),
+        &[255],
+    ] {
+        assert_eq!(provider_invocations(input), "unavailable");
+    }
+}
+#[test]
+fn routine_diagnostics_accept_fixed_stage_and_code_but_refuse_child_canary() {
+    assert_eq!(
+        refusal_stage(b"original reply fixture phase=call_current;code=http_200\n"),
+        "call_current"
+    );
+    assert_eq!(
+        refusal_diagnostic(b"original reply fixture phase=call_current;code=aborted\n"),
+        "aborted"
+    );
+    assert_eq!(
+        refusal_stage(
+            b"original reply fixture phase=call_current;code=http_200;synthetic-private-canary\n"
+        ),
+        "unavailable"
+    );
+    assert_eq!(
+        refusal_stage(b"original reply fixture phase=produced;code=forbidden\n"),
+        "produced"
+    );
+    assert_eq!(
+        refusal_diagnostic(b"original reply fixture phase=engine_execute;code=invalid_output\n"),
+        "invalid_output"
+    );
+    for input in [b"original reply fixture phase=synthetic-private-canary;code=invalid_output\n".as_slice(), b"original reply fixture phase=engine_execute;code=synthetic-private-canary\n".as_slice(), b"original reply fixture phase=engine_execute;code=invalid_output;synthetic-private-canary\n".as_slice()] {
+        assert_eq!(refusal_stage(input), "unavailable");
+        assert_eq!(refusal_diagnostic(input), "unavailable");
+    }
+}
 #[test]
 fn subprocess_diagnostics_accept_only_known_sqlite_warning_and_refuse_secret_canary() {
     assert!(known_runtime_stderr(b""));
@@ -79,12 +385,51 @@ fn subprocess_diagnostics_accept_only_known_sqlite_warning_and_refuse_secret_can
         b"(node:123) ExperimentalWarning: synthetic-private-canary"
     ));
     assert!(!known_runtime_stderr(&[255]));
+    assert_eq!(
+        refusal_diagnostic(b"original reply fixture phase=seed_prepare;code=recipient_identity\n"),
+        "recipient_identity"
+    );
+    assert_eq!(
+        refusal_diagnostic(
+            b"original reply fixture phase=synthetic-private-canary;code=recipient_identity\n"
+        ),
+        "unavailable"
+    );
+    assert_eq!(
+        refusal_diagnostic(
+            b"original reply fixture phase=seed_prepare;code=synthetic-private-canary\n"
+        ),
+        "unavailable"
+    );
+    assert_eq!(
+        refusal_stage(b"original reply fixture phase=history;code=manifest_chain\n"),
+        "history"
+    );
+    assert_eq!(
+        refusal_stage(b"original reply fixture phase=history;code=synthetic-private-canary\n"),
+        "unavailable"
+    );
 }
 async fn driver(input: Value, cwd: &Path) -> Value {
+    run_driver(input, cwd, Driver::OriginalReply).await
+}
+pub(super) enum Driver {
+    OriginalReply,
+    OriginalRoutine,
+}
+pub(super) async fn run_driver(input: Value, cwd: &Path, fixture: Driver) -> Value {
+    let relative = match fixture {
+        Driver::OriginalReply => "../../sdk/typescript/test/original-reply-service-driver.mjs",
+        Driver::OriginalRoutine => {
+            "../../sdk/typescript/test/customer-routine-original-service-driver.mjs"
+        }
+    };
     let script = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../sdk/typescript/test/original-reply-service-driver.mjs")
+        .join(relative)
         .canonicalize()
         .unwrap();
+    let node_script = node_script_path(&script).unwrap();
+    assert_eq!(node_script.canonicalize().unwrap(), script);
     let mut command = Command::new("node");
     command.env_clear();
     for name in ["PATH", "SystemRoot", "TEMP", "TMP"] {
@@ -113,7 +458,16 @@ async fn driver(input: Value, cwd: &Path) -> Value {
         .await
         .expect("bounded original reader driver")
         .unwrap();
-    assert!(output.status.success(), "original reader driver refused");
+    assert!(
+        output.status.success(),
+        "original reader driver refused: phase={} code={} provider={} invocations={} timing={:?} requests={:?}",
+        refusal_stage(&output.stderr),
+        refusal_diagnostic(&output.stderr),
+        provider_refusal(&output.stderr),
+        provider_invocations(&output.stderr),
+        routine_timing(&output.stderr),
+        request_histogram(&output.stderr),
+    );
     assert!(
         known_runtime_stderr(&output.stderr),
         "unexpected original reader diagnostic"
@@ -172,13 +526,13 @@ pub(super) async fn capture(f: &OriginalCase, input: &mut Value, scratch: &Scrat
     assert_eq!(f.case.f.db.query_one("SELECT count(*) FROM conversation_inbound_provenance WHERE account_id=$1 AND event_id=$2",&[&f.case.f.account,&event]).await.unwrap().get::<_,i64>(0),1);
 }
 
-struct Https {
-    origin: String,
-    ca: String,
+pub(super) struct Https {
+    pub(super) origin: String,
+    pub(super) ca: String,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 impl Https {
-    async fn start(app: axum::Router) -> Self {
+    pub(super) async fn start(app: axum::Router) -> Self {
         let plain = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let upstream = plain.local_addr().unwrap();
         let http = tokio::spawn(async move { axum::serve(plain, app).await.unwrap() });
@@ -230,7 +584,7 @@ impl Https {
             tasks: vec![http, tls],
         }
     }
-    async fn close(self) {
+    pub(super) async fn close(self) {
         for task in self.tasks {
             task.abort();
             let _ = task.await;
@@ -565,4 +919,81 @@ async fn original_reply_unique_issued_request_proposes_once_and_restart_only_rec
     tls.close().await;
     scratch.remove().unwrap();
     f.case.f.cleanup().await;
+}
+
+// Return only typed, fixed-label numeric metadata from the failure receipt.
+fn request_histogram(bytes: &[u8]) -> Option<Vec<(&'static str, u32, u32, u32)>> {
+    if bytes.len() > 1024 {
+        return None;
+    }
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut lines = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("original routine requests "));
+    let line = lines.next()?;
+    if lines.next().is_some() {
+        return None;
+    }
+    let mut result = Vec::new();
+    for field in line.split(' ') {
+        let (label, values) = field.split_once('=')?;
+        let label = match label {
+            "original_current" => "original_current",
+            "original_read" => "original_read",
+            "original_page" => "original_page",
+            "context_metadata" => "context_metadata",
+            "context_content" => "context_content",
+            "routine_current" => "routine_current",
+            "original_admit" => "original_admit",
+            "call_current" => "call_current",
+            "produced" => "produced",
+            _ => return None,
+        };
+        if result.iter().any(|(seen, _, _, _)| *seen == label) {
+            return None;
+        }
+        let values: Vec<_> = values.split(',').collect();
+        if values.len() != 3
+            || values
+                .iter()
+                .any(|v| v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return None;
+        }
+        let count = values[0].parse::<u32>().ok()?;
+        let sum = values[1].parse::<u32>().ok()?;
+        let max = values[2].parse::<u32>().ok()?;
+        if !(1..=64).contains(&count) || sum > 60000 || max > sum {
+            return None;
+        }
+        result.push((label, count, sum, max));
+    }
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
+}
+
+#[test]
+fn request_histogram_accepts_only_fixed_unique_labels_and_bounded_numbers() {
+    let good = b"original routine requests original_read=1,75,75 routine_current=2,2200,1300\n";
+    assert_eq!(
+        request_histogram(good),
+        Some(vec![
+            ("original_read", 1, 75, 75),
+            ("routine_current", 2, 2200, 1300)
+        ])
+    );
+    for invalid in [
+        b"original routine requests synthetic-private-canary=1,1,1\n".as_slice(),
+        b"original routine requests routine_current=1,1,1 routine_current=1,1,1\n".as_slice(),
+        b"original routine requests routine_current=65,1,1\n".as_slice(),
+        b"original routine requests routine_current=1,60001,1\n".as_slice(),
+        b"original routine requests routine_current=1,1,2\n".as_slice(),
+        b"original routine requests routine_current=1,1,synthetic-private-canary\n".as_slice(),
+        b"original routine requests routine_current=1,1,1\noriginal routine requests routine_current=1,1,1\n".as_slice(),
+        &[255],
+    ] { assert!(request_histogram(invalid).is_none()); }
+    assert!(request_histogram(&[b'x'; 1025]).is_none());
 }

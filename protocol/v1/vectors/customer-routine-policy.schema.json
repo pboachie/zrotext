@@ -144,6 +144,26 @@
         "pacing_seconds"
       ],
       "additionalProperties": false
+    },
+    "original_input": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "grant_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "grant_id"
+          ],
+          "additionalProperties": false
+        }
+      ]
     }
   },
   "required": [
@@ -194,6 +214,25 @@
           },
           "artifact_digest": {
             "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "original_input"
+        ],
+        "properties": {
+          "original_input": {
+            "type": "object"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "executor": {
+            "const": "local_process"
           }
         }
       }

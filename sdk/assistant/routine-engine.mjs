@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { CustomerRoutineService, closed, fail, id } from './routine-service.mjs';
 import { CipherArtifactStore, ciphertextDigest } from './artifact-store.mjs';
 import { WorkflowToolClient } from '../typescript/dist/workflow-tool-client.js';
+import { OriginalReplyClient } from '../typescript/dist/original-reply-client.js';
 import { openIntegrationWorkflowContext, openWorkflowContext, sealWorkflowContext,
   sealIntegrationWorkflowContext, workflowContextAad } from '../typescript/dist/workflow-context.js';
 
@@ -28,8 +29,8 @@ export function renderRoutine(kind,input) {
 }
 /** Trusted local key custody is separate from service authority. No verified booleans. */
 export class CustomerRoutineEngine {
-  #service; #tools; #store; #crypto; #clock; #enabled; #provider; #controllers=new Set(); #active=false;
-  constructor({enabled=false,service,tools,store,cryptoContext,provider=null,clock=Date.now}) {
+  #service; #tools; #store; #crypto; #clock; #enabled; #provider; #original; #controllers=new Set(); #active=false;
+  constructor({enabled=false,service,tools,store,cryptoContext,provider=null,originalClient=null,clock=Date.now}) {
     if(enabled!==true||!(service instanceof CustomerRoutineService)||!(tools instanceof WorkflowToolClient)||!(store instanceof CipherArtifactStore))fail('unavailable');
     const s=closed(cryptoContext.inputScope,['kind','accountId','deviceId','lineId','intervalId','contextId','bindingGeneration','revision','expiresMs','trustGeneration','manifestVersion','peerDigest','readerId','manifestDigest']);
     for(const field of ['accountId','deviceId','lineId','intervalId','contextId','peerDigest','readerId','manifestDigest'])s[field]=Uint8Array.from(s[field]);
@@ -37,6 +38,8 @@ export class CustomerRoutineEngine {
     this.#service=service;this.#tools=tools;this.#store=store;
     this.#crypto={manifest:cryptoContext.manifest,inputScope:Object.freeze(s),inputPrivateKey:cryptoContext.inputPrivateKey,archiveReaderId:Uint8Array.from(cryptoContext.archiveReaderId)};
     if(provider!==null&&!(provider instanceof LocalProvider))fail('invalid_configuration');
+    if(originalClient!==null&&!(originalClient instanceof OriginalReplyClient))fail('invalid_configuration');
+    this.#original=originalClient;
     this.#provider=provider;this.#clock=clock;this.#enabled=true;
   }
   withdraw() {this.#enabled=false;for(const c of this.#controllers)c.abort();}
@@ -55,6 +58,7 @@ export class CustomerRoutineEngine {
     let plain,output;const controller=new AbortController();this.#controllers.add(controller);
     try {
       const p=await this.#service.current(context_id,policy_id);this.#live();
+      if(p.original_input!=null)fail('original_input_required');
       const start=performance.now();
       const fresh=async({signal=controller.signal}={})=>{const next=await this.#service.current(context_id,policy_id,{signal});this.#live();
         if(signal.aborted||JSON.stringify(next)!==JSON.stringify(p)||this.#now()>=p.expires_ms||performance.now()-start>=p.timeout_ms)fail('authority_unavailable');};
@@ -82,6 +86,74 @@ export class CustomerRoutineEngine {
       const produced=await this.#service.produced(context_id,call.call_id,hash);this.#live();
       return Object.freeze({state:'awaiting_owner_publication',call:produced,archive_ciphertext_digest:hash});
     } finally {plain?.fill(0);output?.fill(0);this.#active=false;controller.abort();this.#controllers.delete(controller);}
+  }
+  /** Original ciphertext is opened locally; owner-configured policy, rather than
+   * message text or sender identity, admits one bounded executor call.
+   */
+  async executeOriginal(value) {
+    const {request_id,context_id,policy_id,event_id}=closed(value,['request_id','context_id','policy_id','event_id']);
+    if(![request_id,context_id,policy_id,event_id].every(id))fail('invalid_request');
+    if(this.#active)fail('busy');this.#live();
+    if(!this.#original||!this.#provider)fail('executor_unavailable');
+    this.#active=true;
+    let instructions,input,output,deadlineTimer;const controller=new AbortController();this.#controllers.add(controller);
+    const start=performance.now();
+    try {
+      const p=await this.#service.currentOriginalPolicy(context_id,policy_id);this.#live();
+      if(p.original_input==null||p.executor!=='local_process'||this.#provider.identity.adapter_id!==p.adapter_id||
+        this.#provider.identity.artifact_digest!==p.artifact_digest)fail('executor_unavailable');
+      const remainingBudget=Math.floor(p.timeout_ms-(performance.now()-start));
+      if(remainingBudget<10)fail('authority_unavailable');
+      deadlineTimer=setTimeout(()=>controller.abort(),remainingBudget);
+      const scope=this.#crypto.inputScope;
+      const metadata=(await this.#tools.call('workflow.context.metadata',{request_id:randomUUID(),context_id})).result;this.#live();
+      if(uuidText(scope.contextId)!==context_id||Number(scope.revision)!==metadata.revision||scope.expiresMs<=BigInt(this.#now()))fail('scope_denied');
+      const source=await this.#original.readVerified(uuidBytes(event_id));this.#live();
+      const authority=source.authority;
+      const same=(a,b)=>a.length===b.length&&a.every((byte,index)=>byte===b[index]);
+      for(const [field,expected] of [['account',scope.accountId],['device',scope.deviceId],['line',scope.lineId],
+        ['interval',scope.intervalId],['reader',scope.readerId]])if(!same(authority[field],expected))fail('scope_denied');
+      const peer=new Uint8Array(await crypto.subtle.digest('SHA-256',textEncoder.encode(authority.peer)));
+      if(!same(peer,scope.peerDigest)||!same(authority.manifest.digest,scope.manifestDigest)||authority.manifest.version!==scope.manifestVersion)fail('scope_denied');
+      const expiresMs=Math.min(Number(scope.expiresMs),p.expires_ms,Number(authority.expiresMs));
+      if(!Number.isSafeInteger(expiresMs)||this.#now()>=expiresMs)fail('expired');
+      const admitted=await this.#service.admitOriginal({request_id,policy_id,context_id,input_revision:metadata.revision,
+        input_source_digest:metadata.source_content_digest,event_id,accepted_manifest_version:source.accepted_manifest_version,
+        event_envelope_digest:source.event_envelope_digest},{signal:controller.signal});this.#live();
+      // The server retains the event identity across response loss and policy changes.
+      if(!admitted.execute_once)return Object.freeze({state:admitted.phase,call:admitted});
+      const fresh=async({signal=controller.signal}={})=>{
+        if(signal.aborted)fail('authority_unavailable');
+        const next=await this.#service.currentOriginalPolicy(context_id,policy_id,{signal});this.#live();
+        if(JSON.stringify(next)!==JSON.stringify(p))fail('authority_unavailable');
+        const current=await this.#service.currentOriginal(admitted.call_id,{signal});this.#live();
+        if(current.policy_id!==policy_id||current.phase!=='unknown'||signal.aborted||this.#now()>=expiresMs||
+          performance.now()-start>=p.timeout_ms)fail('authority_unavailable');
+      };
+      const content=(await this.#tools.call('workflow.context.content',{request_id:randomUUID(),context_id})).result;this.#live();
+      if(content.revision!==metadata.revision)fail('scope_denied');
+      instructions=await openIntegrationWorkflowContext(this.#crypto.manifest,scope,BigInt(this.#now()),this.#crypto.inputPrivateKey,
+        Uint8Array.from(Buffer.from(content.envelope_base64url,'base64url')));this.#live();
+      let configuration;
+      try{configuration=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(instructions));}catch{fail('invalid_content');}
+      if(!configuration||Object.getPrototypeOf(configuration)!==Object.prototype)fail('invalid_content');
+      input=textEncoder.encode(JSON.stringify({configuration,original_message:source.plaintext}));
+      if(input.length<1||input.length>32768)fail('invalid_content');
+      await fresh();
+      const remaining=Math.floor(p.timeout_ms-(performance.now()-start));if(remaining<10)fail('authority_unavailable');
+      try{output=await this.#provider.run({call:admitted,adapter_id:p.adapter_id,kind:p.kind,policyArtifactDigest:p.artifact_digest,
+        input,timeoutMs:remaining,signal:controller.signal,preInvoke:fresh,postReturn:fresh});}catch{fail('provider_unknown','unknown');}
+      this.#live();await fresh();
+      const outputScope={...scope,contextId:uuidBytes(admitted.assigned_output_context_id),revision:1n,
+        readerId:Uint8Array.from(this.#crypto.archiveReaderId),expiresMs:BigInt(expiresMs)};
+      const envelope=await sealWorkflowContext(this.#crypto.manifest,outputScope,BigInt(this.#now()),output);this.#live();
+      await fresh();
+      const hash=this.#store.put({call_id:admitted.call_id,input_context:context_id,input_revision:metadata.revision,
+        input_digest:metadata.source_content_digest,expires_ms:expiresMs,envelope});
+      await fresh();
+      const produced=await this.#service.produced(context_id,admitted.call_id,hash);this.#live();
+      return Object.freeze({state:'awaiting_owner_publication',call:produced,archive_ciphertext_digest:hash});
+    } finally {clearTimeout(deadlineTimer);instructions?.fill(0);input?.fill(0);output?.fill(0);this.#active=false;controller.abort();this.#controllers.delete(controller);}
   }
   /** Owner-local decryption/review. Returned bytes are caller-owned and must be wiped. */
   async review(callId,archivePrivateKey) {
