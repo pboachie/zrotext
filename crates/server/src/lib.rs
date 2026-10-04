@@ -17,6 +17,7 @@ pub mod http_enrollment;
 pub mod http_message_summary;
 pub mod http_messages;
 pub mod http_observer;
+pub mod http_owner_contact_observation;
 pub mod http_owner_contacts;
 pub mod http_owner_conversations;
 pub mod http_owner_erasure;
