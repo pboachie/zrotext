@@ -10,6 +10,8 @@ fn valid_name(name: &str) -> bool {
         "owner_erasure_proof_shape_",
         "owner_erasure_exec_expiry_",
         "owner_erasure_execution_erase_",
+        "owner_erasure_managed_grants_",
+        "owner_erasure_managed_optional_",
     ]
     .iter()
     .find_map(|prefix| name.strip_prefix(prefix))
@@ -122,7 +124,7 @@ pub(crate) async fn drop_fixture(db: &Client, schema: &str) -> Result<(), String
         ) RETURNS boolean LANGUAGE plpgsql SECURITY INVOKER AS $$
         DECLARE function_name text; function_arguments text;
         BEGIN
-            IF fixture_schema !~ '^(manifest_authority|owner_erasure_proof_shape|owner_erasure_exec_expiry|owner_erasure_execution_erase)_[0-9a-f]{32}$'
+            IF fixture_schema !~ '^(manifest_authority|owner_erasure_proof_shape|owner_erasure_exec_expiry|owner_erasure_execution_erase|owner_erasure_managed_grants|owner_erasure_managed_optional)_[0-9a-f]{32}$'
                 OR current_schema() IS DISTINCT FROM fixture_schema
                 OR NOT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname=fixture_schema
                     AND nspowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)) THEN
@@ -182,6 +184,8 @@ fn only_generated_fixture_names_are_accepted_and_identifiers_are_quoted() {
         "owner_erasure_proof_shape_",
         "owner_erasure_exec_expiry_",
         "owner_erasure_execution_erase_",
+        "owner_erasure_managed_grants_",
+        "owner_erasure_managed_optional_",
     ] {
         assert!(valid_name(&format!("{prefix}{}", "a".repeat(32))));
         assert!(!valid_name(&format!("{prefix}{}", "A".repeat(32))));

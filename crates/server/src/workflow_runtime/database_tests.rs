@@ -24,6 +24,7 @@ use zeroize::Zeroizing;
 mod grant_http;
 mod grant_origin;
 mod guided_setup;
+mod managed_grants;
 
 mod original_reply;
 mod scope_expiry;
