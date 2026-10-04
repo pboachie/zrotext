@@ -28,7 +28,8 @@ internal class ConversationJournalStores(context: Context) : AutoCloseable {
         var sends: ConversationSendDatabase? = null
         try {
             capture = Room.databaseBuilder(application, ConversationCaptureDatabase::class.java, CAPTURE_FILE)
-                .addMigrations(ConversationCaptureDatabase.MIGRATION_1_2).build()
+                .addMigrations(ConversationCaptureDatabase.MIGRATION_1_2,
+                    ConversationCaptureDatabase.MIGRATION_2_3).build()
             capture.openHelper.writableDatabase
             sends = Room.databaseBuilder(application, ConversationSendDatabase::class.java, SEND_FILE).build()
             sends.openHelper.writableDatabase
