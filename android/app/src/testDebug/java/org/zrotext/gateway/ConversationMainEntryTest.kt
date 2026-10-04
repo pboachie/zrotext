@@ -146,8 +146,13 @@ class ConversationMainEntryTest {
         assertFalse(compose.activity.getDatabasePath(ConversationJournalStores.CAPTURE_FILE).exists())
         assertFalse(compose.activity.getDatabasePath(ConversationJournalStores.SEND_FILE).exists())
     }
-    private fun fieldValue(name: String): Any? = MainActivity::class.java.getDeclaredField(name)
-        .apply { isAccessible = true }.get(compose.activity)
+    private fun fieldValue(name: String): Any? {
+        val direct = runCatching { MainActivity::class.java.getDeclaredField(name) }.getOrNull()
+        if (direct != null) return direct.apply { isAccessible = true }.get(compose.activity)
+        val delegate = MainActivity::class.java.getDeclaredField(name + "$" + "delegate")
+            .apply { isAccessible = true }.get(compose.activity) as androidx.compose.runtime.State<*>
+        return delegate.value
+    }
     @Test fun consentIsExplicitAndDeclineClosesThenReopenCreatesFreshController() {
         installFixture()
         compose.onNodeWithText(ConversationActivationCodec.DISCLOSURE).assertExists()
