@@ -18,6 +18,7 @@ jobs:
       contents: read
       checks: read
       actions: read
+      pull-requests: read
     outputs:
       artifact: ${{ steps.receipt.outputs.artifact }}
       receipt_sha: ${{ steps.receipt.outputs.receipt_sha }}
@@ -111,6 +112,7 @@ jobs:
       contents: read
       checks: read
       actions: read
+      pull-requests: read
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
