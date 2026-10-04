@@ -195,6 +195,7 @@ pub fn reconcile(input: Reconciliation<'_>) -> Result<Projection, Refusal> {
     if let Some(prior) = previous {
         binding.check(&prior.scope)?;
         if prior.generation >= observation.generation || now < prior.issued_at {
+        if prior.generation >= observation.generation {
             return Err(Refusal::StaleObservation);
         }
     }
