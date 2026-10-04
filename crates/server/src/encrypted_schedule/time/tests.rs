@@ -214,3 +214,69 @@ async fn recurrence_stays_at_recipient_local_time_instead_of_adding_twenty_four_
         Err(WindowError::Invalid)
     ));
 }
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; PostgreSQL civil-time parity"]
+async fn utc_direct_resolution_matches_generic_calendar_across_session_timezones() {
+    let mut db = database().await;
+    let tx = db.transaction().await.unwrap();
+    for session_zone in ["UTC", "America/New_York", "Asia/Kathmandu"] {
+        tx.query_one("SELECT set_config('TimeZone',$1,true)", &[&session_zone])
+            .await
+            .unwrap();
+        for (date, open, close) in [
+            ("2030-01-02", 60, 120),
+            ("2030-12-31", 1380, 60),
+            ("2032-02-28", 1380, 60),
+            ("2032-02-29", 1380, 60),
+            ("2030-04-30", 1439, 1),
+        ] {
+            let value = window(date, Some("UTC"), open, close);
+            let direct = resolve(&tx, value).await.unwrap();
+            let generic = resolve_named(&tx, value, "UTC").await.unwrap();
+            assert_eq!(direct, generic);
+            assert_eq!(
+                duration(direct),
+                i64::from((close + 1440 - open) % 1440) * 60000
+            );
+        }
+    }
+    tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; PostgreSQL invalid-calendar parity"]
+async fn utc_direct_resolution_retains_invalid_calendar_and_window_refusals() {
+    let mut db = database().await;
+    for date in [
+        "2030-02-29",
+        "2032-02-30",
+        "2030-13-01",
+        "2030-00-01",
+        "0000-01-01",
+    ] {
+        // A calendar error aborts its transaction; isolate both actual paths.
+        let tx = db.transaction().await.unwrap();
+        assert!(matches!(
+            resolve(&tx, window(date, Some("UTC"), 60, 120)).await,
+            Err(WindowError::Invalid)
+        ));
+        tx.rollback().await.unwrap();
+        let tx = db.transaction().await.unwrap();
+        assert!(matches!(
+            resolve_named(&tx, window(date, Some("UTC"), 60, 120), "UTC").await,
+            Err(WindowError::Invalid)
+        ));
+        tx.rollback().await.unwrap();
+    }
+    for (date, open, close) in [
+        ("2030-1-01", 60, 120),
+        ("2030-01-01", 60, 60),
+        ("2030-01-01", 1440, 60),
+    ] {
+        assert!(matches!(
+            resolve(&db, window(date, Some("UTC"), open, close)).await,
+            Err(WindowError::Invalid)
+        ));
+    }
+}

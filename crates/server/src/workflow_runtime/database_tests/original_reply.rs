@@ -277,7 +277,7 @@ async fn original_source_tombstones_refuse_partial_source_and_action_deletion() 
 
 mod network;
 
+mod join_order;
 mod races;
 mod registry_binding;
-
-mod join_order;
+mod routines;

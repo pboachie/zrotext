@@ -392,6 +392,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "../migration-candidates/managed_reader_grants.sql",
         include_str!("../../../../deploy/compose/migration-candidates/managed_reader_grants.sql"),
     ),
+    (
+        "089_original_routine_sources.sql",
+        include_str!("../../../../deploy/compose/migrations/089_original_routine_sources.sql"),
+    ),
+    (
+        "090_invoice_usage_observations.sql",
+        include_str!("../../../../deploy/compose/migrations/090_invoice_usage_observations.sql"),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in

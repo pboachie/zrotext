@@ -274,6 +274,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             billing_test.is_some(),
             meter_key,
         )?;
+    let usage_reconcile_enabled = optional_bool("STRIPE_TEST_USAGE_RECONCILE_ENABLED")?;
+    let usage_reconcile_key = if usage_reconcile_enabled {
+        Some(required("STRIPE_TEST_USAGE_RECONCILE_SECRET_KEY")?)
+    } else {
+        None
+    };
+    let usage_reconciler =
+        zrotext_server::billing::usage_reconciliation::TestUsageReconciler::configured(
+            usage_reconcile_enabled,
+            billing_test.is_some(),
+            usage_reconcile_key,
+        )?;
     // Usage-limit plans are quota-only operator configuration with no price
     // or provider; the feature is disabled by default and encodes no default
     // limits. See docs/USAGE-PLANS.md.
@@ -987,14 +999,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 routine_owner_state.clone(),
                 config.exposure_test_enabled,
             ))
-            .merge(zrotext_server::workflow_runtime::routines::http::router(
-                workflow_state,
-                config.customer_routines_enabled,
-            ))
             .merge(
-                zrotext_server::workflow_runtime::routines::http::owner_router(
+                zrotext_server::workflow_runtime::routines::http::router_with_original(
+                    workflow_state,
+                    config.customer_routines_enabled,
+                    config.original_reply_enabled,
+                ),
+            )
+            .merge(
+                zrotext_server::workflow_runtime::routines::http::owner_router_with_original(
                     routine_owner_state,
                     config.customer_routines_enabled,
+                    config.original_reply_enabled,
                 ),
             );
         if config.alpha_policy.enabled() {
@@ -1092,6 +1108,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let billing_notify = config.drain_notify.clone();
         let worker = Arc::new(worker);
         let permits = Arc::new(tokio::sync::Semaphore::new(concurrency));
+        if let Some(reconciler) = usage_reconciler {
+            let schema_db = zrotext_server::runtime_db::connect(&billing_database)
+                .await
+                .map_err(|_| "TEST usage observation startup database unavailable")?;
+            reconciler
+                .validate_schema(&schema_db)
+                .await
+                .map_err(|_| "TEST usage observation startup schema unavailable")?;
+            drop(schema_db);
+            tokio::spawn(zrotext_server::billing::usage_reconciliation::run_queue(
+                billing_database.clone(),
+                reconciler,
+                billing_draining.clone(),
+                billing_notify.clone(),
+                permits.clone(),
+            ));
+        }
         if let Some(transport) = meter_transport {
             tokio::spawn(zrotext_server::billing::meter_transport::run_queue(
                 billing_database.clone(),

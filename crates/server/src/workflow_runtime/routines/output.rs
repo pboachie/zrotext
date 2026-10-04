@@ -79,6 +79,16 @@ pub async fn bind_output(
     output: &IntegrationPrincipal,
     v: OutputBinding,
 ) -> Result<Call, AuthError> {
+    bind_with_original(client, owner, input, output, None, v).await
+}
+pub(crate) async fn bind_with_original(
+    client: &mut Client,
+    owner: &SessionPrincipal,
+    input: &IntegrationPrincipal,
+    output: &IntegrationPrincipal,
+    original: Option<&crate::original_reply::Principal>,
+    v: OutputBinding,
+) -> Result<Call, AuthError> {
     if v.request_id.is_nil()
         || v.output_context_id != v.call_id
         || input.account_id() != output.account_id()
@@ -99,6 +109,7 @@ pub async fn bind_output(
     owner::lock_owner(&tx, owner).await.map_err(error)?;
     let p = store::call_policy(&tx, input, v.call_id).await?;
     live(&tx, &mut source, &p).await?;
+    original::recheck(&tx, input, original, v.call_id, &p, &source).await?;
     if !same_scope(&source.header, &target.header)
         || source.contact() != target.contact()
         || source.purpose() != target.purpose()
@@ -112,7 +123,8 @@ pub async fn bind_output(
     // The separately owner-published output creates its own fresh routine.
     // Input generation remains checked only against the original input fence.
     output_policy.generation = 1;
-    let d = descriptor(&tx, &target, &output_policy, v.call_id, v.call_id).await?;
+    let mut d = descriptor(&tx, &target, &output_policy, v.call_id, v.call_id).await?;
+    original::cap_descriptor(&tx, input, &p, v.call_id, &mut d).await?;
     tx.execute("INSERT INTO workflow_context_fences(account_id,context_id) VALUES($1,$2) ON CONFLICT DO NOTHING",&[&input.account_id(),&v.output_context_id]).await?;
     tx.execute("INSERT INTO workflow_routines(account_id,id,context_id,generation) VALUES($1,$2,$3,1) ON CONFLICT DO NOTHING",&[&input.account_id(),&v.call_id,&v.output_context_id]).await?;
     decisions::fence::live_routine(&tx, &d, &target.header)
@@ -143,6 +155,7 @@ pub async fn bind_output(
     store::policy(&tx, input, p.policy_id).await?;
     owner::fresh_owner(&tx, owner).await.map_err(error)?;
     let result = store::response(&store::load(&tx, input.account_id(), v.call_id).await?)?;
+    original::recheck(&tx, input, original, v.call_id, &p, &source).await?;
     drop(source);
     drop(target);
     drop(target_read);
@@ -160,6 +173,7 @@ struct Permit<'tx, 'connection> {
     descriptor: Descriptor,
     grant: Uuid,
     call: Uuid,
+    original: Option<&'tx crate::original_reply::Principal>,
 }
 impl<'connection> ProposalFence<'connection> for Permit<'_, 'connection> {
     fn transaction(&self) -> &Transaction<'connection> {
@@ -193,7 +207,16 @@ impl<'connection> ProposalFence<'connection> for Permit<'_, 'connection> {
                     return Err(AuthError::Forbidden);
                 }
                 self.target.recheck().await?;
-                self.target_read.recheck().await
+                self.target_read.recheck().await?;
+                original::recheck(
+                    self.tx,
+                    self.input,
+                    self.original,
+                    self.call,
+                    &self.policy,
+                    &self.source,
+                )
+                .await
             }
             .await;
             check.map_err(|e| match e {
@@ -211,6 +234,15 @@ pub async fn resume(
     client: &mut Client,
     input: &IntegrationPrincipal,
     output: &IntegrationPrincipal,
+    call: Uuid,
+) -> Result<Call, AuthError> {
+    resume_with_original(client, input, output, None, call).await
+}
+pub(crate) async fn resume_with_original(
+    client: &mut Client,
+    input: &IntegrationPrincipal,
+    output: &IntegrationPrincipal,
+    original: Option<&crate::original_reply::Principal>,
     call: Uuid,
 ) -> Result<Call, AuthError> {
     if input.account_id() != output.account_id() || input.grant_id() == output.grant_id() {
@@ -237,7 +269,8 @@ pub async fn resume(
     projection(&tx, output, &target).await?;
     let mut output_policy = p.clone();
     output_policy.generation = 1;
-    let descriptor = descriptor(&tx, &target, &output_policy, call, call).await?;
+    let mut descriptor = descriptor(&tx, &target, &output_policy, call, call).await?;
+    original::cap_descriptor(&tx, input, &p, call, &mut descriptor).await?;
     let mut permit = Permit {
         tx: &tx,
         source,
@@ -248,6 +281,7 @@ pub async fn resume(
         descriptor,
         grant: output.grant_id(),
         call,
+        original,
     };
     let result = decisions::store::register_core(&mut permit, call)
         .await

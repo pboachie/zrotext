@@ -66,6 +66,7 @@ fn days(key: &'static str, default: i32) -> Result<i32, String> {
 #[derive(Default, Debug, PartialEq, Eq)]
 pub struct RetentionCounts {
     pub invoice_audit: u64,
+    pub invoice_observations: u64,
     pub idempotency_keys: u64,
     pub messages: u64,
     pub message_events: u64,
@@ -90,6 +91,7 @@ impl RetentionCounts {
         let limit = limit as u64;
         [
             self.invoice_audit,
+            self.invoice_observations,
             self.idempotency_keys,
             self.messages,
             self.message_events,
@@ -413,7 +415,15 @@ pub async fn prune(
         crate::billing::invoice::lifecycle::prune(client, limit),
     )
     .await;
+    let invoice_observations = step(
+        "billing_invoice_usage_observations",
+        &mut first_error,
+        &mut failures,
+        crate::billing::usage_reconciliation::lifecycle::prune(client, limit),
+    )
+    .await;
     Ok(RetentionCounts {
+        invoice_observations,
         invoice_audit,
         idempotency_keys,
         messages,
