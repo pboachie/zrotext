@@ -59,6 +59,18 @@ class ManagedReaderPolicyVectors(unittest.TestCase):
         with self.assertRaises(jsonschema.ValidationError):
             jsonschema.validate(candidate, self.schema)
 
+    def test_variable_hex_requires_complete_bytes_inside_allowed_bounds(self):
+        for key in ("policy_hex", "enrollment_hex", "accepted_manifest_hex"):
+            for odd_value in (self.vector[key][:-1], self.vector[key] + "0"):
+                limits = self.schema["properties"][key]
+                self.assertGreaterEqual(len(odd_value), limits["minLength"])
+                self.assertLessEqual(len(odd_value), limits["maxLength"])
+                self.assertEqual(len(odd_value) % 2, 1)
+                candidate = copy.deepcopy(self.vector)
+                candidate[key] = odd_value
+                with self.assertRaises(jsonschema.ValidationError):
+                    jsonschema.validate(candidate, self.schema)
+
     def test_negative_corpus_is_bounded_distinct_and_mutates_real_exact_bytes(self):
         cases = self.vector["negative_mutations"]
         self.assertEqual(len(cases), 25)

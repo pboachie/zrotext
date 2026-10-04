@@ -2,7 +2,7 @@
 //! Pure proposed signed-evidence consistency. No configured issuer, installed
 //! authority, truthful custody, grants, database, signing or receiver operation.
 
-use crate::sealed_manifest::{VerifiedManifest, key_id};
+use crate::sealed_manifest::VerifiedManifest;
 use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier};
 use sha2::{Digest, Sha256};
 
@@ -189,8 +189,17 @@ fn interval(from: u64, until: u64) -> Result<(), Error> {
     }
     Ok(())
 }
-fn keyed(point: &[u8; 65], id: &[u8; 32], role: u8) -> Result<(), Error> {
-    if key_id(role, point) != *id {
+// Existing candidate-02 purpose-key identity, kept private to this inert codec.
+// Call sites select only the maintained ECDH (0010) or signature (0101) algorithm.
+fn purpose_key_id(algorithm: [u8; 2], point: &[u8; 65]) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"ZTSE/key/v1\0");
+    digest.update(algorithm);
+    digest.update(point);
+    digest.finalize().into()
+}
+fn keyed(point: &[u8; 65], id: &[u8; 32], algorithm: [u8; 2]) -> Result<(), Error> {
+    if purpose_key_id(algorithm, point) != *id {
         return Err("evidence key purpose");
     }
     Ok(())
@@ -235,7 +244,7 @@ pub fn decode_policy(bytes: &[u8]) -> Result<Policy, Error> {
     }
     c.finish()?;
     interval(from_ms, until_ms)?;
-    keyed(&issuer_point, &issuer_key_id, 6)?;
+    keyed(&issuer_point, &issuer_key_id, [1, 1])?;
     Ok(Policy {
         account,
         origin,
@@ -304,8 +313,8 @@ pub fn decode_enrollment(bytes: &[u8]) -> Result<Enrollment, Error> {
     {
         return Err("evidence enrollment bounds");
     }
-    keyed(&e.reader_point, &e.reader_key_id, 3)?;
-    keyed(&e.auth_point, &e.auth_key_id, 6)?;
+    keyed(&e.reader_point, &e.reader_key_id, [0, 0x10])?;
+    keyed(&e.auth_point, &e.auth_key_id, [1, 1])?;
     Ok(e)
 }
 
@@ -349,7 +358,7 @@ pub fn decode_attestation(bytes: &[u8]) -> Result<Attestation, Error> {
     {
         return Err("evidence attestation bounds");
     }
-    keyed(&i.reader_point, &i.reader_key_id, 3)?;
+    keyed(&i.reader_point, &i.reader_key_id, [0, 0x10])?;
     Ok(i)
 }
 
@@ -550,7 +559,7 @@ pub fn verify_signed_evidence(
         || history.pin.get(29..94) != Some(m.root_point.as_slice())
         || m.account != *history.account
         || m.generation != 1
-        || key_id(6, &m.root_point) != m.root_id
+        || purpose_key_id([1, 1], &m.root_point) != m.root_id
     {
         return Err("evidence compared root");
     }

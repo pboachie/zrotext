@@ -21,6 +21,32 @@ fn vector() -> Value {
     ))
     .unwrap()
 }
+#[test]
+fn purpose_ids_match_genuine_manifest_and_shared_signed_vectors() {
+    let f = Fixture::new();
+    let history = f
+        .manifest
+        .account_archive_statement_records(&f.archive, 2000)
+        .unwrap();
+    let e = decode_enrollment(&f.enrollment).unwrap();
+    let p = decode_policy(&f.policy).unwrap();
+    for (algorithm, point, expected) in [
+        ([1, 1], history.root_point, history.root_id),
+        ([0, 0x10], history.reader_point, f.archive),
+        ([0, 0x10], e.reader_point, e.reader_key_id),
+        ([1, 1], e.auth_point, e.auth_key_id),
+        ([1, 1], p.issuer_point, p.issuer_key_id),
+    ] {
+        assert_eq!(purpose_key_id(algorithm, &point), expected);
+        let swapped = if algorithm == [1, 1] {
+            [0, 0x10]
+        } else {
+            [1, 1]
+        };
+        assert_ne!(purpose_key_id(swapped, &point), expected);
+        assert!(keyed(&point, &expected, swapped).is_err());
+    }
+}
 fn signer(n: u8) -> SigningKey {
     let mut scalar = [0; 32];
     scalar[31] = n;
@@ -306,7 +332,7 @@ fn widths_tags_key_purpose_curves_origins_runtime_order_and_integer_caps_refuse(
     assert!(encode_enrollment(&e).is_err());
     let mut e = decode_enrollment(&f.enrollment).unwrap();
     e.reader_point = e.auth_point;
-    e.reader_key_id = key_id(3, &e.reader_point);
+    e.reader_key_id = purpose_key_id([0, 0x10], &e.reader_point);
     assert!(encode_enrollment(&e).is_err());
     for size in [0, 17] {
         let mut p = f.expected_policy.clone();
