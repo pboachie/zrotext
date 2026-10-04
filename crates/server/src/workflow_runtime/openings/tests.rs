@@ -46,7 +46,7 @@ async fn opening(c: &Case, capacity: i16) -> Outcome {
             opening_id: Uuid::new_v4(),
             capacity,
             description: source(c),
-            decision_deadline_ms: now + 30000,
+            decision_deadline_ms: (now + 30000).min(c.base.h.expires_ms - 1000),
         },
     )
     .await
@@ -88,6 +88,7 @@ async fn offered_source(c: &Case, key: OpeningKey, selected: Source) -> Outcome 
 async fn independent_source(c: &Case) -> Source {
     let mut header = c.base.h.clone();
     header.context = Uuid::new_v4();
+    header.expires_ms = c.base.s.expires_ms;
     let bytes = crate::http_owner_conversations::context::tests::Case::envelope(&header, 99);
     crate::http_owner_conversations::context::write(
         &mut c.base.f.connect().await,
@@ -147,32 +148,49 @@ async fn wrong_source_head_digest_peer_or_signature_has_no_allocation_effect() {
     );
     let created = opening(&c, 1).await;
     let offered = offered(&c, created.receipt.opening).await;
-    let peer = crate::http_owner_conversations::activation::begin(
-        &mut c.base.f.connect().await,
-        &c.base.owner,
-        &crate::http_owner_conversations::ConversationConsent {
-            device_id: c.base.f.device,
-            line_id: c.base.f.line,
-            binding_generation: 1,
-            peer: "+13".into(),
-            disclosure_version: crate::http_owner_conversations::DISCLOSURE_VERSION.into(),
-            content_transfer_confirmed: true,
-        },
-        &c.base.f.bytes,
-    )
-    .await
-    .unwrap();
-    crate::http_owner_conversations::activation::tests::activate(&c.base.f, &peer).await;
     let wrong_event = Uuid::new_v4();
-    let bytes = crate::http_owner_conversations::activation::tests::capture(
+    let observed: i64 = c
+        .base
+        .f
+        .db
+        .query_one(
+            "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    // A second peer cannot acquire this active interval. Exercise an actually
+    // signed wrong-peer packet through maintained capture admission instead.
+    let bytes = crate::http_owner_conversations::tests::envelope(
         &c.base.f,
-        &peer,
         wrong_event,
         1,
-        peer.peer.as_bytes(),
-    )
-    .await
-    .unwrap();
+        observed as u64,
+        b"+13",
+    );
+    assert!(matches!(
+        crate::sealed_inbound::ingest::ingest_conversation(
+            &mut c.base.f.connect().await,
+            c.base.f.session(),
+            c.base.f.line,
+            1,
+            &c.base.f.bytes,
+            &bytes,
+            crate::http_owner_conversations::activation::CaptureInterval {
+                interval: c.base.s.interval,
+                activation_digest: c.base.s.activation_digest,
+            },
+        )
+        .await,
+        Err(crate::sealed_inbound::ingest::IngestError::Conversation(
+            ConversationError::Forbidden
+        ))
+    ));
+    assert_eq!(c.base.f.db.query_one(
+        "SELECT count(*) FROM conversation_inbound_provenance WHERE account_id=$1 AND event_id=$2",
+        &[&c.base.f.account, &wrong_event]
+    ).await.unwrap().get::<_, i64>(0), 0);
     let wrong = Reserve {
         request_id: Uuid::new_v4(),
         opening: offered.receipt.opening,
@@ -264,7 +282,31 @@ async fn wrong_source_head_digest_peer_or_signature_has_no_allocation_effect() {
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; actual source purge and deletion"]
 async fn description_purge_cancels_dependent_pending_but_preserves_other_source_bindings_and_confirmed_units()
  {
-    let c = fixture().await;
+    let mut c = fixture().await;
+    let now: i64 = c
+        .base
+        .f
+        .db
+        .query_one(
+            "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    // Expiry is an immutable context binding: create a new real short-lived
+    // source rather than rewriting the persisted deadline or its guard.
+    c.base.h.context = Uuid::new_v4();
+    c.base.h.expires_ms = now + 30000;
+    crate::http_owner_conversations::context::write(
+        &mut c.base.f.connect().await,
+        &c.base.owner,
+        Uuid::new_v4(),
+        0,
+        &c.base.bytes(),
+    )
+    .await
+    .unwrap();
     let created = opening(&c, 3).await;
     let first = offered(&c, created.receipt.opening).await;
     let request = reservation(&c, first.receipt.opening, first.receipt.offer.unwrap(), 1).await;
@@ -284,7 +326,23 @@ async fn description_purge_cancels_dependent_pending_but_preserves_other_source_
     let pending = reserve(&mut c.base.f.connect().await, &c.base.owner, request)
         .await
         .unwrap();
-    c.base.f.db.execute("UPDATE workflow_contexts SET expires_at_ms=floor(extract(epoch FROM clock_timestamp())*1000)::bigint-1 WHERE account_id=$1 AND id=$2", &[&c.base.f.account,&c.base.h.context]).await.unwrap();
+    loop {
+        let now: i64 = c
+            .base
+            .f
+            .db
+            .query_one(
+                "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        if now >= c.base.h.expires_ms {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
     assert_eq!(
         crate::http_owner_conversations::context::lifecycle::prune(
             &mut c.base.f.connect().await,
