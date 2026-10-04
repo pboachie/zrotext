@@ -17,11 +17,13 @@ function billingPage() {
     return elements.get(id);
   };
   const requests = [];
+  const destinations = [];
   globalThis.document = { getElementById: byId, createElement: element, cookie: "" };
+  globalThis.window = { location: { assign: destination => destinations.push(destination) } };
   globalThis.fetch = () => new Promise((resolve) => requests.push(resolve));
   delete require.cache[require.resolve("../../crates/server/static/billing-dashboard.js")];
   require("../../crates/server/static/billing-dashboard.js");
-  return { byId, requests };
+  return { byId, requests, destinations };
 }
 
 function statusResponse() {
@@ -40,6 +42,137 @@ function ambiguousStatusResponse() {
   }) };
 }
 const settle = () => new Promise(setImmediate);
+
+test("billing actions stay closed while status loads and after session loss", async () => {
+  const { byId, requests } = billingPage();
+  assert.equal(byId("checkout").disabled, true);
+  assert.equal(byId("portal").disabled, true);
+  requests.shift()(statusResponse()); await settle();
+  assert.equal(byId("checkout").disabled, false);
+  assert.equal(byId("portal").disabled, false);
+  const refresh = byId("refresh").listeners.click();
+  assert.equal(byId("checkout").disabled, true);
+  assert.equal(byId("portal").disabled, true);
+  requests.shift()({ ok: false, status: 401 }); await refresh;
+  assert.equal(byId("checkout").disabled, true);
+  assert.equal(byId("portal").disabled, true);
+});
+
+test("older hosted responses cannot redirect or restore controls after session loss", async () => {
+  for (const path of ["checkout", "portal"]) {
+    for (const response of [{ ok: true, json: async () => ({ url: `https://${path === "checkout" ? "checkout" : "billing"}.stripe.com/fixture` }) },
+      { ok: false, status: 503 }, { ok: false, status: 409 }]) {
+      const { byId, requests, destinations } = billingPage();
+      requests.shift()(statusResponse()); await settle();
+      globalThis.document.cookie = "__Host-zrotext_csrf=fixture";
+      const handoff = byId(path).listeners.click(); const old = requests.shift();
+      const refresh = byId("refresh").listeners.click();
+      requests.shift()({ ok: false, status: 401 }); await refresh;
+      const message = byId("billing-error").textContent;
+      old(response); await handoff;
+      assert.deepEqual(destinations, []);
+      assert.equal(requests.length, 0);
+      assert.equal(byId("checkout").disabled, true);
+      assert.equal(byId("portal").disabled, true);
+      assert.equal(byId("billing-error").textContent, message);
+    }
+  }
+});
+
+test("refresh invalidates a hosted response whose JSON is still loading", async () => {
+  const { byId, requests, destinations } = billingPage();
+  requests.shift()(statusResponse()); await settle();
+  globalThis.document.cookie = "__Host-zrotext_csrf=fixture";
+  const handoff = byId("portal").listeners.click();
+  let finishJson;
+  requests.shift()({ ok: true, json: () => new Promise(resolve => { finishJson = resolve; }) }); await settle();
+  const refresh = byId("refresh").listeners.click();
+  requests.shift()({ ok: false, status: 401 }); await refresh;
+  finishJson({ url: "https://billing.stripe.com/fixture" }); await handoff;
+  assert.deepEqual(destinations, []);
+  assert.equal(byId("portal").disabled, true);
+});
+
+test("a current offline handoff permits a deliberate retry without duplicate clicks", async () => {
+  const { byId, requests } = billingPage();
+  requests.shift()(statusResponse()); await settle();
+  globalThis.document.cookie = "__Host-zrotext_csrf=fixture";
+  const handoff = byId("portal").listeners.click();
+  await byId("portal").listeners.click();
+  await byId("checkout").listeners.click();
+  assert.equal(requests.length, 1);
+  requests.shift()({ ok: false, status: 503 }); await handoff;
+  assert.match(byId("billing-error").textContent, /Refresh status and retry/);
+  assert.equal(byId("checkout").disabled, false);
+  assert.equal(byId("portal").disabled, false);
+});
+
+test("a refused checkout cannot restore portal controls when its refresh loses the session", async () => {
+  const { byId, requests } = billingPage();
+  requests.shift()(statusResponse()); await settle();
+  globalThis.document.cookie = "__Host-zrotext_csrf=fixture";
+  const handoff = byId("checkout").listeners.click();
+  requests.shift()({ ok: false, status: 409 }); await settle();
+  requests.shift()({ ok: false, status: 401 }); await handoff;
+  assert.equal(byId("checkout").disabled, true);
+  assert.equal(byId("portal").disabled, true);
+});
+
+test("a current hosted response still opens its validated destination", async () => {
+  for (const path of ["checkout", "portal"]) {
+    const { byId, requests, destinations } = billingPage();
+    requests.shift()(statusResponse()); await settle();
+    globalThis.document.cookie = "__Host-zrotext_csrf=fixture";
+    const handoff = byId(path).listeners.click();
+    const destination = `https://${path === "checkout" ? "checkout" : "billing"}.stripe.com/fixture`;
+    requests.shift()({ ok: true, json: async () => ({ url: destination }) }); await handoff;
+    assert.deepEqual(destinations, [destination]);
+  }
+});
+
+test("a current hosted authorization refusal clears owner data until an authorized refresh", async () => {
+  for (const path of ["checkout", "portal"]) {
+    for (const status of [401, 403]) {
+      const { byId, requests } = billingPage();
+      const snapshot = await statusResponse().json();
+      snapshot.projectedEntitlement = { reason: "active", outboundLimit: 20, deviceCap: 1 };
+      snapshot.localUsage = { used_units: 5, reserved_units: 7, refunded_units: 2, limit_units: 20, period_start: "2030-01-01", period_end: "2030-02-01" };
+      requests.shift()({ ok: true, json: async () => snapshot }); await settle();
+      assert.match(byId("entitlement-status").textContent, /outbound allowance 20/);
+      globalThis.document.cookie = "__Host-zrotext_csrf=fixture";
+      const handoff = byId(path).listeners.click();
+      requests.shift()({ ok: false, status }); await handoff;
+      assert.equal(byId("checkout").disabled, true);
+      assert.equal(byId("portal").disabled, true);
+      assert.equal(byId("subscriptions").children.length, 0);
+      assert.equal(byId("entitlement-status").textContent, "");
+      assert.doesNotMatch(byId("local-usage").textContent, /5 consumed/);
+      assert.match(byId("billing-error").textContent, /authorization expired or was refused/);
+      await byId(path).listeners.click();
+      assert.equal(requests.length, 0);
+      const refresh = byId("refresh").listeners.click();
+      requests.shift()(statusResponse()); await refresh;
+      assert.equal(byId("checkout").disabled, false);
+      assert.equal(byId("portal").disabled, false);
+    }
+  }
+});
+
+test("a superseded conflict refresh cannot replace the latest owner status or error", async () => {
+  const { byId, requests } = billingPage();
+  requests.shift()(statusResponse()); await settle();
+  globalThis.document.cookie = "__Host-zrotext_csrf=fixture";
+  const handoff = byId("checkout").listeners.click();
+  requests.shift()({ ok: false, status: 409 }); await settle();
+  const old = requests.shift();
+  const refresh = byId("refresh").listeners.click();
+  requests.shift()({ ok: false, status: 401 }); await refresh;
+  const message = byId("billing-error").textContent;
+  old(statusResponse()); await handoff;
+  assert.equal(byId("billing-error").textContent, message);
+  assert.equal(byId("checkout").disabled, true);
+  assert.equal(byId("portal").disabled, true);
+});
 
 test("exposure warnings include outstanding prior-period liability without granting spend", async () => {
   const { byId, requests } = billingPage();
