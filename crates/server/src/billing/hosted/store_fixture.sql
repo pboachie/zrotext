@@ -40,12 +40,19 @@ CREATE TABLE hosted_billing_projections (
     valid_until bigint NOT NULL CHECK (valid_until >= 0),
     first_failure_at bigint CHECK (first_failure_at >= 0),
     read_token uuid,
+    invoice_id text NOT NULL DEFAULT '',
+    price_id text NOT NULL DEFAULT '',
+    period_start bigint NOT NULL DEFAULT 0,
+    period_end bigint NOT NULL DEFAULT 0,
     PRIMARY KEY (namespace_id, account_id),
     UNIQUE (namespace_id, customer_id),
     UNIQUE (namespace_id, subscription_id),
     CHECK (processed_generation <= dirty_generation),
     CHECK (dirty_generation = per_read_sequence),
     CHECK ((dirty_generation = 0) = (read_token IS NULL)),
+    CHECK ((invoice_id='' AND price_id='' AND period_start=0 AND period_end=0) OR
+           (invoice_id<>'' AND price_id<>'' AND period_start>=0 AND period_end>period_start)),
+    CHECK (phase NOT IN ('active','grace') OR (invoice_id<>'' AND price_id<>'')),
     CHECK (processed_generation > 0 OR
            (phase = 'pending' AND outbound_limit = 0 AND device_limit = 0))
 );

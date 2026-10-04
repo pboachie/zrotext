@@ -664,6 +664,125 @@ fn malformed_expired_or_future_invoice_period_cannot_project_an_active_grant() {
 }
 
 #[test]
+fn active_and_grace_retain_the_exact_provider_obligation_instead_of_the_lease() {
+    for read in [observation(), past_due(180)] {
+        let projection = project(&read, None).unwrap();
+        assert_eq!(projection.invoice(), read.invoice);
+        assert_eq!(projection.price(), read.price);
+        assert_eq!(projection.period_start(), read.period_start);
+        assert_eq!(projection.period_end(), read.period_end);
+        assert!(projection.valid_until() < projection.period_end());
+    }
+    let mut untrusted = observation();
+    untrusted.complete = false;
+    let pending = project(&untrusted, None).unwrap();
+    assert!(pending.has_empty_provenance());
+    untrusted.complete = true;
+    untrusted.price = "price_unapproved".into();
+    let restricted = project(&untrusted, None).unwrap();
+    assert!(restricted.has_empty_provenance());
+    assert_eq!(restricted.outbound_limit(), 0);
+}
+
+#[test]
+fn malformed_period_provenance_cannot_borrow_an_otherwise_current_lease() {
+    let active = project(&observation(), None).unwrap();
+    for case in 0..4 {
+        let mut malformed = active.clone();
+        match case {
+            0 => malformed.invoice.clear(),
+            1 => malformed.price = "price invalid".into(),
+            2 => malformed.period_start = 201,
+            _ => malformed.period_end = 899,
+        }
+        assert_eq!(send(Some(&malformed), 0, 1, 200), Err(Refusal::Pending));
+    }
+}
+
+#[test]
+fn recorded_capacity_counts_the_last_reserved_unit_and_device_exactly_once() {
+    let active = project(&observation(), None).unwrap();
+    let check = |purpose| {
+        admit(
+            &gate(),
+            &marker(),
+            &scope(),
+            fence(1),
+            Some(&active),
+            purpose,
+            200,
+        )
+    };
+    assert_eq!(send(Some(&active), 18, 1, 200), Ok(()));
+    assert_eq!(check(Purpose::OutboundRecorded { consumed: 19 }), Ok(()));
+    assert_eq!(send(Some(&active), 19, 1, 200), Err(Refusal::QuotaExceeded));
+    assert_eq!(
+        check(Purpose::OutboundRecorded { consumed: 20 }),
+        Err(Refusal::QuotaExceeded)
+    );
+    assert_eq!(send(Some(&active), 0, 0, 200), Err(Refusal::QuotaExceeded));
+    assert_eq!(check(Purpose::EnrollDevice { active_devices: 1 }), Ok(()));
+    assert_eq!(check(Purpose::DeviceRecorded { active_devices: 2 }), Ok(()));
+    assert_eq!(
+        check(Purpose::EnrollDevice { active_devices: 2 }),
+        Err(Refusal::DeviceCapExceeded)
+    );
+    assert_eq!(
+        check(Purpose::DeviceRecorded { active_devices: 3 }),
+        Err(Refusal::DeviceCapExceeded)
+    );
+}
+
+#[test]
+fn recorded_capacity_still_requires_current_unrestricted_authority() {
+    let active = project(&observation(), None).unwrap();
+    for purpose in [
+        Purpose::OutboundRecorded { consumed: 19 },
+        Purpose::DeviceRecorded { active_devices: 2 },
+    ] {
+        assert_eq!(
+            admit(
+                &gate(),
+                &marker(),
+                &scope(),
+                fence(2),
+                Some(&active),
+                purpose,
+                200
+            ),
+            Err(Refusal::Pending)
+        );
+        assert_eq!(
+            admit(
+                &gate(),
+                &marker(),
+                &scope(),
+                Fence {
+                    payment_hold: true,
+                    ..fence(1)
+                },
+                Some(&active),
+                purpose,
+                200
+            ),
+            Err(Refusal::Restricted)
+        );
+        assert_eq!(
+            admit(
+                &gate(),
+                &marker(),
+                &scope(),
+                fence(1),
+                Some(&active),
+                purpose,
+                900
+            ),
+            Err(Refusal::Pending)
+        );
+    }
+}
+
+#[test]
 fn device_cap_blocks_new_enrollment_without_revoking_existing_outbound_authority() {
     let active = project(&observation(), None).unwrap();
     assert_eq!(
