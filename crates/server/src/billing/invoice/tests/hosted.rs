@@ -107,6 +107,24 @@ async fn hosted_wrong_transaction_live_and_partial_ledger_installation_refuse() 
             .await
             .is_err()
     );
+    assert!(
+        admission::final_with_deadline(&unrelated, &gate, &prepared, i64::MAX)
+            .await
+            .is_err()
+    );
+    assert!(
+        admission::final_with_deadline(&tx, &gate, &prepared, 0)
+            .await
+            .is_err()
+    );
+    assert!(
+        admission::final_with_deadline(&tx, &gate, &prepared, -1)
+            .await
+            .is_err()
+    );
+    admission::final_with_deadline(&tx, &gate, &prepared, i64::MAX)
+        .await
+        .unwrap();
     unrelated.rollback().await.unwrap();
     let namespace =
         Namespace::new(Uuid::new_v4().into_bytes(), Mode::Live, "acct_fixture").unwrap();
@@ -625,10 +643,12 @@ async fn hosted_final_invoice_read_cannot_extend_original_hosted_lease() {
     // Only this disposable schema changes. Preserve the actual eligibility
     // predicate, but delay returning its row until the hosted lease expires.
     case.db.batch_execute(
-        "ALTER FUNCTION current_billing_invoice_period(uuid) RENAME TO hosted_original_current_period;
+        "CREATE SEQUENCE hosted_delayed_invoice_calls;
+         ALTER FUNCTION current_billing_invoice_period(uuid) RENAME TO hosted_original_current_period;
          CREATE FUNCTION current_billing_invoice_period(p_account uuid)
          RETURNS TABLE(period_id uuid,start_ms bigint,end_ms bigint)
          LANGUAGE plpgsql COST 1000000 ROWS 1 AS $$ BEGIN
+           PERFORM nextval('hosted_delayed_invoice_calls');
            RETURN QUERY SELECT * FROM hosted_original_current_period(p_account);
            PERFORM pg_sleep(3);
          END $$;"
@@ -644,6 +664,19 @@ async fn hosted_final_invoice_read_cannot_extend_original_hosted_lease() {
     );
     drop(prepared);
     tx.rollback().await.unwrap();
+    // Sequences survive rollback: prove refusal reached the delayed final
+    // predicate rather than expiring in an earlier check on a slow runner.
+    let calls = case
+        .db
+        .query_one(
+            "SELECT last_value,is_called FROM hosted_delayed_invoice_calls",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(calls.get::<_, bool>(1));
+    assert_eq!(calls.get::<_, i64>(0), 1);
+
     assert_eq!(
         case.db
             .query_one("SELECT count(*) FROM messages", &[])
@@ -660,5 +693,53 @@ async fn hosted_final_invoice_read_cannot_extend_original_hosted_lease() {
             .get::<_, i64>(0),
         0
     );
+    case.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; isolated hosted invoice schema"]
+async fn hosted_final_invoice_read_cannot_extend_verified_authority_deadline() {
+    let (mut case, gate, _) = installed().await;
+    case.db.batch_execute(
+        "CREATE SEQUENCE hosted_delayed_invoice_calls;
+         ALTER FUNCTION current_billing_invoice_period(uuid) RENAME TO hosted_original_current_period;
+         CREATE FUNCTION current_billing_invoice_period(p_account uuid)
+         RETURNS TABLE(period_id uuid,start_ms bigint,end_ms bigint)
+         LANGUAGE plpgsql COST 1000000 ROWS 1 AS $$ BEGIN
+           PERFORM nextval('hosted_delayed_invoice_calls');
+           RETURN QUERY SELECT * FROM hosted_original_current_period(p_account);
+           PERFORM pg_sleep(3);
+         END $$;"
+    ).await.unwrap();
+    let tx = case.db.transaction().await.unwrap();
+    let prepared = admission::prepare(&tx, &gate, case.account).await.unwrap();
+    let original_deadline: i64 = tx
+        .query_one(
+            "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint+2000",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    // The paid invoice and hosted lease stay valid; only the supplied original
+    // caller authority expires during final invoice evaluation.
+    assert_eq!(
+        admission::final_with_deadline(&tx, &gate, &prepared, original_deadline).await,
+        Err(store::StoreError::Refused(
+            crate::billing::hosted::Refusal::Pending
+        ))
+    );
+    drop(prepared);
+    tx.rollback().await.unwrap();
+    let calls = case
+        .db
+        .query_one(
+            "SELECT last_value,is_called FROM hosted_delayed_invoice_calls",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(calls.get::<_, bool>(1));
+    assert_eq!(calls.get::<_, i64>(0), 1);
     case.cleanup().await;
 }

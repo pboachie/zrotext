@@ -180,12 +180,31 @@ pub async fn outbound(
         Purpose::Outbound { units: 1, consumed }
     };
     store::admit_locked(tx, gate, &prepared.scope, purpose).await?;
-    final_current_invoice(tx, prepared).await
+    final_current_invoice(tx, prepared, i64::MAX).await
+}
+
+/// Final time check after successful recorded outbound/device admission.
+/// The caller supplies the immutable minimum Unix-millisecond deadline from
+/// verified authorities whose locks it still holds; never a request deadline
+/// or a newly extended TTL. This does not replace quota/attribution admission.
+/// Roll back on error and issue no further SQL between success and commit.
+pub async fn final_with_deadline(
+    tx: &Transaction<'_>,
+    gate: &Gate,
+    prepared: &Prepared<'_, '_>,
+    verified_authority_deadline_ms: i64,
+) -> Result<(), StoreError> {
+    if verified_authority_deadline_ms <= 0 {
+        return Err(pending());
+    }
+    locked_projection(tx, gate, prepared).await?;
+    final_current_invoice(tx, prepared, verified_authority_deadline_ms).await
 }
 
 async fn final_current_invoice(
     tx: &Transaction<'_>,
     prepared: &Prepared<'_, '_>,
+    verified_authority_deadline_ms: i64,
 ) -> Result<(), StoreError> {
     let account = Uuid::from_bytes(prepared.scope.owner());
     let namespace = Uuid::from_bytes(prepared.scope.namespace().id());
@@ -193,8 +212,8 @@ async fn final_current_invoice(
     // A WHERE clock predicate can otherwise be evaluated on h before a slow
     // invoice function/join. Materialization prevents that predicate pushdown.
     if tx.query_opt(
-        "WITH invoice AS MATERIALIZED (SELECT w.start_ms,w.end_ms,e.cancel_at_ms,e.grace_until_ms,e.phase AS provider_phase,h.issued_at,h.valid_until FROM current_billing_invoice_period($1) w JOIN billing_invoice_entitlements e ON e.account_id=$1 AND e.period_id=w.period_id JOIN hosted_billing_projections h ON h.account_id=$1 AND h.namespace_id=$2 WHERE e.mode='test' AND e.customer_id=h.customer_id AND e.subscription_id=h.subscription_id AND e.observed_invoice_id=h.invoice_id AND e.effective_price_id=h.price_id AND e.effective_limit=h.outbound_limit AND ((e.phase='active' AND h.phase='active') OR (e.phase='grace' AND h.phase='grace')) AND w.start_ms=h.period_start*1000 AND w.end_ms=h.period_end*1000 AND NOT h.payment_hold AND NOT h.review_required AND h.dirty_generation=h.processed_generation), observed AS MATERIALIZED (SELECT invoice.*,floor(extract(epoch FROM clock_timestamp())*1000)::bigint AS now_ms FROM invoice) SELECT 1 FROM observed WHERE now_ms>=issued_at*1000 AND now_ms<valid_until*1000 AND now_ms>=start_ms AND now_ms<end_ms AND (cancel_at_ms IS NULL OR cancel_at_ms>now_ms) AND (provider_phase<>'grace' OR grace_until_ms>now_ms)",
-        &[&account,&namespace],
+        "WITH invoice AS MATERIALIZED (SELECT w.start_ms,w.end_ms,e.cancel_at_ms,e.grace_until_ms,e.phase AS provider_phase,h.issued_at,h.valid_until FROM current_billing_invoice_period($1) w JOIN billing_invoice_entitlements e ON e.account_id=$1 AND e.period_id=w.period_id JOIN hosted_billing_projections h ON h.account_id=$1 AND h.namespace_id=$2 WHERE e.mode='test' AND e.customer_id=h.customer_id AND e.subscription_id=h.subscription_id AND e.observed_invoice_id=h.invoice_id AND e.effective_price_id=h.price_id AND e.effective_limit=h.outbound_limit AND ((e.phase='active' AND h.phase='active') OR (e.phase='grace' AND h.phase='grace')) AND w.start_ms=h.period_start*1000 AND w.end_ms=h.period_end*1000 AND NOT h.payment_hold AND NOT h.review_required AND h.dirty_generation=h.processed_generation), observed AS MATERIALIZED (SELECT invoice.*,floor(extract(epoch FROM clock_timestamp())*1000)::bigint AS now_ms FROM invoice) SELECT 1 FROM observed WHERE now_ms>=issued_at*1000 AND now_ms<valid_until*1000 AND now_ms>=start_ms AND now_ms<end_ms AND (cancel_at_ms IS NULL OR cancel_at_ms>now_ms) AND (provider_phase<>'grace' OR grace_until_ms>now_ms) AND now_ms<$3",
+        &[&account,&namespace,&verified_authority_deadline_ms],
     ).await.map_err(|_|StoreError::Unavailable)?.is_none(){return Err(pending());}
     Ok(())
 }
@@ -246,5 +265,5 @@ pub async fn device(
     store::admit_locked(tx, gate, &prepared.scope, purpose).await?;
     // Devices consume the same paid service: a legacy risk/cancel/grace change
     // must refuse even before its separate hosted projection has been dirtied.
-    final_current_invoice(tx, prepared).await
+    final_current_invoice(tx, prepared, i64::MAX).await
 }
