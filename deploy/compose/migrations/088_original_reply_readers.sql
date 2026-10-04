@@ -250,7 +250,6 @@ CREATE FUNCTION original_reply_integration_origin_deadline(wanted_account uuid,w
 LANGUAGE sql VOLATILE SET search_path FROM CURRENT AS $$
     SELECT LEAST(g.expires_ms, floor(extract(epoch FROM creator.expires_at)*1000)::bigint, floor(extract(epoch FROM origin.expires_at)*1000)::bigint, registration.expires_ms, reader.valid_until_ms, context.expires_at_ms, interval.expires_at_ms,
      COALESCE(workflow_registry_binding_deadline(g.account_id,g.connector_id,g.reader_key_id,context.interval_id,g.trust_generation,g.manifest_version,g.manifest_digest,g.supplemental_original_grant_id),0)) FROM workflow_integration_grants g
-    SELECT LEAST(g.expires_ms, floor(extract(epoch FROM creator.expires_at)*1000)::bigint, floor(extract(epoch FROM origin.expires_at)*1000)::bigint, registration.expires_ms, reader.valid_until_ms, context.expires_at_ms, interval.expires_at_ms) FROM workflow_integration_grants g
     JOIN accounts tenant ON tenant.id=g.account_id
     JOIN sessions creator ON (creator.account_id,creator.user_id,creator.id)=(g.account_id,g.created_by_user,g.created_session)
     JOIN memberships membership ON (membership.account_id,membership.user_id)=(g.account_id,g.created_by_user)
@@ -315,7 +314,6 @@ CREATE FUNCTION original_reply_grant_deadline(wanted_account uuid,wanted_grant u
 -- Start with the exact grant key and retain the declared authority joins.
 -- Keep planner configuration local to this function; do not change deadlines.
 LANGUAGE sql VOLATILE SET search_path FROM CURRENT SET join_collapse_limit = 1 AS $$
-LANGUAGE sql VOLATILE SET search_path FROM CURRENT AS $$
 SELECT LEAST(g.expires_ms, floor(extract(epoch FROM creator.expires_at)*1000)::bigint, floor(extract(epoch FROM origin.expires_at)*1000)::bigint, registration.expires_ms, reader.valid_until_ms, permission.expires_ms) FROM original_reply_grants g
  JOIN accounts a ON a.id=g.account_id
  JOIN sessions creator ON (creator.account_id,creator.user_id,creator.id)=(g.account_id,g.created_by_user,g.created_session)
