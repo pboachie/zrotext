@@ -49,7 +49,9 @@ fn decode(value: &str) -> Result<Vec<u8>, AuthError> {
 }
 async fn begin(client: &mut Client) -> Result<Transaction<'_>, AuthError> {
     let tx = client.transaction().await?;
-    tx.batch_execute("SET LOCAL lock_timeout='3s'; SET LOCAL statement_timeout='5s'")
+    // These authority queries start from exact grant/policy keys. Bound join
+    // search within this transaction without changing connection defaults.
+    tx.batch_execute("SET LOCAL lock_timeout='3s'; SET LOCAL statement_timeout='5s'; SET LOCAL join_collapse_limit=1")
         .await?;
     Ok(tx)
 }
