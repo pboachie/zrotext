@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::sync::Arc;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify, watch};
 use tower::ServiceExt;
 
 struct Simulator {
@@ -31,6 +31,7 @@ struct Simulator {
     owner: SessionPrincipal,
     statement: Statement,
     done: Arc<Notify>,
+    sockets: SocketTasks,
     token: String,
     phone_session: Uuid,
     origin_hash: [u8; 32],
@@ -38,6 +39,91 @@ struct Simulator {
     owner_token: String,
     owner_csrf: String,
 }
+
+// Axum's upgraded callbacks outlive HTTP graceful shutdown. A receiver registers ownership
+// before upgrade dispatch, including an upgrade that fails before invoking its callback.
+#[derive(Clone)]
+struct SocketTasks {
+    shutdown: watch::Sender<bool>,
+    active: watch::Sender<()>,
+}
+
+impl SocketTasks {
+    fn new() -> Self {
+        let (shutdown, _) = watch::channel(false);
+        let (active, _) = watch::channel(());
+        Self { shutdown, active }
+    }
+
+    fn register<T, R>(&self, state: Arc<T>, resource: R) -> Option<SocketTask<T, R>> {
+        if *self.shutdown.borrow() {
+            return None;
+        }
+        Some(SocketTask {
+            resource,
+            state,
+            _active: self.active.subscribe(),
+        })
+    }
+
+    fn stop(&self) {
+        self.shutdown.send_replace(true);
+    }
+
+    async fn wait(&self) {
+        self.active.closed().await;
+    }
+}
+
+struct SocketTask<T, R> {
+    // Rust drops fields in declaration order, also on cancellation/unwind: release the
+    // scoped connection and state before the final receiver permits fixture cleanup.
+    resource: R,
+    state: Arc<T>,
+    _active: watch::Receiver<()>,
+}
+
+impl<T, R> SocketTask<T, R> {
+    fn state(&self) -> &T {
+        &self.state
+    }
+
+    fn parts(&mut self) -> (&T, &mut R) {
+        (&self.state, &mut self.resource)
+    }
+}
+
+async fn socket_shutdown(receiver: &mut watch::Receiver<bool>) {
+    while !*receiver.borrow_and_update() {
+        if receiver.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+async fn finish_server(
+    server: &mut tokio::task::JoinHandle<()>,
+    sockets: &SocketTasks,
+    deadline: tokio::time::Instant,
+) -> Result<Result<(), tokio::task::JoinError>, tokio::time::error::Elapsed> {
+    let joined = match tokio::time::timeout_at(deadline, &mut *server).await {
+        Ok(joined) => joined,
+        Err(error) => {
+            sockets.stop();
+            server.abort();
+            let _ = server.await;
+            return Err(error);
+        }
+    };
+    // The HTTP join is consumed. Drain under its same deadline without polling it again.
+    if let Err(error) = tokio::time::timeout_at(deadline, sockets.wait()).await {
+        sockets.stop();
+        return Err(error);
+    }
+    Ok(joined)
+}
+
+mod lifecycle_tests;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Command {
@@ -69,17 +155,33 @@ async fn phone_channel(
     }
     // Complete cold scoped PG setup before the authenticated socket opens. It must not inflate
     // only the bootstrap clock's RTT relative to a later independent runtime clock sample.
-    let mut client = {
+    let client = {
         let f = state.fixture.lock().await;
         f.connect().await
     };
+    let Some(mut task) = state.sockets.register(state.clone(), client) else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
     upgrade
         .on_upgrade(move |mut socket| async move {
+            let mut shutdown = task.state().sockets.shutdown.subscribe();
             // Every frame still holds the fixture lock and enters the unchanged transaction.
-            while let Some(Ok(Message::Binary(bytes))) = socket.recv().await {
+            loop {
+                let received = tokio::select! {
+                    biased;
+                    _ = socket_shutdown(&mut shutdown) => {
+                        let _ = socket.close().await;
+                        break;
+                    }
+                    received = socket.recv() => received,
+                };
+                let Some(Ok(Message::Binary(bytes))) = received else {
+                    break;
+                };
+                let (state, client) = task.parts();
                 let f = state.fixture.lock().await;
                 let result = super::super::channel::handle(
-                    &mut client,
+                    client,
                     &super::super::channel::AuthenticatedChannelSession {
                         device: f.session(),
                         phone_session: state.phone_session,
@@ -100,6 +202,7 @@ async fn phone_channel(
                     }
                 }
             }
+            drop(task);
         })
         .into_response()
 }
@@ -190,7 +293,7 @@ async fn command(
             if r.is_ok() {f.db.execute("UPDATE sessions SET revoked_at=clock_timestamp() WHERE id=$1",&[&state.owner.session_id]).await.unwrap();}
             r.map(|()|json!({"ok":true}))
         },
-        "finish"=>{state.done.notify_one();Ok(json!({"ok":true}))},
+        "finish"=>{state.sockets.stop();state.done.notify_one();Ok(json!({"ok":true}))},
         _=>Err(ConversationError::Invalid),
     };
     match result {
@@ -551,11 +654,13 @@ async fn loopback_journal_bridge() {
         "sdkTool":std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/typescript/test/conversation-simulator-envelope.mjs"),
         "browserTool":std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/typescript/test/conversation-browser-simulator.mjs")});
     let done = Arc::new(Notify::new());
+    let sockets = SocketTasks::new();
     let state = Arc::new(Simulator {
         fixture: Mutex::new(f),
         owner,
         statement,
         done: done.clone(),
+        sockets: sockets.clone(),
         token,
         phone_session,
         origin_hash,
@@ -578,11 +683,10 @@ async fn loopback_journal_bridge() {
     assert!(readiness.len() <= 16_384);
     println!("\nZT_CONVERSATION_SIM_READY_V1 {readiness}");
     std::io::stdout().flush().unwrap();
-    let result = tokio::time::timeout(std::time::Duration::from_secs(240), &mut server).await;
-    if result.is_err() {
-        server.abort();
-        let _ = server.await;
-    }
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(240);
+    let result = finish_server(&mut server, &sockets, deadline).await;
+    // A stuck callback fails closed; do not clean its still-owned fixture or cancel a TX
+    // merely to manufacture uniqueness. No additional grace period follows this budget.
     let state = Arc::try_unwrap(state).ok().expect("fixture server stopped");
     state.fixture.into_inner().cleanup().await;
     result
