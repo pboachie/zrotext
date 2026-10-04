@@ -460,12 +460,13 @@ pub(super) async fn run_driver(input: Value, cwd: &Path, fixture: Driver) -> Val
         .unwrap();
     assert!(
         output.status.success(),
-        "original reader driver refused: phase={} code={} provider={} invocations={} timing={:?}",
+        "original reader driver refused: phase={} code={} provider={} invocations={} timing={:?} requests={:?}",
         refusal_stage(&output.stderr),
         refusal_diagnostic(&output.stderr),
         provider_refusal(&output.stderr),
         provider_invocations(&output.stderr),
-        routine_timing(&output.stderr)
+        routine_timing(&output.stderr),
+        request_histogram(&output.stderr),
     );
     assert!(
         known_runtime_stderr(&output.stderr),
@@ -918,4 +919,81 @@ async fn original_reply_unique_issued_request_proposes_once_and_restart_only_rec
     tls.close().await;
     scratch.remove().unwrap();
     f.case.f.cleanup().await;
+}
+
+// Return only typed, fixed-label numeric metadata from the failure receipt.
+fn request_histogram(bytes: &[u8]) -> Option<Vec<(&'static str, u32, u32, u32)>> {
+    if bytes.len() > 1024 {
+        return None;
+    }
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut lines = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("original routine requests "));
+    let line = lines.next()?;
+    if lines.next().is_some() {
+        return None;
+    }
+    let mut result = Vec::new();
+    for field in line.split(' ') {
+        let (label, values) = field.split_once('=')?;
+        let label = match label {
+            "original_current" => "original_current",
+            "original_read" => "original_read",
+            "original_page" => "original_page",
+            "context_metadata" => "context_metadata",
+            "context_content" => "context_content",
+            "routine_current" => "routine_current",
+            "original_admit" => "original_admit",
+            "call_current" => "call_current",
+            "produced" => "produced",
+            _ => return None,
+        };
+        if result.iter().any(|(seen, _, _, _)| *seen == label) {
+            return None;
+        }
+        let values: Vec<_> = values.split(',').collect();
+        if values.len() != 3
+            || values
+                .iter()
+                .any(|v| v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return None;
+        }
+        let count = values[0].parse::<u32>().ok()?;
+        let sum = values[1].parse::<u32>().ok()?;
+        let max = values[2].parse::<u32>().ok()?;
+        if !(1..=64).contains(&count) || sum > 60000 || max > sum {
+            return None;
+        }
+        result.push((label, count, sum, max));
+    }
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
+}
+
+#[test]
+fn request_histogram_accepts_only_fixed_unique_labels_and_bounded_numbers() {
+    let good = b"original routine requests original_read=1,75,75 routine_current=2,2200,1300\n";
+    assert_eq!(
+        request_histogram(good),
+        Some(vec![
+            ("original_read", 1, 75, 75),
+            ("routine_current", 2, 2200, 1300)
+        ])
+    );
+    for invalid in [
+        b"original routine requests synthetic-private-canary=1,1,1\n".as_slice(),
+        b"original routine requests routine_current=1,1,1 routine_current=1,1,1\n".as_slice(),
+        b"original routine requests routine_current=65,1,1\n".as_slice(),
+        b"original routine requests routine_current=1,60001,1\n".as_slice(),
+        b"original routine requests routine_current=1,1,2\n".as_slice(),
+        b"original routine requests routine_current=1,1,synthetic-private-canary\n".as_slice(),
+        b"original routine requests routine_current=1,1,1\noriginal routine requests routine_current=1,1,1\n".as_slice(),
+        &[255],
+    ] { assert!(request_histogram(invalid).is_none()); }
+    assert!(request_histogram(&[b'x'; 1025]).is_none());
 }

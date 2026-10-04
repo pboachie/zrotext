@@ -15,6 +15,8 @@ import {customerReaderKey,customerOriginalReaderKey} from '../../assistant/custo
 import {CipherArtifactStore} from '../../assistant/artifact-store.mjs';
 import {LocalProvider} from '../../assistant/local-provider.mjs';
 import {originalRoutineDiagnostic,runWithProviderDiagnostic} from './original-service-diagnostics.mjs';
+import {RequestHistogram} from './original-request-histogram.mjs';
+const requestHistogram=new RequestHistogram();
 globalThis.crypto??=webcrypto;
 const bytes=value=>Uint8Array.from(Buffer.from(value,'base64'));
 const hex=value=>{assert.match(value,/^[0-9a-f]+$/);return Uint8Array.from(Buffer.from(value,'hex'));};
@@ -57,16 +59,18 @@ function transport(f){
     let operation;try{operation=JSON.parse(init.body);}catch{operation={};}
     const labels=endpoint.pathname==='/v1/reply-events'?{current:'original_current',read:'original_read',page:'original_page'}:endpoint.pathname==='/v1/workflow/tools'?{'workflow.context.metadata':'context_metadata','workflow.context.content':'context_content'}:{current:'routine_current',admit_original:'original_admit',current_original:'call_current',produced:'produced'};
     const started=performance.now();
-    stage=labels[operation.operation??operation.method]??'transport';settlement='pending';requestStarted=started;
+    const label=labels[operation.operation??operation.method]??'transport';
+    stage=label;settlement='pending';requestStarted=started;
+    let counted=false;const record=()=>{if(!counted){counted=true;requestHistogram.record(label,performance.now()-started);}};
     const elapsed=()=>{if(requestStarted===started)lastRequestMs=clippedElapsed(started);};
-    const aborted=()=>{elapsed();settlement='aborted';};init.signal?.addEventListener('abort',aborted,{once:true});
-    const failed=error=>{elapsed();init.signal?.removeEventListener('abort',aborted);if(settlement==='pending')settlement='transport_failed';reject(error);};
+    const aborted=()=>{record();elapsed();settlement='aborted';};init.signal?.addEventListener('abort',aborted,{once:true});
+    const failed=error=>{record();elapsed();init.signal?.removeEventListener('abort',aborted);if(settlement==='pending')settlement='transport_failed';reject(error);};
     const req=request({hostname:origin.hostname,port,path:endpoint.pathname,method:'POST',ca:f.ca_pem,headers:init.headers,
       signal:init.signal,rejectUnauthorized:true},response=>{
       settlement=[200,400,401,403,409,429,503].includes(response.statusCode)?`http_${response.statusCode}`:'other_status';
       const chunks=[];let size=0;response.on('error',failed);
       response.on('data',chunk=>{size+=chunk.length;if(size>524288){req.destroy();failed(Error());}else chunks.push(chunk);});
-      response.on('end',()=>{elapsed();init.signal?.removeEventListener('abort',aborted);resolve(new Response(Buffer.concat(chunks),{status:response.statusCode,headers:response.headers}));});
+      response.on('end',()=>{record();elapsed();init.signal?.removeEventListener('abort',aborted);resolve(new Response(Buffer.concat(chunks),{status:response.statusCode,headers:response.headers}));});
     });req.on('error',failed);req.end(init.body);
   });return {origin:origin.origin,fetch};
 }
@@ -113,6 +117,7 @@ try{
 }catch(error){
   const outer=originalRoutineDiagnostic(stage,error,settlement);
   process.stderr.write(outer);
+  process.stderr.write(requestHistogram.failureLines());
   if(providerRefusal!==null)process.stderr.write(providerRefusal);
   // Fixture marker contains only bounded literal x bytes from the owned child.
   let invocations='unavailable';
