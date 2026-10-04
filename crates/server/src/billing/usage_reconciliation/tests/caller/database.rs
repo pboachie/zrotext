@@ -4,7 +4,7 @@ use crate::sealed_manifest_store::tests::Fixture;
 use std::sync::atomic::{AtomicBool, Ordering};
 mod invoice_period;
 
-async fn invoice_fixture() -> Fixture {
+pub(super) async fn invoice_fixture() -> Fixture {
     let fixture = Fixture::new().await;
     // The shared fixture ends at 078. Its billing prerequisites are installed;
     // apply the actual invoice migration only in this caller's isolated schema.
@@ -25,7 +25,7 @@ async fn invoice_fixture() -> Fixture {
     fixture
 }
 
-async fn seed(
+pub(super) async fn seed(
     db: &Database,
     account: Uuid,
     device: Uuid,
@@ -57,7 +57,7 @@ async fn seed(
         db.execute("INSERT INTO billing_invoice_periods(id,account_id,subscription_id,invoice_id,line_id,item_id,start_ms,end_ms,original_price_id,original_limit) VALUES($1,$2,'sub_Synthetic','in_Synthetic','il_Synthetic','si_Synthetic',1704067200000,1706745600000,'price_Synthetic',100)", &[&Uuid::new_v4(),&account]).await.unwrap();
     }
 }
-async fn authority_snapshot(db: &Database, account: Uuid) -> Value {
+pub(super) async fn authority_snapshot(db: &Database, account: Uuid) -> Value {
     db.query_one("SELECT json_build_object('limit',(SELECT limit_units FROM usage_quota_policies WHERE account_id=$1),'reserved',(SELECT reserved_units FROM usage_periods WHERE account_id=$1),'refunded',(SELECT refunded_units FROM usage_periods WHERE account_id=$1),'ledger',(SELECT count(*) FROM usage_ledger WHERE account_id=$1),'ack',(SELECT state FROM billing_usage_outbox WHERE account_id=$1),'invoices',(SELECT count(*) FROM billing_invoice_periods WHERE account_id=$1))::text",&[&account]).await.unwrap().get::<_,String>(0).parse().unwrap()
 }
 

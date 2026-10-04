@@ -53,16 +53,8 @@ impl TestUsageReconciler {
         parse_summary(&response, scope)
     }
 
-    async fn invoice_quantity(&self, scope: &Scope) -> Result<Option<i64>, Error> {
-        let Some(invoice) = scope.invoice.as_ref() else {
-            return Ok(None);
-        };
-        let subscription = scope.subscription.as_ref().ok_or(Error::Unavailable)?;
-        if !identifier(invoice, "in_") || !identifier(subscription, "sub_") {
-            return refused();
-        }
-        let response = self.read(&format!("v1/invoices/{invoice}"), &[]).await?;
-        invoice_identity(&response, scope)?;
+    /// Complete bounded line evidence is revalidated, not just its aggregate.
+    async fn invoice_lines(&self, invoice: &str, response: &Value) -> Result<Vec<Value>, Error> {
         let mut lines = Vec::new();
         let mut seen = HashSet::new();
         let mut page = response.get("lines").cloned().ok_or(Error::Unavailable)?;
@@ -105,6 +97,20 @@ impl TestUsageReconciler {
                 _ => return refused(),
             }
         }
+        Ok(lines)
+    }
+
+    async fn invoice_quantity(&self, scope: &Scope) -> Result<Option<i64>, Error> {
+        let Some(invoice) = scope.invoice.as_ref() else {
+            return Ok(None);
+        };
+        let subscription = scope.subscription.as_ref().ok_or(Error::Unavailable)?;
+        if !identifier(invoice, "in_") || !identifier(subscription, "sub_") {
+            return refused();
+        }
+        let response = self.read(&format!("v1/invoices/{invoice}"), &[]).await?;
+        invoice_identity(&response, scope)?;
+        let lines = self.invoice_lines(invoice, &response).await?;
         let mut selected = None;
         let mut prices = HashMap::new();
         // A bounded complete invoice is required. Fixed subscription charges,
@@ -190,7 +196,8 @@ impl TestUsageReconciler {
         }
         let final_invoice = self.read(&format!("v1/invoices/{invoice}"), &[]).await?;
         invoice_identity(&final_invoice, scope)?;
-        if response != final_invoice {
+        if response != final_invoice || lines != self.invoice_lines(invoice, &final_invoice).await?
+        {
             return refused();
         }
         Ok(selected)

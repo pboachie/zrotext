@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_rustls::TlsAcceptor;
 mod invoice_binding;
+mod pagination_drift;
 
 struct Reply {
     path: &'static str,
@@ -272,6 +273,10 @@ async fn complete_multiple_invoice_pages_select_usage_and_cache_unrelated_prices
         reply("/v1/prices/price_Synthetic", price()),
         reply("/v1/invoices/in_Synthetic", first),
         reply(
+            "/v1/invoices/in_Synthetic/lines",
+            json!({"object":"list","has_more":false,"data":[line("il_Selected",3)]}),
+        ),
+        reply(
             "/v1/billing/meters/mtr_Synthetic/event_summaries",
             summary(3),
         ),
@@ -279,7 +284,7 @@ async fn complete_multiple_invoice_pages_select_usage_and_cache_unrelated_prices
     let (worker, server) = tls(replies).await;
     assert_eq!(worker.observe(&scope()).await.unwrap(), (3, Some(3)));
     let paths = server.await.unwrap();
-    assert_eq!(paths.len(), 8);
+    assert_eq!(paths.len(), 9);
     let query = Url::parse(&format!("https://fixture.invalid{}", paths[3])).unwrap();
     assert!(
         query
