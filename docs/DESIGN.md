@@ -60,6 +60,7 @@ Setup presents an overview and separate access, SIM and pairing steps. Steps are
 ## Reference assets
 
 - [ZROtext mark](assets/zrotext-mark.svg): editable SVG used in the README.
+- [README banner](assets/zrotext-banner.svg) and [social preview](assets/zrotext-social-preview.svg): original SVGs built from the mark and palette. [`zrotext-social-preview.png`](assets/zrotext-social-preview.png) is a Chromium export of the preview SVG (1200x630) for the repository social-preview setting, which a maintainer uploads.
 - [Android app concept](assets/android-app-concept.png): browser-rendered phone artwork with the planned gateway interface.
 - [Fleet console concept](assets/fleet-console-concept.png): sample account, devices and message activity.
 - [Two-location concept](assets/two-location-concept.png): sample routing and database-authority view.
