@@ -102,8 +102,7 @@ function Test-ReducedOutput([string[]]$Lines) {
 # The unlock candidate is a non-default cargo feature: the default owner binary
 # must keep refusing the command (its suite above stays at 4), while the feature
 # build exercises the reviewed owner ceremonies and pure codec/crypto suites.
-$unlockSuites=@(@{Package='zrotext-owner';Passed=@(27)},@{Package='zrotext-root-material';Passed=@(86,8)})
-$unlockSuites=@(@{Package='zrotext-owner';Passed=@(39)},@{Package='zrotext-root-material';Passed=@(78,8)})
+$unlockSuites=@(@{Package='zrotext-owner';Passed=@(39)},@{Package='zrotext-root-material';Passed=@(100,8)})
 function Test-UnlockOutput([string[]]$Lines) {
     foreach($line in $Lines) {
         if($line -match '^test result: ' -and $line -notmatch '^test result: ok\. \d+ passed; 0 failed; 0 ignored;'){return $false}
@@ -137,14 +136,24 @@ function Test-UnlockOutput([string[]]$Lines) {
     foreach($bad in @(@($good[0]),($good+'test result: FAILED. 3 passed; 1 failed; 0 ignored;'),($good+'test result: ok. 1 passed; 0 failed; 2 ignored;'),($good+$good[1]))) {
         if(Test-ReducedOutput $bad){throw 'Reduced-rights summary refusal regression.'}
     }
-    $unlockGood=@('test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 86 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured')
+    $unlockGood=@('test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 100 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured')
     if(-not (Test-UnlockOutput $unlockGood)){throw 'Unlock summary acceptance regression.'}
+    $unlockPreviousProducer=@('test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 86 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured')
+    if(Test-UnlockOutput $unlockPreviousProducer){throw 'Obsolete producer-only unlock composition regression.'}
     $unlockBeforeAccountGenesis=@('test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 76 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured')
     if(Test-UnlockOutput $unlockBeforeAccountGenesis){throw 'Missing account genesis suite regression.'}
     $unlockBeforeStageEvidence=@('test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured')
     if(Test-UnlockOutput $unlockBeforeStageEvidence){throw 'Missing pre-account evidence suite regression.'}
-    $unlockGood=@('test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 78 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured')
-    if(-not (Test-UnlockOutput $unlockGood)){throw 'Unlock summary acceptance regression.'}
+    $unlockPreviousSigner=@('test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 78 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured')
+    if(Test-UnlockOutput $unlockPreviousSigner){throw 'Obsolete signer-only unlock composition regression.'}
+    $unlockMissingProducer=@('test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 90 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured')
+    if(Test-UnlockOutput $unlockMissingProducer){throw 'Missing composed account genesis suite regression.'}
+    $unlockMissingPreaccount=@('test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 88 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured')
+    if(Test-UnlockOutput $unlockMissingPreaccount){throw 'Missing composed pre-account evidence suite regression.'}
+    $unlockMissingRootSigner=@('test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 86 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured')
+    if(Test-UnlockOutput $unlockMissingRootSigner){throw 'Missing composed root contact signing suite regression.'}
+    $unlockMissingOwnerSigner=@('test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 100 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured')
+    if(Test-UnlockOutput $unlockMissingOwnerSigner){throw 'Missing composed owner contact signing suite regression.'}
     $unlockBeforeContact=@('test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured')
     if(Test-UnlockOutput $unlockBeforeContact){throw 'Missing contact signing suite regression.'}
     $unlockLegacy=@('test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 48 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured')
