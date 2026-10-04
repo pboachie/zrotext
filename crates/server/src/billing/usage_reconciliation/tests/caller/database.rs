@@ -58,7 +58,21 @@ pub(super) async fn seed(
     }
 }
 pub(super) async fn authority_snapshot(db: &Database, account: Uuid) -> Value {
-    db.query_one("SELECT json_build_object('limit',(SELECT limit_units FROM usage_quota_policies WHERE account_id=$1),'reserved',(SELECT reserved_units FROM usage_periods WHERE account_id=$1),'refunded',(SELECT refunded_units FROM usage_periods WHERE account_id=$1),'ledger',(SELECT count(*) FROM usage_ledger WHERE account_id=$1),'ack',(SELECT state FROM billing_usage_outbox WHERE account_id=$1),'invoices',(SELECT count(*) FROM billing_invoice_periods WHERE account_id=$1))::text",&[&account]).await.unwrap().get::<_,String>(0).parse().unwrap()
+    // Capture complete deterministic rows, not single-row or summed projections:
+    // multi-period fixtures must detect any accounting or acknowledgement mutation.
+    db.query_one(
+        "SELECT json_build_object( \
+         'policies',COALESCE((SELECT jsonb_agg(to_jsonb(p) ORDER BY metric) FROM usage_quota_policies p WHERE account_id=$1),'[]'::jsonb), \
+         'periods',COALESCE((SELECT jsonb_agg(to_jsonb(p) ORDER BY metric,period_start) FROM usage_periods p WHERE account_id=$1),'[]'::jsonb), \
+         'ledger',(SELECT count(*) FROM usage_ledger WHERE account_id=$1), \
+         'ledger_entries',COALESCE((SELECT jsonb_agg(to_jsonb(l) ORDER BY message_id,entry_kind) FROM usage_ledger l WHERE account_id=$1),'[]'::jsonb), \
+         'outbox',COALESCE((SELECT jsonb_agg(to_jsonb(o) ORDER BY message_id) FROM billing_usage_outbox o WHERE account_id=$1),'[]'::jsonb), \
+         'finalized',COALESCE((SELECT jsonb_agg(to_jsonb(f) ORDER BY message_id) FROM billing_usage_finalized f WHERE account_id=$1),'[]'::jsonb), \
+         'invoices',(SELECT count(*) FROM billing_invoice_periods WHERE account_id=$1), \
+         'invoice_periods',COALESCE((SELECT jsonb_agg(to_jsonb(i) ORDER BY id) FROM billing_invoice_periods i WHERE account_id=$1),'[]'::jsonb), \
+         'invoice_usage',COALESCE((SELECT jsonb_agg(to_jsonb(u) ORDER BY message_id) FROM billing_invoice_usage u WHERE account_id=$1),'[]'::jsonb))::text",
+        &[&account],
+    ).await.unwrap().get::<_,String>(0).parse().unwrap()
 }
 
 #[tokio::test]

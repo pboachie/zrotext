@@ -40,7 +40,7 @@ async fn invoice_observations_export_all_pages_prune_only_old_evidence_and_erase
     assert_eq!(server.await.unwrap().len(), 6);
     let before = authority_snapshot(&f.db, f.account).await;
     // Explicit historical fixture rows, not weakening the UPDATE-immutable gate.
-    for index in 1..=21i64 {
+    for index in 1..=21i32 {
         f.db.execute("INSERT INTO billing_invoice_usage_observations SELECT account_id,$1,period_id,policy_version,identity_digest,snapshot_digest,finalized_units,acknowledged_units,pending_units,review_units,open_units,provider_units,invoice_units,state,CASE WHEN $2=1 THEN clock_timestamp()-interval '181 days' ELSE clock_timestamp() END FROM billing_invoice_usage_observations WHERE account_id=$3 LIMIT 1",&[&Uuid::new_v4(),&index,&f.account]).await.unwrap();
     }
     assert_eq!(

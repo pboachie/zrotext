@@ -99,7 +99,7 @@ async fn refunded_reservation_without_finalized_charge_is_not_pending_liability(
     )
     .await
     .unwrap();
-    f.db.execute("INSERT INTO usage_ledger(account_id,message_id,metric,period_start,entry_kind,units) SELECT account_id,message_id,metric,period_start,'refund',units FROM usage_ledger WHERE account_id=$1 AND entry_kind='reserve'", &[&f.account]).await.unwrap();
+    f.db.execute("INSERT INTO usage_ledger(account_id,message_id,metric,period_start,entry_kind,units) SELECT account_id,message_id,metric,period_start,'refund',-units FROM usage_ledger WHERE account_id=$1 AND entry_kind='reserve'", &[&f.account]).await.unwrap();
     let before = authority_snapshot(&f.db, f.account).await;
     let (worker, server) = tls(responses(0)).await;
     assert_eq!(
