@@ -66,8 +66,13 @@ pub async fn prepare<'tx, 'connection>(
         "SELECT 1 FROM hosted_billing_ledger_bindings WHERE account_id=$1 AND namespace_id=$2 AND customer_id=$3 AND subscription_id=$4 AND ledger_mode='test' FOR SHARE",
         &[&authenticated_account,&namespace_id,&customer,&subscription],
     ).await.map_err(|_|StoreError::Unavailable)?.is_none() { return Err(pending()); }
-    // Match legacy ingress's customer-before-account order. No projection lock
-    // until the caller has obtained its canonical account lock below.
+    // Fence normal ingress as well as risk events, including previously absent
+    // subscriptions that existing reconciliation-row locks cannot protect.
+    // Reuse ingress's customer advisory lock before customer/account locks and
+    // retain it through the caller's commit. No projection lock is taken yet.
+    crate::billing::lock_customer(tx, &customer)
+        .await
+        .map_err(|_| StoreError::Unavailable)?;
     if tx.query_opt(
         "SELECT 1 FROM billing_customers WHERE account_id=$1 AND stripe_customer_id=$2 FOR SHARE",
         &[&authenticated_account,&customer],
