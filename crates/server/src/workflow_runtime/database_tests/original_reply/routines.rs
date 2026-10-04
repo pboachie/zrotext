@@ -10,6 +10,7 @@ use crate::workflow_runtime::routines::{
 use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 mod acceptance;
+mod authentication_profile;
 mod diagnostics;
 mod planning;
 mod transport;
