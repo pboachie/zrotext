@@ -15,7 +15,7 @@ const snapshot = value => JSON.parse(JSON.stringify(value));
 const ordered = value => Array.isArray(value) ? value.map(ordered) : value && typeof value === 'object'
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, ordered(value[key])])) : value;
 const encode = value => JSON.stringify(ordered(value));
-const terminal = new Set(['prepared', 'cancelled', 'expired', 'blocked']);
+const terminal = new Set(['cancelled', 'expired', 'blocked']);
 
 /** Explicitly installed customer timer; never a relay actor or renderer. */
 export class ScheduledRunner {
@@ -34,11 +34,17 @@ export class ScheduledRunner {
         action_id TEXT PRIMARY KEY, identity TEXT NOT NULL, state TEXT NOT NULL,
         next_ms INTEGER NOT NULL, request_id TEXT, result TEXT, lease_id TEXT,
         lease_until INTEGER NOT NULL DEFAULT 0
-      );`);
-    this.#active = enabled === true;
+      );
+      CREATE TABLE IF NOT EXISTS scheduler_lifecycle (id INTEGER PRIMARY KEY CHECK(id=1), erased INTEGER NOT NULL CHECK(erased IN (0,1)));
+      INSERT OR IGNORE INTO scheduler_lifecycle VALUES(1,0);
+      CREATE TABLE IF NOT EXISTS scheduler_retired (action_id TEXT PRIMARY KEY);`);
+    // Older installations could label an uncertain Send as blocked/expired.
+    // A durable request without an authoritative cancellation is not rollback.
+    this.#db.exec("UPDATE scheduled_actions SET state='unknown' WHERE state IN ('blocked','expired') AND request_id IS NOT NULL;");
+    this.#active = enabled === true && this.#db.prepare('SELECT erased FROM scheduler_lifecycle WHERE id=1').get().erased === 0;
   }
-  #operation() { if (!this.#active) fail('disabled'); return this.#epoch; }
-  #check(epoch) { if (!this.#active || this.#epoch !== epoch) fail('disabled'); }
+  #operation() { if (!this.#active || this.#db.prepare('SELECT erased FROM scheduler_lifecycle WHERE id=1').get().erased) fail('disabled'); return this.#epoch; }
+  #check(epoch) { if (!this.#active || this.#epoch !== epoch || this.#db.prepare('SELECT erased FROM scheduler_lifecycle WHERE id=1').get().erased) fail('disabled'); }
   async #ready(context) {
     const ready = await this.#client.readiness();
     for (const method of ['workflow.action.status', 'workflow.action.schedule', 'workflow.action.send']) {
@@ -57,12 +63,18 @@ export class ScheduledRunner {
     const pending = { context_id: context, key: params.key, occurrence: null, schedule_request: params.request_id, params };
     this.#db.exec('BEGIN IMMEDIATE');
     try {
+      for (const row of this.#db.prepare('SELECT identity FROM scheduled_actions').all()) {
+        const prior = JSON.parse(row.identity).params;
+        if (prior.series_id === params.series_id && prior.ordinal !== params.ordinal && prior.key.action_id === params.key.action_id) fail('approval_reused');
+        if (prior.series_id === params.series_id && prior.ordinal === params.ordinal && encode(prior) !== encode(params)) fail('changed_schedule');
+      }
+      if (this.#db.prepare('SELECT 1 FROM scheduler_retired WHERE action_id=?').get(params.key.action_id)) fail('retired');
       const row = this.#db.prepare('SELECT identity FROM scheduled_actions WHERE action_id=?').get(params.key.action_id);
       if (row) {
         const stored = JSON.parse(row.identity);
         if (stored.context_id !== context || encode(stored.params) !== encode(params)) fail('changed_schedule');
       } else {
-        if (this.#db.prepare('SELECT count(*) AS n FROM scheduled_actions').get().n >= 1000) fail('journal_full');
+        if (this.#db.prepare('SELECT (SELECT count(*) FROM scheduled_actions)+(SELECT count(*) FROM scheduler_retired) AS n').get().n >= 1000) fail('journal_full');
         // Reserve bounded metadata before the scheduling mutation. A crash or
         // response loss can be resumed only with this exact schedule request.
         this.#db.prepare("INSERT INTO scheduled_actions(action_id,identity,state,next_ms) VALUES(?,?,'schedule_unknown',0)")
@@ -72,6 +84,7 @@ export class ScheduledRunner {
     } catch (error) { this.#db.exec('ROLLBACK'); throw error; }
     this.#check(epoch);
     const result = await this.#client.call('workflow.action.schedule', params);
+    this.#check(epoch);
     const occurrence = result.result;
     const identity = encode({ context_id: context, key: params.key, occurrence,
       schedule_request: params.request_id, params });
@@ -86,6 +99,46 @@ export class ScheduledRunner {
     this.#db.prepare("UPDATE scheduled_actions SET identity=?,state=?,next_ms=? WHERE action_id=? AND state='schedule_unknown'")
       .run(identity, state, occurrence.opens_at_ms ?? occurrence.expires_at_ms, params.key.action_id);
     return this.inspect(params.key.action_id);
+  }
+  /** Every recurrence supplies a distinct owner-approved action; no approval inheritance. */
+  async enqueueOccurrence(params) {
+    validateWorkflowRequest('workflow.action.schedule', params);
+    // The real service checks the exact current approval, policy and pacing.
+    return this.enqueue(params);
+  }
+  /** Bounded customer-local metadata takeout; never credentials or content. */
+  exportPage({ after = '', limit = 20 } = {}) {
+    if (typeof after !== 'string' || after.length > 36 || !Number.isInteger(limit) || limit < 1 || limit > 100) fail('invalid_page');
+    const rows = this.#db.prepare("SELECT action_id,identity,state,request_id,result FROM (SELECT action_id,identity,state,request_id,result FROM scheduled_actions UNION ALL SELECT action_id,NULL AS identity,'retired' AS state,NULL AS request_id,NULL AS result FROM scheduler_retired) WHERE action_id>? ORDER BY action_id LIMIT ?").all(after, limit + 1);
+    const items = rows.slice(0, limit).map(row => ({ action_id: row.action_id, identity: row.identity ? JSON.parse(row.identity) : null, state: row.state, request_id: row.request_id, result: row.result ? JSON.parse(row.result) : null }));
+    return { items, next: rows.length > limit ? items.at(-1).action_id : null };
+  }
+  /** Prune only resolved terminal records after their actual occurrence expiry.
+   * Unknown/prepared work remains reconciliation data, never silently expired. */
+  retain({ beforeMs, limit = 20 } = {}) {
+    if (!Number.isSafeInteger(beforeMs) || beforeMs < 0 || beforeMs > Date.now() || !Number.isInteger(limit) || limit < 1 || limit > 100) fail('invalid_retention');
+    this.#db.exec('BEGIN IMMEDIATE');
+    try {
+      const rows = this.#db.prepare("SELECT action_id,identity FROM scheduled_actions WHERE (state='cancelled' OR (state IN ('expired','blocked') AND request_id IS NULL)) AND lease_until=0 ORDER BY action_id").all();
+      let count = 0;
+      for (const row of rows) {
+        const occurrence = JSON.parse(row.identity).occurrence;
+        if (!occurrence || occurrence.expires_at_ms > beforeMs || count >= limit) continue;
+        this.#db.prepare('INSERT OR IGNORE INTO scheduler_retired VALUES(?)').run(row.action_id);
+        this.#db.prepare('DELETE FROM scheduled_actions WHERE action_id=?').run(row.action_id);
+        count++;
+      }
+      this.#db.exec('COMMIT'); return count;
+    } catch (error) { this.#db.exec('ROLLBACK'); throw error; }
+  }
+  /** Erase all local metadata and permanently disable this installation.
+   * Does not retract remote work or erase filesystem/WAL/backups forensically. */
+  erase() {
+    this.disable();
+    this.#db.exec('BEGIN IMMEDIATE');
+    try {
+      this.#db.exec('UPDATE scheduler_lifecycle SET erased=1 WHERE id=1; DELETE FROM scheduled_actions; DELETE FROM scheduler_retired; COMMIT;');
+    } catch (error) { this.#db.exec('ROLLBACK'); throw error; }
   }
   inspect(action) {
     const row = this.#db.prepare('SELECT state,request_id,result FROM scheduled_actions WHERE action_id=?').get(action);
@@ -121,20 +174,22 @@ export class ScheduledRunner {
       const status = (await this.#client.call('workflow.action.status', { request_id: randomUUID(), context_id: context, action_id: key.action_id })).result;
       this.#check(epoch);
       if (['account_id','action_id','revision','binding_digest'].some(field => status.key[field] !== key[field])) fail('action_changed');
-      if (status.phase === 'dispatching' && status.delivery.availability === 'available') {
+      if (status.phase === 'cancelled' || (status.delivery.availability === 'available' && status.delivery.state === 'cancelled')) {
+        this.#finish(row, 'cancelled', status.delivery.availability === 'available' ? status.delivery : null);
+      } else if (status.phase === 'dispatching' && status.delivery.availability === 'available') {
         // The public occurrence DTO intentionally contains no dispatch ID.
         // Discover it only through the server's exact-action delivery projection.
         this.#finish(row, 'prepared', { state: 'prepared', message_id: status.delivery.message_id, dispatch_id: status.delivery.dispatch_id });
-      } else if (['dispatching', 'unknown'].includes(status.phase) && status.delivery.availability !== 'available') {
+      } else if (status.phase === 'unknown' || (status.phase === 'dispatching' && status.delivery.availability !== 'available')) {
         // Unavailable projection metadata cannot prove rollback or completion.
         // Retain the original send identity and continue status-only recovery.
-        this.#finish(row, 'unknown', null);
-      } else if (status.phase !== 'approved') {
-        this.#finish(row, 'blocked', null);
-      } else if (row.state === 'unknown') {
+        this.#finish(row, 'unknown', row.result ? JSON.parse(row.result) : null);
+      } else if (row.state === 'unknown' || row.state === 'prepared') {
         // A lost response cannot prove rollback. Reconcile only; no automatic
         // exact replay or fresh send identity after uncertainty, even on restart.
-        this.#finish(row, 'unknown', null);
+        this.#finish(row, row.state, row.result ? JSON.parse(row.result) : null);
+      } else if (status.phase !== 'approved') {
+        this.#finish(row, 'blocked', null);
       } else if (Date.now() >= occurrence.expires_at_ms) {
         // Local wall time is only a conservative stop/wakeup hint. Server time
         // and current authority remain the effect predicates on every call.
@@ -154,7 +209,8 @@ export class ScheduledRunner {
       if (error instanceof SchedulerError && error.code === 'disabled') {
         // Stop pending work without changing its durable waiting/unknown truth.
         this.#db.prepare('UPDATE scheduled_actions SET lease_id=NULL,lease_until=0 WHERE action_id=? AND lease_id=?').run(action, row.lease);
-      } else if (row.state === 'unknown' || (error instanceof WorkflowToolError && error.state === 'unknown')) this.#finish(row, 'unknown', null);
+      } else if (row.state === 'unknown' || row.state === 'prepared') this.#finish(row, row.state, row.result ? JSON.parse(row.result) : null);
+      else if (error instanceof WorkflowToolError && error.state === 'unknown') this.#finish(row, 'unknown', null);
       else this.#finish(row, 'blocked', null);
       throw error;
     }
@@ -179,7 +235,7 @@ export class ScheduledRunner {
     this.#running = true;
     try {
       while (!signal?.aborted && this.#active) {
-        const due = this.#db.prepare("SELECT action_id FROM scheduled_actions WHERE state IN ('waiting','unknown') AND next_ms<=? ORDER BY next_ms,action_id LIMIT 20").all(Date.now());
+        const due = this.#db.prepare("SELECT action_id FROM scheduled_actions WHERE state IN ('waiting','unknown','prepared') AND next_ms<=? ORDER BY next_ms,action_id LIMIT 20").all(Date.now());
         for (const row of due) {
           if (signal?.aborted || !this.#active) break;
           await this.advance(row.action_id).catch(() => {}); // redacted durable state remains inspectable
