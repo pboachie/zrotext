@@ -187,6 +187,11 @@ at that source's original observation time, compares all reader/root records,
 and invokes the genuine unsigned encoder. This is not a live current source
 brand. Drift, missing/pruned history or mismatched observations refuses positive
 handoff. Final owner/session checks surround positive publication.
+The source's signed_until_ms is the independently verified minimum of manifest,
+reader and root-writer expiries; it is not the requested intent end time. Pending
+until_ms must equal the original requested_until_ms and may be strictly shorter
+than that source ceiling. A forged expanded/contracted ceiling or an interval
+changed from the original owner intent refuses.
 
 The public proposal download has exactly create and pending, preserving the
 original Create and bounded Pending JSON. The displayed `contact-reader-sign`
