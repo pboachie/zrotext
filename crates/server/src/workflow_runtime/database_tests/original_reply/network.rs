@@ -240,6 +240,38 @@ fn refusal_stage(bytes: &[u8]) -> &'static str {
     }
     "unavailable"
 }
+fn routine_timing(bytes: &[u8]) -> Option<(u32, u32, u32)> {
+    if bytes.len() > 1024 {
+        return None;
+    }
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut records = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("original routine timing request_ms="));
+    let record = records.next()?;
+    if records.next().is_some() {
+        return None;
+    }
+    let (request, rest) = record.split_once(" total_ms=")?;
+    let (total, remaining) = rest.split_once(" remaining_ms=")?;
+    fn number(text: &str, maximum: u32) -> Option<u32> {
+        let parsed = text.parse::<u32>().ok()?;
+        (parsed <= maximum && parsed.to_string() == text).then_some(parsed)
+    }
+    Some((
+        number(request, 60000)?,
+        number(total, 60000)?,
+        number(remaining, 10000)?,
+    ))
+}
+#[test]
+fn routine_timing_accepts_only_canonical_bounded_numbers() {
+    assert_eq!(
+        routine_timing(b"original routine timing request_ms=15 total_ms=9999 remaining_ms=1\n"),
+        Some((15, 9999, 1))
+    );
+    for input in [b"original routine timing request_ms=synthetic-private-canary total_ms=10 remaining_ms=1\n".as_slice(), b"original routine timing request_ms=01 total_ms=10 remaining_ms=1\n".as_slice(), b"original routine timing request_ms=60001 total_ms=10 remaining_ms=1\n".as_slice(), b"original routine timing request_ms=1 total_ms=10 remaining_ms=1;synthetic-private-canary\n".as_slice(), b"original routine timing request_ms=1 total_ms=10 remaining_ms=1\noriginal routine timing request_ms=1 total_ms=10 remaining_ms=1\n".as_slice()]{assert_eq!(routine_timing(input),None);}
+}
 fn provider_refusal(bytes: &[u8]) -> &'static str {
     if bytes.len() > 1024 {
         return "unavailable";
@@ -428,11 +460,12 @@ pub(super) async fn run_driver(input: Value, cwd: &Path, fixture: Driver) -> Val
         .unwrap();
     assert!(
         output.status.success(),
-        "original reader driver refused: phase={} code={} provider={} invocations={}",
+        "original reader driver refused: phase={} code={} provider={} invocations={} timing={:?}",
         refusal_stage(&output.stderr),
         refusal_diagnostic(&output.stderr),
         provider_refusal(&output.stderr),
-        provider_invocations(&output.stderr)
+        provider_invocations(&output.stderr),
+        routine_timing(&output.stderr)
     );
     assert!(
         known_runtime_stderr(&output.stderr),

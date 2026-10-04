@@ -56,19 +56,22 @@ function transport(f){
       reject(Error());return;}
     let operation;try{operation=JSON.parse(init.body);}catch{operation={};}
     const labels=endpoint.pathname==='/v1/reply-events'?{current:'original_current',read:'original_read',page:'original_page'}:endpoint.pathname==='/v1/workflow/tools'?{'workflow.context.metadata':'context_metadata','workflow.context.content':'context_content'}:{current:'routine_current',admit_original:'original_admit',current_original:'call_current',produced:'produced'};
-    stage=labels[operation.operation??operation.method]??'transport';settlement='pending';
-    const aborted=()=>{settlement='aborted';};init.signal?.addEventListener('abort',aborted,{once:true});
-    const failed=error=>{init.signal?.removeEventListener('abort',aborted);if(settlement==='pending')settlement='transport_failed';reject(error);};
+    const started=performance.now();
+    stage=labels[operation.operation??operation.method]??'transport';settlement='pending';requestStarted=started;
+    const elapsed=()=>{if(requestStarted===started)lastRequestMs=clippedElapsed(started);};
+    const aborted=()=>{elapsed();settlement='aborted';};init.signal?.addEventListener('abort',aborted,{once:true});
+    const failed=error=>{elapsed();init.signal?.removeEventListener('abort',aborted);if(settlement==='pending')settlement='transport_failed';reject(error);};
     const req=request({hostname:origin.hostname,port,path:endpoint.pathname,method:'POST',ca:f.ca_pem,headers:init.headers,
       signal:init.signal,rejectUnauthorized:true},response=>{
       settlement=[200,400,401,403,409,429,503].includes(response.statusCode)?`http_${response.statusCode}`:'other_status';
       const chunks=[];let size=0;response.on('error',failed);
       response.on('data',chunk=>{size+=chunk.length;if(size>524288){req.destroy();failed(Error());}else chunks.push(chunk);});
-      response.on('end',()=>{init.signal?.removeEventListener('abort',aborted);resolve(new Response(Buffer.concat(chunks),{status:response.statusCode,headers:response.headers}));});
+      response.on('end',()=>{elapsed();init.signal?.removeEventListener('abort',aborted);resolve(new Response(Buffer.concat(chunks),{status:response.statusCode,headers:response.headers}));});
     });req.on('error',failed);req.end(init.body);
   });return {origin:origin.origin,fetch};
 }
-let providerRefusal=null,invocationMarker=null;
+let providerRefusal=null,invocationMarker=null,requestStarted=null,engineStarted=null,lastRequestMs=0;
+const clippedElapsed=start=>start===null?0:Math.min(60000,Math.max(0,Math.floor(performance.now()-start)));
 let stage='input',settlement='pending',wire='',engine,provider,store;
 try{
   for await(const chunk of process.stdin){wire+=chunk;if(Buffer.byteLength(wire)>262144)throw Error();}
@@ -101,7 +104,7 @@ try{
       store,provider,originalClient,cryptoContext:{manifest,inputScope:scope,inputPrivateKey:privateKey,archiveReaderId:hex(f.archive_reader_id)}});
     const marker=join(directory,'original-routine-invocations');
     const before=existsSync(marker)?readFileSync(marker,'utf8'):'';
-    stage='engine_execute';const result=await engine.executeOriginal({request_id:f.request_id,context_id:f.routine_policy.context_id,policy_id:f.routine_policy.policy_id,event_id:f.event_id});
+    stage='engine_execute';engineStarted=performance.now();const result=await engine.executeOriginal({request_id:f.request_id,context_id:f.routine_policy.context_id,policy_id:f.routine_policy.policy_id,event_id:f.event_id});
     stage='result_assert';const after=existsSync(marker)?readFileSync(marker,'utf8'):'';
     if(f.phase==='exercise_original'){assert.equal(result.state,'awaiting_owner_publication');assert.equal(after,before+'x');}
     else{assert.equal(result.call.execute_once,false);assert.equal(after,before);}
@@ -118,5 +121,9 @@ try{
     try{fd=openSync(invocationMarker,constants.O_RDONLY|(constants.O_NOFOLLOW??0)|(constants.O_NONBLOCK??0));}catch(error){if(error?.code==='ENOENT')invocations='0';else throw error;}
     if(fd!==undefined){const info=fstatSync(fd);if(info.isFile()&&info.nlink===1&&info.size>=0&&info.size<=2){marker=Buffer.alloc(3);const size=readSync(fd,marker,0,3,0);if(size===info.size&&size<=2&&marker.subarray(0,size).every(byte=>byte===120))invocations=String(size);}}
   }}catch{}finally{marker?.fill(0);if(fd!==undefined)try{closeSync(fd);}catch{}}
-  process.stderr.write(`original routine invocations=${invocations}\n`);process.exitCode=1;
+  process.stderr.write(`original routine invocations=${invocations}\n`);
+  const totalMs=clippedElapsed(engineStarted),requestMs=requestStarted===null?0:(settlement==='pending'?clippedElapsed(requestStarted):lastRequestMs);
+  // This is only the known synthetic fixture budget, never an authority claim.
+  const remainingMs=Math.max(0,10000-totalMs);
+  process.stderr.write(`original routine timing request_ms=${requestMs} total_ms=${totalMs} remaining_ms=${remainingMs}\n`);process.exitCode=1;
 }finally{engine?.withdraw();provider?.close();store?.close();}
