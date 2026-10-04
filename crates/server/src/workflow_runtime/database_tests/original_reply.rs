@@ -279,3 +279,5 @@ mod network;
 
 mod races;
 mod registry_binding;
+
+mod join_order;
