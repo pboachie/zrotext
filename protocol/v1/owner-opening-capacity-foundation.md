@@ -7,6 +7,12 @@ Tests install the candidate explicitly into disposable schemas. No mutation
 route, SDK caller, application journey, interval-overlap booking, external
 calendar, provider call or SMS dispatch is enabled by this foundation.
 
+Current conversation storage admits at most one pending, install-pending or
+active interval per account. The maintained activation authorizer retains that
+account-wide boundary. Capacity race tests use genuine signed replies in one
+eligible interval; they prove atomic unit ownership within that scope.
+Multi-peer intake and complete application journeys under #759 remain unaccepted.
+
 The current authenticated account owner selects exact current encrypted
 workflow context IDs, revisions and digests. The maintained selected-reader
 authorizer requires writing authority; a permanent context stop fence also
