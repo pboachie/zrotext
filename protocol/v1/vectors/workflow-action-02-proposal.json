@@ -1,0 +1,2958 @@
+{
+  "status": "PROPOSED UNAVAILABLE PROFILE; conformance only; no route, reader, grant or eligibility authority",
+  "legacy01_digest_unchanged": "9272cf1119375b3b8431e4fc338bb8b3f1bcf674b67b83a0d15aec773ef4a222",
+  "positives": [
+    {
+      "name": "owner-local",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "owner_local",
+          "role": 2,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202"
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "canonical": "{\"action\":{\"account_id\":\"00000000-0000-0000-0000-000000000001\",\"action_id\":\"00000000-0000-0000-0000-00000000000a\",\"authority_generation\":1,\"commitment\":\"sensitive\",\"content_digest\":\"abababababababababababababababababababababababababababababababab\",\"content_ref\":\"00000000-0000-0000-0000-00000000000d\",\"content_version\":1,\"expires_at\":2000000300,\"line_id\":\"00000000-0000-0000-0000-00000000000b\",\"not_before\":2000000000,\"purpose_id\":\"00000000-0000-0000-0000-000000000001\",\"recipient_id\":\"00000000-0000-0000-0000-00000000000c\",\"revision\":1,\"routine_id\":\"00000000-0000-0000-0000-00000000000e\",\"timezone\":\"UTC\",\"window_id\":\"fixture-window\"},\"disclosure\":{\"mode\":\"provider_plaintext\",\"recipient_commitment\":\"5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7\",\"request_digest\":\"0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb\"},\"profile\":\"workflow-action-02\",\"reader\":{\"key_id\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"kind\":\"owner_local\",\"manifest_digest\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"manifest_version\":1,\"role\":2,\"trust_generation\":1},\"route\":{\"adapter\":\"telnyx-sms-v2\",\"eligibility_digest\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"eligibility_policy_id\":\"00000000-0000-0000-0000-000000000016\",\"eligibility_policy_version\":1,\"exposure_policy_version\":1,\"exposure_route_policy_id\":\"00000000-0000-0000-0000-000000000017\",\"kind\":\"provider\",\"messaging_profile_id\":\"00000000-0000-0000-0000-000000000003\",\"organization_id\":\"00000000-0000-0000-0000-000000000002\",\"route_fingerprint\":\"2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0\",\"route_id\":\"00000000-0000-0000-0000-000000000014\",\"route_version\":1,\"sender_config_id\":\"00000000-0000-0000-0000-000000000015\",\"sender_config_version\":1}}",
+      "canonical_bytes": 1816,
+      "binding_digest": "0a5b3363d9d9ff8ea8dcb0a1b1eebe137a895abf0821e6b6e3635946136e4ade"
+    },
+    {
+      "name": "customer-selected",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "canonical": "{\"action\":{\"account_id\":\"00000000-0000-0000-0000-000000000001\",\"action_id\":\"00000000-0000-0000-0000-00000000000a\",\"authority_generation\":1,\"commitment\":\"sensitive\",\"content_digest\":\"abababababababababababababababababababababababababababababababab\",\"content_ref\":\"00000000-0000-0000-0000-00000000000d\",\"content_version\":1,\"expires_at\":2000000300,\"line_id\":\"00000000-0000-0000-0000-00000000000b\",\"not_before\":2000000000,\"purpose_id\":\"00000000-0000-0000-0000-000000000001\",\"recipient_id\":\"00000000-0000-0000-0000-00000000000c\",\"revision\":1,\"routine_id\":\"00000000-0000-0000-0000-00000000000e\",\"timezone\":\"UTC\",\"window_id\":\"fixture-window\"},\"disclosure\":{\"mode\":\"provider_plaintext\",\"recipient_commitment\":\"5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7\",\"request_digest\":\"0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb\"},\"profile\":\"workflow-action-02\",\"reader\":{\"grant_id\":\"00000000-0000-0000-0000-00000000001e\",\"grant_version\":1,\"key_id\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"kind\":\"customer_selected\",\"manifest_digest\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"manifest_version\":1,\"role\":3,\"trust_generation\":1},\"route\":{\"adapter\":\"telnyx-sms-v2\",\"eligibility_digest\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"eligibility_policy_id\":\"00000000-0000-0000-0000-000000000016\",\"eligibility_policy_version\":1,\"exposure_policy_version\":1,\"exposure_route_policy_id\":\"00000000-0000-0000-0000-000000000017\",\"kind\":\"provider\",\"messaging_profile_id\":\"00000000-0000-0000-0000-000000000003\",\"organization_id\":\"00000000-0000-0000-0000-000000000002\",\"route_fingerprint\":\"2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0\",\"route_id\":\"00000000-0000-0000-0000-000000000014\",\"route_version\":1,\"sender_config_id\":\"00000000-0000-0000-0000-000000000015\",\"sender_config_version\":1}}",
+      "canonical_bytes": 1890,
+      "binding_digest": "ec1674beda783aad0b18c2449b8ef3a274a99f4bd0ef6b30d72f260f296fd183"
+    }
+  ],
+  "binding_mutations": [
+    {
+      "field": "action.account_id",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000064",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "198ab3929beb6cc682d8ecd498a61bd894d7a1f156a32acdf9d9a639241653b3"
+    },
+    {
+      "field": "action.action_id",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-000000000064",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "d9da476a69b9a84946347a7e7383dc41f4964ced475b9609797c6041e58c00ad"
+    },
+    {
+      "field": "action.revision",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 2,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "e834257c70220717ca67728ac8dd7d0c714262587bc848bec0e92fc82a9eadd9"
+    },
+    {
+      "field": "action.line_id",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-000000000064",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "ca8d328be470fa6248ba70a4fc7d7eb8375f8f40f21d517085dfb6846a35766c"
+    },
+    {
+      "field": "action.recipient_id",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-000000000064",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "f815d51a10fadb49151ce094d57d3466ff392a8a44922d11e1911f757815b3be"
+    },
+    {
+      "field": "action.content_ref",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-000000000064",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "5601f42c9d44dd10199ac105bcd539314310440271580122881e7efdd921c2bc"
+    },
+    {
+      "field": "action.content_digest",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "d4fa3c91c8ab45b96d5160a9e24596436b487811d46cf244c16ce5280acf4bf9"
+    },
+    {
+      "field": "action.content_version",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 2,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "c5a1189388b644d73ca52006c5b6e3b5f859bf41f58175de6066fc5e60bf234f"
+    },
+    {
+      "field": "action.not_before",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000001,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "04b01b633abb7dbfbb925a2c280d39e8a320eb0b5cbde45b0cb5c1f06ff6dfe7"
+    },
+    {
+      "field": "action.expires_at",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000301,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "a0263e1890ad6ba4edf82d0ecf63ca400c6fc949af2046986a9de2e848745d4a"
+    },
+    {
+      "field": "action.timezone",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "Etc/UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "29a7b0fb9885ecb1741e69c071b2a111bb737f5cd71a906b9e910d298660b179"
+    },
+    {
+      "field": "action.window_id",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "other-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "d206ba31ab48c4924fe68b2ffdaa9f81376dfb8ae72031f4b0efd1a6ec0c0c95"
+    },
+    {
+      "field": "action.routine_id",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-000000000064",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "6a2e8f73bd3a04db1840b98f2a0fdf0fa008b16348512b9512696ffe0083ef57"
+    },
+    {
+      "field": "action.authority_generation",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 2,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "47bc61c509a4e5d720f2402b0506ffabfd2a32b8729d69a232203ad7078e682c"
+    },
+    {
+      "field": "action.commitment",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "informational"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "315a33c08c79b5585c4974ab009ec56728d9c66ca04d0e65ef20defbbc48557a"
+    },
+    {
+      "field": "route.route_id",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000064",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "3af6db9a6dea9ff75329a49de149c5ab853e281d4d89d0a926db4e34a2d506cf"
+    },
+    {
+      "field": "route.route_version",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 2,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "debadc996ebb62d9d14669e9d4cf63ae02ab3dd7c023239f4b4ad4162c05a266"
+    },
+    {
+      "field": "route.organization_id",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000064",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "ec2ae4d77e4b34088c6b5c25faa32f4d302f7a1169af54db85af3e47c199359b"
+    },
+    {
+      "field": "route.messaging_profile_id",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000064",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "e057c5678f372f5c06adb8963281830a2a2ae75fb333b87a5edd84355c1e6b11"
+    },
+    {
+      "field": "route.sender_config_id",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000064",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "0ef55a18a87189e3a9007dd756b8139d798ac3b88572300bca9e7a62f6eea049"
+    },
+    {
+      "field": "route.sender_config_version",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 2,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "d8fc3569cbc7184ae02a455f0a7ea489ed5fdd93cae81fce0a620869dd8a4702"
+    },
+    {
+      "field": "route.route_fingerprint",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "0fab05758c925b30c31d779507a99bd2f85da54fc9b5889b1b525251ad379c9d"
+    },
+    {
+      "field": "route.eligibility_policy_id",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000064",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "badbbf0263dc9258fe3ce613aeea8cdb384e7536daf41101f5b90b646bea52d6"
+    },
+    {
+      "field": "route.eligibility_policy_version",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 2,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "1dfc5b673a7826494b0b5d9c18b08a4f62225dadb5a37abbcdd4132d5be72f09"
+    },
+    {
+      "field": "route.eligibility_digest",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "cdbac0431a12953d8a42d8b9a63e7eadd32ccf5cd666ae83bc6358c1a9468078"
+    },
+    {
+      "field": "route.exposure_route_policy_id",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000064",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "901d3f42b1310646a58db236a8e023bef57b2fc4fa9e807a1860c1ac7da0c031"
+    },
+    {
+      "field": "route.exposure_policy_version",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 2
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "7fa1c03d152cb4695df539eaa9aee4183c5b3b97ddaec3d6a4053a1fd1c6c3fe"
+    },
+    {
+      "field": "reader.key_id",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "c0ee1738fb868e7a1b2150bef831f4bce56001cb7098de8415721d9c376b4d2f"
+    },
+    {
+      "field": "reader.trust_generation",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 2,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "24f82333ee3924c668f6a4e9a325701296cc0200a228f92df22059a20b09897d"
+    },
+    {
+      "field": "reader.manifest_version",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 2,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "5c75be4a5ed68da5f79f5502a5f8259398e3bd57ba0323cc4489a8e08c5d20e6"
+    },
+    {
+      "field": "reader.manifest_digest",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "f7f34d84b46ed120ca00888f3d415637044d702ea4bc48f9d4a78d216b178b2d"
+    },
+    {
+      "field": "reader.grant_id",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-000000000064",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "c78505c3d726832cb4ac920ab8659dc7e3c9c8b08bebaba52b97a6c604cb7bea"
+    },
+    {
+      "field": "reader.grant_version",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 2
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "79f6162eba979025e9bba274a62b4083386e7b65947990985d48bd851ee6583d"
+    },
+    {
+      "field": "disclosure.recipient_commitment",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "binding_digest": "c335d50b9fc1d2f0a3560650d38f64f5964a2faa56fc07eaf202a6ea90f345d2"
+    },
+    {
+      "field": "disclosure.request_digest",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef"
+        }
+      },
+      "binding_digest": "bfb659fba9a6848320127230c8f4e603aa5fa47d05c3cfd4f478e9b2408768fa"
+    }
+  ],
+  "negative_grammar": [
+    {
+      "name": "unknown-profile",
+      "input": {
+        "profile": "workflow-action-99",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "owner_local",
+          "role": 2,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202"
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "expected": "reject"
+    },
+    {
+      "name": "extra-top-key",
+      "input": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "owner_local",
+          "role": 2,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202"
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        },
+        "authorized": true
+      },
+      "expected": "reject"
+    },
+    {
+      "name": "missing-disclosure",
+      "input": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "owner_local",
+          "role": 2,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202"
+        }
+      },
+      "expected": "reject"
+    },
+    {
+      "name": "nil-route",
+      "input": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000000",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "owner_local",
+          "role": 2,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202"
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "expected": "reject"
+    },
+    {
+      "name": "uppercase-digest",
+      "input": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "owner_local",
+          "role": 2,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202"
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "expected": "reject"
+    },
+    {
+      "name": "unsafe-generation",
+      "input": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "owner_local",
+          "role": 2,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 9007199254740992,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202"
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "expected": "reject"
+    },
+    {
+      "name": "boolean-generation",
+      "input": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "owner_local",
+          "role": 2,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": true,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202"
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "expected": "reject"
+    },
+    {
+      "name": "fractional-version",
+      "input": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1.5,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "owner_local",
+          "role": 2,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202"
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "expected": "reject"
+    },
+    {
+      "name": "role-kind-mismatch",
+      "input": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "owner_local",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202"
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "expected": "reject"
+    },
+    {
+      "name": "owner-extra-grant",
+      "input": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "owner_local",
+          "role": 2,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "expected": "reject"
+    },
+    {
+      "name": "implicit-disclosure",
+      "input": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "owner_local",
+          "role": 2,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202"
+        },
+        "disclosure": {
+          "mode": "automatic",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "expected": "reject"
+    },
+    {
+      "name": "oversize-timezone",
+      "input": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "owner_local",
+          "role": 2,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202"
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "expected": "reject"
+    },
+    {
+      "name": "nonascii-window",
+      "input": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "\u00e9",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "owner_local",
+          "role": 2,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202"
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "expected": "reject"
+    },
+    {
+      "name": "millisecond-overflow-range",
+      "input": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 9007199254741,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "owner_local",
+          "role": 2,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202"
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "expected": "reject"
+    },
+    {
+      "name": "extra-route-url",
+      "input": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1,
+          "url": "https://fixture.example"
+        },
+        "reader": {
+          "kind": "owner_local",
+          "role": 2,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202"
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "expected": "reject"
+    },
+    {
+      "name": "duplicate-top-key",
+      "raw": "{\"action\":{\"account_id\":\"00000000-0000-0000-0000-000000000001\",\"action_id\":\"00000000-0000-0000-0000-00000000000a\",\"authority_generation\":1,\"commitment\":\"sensitive\",\"content_digest\":\"abababababababababababababababababababababababababababababababab\",\"content_ref\":\"00000000-0000-0000-0000-00000000000d\",\"content_version\":1,\"expires_at\":2000000300,\"line_id\":\"00000000-0000-0000-0000-00000000000b\",\"not_before\":2000000000,\"purpose_id\":\"00000000-0000-0000-0000-000000000001\",\"recipient_id\":\"00000000-0000-0000-0000-00000000000c\",\"revision\":1,\"routine_id\":\"00000000-0000-0000-0000-00000000000e\",\"timezone\":\"UTC\",\"window_id\":\"fixture-window\"},\"disclosure\":{\"mode\":\"provider_plaintext\",\"recipient_commitment\":\"5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7\",\"request_digest\":\"0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb\"},\"profile\":\"workflow-action-02\",\"reader\":{\"key_id\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"kind\":\"owner_local\",\"manifest_digest\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"manifest_version\":1,\"role\":2,\"trust_generation\":1},\"route\":{\"adapter\":\"telnyx-sms-v2\",\"eligibility_digest\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"eligibility_policy_id\":\"00000000-0000-0000-0000-000000000016\",\"eligibility_policy_version\":1,\"exposure_policy_version\":1,\"exposure_route_policy_id\":\"00000000-0000-0000-0000-000000000017\",\"kind\":\"provider\",\"messaging_profile_id\":\"00000000-0000-0000-0000-000000000003\",\"organization_id\":\"00000000-0000-0000-0000-000000000002\",\"route_fingerprint\":\"2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0\",\"route_id\":\"00000000-0000-0000-0000-000000000014\",\"route_version\":1,\"sender_config_id\":\"00000000-0000-0000-0000-000000000015\",\"sender_config_version\":1},\"profile\":\"workflow-action-02\"}",
+      "expected": "reject"
+    }
+  ],
+  "negative_wire": [
+    {
+      "name": "escaped-duplicate-top-key",
+      "expected": "reject",
+      "raw_parts": [
+        "{\"action\":{\"account_id\":\"00000000-0000-0000-0000-000000000001\",\"action_id\":\"00000000-0000-0000-0000-00000000000a\",\"authority_generation\":1,\"commitment\":\"sensitive\",\"content_digest\":\"abababababababababababababababababababababababababababababababab\",\"content_ref\":\"00000000-0000-0000-0000-00000000000d\",\"content_version\":1,\"expires_at\":2000000300,\"line_id\":\"00000000-0000-0000-0000-00000000000b\",\"not_before\":2000000000,\"purpose_id\":\"00000000-0000-0000-0000-000000000001\",\"recipient_id\":\"00000000-0000-0000-0000-00000000000c\",\"revision\":1,\"routine_id\":\"00000000-0000-0000-0000-00000000000e\",\"timezone\":\"UTC\",\"window_id\":\"fixture-window\"},\"disclosure\":{\"mode\":\"provider_plaintext\",\"recipient_commitment\":\"5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7\",\"request_digest\":\"0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb\"},\"profile\":\"workflow-action-02\",\"reader\":{\"key_id\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"kind\":\"owner_local\",\"manifest_digest\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"manifest_version\":1,\"role\":2,\"trust_generation\":1},\"route\":{\"adapter\":\"telnyx-sms-v2\",\"eligibility_digest\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"eligibility_policy_id\":\"00000000-0000-0000-0000-000000000016\",\"eligibility_policy_version\":1,\"exposure_policy_version\":1,\"exposure_route_policy_id\":\"00000000-0000-0000-0000-000000000017\",\"kind\":\"provider\",\"messaging_profile_id\":\"00000000-0000-0000-0000-000000000003\",\"organization_id\":\"00000000-0000-0000-0000-000000000002\",\"route_fingerprint\":\"2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0\",\"route_id\":\"00000000-0000-0000-0000-000000000014\",\"route_version\":1,\"sender_config_id\":\"00000000-0000-0000-0000-000000000015\",\"sender_config_version\":1},\"",
+        "\\u0070",
+        "rofile\":\"workflow-action-02\"}"
+      ]
+    },
+    {
+      "name": "duplicate-nested-route-key",
+      "raw": "{\"action\":{\"account_id\":\"00000000-0000-0000-0000-000000000001\",\"action_id\":\"00000000-0000-0000-0000-00000000000a\",\"authority_generation\":1,\"commitment\":\"sensitive\",\"content_digest\":\"abababababababababababababababababababababababababababababababab\",\"content_ref\":\"00000000-0000-0000-0000-00000000000d\",\"content_version\":1,\"expires_at\":2000000300,\"line_id\":\"00000000-0000-0000-0000-00000000000b\",\"not_before\":2000000000,\"purpose_id\":\"00000000-0000-0000-0000-000000000001\",\"recipient_id\":\"00000000-0000-0000-0000-00000000000c\",\"revision\":1,\"routine_id\":\"00000000-0000-0000-0000-00000000000e\",\"timezone\":\"UTC\",\"window_id\":\"fixture-window\"},\"disclosure\":{\"mode\":\"provider_plaintext\",\"recipient_commitment\":\"5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7\",\"request_digest\":\"0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb\"},\"profile\":\"workflow-action-02\",\"reader\":{\"key_id\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"kind\":\"owner_local\",\"manifest_digest\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"manifest_version\":1,\"role\":2,\"trust_generation\":1},\"route\":{\"route_version\":1,\"adapter\":\"telnyx-sms-v2\",\"eligibility_digest\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"eligibility_policy_id\":\"00000000-0000-0000-0000-000000000016\",\"eligibility_policy_version\":1,\"exposure_policy_version\":1,\"exposure_route_policy_id\":\"00000000-0000-0000-0000-000000000017\",\"kind\":\"provider\",\"messaging_profile_id\":\"00000000-0000-0000-0000-000000000003\",\"organization_id\":\"00000000-0000-0000-0000-000000000002\",\"route_fingerprint\":\"2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0\",\"route_id\":\"00000000-0000-0000-0000-000000000014\",\"route_version\":1,\"sender_config_id\":\"00000000-0000-0000-0000-000000000015\",\"sender_config_version\":1}}",
+      "expected": "reject"
+    },
+    {
+      "name": "exponent-integer",
+      "raw": "{\"action\":{\"account_id\":\"00000000-0000-0000-0000-000000000001\",\"action_id\":\"00000000-0000-0000-0000-00000000000a\",\"authority_generation\":1,\"commitment\":\"sensitive\",\"content_digest\":\"abababababababababababababababababababababababababababababababab\",\"content_ref\":\"00000000-0000-0000-0000-00000000000d\",\"content_version\":1,\"expires_at\":2000000300,\"line_id\":\"00000000-0000-0000-0000-00000000000b\",\"not_before\":2000000000,\"purpose_id\":\"00000000-0000-0000-0000-000000000001\",\"recipient_id\":\"00000000-0000-0000-0000-00000000000c\",\"revision\":1,\"routine_id\":\"00000000-0000-0000-0000-00000000000e\",\"timezone\":\"UTC\",\"window_id\":\"fixture-window\"},\"disclosure\":{\"mode\":\"provider_plaintext\",\"recipient_commitment\":\"5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7\",\"request_digest\":\"0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb\"},\"profile\":\"workflow-action-02\",\"reader\":{\"key_id\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"kind\":\"owner_local\",\"manifest_digest\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"manifest_version\":1,\"role\":2,\"trust_generation\":1},\"route\":{\"adapter\":\"telnyx-sms-v2\",\"eligibility_digest\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"eligibility_policy_id\":\"00000000-0000-0000-0000-000000000016\",\"eligibility_policy_version\":1,\"exposure_policy_version\":1,\"exposure_route_policy_id\":\"00000000-0000-0000-0000-000000000017\",\"kind\":\"provider\",\"messaging_profile_id\":\"00000000-0000-0000-0000-000000000003\",\"organization_id\":\"00000000-0000-0000-0000-000000000002\",\"route_fingerprint\":\"2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0\",\"route_id\":\"00000000-0000-0000-0000-000000000014\",\"route_version\":1e0,\"sender_config_id\":\"00000000-0000-0000-0000-000000000015\",\"sender_config_version\":1}}",
+      "expected": "reject"
+    },
+    {
+      "name": "fractional-spelling",
+      "raw": "{\"action\":{\"account_id\":\"00000000-0000-0000-0000-000000000001\",\"action_id\":\"00000000-0000-0000-0000-00000000000a\",\"authority_generation\":1,\"commitment\":\"sensitive\",\"content_digest\":\"abababababababababababababababababababababababababababababababab\",\"content_ref\":\"00000000-0000-0000-0000-00000000000d\",\"content_version\":1,\"expires_at\":2000000300,\"line_id\":\"00000000-0000-0000-0000-00000000000b\",\"not_before\":2000000000,\"purpose_id\":\"00000000-0000-0000-0000-000000000001\",\"recipient_id\":\"00000000-0000-0000-0000-00000000000c\",\"revision\":1,\"routine_id\":\"00000000-0000-0000-0000-00000000000e\",\"timezone\":\"UTC\",\"window_id\":\"fixture-window\"},\"disclosure\":{\"mode\":\"provider_plaintext\",\"recipient_commitment\":\"5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7\",\"request_digest\":\"0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb\"},\"profile\":\"workflow-action-02\",\"reader\":{\"key_id\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"kind\":\"owner_local\",\"manifest_digest\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"manifest_version\":1,\"role\":2,\"trust_generation\":1},\"route\":{\"adapter\":\"telnyx-sms-v2\",\"eligibility_digest\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"eligibility_policy_id\":\"00000000-0000-0000-0000-000000000016\",\"eligibility_policy_version\":1,\"exposure_policy_version\":1,\"exposure_route_policy_id\":\"00000000-0000-0000-0000-000000000017\",\"kind\":\"provider\",\"messaging_profile_id\":\"00000000-0000-0000-0000-000000000003\",\"organization_id\":\"00000000-0000-0000-0000-000000000002\",\"route_fingerprint\":\"2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0\",\"route_id\":\"00000000-0000-0000-0000-000000000014\",\"route_version\":1.0,\"sender_config_id\":\"00000000-0000-0000-0000-000000000015\",\"sender_config_version\":1}}",
+      "expected": "reject"
+    },
+    {
+      "name": "negative-zero",
+      "raw": "{\"action\":{\"account_id\":\"00000000-0000-0000-0000-000000000001\",\"action_id\":\"00000000-0000-0000-0000-00000000000a\",\"authority_generation\":1,\"commitment\":\"sensitive\",\"content_digest\":\"abababababababababababababababababababababababababababababababab\",\"content_ref\":\"00000000-0000-0000-0000-00000000000d\",\"content_version\":1,\"expires_at\":2000000300,\"line_id\":\"00000000-0000-0000-0000-00000000000b\",\"not_before\":-0,\"purpose_id\":\"00000000-0000-0000-0000-000000000001\",\"recipient_id\":\"00000000-0000-0000-0000-00000000000c\",\"revision\":1,\"routine_id\":\"00000000-0000-0000-0000-00000000000e\",\"timezone\":\"UTC\",\"window_id\":\"fixture-window\"},\"disclosure\":{\"mode\":\"provider_plaintext\",\"recipient_commitment\":\"5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7\",\"request_digest\":\"0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb\"},\"profile\":\"workflow-action-02\",\"reader\":{\"key_id\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"kind\":\"owner_local\",\"manifest_digest\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"manifest_version\":1,\"role\":2,\"trust_generation\":1},\"route\":{\"adapter\":\"telnyx-sms-v2\",\"eligibility_digest\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"eligibility_policy_id\":\"00000000-0000-0000-0000-000000000016\",\"eligibility_policy_version\":1,\"exposure_policy_version\":1,\"exposure_route_policy_id\":\"00000000-0000-0000-0000-000000000017\",\"kind\":\"provider\",\"messaging_profile_id\":\"00000000-0000-0000-0000-000000000003\",\"organization_id\":\"00000000-0000-0000-0000-000000000002\",\"route_fingerprint\":\"2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0\",\"route_id\":\"00000000-0000-0000-0000-000000000014\",\"route_version\":1,\"sender_config_id\":\"00000000-0000-0000-0000-000000000015\",\"sender_config_version\":1}}",
+      "expected": "reject"
+    },
+    {
+      "name": "leading-zero",
+      "raw": "{\"action\":{\"account_id\":\"00000000-0000-0000-0000-000000000001\",\"action_id\":\"00000000-0000-0000-0000-00000000000a\",\"authority_generation\":1,\"commitment\":\"sensitive\",\"content_digest\":\"abababababababababababababababababababababababababababababababab\",\"content_ref\":\"00000000-0000-0000-0000-00000000000d\",\"content_version\":1,\"expires_at\":2000000300,\"line_id\":\"00000000-0000-0000-0000-00000000000b\",\"not_before\":2000000000,\"purpose_id\":\"00000000-0000-0000-0000-000000000001\",\"recipient_id\":\"00000000-0000-0000-0000-00000000000c\",\"revision\":1,\"routine_id\":\"00000000-0000-0000-0000-00000000000e\",\"timezone\":\"UTC\",\"window_id\":\"fixture-window\"},\"disclosure\":{\"mode\":\"provider_plaintext\",\"recipient_commitment\":\"5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7\",\"request_digest\":\"0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb\"},\"profile\":\"workflow-action-02\",\"reader\":{\"key_id\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"kind\":\"owner_local\",\"manifest_digest\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"manifest_version\":1,\"role\":2,\"trust_generation\":1},\"route\":{\"adapter\":\"telnyx-sms-v2\",\"eligibility_digest\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"eligibility_policy_id\":\"00000000-0000-0000-0000-000000000016\",\"eligibility_policy_version\":1,\"exposure_policy_version\":1,\"exposure_route_policy_id\":\"00000000-0000-0000-0000-000000000017\",\"kind\":\"provider\",\"messaging_profile_id\":\"00000000-0000-0000-0000-000000000003\",\"organization_id\":\"00000000-0000-0000-0000-000000000002\",\"route_fingerprint\":\"2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0\",\"route_id\":\"00000000-0000-0000-0000-000000000014\",\"route_version\":01,\"sender_config_id\":\"00000000-0000-0000-0000-000000000015\",\"sender_config_version\":1}}",
+      "expected": "reject"
+    },
+    {
+      "name": "escaped-key-alias",
+      "expected": "reject",
+      "raw_parts": [
+        "{\"action\":{\"account_id\":\"00000000-0000-0000-0000-000000000001\",\"action_id\":\"00000000-0000-0000-0000-00000000000a\",\"authority_generation\":1,\"commitment\":\"sensitive\",\"content_digest\":\"abababababababababababababababababababababababababababababababab\",\"content_ref\":\"00000000-0000-0000-0000-00000000000d\",\"content_version\":1,\"expires_at\":2000000300,\"line_id\":\"00000000-0000-0000-0000-00000000000b\",\"not_before\":2000000000,\"purpose_id\":\"00000000-0000-0000-0000-000000000001\",\"recipient_id\":\"00000000-0000-0000-0000-00000000000c\",\"revision\":1,\"routine_id\":\"00000000-0000-0000-0000-00000000000e\",\"timezone\":\"UTC\",\"window_id\":\"fixture-window\"},\"disclosure\":{\"mode\":\"provider_plaintext\",\"recipient_commitment\":\"5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7\",\"request_digest\":\"0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb\"},\"",
+        "\\u0070",
+        "rofile\":\"workflow-action-02\",\"reader\":{\"key_id\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"kind\":\"owner_local\",\"manifest_digest\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"manifest_version\":1,\"role\":2,\"trust_generation\":1},\"route\":{\"adapter\":\"telnyx-sms-v2\",\"eligibility_digest\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"eligibility_policy_id\":\"00000000-0000-0000-0000-000000000016\",\"eligibility_policy_version\":1,\"exposure_policy_version\":1,\"exposure_route_policy_id\":\"00000000-0000-0000-0000-000000000017\",\"kind\":\"provider\",\"messaging_profile_id\":\"00000000-0000-0000-0000-000000000003\",\"organization_id\":\"00000000-0000-0000-0000-000000000002\",\"route_fingerprint\":\"2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0\",\"route_id\":\"00000000-0000-0000-0000-000000000014\",\"route_version\":1,\"sender_config_id\":\"00000000-0000-0000-0000-000000000015\",\"sender_config_version\":1}}"
+      ]
+    },
+    {
+      "name": "leading-whitespace",
+      "raw": " {\"action\":{\"account_id\":\"00000000-0000-0000-0000-000000000001\",\"action_id\":\"00000000-0000-0000-0000-00000000000a\",\"authority_generation\":1,\"commitment\":\"sensitive\",\"content_digest\":\"abababababababababababababababababababababababababababababababab\",\"content_ref\":\"00000000-0000-0000-0000-00000000000d\",\"content_version\":1,\"expires_at\":2000000300,\"line_id\":\"00000000-0000-0000-0000-00000000000b\",\"not_before\":2000000000,\"purpose_id\":\"00000000-0000-0000-0000-000000000001\",\"recipient_id\":\"00000000-0000-0000-0000-00000000000c\",\"revision\":1,\"routine_id\":\"00000000-0000-0000-0000-00000000000e\",\"timezone\":\"UTC\",\"window_id\":\"fixture-window\"},\"disclosure\":{\"mode\":\"provider_plaintext\",\"recipient_commitment\":\"5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7\",\"request_digest\":\"0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb\"},\"profile\":\"workflow-action-02\",\"reader\":{\"key_id\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"kind\":\"owner_local\",\"manifest_digest\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"manifest_version\":1,\"role\":2,\"trust_generation\":1},\"route\":{\"adapter\":\"telnyx-sms-v2\",\"eligibility_digest\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"eligibility_policy_id\":\"00000000-0000-0000-0000-000000000016\",\"eligibility_policy_version\":1,\"exposure_policy_version\":1,\"exposure_route_policy_id\":\"00000000-0000-0000-0000-000000000017\",\"kind\":\"provider\",\"messaging_profile_id\":\"00000000-0000-0000-0000-000000000003\",\"organization_id\":\"00000000-0000-0000-0000-000000000002\",\"route_fingerprint\":\"2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0\",\"route_id\":\"00000000-0000-0000-0000-000000000014\",\"route_version\":1,\"sender_config_id\":\"00000000-0000-0000-0000-000000000015\",\"sender_config_version\":1}}",
+      "expected": "reject"
+    },
+    {
+      "name": "trailing-value",
+      "raw": "{\"action\":{\"account_id\":\"00000000-0000-0000-0000-000000000001\",\"action_id\":\"00000000-0000-0000-0000-00000000000a\",\"authority_generation\":1,\"commitment\":\"sensitive\",\"content_digest\":\"abababababababababababababababababababababababababababababababab\",\"content_ref\":\"00000000-0000-0000-0000-00000000000d\",\"content_version\":1,\"expires_at\":2000000300,\"line_id\":\"00000000-0000-0000-0000-00000000000b\",\"not_before\":2000000000,\"purpose_id\":\"00000000-0000-0000-0000-000000000001\",\"recipient_id\":\"00000000-0000-0000-0000-00000000000c\",\"revision\":1,\"routine_id\":\"00000000-0000-0000-0000-00000000000e\",\"timezone\":\"UTC\",\"window_id\":\"fixture-window\"},\"disclosure\":{\"mode\":\"provider_plaintext\",\"recipient_commitment\":\"5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7\",\"request_digest\":\"0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb\"},\"profile\":\"workflow-action-02\",\"reader\":{\"key_id\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"kind\":\"owner_local\",\"manifest_digest\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"manifest_version\":1,\"role\":2,\"trust_generation\":1},\"route\":{\"adapter\":\"telnyx-sms-v2\",\"eligibility_digest\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"eligibility_policy_id\":\"00000000-0000-0000-0000-000000000016\",\"eligibility_policy_version\":1,\"exposure_policy_version\":1,\"exposure_route_policy_id\":\"00000000-0000-0000-0000-000000000017\",\"kind\":\"provider\",\"messaging_profile_id\":\"00000000-0000-0000-0000-000000000003\",\"organization_id\":\"00000000-0000-0000-0000-000000000002\",\"route_fingerprint\":\"2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0\",\"route_id\":\"00000000-0000-0000-0000-000000000014\",\"route_version\":1,\"sender_config_id\":\"00000000-0000-0000-0000-000000000015\",\"sender_config_version\":1}}{}",
+      "expected": "reject"
+    },
+    {
+      "name": "raw-over-cap",
+      "raw": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         {\"action\":{\"account_id\":\"00000000-0000-0000-0000-000000000001\",\"action_id\":\"00000000-0000-0000-0000-00000000000a\",\"authority_generation\":1,\"commitment\":\"sensitive\",\"content_digest\":\"abababababababababababababababababababababababababababababababab\",\"content_ref\":\"00000000-0000-0000-0000-00000000000d\",\"content_version\":1,\"expires_at\":2000000300,\"line_id\":\"00000000-0000-0000-0000-00000000000b\",\"not_before\":2000000000,\"purpose_id\":\"00000000-0000-0000-0000-000000000001\",\"recipient_id\":\"00000000-0000-0000-0000-00000000000c\",\"revision\":1,\"routine_id\":\"00000000-0000-0000-0000-00000000000e\",\"timezone\":\"UTC\",\"window_id\":\"fixture-window\"},\"disclosure\":{\"mode\":\"provider_plaintext\",\"recipient_commitment\":\"5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7\",\"request_digest\":\"0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb\"},\"profile\":\"workflow-action-02\",\"reader\":{\"key_id\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"kind\":\"owner_local\",\"manifest_digest\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"manifest_version\":1,\"role\":2,\"trust_generation\":1},\"route\":{\"adapter\":\"telnyx-sms-v2\",\"eligibility_digest\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"eligibility_policy_id\":\"00000000-0000-0000-0000-000000000016\",\"eligibility_policy_version\":1,\"exposure_policy_version\":1,\"exposure_route_policy_id\":\"00000000-0000-0000-0000-000000000017\",\"kind\":\"provider\",\"messaging_profile_id\":\"00000000-0000-0000-0000-000000000003\",\"organization_id\":\"00000000-0000-0000-0000-000000000002\",\"route_fingerprint\":\"2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0\",\"route_id\":\"00000000-0000-0000-0000-000000000014\",\"route_version\":1,\"sender_config_id\":\"00000000-0000-0000-0000-000000000015\",\"sender_config_version\":1}}",
+      "expected": "reject"
+    }
+  ]
+}
