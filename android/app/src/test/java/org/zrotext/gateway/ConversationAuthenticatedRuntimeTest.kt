@@ -219,6 +219,22 @@ class ConversationAuthenticatedRuntimeTest {
         assembly.maintainAuthenticatedTime(scope){error("Synthetic caller failure")};drain()
         elapsed=20000;assertEquals(true,maintain());assertEquals(3,timeReplies)
     }
+    @Test fun lastAuthorityCheckAtOriginalLeaseDeadlineRefusesDespiteFreshAnchor() {
+        activateLongLease();elapsed=20000;assertEquals(true,maintain())
+        elapsed=40000;assertEquals(true,maintain());elapsed=59000
+        var refreshed=false;var checks=0
+        duringTime={refreshed=true}
+        duringAuthority={if(refreshed && ++checks==4)elapsed=60000}
+        assertEquals(false,maintain());assertTrue(checks>=4);assertFalse(assembly.captureEligible())
+        assertEquals(ConversationStopReason.LEASE_EXPIRED,snapshots.last().stopReason)
+        assertEquals(1,decisions);assertEquals(1,exchanges);assertEquals(0,captureReplies)
+    }
+    @Test fun deliveryAtOriginalLeaseDeadlineCannotClaimMaintenanceSuccess() {
+        activateLongLease();elapsed=20000;assertEquals(true,maintain())
+        elapsed=40000;assertEquals(true,maintain());elapsed=59000;var result:Boolean?=null
+        assembly.maintainAuthenticatedTime(scope){result=it};worker.drain()
+        elapsed=60000;delivery.drain();assertEquals(false,result);assertFalse(assembly.captureEligible());drain()
+    }
     @Test fun proposalAndSeparatePhoneDecisionRequiredBeforeEncryptedReceipt() {
         propose();assertFalse(assembly.captureEligible());assertEquals(0,decisions)
         val value=snapshots.last();assertEquals(ConversationPresentationPhase.AWAITING_PHONE_REVIEW,value.phase)

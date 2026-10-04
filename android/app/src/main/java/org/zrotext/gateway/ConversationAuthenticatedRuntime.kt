@@ -129,11 +129,18 @@ internal class ConversationAuthenticatedRuntime(
         if (!maintenance.compareAndSet(null, operation)) { deliverMaintenance(false, complete); return }
         try { serial.execute {
             var candidate: TimeWitness? = null
+            var originalLeaseDeadline = 0L
             val result = try {
                 check(maintenance.get() === operation)
                 check(operation.witness === witness)
                 admission.withCurrentScope(operation.scope) { it() }
+                // Sample BEFORE remainingMs: any authority wait can only shorten this bound.
+                val leaseStarted = witness.beforeDeadline(elapsedMillis)
+                val remaining = admission.remainingMs(operation.scope)
+                check(remaining > 0)
+                originalLeaseDeadline = Math.addExact(leaseStarted, remaining)
                 val started = witness.beforeDeadline(elapsedMillis)
+                if (started >= originalLeaseDeadline) throw TimeUnavailable()
                 val refreshed = freshWitness(witness.session, witness.epoch)
                 candidate = refreshed
                 check(refreshed.started >= started)
@@ -145,8 +152,8 @@ internal class ConversationAuthenticatedRuntime(
                     synchronized(bindingLock) {
                         check(!blocked.get() && maintenance.get() === operation)
                         requireWitness(witness)
-                        witness.beforeDeadline(elapsedMillis)
-                        refreshed.beforeDeadline(elapsedMillis)
+                        if (witness.beforeDeadline(elapsedMillis) >= originalLeaseDeadline) throw TimeUnavailable()
+                        if (refreshed.beforeDeadline(elapsedMillis) >= originalLeaseDeadline) throw TimeUnavailable()
                         timeWitness.set(refreshed)
                     }
                 }
@@ -163,7 +170,11 @@ internal class ConversationAuthenticatedRuntime(
             val completedWitness = candidate
             deliverMaintenance(result, complete) {
                 !blocked.get() && epoch.get() == witness.epoch && timeWitness.get() === completedWitness &&
-                    runCatching { requireWitness(checkNotNull(completedWitness)) }.isSuccess
+                    runCatching {
+                        val liveWitness = checkNotNull(completedWitness)
+                        requireWitness(liveWitness)
+                        check(liveWitness.beforeDeadline(elapsedMillis) < originalLeaseDeadline)
+                    }.isSuccess
             }
         } } catch (_: Exception) {
             maintenance.compareAndSet(operation, null)
