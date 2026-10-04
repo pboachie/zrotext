@@ -7,7 +7,7 @@ import {createHash} from 'node:crypto';
 import {packageOutput,confinedOutput} from '../../../scripts/package_conversation_browser.mjs';
 import {mkdtemp,writeFile,rm,readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {parseOptions,selectExecutable,ReadyParser,serverPassed,SERVER_TEST,capture,executableDigest,joinOwnedAcceptance,createBrowserPackage} from '../../../scripts/sealed_setup_ci_driver.mjs';
+import {parseOptions,selectExecutable,ReadyParser,serverPassed,SERVER_TEST,capture,executableDigest,joinOwnedAcceptance,createBrowserPackage,assertPhoneConsumerOutput} from '../../../scripts/sealed_setup_ci_driver.mjs';
 const id='11111111-1111-4111-8111-111111111111',root=path.resolve('fixture-root'),manifest=path.join(root,'crates/server/Cargo.toml'),exe=path.join(root,'target/fixture.exe');
 function ready(){const paired=Buffer.alloc(65);paired[0]=4;return {version:1,synthetic:true,port:4444,controlToken:'07'.repeat(32),origin:'https://owner.example.test:4443',baseline:{accountId:id,userId:id,sessionId:id,deviceId:id,lineId:id,nextGeneration:'1',pairedPoint:paired.toString('hex'),pairedFingerprintHex:createHash('sha256').update(paired).digest('hex'),rootFactor:'fixture-factor'.padEnd(26,'x'),lineFactor:'fixture-factor'.padEnd(26,'y'),cookies:[{name:'__Host-zrotext_session',value:'fixture-session'},{name:'__Host-zrotext_csrf',value:'fixture-csrf'}],lease:{connectionEpoch:'1',deploymentEpoch:'1',siteId:'fixture-site',instanceId:'fixture-instance'}}};}
 const record=prefix=>prefix+JSON.stringify(ready())+'\n';
@@ -69,4 +69,9 @@ test('browser package creation refuses existing ownership and preserves its cont
     await assert.rejects(createBrowserPackage());
     assert.equal(await readFile(marker,'utf8'),'preserve');
   }finally{await rm(directory,{recursive:true,force:true});}
+});
+
+test('managed phone proof requires its exact non-skipped admission marker and successful build',()=>{
+  assert.doesNotThrow(()=>assertPhoneConsumerOutput('    COMPOSED_PHONE_ROOT_ADMISSION_PASS\nBUILD SUCCESSFUL in 1s\n'));
+  for(const output of ['BUILD SUCCESSFUL','COMPOSED_PHONE_ROOT_ADMISSION_PASS','BUILD SUCCESSFUL\nCOMPOSED_PHONE_ROOT_ADMISSION_PASS_SKIPPED','BUILD SUCCESSFUL\nprefix COMPOSED_PHONE_ROOT_ADMISSION_PASS'])assert.throws(()=>assertPhoneConsumerOutput(output));
 });
