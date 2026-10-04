@@ -55,9 +55,9 @@ Owners lose time collecting the same details and tracking unanswered inquiries w
 ### Required capabilities
 
 - [Contacts, consent and conversations](ROADMAP.md#cap-contacts) (Build)
-- [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Planned)
-- [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Planned)
-- [Customer-controlled AI assistant](ROADMAP.md#cap-assistant) (Planned)
+- [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Build)
+- [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Build)
+- [Customer-controlled AI assistant](ROADMAP.md#cap-assistant) (Build)
 
 These also inherit their upstream roadmap dependencies and the [general sending gates](ROADMAP.md#path-to-general-sending).
 
@@ -94,9 +94,9 @@ Capturing a thought or delegating a small task should not require opening anothe
 ### Required capabilities
 
 - [Contacts, consent and conversations](ROADMAP.md#cap-contacts) (Build)
-- [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Planned)
-- [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Planned)
-- [Customer-controlled AI assistant](ROADMAP.md#cap-assistant) (Planned)
+- [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Build)
+- [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Build)
+- [Customer-controlled AI assistant](ROADMAP.md#cap-assistant) (Build)
 
 These also inherit their upstream roadmap dependencies and the [general sending gates](ROADMAP.md#path-to-general-sending).
 
@@ -133,11 +133,11 @@ An agent needs a scoped way to notify its owner, receive replies and request rev
 
 ### Required capabilities
 
-- [MCP tools for customer-controlled agents](ROADMAP.md#cap-mcp) (Planned)
-- [Agent SDK adapters and reply events](ROADMAP.md#cap-agenttools) (Planned)
-- [Guided agent setup and simulator quickstart](ROADMAP.md#cap-agentsetup) (Planned)
-- [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Planned)
-- [Workflow connector and integrations](ROADMAP.md#cap-integrations) (Planned)
+- [MCP tools for customer-controlled agents](ROADMAP.md#cap-mcp) (Build)
+- [Agent SDK adapters and reply events](ROADMAP.md#cap-agenttools) (Build)
+- [Guided agent setup and simulator quickstart](ROADMAP.md#cap-agentsetup) (Build)
+- [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Build)
+- [Workflow connector and integrations](ROADMAP.md#cap-integrations) (Build)
 
 These also inherit their upstream roadmap dependencies and the [general sending gates](ROADMAP.md#path-to-general-sending).
 
@@ -176,9 +176,9 @@ Customers need progress updates, and owners need a clear record of approval befo
 ### Required capabilities
 
 - [Contacts, consent and conversations](ROADMAP.md#cap-contacts) (Build)
-- [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Planned)
-- [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Planned)
-- [Workflow connector and integrations](ROADMAP.md#cap-integrations) (Planned)
+- [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Build)
+- [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Build)
+- [Workflow connector and integrations](ROADMAP.md#cap-integrations) (Build)
 
 These also inherit their upstream roadmap dependencies and the [general sending gates](ROADMAP.md#path-to-general-sending).
 
@@ -215,9 +215,9 @@ A cancelled appointment leaves unused time while several customers may want the 
 ### Required capabilities
 
 - [Contacts, consent and conversations](ROADMAP.md#cap-contacts) (Build)
-- [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Planned)
-- [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Planned)
-- [Workflow connector and integrations](ROADMAP.md#cap-integrations) (Planned)
+- [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Build)
+- [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Build)
+- [Workflow connector and integrations](ROADMAP.md#cap-integrations) (Build)
 
 These also inherit their upstream roadmap dependencies and the [general sending gates](ROADMAP.md#path-to-general-sending).
 
@@ -254,9 +254,9 @@ Hosts need to reach guests personally and follow up without repeatedly messaging
 ### Required capabilities
 
 - [Contacts, consent and conversations](ROADMAP.md#cap-contacts) (Build)
-- [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Planned)
-- [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Planned)
-- [Workflow connector and integrations](ROADMAP.md#cap-integrations) (Planned)
+- [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Build)
+- [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Build)
+- [Workflow connector and integrations](ROADMAP.md#cap-integrations) (Build)
 - [Data export and account deletion](ROADMAP.md#cap-export) (Build)
 
 These also inherit their upstream roadmap dependencies and the [general sending gates](ROADMAP.md#path-to-general-sending).
@@ -294,9 +294,9 @@ Coordinators need to fill an opening without continuing to contact people after 
 ### Required capabilities
 
 - [Contacts, consent and conversations](ROADMAP.md#cap-contacts) (Build)
-- [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Planned)
-- [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Planned)
-- [Workflow connector and integrations](ROADMAP.md#cap-integrations) (Planned)
+- [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Build)
+- [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Build)
+- [Workflow connector and integrations](ROADMAP.md#cap-integrations) (Build)
 
 These also inherit their upstream roadmap dependencies and the [general sending gates](ROADMAP.md#path-to-general-sending).
 
@@ -333,9 +333,9 @@ Small recurring responsibilities are easy to forget or duplicate when coordinati
 ### Required capabilities
 
 - [Contacts, consent and conversations](ROADMAP.md#cap-contacts) (Build)
-- [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Planned)
-- [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Planned)
-- [Workflow connector and integrations](ROADMAP.md#cap-integrations) (Planned)
+- [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Build)
+- [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Build)
+- [Workflow connector and integrations](ROADMAP.md#cap-integrations) (Build)
 
 These also inherit their upstream roadmap dependencies and the [general sending gates](ROADMAP.md#path-to-general-sending).
 
@@ -372,9 +372,9 @@ Small lending programs need a simple way to accept requests and track availabili
 ### Required capabilities
 
 - [Contacts, consent and conversations](ROADMAP.md#cap-contacts) (Build)
-- [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Planned)
-- [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Planned)
-- [Workflow connector and integrations](ROADMAP.md#cap-integrations) (Planned)
+- [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Build)
+- [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Build)
+- [Workflow connector and integrations](ROADMAP.md#cap-integrations) (Build)
 
 These also inherit their upstream roadmap dependencies and the [general sending gates](ROADMAP.md#path-to-general-sending).
 
@@ -411,9 +411,9 @@ An alert is useful only when someone accepts responsibility and others can see t
 ### Required capabilities
 
 - [Contacts, consent and conversations](ROADMAP.md#cap-contacts) (Build)
-- [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Planned)
-- [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Planned)
-- [Workflow connector and integrations](ROADMAP.md#cap-integrations) (Planned)
+- [Templates and scheduled follow-ups](ROADMAP.md#cap-scheduling) (Build)
+- [Approvals and reply tracking](ROADMAP.md#cap-approvals) (Build)
+- [Workflow connector and integrations](ROADMAP.md#cap-integrations) (Build)
 
 These also inherit their upstream roadmap dependencies and the [general sending gates](ROADMAP.md#path-to-general-sending).
 

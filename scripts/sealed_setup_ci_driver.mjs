@@ -72,6 +72,11 @@ export async function joinOwnedAcceptance(acceptance,{timeoutMs=240000,joinMs=90
     throw first;
   }
 }
+export function assertPhoneConsumerOutput(output){
+  assert.ok(typeof output==='string'&&output.length<=MAX_OUTPUT);
+  assert.ok(output.includes('BUILD SUCCESSFUL'),'Actual Android root consumer required');
+  assert.match(output,/^\s*COMPOSED_PHONE_ROOT_ADMISSION_PASS\s*$/m,'Non-skipped same-instance phone admission required');
+}
 export async function main(args=process.argv.slice(2)){
   let stage='prerequisites',assets,server,browser,ready,serverExit,exited,unsafeCleanup=false,termination;const parser=new ReadyParser();let output='';
   try{
@@ -80,6 +85,7 @@ export async function main(args=process.argv.slice(2)){
     const tls=await tlsInput(),serverExecutable=await compiled(options,'server'),nativeExecutable=await compiled(options,'native');
     const serverSha256=await executableDigest(serverExecutable),nativeSha256=await executableDigest(nativeExecutable);
     stage='browser-package';assets=await createBrowserPackage();await capture(process.execPath,[path.join(repo,'scripts/package_conversation_browser.mjs'),'--owned-setup-fixture'],{timeoutMs:30000});
+    stage='phone-consumer-build';await runOwnedProcess('cmd.exe',['/d','/c','gradlew.bat',':app:compileDebugUnitTestKotlin','--no-daemon','--max-workers=1'],{cwd:path.join(repo,'android'),timeoutMs:600000,maximum:MAX_OUTPUT});
     const origin=`https://owner.example.test:${await reservePort()}`;stage='server-readiness';let resolveReady,rejectReady;const readiness=new Promise((resolve,reject)=>{resolveReady=resolve;rejectReady=reject;});
     server=spawn(serverExecutable,['--exact',SERVER_TEST,'--ignored','--nocapture','--test-threads=1'],{cwd:repo,windowsHide:true,shell:false,detached:process.platform!=='win32',stdio:['ignore','pipe','pipe'],env:{...process.env,ZT_OWNER_SETUP_FIXTURE_ORIGIN:origin,ZT_OWNER_SETUP_BROWSER_ASSETS:assets}});
     exited=new Promise(resolve=>server.once('close',code=>{serverExit=code;if(!ready)rejectReady(Error('Fixture exited before readiness'));resolve(code);}));server.once('error',()=>rejectReady(Error('Fixture launch failed')));
@@ -87,7 +93,11 @@ export async function main(args=process.argv.slice(2)){
     let size=0;const collect=(chunk,stdout)=>{size+=chunk.length;if(size>1048576){void stopServer();rejectReady(Error('Fixture diagnostics exceeded bound'));return;}output+=chunk.toString('utf8');if(stdout)try{const value=parser.feed(chunk);if(value){ready=value;resolveReady(value);}}catch{void stopServer();rejectReady(Error('Fixture readiness refused'));}};
     server.stdout.on('data',chunk=>collect(chunk,true));server.stderr.on('data',chunk=>collect(chunk,false));ready=await deadline(readiness,60000);assert.equal(ready.origin,origin);
     stage='compiled-browser-native-consumption';const require=createRequire(import.meta.url);const {chromium}=require(require.resolve('playwright',{paths:[options.tools]}));browser=await chromium.launch({headless:true,args:[`--host-resolver-rules=MAP owner.example.test ${(await lookup('localhost',{family:4})).address}`,'--no-proxy-server']});
-    const acceptance=runCompiledSetupAcceptance({browser,ready,nativeExecutable,tls});const result=await joinOwnedAcceptance(acceptance,{cancel:async()=>{await Promise.all([browser.close(),stopServer()]);browser=null;}});await browser.close();browser=null;
+    const acceptance=runCompiledSetupAcceptance({browser,ready,nativeExecutable,tls,consumePublishedRoot:async fixture=>{
+      assert.ok(Buffer.byteLength(JSON.stringify(fixture))<=2048);
+      const result=await runOwnedProcess('cmd.exe',['/d','/c','gradlew.bat',':app:testDebugUnitTest','--tests','org.zrotext.gateway.PublishedRootProvisioningTest','-PcomposedRootFixture=true','--rerun','--no-daemon','--max-workers=1'],{cwd:path.join(repo,'android'),env:{...process.env,ZT_COMPOSED_ROOT_FIXTURE:JSON.stringify(fixture)},timeoutMs:180000,maximum:MAX_OUTPUT});
+      assertPhoneConsumerOutput(result);
+    }});const result=await joinOwnedAcceptance(acceptance,{cancel:async()=>{await Promise.all([browser.close(),stopServer()]);browser=null;}});await browser.close();browser=null;
     stage='server-terminal';assert.equal(await deadline(exited,20000),0);assert.ok(serverPassed(output),'Compiled fixture assertions must pass');assert.deepEqual(new ReadyParser().feed(Buffer.from(output)),ready);
     assert.equal(await executableDigest(serverExecutable),serverSha256,'Server executable changed');assert.equal(await executableDigest(nativeExecutable),nativeSha256,'Native executable changed');
     console.log(JSON.stringify({stage:'PASS-COMPILED-SETUP-FIXTURE',result,driverSource,serverSourceLabel:options['server-source']||driverSource,nativeSourceLabel:options['native-source']||driverSource,serverSourceMode:options['server-executable']?'caller-supplied-source-label':'cargo-json-current-source',nativeSourceMode:options['native-executable']?'caller-supplied-source-label':'cargo-json-current-source',serverSha256,nativeSha256,physicalDevice:false,carrierSms:false}));return 0;
