@@ -32,6 +32,7 @@ async fn prepared_with_signer(
         generation: 3,
         kind: contracts::Kind::Faq,
         executor: contracts::Executor::DeterministicLocal,
+        original_input: None,
         adapter_id: None,
         artifact_digest: None,
         period: contracts::Period::UtcDay,

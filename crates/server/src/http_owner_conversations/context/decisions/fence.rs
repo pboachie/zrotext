@@ -22,7 +22,8 @@ pub(crate) async fn recheck_descriptor(
     if activation::now(tx).await? >= d.expires_at_ms()? {
         return Err(ConversationError::Forbidden);
     }
-    fresh_owner(tx, owner).await
+    fresh_owner(tx, owner).await?;
+    crate::workflow_runtime::routines::original_action_current(tx, d).await
 }
 
 pub(crate) async fn checked_descriptor<'tx, 'connection>(
@@ -61,6 +62,7 @@ pub(crate) async fn contact(
     header: &wire::Header,
 ) -> Result<(), ConversationError> {
     crate::original_reply::source::recheck(tx, descriptor).await?;
+    crate::workflow_runtime::routines::original_action_current(tx, descriptor).await?;
     let ids = descriptor.identities()?;
     let row = tx
         .query_opt(

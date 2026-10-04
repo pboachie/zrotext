@@ -20,6 +20,7 @@ pub enum Section {
     Admissions,
     Turns,
     Periods,
+    OriginalSources,
 }
 #[derive(Default, Serialize)]
 pub struct Export {
@@ -35,7 +36,16 @@ pub async fn export(
     let tx = client.transaction().await?;
     owner::lock_owner(&tx, owner).await?;
     let mut result = Export::default();
-    if installed(&tx).await? {
+    if installed(&tx).await?
+        && (!matches!(section, Section::OriginalSources)
+            || tx
+                .query_one(
+                    "SELECT to_regclass('workflow_routine_original_sources') IS NOT NULL",
+                    &[],
+                )
+                .await?
+                .get::<_, bool>(0))
+    {
         let account = owner.tenant.account_id();
         let (table, key, kind) = match section {
             Section::Policies => ("workflow_routine_policies", "id", "uuid"),
@@ -43,6 +53,7 @@ pub async fn export(
             Section::Admissions => ("workflow_routine_admission_tombstones", "call_id", "uuid"),
             Section::Turns => ("workflow_routine_turn_debits", "context_id", "uuid"),
             Section::Periods => ("workflow_routine_period_debits", "utc_day", "bigint"),
+            Section::OriginalSources => ("workflow_routine_original_sources", "call_id", "uuid"),
         };
         if let Some(cursor) = before.as_ref() {
             if (kind == "uuid" && Uuid::parse_str(cursor).is_err())

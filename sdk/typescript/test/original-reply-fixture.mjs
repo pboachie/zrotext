@@ -9,11 +9,11 @@ const enc = new TextEncoder(), hash = b => Uint8Array.from(createHash("sha256").
 export const join = (...parts) => Uint8Array.from(Buffer.concat(parts.map(b => Buffer.from(b))));
 const u64 = n => { const b = new Uint8Array(8); new DataView(b.buffer).setBigUint64(0, n); return b; };
 const text = s => join(Uint8Array.of(enc.encode(s).length), enc.encode(s));
-const id = n => new Uint8Array(16).fill(n);
 function key(n) { const d = new Uint8Array(32); d[31] = n; const curve = createECDH("prime256v1"); curve.setPrivateKey(d); return { d, point: Uint8Array.from(curve.getPublicKey()) }; }
 async function importKey(k, name, usages) { return crypto.subtle.importKey("jwk", { kty: "EC", crv: "P-256", x: Buffer.from(k.point.subarray(1, 33)).toString("base64url"), y: Buffer.from(k.point.subarray(33)).toString("base64url"), d: Buffer.from(k.d).toString("base64url"), ext: false }, { name, namedCurve: "P-256" }, false, usages); }
 async function sign(k, label, bytes) { const n = new Uint8Array(4); new DataView(n.buffer).setUint32(0, bytes.length); return canonicalSignature02(new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, await importKey(k, "ECDSA", ["sign"]), join(enc.encode(label + "\0"), n, bytes)))); }
-export async function originalReplyFixture({ observedMs = 2000n, currentMs = observedMs } = {}) {
+export async function originalReplyFixture({ observedMs = 2000n, currentMs = observedMs, canonicalIds = false } = {}) {
+  const id = n => { const value = new Uint8Array(16).fill(n); if (canonicalIds) { value[6] = 0x40 | (value[6] & 15); value[8] = 0x80 | (value[8] & 63); } return value; };
   const now = 2000n, root = key(1), archive = key(3), phone = key(4), customer = key(6);
   const account = id(1), device = id(4), line = id(5), zero = new Uint8Array(16), previous = new Uint8Array(32).fill(9);
   const records = [{ role: 2, k: archive, scope: 12, device: zero, line: zero }, { role: 3, k: customer, scope: 8, device: zero, line: zero }, { role: 4, k: phone, scope: 2, device, line }, { role: 6, k: root, scope: 0, device: zero, line: zero }].map(r => ({ ...r, keyId: hash(join(enc.encode("ZTSE/key/v1\0"), Uint8Array.of(r.role <= 3 ? 0 : 1, r.role <= 3 ? 16 : 1), r.k.point)) }));

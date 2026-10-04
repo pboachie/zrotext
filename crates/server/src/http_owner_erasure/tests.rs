@@ -387,6 +387,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "088_original_reply_readers.sql",
         include_str!("../../../../deploy/compose/migrations/088_original_reply_readers.sql"),
     ),
+    (
+        "089_original_routine_sources.sql",
+        include_str!("../../../../deploy/compose/migrations/089_original_routine_sources.sql"),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in

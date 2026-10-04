@@ -10,6 +10,7 @@ use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
 use serde::Serialize;
+use sha2::Digest;
 use tokio_postgres::{Client, Transaction};
 use uuid::Uuid;
 pub mod consumption;
@@ -25,6 +26,15 @@ pub(crate) struct Principal {
     grant: Uuid,
     hash: [u8; 32],
 }
+impl Principal {
+    pub(crate) fn account_id(&self) -> Uuid {
+        self.account
+    }
+    pub(crate) fn grant_id(&self) -> Uuid {
+        self.grant
+    }
+}
+
 pub(crate) fn credential_shape(token: &str) -> bool {
     token.strip_prefix("ztr_").is_some_and(|s| {
         s.len() == 43
@@ -96,7 +106,7 @@ fn hex(bytes: &[u8]) -> String {
 
 // Root -> account/session -> grant -> interval -> registry. Final clock samples
 // occur after all locks; an immutable read principal is never a cached permit.
-async fn locked(
+pub(crate) async fn locked(
     tx: &Transaction<'_>,
     p: &Principal,
     accepted: i64,
@@ -271,6 +281,50 @@ pub(crate) async fn read(
     tx.commit().await?;
     Ok(result)
 }
+/// Transaction-bound verified original ciphertext identity for an independently
+/// owner-configured routine. This grants neither proposal nor delivery authority.
+pub(crate) async fn verified_event(
+    tx: &Transaction<'_>,
+    principal: &Principal,
+    event: Uuid,
+    accepted: i64,
+) -> Result<(Proof, activation::Statement, [u8; 32]), ConversationError> {
+    if event.is_nil() {
+        return Err(ConversationError::Invalid);
+    }
+    let (proof, statement) = locked(tx, principal, accepted).await?;
+    let row = tx.query_opt(
+        "SELECT e.envelope,p.trust_generation,p.manifest_version,p.manifest_digest,p.verified_manifest,p.accepted_at_ms FROM sealed_inbound_events e JOIN conversation_inbound_provenance p ON (p.account_id,p.event_id)=(e.account_id,e.id) WHERE e.account_id=$1 AND e.id=$2 AND p.interval_id=$3 AND e.device_id=$4 AND e.line_id=$5 AND e.binding_generation=$6 FOR SHARE OF e,p",
+        &[&principal.account,&event,&proof.interval_id,&proof.device_id,&proof.line_id,&statement.generation],
+    ).await?.ok_or(ConversationError::NotFound)?;
+    let bytes: Vec<u8> = row
+        .get::<_, Option<Vec<u8>>>(0)
+        .ok_or(ConversationError::NotFound)?;
+    let snapshot = crate::sealed_manifest_store::outbound::ManifestSnapshot {
+        generation: row.get(1),
+        version: row.get(2),
+        digest: row
+            .get::<_, Vec<u8>>(3)
+            .try_into()
+            .map_err(|_| ConversationError::Forbidden)?,
+        bytes: row.get(4),
+        accepted_ms: row.get(5),
+    };
+    if snapshot.generation != statement.trust_generation
+        || snapshot.version < accepted
+        || snapshot.version > proof.current_manifest_version
+    {
+        return Err(ConversationError::Forbidden);
+    }
+    let readers = activation::readers(&statement);
+    let wanted = activation::wanted(&statement, event, &readers);
+    let mut authority = lock_current(tx, principal.account).await?;
+    authority.verify_history(&wanted, &snapshot, &bytes).await?;
+    let digest = sha2::Sha256::digest(&bytes).into();
+    let (proof, _) = locked(tx, principal, accepted).await?;
+    Ok((proof, statement, digest))
+}
+
 async fn audit(
     tx: &Transaction<'_>,
     p: &Principal,

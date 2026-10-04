@@ -188,6 +188,13 @@ pub(crate) async fn consume(
     let mut action = None;
     let mut output_permit = None;
     if qualifying && let Some(descriptor) = input.descriptor.as_ref() {
+        // A routine execution already reserved this exact connector/event. Read
+        // and owner-review receipts remain allowed; automatic effects cannot fork.
+        if tx.query_one("SELECT to_regclass('workflow_routine_original_sources') IS NOT NULL",&[]).await?.get::<_,bool>(0)
+            && tx.query_one("SELECT EXISTS(SELECT 1 FROM workflow_routine_original_sources WHERE account_id=$1 AND connector_id=$2 AND event_id=$3)",
+                &[&p.account,&proof.connector_id,&input.event_id]).await?.get::<_,bool>(0) {
+            return Err(ConversationError::Conflict);
+        }
         let source = request_descriptor.as_ref().expect("qualifying");
         if descriptor.recipient_id != source.recipient_id
             || descriptor.purpose_id != source.purpose_id

@@ -5,6 +5,7 @@ import { OriginalReplyClient } from "../dist/original-reply-client.js";
 import { originalReplyFixture } from "./original-reply-fixture.mjs";
 import { readFile } from "node:fs/promises";
 import { workflowActionDigest } from "../dist/workflow-decisions.js";
+import { createHash } from "node:crypto";
 const b64 = b => Buffer.from(b).toString("base64"), hex = b => Buffer.from(b).toString("hex");
 const uuid = b => hex(b).replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, "$1-$2-$3-$4-$5");
 function proof(f) { return { account_id: uuid(f.scope.account), interval_id: uuid(f.scope.interval), device_id: uuid(f.scope.device), line_id: uuid(f.scope.line),
@@ -16,6 +17,27 @@ function readResult(f) { return { event_id: uuid(f.event), accepted_at_ms: 2000,
 function options(f, fetch) { return { origin: "https://customer.invalid", credential: "ztr_" + Buffer.alloc(32, 7).toString("base64url"), scope: f.scope,
   privateKey: f.privateKey, acceptedHistory: [f.manifest], clock: () => 2000n, fetch }; }
 const response = (kind, result) => new Response(JSON.stringify({ kind, result }), { headers: { "content-type": "application/json" } });
+test("verified original read binds its actual ciphertext and final current authority", async () => {
+  const f = await originalReplyFixture(), requests = [];
+  const client = new OriginalReplyClient(options(f, async (_url, init) => {
+    const request = JSON.parse(init.body); requests.push(request);
+    return response(request.method, request.method === "read" ? readResult(f) : { ...proof(f), expires_at_ms: 80000 });
+  }));
+  const result = await client.readVerified(f.event);
+  assert.equal(result.plaintext, "synthetic original reply");
+  assert.equal(result.event_id, uuid(f.event));
+  assert.equal(result.event_envelope_digest, createHash("sha256").update(f.envelope).digest("hex"));
+  assert.equal(result.accepted_manifest_version, 7);
+  assert.equal(result.authority.expiresMs, 80000n);
+  assert.equal(Object.isFrozen(result), true);
+  assert.deepEqual(requests.map(request => request.method), ["read", "current"]);
+});
+test("verified original read publishes no source identity when final authority is revoked", async () => {
+  const f = await originalReplyFixture(); let requests = 0;
+  const client = new OriginalReplyClient(options(f, async () => ++requests === 1 ? response("read", readResult(f)) : new Response("", { status: 403 })));
+  await assert.rejects(client.readVerified(f.event), /Original reply unavailable/);
+  assert.equal(requests, 2);
+});
 test("original client uses separate bearer and current proof after real role3 opening", async () => {
   const f = await originalReplyFixture(), calls = [];
   const client = new OriginalReplyClient(options(f, async (url, init) => {

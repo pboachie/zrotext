@@ -52,7 +52,7 @@ fn node_entrypoint_preserves_canonical_local_file_and_refuses_namespace_aliases(
     assert!(node_script_path(Path::new("relative-fixture")).is_err());
 }
 
-fn jwk(key: &SigningKey) -> Value {
+pub(super) fn jwk(key: &SigningKey) -> Value {
     let point = key.verifying_key().to_sec1_point(false);
     json!({"kty":"EC","crv":"P-256","x":URL_SAFE_NO_PAD.encode(point.x().unwrap()),"y":URL_SAFE_NO_PAD.encode(point.y().unwrap()),"d":URL_SAFE_NO_PAD.encode(key.to_bytes()),"ext":true})
 }
@@ -70,6 +70,93 @@ fn known_runtime_stderr(bytes: &[u8]) -> bool {
    !pid.is_empty()&&pid.bytes().all(|b|b.is_ascii_digit())&&warning=="ExperimentalWarning: SQLite is an experimental feature and might change at any time"
  })
 }
+fn refusal_diagnostic(bytes: &[u8]) -> &'static str {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return "unavailable";
+    };
+    if bytes.len() > 1024 {
+        return "unavailable";
+    }
+    for line in text.lines() {
+        let Some(fields) = line.strip_prefix("original reply fixture phase=") else {
+            continue;
+        };
+        let Some((phase, code)) = fields.split_once(";code=") else {
+            return "unavailable";
+        };
+        if ![
+            "input",
+            "history",
+            "scope",
+            "seed_prepare",
+            "transport",
+            "client",
+            "receiver",
+            "page",
+            "read",
+            "consume",
+            "recover",
+        ]
+        .contains(&phase)
+        {
+            return "unavailable";
+        }
+        return match code {
+            "manifest_chain" => "manifest_chain",
+            "manifest_time" => "manifest_time",
+            "reader_authority" => "reader_authority",
+            "signer_authority" => "signer_authority",
+            "recipient_identity" => "recipient_identity",
+            "recipient_order" => "recipient_order",
+            _ => "unavailable",
+        };
+    }
+    "unavailable"
+}
+fn refusal_stage(bytes: &[u8]) -> &'static str {
+    if bytes.len() > 1024 {
+        return "unavailable";
+    }
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return "unavailable";
+    };
+    for line in text.lines() {
+        let Some(fields) = line.strip_prefix("original reply fixture phase=") else {
+            continue;
+        };
+        let Some((phase, code)) = fields.split_once(";code=") else {
+            return "unavailable";
+        };
+        if ![
+            "unavailable",
+            "manifest_chain",
+            "manifest_time",
+            "reader_authority",
+            "signer_authority",
+            "recipient_identity",
+            "recipient_order",
+        ]
+        .contains(&code)
+        {
+            return "unavailable";
+        }
+        return match phase {
+            "input" => "input",
+            "history" => "history",
+            "scope" => "scope",
+            "seed_prepare" => "seed_prepare",
+            "transport" => "transport",
+            "client" => "client",
+            "receiver" => "receiver",
+            "page" => "page",
+            "read" => "read",
+            "consume" => "consume",
+            "recover" => "recover",
+            _ => "unavailable",
+        };
+    }
+    "unavailable"
+}
 #[test]
 fn subprocess_diagnostics_accept_only_known_sqlite_warning_and_refuse_secret_canary() {
     assert!(known_runtime_stderr(b""));
@@ -79,12 +166,51 @@ fn subprocess_diagnostics_accept_only_known_sqlite_warning_and_refuse_secret_can
         b"(node:123) ExperimentalWarning: synthetic-private-canary"
     ));
     assert!(!known_runtime_stderr(&[255]));
+    assert_eq!(
+        refusal_diagnostic(b"original reply fixture phase=seed_prepare;code=recipient_identity\n"),
+        "recipient_identity"
+    );
+    assert_eq!(
+        refusal_diagnostic(
+            b"original reply fixture phase=synthetic-private-canary;code=recipient_identity\n"
+        ),
+        "unavailable"
+    );
+    assert_eq!(
+        refusal_diagnostic(
+            b"original reply fixture phase=seed_prepare;code=synthetic-private-canary\n"
+        ),
+        "unavailable"
+    );
+    assert_eq!(
+        refusal_stage(b"original reply fixture phase=history;code=manifest_chain\n"),
+        "history"
+    );
+    assert_eq!(
+        refusal_stage(b"original reply fixture phase=history;code=synthetic-private-canary\n"),
+        "unavailable"
+    );
 }
 async fn driver(input: Value, cwd: &Path) -> Value {
+    run_driver(input, cwd, Driver::OriginalReply).await
+}
+pub(super) enum Driver {
+    OriginalReply,
+    OriginalRoutine,
+}
+pub(super) async fn run_driver(input: Value, cwd: &Path, fixture: Driver) -> Value {
+    let relative = match fixture {
+        Driver::OriginalReply => "../../sdk/typescript/test/original-reply-service-driver.mjs",
+        Driver::OriginalRoutine => {
+            "../../sdk/typescript/test/customer-routine-original-service-driver.mjs"
+        }
+    };
     let script = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../sdk/typescript/test/original-reply-service-driver.mjs")
+        .join(relative)
         .canonicalize()
         .unwrap();
+    let node_script = node_script_path(&script).unwrap();
+    assert_eq!(node_script.canonicalize().unwrap(), script);
     let mut command = Command::new("node");
     command.env_clear();
     for name in ["PATH", "SystemRoot", "TEMP", "TMP"] {
@@ -113,7 +239,12 @@ async fn driver(input: Value, cwd: &Path) -> Value {
         .await
         .expect("bounded original reader driver")
         .unwrap();
-    assert!(output.status.success(), "original reader driver refused");
+    assert!(
+        output.status.success(),
+        "original reader driver refused: phase={} code={}",
+        refusal_stage(&output.stderr),
+        refusal_diagnostic(&output.stderr)
+    );
     assert!(
         known_runtime_stderr(&output.stderr),
         "unexpected original reader diagnostic"
@@ -172,13 +303,13 @@ pub(super) async fn capture(f: &OriginalCase, input: &mut Value, scratch: &Scrat
     assert_eq!(f.case.f.db.query_one("SELECT count(*) FROM conversation_inbound_provenance WHERE account_id=$1 AND event_id=$2",&[&f.case.f.account,&event]).await.unwrap().get::<_,i64>(0),1);
 }
 
-struct Https {
-    origin: String,
-    ca: String,
+pub(super) struct Https {
+    pub(super) origin: String,
+    pub(super) ca: String,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 impl Https {
-    async fn start(app: axum::Router) -> Self {
+    pub(super) async fn start(app: axum::Router) -> Self {
         let plain = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let upstream = plain.local_addr().unwrap();
         let http = tokio::spawn(async move { axum::serve(plain, app).await.unwrap() });
@@ -230,7 +361,7 @@ impl Https {
             tasks: vec![http, tls],
         }
     }
-    async fn close(self) {
+    pub(super) async fn close(self) {
         for task in self.tasks {
             task.abort();
             let _ = task.await;

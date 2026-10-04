@@ -987,14 +987,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 routine_owner_state.clone(),
                 config.exposure_test_enabled,
             ))
-            .merge(zrotext_server::workflow_runtime::routines::http::router(
-                workflow_state,
-                config.customer_routines_enabled,
-            ))
             .merge(
-                zrotext_server::workflow_runtime::routines::http::owner_router(
+                zrotext_server::workflow_runtime::routines::http::router_with_original(
+                    workflow_state,
+                    config.customer_routines_enabled,
+                    config.original_reply_enabled,
+                ),
+            )
+            .merge(
+                zrotext_server::workflow_runtime::routines::http::owner_router_with_original(
                     routine_owner_state,
                     config.customer_routines_enabled,
+                    config.original_reply_enabled,
                 ),
             );
         if config.alpha_policy.enabled() {
