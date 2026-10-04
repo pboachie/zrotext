@@ -402,7 +402,7 @@ class ConversationMainEntryTest {
             ConversationMessageReceiveController.Outcome.RECEIVING, fieldValue("conversationMessageOutcome"))
         assertNotNull("The synthetic receive must reach the deferred transport", completion.get())
         compose.waitForIdle()
-        val pendingStatus = compose.onNodeWithText("Receiving and verifying the confirmed message.", useUnmergedTree = true)
+        val pendingStatus = compose.onNodeWithText("Receiving and verifying the confirmed message…", useUnmergedTree = true)
         pendingStatus.assertExists()
         assertEquals(androidx.compose.ui.semantics.LiveRegionMode.Polite,
             pendingStatus.fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsProperties.LiveRegion])
