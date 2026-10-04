@@ -202,8 +202,10 @@ It mandates actual SDK initialization, tool discovery, readiness and metadata
 through the installed launcher, and repeats verification after creator revocation.
 It checks unchanged configuration, intent and narrow custody. Linux CI owns an
 isolated Secret Service session with fresh data/runtime directories and a
-nonempty synthetic unlock password. It confirms its new login collection is
-unlocked and selects/verifies that collection's default alias before any store.
+nonempty synthetic unlock password. It waits with a fixed bound for that session's
+Secret Service without activating another daemon, then confirms its new login
+collection is unlocked and selects/verifies that collection's default alias
+before any store.
 Windows local acceptance uses unique synthetic
 Credential Manager entries. Its test-only PATH shim accepts only the version
 probe or exact reviewed broker and injects the loopback fixture CA before executing

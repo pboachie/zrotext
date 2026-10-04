@@ -59,6 +59,12 @@ jobs:
               echo "fixture keyring initialization refused" >&2
               exit 1
             fi
+            # The daemon releases its parent before initializing Secret Service.
+            # Wait for this owned session's name without activating another daemon.
+            if ! timeout 10s gdbus wait --session --timeout 10 org.freedesktop.secrets >/dev/null 2>&1; then
+              echo "fixture Secret Service readiness refused" >&2
+              exit 1
+            fi
             if ! timeout 10s gdbus call --session --dest org.freedesktop.secrets \
               --object-path /org/freedesktop/secrets/collection/login --method org.freedesktop.DBus.Properties.Get \
               org.freedesktop.Secret.Collection Locked 2>/dev/null | rg -Fqx '(<false>,)'; then
