@@ -105,7 +105,6 @@ struct ExportQuery {
     schedule_series_before: Option<Uuid>,
     schedule_occurrences_before: Option<Uuid>,
     schedule_audit_before: Option<Uuid>,
-    contacts_before: Option<Uuid>,
 }
 
 #[derive(Serialize)]
