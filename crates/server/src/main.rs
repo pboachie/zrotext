@@ -96,6 +96,7 @@ struct Config {
     sealed_webhook_delivery_enabled: bool,
     workflow_tools_enabled: bool,
     customer_routines_enabled: bool,
+    exposure_test_enabled: bool,
     retention: RetentionPolicy,
     draining: Arc<AtomicBool>,
     drain_notify: Arc<Notify>,
@@ -354,6 +355,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sealed_webhook_delivery_enabled = optional_bool("SEALED_WEBHOOK_DELIVERY_ENABLED")?;
     let sealed_dispatch_enabled = optional_bool("SEALED_DISPATCH_ENABLED")?;
     let customer_routines_enabled = optional_bool("CUSTOMER_ROUTINES_ENABLED")?;
+    let exposure_test_enabled = optional_bool("EXPOSURE_TEST_ENABLED")?;
     customer_routines_config_check(customer_routines_enabled, workflow_tools_enabled)?;
     // Independent-quorum failover executor and member-side reporting loop.
     // Disabled by default; when off (or absent) nothing further is read and
@@ -428,6 +430,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         sealed_webhook_delivery_enabled,
         workflow_tools_enabled,
         customer_routines_enabled,
+        exposure_test_enabled,
         retention: RetentionPolicy::from_env()?,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
@@ -956,6 +959,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             config.workflow_tools_enabled,
         ));
         app = app
+            .merge(zrotext_server::billing::exposure::http::router(
+                routine_owner_state.clone(),
+                config.exposure_test_enabled,
+            ))
             .merge(zrotext_server::workflow_runtime::routines::http::router(
                 workflow_state,
                 config.customer_routines_enabled,
@@ -1006,6 +1013,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         || config.sealed_webhook_delivery_enabled
         || config.sealed_dispatch_enabled
         || config.workflow_tools_enabled
+        || config.exposure_test_enabled
         || webhook_delivery_enabled
         || webhook_management_configured
         || usage_limits_enabled
@@ -1795,6 +1803,7 @@ mod tests {
             sealed_webhook_delivery_enabled: false,
             workflow_tools_enabled: false,
             customer_routines_enabled: false,
+            exposure_test_enabled: false,
             retention: RetentionPolicy::default(),
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),
@@ -1808,6 +1817,7 @@ mod tests {
     fn customer_routines_are_disabled_by_default_and_require_workflow_tools() {
         let config = unreachable_config();
         assert!(!config.customer_routines_enabled);
+        assert!(!config.exposure_test_enabled);
         assert!(customer_routines_config_check(false, false).is_ok());
         assert!(customer_routines_config_check(false, true).is_ok());
         assert_eq!(
@@ -1995,6 +2005,7 @@ mod tests {
             sealed_webhook_delivery_enabled: false,
             workflow_tools_enabled: false,
             customer_routines_enabled: false,
+            exposure_test_enabled: false,
             retention: RetentionPolicy::default(),
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),
