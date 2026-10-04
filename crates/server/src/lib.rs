@@ -189,4 +189,5 @@ pub(crate) mod outbox_test_support {
 #[cfg(test)]
 mod sealed_root_roles_tests;
 
+pub mod managed_reader_policy;
 pub mod workflow_templates;
