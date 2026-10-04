@@ -32,6 +32,13 @@ upgrade this TEST-only controller. The runtime must mount the availability
 route before integrating this component; missing or contradictory responses
 remove actionable controls.
 
+The availability v1 response must contain exactly its six documented fields.
+Valid self-hosted, disabled or LIVE capabilities preserve successful sign-in
+and produce `billing_unavailable`, without reading TEST billing. Both portal
+and checkout handoffs recheck hosted TEST mode. Portal remains usable when
+registration is closed or new checkout is disabled, provided the authenticated
+TEST customer binding remains current.
+
 The hosted sequence uses these existing APIs:
 
 1. `register(email, password, invite)` requests registration. The optional

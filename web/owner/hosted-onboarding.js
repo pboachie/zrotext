@@ -6,6 +6,8 @@
 (function (root) {
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const count = (value) => Number.isSafeInteger(value) && value >= 0;
+  const availabilityFields = Object.freeze(["schema_version", "deployment", "registration",
+    "billing", "checkout_available", "plan_catalog_available"]);
   const errors = Object.freeze({
     400: "Check your entries and try again.",
     401: "Sign in again to continue.",
@@ -171,7 +173,15 @@
     async function refreshWithin(guard) {
       const before = await ownerSession();
       guard();
-      await availabilityWithin(guard);
+      const capability = await availabilityWithin(guard);
+      if (capability.deployment !== "hosted" || capability.billing !== "test") {
+        await sameSession(before);
+        guard();
+        session = before;
+        challenge = null;
+        return publish({ phase: "billing_unavailable", hosting: "hosted",
+          message: "Hosted TEST billing is unavailable on this server." });
+      }
       const billing = await request("/v1/billing/status");
       guard();
       await sameSession(before);
@@ -187,7 +197,10 @@
       availability = null;
       const value = await request("/v1/service/availability");
       guard();
-      if (!value || value.schema_version !== 1 ||
+      if (!value || typeof value !== "object" || Array.isArray(value) ||
+          Object.keys(value).length !== availabilityFields.length ||
+          !Object.keys(value).every((field) => availabilityFields.includes(field)) ||
+          value.schema_version !== 1 ||
           !["hosted", "self_hosted"].includes(value.deployment) ||
           !["closed", "invite_only", "open"].includes(value.registration) ||
           !["disabled", "test", "live"].includes(value.billing) ||
@@ -196,7 +209,9 @@
           (value.deployment === "self_hosted" && (value.billing !== "disabled" || value.checkout_available || value.plan_catalog_available))) {
         throw new Error("Service availability could not be verified. Sign-in and recovery remain available.");
       }
-      availability = Object.freeze({ ...value });
+      availability = Object.freeze({ schema_version: value.schema_version,
+        deployment: value.deployment, registration: value.registration, billing: value.billing,
+        checkout_available: value.checkout_available, plan_catalog_available: value.plan_catalog_available });
       return availability;
     }
 
@@ -259,11 +274,12 @@
           : kind === "portal" ? view.portalAvailable : false;
         return run(async (guard) => {
           if (!permitted) throw new Error("Refresh billing before requesting this handoff.");
-          if (kind === "checkout") {
-            const value = await availabilityWithin(guard);
-            if (value.deployment !== "hosted" || value.billing !== "test" || !value.checkout_available) {
-              throw new Error("Checkout is unavailable on this server.");
-            }
+          const value = await availabilityWithin(guard);
+          if (value.deployment !== "hosted" || value.billing !== "test") {
+            throw new Error("Hosted TEST billing is unavailable on this server.");
+          }
+          if (kind === "checkout" && !value.checkout_available) {
+            throw new Error("Checkout is unavailable on this server.");
           }
           await sameSession(expected);
           guard();

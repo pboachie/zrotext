@@ -320,7 +320,72 @@ test("live availability never authorizes this TEST-only controller to checkout",
   const f = fixture({ "/v1/service/availability": () => response(available({ billing: "live" })) });
   f.controller.select("hosted");
   await f.controller.refresh();
-  assert.equal(f.controller.view().checkoutAvailable, false);
+  assert.equal(f.controller.view().phase, "billing_unavailable");
+  assert.equal(f.controller.view().checkoutAvailable, undefined);
   await assert.rejects(f.controller.handoff("checkout"), /Refresh billing/);
-  assert.equal(f.calls.some((call) => call.path === "/v1/billing/checkout"), false);
+  await assert.rejects(f.controller.handoff("portal"), /Refresh billing/);
+  assert.equal(f.calls.some((call) => call.path.startsWith("/v1/billing/")), false);
+});
+
+test("availability requires exactly the six version-one fields", async () => {
+  const missing = available();
+  delete missing.plan_catalog_available;
+  for (const value of [available({ private_detail: "synthetic-extra" }), missing,
+    available({ schema_version: "1" }), available({ checkout_available: "true" }),
+    [], "synthetic-response"]) {
+    const f = fixture({ "/v1/service/availability": () => response(value) });
+    f.controller.select("hosted");
+    await assert.rejects(f.controller.availability(), /could not be verified/);
+    await assert.rejects(f.controller.register("owner@example.test", "synthetic-password"), /could not be verified/);
+    assert.equal(f.calls.some((call) => call.path === "/v1/auth/register"), false);
+    assert.equal(f.controller.view().checkoutAvailable, undefined);
+  }
+});
+
+test("valid disabled and self-hosted availability preserves sign-in without billing reads", async () => {
+  for (const value of [available({ billing: "disabled", checkout_available: false, plan_catalog_available: false }),
+    available({ deployment: "self_hosted", billing: "disabled", checkout_available: false, plan_catalog_available: false })]) {
+    const f = fixture({ "/v1/service/availability": () => response(value) });
+    f.controller.select("hosted");
+    await f.controller.login("owner@example.test", "synthetic-password");
+    assert.equal(f.controller.view().phase, "billing_unavailable");
+    assert.equal(f.calls.some((call) => call.path === "/v1/auth/login"), true);
+    assert.equal(f.calls.filter((call) => call.path === "/v1/auth/session").length, 2);
+    await f.controller.refresh();
+    assert.equal(f.controller.view().phase, "billing_unavailable");
+    assert.equal(f.controller.view().checkoutAvailable, undefined);
+    assert.equal(f.controller.view().portalAvailable, undefined);
+    await assert.rejects(f.controller.handoff("checkout"), /Refresh billing/);
+    await assert.rejects(f.controller.handoff("portal"), /Refresh billing/);
+    assert.equal(f.calls.some((call) => call.path.startsWith("/v1/billing/")), false);
+  }
+});
+
+test("portal rechecks availability and refuses replacement deployment or billing mode", async () => {
+  for (const replacement of [available({ billing: "live" }),
+    available({ billing: "disabled", checkout_available: false, plan_catalog_available: false }),
+    available({ deployment: "self_hosted", billing: "disabled", checkout_available: false, plan_catalog_available: false })]) {
+    let value = available();
+    const f = fixture({ "/v1/service/availability": () => response(value) });
+    f.controller.select("hosted");
+    f.snapshot(active());
+    await f.controller.refresh();
+    assert.equal(f.controller.view().portalAvailable, true);
+    value = replacement;
+    await assert.rejects(f.controller.handoff("portal"), /TEST billing is unavailable/);
+    assert.equal(f.calls.some((call) => call.path === "/v1/billing/portal"), false);
+    assert.equal(f.controller.view().portalAvailable, undefined);
+  }
+});
+
+test("TEST portal remains available when registration, catalog and checkout are closed", async () => {
+  const f = fixture({ "/v1/service/availability": () => response(available({ registration: "closed",
+    checkout_available: false, plan_catalog_available: false })) });
+  f.controller.select("hosted");
+  f.snapshot(active());
+  await f.controller.refresh();
+  assert.equal(f.controller.view().checkoutAvailable, false);
+  assert.equal(f.controller.view().portalAvailable, true);
+  assert.equal(await f.controller.handoff("portal"), "https://billing.stripe.com/p/session/test_fixture");
+  assert.equal(f.controller.view().billingMode, "test");
 });
