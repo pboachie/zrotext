@@ -3,6 +3,7 @@ use super::*;
 use crate::http_owner_conversations::context::decisions::{model::Decision, tests::Case};
 mod cancellation;
 mod entitlement;
+mod http;
 mod invoice;
 mod resilience;
 mod retention;
