@@ -129,6 +129,8 @@ pub(crate) const DELETE_PLAN: &[(&str, &str)] = &[
     (
         "managed_reader_keys",
         "DELETE FROM managed_reader_keys WHERE account_id=$1",
+    ),
+    (
         "provider_receipt_events",
         "DELETE FROM provider_receipt_events WHERE account_id=$1",
     ),
@@ -264,7 +266,6 @@ pub(crate) const DELETE_PLAN: &[(&str, &str)] = &[
         "conversation_confirmation_records",
         "DELETE FROM conversation_confirmation_records WHERE account_id=$1",
     ),
-const DELETE_PLAN: &[(&str, &str)] = &[
     // Contacts and their append-only consent history: erasable account
     // records (unlike the schema-protected opt-out planes), deleted before
     // the memberships their recorder foreign keys point at.
@@ -868,6 +869,10 @@ async fn erase_account(
     // have neither table, while partial installation must fail closed.
     let provider_receipts_installed =
         match crate::provider_sms::receipts::lifecycle::installed(&tx).await {
+    // Optional issuer catalog preparation can wait, so finish it before auth.
+    // The returned value borrows this exact transaction and permits only deletes.
+    let issuer_erasure =
+        match crate::contact_reader_issuer::export::prepare_erase(&tx, account_id).await {
             Ok(value) => value,
             Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
         };
@@ -932,6 +937,7 @@ async fn erase_account(
     };
     let mut deleted = Vec::new();
     match crate::provider_config::lifecycle::erase_account(&tx, account_id).await {
+    match issuer_erasure.erase().await {
         Ok(counts) => deleted.extend(
             counts
                 .into_iter()
@@ -982,6 +988,8 @@ async fn erase_account(
     }
     for &(table, sql) in DELETE_PLAN {
         if crate::managed_ai::lifecycle::TABLES.contains(&table) && !managed_installed {
+            continue;
+        }
         if ["provider_receipt_events", "provider_receipt_attempts"].contains(&table)
             && !provider_receipts_installed
         {

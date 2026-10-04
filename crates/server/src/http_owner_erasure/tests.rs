@@ -12,9 +12,9 @@ use serde_json::{Value, json};
 use totp_rs::{Builder, Secret};
 use tower::ServiceExt;
 mod managed_grants;
+mod opening_capacity;
 #[path = "provider_receipts_tests.rs"]
 mod provider_receipts;
-mod opening_capacity;
 
 const ORIGIN: &str = "https://test.example";
 
@@ -390,6 +390,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "088_original_reply_readers.sql",
         include_str!("../../../../deploy/compose/migrations/088_original_reply_readers.sql"),
+    ),
     // Explicit fixture-only proposal. The production migrator never discovers it.
     (
         "../migration-candidates/managed_reader_grants.sql",
@@ -402,8 +403,6 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "090_invoice_usage_observations.sql",
         include_str!("../../../../deploy/compose/migrations/090_invoice_usage_observations.sql"),
-        "068_contacts_consent.sql",
-        include_str!("../../../../deploy/compose/migrations/068_contacts_consent.sql"),
     ),
 ];
 

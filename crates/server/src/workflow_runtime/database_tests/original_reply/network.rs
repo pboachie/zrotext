@@ -468,6 +468,7 @@ pub(super) async fn run_driver(input: Value, cwd: &Path, fixture: Driver) -> Val
         routine_timing(&output.stderr),
         request_histogram(&output.stderr),
     );
+    assert!(output.status.success(), "original reader driver refused");
     assert!(
         known_runtime_stderr(&output.stderr),
         "unexpected original reader diagnostic"

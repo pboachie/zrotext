@@ -145,7 +145,6 @@ fn parse_csv_line(line: &str, line_number: usize) -> Result<Option<Vec<String>>,
         if quoted && !in_quotes && character != ',' {
             return Err(CsvError::MalformedQuote { line: line_number });
         }
-    while let Some(character) = characters.next() {
         match character {
             '"' if in_quotes => {
                 if characters.peek() == Some(&'"') {
@@ -170,7 +169,6 @@ fn parse_csv_line(line: &str, line_number: usize) -> Result<Option<Vec<String>>,
                 return Err(CsvError::ControlCharacter { line: line_number });
             }
             other if other.is_control() => {
-            other if (other as u32) < 0x20 => {
                 return Err(CsvError::ControlCharacter { line: line_number });
             }
             other => cell.push(other),
