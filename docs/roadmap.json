@@ -1,5 +1,5 @@
 {
-  "snapshot": "2026-10-03",
+  "snapshot": "2026-10-04",
   "tracks": [
     {
       "id": "gateway",
@@ -16,7 +16,8 @@
             ["#24", "https://github.com/pboachie/zrotext/pull/24"],
             ["#160", "https://github.com/pboachie/zrotext/pull/160"],
             ["#462", "https://github.com/pboachie/zrotext/pull/462"],
-            ["device compatibility", "DEVICE-COMPATIBILITY.md"]
+            ["device compatibility", "DEVICE-COMPATIBILITY.md"],
+            ["#809", "https://github.com/pboachie/zrotext/pull/809"]
           ],
           "done": [
             "One-use pairing with code and key-fingerprint comparison",
@@ -24,7 +25,8 @@
             "Authenticated WebSocket stream with heartbeats, fenced session epochs and bounded reconnects",
             "Opt-in heartbeat resumes after a phone reboot",
             "Controlled test on one Samsung device and SIM ([compatibility notes](DEVICE-COMPATIBILITY.md))",
-            "Supported-device guidance ([compatibility guidance](DEVICE-COMPATIBILITY.md))"
+            "Supported-device guidance ([compatibility guidance](DEVICE-COMPATIBILITY.md))",
+            "Socket-capacity refusals identify their refusal phase without exposing peer contents ([#809](https://github.com/pboachie/zrotext/pull/809))"
           ],
           "todo": [
             "Longer liveness runs across networks, carriers and device models"
@@ -91,14 +93,16 @@
             ["#25", "https://github.com/pboachie/zrotext/pull/25"],
             ["#29", "https://github.com/pboachie/zrotext/pull/29"],
             ["#39", "https://github.com/pboachie/zrotext/pull/39"],
-            ["#80", "https://github.com/pboachie/zrotext/pull/80"]
+            ["#80", "https://github.com/pboachie/zrotext/pull/80"],
+            ["#779", "https://github.com/pboachie/zrotext/pull/779"]
           ],
           "done": [
             "Bounded inbound SMS pilot on Android with signed metadata upload",
             "Durable webhook outbox with HMAC signatures, retries and bounded manual replay",
             "Webhook signing secrets encrypted at rest, with key rotation ([runbook](WEBHOOK-KEK-ROTATION.md))",
             "Retention limits for inbound content and delivery history",
-            "Default-off consent-bound conversation capture and selected sealed event delivery with durable consumer checkpoints ([#710](https://github.com/pboachie/zrotext/pull/710), [#745](https://github.com/pboachie/zrotext/pull/745))"
+            "Default-off consent-bound conversation capture and selected sealed event delivery with durable consumer checkpoints ([#710](https://github.com/pboachie/zrotext/pull/710), [#745](https://github.com/pboachie/zrotext/pull/745))",
+            "Exact phone conversation captures finalize only after a valid durable upload acknowledgment retires the protected body and envelope; uncertain uploads retain their bytes and acknowledged duplicates never reseal or upload ([#779](https://github.com/pboachie/zrotext/pull/779))"
           ],
           "todo": [
             "Enabled unsolicited message-content capture and authorized customer-reader journeys beyond the pilot reply window; the line-bound STOP path carries metadata only",
@@ -303,12 +307,14 @@
           "evidence": [
             ["local connector setup", "SELF-HOSTING.md#experimental-local-agent-setup"],
             ["#724", "https://github.com/pboachie/zrotext/pull/724"],
-            ["#747", "https://github.com/pboachie/zrotext/pull/747"]
+            ["#747", "https://github.com/pboachie/zrotext/pull/747"],
+            ["#780", "https://github.com/pboachie/zrotext/pull/780"]
           ],
           "evidence_note": "guided synthetic notification/reply/approval exchange and quickstart validation are merged; complete authenticated custody and supported-client setup acceptance remain open",
           "done": [
             "Composed guided synthetic first exchange and reproducible scope, replay, revocation, opt-out and unknown-outcome cases",
-            "Mechanical quickstart checklist and output verification; simulation has no SMS or AI-provider effects"
+            "Mechanical quickstart checklist and output verification; simulation has no SMS or AI-provider effects",
+            "Read-only verification of installed guided connectors through authenticated MCP metadata with a pinned client; incomplete exchanges stay unverified and never widen permissions or configuration ([#780](https://github.com/pboachie/zrotext/pull/780))"
           ],
           "todo": [
             "Complete authenticated guided setup, scoped pairing, OS credential custody, configuration preservation and disconnect (#618)",
@@ -363,14 +369,16 @@
             ["#735", "https://github.com/pboachie/zrotext/pull/735"],
             ["#737", "https://github.com/pboachie/zrotext/pull/737"],
             ["#745", "https://github.com/pboachie/zrotext/pull/745"],
-            ["#754", "https://github.com/pboachie/zrotext/pull/754"]
+            ["#754", "https://github.com/pboachie/zrotext/pull/754"],
+            ["#765", "https://github.com/pboachie/zrotext/pull/765"]
           ],
           "done": [
             "Draft protocol, recorded Q1-Q11 decisions, strict server receiver and shared cross-client/adversarial vectors",
             "Default-off exact-envelope admission, negotiated dispatch, scoped lifecycle and inbound upload",
             "Explicit owner custody and initial conversation authority; composed server/browser/CLI sealed line setup and lifecycle ([#737](https://github.com/pboachie/zrotext/pull/737), [#754](https://github.com/pboachie/zrotext/pull/754))",
             "Maintained Android dispatch and foreground conversation callers with current authority, journal, teardown and no-replay fences ([#735](https://github.com/pboachie/zrotext/pull/735))",
-            "Consent-bound selected inbound event delivery and durable local receipt/checkpoint handling ([#745](https://github.com/pboachie/zrotext/pull/745))"
+            "Consent-bound selected inbound event delivery and durable local receipt/checkpoint handling ([#745](https://github.com/pboachie/zrotext/pull/745))",
+            "Isolated no-radio Android preparation probe pins recipient public-key custody, reported security level and observed boot count across separate runs; missing, duplicate or substituted baseline evidence fails closed ([#765](https://github.com/pboachie/zrotext/pull/765))"
           ],
           "todo": [
             "Resolve the production Android recipient/profile gate: candidate empty HPKE AAD does not satisfy the required distinct nonempty info/AAD transcript (#625)",
@@ -419,13 +427,15 @@
             ["#44", "https://github.com/pboachie/zrotext/pull/44"],
             ["#70", "https://github.com/pboachie/zrotext/pull/70"],
             ["#184", "https://github.com/pboachie/zrotext/pull/184"],
-            ["#468", "https://github.com/pboachie/zrotext/pull/468"]
+            ["#468", "https://github.com/pboachie/zrotext/pull/468"],
+            ["#770", "https://github.com/pboachie/zrotext/pull/770"]
           ],
           "done": [
             "Stripe Checkout and Customer Portal in test mode",
             "Signed event inbox with risk holds for refunds and disputes",
             "Metered admission for billed pilot tenants",
-            "First slice of usage limits and plans: quota-only usage-limit plans with enforced metered limits and honest over-limit responses, disabled by default and without any pricing decision"
+            "First slice of usage limits and plans: quota-only usage-limit plans with enforced metered limits and honest over-limit responses, disabled by default and without any pricing decision",
+            "Read-only TEST meter and invoice usage observation and reconciliation without changing billing authority ([#770](https://github.com/pboachie/zrotext/pull/770))"
           ],
           "todo": [
             "Explicit live-payment isolation and runtime implementation; quota-only limits/plans already exist default-off (#645)",
@@ -486,14 +496,16 @@
           "id": "providers",
           "name": "Provider-based high-volume sending",
           "short": "Provider-based sending",
-          "stage": "planned",
+          "stage": "design",
           "evidence": [
             ["product proposal", "PRODUCT-PLAN.md#managed-ai-and-larger-campaigns"],
-            ["route evaluation", "PROVIDER-ROUTES.md"]
+            ["route evaluation", "PROVIDER-ROUTES.md"],
+            ["#778", "https://github.com/pboachie/zrotext/pull/778"]
           ],
-          "evidence_note": "evaluation only; no route selected and no runtime implementation",
+          "evidence_note": "proposal, route evaluation and an inert proposed action-descriptor protocol exist; no route selected and no runtime implementation",
           "done": [
-            "Evaluate provider routes, supported regions and sender-number requirements before promising capacity ([evaluation](PROVIDER-ROUTES.md), [#459](https://github.com/pboachie/zrotext/pull/459))"
+            "Evaluate provider routes, supported regions and sender-number requirements before promising capacity ([evaluation](PROVIDER-ROUTES.md), [#459](https://github.com/pboachie/zrotext/pull/459))",
+            "Inert proposed provider action descriptor with closed fields, exact original-wire canonical checks, public schema and vectors; no endpoint, storage writer, SDK producer or sending authority is mounted ([#778](https://github.com/pboachie/zrotext/pull/778))"
           ],
           "todo": [
             "Explicit route selection with shared suppression, idempotency and delivery semantics; no automatic resend of unknown phone attempts"
