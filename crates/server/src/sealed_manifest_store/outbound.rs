@@ -241,6 +241,29 @@ impl CurrentAuthority<'_, '_> {
         i64::try_from(until).map_err(|_| AdmissionError::Rejected("integration reader deadline"))
     }
 
+    /// Cryptographic deadlines of the conversation keys the reply path
+    /// depends on beyond the integration reader itself: the immutable
+    /// archive reader (role 2) and the phone conversation signer (role 4).
+    /// Reply grants and proofs must not outlive either, or the credential
+    /// would authorize reads relying on expired key authority.
+    pub(crate) async fn conversation_deadlines(
+        &mut self,
+        device: Uuid,
+        line: Uuid,
+    ) -> Result<(i64, i64), AdmissionError> {
+        let now = self.checked_time().await?;
+        let keys = self.manifest.conversation_keys_with_deadlines(
+            device.as_bytes(),
+            line.as_bytes(),
+            now,
+        )?;
+        let archive = i64::try_from(keys.archive_until)
+            .map_err(|_| AdmissionError::Rejected("archive reader deadline"))?;
+        let signer = i64::try_from(keys.signer_until)
+            .map_err(|_| AdmissionError::Rejected("conversation signer deadline"))?;
+        Ok((archive, signer))
+    }
+
     /// A workflow signer is a distinct active role-5 key for this exact line.
     pub(crate) async fn workflow_signer(
         &mut self,

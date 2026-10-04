@@ -169,12 +169,22 @@ async fn locked(
         });
     }
     let reader_until:i64=tx.query_one("SELECT LEAST(r.expires_ms,k.valid_until_ms,g.expires_ms) FROM connector_registrations r JOIN connector_keys k ON (k.account_id,k.connector_id,k.key_id)=(r.account_id,r.connector_id,r.key_id) JOIN connector_grants g ON (g.account_id,g.connector_id)=(r.account_id,r.connector_id) WHERE r.account_id=$1 AND r.connector_id=$2 AND g.grant_id=$3",&[&p.account,&connector,&read_grant]).await?.get(0);
+    // The archive reader (role 2) and phone conversation signer (role 4)
+    // carry their own cryptographic deadlines; a proof accepted past either
+    // would rest on expired key authority even with the integration reader
+    // and grant still live.
+    let (archive_until, signer_until) = authority
+        .conversation_deadlines(s.device, s.line)
+        .await
+        .map_err(|_| ConversationError::Forbidden)?;
     let observed = activation::now(tx).await?;
     let expires = row
         .get::<_, i64>(4)
         .min(creator_until)
         .min(origin_until)
-        .min(reader_until);
+        .min(reader_until)
+        .min(archive_until)
+        .min(signer_until);
     if observed >= expires {
         return Err(ConversationError::Forbidden);
     }

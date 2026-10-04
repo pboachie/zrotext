@@ -104,6 +104,14 @@ pub async fn issue(
         .integration_reader_deadline(s.device, s.line, &point)
         .await
         .map_err(|_| AuthError::Forbidden)?;
+    // The reply path also depends on the archive reader (role 2) and the
+    // phone conversation signer (role 4); a grant that outlived either key
+    // would authorize reads relying on expired authority.
+    let (archive_until, signer_until) = authority
+        .conversation_deadlines(s.device, s.line)
+        .await
+        .map_err(|_| AuthError::Forbidden)?;
+    let crypto_until = crypto_until.min(archive_until).min(signer_until);
     if reader != request.reader_key_id || scope & 8 != 8 || request.expires_at_ms > crypto_until {
         return Err(AuthError::InvalidInput);
     }
