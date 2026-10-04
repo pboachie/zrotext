@@ -18,6 +18,8 @@ pub use conversation_refresh::activation as conversation_activation;
 /// Typed first manifest signing with independently compared public points.
 #[cfg(feature = "unlock")]
 pub mod conversation_genesis;
+/// Cryptographic stage-root evidence only; signing is offline unlock-only.
+pub mod preaccount_root_evidence;
 pub mod recovery_kit;
 pub mod root_backup;
 /// Offline unlock signing, compiled only when the `unlock` feature is
