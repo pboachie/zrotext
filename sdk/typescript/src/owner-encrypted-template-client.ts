@@ -105,15 +105,15 @@ export class OwnerEncryptedTemplateClient {
  #ticket(ticket:object):Saved{if(this.#busy)throw new OwnerTemplateError('busy','refused');this.#live(this.#saved?.deadline??0);const r=this.#saved;if(!r||r.ticket!==ticket)refuse();return r;}
  async prepareSave(input:TemplateSaveInput):Promise<TemplateTicket>{
   if(this.#busy||this.#saved||this.#pending)throw new OwnerTemplateError('pending_write','refused');const deadline=performance.now()+this.#timeout;this.#live(deadline);
-  const d=record(input,['requestId','expectedRevision','scope','envelope']),s=scope(d.scope);if(!(d.envelope instanceof Uint8Array)||d.envelope.length<308||d.envelope.length>maxEnvelope)refuse();const envelope=Uint8Array.from(d.envelope);parse(envelope);if(!equal(encryptedTemplateAad(s),envelope.slice(0,222)))refuse();
-  this.#busy=true;let r:Saved|undefined;
+  this.#busy=true;let r:Saved|undefined,envelope:Uint8Array|undefined;
   try{
+   const d=record(input,['requestId','expectedRevision','scope','envelope']),s=scope(d.scope);if(!(d.envelope instanceof Uint8Array)||d.envelope.length<308||d.envelope.length>maxEnvelope)refuse();envelope=Uint8Array.from(d.envelope);parse(envelope);if(!equal(encryptedTemplateAad(s),envelope.slice(0,222)))refuse();
    const request=await this.#wait(templateSaveRequest(s,d.requestId,d.expectedRevision,envelope),deadline);this.#live(deadline);const csrf=await this.#csrf(deadline);
    r={ticket:Object.freeze({}),requestId:d.requestId,scope:s,request,csrf,deadline,attempts:0,verifies:0,unknown:false};this.#saved=r;this.#deadline(r,await this.#current(s,deadline,csrf));
    await this.#wait(crypto.subtle.importKey('raw',Uint8Array.from(envelope.slice(222,287)).buffer,{name:'ECDH',namedCurve:'P-256'},false,[]),r.deadline);
    await this.#wait(this.#options.consumeCiphertextReview(Object.freeze({requestId:r.requestId,expectedRevision:d.expectedRevision,scope:scope(s),encryptedDigest:request.encryptedDigest})),r.deadline);
    this.#deadline(r,await this.#current(s,r.deadline,csrf));return r.ticket;
-  }catch(error){if(r)this.#forget(r);if(error instanceof OwnerTemplateError)throw error;throw new OwnerTemplateError('invalid_request','refused');}finally{envelope.fill(0);this.#busy=false;}
+  }catch(error){if(r)this.#forget(r);if(error instanceof OwnerTemplateError)throw error;throw new OwnerTemplateError('invalid_request','refused');}finally{envelope?.fill(0);this.#busy=false;}
  }
  async #body(response:Response,limit:number,deadline:number):Promise<Uint8Array>{
   const reader=response.body?.getReader();if(!reader)throw new OwnerTemplateError('response_unknown','unknown');let size=0;const chunks:Uint8Array[]=[];
@@ -131,10 +131,18 @@ export class OwnerEncryptedTemplateClient {
   try{
    this.#deadline(r,await this.#current(r.scope,r.deadline,r.csrf));this.#live(r.deadline);r.attempts++;r.unknown=true;attempted=true;this.#pending=this.#identity(r);
    const response=await this.#response(true,r.deadline,r.csrf,r);
-   if([400,401,403,404,409,413,429].includes(response.status)){void response.body?.cancel().catch(()=>{});if(wasUnknown)throw new OwnerTemplateError('response_unknown','unknown');this.#forget(r);if(response.status===401||response.status===403)this.close();throw new OwnerTemplateError('save_refused','refused');}
+   if([400,401,403,404,409,413,429].includes(response.status)){void response.body?.cancel().catch(()=>{});
+    // An auth refusal invalidates this host lifetime even when an earlier effect
+    // remains unknown. Keep its metadata, but destroy the live retry capability.
+    if(wasUnknown){if(response.status===401||response.status===403)this.close();throw new OwnerTemplateError('response_unknown','unknown');}
+    this.#forget(r);if(response.status===401||response.status===403)this.close();throw new OwnerTemplateError('save_refused','refused');}
    if(response.status!==200||!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(response.headers.get('content-type')??'')){void response.body?.cancel().catch(()=>{});throw new OwnerTemplateError('response_unknown','unknown');}
    const body=await this.#body(response,256,r.deadline);templateSaveReceipt(r.request,body);if(new TextDecoder('utf-8',{fatal:true}).decode(body)!==JSON.stringify({revision:r.request.revision}))throw new OwnerTemplateError('response_unknown','unknown');
-   this.#deadline(r,await this.#current(r.scope,r.deadline,r.csrf));const acknowledgement=Object.freeze({...this.#identity(r),state:'acknowledged_saved_revision' as const});
+   this.#deadline(r,await this.#current(r.scope,r.deadline,r.csrf));
+   // The existing backend has immutable revisions. Contradictory observations
+   // cannot acknowledge this request or overwrite an already observed digest.
+   if(r.scope.revision===this.#head&&this.#headDigest!==null&&r.request.encryptedDigest!==this.#headDigest)throw new OwnerTemplateError('response_unknown','unknown');
+   const acknowledgement=Object.freeze({...this.#identity(r),state:'acknowledged_saved_revision' as const});
    if(r.scope.revision>=this.#head){this.#head=r.scope.revision;this.#headDigest=r.request.encryptedDigest;}this.#forget(r);return acknowledgement;
   }catch(error){if(error instanceof OwnerTemplateError&&error.state==='refused'&&!this.#pending&&this.#saved!==r)throw error;if(attempted||wasUnknown)throw new OwnerTemplateError('response_unknown','unknown');if(error instanceof OwnerTemplateError)throw error;throw new OwnerTemplateError('save_refused','refused');}finally{this.#busy=false;}
  }

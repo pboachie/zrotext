@@ -46,6 +46,8 @@ It includes asynchronous current-host, CSRF, review, cryptographic, network and
 streamed-body waits. Preparing a ticket, retrying or verifying never renews its
 deadline. Synchronous host callbacks must return promptly; JavaScript cannot
 preempt a synchronously blocked host. One ticket is outstanding at a time.
+The preparation fence is acquired before inspecting caller-controlled input;
+reentrant inspection cannot obtain a second ticket or consume a second review.
 `close`, caller abort and expiry abort transport, clear owned encrypted buffers
 and reject late results. Unknown request metadata survives closure for diagnosis.
 These fences do not forcibly cancel arbitrary host callback work; the trusted
@@ -79,6 +81,10 @@ there are at most three POST attempts in total. A later refusal cannot erase an
 earlier ambiguous effect. No automatic retry is requested by the client. Browser
 or network infrastructure may itself retry a request, so backend exact-request
 idempotency remains essential.
+An authorization refusal closes the client and destroys its retry buffer even
+after an earlier unknown effect; the unknown metadata remains. A contradictory
+same-revision acknowledgement cannot overwrite an observed ciphertext digest or
+clear its unknown ticket.
 
 Tickets and buffers are process-local and expire. They establish no crash or
 restart recovery; after closure the unresolved metadata does not recreate the
@@ -123,15 +129,17 @@ The SDK's discovered `owner-encrypted-template-client.test.mjs` exercises actual
 SDK encryption and manifest verification with synthetic fetch boundaries. It
 covers mutable caller/review data, provenance, unknown identity and exact retry,
 revocation/CSRF changes, delayed acknowledgements, deadline/abort, stalled and
-oversized bodies, redirect refusal, read floors and attempt bounds.
+oversized bodies, redirect refusal, read floors, contradictory acknowledgements,
+authorization refusals after unknown, reentrant caller inspection and attempt bounds.
 
 The existing rendered-owner CI job discovers
 `web/owner/browser/encrypted-template-client.test.js` after installing pinned
 Playwright and Chromium. It runs the compiled module in actual Chromium against
 an owned local HTTPS fixture with synthetic Secure/HttpOnly owner cookies and
 CSRF, real opaque request bytes and current-host exchanges. It checks save/read,
-ambiguous persisted response plus exact retry, post-response owner revocation and
-a stalled body that actually reaches the deadline. Its unique self-signed
+ambiguous persisted response plus exact retry, contradictory same-revision
+acknowledgements, authorization refusals after unknown, post-response owner
+revocation and a stalled body that actually reaches the deadline. Its unique self-signed
 certificate is accepted only by its isolated browser test context; production
 TLS is unchanged. All temporary server connections, context and certificate
 files are owned and cleaned up. Missing browser/runtime/dependencies fail; no

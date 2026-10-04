@@ -20,6 +20,8 @@ async function fixture(mode,run){
  const f=await templateFixture(),temporary=await fs.mkdtemp(path.join(os.tmpdir(),'zrotext-template-browser-'));
  let server,context;const posts=[],reads=[],requests=[];let live=true,stored=Uint8Array.from(f.envelope);
  try{
+  const {sealEncryptedTemplate}=await import(pathToFileURL(path.join(sdk,'dist/encrypted-template.js')).href);
+  const contradictory=mode==='contradictory'?await sealEncryptedTemplate(f.manifest,f.scope,f.nowMs,{template:'Different synthetic stored version',values:{}}):null;
   const key=path.join(temporary,'key.pem'),cert=path.join(temporary,'cert.pem');
   // A unique self-signed synthetic fixture certificate; no production TLS change.
   execFileSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-keyout',key,'-out',cert,'-subj','/CN=localhost','-days','1'],{stdio:'ignore',timeout:15000});
@@ -57,12 +59,13 @@ async function fixture(mode,run){
      posts.push({id:req.headers['idempotency-key'],revision:req.headers['x-zrotext-template-revision'],body});stored=Uint8Array.from(body);
      // Persist, then refuse acknowledgement deterministically. Chromium may
      // retry an empty socket response itself, obscuring that boundary.
-     if(mode==='unknown'&&posts.length===1){res.writeHead(503).end();return;}if(mode==='revoked')live=false;
+     if(['unknown','contradictory','unknown-401','unknown-403'].includes(mode)&&posts.length===1){res.writeHead(503).end();return;}
+     if(mode.startsWith('unknown-')&&posts.length===2){res.writeHead(Number(mode.slice(8))).end();return;}if(mode==='revoked')live=false;
      res.setHeader('content-type','application/json');res.setHeader('cache-control','no-store');res.end('{"revision":1}');return;
     }
     if(req.method==='GET'&&url.pathname.startsWith('/v1/owner/workflow/templates/')){
      reads.push(url.pathname);res.setHeader('content-type','application/vnd.zrotext.workflow-template.v1');res.setHeader('cache-control','no-store');
-     if(mode==='deadline'){res.write(Buffer.from(stored.slice(0,64)));return;}res.end(Buffer.from(stored));return;
+     if(mode==='deadline'){res.write(Buffer.from(stored.slice(0,64)));return;}res.end(Buffer.from(contradictory??stored));return;
     }
     res.writeHead(404).end();
    }catch{if(!res.headersSent)res.writeHead(500);res.end();}
@@ -91,4 +94,12 @@ test('Chromium current owner revocation after POST refuses late acknowledgement'
 test('Chromium stalled encrypted body obeys absolute deadline and returns no late snapshot',async()=>fixture('deadline',async({page,reads,posts})=>{
  const result=await page.evaluate(async()=>{const c=createTemplateClient(500);const started=performance.now();try{await c.readLatest();return {published:true};}catch{return {published:false,elapsed:performance.now()-started};}finally{c.close();}});
  assert.equal(result.published,false);assert.ok(result.elapsed<2000);assert.equal(reads.length,1);assert.equal(posts.length,0);
+}));
+test('Chromium contradictory same revision acknowledgement preserves unknown and observed digest',async()=>fixture('contradictory',async({page,posts})=>{
+ const result=await page.evaluate(async()=>{const c=createTemplateClient();const t=await c.prepareSave(templateWrite());try{await c.commit(t);}catch{}const first=await c.verifyUnknown(t);const pending=c.pending();let state;try{await c.retryUnknown(t);}catch(e){state=e.state;}const second=await c.verifyUnknown(t);const result={state,pendingUnchanged:JSON.stringify(c.pending())===JSON.stringify(pending),sameObservedDigest:first.encryptedDigest===second.encryptedDigest,matchesPending:second.matchesPending,acknowledged:second.requestAcknowledged};c.close();return result;});
+ assert.deepEqual(result,{state:'unknown',pendingUnchanged:true,sameObservedDigest:true,matchesPending:false,acknowledged:false});assert.equal(posts.length,2);assert.deepEqual(posts[0],posts[1]);
+}));
+for(const status of [401,403])test(`Chromium authorization ${status} after unknown prevents another POST despite stale host claims`,async()=>fixture(`unknown-${status}`,async({page,posts})=>{
+ const result=await page.evaluate(async()=>{const c=createTemplateClient();const t=await c.prepareSave(templateWrite());try{await c.commit(t);}catch{}const pending=c.pending();try{await c.retryUnknown(t);}catch{}let state;try{await c.retryUnknown(t);}catch(e){state=e.state;}const result={state,pendingUnchanged:JSON.stringify(c.pending())===JSON.stringify(pending)};c.close();return result;});
+ assert.deepEqual(result,{state:'unknown',pendingUnchanged:true});assert.equal(posts.length,2);assert.deepEqual(posts[0],posts[1]);
 }));
