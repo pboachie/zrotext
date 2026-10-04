@@ -38,6 +38,8 @@ pub mod account;
 pub mod agent_grants;
 pub mod collaboration;
 pub mod mfa;
+mod owner_reduction;
+pub(crate) use owner_reduction::OwnerReductionFence;
 mod password_work;
 #[cfg(test)]
 mod roles_tests;
