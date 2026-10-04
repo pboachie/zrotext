@@ -80,19 +80,109 @@ impl Fixture {
     }
 }
 
+async fn receive_capacity_json(
+    socket: &mut TestSocket,
+    phase: &'static str,
+    ordinal: usize,
+) -> Value {
+    assert!(matches!(
+        phase,
+        "pending_challenge" | "admitted_challenge" | "proof" | "heartbeat_0" | "heartbeat_1"
+    ));
+    assert!(ordinal < MAX_DEVICE_SOCKETS);
+    // Retain the same five-second response deadline and exact JSON expectations.
+    let frame = timeout(Duration::from_secs(5), socket.next())
+        .await
+        .unwrap_or_else(|_| panic!("capacity phase={phase} ordinal={ordinal}: response timed out"))
+        .unwrap_or_else(|| panic!("capacity phase={phase} ordinal={ordinal}: socket closed"))
+        .unwrap_or_else(|_| panic!("capacity phase={phase} ordinal={ordinal}: read failed"));
+    match frame {
+        WsMessage::Text(text) => serde_json::from_str(text.as_str())
+            .unwrap_or_else(|_| panic!("capacity phase={phase} ordinal={ordinal}: invalid JSON")),
+        WsMessage::Close(frame) => panic!(
+            "capacity phase={phase} ordinal={ordinal}: expected JSON text, close code {:?}",
+            frame.map(|f| u16::from(f.code))
+        ),
+        _ => panic!("capacity phase={phase} ordinal={ordinal}: expected JSON text, non-text frame"),
+    }
+}
+
+#[tokio::test]
+async fn capacity_diagnostics_identify_phase_and_ordinal_without_exposing_peer_payloads() {
+    for closing in [true, false] {
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let frame = if closing {
+                WsMessage::Close(Some(tungstenite::protocol::CloseFrame {
+                    code: tungstenite::protocol::frame::coding::CloseCode::Again,
+                    reason: "synthetic-private-peer-canary".into(),
+                }))
+            } else {
+                WsMessage::Text("synthetic-private-peer-canary invalid JSON".into())
+            };
+            socket.send(frame).await.unwrap();
+        });
+        let (mut socket, _) = connect_async(format!("ws://{address}")).await.unwrap();
+        let failure =
+            tokio::spawn(async move { receive_capacity_json(&mut socket, "proof", 7).await })
+                .await
+                .unwrap_err();
+        assert!(failure.is_panic());
+        let payload = failure.into_panic();
+        let message = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .expect("string panic");
+        assert!(message.contains("capacity phase=proof ordinal=7"));
+        assert!(!message.contains("synthetic-private-peer-canary"));
+        if closing {
+            assert!(message.contains("close code Some(1013)"));
+        } else {
+            assert!(message.contains("invalid JSON"));
+        }
+        server.await.unwrap();
+    }
+}
+
 async fn challenge(address: SocketAddr, device_id: Uuid) -> (TestSocket, Value) {
+    challenge_at(address, device_id, None).await
+}
+
+async fn challenge_at(
+    address: SocketAddr,
+    device_id: Uuid,
+    diagnostic: Option<(&'static str, usize)>,
+) -> (TestSocket, Value) {
     let mut socket = open(address).await;
     send_json(
         &mut socket,
         json!({"v":1,"type":"hello","device_id":device_id}),
     )
     .await;
-    let frame = receive_json(&mut socket).await;
+    let frame = match diagnostic {
+        Some((phase, ordinal)) => receive_capacity_json(&mut socket, phase, ordinal).await,
+        None => receive_json(&mut socket).await,
+    };
     assert_eq!(frame["type"], "challenge");
     (socket, frame)
 }
 
 pub(super) async fn prove(socket: &mut TestSocket, frame: Value, signing: &SigningKey) -> i64 {
+    prove_at(socket, frame, signing, None).await
+}
+
+async fn prove_at(
+    socket: &mut TestSocket,
+    frame: Value,
+    signing: &SigningKey,
+    ordinal: Option<usize>,
+) -> i64 {
     let challenge = DeviceChallenge {
         id: Uuid::parse_str(frame["challenge_id"].as_str().unwrap()).unwrap(),
         account_id: Uuid::parse_str(frame["account_id"].as_str().unwrap()).unwrap(),
@@ -113,7 +203,10 @@ pub(super) async fn prove(socket: &mut TestSocket, frame: Value, signing: &Signi
         }),
     )
     .await;
-    let session = receive_json(socket).await;
+    let session = match ordinal {
+        Some(n) => receive_capacity_json(socket, "proof", n).await,
+        None => receive_json(socket).await,
+    };
     assert_eq!(session["type"], "session");
     session["connection_epoch"].as_i64().unwrap()
 }
@@ -136,9 +229,13 @@ async fn all_admitted_sessions_renew_while_proofs_wait_without_pinning_database_
     // proof timeout can return the first client's slot.
     let started = Instant::now();
     let mut pending = Vec::new();
-    for _ in 0..17 {
+    for ordinal in 0..17 {
         let (device_id, _) = fixture.device().await;
-        pending.push(challenge(address, device_id).await.0);
+        pending.push(
+            challenge_at(address, device_id, Some(("pending_challenge", ordinal)))
+                .await
+                .0,
+        );
     }
     assert!(started.elapsed() < AUTH_TIMEOUT);
     assert_eq!(
@@ -152,10 +249,11 @@ async fn all_admitted_sessions_renew_while_proofs_wait_without_pinning_database_
 
     // All 32 authenticated sockets must coexist with those unproven peers.
     let mut phones = Vec::new();
-    for _ in 0..MAX_DEVICE_SOCKETS {
+    for ordinal in 0..MAX_DEVICE_SOCKETS {
         let (device_id, signing) = fixture.device().await;
-        let (mut socket, frame) = challenge(address, device_id).await;
-        let epoch = prove(&mut socket, frame, &signing).await;
+        let (mut socket, frame) =
+            challenge_at(address, device_id, Some(("admitted_challenge", ordinal))).await;
+        let epoch = prove_at(&mut socket, frame, &signing, Some(ordinal)).await;
         phones.push((socket, epoch));
     }
     assert_eq!(admission.established.available_permits(), 0);
@@ -173,9 +271,18 @@ async fn all_admitted_sessions_renew_while_proofs_wait_without_pinning_database_
         for (socket, _) in &mut phones {
             send_json(socket, json!({"v":1,"type":"heartbeat"})).await;
         }
-        for (socket, epoch) in &mut phones {
+        for (ordinal, (socket, epoch)) in phones.iter_mut().enumerate() {
             assert_eq!(
-                receive_json(socket).await,
+                receive_capacity_json(
+                    socket,
+                    if round == 0 {
+                        "heartbeat_0"
+                    } else {
+                        "heartbeat_1"
+                    },
+                    ordinal
+                )
+                .await,
                 json!({"v":1,"type":"heartbeat_ack","connection_epoch":epoch})
             );
         }
