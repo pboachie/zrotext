@@ -508,6 +508,12 @@ async fn export_account(
         &principal,
         query.original_reply_section.unwrap_or_default(),
         query.original_reply_before,
+    )
+    .await
+    {
+        Ok(view) => view,
+        Err(error) => return error.into_response(),
+    };
     let opening_capacity = match crate::workflow_runtime::openings::export::export(
         &mut client,
         &principal,
@@ -533,6 +539,8 @@ async fn export_account(
         .await
         {
             Ok(page) => page,
+            Err(error) => return error.into_response(),
+        },
         provider_configurations: match crate::provider_config::lifecycle::export(
             &mut client,
             &principal,
