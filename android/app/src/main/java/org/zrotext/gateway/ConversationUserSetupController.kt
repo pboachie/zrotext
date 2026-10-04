@@ -156,7 +156,7 @@ internal class ConversationUserSetupController(
                 }
             }, dispatchForConnection = { value ->
                 requireOpen(); check(executionConnection.compareAndSet(null, value)); execution.dispatch(value)
-            })
+            }, timeMaintenanceScheduler = JournalRuntime.timeouts)
         installed = ConversationSocketComposition.installOwned({ socket, identity, epoch ->
             requireOpen()
             check(identity == selection.identity)

@@ -205,9 +205,18 @@ class ConversationProbeDeviceTest {
             assertNull(db.journal().wireCapture(token)!!.protectedEnvelope)
             assertNotNull(db.journal().wireCapture(token)!!.acknowledgedDigest)
             if(scenario=="capture-ack") {
+                fun maintainTime() {
+                    val done=java.util.concurrent.CountDownLatch(1)
+                    val refreshed=java.util.concurrent.atomic.AtomicBoolean(false)
+                    runtime.maintainAuthenticatedTime(scope) { accepted->refreshed.set(accepted);done.countDown() }
+                    assertTrue("Same-runtime authenticated maintenance completion",done.await(10,TimeUnit.SECONDS))
+                    assertTrue("Same-runtime maintenance cannot reopen expired authority",refreshed.get())
+                }
+                maintainTime()
                 // Batch only fixture crypto to avoid per-packet Node startups consuming the unchanged
                 // authenticated-clock age. All 128 bodies pass actual receipt admission and its cap.
                 val captures=(2..129).map { index ->
+                    if(index>2 && (index-2)%32==0)maintainTime()
                     val receipt=index.toString(16).padStart(64,'0')
                     val content="Synthetic acknowledged capture $index"
                     syntheticReceipt(receipt,content)
@@ -216,11 +225,13 @@ class ConversationProbeDeviceTest {
                     Triple(receipt,checkNotNull(runtime.retryCapture(receipt)),index.toLong())
                 }
                 assertEquals(ConversationCaptureDao.CONTENT_CAPACITY,db.journal().contentCount())
+                maintainTime()
                 System.err.println("Synthetic capture batch admitted at ${TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-start)}ms")
                 val packets=fixture.envelopes(captures.map {it.second to it.third})
                 System.err.println("Synthetic capture batch prepared at ${TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-start)}ms")
                 // Every upload still uses actual Room reservation/persistence, authenticated WS and PG.
                 captures.forEachIndexed {position,(receipt,capture,expectedSequence) ->
+                    if(position%16==0)maintainTime()
                     val done=java.util.concurrent.CountDownLatch(1)
                     val committed=java.util.concurrent.atomic.AtomicBoolean(false)
                     runtime.uploadCapture(receipt,{value,sequence ->
