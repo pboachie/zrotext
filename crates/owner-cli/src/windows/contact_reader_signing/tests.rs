@@ -356,6 +356,16 @@ fn public_output_is_create_new_and_read_input_refuses_directories_and_oversize()
     let big = parent.join("big.json");
     std::fs::write(&big, vec![b' '; MAX_WRAPPER + 1]).unwrap();
     assert!(read_proposal(big.to_str().unwrap()).is_err());
+    let owned = parent.canonicalize().unwrap();
+    let within = parent.join("within");
+    std::fs::create_dir(&within).unwrap();
+    assert!(inspect_owned_cleanup_directory(&within, &owned).is_ok());
+    let sibling = unique_parent();
+    std::fs::create_dir_all(&sibling).unwrap();
+    assert!(inspect_owned_cleanup_directory(&sibling, &owned).is_err());
+    assert!(inspect_owned_cleanup_directory(&fixture_root(), &owned).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), vec![9; 314]);
+    cleanup(&sibling);
     cleanup(&parent);
 }
 fn fixture_root() -> PathBuf {
@@ -449,20 +459,35 @@ fn no_reparse(path: &std::path::Path) -> Result<()> {
     }
     Ok(())
 }
-fn cleanup(parent: &std::path::Path) {
-    assert_eq!(parent.parent(), Some(fixture_root().as_path()));
-    no_reparse(parent).unwrap();
-    fn descend(path: &std::path::Path) {
-        for item in std::fs::read_dir(path).unwrap() {
-            let item = item.unwrap();
-            no_reparse(&item.path()).unwrap();
-            if item.file_type().unwrap().is_dir() {
-                descend(&item.path());
-            }
+fn inspect_owned_cleanup_directory(path: &std::path::Path, owned: &std::path::Path) -> Result<()> {
+    no_reparse(path)?;
+    let normalized = path.canonicalize().map_err(|_| ())?;
+    if !normalized.starts_with(owned) {
+        return Err(());
+    }
+    for item in std::fs::read_dir(&normalized).map_err(|_| ())? {
+        let item = item.map_err(|_| ())?;
+        no_reparse(&item.path())?;
+        if item.file_type().map_err(|_| ())?.is_dir() {
+            inspect_owned_cleanup_directory(&item.path(), owned)?;
         }
     }
-    descend(parent);
-    std::fs::remove_dir_all(parent).unwrap();
+    Ok(())
+}
+fn cleanup(parent: &std::path::Path) {
+    let fixed = fixture_root();
+    assert_eq!(parent.parent(), Some(fixed.as_path()));
+    no_reparse(&fixed).unwrap();
+    no_reparse(parent).unwrap();
+    let root = fixed.canonicalize().unwrap();
+    let owned = parent.canonicalize().unwrap();
+    assert_eq!(owned.parent(), Some(root.as_path()));
+    inspect_owned_cleanup_directory(parent, &owned).unwrap();
+    no_reparse(parent).unwrap();
+    no_reparse(&owned).unwrap();
+    assert_eq!(parent.canonicalize().unwrap(), owned);
+    assert_eq!(owned.parent(), Some(root.as_path()));
+    std::fs::remove_dir_all(&owned).unwrap();
 }
 #[test]
 fn native_contact_signing_consumes_real_sessions_and_preserves_existing_bundle() {
