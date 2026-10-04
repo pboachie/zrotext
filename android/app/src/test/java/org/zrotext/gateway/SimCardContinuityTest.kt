@@ -28,11 +28,11 @@ class SimCardContinuityTest {
         assertFalse(SimCardContinuity.matches(approved, listOf(ActiveSimCard(8, 42))))
     }
 
-    @Test fun absentUnreadableOrAmbiguousSimCannotAttributeAnEvent() {
+    @Test fun absentUnreadableOrAmbiguousSelectedSimCannotAttributeAnEvent() {
         assertFalse(SimCardContinuity.matches(approved, null))
         assertFalse(SimCardContinuity.matches(approved, emptyList()))
         assertFalse(SimCardContinuity.matches(approved,
-            listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43))))
+            listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 42))))
         assertFalse(SimCardContinuity.matches(null, listOf(ActiveSimCard(7, 42))))
     }
 

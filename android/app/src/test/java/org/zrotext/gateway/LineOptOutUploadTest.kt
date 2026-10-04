@@ -90,7 +90,7 @@ class LineOptOutUploadTest {
         assertFalse(LineOptOutUploadGate.allows(row(), null, account, device, 7,
             listOf(ActiveSimCard(7, 42)), now))
         assertFalse(LineOptOutUploadGate.allows(row(), binding, account, device, 7,
-            listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43)), now))
+            listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 42)), now))
         assertFalse(LineOptOutUploadGate.allows(row(), binding, account, device, 8,
             listOf(ActiveSimCard(7, 42)), now))
         assertFalse(LineOptOutUploadGate.allows(row().copy(observedSubscriptionId = null),

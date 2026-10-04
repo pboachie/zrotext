@@ -42,20 +42,28 @@ internal object SimCardContinuity {
 
     /**
      * A match is a conservative local continuity signal, not carrier ownership proof. Card IDs
-     * are only useful when Android supplies a nonnegative value for one observed active SIM.
+     * are only useful when Android supplies a nonnegative value for the selected physical SIM.
      */
     fun activationCandidate(active: List<ActiveSimCard>?): ActivatedSimCard? {
         if (active?.size != 1) return null
-        val only = active.single()
-        val card = only.cardId ?: return null
+        return activationCandidate(active, active.single().subscriptionId)
+    }
+
+    /** A second SIM never selects a line or replaces a missing explicitly selected SIM. */
+    fun activationCandidate(active: List<ActiveSimCard>?, selectedSubscriptionId: Int): ActivatedSimCard? {
+        if (active == null || selectedSubscriptionId < 0 ||
+            active.map { it.subscriptionId }.distinct().size != active.size) return null
+        val selected = active.singleOrNull { it.subscriptionId == selectedSubscriptionId } ?: return null
+        val card = selected.cardId ?: return null
         // An eSIM card ID identifies the eUICC, not an individual profile. A profile swap may
         // preserve the card ID and cannot pass until a separate profile identity is verified.
-        return if (only.subscriptionId >= 0 && card >= 0 && !only.isEmbedded) {
-            ActivatedSimCard(only.subscriptionId, card)
+        return if (card >= 0 && !selected.isEmbedded &&
+            active.none { it.subscriptionId != selectedSubscriptionId && it.cardId == card }) {
+            ActivatedSimCard(selectedSubscriptionId, card)
         } else null
     }
 
     fun matches(activated: ActivatedSimCard?, active: List<ActiveSimCard>?): Boolean {
-        return activated != null && activationCandidate(active) == activated
+        return activated != null && activationCandidate(active, activated.subscriptionId) == activated
     }
 }
