@@ -41,6 +41,10 @@ pub struct OwnerExportState {
 pub fn router(state: OwnerExportState) -> Router {
     Router::new()
         .route("/v1/owner/export", get(export_account))
+        .layer(middleware::from_fn_with_state(
+            Arc::new(state.clone()),
+            issuer_state_only,
+        ))
         .layer(middleware::from_fn(no_store))
         .with_state(Arc::new(state))
 }
@@ -52,6 +56,62 @@ async fn no_store(request: Request, next: Next) -> Response {
         header::HeaderValue::from_static("no-store"),
     );
     response
+}
+
+/// A closed public-only selector is dispatched before the ordinary takeout
+/// reads any private family or opens a contact vault. The default route is kept.
+async fn issuer_state_only(
+    State(state): State<Arc<OwnerExportState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    use crate::http_auth::{AuthHttpError, preauth::AccountSlot};
+    use std::time::Duration;
+    use tokio::time::{Instant, timeout, timeout_at};
+    let query = match Query::<ExportQuery>::try_from_uri(request.uri()) {
+        Ok(Query(query)) => query,
+        Err(_) => return AuthHttpError::BadRequest.into_response(),
+    };
+    if query.contact_reader_only.is_none() {
+        return next.run(request).await;
+    }
+    // Exact raw spelling also rejects encoded aliases, duplicates and every
+    // old/new cursor combination without enumerating foreign field names.
+    if request.method() != axum::http::Method::GET
+        || request.uri().query() != Some("contact_reader_only=state")
+    {
+        return AuthHttpError::BadRequest.into_response();
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let result = timeout_at(deadline, async {
+        let (parts, body) = request.into_parts();
+        crate::http_owner_contact_issuance::headers(&parts.headers, false)?;
+        let mut client = crate::runtime_db::connect(&state.database_url)
+            .await
+            .map_err(|_| AuthHttpError::Unavailable)?;
+        let principal = require_owner_read(&client, &state.auth_hasher, &parts.headers).await?;
+        let _account_slot = AccountSlot::try_acquire(principal.tenant.account_id())
+            .ok_or(AuthHttpError::TooManyRequests)?;
+        timeout(Duration::from_secs(1), axum::body::to_bytes(body, 0))
+            .await
+            .map_err(|_| AuthHttpError::BadRequest)?
+            .map_err(|_| AuthHttpError::BadRequest)?;
+        let bytes = crate::contact_reader_issuer::export::state_only(&mut client, &principal)
+            .await
+            .map_err(crate::http_owner_contact_issuance::error)?;
+        if Instant::now() >= deadline {
+            return Err(AuthHttpError::Unavailable);
+        }
+        Ok::<Response, AuthHttpError>(
+            ([(header::CONTENT_TYPE, "application/json")], bytes).into_response(),
+        )
+    })
+    .await;
+    match result {
+        Ok(Ok(response)) if Instant::now() < deadline => response,
+        Ok(Err(error)) => error.into_response(),
+        _ => AuthHttpError::Unavailable.into_response(),
+    }
 }
 
 #[derive(Deserialize)]
@@ -73,6 +133,9 @@ struct ExportQuery {
     provider_configurations_after: Option<Uuid>,
     provider_configuration_versions_after: Option<String>,
     provider_configuration_mutations_after: Option<Uuid>,
+    contact_reader_only: Option<String>,
+    contact_reader_pending_after: Option<String>,
+    contact_reader_receipts_after: Option<String>,
     sealed_deliveries_after: Option<Uuid>,
     templates_after: Option<Uuid>,
     template_versions_after: Option<Uuid>,
@@ -205,6 +268,7 @@ struct ExportView {
     provider_receipts: crate::provider_sms::receipts::lifecycle::Page,
     opening_capacity: crate::workflow_runtime::openings::export::Export,
     provider_configurations: crate::provider_config::lifecycle::Export,
+    contact_reader_issuance: crate::contact_reader_issuer::export::Page,
     sealed_line_setup: serde_json::Value,
     sealed_event_deliveries: crate::sealed_inbound::delivery::lifecycle::Export,
     execution_inventory:
@@ -262,6 +326,21 @@ async fn export_account(
         Err(error) => return error.into_response(),
     };
     let account_id = principal.tenant.account_id();
+    // The state-only middleware dispatches before this private-family path.
+    if query.contact_reader_only.is_some() {
+        return crate::http_auth::AuthHttpError::BadRequest.into_response();
+    }
+    let contact_reader_issuance = match crate::contact_reader_issuer::export::page(
+        &mut client,
+        &principal,
+        query.contact_reader_pending_after.as_deref(),
+        query.contact_reader_receipts_after.as_deref(),
+    )
+    .await
+    {
+        Ok(page) => page,
+        Err(error) => return crate::http_owner_contact_issuance::error(error).into_response(),
+    };
     let agent_grants =
         match crate::auth::agent_grants::list(&client, &principal, query.agent_before).await {
             Ok(Some(page)) => page,
@@ -574,6 +653,7 @@ async fn export_account(
             Err(error) => return error.into_response(),
         },
         encrypted_templates,
+        contact_reader_issuance,
         execution_inventory,
         workflow_integrations,
         managed_reader_grants: match crate::managed_ai::lifecycle::export(
