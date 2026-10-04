@@ -112,7 +112,9 @@ def plan_config(path: Path, client: str, server: Path, expected: str, remove=Fal
             "grantRevoked": False, "grantCreated": False}
     return plan, raw, encoded
 
-def apply_plan(path: Path, plan: dict, original: bytes, encoded: bytes, reviewed: str) -> dict:
+def apply_plan(path: Path, plan: dict, original: bytes, encoded: bytes, reviewed: str, *, path_check=None) -> dict:
+    if path_check:
+        path_check()
     if reviewed != plan["reviewDigest"]:
         raise SetupError("review_required_or_configuration_changed")
     if plan["action"] == "unchanged":
@@ -124,7 +126,9 @@ def apply_plan(path: Path, plan: dict, original: bytes, encoded: bytes, reviewed
     except FileExistsError:
         raise SetupError("setup_busy") from None
     temp_name = None
+    staged_identity = None
     try:
+        lock_identity = os.fstat(lock_fd)
         os.close(lock_fd)
         current, _ = read_config(path)
         if current != original:
@@ -132,6 +136,7 @@ def apply_plan(path: Path, plan: dict, original: bytes, encoded: bytes, reviewed
         mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
         with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".zrotext-", delete=False) as staged:
             temp_name = staged.name
+            staged_identity = os.fstat(staged.fileno())
             os.chmod(temp_name, mode)
             staged.write(encoded)
             staged.flush()
@@ -140,12 +145,31 @@ def apply_plan(path: Path, plan: dict, original: bytes, encoded: bytes, reviewed
         current, _ = read_config(path)
         if current != original:
             raise SetupError("configuration_changed")
+        if path_check:
+            path_check()
+            observed_stage = os.stat(temp_name, follow_symlinks=False)
+            if (not stat.S_ISREG(observed_stage.st_mode) or observed_stage.st_nlink != 1
+                    or (observed_stage.st_dev, observed_stage.st_ino) != (staged_identity.st_dev, staged_identity.st_ino)):
+                raise SetupError("configuration_changed")
         os.replace(temp_name, path)
         temp_name = None
         return {"action": plan["action"], "liveAvailable": False, "grantRevoked": False}
     finally:
+        if path_check:
+            # On replacement success the target inode legitimately changes;
+            # cleanup still requires the original parent directory identity.
+            path_check(parent_only=True)
         if temp_name:
+            if path_check:
+                observed_stage = os.stat(temp_name, follow_symlinks=False)
+                if (not stat.S_ISREG(observed_stage.st_mode) or observed_stage.st_nlink != 1
+                        or (observed_stage.st_dev, observed_stage.st_ino) != (staged_identity.st_dev, staged_identity.st_ino)):
+                    raise SetupError("configuration_changed")
             os.unlink(temp_name)
+        if path_check:
+            observed_lock = os.stat(lock, follow_symlinks=False)
+            if (observed_lock.st_dev, observed_lock.st_ino) != (lock_identity.st_dev, lock_identity.st_ino):
+                raise SetupError("setup_busy")
         os.unlink(lock)
 
 def doctor(server: Path, expected: str, client="mcp-json") -> dict:

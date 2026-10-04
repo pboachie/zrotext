@@ -32,6 +32,11 @@ tool does not discover or edit a guessed global configuration location.
 
 ## Guided local workflow
 
+An explicit [narrow workflow grant setup candidate](guided-workflow-grants.md)
+now authenticates the owner, stores only a metadata/status credential in the
+customer OS secret store, and previews a private broker entry. It does not pair
+a phone, grant content/send access or replace the simulator-first flow below.
+
 To try the complete bounded fixture journey without a client configuration,
 build the SDK and run `python scripts/agent_setup.py journey` from the checkout
 root. See [the synthetic quickstart](AGENT-QUICKSTART.md#launch) for prerequisites,
