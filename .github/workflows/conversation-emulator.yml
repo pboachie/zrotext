@@ -116,7 +116,9 @@ jobs:
             --receipt "$diagnostics/boot-readiness.json"
           require_emulator_process
           phase='compiled-roundtrip'
-          python3 scripts/conversation_emulator.py --serial emulator-5596 --adb "$ANDROID_HOME/platform-tools/adb" --aapt "$ANDROID_HOME/build-tools/37.0.0/aapt" --toolchain 1.97.1 --skip-build
+          python3 scripts/conversation_emulator.py --serial emulator-5596 --adb "$ANDROID_HOME/platform-tools/adb" --aapt "$ANDROID_HOME/build-tools/37.0.0/aapt" --toolchain 1.97.1 --skip-build --scenario roundtrip
+          phase='compiled-capture-ack'
+          python3 scripts/conversation_emulator.py --serial emulator-5596 --adb "$ANDROID_HOME/platform-tools/adb" --aapt "$ANDROID_HOME/build-tools/37.0.0/aapt" --toolchain 1.97.1 --skip-build --scenario capture-ack
           python3 scripts/conversation_compiled_acceptance.py \
             --commit "$(git rev-parse HEAD)" \
             --app-sha256 "$(sha256sum android/app/build/outputs/apk/debug/app-debug.apk | cut -d ' ' -f 1)" \

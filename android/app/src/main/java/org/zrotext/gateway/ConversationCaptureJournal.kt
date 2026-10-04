@@ -13,8 +13,8 @@ import androidx.room.Transaction
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-/** Separate dormant database: no receiver, service or production builder opens it. */
-@Database(entities = [ConversationInstallation::class, ConversationReceipt::class, ConversationClosedInterval::class, ConversationWireCapture::class], version = 2,
+/** Separate content journal, opened only by the explicit conversation installation. */
+@Database(entities = [ConversationInstallation::class, ConversationReceipt::class, ConversationClosedInterval::class, ConversationWireCapture::class], version = 3,
     exportSchema = false)
 abstract class ConversationCaptureDatabase : RoomDatabase() {
     abstract fun journal(): ConversationCaptureDao
@@ -25,6 +25,12 @@ abstract class ConversationCaptureDatabase : RoomDatabase() {
                 db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_conversation_wire_captures_token ON conversation_wire_captures(token)")
             }
         }
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Unknown older uploads remain pending, with their exact protected bytes intact.
+                db.execSQL("ALTER TABLE conversation_wire_captures ADD COLUMN acknowledgedDigest TEXT")
+            }
+        }
     }
 }
 
@@ -33,7 +39,8 @@ abstract class ConversationCaptureDatabase : RoomDatabase() {
 data class ConversationWireCapture(
     @PrimaryKey(autoGenerate = true) val sequence: Long = 0,
     val token: String, val captureId: String, val intervalId: String,
-    val protectedEnvelope: ByteArray? = null, val nonce: ByteArray? = null
+    val protectedEnvelope: ByteArray? = null, val nonce: ByteArray? = null,
+    val acknowledgedDigest: String? = null
 ) { override fun toString() = "ConversationWireCapture(redacted)" }
 
 @Entity(tableName = "conversation_closed_intervals")
@@ -74,12 +81,42 @@ abstract class ConversationCaptureDao {
     @Query("SELECT COUNT(*) FROM conversation_wire_captures")
     protected abstract fun wireCount(): Int
     @Insert protected abstract fun insertWire(value: ConversationWireCapture): Long
-    @Query("UPDATE conversation_wire_captures SET protectedEnvelope=:content,nonce=:nonce WHERE sequence=:sequence AND protectedEnvelope IS NULL AND nonce IS NULL")
+    @Query("UPDATE conversation_wire_captures SET protectedEnvelope=:content,nonce=:nonce WHERE sequence=:sequence AND protectedEnvelope IS NULL AND nonce IS NULL AND acknowledgedDigest IS NULL")
     protected abstract fun setWire(sequence: Long, content: ByteArray, nonce: ByteArray): Int
     @Query("UPDATE conversation_wire_captures SET protectedEnvelope=NULL,nonce=NULL WHERE intervalId=:interval")
     protected abstract fun clearWire(interval: String): Int
     @Query("UPDATE conversation_wire_captures SET protectedEnvelope=NULL,nonce=NULL WHERE token IN (SELECT token FROM conversation_receipts WHERE firstObservedAtMs<:cutoff)")
     protected abstract fun purgeWireBefore(cutoff: Long): Int
+
+    @Query("UPDATE conversation_wire_captures SET acknowledgedDigest=:digest,protectedEnvelope=NULL,nonce=NULL WHERE sequence=:sequence AND acknowledgedDigest IS NULL")
+    protected abstract fun acknowledgeWire(sequence: Long, digest: String): Int
+    @Query("UPDATE conversation_receipts SET protectedCapture=NULL,nonce=NULL WHERE token=:token")
+    protected abstract fun clearReceiptContent(token: String): Int
+
+    /** The authenticated exact ACK commits its tombstone and retires both ciphertexts together. */
+    @Transaction open fun acknowledgeCapture(expected: ConversationWireCapture, observedAt: Long,
+                                             digest: String, checkLive: () -> Unit) {
+        checkLive(); check(isClosed(expected.intervalId) == 0)
+        require(Regex("[0-9a-f]{64}").matches(digest))
+        val receipt = checkNotNull(receipt(expected.token))
+        check(receipt.captureId == expected.captureId && receipt.intervalId == expected.intervalId &&
+            receipt.firstObservedAtMs == observedAt)
+        val stored = checkNotNull(wireCapture(expected.token))
+        check(stored.sequence == expected.sequence && stored.captureId == expected.captureId &&
+            stored.intervalId == expected.intervalId)
+        if (stored.acknowledgedDigest != null) {
+            check(stored.acknowledgedDigest == digest && stored.protectedEnvelope == null &&
+                stored.nonce == null && receipt.protectedCapture == null && receipt.nonce == null)
+        } else {
+            check(receipt.protectedCapture != null && receipt.nonce != null)
+            check(checkNotNull(stored.protectedEnvelope).contentEquals(checkNotNull(expected.protectedEnvelope)) &&
+                checkNotNull(stored.nonce).contentEquals(checkNotNull(expected.nonce)))
+            check(acknowledgeWire(stored.sequence, digest) == 1)
+            check(clearReceiptContent(stored.token) == 1)
+        }
+        // A loss after either write rolls back the ACK and both removals, including on duplicates.
+        checkLive()
+    }
 
     @Transaction open fun reserveWire(token: String, capture: String, interval: String, checkLive: () -> Unit): ConversationWireCapture {
         checkLive()

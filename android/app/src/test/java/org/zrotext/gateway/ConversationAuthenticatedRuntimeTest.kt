@@ -31,6 +31,9 @@ class ConversationAuthenticatedRuntimeTest {
     private var exchanges = 0
     private var duringInstall: () -> Unit = {}
     private var duringContent: () -> Unit = {}
+    private var captureReplies = 0
+    private var captureCreated = true
+    private var alterCaptureReply: (ByteArray) -> ByteArray = { it }
     private class Queue : Executor {
         private val commands = java.util.ArrayDeque<Runnable>()
         var beforeSubmit: () -> Unit = {}
@@ -75,9 +78,10 @@ class ConversationAuthenticatedRuntimeTest {
                     ConversationChannelCodec.timeReply(ConversationTimeReply(current,if(tamperTime) UUID.randomUUID() else time.challenge,100000))
                 } else if(request[5].toInt()==12) {
                     val (nonce,selected,envelope)=ConversationChannelCodec.parseCaptureRequest(request,current)
+                    captureReplies++
                     duringContent()
-                    ConversationChannelCodec.captureReply(current,nonce,UUID.fromString(db.journal().receipt("55".repeat(32))!!.captureId),
-                        Draft02OutboundPreparation.hash(envelope),true).also {assertEquals(scope,selected)}
+                    alterCaptureReply(ConversationChannelCodec.captureReply(current,nonce,UUID.fromString(db.journal().receipt("55".repeat(32))!!.captureId),
+                        Draft02OutboundPreparation.hash(envelope),captureCreated)).also {assertEquals(scope,selected)}
                 } else if(request[5].toInt()==14) {
                     val (nonce,selected,_)=ConversationChannelCodec.parseDeliveryRequest(request,current)
                     duringContent()
@@ -109,11 +113,60 @@ class ConversationAuthenticatedRuntimeTest {
         assertEquals(1,db.journal().contentCount())
     }
     @Test fun denialNeverInstallsOrCaptures() {propose();val value=snapshots.last();assembly.presentation.declinePhoneReview(review.requestId,value.version);drain();assertFalse(assembly.captureEligible());assertEquals(0,decisions);assertEquals(0,exchanges)}
+    @Test fun verifiedDurableAckReleasesCapacityAndDuplicateRequiresCurrentAuthorityWithoutUpload() {
+        activate();val token="55".repeat(32)
+        assertEquals(ConversationObservation.CAPTURED,assembly.observeFirstReceipt(token,scope.peer,scope.lineId,1,"synthetic"))
+        var accepted:Boolean?=null
+        assembly.uploadCapture(token,{_,sequence->assertEquals(1L,sequence);byteArrayOf(1,2,3)}){accepted=it};drain()
+        assertEquals(true,accepted);assertEquals(0,db.journal().contentCount());assertEquals(1,db.journal().receiptCount())
+        assertNull(db.journal().wireCapture(token)!!.protectedEnvelope)
+        assertEquals(Draft02OutboundPreparation.hash(byteArrayOf(1,2,3)),db.journal().wireCapture(token)!!.acknowledgedDigest)
+        assembly.uploadCapture(token,{_,_->error("Already acknowledged must not seal or upload")}){accepted=it};drain()
+        assertEquals(true,accepted);assertEquals(1,captureReplies)
+        assertEquals(ConversationObservation.DUPLICATE,assembly.observeFirstReceipt(token,scope.peer,scope.lineId,1,"synthetic"))
+        consent=false
+        assembly.uploadCapture(token,{_,_->error("Revoked must not seal or upload")}){accepted=it};drain()
+        assertEquals(false,accepted);assertEquals(1,captureReplies)
+    }
+    @Test fun malformedAckAndUncertainUploadKeepExactPacketForAuthenticatedCreatedFalseRetry() {
+        activate();val token="55".repeat(32)
+        assembly.observeFirstReceipt(token,scope.peer,scope.lineId,1,"synthetic")
+        var accepted:Boolean?=null;var seals=0
+        val mutations:List<(ByteArray)->ByteArray> = listOf(
+            {it.copyOf(it.size-1)},
+            {it.copyOf().apply {this[102]=(this[102].toInt() xor 1).toByte()}},
+            {it.copyOf().apply {this[118]=(this[118].toInt() xor 1).toByte()}},
+            {it.copyOf().apply {this[134]=(this[134].toInt() xor 1).toByte()}},
+            {it.copyOf().apply {this[166]=2}},
+            {throw IllegalStateException("Synthetic lost ACK")})
+        for(alter in mutations) {
+            alterCaptureReply=alter
+            assembly.uploadCapture(token,{_,_->seals++;byteArrayOf(1,2,3)}){accepted=it};drain()
+            assertEquals(false,accepted);assertEquals(1,db.journal().contentCount())
+            assertNotNull(db.journal().wireCapture(token)!!.protectedEnvelope)
+            assertNull(db.journal().wireCapture(token)!!.acknowledgedDigest)
+        }
+        alterCaptureReply={it};captureCreated=false
+        assembly.uploadCapture(token,{_,_->error("Retry must reuse exact committed packet")}){accepted=it};drain()
+        assertEquals(true,accepted);assertEquals(1,seals);assertEquals(0,db.journal().contentCount())
+    }
+    @Test fun withdrawalDuringAuthenticatedCaptureReplyCannotCommitAckOrClearContent() {
+        activate();val token="55".repeat(32)
+        assembly.observeFirstReceipt(token,scope.peer,scope.lineId,1,"synthetic")
+        duringContent={consent=false}
+        var accepted:Boolean?=null
+        assembly.uploadCapture(token,{_,_->byteArrayOf(1)}){accepted=it};drain()
+        assertEquals(false,accepted);assertEquals(1,db.journal().contentCount())
+        assertNotNull(db.journal().wireCapture(token)!!.protectedEnvelope)
+        assertNull(db.journal().wireCapture(token)!!.acknowledgedDigest)
+    }
     @Test fun stopClosesAdmissionWhileCaptureReplyIsHeldAndLateAckCannotSucceed() {
         activate()
         val token="55".repeat(32)
         assertEquals(ConversationObservation.CAPTURED,assembly.observeFirstReceipt(token,scope.peer,scope.lineId,1,"synthetic"))
         heldContentCannotDelayStop {done->assembly.uploadCapture(token,{_,_->byteArrayOf(1)},done)}
+        assertEquals(1,db.journal().contentCount())
+        assertNull(db.journal().wireCapture(token)!!.acknowledgedDigest)
     }
     @Test fun stopClosesAdmissionWhileDeliveryReplyIsHeldAndLatePacketCannotEnterJournal() {
         activate()
