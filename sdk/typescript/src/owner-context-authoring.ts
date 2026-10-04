@@ -57,7 +57,7 @@ class Authoring {
     if(typeof o.expiresMs!=='bigint'||o.expiresMs<1n||o.expiresMs>=(1n<<63n))fail();
     this.#o=o as OwnerContextAuthoringOptions;this.#binding=bindingCopy(o.binding);this.#context=bytes(o.contextId,16);this.#document=document;this.#window=window;
     this.#pane=document.createElement('section');this.#pane.setAttribute('aria-label','Owner facts');
-    const label=document.createElement('label');label.textContent='Facts';this.#editor=document.createElement('textarea');this.#editor.setAttribute('aria-label','Facts');this.#editor.setAttribute('autocomplete','off');this.#editor.spellcheck=false;label.append(this.#editor);
+    const label=document.createElement('label');label.textContent='Facts';this.#editor=document.createElement('textarea');this.#editor.setAttribute('aria-label','Facts');this.#editor.setAttribute('autocomplete','off');this.#editor.spellcheck=false;this.#editor.maxLength=32768;label.append(this.#editor);
     this.#review=document.createElement('div');this.#review.setAttribute('aria-label','Review facts');this.#review.hidden=true;
     this.#status=document.createElement('p');this.#status.setAttribute('role','status');this.#status.setAttribute('aria-live','polite');
     this.#pane.append(label,this.#review,this.#status);
@@ -121,15 +121,17 @@ class Authoring {
   async #reviewWrite(review:OwnerContextWriteReview):Promise<void>{
     this.#live();if(!this.#scope||review.requestId!==this.#request||review.contextId!==uuid(this.#context)||review.expectedRevision!==0||review.revision!==1||review.envelopeDigest!==this.#digest||!same(workflowContextAad(review.scope),workflowContextAad(this.#scope))||this.#editor.value!==this.#text)fail();
     this.#phase='review';this.#review.hidden=false;
-    const details=this.#document.createElement('p');details.textContent=`Account ${uuid(this.#binding.account)} · Line ${uuid(this.#binding.line)} · Peer ${this.#binding.peer} · Facts expire ${new Date(Number(this.#o.expiresMs)).toISOString()}`;
+    const summary=`Account ${uuid(this.#binding.account)} · Line ${uuid(this.#binding.line)} · Peer ${this.#binding.peer} · Facts expire ${new Date(Number(this.#o.expiresMs)).toISOString()}`;
+    const details=this.#document.createElement('p');details.textContent=summary;
     const facts=this.#document.createElement('pre');facts.textContent=this.#text;this.#review.replaceChildren(details,facts);this.#render();
-    await this.#wait(new Promise<void>((resolve,reject)=>{this.#decision={resolve,reject};}));this.#decision=null;this.#live();if(this.#editor.value!==this.#text)fail();
+    await this.#wait(new Promise<void>((resolve,reject)=>{this.#decision={resolve,reject};}));this.#decision=null;this.#live();
+    if(this.#editor.value!==this.#text||this.#review.hidden||facts.textContent!==this.#text||details.textContent!==summary||this.#review.children.length!==2||this.#review.children[0]!==details||this.#review.children[1]!==facts)fail();
     this.#phase='saving';this.#render();
   }
   async #prepare():Promise<void>{
     if(this.#closed||this.#phase!=='editing')return;this.#phase='preparing';this.#render();
     try{
-      this.#deadline=performance.now()+this.#o.timeoutMs!;this.#cap(this.#deadline);this.#text=this.#editor.value;this.#content=new TextEncoder().encode(this.#text);if(this.#content.length<1||this.#content.length>32768)fail();
+      this.#deadline=performance.now()+this.#o.timeoutMs!;this.#cap(this.#deadline);this.#text=this.#editor.value;if(this.#text.length<1||this.#text.length>32768)fail();this.#content=new TextEncoder().encode(this.#text);if(this.#content.length>32768)fail();
       const current=await this.#current(),b=this.#binding;
       const peer=new Uint8Array(await this.#wait(crypto.subtle.digest('SHA-256',new TextEncoder().encode(b.peer))));this.#live();
       this.#scope={kind:1,accountId:bytes(b.account,16),deviceId:bytes(b.device,16),lineId:bytes(b.line,16),intervalId:bytes(b.interval,16),contextId:bytes(this.#context,16),bindingGeneration:b.generation,revision:1n,expiresMs:this.#o.expiresMs,trustGeneration:current.manifest.generation,manifestVersion:current.manifest.version,peerDigest:peer,readerId:bytes(b.archiveReader,32),manifestDigest:bytes(current.manifest.digest,32)};

@@ -51,6 +51,13 @@ test('closed options and document origin refuse without invoking getters or auth
   const disabled=await fixture({enabled:false});assert.equal(disabled.author.state().phase,'closed');disabled.click('Review facts');await delay(5);assert.equal(disabled.state.reads+disabled.state.calls.length,0);disabled.author.close();
 });
 
+test('changed or hidden visible review and bounded UTF8 facts cannot publish',async()=>{
+  for(const mutate of [f=>f.review.children[1].textContent='Synthetic changed review',f=>f.review.children[0].textContent='Synthetic changed selection',f=>f.review.hidden=true,f=>f.review.replaceChildren()]){
+    const f=await fixture();try{await f.prepare();mutate(f);f.click('Save encrypted facts');await until(()=>f.author.state().phase==='refused');assert.equal(f.state.calls.length,0);assert.equal(f.editor.value,'');}finally{f.author.close();}
+  }
+  for(const text of ['x'.repeat(32769),'\u2603'.repeat(12000)]){const f=await fixture();try{f.editor.value=text;f.click('Review facts');await until(()=>f.author.state().phase==='refused');assert.equal(f.state.reads+f.state.calls.length,0);assert.equal(f.editor.value,'');}finally{f.author.close();}}
+});
+
 test('actual signed post-enrollment successor is used and later stale scope cannot publish',async()=>{
   const f=await fixture();try{
     const successor=await verifyManifest02(await signFixtureSuccessor02(f.f),verifiedManifestTrust02(f.f.predecessor,f.f.nowMs),f.f.nowMs);
