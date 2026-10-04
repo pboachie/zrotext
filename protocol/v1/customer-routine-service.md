@@ -59,3 +59,9 @@ Withdrawal stops admission and resume and irreversibly fences every separately p
 Synthetic HTTPS fixtures establish client transport behavior only. The separate real-router/disposable-database fixture covers service authority and actual reviewed client crypto. Neither proves deployment activation, physical-device operation, carrier delivery or approval of an unresolved provider or reader policy.
 
 The multi-process fixture uses serialized, exportable synthetic customer keys and an explicitly owner-configured ten-second execution policy. It does not prove hardware or non-exportable key custody. Existing deadline and unknown-outcome refusal tests retain their separate bounded policies.
+
+Exact `UTC` routine windows use PostgreSQL calendar conversion directly because
+UTC has a fixed zero offset and no civil-time gaps or overlaps. Other named
+zones retain the bounded offset enumeration and owner-review behavior for
+ambiguous or nonexistent civil time. This optimization supplies no approval or
+execution authority and changes no expiry or provider deadline.
