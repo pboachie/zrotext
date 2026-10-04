@@ -188,7 +188,7 @@ class Review {
   }catch(e){this.#forget(r);throw e;}finally{if(bytes){bytes.fill(0);r.buffers=r.buffers.filter(v=>v!==bytes);}this.#busy=false;}
  }
  #issuerStatus(phase,text){
-  this.#nodes['issuer-status'].textContent=text;const p=this.#issuer,active=!!p?.active&&!this.#closed;
+  if(!this.#closed)this.#nodes['issuer-status'].textContent=text;const p=this.#issuer,active=!!p?.active&&!this.#closed;
   for(const id of ['issuer-create','issuer-retry','issuer-export','issuer-import','issuer-complete','issuer-lookup','issuer-cancel','issuer-withdraw','issuer-decline'])this.#nodes[id].disabled=true;
   this.#nodes['issuer-create'].disabled=!active||phase!=='REVIEWING';this.#nodes['issuer-retry'].disabled=!active||phase!=='UNKNOWN'||!!p?.pending||p?.slots>=3;
   this.#nodes['issuer-export'].disabled=this.#closed||!this.#issuerUnknown?.pending;this.#nodes['issuer-recovery-export'].disabled=this.#closed||!this.#issuerUnknown;this.#nodes['issuer-import'].disabled=!active||!p?.pending||!!p.signed;
