@@ -129,8 +129,9 @@ async fn owner_projection_rechecks_missing_dirty_cancelled_and_held_invoice_auth
         .await
         .unwrap();
     assert_current(&owner_status(&case).await, true, 2);
-    ingest_signed(&mut case, json!({"id":"evt_statusrefund","object":"event","livemode":false,
-        "type":"charge.refunded","data":{"object":{"id":"ch_statusrefund","object":"charge","customer":"cus_invoice1","amount_refunded":1}}})).await;
+    let event = json!({"id":"evt_statusrefund","object":"event","livemode":false,
+        "type":"charge.refunded","data":{"object":{"id":"ch_statusrefund","object":"charge","customer":&case.customer,"amount_refunded":1}}});
+    ingest_signed(&mut case, event).await;
     assert_current(&owner_status(&case).await, false, 0);
     assert_eq!(
         owner_status(&case).await["invoicePeriod"]["consumedUnits"],
@@ -156,8 +157,9 @@ async fn unpaid_upgrade_status_uses_original_grace_ceiling_and_rechecks_its_dead
         .await
         .unwrap()
         .get(0);
-    ingest_signed(&mut case, json!({"id":"evt_statusfailed","object":"event","livemode":false,"created":now,
-        "type":"invoice.payment_failed","data":{"object":{"id":"in_invoice2","customer":"cus_invoice1","parent":{"subscription_details":{"subscription":"sub_invoice1"}}}}})).await;
+    let event = json!({"id":"evt_statusfailed","object":"event","livemode":false,"created":now,
+        "type":"invoice.payment_failed","data":{"object":{"id":"in_invoice2","customer":&case.customer,"parent":{"subscription_details":{"subscription":"sub_invoice1"}}}}});
+    ingest_signed(&mut case, event).await;
     case.generation += 1;
     let failed = case.observation_for_price(
         "past_due",
