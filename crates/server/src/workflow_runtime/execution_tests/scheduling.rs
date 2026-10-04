@@ -292,11 +292,20 @@ async fn anonymous_projection_observes_real_owner_cancel_takeover_and_grant_with
                 .unwrap();
             }
         }
+        if operation == "takeover" {
+            let row = flow.case.f.db.query_one("SELECT o.phase,o.lease_id IS NULL,o.lease_until_ms IS NULL,r.stopped_at IS NOT NULL,f.stopped_at IS NOT NULL,(SELECT count(*) FROM workflow_schedule_audit WHERE occurrence_id=o.id AND operation='cancel'),(SELECT count(*) FROM usage_ledger WHERE entry_kind='refund') FROM workflow_schedule_occurrences o JOIN workflow_schedule_series s ON(s.account_id,s.id)=(o.account_id,o.series_id) JOIN workflow_routines r ON(r.account_id,r.id)=(s.account_id,s.routine_id) JOIN workflow_context_fences f ON(f.account_id,f.context_id)=(s.account_id,s.context_id) WHERE o.id=$1", &[&occurrence.id]).await.unwrap();
+            assert_eq!(row.get::<_, String>(0), "cancelled");
+            for column in 1..=4 {
+                assert!(row.get::<_, bool>(column));
+            }
+            assert_eq!(row.get::<_, i64>(5), 1);
+            assert_eq!(row.get::<_, i64>(6), 0);
+        }
         assert_eq!(
             crate::encrypted_schedule::worker::tick(&mut flow.case.f.connect().await)
                 .await
                 .unwrap(),
-            1
+            if operation == "takeover" { 0 } else { 1 }
         );
         assert_eq!(
             crate::encrypted_schedule::worker::tick(&mut flow.case.f.connect().await)
@@ -318,6 +327,9 @@ async fn anonymous_projection_observes_real_owner_cancel_takeover_and_grant_with
             "cancelled"
         );
         assert_eq!(counts(&flow.case).await, (1, 0, 0));
+        let audit = flow.case.f.db.query_one("SELECT (SELECT count(*) FROM workflow_schedule_audit WHERE occurrence_id=$1 AND operation='cancel'),(SELECT count(*) FROM usage_ledger WHERE entry_kind='refund')", &[&occurrence.id]).await.unwrap();
+        assert_eq!(audit.get::<_, i64>(0), 1);
+        assert_eq!(audit.get::<_, i64>(1), 0);
         flow.case.f.cleanup().await;
     }
 }
