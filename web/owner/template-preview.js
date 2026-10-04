@@ -11,16 +11,19 @@
     return document.cookie.split(";").map((part) => part.trim())
       .find((part) => part.startsWith("__Host-zrotext_csrf="))?.slice("__Host-zrotext_csrf=".length) || null;
   }
-  function clearText() {
-    revision++;
-    byId("template").value = "";
-    byId("substitutions").value = "";
+  function clearPreview() {
     say("output", "");
     say("estimate", "");
     say("preview-status", "");
   }
+  function clearText() {
+    revision++;
+    byId("template").value = "";
+    byId("substitutions").value = "";
+    clearPreview();
+  }
   function conceal(hidden) {
-    for (const id of ["editor", "output", "preview-status"]) byId(id).hidden = hidden;
+    for (const id of ["editor", "output", "estimate", "preview-status"]) byId(id).hidden = hidden;
   }
   function lock(message) {
     epoch++;
@@ -76,9 +79,7 @@
   }
   async function preview() {
     const identity = owner, proof = ownerCookie, edit = revision;
-    say("output", "");
-    say("preview-status", "");
-    say("estimate", "");
+    clearPreview();
     if (!identity || !await checkSession() || identity !== owner || proof !== ownerCookie || edit !== revision) return;
     try {
       const values = core.parseValues(byId("substitutions").value);
@@ -145,8 +146,7 @@
   byId("sign-out").addEventListener("click", signOut);
   for (const id of ["template", "substitutions"]) byId(id).addEventListener("input", () => {
     revision++;
-    say("output", "");
-    say("preview-status", "");
+    clearPreview();
     if (cookie() !== ownerCookie) lock("Sign-in changed. Text cleared. Check sign-in again.");
   });
   window.addEventListener("pagehide", suspend);

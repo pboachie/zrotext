@@ -60,7 +60,7 @@ impl StripeTestMeterTransport {
     }
     async fn send(&self, request: MeterRequest) -> MeterResponse {
         if request.identifier.is_empty()
-            || request.identifier.len() > 128
+            || request.identifier.len() > 100
             || !request
                 .identifier
                 .bytes()

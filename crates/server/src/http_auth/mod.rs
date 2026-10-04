@@ -40,6 +40,7 @@ use zeroize::Zeroizing;
 
 mod agent_grants;
 mod collaboration;
+mod original_reply;
 pub mod preauth;
 mod root_custody;
 mod seats_http;
@@ -633,6 +634,7 @@ pub struct AuthHttpState {
     pub agent_grants_enabled: bool,
     /// Owner setup for the existing shared workflow service; off by default.
     pub workflow_grants_enabled: bool,
+    pub original_reply_enabled: bool,
     /// Operator-configured networks trusted for the password-reset request
     /// lane. Empty unless configured; never grants any other route.
     pub reset_trusted_networks: Arc<TrustedNetworks>,
@@ -680,12 +682,18 @@ impl AuthHttpState {
             root_custody_enabled: false,
             agent_grants_enabled: false,
             workflow_grants_enabled: false,
+            original_reply_enabled: false,
             reset_trusted_networks: Arc::new(TrustedNetworks::default()),
         })
     }
 
     pub fn with_agent_grants_enabled(mut self) -> Self {
         self.agent_grants_enabled = true;
+        self
+    }
+
+    pub fn with_original_reply_enabled(mut self, enabled: bool) -> Self {
+        self.original_reply_enabled = enabled;
         self
     }
 
@@ -831,6 +839,18 @@ pub fn router(state: AuthHttpState) -> Router {
             .route(
                 "/workflow-grants/{grant_id}",
                 delete(workflow_grants::revoke),
+            );
+    }
+    if state.original_reply_enabled {
+        router = router
+            .route(
+                "/reply-grants",
+                post(original_reply::create).layer(DefaultBodyLimit::max(4096)),
+            )
+            .route("/reply-grants/{grant_id}", delete(original_reply::revoke))
+            .route(
+                "/reply-requests",
+                post(original_reply::request).layer(DefaultBodyLimit::max(4096)),
             );
     }
     if state.root_custody_enabled {

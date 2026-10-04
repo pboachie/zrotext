@@ -119,16 +119,16 @@ fn checked(path: &Path) -> io::Result<()> {
     }
     Ok(())
 }
-pub(super) struct Scratch {
+pub(crate) struct Scratch {
     anchor: PathBuf,
-    pub(super) path: PathBuf,
+    pub(crate) path: PathBuf,
     marker: Uuid,
     anchor_identity: Identity,
     child_identity: Identity,
     marker_identity: Identity,
 }
 impl Scratch {
-    pub(super) fn create() -> io::Result<Self> {
+    pub(crate) fn create() -> io::Result<Self> {
         Self::configured(&std::env::temp_dir())
     }
     fn configured(raw: &Path) -> io::Result<Self> {
@@ -228,7 +228,7 @@ impl Scratch {
             marker_identity,
         })
     }
-    pub(super) fn remove(self) -> io::Result<()> {
+    pub(crate) fn remove(self) -> io::Result<()> {
         checked(&self.anchor)?;
         checked(&self.path)?;
         let child_text = self

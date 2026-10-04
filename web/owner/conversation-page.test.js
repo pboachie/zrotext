@@ -78,6 +78,14 @@ test("lost accepted response clears plaintext and displays identity with no new 
 });
 
 test("ordinary page includes concrete root enrollment controls and no recovery input",()=>{const html=require("node:fs").readFileSync(require("node:path").join(__dirname,"conversation.html"),"utf8");assert.ok(html.includes('src="conversation-root-enrollment.js"'));for(const id of ["root-begin","root-complete","root-backup-file","root-card-file","root-signatures-file","root-mfa"])assert.ok(html.includes(`id="${id}"`),id);assert.ok(!html.includes('id="root-recovery"'));});
+test("ordinary page passes a separately unchecked reader decision and closes a held activation when its readers change",async()=>{
+ let read,release,signal,closed=0;const p=await page({adapterAvailable:false,ownerFactory:{create:options=>{read=options.readSelection;return {close(){closed++;},activate:async(_file,options)=>{signal=options.signal;await new Promise(resolve=>release=resolve);}};}}});
+ try{assert.equal(read().integrationReadersText,"");assert.equal(read().integrationTransferConsent,undefined);
+ p.element("integration-readers").value="synthetic reader selection";p.element("integration-transfer-consent").checked=true;assert.equal(read().integrationReadersText,"synthetic reader selection");assert.equal(read().integrationTransferConsent,true);
+ const pending=p.click("prepare-activation");await Promise.resolve();p.element("owner-setup").listeners.input({target:{id:"integration-readers",closest:()=>null}});assert.equal(signal.aborted,true);assert.equal(closed,1);release();await pending;assert.ok(!p.element("status").textContent.startsWith("Activation submitted"));
+ const html=require("node:fs").readFileSync(require("node:path").join(__dirname,"conversation.html"),"utf8");assert.ok(html.includes('id="integration-readers"'));assert.ok(html.includes('id="integration-transfer-consent" type="checkbox">'));assert.ok(html.includes("Separate phone approval of the exact reader list"));
+ }finally{p.cleanup();}
+});
 
 for(const phase of ["begin","complete"])test("root page Clear fences held "+phase+" and clears local factor",async()=>{
  let release,closed=0,signal;

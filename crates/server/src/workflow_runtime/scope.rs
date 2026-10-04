@@ -58,7 +58,7 @@ pub(super) async fn lock_scope<'tx, 'connection>(
          AND g.revoked_ms IS NULL AND (g.permissions::integer & $5)=$5 AND m.role='owner' AND m.revoked_at IS NULL \
          AND u.email_verified_at IS NOT NULL AND u.mfa_enabled AND s.revoked_at IS NULL \
          AND c.purged_at IS NULL AND v.envelope IS NOT NULL AND r.state='active' AND r.key_id=g.reader_key_id \
-         AND (r.manifest_generation,r.manifest_version,r.manifest_digest)=(g.trust_generation,g.manifest_version,g.manifest_digest) \
+         AND workflow_registry_binding_deadline(g.account_id,g.connector_id,g.reader_key_id,c.interval_id,g.trust_generation,g.manifest_version,g.manifest_digest,g.supplemental_original_grant_id)>floor(extract(epoch FROM clock_timestamp())*1000)::bigint \
          AND k.retired_ms IS NULL \
          FOR SHARE OF g,m,u,s,c,v,r,k",
         &[&account,&principal.grant_id(),&principal.credential_hash().as_slice(),&context,&permission_bit]
@@ -281,6 +281,7 @@ impl CheckedScope<'_, '_> {
         }
         let deadline = self.tx.query_opt(
         "SELECT LEAST(g.expires_ms,r.expires_ms,k.valid_until_ms, \
+         COALESCE(workflow_registry_binding_deadline(g.account_id,g.connector_id,g.reader_key_id,$4,g.trust_generation,g.manifest_version,g.manifest_digest,g.supplemental_original_grant_id),0), \
          floor(extract(epoch FROM s.expires_at)*1000)::bigint, \
          CASE WHEN $5::boolean THEN COALESCE((SELECT max(cg.expires_ms) FROM connector_grants cg \
              WHERE cg.account_id=g.account_id AND cg.connector_id=g.connector_id AND cg.line_id=g.line_id \
@@ -310,7 +311,7 @@ impl CheckedScope<'_, '_> {
              AND l.state='active' AND l.approved_at IS NOT NULL AND l.current_binding_generation=g.binding_generation \
              AND b.state='active' AND b.purpose='sealed' AND b.activated_at IS NOT NULL AND b.owner_approval_digest IS NOT NULL AND b.device_confirmation_digest IS NOT NULL) \
          AND EXISTS(SELECT 1 FROM conversation_intervals i WHERE i.account_id=g.account_id AND i.id=$4 AND i.phase='active' AND i.expires_at_ms>$3) \
-         AND r.state='active' AND r.key_id=g.reader_key_id AND (r.manifest_generation,r.manifest_version,r.manifest_digest)=(g.trust_generation,g.manifest_version,g.manifest_digest) \
+         AND r.state='active' AND r.key_id=g.reader_key_id AND r.manifest_generation=g.trust_generation \
          AND k.retired_ms IS NULL AND r.expires_ms>$3 AND k.valid_from_ms<=$3 AND k.valid_until_ms>$3 \
          AND (NOT $5::boolean OR EXISTS(SELECT 1 FROM connector_grants cg WHERE cg.account_id=g.account_id AND cg.connector_id=g.connector_id \
              AND cg.line_id=g.line_id AND cg.kind='read' AND (cg.read_directions & 8)=8 AND cg.revoked_ms IS NULL AND cg.expires_ms>$3 \

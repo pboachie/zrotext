@@ -26,7 +26,7 @@ internal class ConversationJournalPresentationDomain(
         val verified = verifier.verifiedPreparation(owned.copyOf())
         require(review.intervalId == verified.intervalId && review.lineId == verified.lineId &&
             review.lineGeneration == verified.bindingGeneration && review.peer == verified.peer &&
-            review.disclosureDigest == verified.disclosureDigest)
+            review.disclosureDigest == verified.disclosureDigest && review.integrationSelection == verified.integrationSelection)
         val started = now(); check(started <= Long.MAX_VALUE - review.remainingMs)
         pending = Pending(review,verified,owned,started + review.remainingMs)
         scope = verified
