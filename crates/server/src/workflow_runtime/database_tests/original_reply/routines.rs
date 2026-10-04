@@ -244,6 +244,22 @@ impl RoutineCase {
         self.scratch.remove().unwrap();
         self.f.case.f.cleanup().await;
     }
+    async fn approve(&self, key: decisions::ActionKey) -> decisions::ActionState {
+        let current = decisions::read(&mut self.f.case.f.connect().await, &self.f.case.owner, key)
+            .await
+            .unwrap();
+        assert_eq!(current.key, key);
+        decisions::decide(
+            &mut self.f.case.f.connect().await,
+            &self.f.case.owner,
+            Uuid::new_v4(),
+            current.record_version,
+            current.key,
+            decisions::model::Decision::Approve,
+        )
+        .await
+        .unwrap()
+    }
 }
 
 #[tokio::test]
@@ -286,16 +302,7 @@ async fn original_source_erasure_refuses_preparation_even_after_exact_owner_appr
     let mut f = RoutineCase::new().await;
     let call = f.admit(f.invocation.clone()).await.unwrap();
     let key = f.owner_publish_and_propose(call.call_id).await;
-    let approved = decisions::apply_decision(
-        &mut f.f.case.f.connect().await,
-        &f.f.case.owner,
-        Uuid::new_v4(),
-        f.f.case.header.manifest_version,
-        key,
-        decisions::model::Decision::Approve,
-    )
-    .await
-    .unwrap();
+    let approved = f.approve(key).await;
     assert_eq!(approved.key, key);
     f.f.case
         .f
@@ -385,16 +392,7 @@ async fn original_reply_child_keeps_first_question_source_fence_after_genuine_is
     let mut f = RoutineCase::new().await;
     let call = f.admit(f.invocation.clone()).await.unwrap();
     let first = f.owner_publish_and_propose(call.call_id).await;
-    let approved = decisions::apply_decision(
-        &mut f.f.case.f.connect().await,
-        &f.f.case.owner,
-        Uuid::new_v4(),
-        f.f.case.header.manifest_version,
-        first,
-        decisions::model::Decision::Approve,
-    )
-    .await
-    .unwrap();
+    let approved = f.approve(first).await;
     let request = super::network::issued_request(&mut f.f, approved).await;
     let second_event = Uuid::new_v4();
     let mut seed = configuration(&f.f, second_event).await;
