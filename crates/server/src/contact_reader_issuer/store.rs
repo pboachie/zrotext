@@ -119,7 +119,7 @@ impl State {
         let digest: Option<Vec<u8>> = r.try_get("current_statement_digest")?;
         let signed: Option<Vec<u8>> = r.try_get("current_statement")?;
         let prior = match (phase.as_str(), id, generation, digest) {
-            ("EMPTY", None, None, None) if signed.is_none() => Prior::Empty,
+            ("EMPTY", None, None, None) if signed.is_none() => Prior::Empty {},
             ("ACTIVE" | "WITHDRAWN", Some(id), Some(g), Some(d)) if g > 0 && g <= allocator => {
                 let authorization = Id(identity(id)?);
                 let generation = Number(g);
@@ -222,7 +222,7 @@ impl Pending {
         let prior_g: Option<i64> = r.try_get("prior_generation")?;
         let prior_d: Option<Vec<u8>> = r.try_get("prior_digest")?;
         let prior = match (prior_phase.as_str(), prior_id, prior_g, prior_d) {
-            ("EMPTY", None, None, None) => Prior::Empty,
+            ("EMPTY", None, None, None) => Prior::Empty {},
             ("ACTIVE" | "WITHDRAWN", Some(id), Some(g), Some(d)) if g > 0 && g < generation => {
                 let authorization = Id(identity(id)?);
                 let generation = Number(g);

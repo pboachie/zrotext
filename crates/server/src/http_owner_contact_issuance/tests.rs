@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
+use axum::body::Body;
 
 fn read_headers() -> HeaderMap {
     let mut h = HeaderMap::new();

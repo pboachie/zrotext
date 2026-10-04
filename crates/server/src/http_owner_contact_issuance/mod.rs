@@ -11,7 +11,7 @@ use crate::{
 };
 use axum::{
     Router,
-    body::{Body, to_bytes},
+    body::to_bytes,
     extract::{Request, State},
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
