@@ -98,6 +98,7 @@ struct ExportQuery {
     schedule_series_before: Option<Uuid>,
     schedule_occurrences_before: Option<Uuid>,
     schedule_audit_before: Option<Uuid>,
+    contacts_before: Option<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -638,7 +639,7 @@ async fn export_contacts(
         {
             Ok(Some(row)) => Some((row.get(0), before)),
             Ok(None) => return Err(FieldError::MissingContactCursor),
-            Err(_) => return Err(FieldError::Unreadable),
+            Err(_) => return Err(FieldError::Database),
         }
     } else {
         None
@@ -663,7 +664,7 @@ async fn export_contacts(
         .await
     {
         Ok(rows) => rows,
-        Err(_) => return Err(FieldError::Unreadable),
+        Err(_) => return Err(FieldError::Database),
     };
     let truncated = rows.len() > EXPORT_CONTACT_LIMIT;
     let page: Vec<&Row> = rows.iter().take(EXPORT_CONTACT_LIMIT).collect();
@@ -705,7 +706,7 @@ async fn export_contacts(
         .await
         {
             Ok(history) => history,
-            Err(_) => return Err(FieldError::Unreadable),
+            Err(_) => return Err(FieldError::Database),
         };
         let consents = crate::http_owner_contacts::consents::consent_states(&history, now_ms);
         contacts.push(ContactExportView {

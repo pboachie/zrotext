@@ -38,6 +38,7 @@ macro_rules! migration {
 
 // The routes run on the complete schema, SQL embedded at build time.
 const TEST_MIGRATIONS: [(&str, &str); 90] = [
+const TEST_MIGRATIONS: [(&str, &str); 67] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -128,6 +129,7 @@ const TEST_MIGRATIONS: [(&str, &str); 90] = [
     migration!("088_original_reply_readers.sql"),
     migration!("089_original_routine_sources.sql"),
     migration!("090_invoice_usage_observations.sql"),
+    migration!("068_contacts_consent.sql"),
 ];
 
 #[test]
@@ -1075,6 +1077,7 @@ async fn consent_records_track_purpose_expiry_and_withdrawal() {
                 "purpose": "marketing", "action": "grant", "source": "manual_entry",
                 "effective_at_ms": now - 10_000, "expires_at_ms": now + 3_600_000,
             }),
+            &grant("marketing", Some(now + 3_600_000)),
         ))
         .await;
     assert_eq!(response.status(), StatusCode::OK);

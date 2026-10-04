@@ -401,6 +401,8 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "090_invoice_usage_observations.sql",
         include_str!("../../../../deploy/compose/migrations/090_invoice_usage_observations.sql"),
+        "068_contacts_consent.sql",
+        include_str!("../../../../deploy/compose/migrations/068_contacts_consent.sql"),
     ),
 ];
 

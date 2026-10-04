@@ -38,6 +38,7 @@ macro_rules! export_schema {
         };
     }
 const EXPORT_SCHEMA: [(&str, &str); 90] = export_schema!(
+const EXPORT_SCHEMA: [(&str, &str); 67] = export_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -128,6 +129,7 @@ const EXPORT_SCHEMA: [(&str, &str); 90] = export_schema!(
     "088_original_reply_readers.sql",
     "089_original_routine_sources.sql",
     "090_invoice_usage_observations.sql",
+    "068_contacts_consent.sql",
 );
 #[test]
 fn export_schema_includes_every_checked_in_migration() {
@@ -733,6 +735,23 @@ async fn export_paginates_full_history_beyond_the_first_page() {
     let (mut db, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     crate::auth::test_schema::apply(&db).await;
+    for migration in [
+        include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
+        include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
+        include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
+        include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+        include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
+        include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
+        include_str!("../../../../deploy/compose/migrations/014_owner_mfa_failure_budget.sql"),
+        include_str!("../../../../deploy/compose/migrations/018_sealed_inbound_identity.sql"),
+        include_str!("../../../../deploy/compose/migrations/043_sealed_candidate_inbound.sql"),
+        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
+        include_str!("../../../../deploy/compose/migrations/064_owner_conversation_consent.sql"),
+        include_str!("../../../../deploy/compose/migrations/065_conversation_activation.sql"),
+        include_str!("../../../../deploy/compose/migrations/067_contacts_consent.sql"),
+    ] {
+        db.batch_execute(migration).await.unwrap();
+    }
     let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(19)).unwrap());
     let a = register(
         &mut db,
@@ -821,6 +840,13 @@ async fn export_paginates_full_history_beyond_the_first_page() {
                 1,
                 Zeroizing::new(vec![9_u8; 32]),
             )
+            .unwrap(),
+        )),
+    });
+    let first = body(
+        app.clone()
+            .oneshot(get("/v1/owner/export", Some(&session_a)))
+            .await
             .unwrap(),
         )),
     });
