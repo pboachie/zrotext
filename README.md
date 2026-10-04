@@ -98,6 +98,7 @@ To create the first owner, follow the [local bootstrap steps](docs/SELF-HOSTING.
 - [Architecture and API contracts](docs/ARCHITECTURE.md)
 - [Delivery state model](docs/DELIVERY-STATES.md)
 - [Agent texting quickstart (simulator)](docs/AGENT-QUICKSTART.md)
+- [Send your first message (API examples)](docs/SEND-FIRST-MESSAGE.md)
 - [Two-location routing and failover design](docs/MULTI-LOCATION.md)
 - [Security design](docs/SECURITY-DESIGN.md)
 - [SMS compliance and current limits](docs/SMS-COMPLIANCE.md)
