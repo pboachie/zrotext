@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Unmounted TEST exposure candidate. A receipt neither authorizes content
+//! Default-off TEST exposure preflight. A receipt neither authorizes content
 //! access nor starts an external call; provider/model adapters remain absent.
 
 use crate::{
@@ -15,6 +15,7 @@ use uuid::Uuid;
 use zrotext_delivery_store::exposure::{ExposureError, ExposureUnits, projected_liability};
 
 mod cancellation;
+pub mod http;
 mod store;
 use store::Scope;
 
@@ -46,6 +47,16 @@ pub struct Reservation {
     pub created: bool,
 }
 
+/// Account-scoped metadata only; no intent nonce or execution proof leaves.
+pub struct ReservationStatus {
+    pub id: Uuid,
+    pub maximum_units: i64,
+    pub actual_units: Option<i64>,
+    pub policy_version: i64,
+    pub state: String,
+    pub intent_issued: bool,
+}
+
 /// Non-deserializable process-local proof of the first synthetic intent. No
 /// retry can mint another intent for this action, even after lease expiration.
 pub struct TestIntent {
@@ -63,6 +74,34 @@ pub enum TestOutcome {
 }
 
 impl TestExposure {
+    /// Inspection remains usable after policy/action expiry and never grants
+    /// execution. Fresh owner authentication still fences both sides of the read.
+    pub async fn status(
+        &self,
+        client: &mut Client,
+        owner: &SessionPrincipal,
+        reservation: Uuid,
+    ) -> Result<Option<ReservationStatus>, Error> {
+        self.require_enabled()?;
+        let tx = client.transaction().await?;
+        crate::http_owner_conversations::lock_owner(&tx, owner).await?;
+        let row = tx.query_opt(
+            "SELECT id,maximum_units,actual_units,policy_version,state,lease_id IS NOT NULL FROM exposure_reservations WHERE account_id=$1 AND id=$2",
+            &[&owner.tenant.account_id(), &reservation],
+        ).await?;
+        let result = row.map(|row| ReservationStatus {
+            id: row.get(0),
+            maximum_units: row.get(1),
+            actual_units: row.get(2),
+            policy_version: row.get(3),
+            state: row.get(4),
+            intent_issued: row.get(5),
+        });
+        crate::http_owner_conversations::fresh_owner(&tx, owner).await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
     /// Irreversibly release a reservation that never obtained an execution
     /// intent. This only requires a currently authenticated account owner;
     /// expired actions and withdrawn policies are not renewed by cleanup.
