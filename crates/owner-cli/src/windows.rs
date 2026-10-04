@@ -24,6 +24,8 @@ mod conversation_genesis;
 #[cfg(feature = "unlock")]
 mod conversation_refresh;
 #[cfg(feature = "unlock")]
+mod contact_reader_signing;
+#[cfg(feature = "unlock")]
 mod custody_sign;
 #[cfg(feature = "unlock")]
 mod line_key_registration;
@@ -529,6 +531,10 @@ fn run_unlock(
 }
 
 pub(super) fn run(args: &[String]) -> Result<()> {
+    #[cfg(feature = "unlock")]
+    if args.first().map(String::as_str) == Some("contact-reader-sign") {
+        return contact_reader_signing::run(args, local_store_parent()?);
+    }
     #[cfg(feature = "unlock")]
     if args.first().map(String::as_str) == Some("line-key-registration") {
         return line_key_registration::run(args, local_store_parent()?);

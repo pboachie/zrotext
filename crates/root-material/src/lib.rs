@@ -23,6 +23,9 @@ pub use conversation_refresh::activation as conversation_activation;
 pub mod conversation_genesis;
 /// Cryptographic stage-root evidence only; signing is offline unlock-only.
 pub mod preaccount_root_evidence;
+/// One historical contact statement signature with a genuinely recovered root.
+#[cfg(feature = "unlock")]
+pub mod contact_reader_signing;
 pub mod recovery_kit;
 pub mod root_backup;
 /// Offline unlock signing, compiled only when the `unlock` feature is

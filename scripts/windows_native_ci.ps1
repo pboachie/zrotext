@@ -103,6 +103,7 @@ function Test-ReducedOutput([string[]]$Lines) {
 # must keep refusing the command (its suite above stays at 4), while the feature
 # build exercises the reviewed owner ceremonies and pure codec/crypto suites.
 $unlockSuites=@(@{Package='zrotext-owner';Passed=@(27)},@{Package='zrotext-root-material';Passed=@(86,8)})
+$unlockSuites=@(@{Package='zrotext-owner';Passed=@(39)},@{Package='zrotext-root-material';Passed=@(78,8)})
 function Test-UnlockOutput([string[]]$Lines) {
     foreach($line in $Lines) {
         if($line -match '^test result: ' -and $line -notmatch '^test result: ok\. \d+ passed; 0 failed; 0 ignored;'){return $false}
@@ -142,6 +143,10 @@ function Test-UnlockOutput([string[]]$Lines) {
     if(Test-UnlockOutput $unlockBeforeAccountGenesis){throw 'Missing account genesis suite regression.'}
     $unlockBeforeStageEvidence=@('test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured')
     if(Test-UnlockOutput $unlockBeforeStageEvidence){throw 'Missing pre-account evidence suite regression.'}
+    $unlockGood=@('test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 78 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured')
+    if(-not (Test-UnlockOutput $unlockGood)){throw 'Unlock summary acceptance regression.'}
+    $unlockBeforeContact=@('test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured')
+    if(Test-UnlockOutput $unlockBeforeContact){throw 'Missing contact signing suite regression.'}
     $unlockLegacy=@('test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 48 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured')
     if(Test-UnlockOutput $unlockLegacy){throw 'Obsolete unlock suite registration regression.'}
     $unlockBeforeRegistration=@('test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 59 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured')
