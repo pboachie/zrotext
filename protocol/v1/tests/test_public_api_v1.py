@@ -14,6 +14,7 @@ Run: python -m unittest discover -s protocol/v1/tests -p 'test_public_api_v1.py'
 """
 
 import json
+import re
 import unittest
 from pathlib import Path
 
@@ -628,6 +629,75 @@ class PublicApiContractTests(unittest.TestCase):
         self.assertIn("before the body is read", submit["description"])
         self.assertIn("401", submit["responses"])
         self.assertIn("400", submit["responses"])
+
+
+SERVER_SRC = Path(__file__).resolve().parents[3] / "crates" / "server" / "src"
+
+# Source files that mount the routes this document pins, with the nest prefix
+# main.rs gives each router ("" when the routes carry their full path).
+ROUTE_SOURCES = {
+    "http_webhooks.rs": "",
+    "http_owner_messages.rs": "",
+    "http_messages/mod.rs": "/v1/alpha",
+    "http_enrollment/mod.rs": "/v1/enrollment",
+}
+# The server routes under these prefixes must all be documented here.
+DOCUMENTED_PREFIXES = ("/v1/webhooks", "/v1/owner/messages", "/v1/alpha", "/v1/enrollment/devices")
+# Real routes under a documented prefix that this document does not pin yet.
+KNOWN_UNDOCUMENTED = {
+    ("/v1/webhooks/{endpoint_id}/sealed-events", "post"):
+        "mounted only when sealed delivery is enabled; see protocol/v1/webhook-endpoints.md",
+}
+
+
+def server_routes():
+    """Every (path, method) mounted by ROUTE_SOURCES, read from the Rust source."""
+    found = set()
+    for name, prefix in ROUTE_SOURCES.items():
+        source = (SERVER_SRC / name).read_text()
+        for start in re.finditer(r"\.route\(", source):
+            depth, index = 1, start.end()
+            while depth:
+                depth += {"(": 1, ")": -1}.get(source[index], 0)
+                index += 1
+            call = source[start.end():index - 1]
+            path = re.match(r'\s*"([^"]+)"', call).group(1)
+            for method in re.findall(r"\b(get|post|put|patch|delete)\(", call):
+                found.add((prefix + path, method))
+    return found
+
+
+class ServerRouteDriftTests(unittest.TestCase):
+    def test_nest_prefixes_match_main(self):
+        main = (SERVER_SRC / "main.rs").read_text()
+        for name, prefix in ROUTE_SOURCES.items():
+            if prefix:
+                module = name.split("/")[0].removesuffix(".rs")
+                self.assertRegex(main, rf'\.nest\(\s*"{prefix}",\s*{module}::router')
+
+    def test_server_routes_were_found(self):
+        self.assertGreaterEqual(len(server_routes()), 12)
+
+    def test_every_documented_implemented_route_exists_in_the_server(self):
+        routes = server_routes()
+        for path, method, _ in implemented_operations():
+            self.assertIn((path, method), routes, f"{method} {path} is documented but not mounted")
+
+    def test_every_server_route_in_scope_is_documented(self):
+        documented = {(path, method) for path, method, _ in operations(DOCUMENT)}
+        for path, method in sorted(server_routes()):
+            if not path.startswith(DOCUMENTED_PREFIXES):
+                continue
+            if (path, method) in KNOWN_UNDOCUMENTED:
+                continue
+            self.assertIn((path, method), documented, f"{method} {path} is mounted but undocumented")
+
+    def test_known_undocumented_entries_still_exist_and_stay_undocumented(self):
+        routes = server_routes()
+        documented = {(path, method) for path, method, _ in operations(DOCUMENT)}
+        for entry in KNOWN_UNDOCUMENTED:
+            self.assertIn(entry, routes, "remove the stale exemption")
+            self.assertNotIn(entry, documented, "remove the exemption now that it is documented")
 
 
 if __name__ == "__main__":
