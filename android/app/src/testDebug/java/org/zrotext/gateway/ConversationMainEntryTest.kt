@@ -401,6 +401,11 @@ class ConversationMainEntryTest {
             "; expired=" + fieldValue("conversationReplyExpired"),
             ConversationMessageReceiveController.Outcome.RECEIVING, fieldValue("conversationMessageOutcome"))
         assertNotNull("The synthetic receive must reach the deferred transport", completion.get())
+        compose.waitForIdle()
+        if (compose.onAllNodesWithText("Receiving and verifying the confirmed message.").fetchSemanticsNodes().isEmpty()) {
+            val roots = compose.onAllNodes(isRoot(), useUnmergedTree = true)
+            roots.fetchSemanticsNodes().indices.forEach { println(roots[it].printToString()) }
+        }
         compose.onNodeWithText("Receiving and verifying the confirmed message.").assertExists()
         compose.runOnIdle { field("conversationPickEpoch", fieldValue("conversationUiEpoch")) }
         compose.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
