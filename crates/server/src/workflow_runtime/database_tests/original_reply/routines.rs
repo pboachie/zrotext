@@ -79,6 +79,15 @@ impl RoutineCase {
         let input = authenticate(&f.case.f.db, &f.case.hasher, &credential.token)
             .await
             .unwrap();
+        // Owner execution policy does not supply contact consent. Establish the
+        // same independent synthetic operational consent as ordinary routines.
+        let consent = Uuid::new_v4();
+        assert_eq!(f.case.f.db.execute("INSERT INTO contact_consent_records(id,account_id,contact_id,purpose,action,source,effective_at,recorded_by) VALUES($1,$2,$3,'operational','grant','manual_entry',clock_timestamp(),$4)",
+            &[&consent,&f.case.f.account,&f.case.request.contact,&f.case.owner.user_id]).await.unwrap(),1);
+        let latest = f.case.f.db.query_one("SELECT id,action FROM contact_consent_records WHERE account_id=$1 AND contact_id=$2 AND purpose='operational' ORDER BY effective_at DESC,recorded_at DESC,id DESC LIMIT 1",
+            &[&f.case.f.account,&f.case.request.contact]).await.unwrap();
+        assert_eq!(latest.get::<_, Uuid>(0), consent);
+        assert_eq!(latest.get::<_, String>(1), "grant");
         let clock=f.case.f.db.query_one("WITH moment(t) AS (SELECT clock_timestamp()) SELECT to_char(t AT TIME ZONE 'UTC','YYYY-MM-DD'),extract(hour FROM t AT TIME ZONE 'UTC')::integer*60+extract(minute FROM t AT TIME ZONE 'UTC')::integer FROM moment",&[]).await.unwrap();
         let minute: i32 = clock.get(1);
         let mut policy:Policy=serde_json::from_value(json!({
