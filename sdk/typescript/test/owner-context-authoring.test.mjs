@@ -17,10 +17,10 @@ function nodes(element){return [element,...element.children.flatMap(nodes)];}
 async function until(run){for(let n=0;n<300;n++){if(run())return;await delay(5);}assert.fail('Expected authoring phase did not arrive');}
 async function fixture(edit={}){
   const f=await refreshFixture(),ui=presentation(f.origin),controller=new AbortController(),listeners={setup:[],custody:[],archive:[]};
-  const state={calls:[],reads:0,head:null,current:{binding:f.review.binding,manifest:f.predecessor,nowMs:f.nowMs,ownerSessionLive:true,consentLive:true}};
+  const state={calls:[],reads:0,head:null,csrf:'synthetic-csrf',current:{binding:f.review.binding,manifest:f.predecessor,nowMs:f.nowMs,ownerSessionLive:true,consentLive:true}};
   const subscribe=key=>listener=>{listeners[key].push(listener);return()=>{listeners[key]=listeners[key].filter(v=>v!==listener);};};
   const options={enabled:true,origin:f.origin,host:ui.host,binding:f.review.binding,contextId:new Uint8Array(16).fill(6),expiresMs:f.nowMs+300000n,
-    readCurrent:async()=>{state.reads++;return state.current;},currentCsrf:()=> 'synthetic-csrf',archiveLease:{onClose:subscribe('archive'),withKey:()=>{throw Error('Key access must not occur');},close:()=>listeners.archive.slice().forEach(run=>run())},
+    readCurrent:async()=>{state.reads++;return state.current;},currentCsrf:()=>state.csrf,archiveLease:{onClose:subscribe('archive'),withKey:()=>{throw Error('Key access must not occur');},close:()=>listeners.archive.slice().forEach(run=>run())},
     onSetupClose:subscribe('setup'),onCustodyClose:subscribe('custody'),signal:controller.signal,timeoutMs:2000,observationMs:2000,
     fetchImpl:async(url,init)=>{state.calls.push({url,init,body:init.body?new Uint8Array(init.body).slice():null});if(init.method==='POST'){state.head=new Uint8Array(init.body).slice();return new Response('{"revision":1}',{headers:{'content-type':'application/json'}});}return new Response(state.head,{headers:{'content-type':'application/vnd.zrotext.workflow-context.v1'}});},...edit};
   const author=createOwnerContextAuthoring(options),all=nodes(ui.host),editor=all.find(v=>v.tagName==='textarea'),review=all.find(v=>v.attributes['aria-label']==='Review facts'),status=all.find(v=>v.attributes.role==='status');
@@ -95,6 +95,12 @@ test('actual current owner loss while checking unknown closes unusable actions b
     await f.save();const pending=f.author.state().pending;assert.ok(pending);f.state.current={...f.state.current,ownerSessionLive:false};f.click('Check saved facts');await until(()=>f.author.state().phase==='closed');
     assert.deepEqual(f.author.state().pending,pending);assert.equal(f.editor.value,'');assert.ok(nodes(f.ui.host).filter(v=>v.tagName==='button').every(v=>v.disabled));
   }finally{f.author.close();}
+});
+
+test('changed CSRF or synchronous CSRF abort closes unknown controls before another transport',async()=>{
+  for(const cause of ['change','abort']){let f,calls=0;f=await fixture({fetchImpl:async()=>{calls++;return new Response(null,{status:503});},...(cause==='abort'?{currentCsrf:()=>{if(f.state.csrf==='changed')f.controller.abort();return 'synthetic-csrf';}}:{})});try{
+    await f.save();const pending=f.author.state().pending;f.state.csrf='changed';f.click('Check saved facts');await until(()=>f.author.state().phase==='closed');assert.deepEqual(f.author.state().pending,pending);assert.ok(nodes(f.ui.host).filter(v=>v.tagName==='button').every(v=>v.disabled));assert.equal(f.editor.value,'');assert.equal(calls,1);
+  }finally{f.author.close();}}
 });
 
 test('idle pre-seal deadline closes visible review and preserves unknown after expiration',async()=>{

@@ -54,7 +54,7 @@ One absolute owned deadline starts when review preparation begins, before
 authority reads and HPKE sealing. It covers sealing, review, transport and
 reconciliation, only shortens, and closes idle review/unknown records. Fresh
 callbacks, retries and checks never renew it. Setup, archive or custody loss,
-signal abort, pagehide, hidden document, invalid current owner or an edit during
+signal abort, pagehide, hidden document, invalid current owner, changed/lost CSRF or an edit during
 the operation closes the module. Cleanup continues after a failing unsubscribe.
 Void setup subscriptions remain owned by setup until its own closure.
 

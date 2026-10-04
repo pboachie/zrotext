@@ -45,6 +45,7 @@ class Authoring {
   #now=0n;#content:Uint8Array|null=null;#envelope:Uint8Array|null=null;#text='';#scope:WorkflowContextScope|null=null;#request='';#digest='';
   #decision:Readonly<{resolve():void;reject(error:Error):void}>|null=null;
   #posts=0;#checks=0;
+  #csrfValue:string|null=null;
   #pane:HTMLElement;#editor:HTMLTextAreaElement;#review:HTMLElement;#status:HTMLElement;
   #buttons:Record<string,HTMLButtonElement>={};
   constructor(input:OwnerContextAuthoringOptions){
@@ -87,11 +88,17 @@ class Authoring {
   #scrub():void{this.#content?.fill(0);this.#content=null;this.#envelope?.fill(0);this.#envelope=null;this.#text='';this.#editor.value='';this.#review.textContent='';this.#review.hidden=true;}
   close():void{
     this.#closed=true;if(this.#timer!==undefined)clearTimeout(this.#timer);this.#timer=undefined;
-    this.#pending=this.#client?.pending()??this.#pending;this.#controller.abort();
+    this.#pending=this.#client?.pending()??this.#pending;this.#controller.abort();this.#csrfValue=null;
     this.#decision?.reject(Error('Owner facts closed'));this.#decision=null;
     try{this.#client?.close();}finally{this.#ticket=null;this.#scrub();for(const cleanup of this.#cleanup.splice(0))try{cleanup();}catch{/* Other teardown always continues. */}this.#phase='closed';this.#render();}
   }
   #live():void{if(this.#closed||this.#o.signal.aborted||this.#document.hidden||performance.now()>=this.#deadline){this.close();fail();}}
+  #csrf():string{
+    try{this.#live();const token=this.#o.currentCsrf();this.#live();
+      if(typeof token!=='string'||token.length<1||token.length>256||/[^\x21-\x7e]/.test(token)||this.#csrfValue!==null&&token!==this.#csrfValue)fail();
+      this.#csrfValue=token;return token;
+    }catch(error){this.close();throw error;}
+  }
   #cap(deadline:number):void{this.#live();if(deadline>this.#deadline)fail();this.#deadline=deadline;if(this.#timer!==undefined)clearTimeout(this.#timer);this.#timer=setTimeout(()=>this.close(),Math.max(0,deadline-performance.now()));this.#live();}
   async #wait<T>(promise:Promise<T>):Promise<T>{
     const observed=Promise.resolve(promise);try{this.#live();}catch(error){void observed.catch(()=>{});throw error;}
@@ -137,7 +144,7 @@ class Authoring {
       this.#scope={kind:1,accountId:bytes(b.account,16),deviceId:bytes(b.device,16),lineId:bytes(b.line,16),intervalId:bytes(b.interval,16),contextId:bytes(this.#context,16),bindingGeneration:b.generation,revision:1n,expiresMs:this.#o.expiresMs,trustGeneration:current.manifest.generation,manifestVersion:current.manifest.version,peerDigest:peer,readerId:bytes(b.archiveReader,32),manifestDigest:bytes(current.manifest.digest,32)};
       this.#envelope=await this.#wait(sealWorkflowContext(current.manifest,this.#scope,current.nowMs,this.#content));this.#live();this.#content.fill(0);this.#content=null;
       this.#digest=hex(new Uint8Array(await this.#wait(crypto.subtle.digest('SHA-256',Uint8Array.from(this.#envelope).buffer))));this.#live();this.#request=crypto.randomUUID();
-      this.#client=new OwnerWorkflowContextClient({enabled:true,origin:this.#o.origin,selection:{binding:b,contextId:this.#context,kind:1},readCurrent:()=>this.#current(),currentCsrf:this.#o.currentCsrf,consumeWriteReview:review=>this.#reviewWrite(review),signal:this.#controller.signal,timeoutMs:Math.max(1,Math.floor(this.#deadline-performance.now())),...(this.#o.fetchImpl?{fetchImpl:this.#o.fetchImpl}:{})});
+      this.#client=new OwnerWorkflowContextClient({enabled:true,origin:this.#o.origin,selection:{binding:b,contextId:this.#context,kind:1},readCurrent:()=>this.#current(),currentCsrf:()=>this.#csrf(),consumeWriteReview:review=>this.#reviewWrite(review),signal:this.#controller.signal,timeoutMs:Math.max(1,Math.floor(this.#deadline-performance.now())),...(this.#o.fetchImpl?{fetchImpl:this.#o.fetchImpl}:{})});
       this.#ticket=await this.#wait(this.#client.prepare({requestId:this.#request,expectedRevision:0,scope:this.#scope,envelope:this.#envelope}));this.#live();this.#envelope.fill(0);this.#envelope=null;
       this.#posts++;await this.#wait(this.#client.commit(this.#ticket));this.#live();this.#pending=null;this.#ticket=null;this.#phase='saved';this.#scrub();if(this.#timer!==undefined)clearTimeout(this.#timer);this.#timer=undefined;this.#render();
     }catch(error){this.#outcome(error);}
