@@ -10,6 +10,8 @@ use crate::workflow_runtime::routines::{
 use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 mod acceptance;
+mod diagnostics;
+use diagnostics::{deadline_diagnostic, refusal_class};
 
 struct RoutineCase {
     f: OriginalCase,
@@ -109,15 +111,32 @@ impl RoutineCase {
         let principal = service::authenticate(&f.case.f.db, &f.case.hasher, &read.token)
             .await
             .unwrap();
-        routines::configure_with_original(
+        let started = std::time::Instant::now();
+        let configured = routines::configure_with_original(
             &mut f.case.f.connect().await,
             &f.case.owner,
             &input,
             Some(&principal),
             policy.clone(),
         )
-        .await
-        .unwrap();
+        .await;
+        if configured.is_err() {
+            let diagnostic = deadline_diagnostic(
+                &f,
+                read.grant_id,
+                &input,
+                None,
+                &policy,
+                "configure",
+                started,
+            )
+            .await;
+            panic!(
+                "routine fixture refused: class={} {diagnostic}",
+                refusal_class(&configured)
+            );
+        }
+        configured.unwrap();
         let event_digest: Vec<u8> = f
             .case
             .f
@@ -222,7 +241,8 @@ impl RoutineCase {
             output_source_digest: hash.clone(),
             produced_digest: hash,
         };
-        routines::bind_with_original(
+        let started = std::time::Instant::now();
+        let bound = routines::bind_with_original(
             &mut self.f.case.f.connect().await,
             &self.f.case.owner,
             &self.input,
@@ -230,8 +250,24 @@ impl RoutineCase {
             Some(&original),
             binding,
         )
-        .await
-        .unwrap();
+        .await;
+        if bound.is_err() {
+            let diagnostic = deadline_diagnostic(
+                &self.f,
+                self.read.grant_id,
+                &self.input,
+                Some(&output),
+                &self.policy,
+                "bind",
+                started,
+            )
+            .await;
+            panic!(
+                "routine fixture refused: class={} {diagnostic}",
+                refusal_class(&bound)
+            );
+        }
+        bound.unwrap();
         let proposed = routines::resume_with_original(
             &mut self.f.case.f.connect().await,
             &self.input,

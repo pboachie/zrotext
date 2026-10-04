@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {webcrypto,createHash} from 'node:crypto';
 import {request} from 'node:https';
 import {join,parse,sep} from 'node:path';
-import {realpathSync,writeFileSync,readFileSync,existsSync} from 'node:fs';
+import {realpathSync,writeFileSync,readFileSync,existsSync,openSync,fstatSync,readSync,closeSync,constants} from 'node:fs';
 import {enrollRootPin02,verifyManifest02,verifiedManifestTrust02} from '../dist/draft02-manifest.js';
 import {OriginalReplyClient} from '../dist/original-reply-client.js';
 import {WorkflowToolClient} from '../dist/workflow-tool-client.js';
@@ -14,7 +14,7 @@ import {CustomerRoutineService} from '../../assistant/routine-service.mjs';
 import {customerReaderKey,customerOriginalReaderKey} from '../../assistant/customer-routines.mjs';
 import {CipherArtifactStore} from '../../assistant/artifact-store.mjs';
 import {LocalProvider} from '../../assistant/local-provider.mjs';
-import {originalRoutineDiagnostic} from './original-service-diagnostics.mjs';
+import {originalRoutineDiagnostic,runWithProviderDiagnostic} from './original-service-diagnostics.mjs';
 globalThis.crypto??=webcrypto;
 const bytes=value=>Uint8Array.from(Buffer.from(value,'base64'));
 const hex=value=>{assert.match(value,/^[0-9a-f]+$/);return Uint8Array.from(Buffer.from(value,'hex'));};
@@ -68,6 +68,7 @@ function transport(f){
     });req.on('error',failed);req.end(init.body);
   });return {origin:origin.origin,fetch};
 }
+let providerRefusal=null,invocationMarker=null;
 let stage='input',settlement='pending',wire='',engine,provider,store;
 try{
   for await(const chunk of process.stdin){wire+=chunk;if(Buffer.byteLength(wire)>262144)throw Error();}
@@ -76,6 +77,9 @@ try{
   assert.notEqual(directory,parse(directory).root);assert.notEqual(directory,sourceRoot);assert.ok(!directory.startsWith(sourceRoot+sep));
   stage='history';const accepted=await history(f),manifest=accepted.at(-1);stage='scope';const scope=workflowScope(f);
   stage='installation';provider=install(directory,f.phase==='seed_context');
+  const actualProviderRun=provider.run.bind(provider);
+  provider.run=options=>runWithProviderDiagnostic({run:actualProviderRun},options,line=>{providerRefusal=line;});
+  invocationMarker=join(directory,'original-routine-invocations');
   if(f.phase==='seed_context'){
     const plain=new TextEncoder().encode(JSON.stringify({question:'synthetic owner configured question',answer:'synthetic owner configured answer'}));
     try{
@@ -104,5 +108,15 @@ try{
     process.stdout.write(JSON.stringify(result));
   }
 }catch(error){
-  process.stderr.write(originalRoutineDiagnostic(stage,error,settlement));process.exitCode=1;
+  const outer=originalRoutineDiagnostic(stage,error,settlement);
+  process.stderr.write(outer);
+  if(providerRefusal!==null)process.stderr.write(providerRefusal);
+  // Fixture marker contains only bounded literal x bytes from the owned child.
+  let invocations='unavailable';
+  let fd,marker;
+  try{if(invocationMarker!==null){
+    try{fd=openSync(invocationMarker,constants.O_RDONLY|(constants.O_NOFOLLOW??0)|(constants.O_NONBLOCK??0));}catch(error){if(error?.code==='ENOENT')invocations='0';else throw error;}
+    if(fd!==undefined){const info=fstatSync(fd);if(info.isFile()&&info.nlink===1&&info.size>=0&&info.size<=2){marker=Buffer.alloc(3);const size=readSync(fd,marker,0,3,0);if(size===info.size&&size<=2&&marker.subarray(0,size).every(byte=>byte===120))invocations=String(size);}}
+  }}catch{}finally{marker?.fill(0);if(fd!==undefined)try{closeSync(fd);}catch{}}
+  process.stderr.write(`original routine invocations=${invocations}\n`);process.exitCode=1;
 }finally{engine?.withdraw();provider?.close();store?.close();}

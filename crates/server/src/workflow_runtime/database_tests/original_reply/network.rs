@@ -240,6 +240,81 @@ fn refusal_stage(bytes: &[u8]) -> &'static str {
     }
     "unavailable"
 }
+fn provider_refusal(bytes: &[u8]) -> &'static str {
+    if bytes.len() > 1024 {
+        return "unavailable";
+    }
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return "unavailable";
+    };
+    let mut lines = text
+        .lines()
+        .filter(|line| line.starts_with("original reply fixture phase="));
+    lines.next(); // Preserve the separate outer diagnostic, parsed above.
+    let Some(line) = lines.next() else {
+        return "unavailable";
+    };
+    if lines.next().is_some()
+        || !line.starts_with("original reply fixture phase=engine_execute;code=")
+    {
+        return "unavailable";
+    }
+    match refusal_diagnostic(line.as_bytes()) {
+        "artifact_changed" => "artifact_changed",
+        "invalid_configuration" => "invalid_configuration",
+        "invalid_invocation" => "invalid_invocation",
+        "invalid_output" => "invalid_output",
+        "not_executable" => "not_executable",
+        "provider_unknown" => "provider_unknown",
+        "replay_conflict" => "replay_conflict",
+        "unknown_no_retry" => "unknown_no_retry",
+        "withdrawn" => "withdrawn",
+        _ => "unavailable",
+    }
+}
+fn provider_invocations(bytes: &[u8]) -> &'static str {
+    if bytes.len() > 1024 {
+        return "unavailable";
+    }
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return "unavailable";
+    };
+    let mut lines = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("original routine invocations="));
+    let Some(count) = lines.next() else {
+        return "unavailable";
+    };
+    if lines.next().is_some() {
+        return "unavailable";
+    }
+    match count {
+        "0" => "0",
+        "1" => "1",
+        "2" => "2",
+        _ => "unavailable",
+    }
+}
+#[test]
+fn secondary_provider_diagnostics_and_counts_refuse_unknown_or_injected_fields() {
+    let fixed=b"original reply fixture phase=call_current;code=provider_unknown\noriginal reply fixture phase=engine_execute;code=invalid_output\noriginal routine invocations=1\n";
+    assert_eq!(provider_refusal(fixed), "invalid_output");
+    assert_eq!(provider_invocations(fixed), "1");
+    for count in ["0", "2", "unavailable"] {
+        let line = format!("original routine invocations={count}\n");
+        assert_eq!(provider_invocations(line.as_bytes()), count);
+    }
+    for input in [b"original reply fixture phase=call_current;code=provider_unknown\noriginal reply fixture phase=engine_execute;code=synthetic-private-canary\n".as_slice(), b"original reply fixture phase=call_current;code=provider_unknown\noriginal reply fixture phase=synthetic-private-canary;code=invalid_output\n".as_slice()] {
+        assert_eq!(provider_refusal(input), "unavailable");
+    }
+    for input in [
+        b"original routine invocations=1;synthetic-private-canary\n".as_slice(),
+        b"original routine invocations=1\noriginal routine invocations=2\n".as_slice(),
+        &[255],
+    ] {
+        assert_eq!(provider_invocations(input), "unavailable");
+    }
+}
 #[test]
 fn routine_diagnostics_accept_fixed_stage_and_code_but_refuse_child_canary() {
     assert_eq!(
@@ -353,9 +428,11 @@ pub(super) async fn run_driver(input: Value, cwd: &Path, fixture: Driver) -> Val
         .unwrap();
     assert!(
         output.status.success(),
-        "original reader driver refused: phase={} code={}",
+        "original reader driver refused: phase={} code={} provider={} invocations={}",
         refusal_stage(&output.stderr),
-        refusal_diagnostic(&output.stderr)
+        refusal_diagnostic(&output.stderr),
+        provider_refusal(&output.stderr),
+        provider_invocations(&output.stderr)
     );
     assert!(
         known_runtime_stderr(&output.stderr),
