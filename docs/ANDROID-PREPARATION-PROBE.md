@@ -14,10 +14,12 @@ Without the property, ordinary debug and release packaging remain unchanged.
 
 The probe replaces both application manifests with a plain `Application`, without
 gateway startup, dependency components, permissions, package queries or a shared
-UID. A fixed runner admits only two synthetic tests; the source set contains only
+UID. A fixed runner admits only three synthetic tests or the exact staged custody
+method; the source set contains only
 that runner, those tests and the two required fixture helpers. Each test creates
-one unpredictable owned key alias, removes that exact alias in `finally`, and
-uses an in-memory journal. It never enumerates aliases, samples a SIM, opens the
+an unpredictable owned key alias. Ordinary test runs remove that alias in
+`finally`; staged custody runs retain their one synthetic alias between explicit
+invocations. Preparation uses an in-memory journal. It never enumerates aliases, samples a SIM, opens the
 gateway journal, invokes a service or calls an SMS send method.
 
 `python scripts/android_preparation_probe.py` validates the actual APK manifests,
@@ -45,6 +47,29 @@ segmentation is exercised by preparation only; this probe makes no claim about
 six/seven segment boundaries on an active SIM. The custom HPKE receiver remains
 a candidate, regardless of hardware test results.
 
-CI runs both tests on a disposable emulator and requires exactly two successful
+The third test enrolls, reloads and performs ECDH through the actual Keystore,
+compares the original public key ID and reported security level, then checks
+loss and local revocation without replacement. The host also runs this exact
+method in five separate instrumentation invocations: `enroll`, `reload`, `lose`,
+`revoke`, `cleanup`. All later stages receive the same pinned public ID,
+reported level and observed `BOOT_COUNT` from enrollment. Cleanup refuses a
+different pinned ID and deletes only the owned synthetic fixture.
+
+This sequence proves only the behavior observed across separate instrumentation
+runs. It never invokes reboot, force-stop, data clearing or a device-setting
+change. A separately controlled reboot drill may select the exact custody method
+with `custodyRequireReboot=true` at reload; the test requires an increased
+`BOOT_COUNT`. The ordinary host sequence requires the unchanged count. That
+counter is an observation, not trusted UTC, rollback protection or independent
+hardware attestation. Neither sequence selects a maintained HPKE receiver,
+changes the distinct nonempty production `info`/AAD requirement, or accepts the
+candidate's empty HPKE AAD.
+
+CI runs all three tests on a disposable emulator and requires exactly three successful
 completions, zero skips and an explicit custody result. Physical execution is a
 separate controlled operation, not an automatic consequence of building the probe.
+Each of the five staged invocations must separately report one successful
+completion of the exact custody method and zero skips. Missing, duplicate,
+malformed or unknown baseline metadata fails the host check before later stages.
+Any stage failure stops the sequence; the existing artifact-verified cleanup
+still removes only this invocation's installed isolated packages.

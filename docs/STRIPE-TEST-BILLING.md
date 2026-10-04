@@ -201,6 +201,13 @@ cap exists in this projection, so the page explicitly says it is unavailable.
 Missing periods remain unavailable, while a real zero counter remains zero.
 Refresh clears old values and failures leave no stale tenant snapshot. Stripe
 meter summaries do not enforce these counters. No additional polling is added.
+Checkout and Portal stay disabled until the current status refresh succeeds.
+A refresh invalidates pending hosted handoffs, so an earlier response cannot
+redirect the browser or restore controls after session loss. Failed current
+handoffs permit a deliberate retry; a refused Checkout refreshes status before
+displaying Portal guidance.
+A hosted handoff's authorization refusal clears the displayed owner snapshots
+and keeps both controls closed until a fresh authorized status refresh succeeds.
 
 Portal returns remain informational: only reconciled provider reads affect
 entitlement. The selected cancellation mode is displayed by Stripe's configured

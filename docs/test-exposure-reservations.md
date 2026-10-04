@@ -1,12 +1,50 @@
 # TEST exposure reservation candidate
 
-The unmounted `billing::exposure::TestExposure` library adds a conservative,
+The default-off `billing::exposure::TestExposure` library adds a conservative,
 durable exposure prerequisite for synthetic provider and AI operations. Its
 default constructor refuses requests. Explicit in-process TEST opt-in and
-enabled immutable database policies are both required. It adds no HTTP route,
+enabled immutable database policies are both required. Its optional owner TEST
+preflight routes do not release an execution intent. It adds no
 provider/model transport, payment operation, price mapping or runtime worker.
 It does not change free/self-hosted startup, the existing Android quota, STOP,
 authenticated billing, export or deletion access.
+
+## Owner TEST preflight and cleanup
+
+`EXPOSURE_TEST_ENABLED` defaults to false, leaving these routes unmounted. When
+explicitly enabled with account routes, it mounts three owner-only endpoints:
+
+- `POST /v1/owner/exposure/test/reserve` accepts the complete `action` key
+  (account/action UUID, exact revision and lowercase binding digest),
+  `route_policy_id` and `reservation_id`. The existing transaction reserves all
+  six scopes and deployment liability before returning a preflight receipt.
+  Cost, rates, caps, approval flags and unknown fields are refused. Only the
+  immutable operator-installed TEST policy supplies the conservative maximum.
+- `POST /v1/owner/exposure/test/cancel` accepts `reservation_id` and invokes
+  `cancel_unstarted`. Exact replay returns `changed: false`; any issued intent
+  refuses cleanup, including an uncertain or expired execution lease.
+- `GET /v1/owner/exposure/test/{id}` returns the authenticated account's original
+  maximum, actual units if finalized, original policy version, lifecycle state
+  and whether an intent was issued. Foreign and absent reservations both return
+  404. It reveals no intent nonce, settlement proof or provider payload.
+
+Writes use a current owner session, exact configured Origin and CSRF proof before
+reading the bounded JSON body. Status reads also require the shared owner CSRF
+header proof. Bearer authorization and URL query parameters are refused. Reads
+and writes recheck current owner authority in their transactions; responses are
+`no-store`. Amounts and policy versions use decimal strings to preserve exact
+integers for browser callers. Status and pre-intent cancellation remain available
+after policy or action expiry, without renewing approval or hosted entitlement.
+`soft_warning` describes a newly created admission only; exact reserve replay
+returns `null` because the original threshold observation is not persisted.
+
+No first-intent or settlement HTTP endpoint exists. Every preflight/status receipt
+explicitly reports `execution_authorized: false`; it cannot start a model call,
+Android operation, provider transport or payment. The gate requires no Stripe
+customer for free/self-hosted synthetic tests. These endpoints are partial #674
+caller integration only: actual execution release, production reconciliation and
+maximum-cost enforcement by a paid adapter remain pending. Arbitrary customer-local
+executables have no monetary guarantee from their generic routine unit counters.
 
 This is a source candidate, not hosted launch readiness. Actual provider
 transport authority (#643), managed-reader/model authority (#644), runtime

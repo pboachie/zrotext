@@ -236,6 +236,37 @@ internal class ConversationCaptureAdmission(
     }
     @Synchronized fun activeScope(): ConversationCaptureScope? = currentLease()?.scope
 
+    /** Only the authenticated transport's exact durable ACK may release pending content capacity. */
+    @Synchronized fun acknowledgeCapture(token: String, capture: ConversationCapturedBody,
+                                         envelope: ByteArray, ack: ConversationCaptureAck) = failClosed {
+        fun checkLive() { check(checkNotNull(currentLease()).scope == capture.scope) }
+        checkLive()
+        require(envelope.size in 1..40000)
+        val digest = Draft02OutboundPreparation.hash(envelope)
+        check(ack.event.toString() == capture.captureId && ack.digest == digest)
+        val row = checkNotNull(journal.wireCapture(token))
+        check(row.sequence > 0 && row.captureId == capture.captureId && row.intervalId == capture.scope.intervalId)
+        if (row.acknowledgedDigest == null) {
+            val aad = "zrotext-conversation-wire-v1:$token:${capture.captureId}:${row.sequence}:${capture.scope.transcriptDigest}"
+            val persisted = java.util.Base64.getDecoder().decode(protection.open(InboundVault.Sealed(
+                checkNotNull(row.protectedEnvelope), checkNotNull(row.nonce)), aad))
+            try { check(persisted.contentEquals(envelope)) } finally { persisted.fill(0) }
+        }
+        journal.acknowledgeCapture(row, capture.firstObservedAtMs, digest, ::checkLive)
+    }
+
+    /** Exact committed duplicate requires the current installation; it never restores a lease. */
+    @Synchronized fun captureAcknowledged(token: String): Boolean = failClosed {
+        val active = currentLease() ?: return@failClosed false
+        val row = journal.wireCapture(token) ?: return@failClosed false
+        if (row.acknowledgedDigest == null || row.intervalId != active.scope.intervalId) return@failClosed false
+        val receipt = checkNotNull(journal.receipt(token))
+        check(row.sequence > 0 && row.captureId == receipt.captureId && row.intervalId == receipt.intervalId &&
+            row.protectedEnvelope == null && row.nonce == null && receipt.protectedCapture == null && receipt.nonce == null)
+        check(currentLease() == active)
+        true
+    }
+
     /** Queue retries retain original scope and receipt time; renewal never reseals old content. */
     @Synchronized fun retry(receiptToken: String): ConversationCapturedBody? = failClosed {
         val active = currentLease() ?: return@failClosed null
