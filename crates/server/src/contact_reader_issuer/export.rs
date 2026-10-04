@@ -206,30 +206,48 @@ pub(crate) async fn page(
 ) -> Result<Page, Error> {
     Ok(read(client, owner, false, pending, receipts).await?.1)
 }
-/// Only the actual maintained full-account erasure transaction calls this hook.
-/// Earlier enrolled-root history blockers remain in force.
-pub(crate) async fn erase(
-    tx: &Transaction<'_>,
+/// Optional schema preparation belongs before the maintained final auth fence.
+/// This private, transaction-borrowed preparation proves only schema readiness;
+/// it carries no owner authorization and cannot be moved to another transaction.
+pub(crate) struct PreparedErasure<'tx, 'connection> {
+    tx: &'tx Transaction<'connection>,
     account: Uuid,
-) -> Result<Vec<(&'static str, u64)>, Error> {
-    if !super::lifecycle::installed(tx).await? {
-        return Ok(Vec::new());
+    installed: bool,
+}
+pub(crate) async fn prepare_erase<'tx, 'connection>(
+    tx: &'tx Transaction<'connection>,
+    account: Uuid,
+) -> Result<PreparedErasure<'tx, 'connection>, Error> {
+    Ok(PreparedErasure {
+        tx,
+        account,
+        installed: super::lifecycle::installed(tx).await?,
+    })
+}
+impl PreparedErasure<'_, '_> {
+    /// Only child-first deletes run after final auth, with no catalog preflight.
+    /// Existing enrolled-root blockers and the final owner fence remain external.
+    pub(crate) async fn erase(self) -> Result<Vec<(&'static str, u64)>, Error> {
+        if !self.installed {
+            return Ok(Vec::new());
+        }
+        let mut counts = Vec::new();
+        for table in [
+            "contact_reader_pending",
+            "contact_reader_receipts",
+            "contact_reader_state",
+        ] {
+            let count = self
+                .tx
+                .execute(
+                    &format!("DELETE FROM {table} WHERE account_id=$1"),
+                    &[&self.account],
+                )
+                .await?;
+            counts.push((table, count));
+        }
+        Ok(counts)
     }
-    let mut counts = Vec::new();
-    for table in [
-        "contact_reader_pending",
-        "contact_reader_receipts",
-        "contact_reader_state",
-    ] {
-        let count = tx
-            .execute(
-                &format!("DELETE FROM {table} WHERE account_id=$1"),
-                &[&account],
-            )
-            .await?;
-        counts.push((table, count));
-    }
-    Ok(counts)
 }
 
 #[cfg(test)]

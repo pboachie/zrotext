@@ -149,15 +149,20 @@ checks, state SHARE, actual clock, final point-in-time owner and commit ACK.
 
 The companion SQL remains unnumbered/uninstalled. Exact columns, nullability,
 keys, validated CHECKs, typed predicate bodies/signatures/search path and
-transition/immutable/deferred closure triggers are required. Absent returns
+transition/immutable/deferred closure triggers are required. Trigger bindings
+must use the exact validated current-schema function OID and cover every
+mutation, without column-limited UPDATE predicates. Absent returns
 unavailable or an owner-checked empty export; partial/mismatched schema refuses.
 Rows are independently revalidated for copied framing, points, digests,
 signature mathematics and semantic/source consistency before serialization.
 No copied blob is deserialized into accepted authority. Database constraints
 and privilege assumptions do not establish independent restore admission.
 
-The real account-erasure transaction calls pending -> receipts -> state deletion
-with three counts, before parent deletion. Later failure rolls everything back.
+The real account-erasure transaction prepares optional schema readiness before
+its final authentication fence. A private value borrows that same transaction;
+after the fence it performs only pending -> receipts -> state deletion with
+three counts and no new catalog preflight, before parent deletion. Later failure
+rolls everything back. Schema preparation carries no owner authority.
 Existing immutable enrolled-root history blockers still return 409 earlier.
 This hook does not make enrolled-account erasure reachable or solve backup,
 replica, WAL or independently anchored no-reuse continuity.

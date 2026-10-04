@@ -208,6 +208,8 @@ pub(crate) struct Owner {
     pub fingerprint: [u8; 32],
     pub pin: Vec<u8>,
     pub recovery: Vec<String>,
+    // Only the genuinely enrolled synthetic test secret, never production input.
+    totp_secret: zeroize::Zeroizing<String>,
 }
 pub(crate) const ORIGIN: &str = "https://owner.example.test";
 impl Owner {
@@ -336,6 +338,7 @@ impl Owner {
             fingerprint,
             pin,
             recovery,
+            totp_secret: zeroize::Zeroizing::new(enrollment.secret_base32.clone()),
         }
     }
     pub(crate) fn url(&self) -> String {
@@ -711,6 +714,15 @@ async fn absent_partial_or_changed_schema_fails_closed() {
     let mut db = f.schema.connect().await;
     let tx = db.transaction().await.unwrap();
     assert!(!lifecycle::installed(&tx).await.unwrap());
+    assert!(
+        export::prepare_erase(&tx, f.principal.tenant.account_id())
+            .await
+            .unwrap()
+            .erase()
+            .await
+            .unwrap()
+            .is_empty()
+    );
     tx.rollback().await.unwrap();
     f.schema
         .db
@@ -750,6 +762,35 @@ async fn absent_partial_or_changed_schema_fails_closed() {
     let tx = db.transaction().await.unwrap();
     tx.batch_execute("CREATE OR REPLACE FUNCTION contact_reader_state_bounds_valid(account_id uuid,root_pin bytea,root_fingerprint bytea,trust_generation bigint,allocation_generation bigint,mutation_revision bigint,last_mutation_ms bigint,receipt_next_slot smallint,phase text,current_authorization uuid,current_generation bigint,current_statement_digest bytea,current_statement bytea) RETURNS boolean LANGUAGE sql IMMUTABLE SET search_path FROM CURRENT AS $$ SELECT true $$").await.unwrap();
     assert!(lifecycle::installed(&tx).await.is_err());
+    tx.rollback().await.unwrap();
+    // A same-name UPDATE OF trigger omits ordinary mutations even when its
+    // function is genuine. Both immutable transition triggers must cover all.
+    for sql in [
+        "DROP TRIGGER contact_reader_state_transition ON contact_reader_state; CREATE TRIGGER contact_reader_state_transition BEFORE UPDATE OF root_pin ON contact_reader_state FOR EACH ROW EXECUTE FUNCTION contact_reader_state_guard()",
+        "DROP TRIGGER contact_reader_pending_immutable ON contact_reader_pending; CREATE TRIGGER contact_reader_pending_immutable BEFORE UPDATE OF origin ON contact_reader_pending FOR EACH ROW EXECUTE FUNCTION contact_reader_pending_guard()",
+    ] {
+        let tx = db.transaction().await.unwrap();
+        tx.batch_execute(sql).await.unwrap();
+        assert!(matches!(
+            lifecycle::installed(&tx).await,
+            Err(Error::Unavailable)
+        ));
+        tx.rollback().await.unwrap();
+    }
+    // Even a byte-identical same-name function in another namespace is not the
+    // already validated function OID. Create/drop only an owned unique schema.
+    let alternate = format!("contact_guard_{}", Uuid::new_v4().simple());
+    let tx = db.transaction().await.unwrap();
+    let body = include_str!("../../../../protocol/v1/contact-reader-issuance-storage-proposal.sql")
+        .split("$state_guard$")
+        .nth(1)
+        .unwrap();
+    tx.batch_execute(&format!("CREATE SCHEMA {alternate}; CREATE FUNCTION {alternate}.contact_reader_state_guard() RETURNS trigger LANGUAGE plpgsql SET search_path FROM CURRENT AS $state_guard${body}$state_guard$; DROP TRIGGER contact_reader_state_transition ON contact_reader_state; CREATE TRIGGER contact_reader_state_transition BEFORE UPDATE ON contact_reader_state FOR EACH ROW EXECUTE FUNCTION {alternate}.contact_reader_state_guard()"))
+        .await.unwrap();
+    assert!(matches!(
+        lifecycle::installed(&tx).await,
+        Err(Error::Unavailable)
+    ));
     tx.rollback().await.unwrap();
     f.schema.cleanup().await;
 }
@@ -952,7 +993,8 @@ async fn optional_child_first_erasure_rolls_back_with_later_failure_and_rejects_
     let account = f.principal.tenant.account_id();
     let mut db = f.schema.connect().await;
     let tx = db.transaction().await.unwrap();
-    let counts = export::erase(&tx, account).await.unwrap();
+    let prepared = export::prepare_erase(&tx, account).await.unwrap();
+    let counts = prepared.erase().await.unwrap();
     assert_eq!(
         counts,
         vec![
@@ -978,10 +1020,15 @@ async fn optional_child_first_erasure_rolls_back_with_later_failure_and_rejects_
     tx.batch_execute("ALTER TABLE contact_reader_receipts RENAME TO contact_test_receipts_hidden")
         .await
         .unwrap();
-    assert!(export::erase(&tx, account).await.is_err());
+    assert!(export::prepare_erase(&tx, account).await.is_err());
     tx.rollback().await.unwrap();
     let tx = db.transaction().await.unwrap();
-    export::erase(&tx, account).await.unwrap();
+    export::prepare_erase(&tx, account)
+        .await
+        .unwrap()
+        .erase()
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
     assert_eq!(
         export::state_only(&mut f.schema.connect().await, &f.principal)
@@ -1110,9 +1157,29 @@ async fn historical_lookup_survives_session_change_but_first_completion_and_chan
         .unwrap()
         .get(0);
     let mut db = f.schema.connect().await;
-    let login = crate::auth::login(&db, &f.hasher, &email, "synthetic issuer password")
-        .await
-        .unwrap();
+    assert!(matches!(
+        crate::auth::login(&db, &f.hasher, &email, "synthetic issuer password").await,
+        Err(crate::auth::AuthError::MfaRequired { account_id, user_id })
+            if account_id == f.principal.tenant.account_id() && user_id == f.principal.user_id
+    ));
+    let challenge = crate::auth::mfa::begin_login_challenge(
+        &db,
+        &f.hasher,
+        f.principal.tenant.account_id(),
+        f.principal.user_id,
+        "synthetic issuer password",
+    )
+    .await
+    .unwrap();
+    let login = crate::auth::mfa::complete_login(
+        &mut db,
+        Some(&f.cipher),
+        &f.hasher,
+        &challenge,
+        &f.recovery[2],
+    )
+    .await
+    .unwrap();
     let other = crate::auth::authenticate_session(&db, &f.hasher, &login.token)
         .await
         .unwrap();
@@ -1283,7 +1350,10 @@ async fn export_cursors_need_exact_visible_account_identity_and_never_infer_zero
     ));
     let mut db = f.schema.connect().await;
     let tx = db.transaction().await.unwrap();
-    export::erase(&tx, f.principal.tenant.account_id())
+    export::prepare_erase(&tx, f.principal.tenant.account_id())
+        .await
+        .unwrap()
+        .erase()
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -1336,6 +1406,234 @@ async fn cancellation_rechecks_held_owner_after_last_write_and_rolls_back_lost_s
     f.schema.db.batch_execute("DROP TRIGGER contact_test_session_loss ON contact_reader_receipts; DROP FUNCTION contact_test_session_loss()").await.unwrap();
     assert!(
         matches!(lifecycle::cancel(&mut f.schema.connect().await,&f.principal,p.authorization.0,input()).await.unwrap(),ResultView::Receipt(ref r) if r.kind=="cancelled")
+    );
+    f.schema.cleanup().await;
+}
+
+// These sequential fixture-owned triggers are final-write controls, not an
+// authenticated concurrency experiment. A sequence records the actual receipt
+// write's clock independently of rollback; no auth/factor/source is fabricated.
+async fn staged_completion_clock(f: &Owner) -> i64 {
+    let row = f
+        .schema
+        .db
+        .query_one(
+            "SELECT last_value,is_called FROM contact_test_stage_ms",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(
+        row.get::<_, bool>(1),
+        "the actual final receipt write must have run"
+    );
+    row.get(0)
+}
+async fn actual_clock(f: &Owner) -> i64 {
+    f.schema
+        .db
+        .query_one(
+            "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0)
+}
+async fn assert_completion_rolled_back(f: &Owner, p: &PendingView) {
+    let account = f.principal.tenant.account_id();
+    let row = f.schema.db.query_one(
+        "SELECT mutation_revision,phase,current_statement,(SELECT count(*) FROM contact_reader_pending WHERE account_id=$1 AND authorization=$2),(SELECT count(*) FROM contact_reader_receipts WHERE account_id=$1) FROM contact_reader_state WHERE account_id=$1",
+        &[&account, &p.authorization.0],
+    ).await.unwrap();
+    assert_eq!(row.get::<_, i64>(0), p.allocated_revision.0);
+    assert_eq!(row.get::<_, String>(1), "EMPTY");
+    assert!(row.get::<_, Option<Vec<u8>>>(2).is_none());
+    assert_eq!(row.get::<_, i64>(3), 1);
+    assert_eq!(row.get::<_, i64>(4), 0);
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; real post-write source refusal and rollback"]
+async fn completion_rechecks_real_source_after_last_write_and_rolls_back_revocation() {
+    let f = Owner::new(true, true).await;
+    let p = f.pending(f.input().await).await;
+    let account = f.principal.tenant.account_id();
+    f.schema.db.batch_execute("CREATE SEQUENCE contact_test_stage_ms; CREATE FUNCTION contact_test_source_loss() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM setval('contact_test_stage_ms',NEW.terminal_ms,true); UPDATE sealed_manifest_authorities SET revoked_at=clock_timestamp() WHERE account_id=NEW.account_id; RETURN NEW; END $$; CREATE TRIGGER contact_test_source_loss AFTER INSERT ON contact_reader_receipts FOR EACH ROW EXECUTE FUNCTION contact_test_source_loss()").await.unwrap();
+    assert!(
+        lifecycle::complete(
+            &mut f.schema.connect().await,
+            &f.hasher,
+            &f.cipher,
+            &f.principal,
+            ORIGIN,
+            p.authorization.0,
+            f.completion(&p, 0),
+        )
+        .await
+        .is_err()
+    );
+    assert!(staged_completion_clock(&f).await < p.until_ms.0);
+    assert_completion_rolled_back(&f, &p).await;
+    assert!(
+        f.schema
+            .db
+            .query_one(
+                "SELECT revoked_at IS NULL FROM sealed_manifest_authorities WHERE account_id=$1",
+                &[&account],
+            )
+            .await
+            .unwrap()
+            .get::<_, bool>(0)
+    );
+    f.schema.db.batch_execute("DROP TRIGGER contact_test_source_loss ON contact_reader_receipts; DROP FUNCTION contact_test_source_loss()").await.unwrap();
+    // The consumed recovery factor also rolled back: the exact factor is usable.
+    assert!(
+        lifecycle::complete(
+            &mut f.schema.connect().await,
+            &f.hasher,
+            &f.cipher,
+            &f.principal,
+            ORIGIN,
+            p.authorization.0,
+            f.completion(&p, 0),
+        )
+        .await
+        .is_ok()
+    );
+    f.schema.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; actual clock crosses requested deadline after write"]
+async fn completion_rechecks_actual_deadline_after_last_write_and_rolls_back() {
+    let f = Owner::new(true, true).await;
+    let mut c = f.input().await;
+    c.requested_until_ms = Number(actual_clock(&f).await + 4_000);
+    let p = f.pending(c).await;
+    // Bounded sleep occurs only after the actual last receipt write. No clock
+    // injection, changed deadline, or shared statement-timeout override is used.
+    f.schema.db.batch_execute(&format!("CREATE SEQUENCE contact_test_stage_ms; CREATE FUNCTION contact_test_deadline_crossing() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM setval('contact_test_stage_ms',NEW.terminal_ms,true); PERFORM pg_sleep(GREATEST(0,({}::double precision-extract(epoch FROM clock_timestamp())*1000)/1000)); RETURN NEW; END $$; CREATE TRIGGER contact_test_deadline_crossing AFTER INSERT ON contact_reader_receipts FOR EACH ROW EXECUTE FUNCTION contact_test_deadline_crossing()", p.until_ms.0 + 50)).await.unwrap();
+    assert!(
+        actual_clock(&f).await < p.until_ms.0 - 500,
+        "setup missed its real deadline; refuse a vacuous control"
+    );
+    assert!(matches!(
+        lifecycle::complete(
+            &mut f.schema.connect().await,
+            &f.hasher,
+            &f.cipher,
+            &f.principal,
+            ORIGIN,
+            p.authorization.0,
+            f.completion(&p, 0),
+        )
+        .await,
+        Err(Error::Conflict)
+    ));
+    assert!(staged_completion_clock(&f).await < p.until_ms.0);
+    assert!(actual_clock(&f).await >= p.until_ms.0);
+    assert_completion_rolled_back(&f, &p).await;
+    assert!(f.schema.db.query_one(
+        "SELECT count(*) FROM owner_mfa_recovery_codes WHERE account_id=$1 AND used_at IS NOT NULL",
+        &[&f.principal.tenant.account_id()],
+    ).await.unwrap().get::<_, i64>(0) == 0);
+    f.schema.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; genuine enrolled TOTP expires only after final write"]
+async fn completion_rechecks_consumed_totp_current_at_after_last_write_and_rolls_back() {
+    let f = Owner::new(true, true).await;
+    let p = f.pending(f.input().await).await;
+    let account = f.principal.tenant.account_id();
+    let prior_step: i64 = f
+        .schema
+        .db
+        .query_one(
+            "SELECT last_accepted_step FROM owner_mfa WHERE account_id=$1 AND user_id=$2",
+            &[&account, &f.principal.user_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    // Select the next genuinely generated step, then await its final valid
+    // previous-step window on the real DB clock. Enrollment's step stays spent.
+    let selected_step = prior_step + 1;
+    let boundary = (selected_step + 2) * 30_000;
+    let totp = totp_rs::Builder::new()
+        .with_secret(totp_rs::Secret::try_from_base32(&f.totp_secret).unwrap())
+        .build()
+        .unwrap();
+    let code = totp.generate(selected_step as u64 * 30).to_string();
+    let mut input = f.completion(&p, 0);
+    input.code = Code(zeroize::Zeroizing::new(code));
+    f.schema.db.batch_execute(&format!("CREATE SEQUENCE contact_test_stage_ms; CREATE SEQUENCE contact_test_factor_step; CREATE FUNCTION contact_test_factor_crossing() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM setval('contact_test_stage_ms',NEW.terminal_ms,true); PERFORM setval('contact_test_factor_step',(SELECT last_accepted_step FROM owner_mfa WHERE account_id=NEW.account_id AND user_id=(SELECT user_id FROM memberships WHERE account_id=NEW.account_id AND role='owner')),true); PERFORM pg_sleep(GREATEST(0,({}::double precision-extract(epoch FROM clock_timestamp())*1000)/1000)); RETURN NEW; END $$; CREATE TRIGGER contact_test_factor_crossing AFTER INSERT ON contact_reader_receipts FOR EACH ROW EXECUTE FUNCTION contact_test_factor_crossing()", boundary + 50)).await.unwrap();
+    let now = actual_clock(&f).await;
+    let wait = boundary - 2_500 - now;
+    assert!(
+        (0..=90_000).contains(&wait),
+        "fixture did not reach a usable bounded TOTP window"
+    );
+    let mut db = f.schema.connect().await;
+    tokio::time::sleep(std::time::Duration::from_millis(wait as u64)).await;
+    let before = actual_clock(&f).await;
+    assert!(
+        before >= boundary - 30_000 && before < boundary - 1_000,
+        "refuse missed-window controls before calling the genuine completion"
+    );
+    assert!(p.until_ms.0 > boundary + 5_000);
+    assert!(matches!(
+        lifecycle::complete(
+            &mut db,
+            &f.hasher,
+            &f.cipher,
+            &f.principal,
+            ORIGIN,
+            p.authorization.0,
+            input,
+        )
+        .await,
+        Err(Error::Conflict)
+    ));
+    let staged = staged_completion_clock(&f).await;
+    assert!(staged >= boundary - 30_000 && staged < boundary);
+    let consumed = f
+        .schema
+        .db
+        .query_one(
+            "SELECT last_value,is_called FROM contact_test_factor_step",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(consumed.get::<_, bool>(1));
+    assert_eq!(consumed.get::<_, i64>(0), selected_step);
+    let after = actual_clock(&f).await;
+    assert!(after >= boundary && after < p.until_ms.0);
+    assert_completion_rolled_back(&f, &p).await;
+    assert_eq!(
+        f.schema
+            .db
+            .query_one(
+                "SELECT last_accepted_step FROM owner_mfa WHERE account_id=$1 AND user_id=$2",
+                &[&account, &f.principal.user_id],
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        prior_step
+    );
+    assert!(
+        f.schema
+            .db
+            .query_one(
+                "SELECT revoked_at IS NULL FROM sealed_manifest_authorities WHERE account_id=$1",
+                &[&account],
+            )
+            .await
+            .unwrap()
+            .get::<_, bool>(0)
     );
     f.schema.cleanup().await;
 }

@@ -804,6 +804,13 @@ async fn erase_account(
             return error_response(StatusCode::SERVICE_UNAVAILABLE,"unavailable");
         }
     }
+    // Optional issuer catalog preparation can wait, so finish it before auth.
+    // The returned value borrows this exact transaction and permits only deletes.
+    let issuer_erasure =
+        match crate::contact_reader_issuer::export::prepare_erase(&tx, account_id).await {
+            Ok(value) => value,
+            Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+        };
     // FINAL AUTH FENCE. Ordering inside this transaction is deliberate:
     // every read that can wait on a row lock — all the blocked-table
     // preflight counts above — has already run, and this fence is the last
@@ -864,7 +871,7 @@ async fn erase_account(
         Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
     };
     let mut deleted = Vec::new();
-    match crate::contact_reader_issuer::export::erase(&tx, account_id).await {
+    match issuer_erasure.erase().await {
         Ok(counts) => deleted.extend(
             counts
                 .into_iter()

@@ -170,6 +170,7 @@ pub(crate) async fn installed(tx: &Transaction<'_>) -> Result<bool, Error> {
             }
         }
     }
+    let mut trigger_functions = Vec::new();
     for (name, tag) in [
         ("contact_reader_state_guard", "state_guard"),
         ("contact_reader_pending_guard", "pending_guard"),
@@ -180,7 +181,7 @@ pub(crate) async fn installed(tx: &Transaction<'_>) -> Result<bool, Error> {
             .split(&delimiter)
             .nth(1)
             .ok_or(Error::Unavailable)?;
-        let rows=tx.query("SELECT p.prosrc,p.prorettype='trigger'::regtype,p.pronargs,p.prosecdef,p.proconfig FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname=current_schema() AND p.proname=$1",&[&name]).await?;
+        let rows=tx.query("SELECT p.prosrc,p.prorettype='trigger'::regtype,p.pronargs,p.prosecdef,p.proconfig,p.oid FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname=current_schema() AND p.proname=$1",&[&name]).await?;
         if rows.len() != 1 {
             return Err(Error::Unavailable);
         }
@@ -198,6 +199,7 @@ pub(crate) async fn installed(tx: &Transaction<'_>) -> Result<bool, Error> {
         {
             return Err(Error::Unavailable);
         }
+        trigger_functions.push((name, row.try_get::<_, u32>(5)?));
     }
     for (table, name, function, kind, deferred) in [
         (
@@ -236,7 +238,12 @@ pub(crate) async fn installed(tx: &Transaction<'_>) -> Result<bool, Error> {
             true,
         ),
     ] {
-        let row=tx.query_opt("SELECT p.proname,t.tgtype,t.tgdeferrable,t.tginitdeferred,t.tgenabled::text,t.tgqual IS NULL,t.tgnargs FROM pg_trigger t JOIN pg_proc p ON p.oid=t.tgfoid WHERE t.tgrelid=$1::regclass AND t.tgname=$2 AND NOT t.tgisinternal",&[&table,&name]).await?.ok_or(Error::Unavailable)?;
+        let expected_oid = trigger_functions
+            .iter()
+            .find(|(name, _)| *name == function)
+            .ok_or(Error::Unavailable)?
+            .1;
+        let row=tx.query_opt("SELECT p.proname,t.tgtype,t.tgdeferrable,t.tginitdeferred,t.tgenabled::text,t.tgqual IS NULL,t.tgnargs,t.tgattr=''::int2vector,t.tgfoid FROM pg_trigger t JOIN pg_proc p ON p.oid=t.tgfoid WHERE t.tgrelid=$1::regclass AND t.tgname=$2 AND NOT t.tgisinternal",&[&table,&name]).await?.ok_or(Error::Unavailable)?;
         if row.try_get::<_, String>(0)? != function
             || row.try_get::<_, i16>(1)? != kind
             || row.try_get::<_, bool>(2)? != deferred
@@ -244,6 +251,8 @@ pub(crate) async fn installed(tx: &Transaction<'_>) -> Result<bool, Error> {
             || row.try_get::<_, String>(4)? != "O"
             || !row.try_get::<_, bool>(5)?
             || row.try_get::<_, i16>(6)? != 0
+            || !row.try_get::<_, bool>(7)?
+            || row.try_get::<_, u32>(8)? != expected_oid
         {
             return Err(Error::Unavailable);
         }
