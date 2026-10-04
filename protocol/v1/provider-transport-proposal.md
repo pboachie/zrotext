@@ -5,6 +5,14 @@ a sender, migration, provider enrollment or permission to activate traffic.
 The [dormant verifier](../../docs/PROVIDER-SMS.md) remains network-free.
 Phone SMS and phone MMS retain their existing authority and gates.
 
+The first #760 slice supplies dormant known-correlation receipt persistence and
+owner export/erasure integration using the unnumbered
+[storage proposal](provider-receipt-storage-proposal.sql). Ordinary migrations
+do not install it. Production has no permit issuer, correlation creator or
+receipt caller, so it cannot activate provider traffic. Tests install this
+proposal explicitly in isolated disposable PostgreSQL schemas. A future serial
+promotion follows preceding migrations; no gap migration is shipped here.
+
 ## One recorded route per exact action
 
 An authenticated owner chooses `phone` or `provider` before approving an action.
@@ -72,6 +80,14 @@ single-recipient and organization/profile/sender/recipient checks. The trusted
 route/account is selected from endpoint configuration, never callback fields.
 No signature or callback grants send, decryption or suppression authority.
 
+The current verifier refuses signed callbacks whose recipient has been masked
+by Telnyx [message redaction](https://developers.telnyx.com/docs/messaging/messages/message-redaction).
+Support requires a separately reviewed known-committed correlation plus the
+existing signature, profile, sender and provider-ID checks. Full recipient
+validation cannot simply be removed. Redaction requires provider allowlisting,
+and its read-time masking does not delete stored provider data. Policy and
+retention verification remain activation gates.
+
 An early callback cannot infer an attempt from recipient/body/time. Quarantine
 verified but uncorrelated evidence by configured account/route revision and
 provider message ID, with bounded storage and a bounded correlation deadline.
@@ -93,7 +109,10 @@ evicting consumed identities. A conflict goes to a metadata-only exceptions
 queue and cannot erase delivery evidence. Durable tombstones outlive accepted
 callback/replay windows; expired timestamps still fail verification after
 compaction. Body deletion cannot delete the replay fence while evidence can
-still be accepted. Retention policy must specify bounded durations before
+still be accepted. The dormant known-correlation ledger erases linkage and
+events into an identity-only attempt fence retained for the account's lifetime;
+full account erasure removes it. It stores no raw callbacks. Retention policy
+for any future early-callback quarantine must specify bounded durations before
 runtime activation; indefinite raw callback retention is not permitted.
 
 ## Suppression and races
