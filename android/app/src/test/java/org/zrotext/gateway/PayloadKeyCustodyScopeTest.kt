@@ -215,7 +215,9 @@ class PayloadKeyCustodyScopeTest {
 
     @Test fun nestedWrapperEntryRefusesBeforeAnotherMonitorWaitingForTheStore() {
         val store = Store(pin); val source = Source(store, pin); val monitorA = Any(); val monitorB = Any()
-        val scopeEntered = CountDownLatch(1); val bWaiting = CountDownLatch(1); val pool = Executors.newFixedThreadPool(2)
+        val scopeEntered = CountDownLatch(1); val bWaiting = CountDownLatch(1)
+        // A broken guard must fail the bounded assertion without trapping the test JVM.
+        val pool = Executors.newFixedThreadPool(2) { task -> Thread(task).apply { isDaemon = true } }
         store.beforeAcquire = { count -> if (count == 2) bWaiting.countDown() }
         try {
             val a = pool.submit {
