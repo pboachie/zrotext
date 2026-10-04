@@ -115,6 +115,30 @@ pub(crate) const DELETE_PLAN: &[(&str, &str)] = &[
         "DELETE FROM sealed_event_deliveries WHERE account_id=$1",
     ),
     (
+        "original_reply_access",
+        "DELETE FROM original_reply_access WHERE account_id=$1",
+    ),
+    (
+        "original_reply_sources",
+        "DELETE FROM original_reply_sources WHERE account_id=$1",
+    ),
+    (
+        "original_reply_consumptions",
+        "DELETE FROM original_reply_consumptions WHERE account_id=$1",
+    ),
+    (
+        "original_reply_requests",
+        "DELETE FROM original_reply_requests WHERE account_id=$1",
+    ),
+    (
+        "original_reply_grants",
+        "DELETE FROM original_reply_grants WHERE account_id=$1",
+    ),
+    (
+        "original_reply_manifest_history",
+        "DELETE FROM original_reply_manifest_history WHERE account_id=$1",
+    ),
+    (
         "exposure_reservation_scopes",
         "DELETE FROM exposure_reservation_scopes WHERE account_id=$1",
     ),

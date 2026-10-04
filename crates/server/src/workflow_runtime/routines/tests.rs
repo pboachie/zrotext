@@ -646,4 +646,4 @@ fn auth_hash(domain: &[u8], value: &str) -> Vec<u8> {
     mac.finalize().into_bytes().to_vec()
 }
 
-mod service;
+pub(crate) mod service;

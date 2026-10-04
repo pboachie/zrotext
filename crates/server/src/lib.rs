@@ -44,6 +44,7 @@ pub mod sealed_outbound;
 pub mod sealed_root_ceremony;
 pub mod sealed_root_custody;
 pub use zrotext_root_material::sealed_root_enrollment;
+pub mod original_reply;
 pub mod wakeups;
 pub mod webhook_egress;
 pub mod webhook_worker;

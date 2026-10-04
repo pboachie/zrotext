@@ -23,6 +23,11 @@
     <label>Independently accepted manifest digest (64 lowercase hex characters) <input id="owner-digest" autocomplete="off" maxlength="64"></label>
     <label>Optional received event UUID <input id="owner-event" autocomplete="off" maxlength="36"></label>
     <label><input id="content-consent" type="checkbox"> Allow phone SMS body transfer for this exact line and peer. Pairing and SMS permission do not grant this consent; separate phone approval is required.</label>
+    <fieldset><legend>Optional customer-controlled reply readers</legend>
+    <p>Select up to six existing customer-controlled readers whose public keys and read grants you have independently approved. Each line lists the connector UUID, read-grant UUID and reader key fingerprint, separated by commas. Empty selection transfers only to the paired browser. Reader access does not approve or send replies.</p>
+    <label>Approved readers <textarea id="integration-readers" rows="4" maxlength="2048" autocomplete="off" spellcheck="false"></textarea></label>
+    <label><input id="integration-transfer-consent" type="checkbox"> Allow encrypted SMS content for this exact phone line and conversation to be transferred to the explicitly listed customer-controlled readers. Stop closes new capture and transfer; retained encrypted content is deleted separately. Separate phone approval of the exact reader list is required.</label>
+    </fieldset>
     <fieldset><legend>First reader manifest</legend>
     <p>For an account with an independently accepted root receipt and no manifest, enter version 0 and a digest of 64 zeroes above. Import the selected phone's public key export and compare its fingerprint directly on that phone. Import your existing encrypted archive and compare its key ID with your separate archive receipt. These files contain public review information; header comparison does not decrypt or authenticate the archive backup.</p>
     <label>Independently accepted paired phone signing fingerprint (64 lowercase hex characters) <input id="genesis-phone-signing-fingerprint" autocomplete="off" maxlength="64"></label>

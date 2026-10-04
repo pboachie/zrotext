@@ -250,4 +250,4 @@ pub async fn withdraw(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

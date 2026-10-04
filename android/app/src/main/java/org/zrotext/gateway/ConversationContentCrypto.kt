@@ -80,7 +80,8 @@ internal class ConversationContentCrypto internal constructor(private val keys: 
             uuid(v.scope.accountId), uuid(message), uuid(v.scope.deviceId), uuid(v.scope.lineId),
             v.scope.peer.toByteArray(Charsets.US_ASCII), if (inbound) v.phoneSignerKeyId else v.outboundSignerKeyId,
             (if (inbound) emptyList() else listOf(Draft02ManifestAuthority.Reader(1, checkNotNull(deviceReader)))) +
-                Draft02ManifestAuthority.Reader(2, unhex(v.scope.readerKeyId)))
+                Draft02ManifestAuthority.Reader(2, unhex(v.scope.readerKeyId)) +
+                (if(inbound) v.scope.selectedReaders.map { Draft02ManifestAuthority.Reader(3,unhex(it.keyId)) } else emptyList()))
 
     /** One immutable capture identity and positive journal sequence; caller admission remains mandatory. */
     fun sealCapture(capture: ConversationCapturedBody, sequence: Long): ByteArray {
@@ -110,10 +111,15 @@ internal class ConversationContentCrypto internal constructor(private val keys: 
             cipher.updateAAD(ascii("ZTSE/body/v2\u0000") + header + protected)
             val encrypted = cipher.doFinal(content)
             stable(initial).let { it.authority.context(selected, it.trustedNowMs) }
-            val wrap = sealArchiveWrap(header, protected, unhex(initial.scope.readerKeyId), initial.archiveReaderPoint, cek)
+            val wraps=context.readers.map { reader ->
+                val fresh=stable(initial); val checked=fresh.authority.context(selected,fresh.trustedNowMs)
+                val point=fresh.authority.readerPoint(checked,reader,fresh.trustedNowMs)
+                if(reader.role==2) check(same(point,initial.archiveReaderPoint))
+                sealReaderWrap(header,protected,reader.role,reader.keyId,point,cek)
+            }.fold(ByteArray(0)) { a,b -> a+b }
             stable(initial).let { it.authority.context(selected, it.trustedNowMs) }
             val unsigned = header + protected + nonce + ByteBuffer.allocate(4).putInt(encrypted.size).array() +
-                encrypted + byteArrayOf(1) + wrap
+                encrypted + byteArrayOf(context.readers.size.toByte()) + wraps
             checkInboundUnsigned(unsigned, context.signerPoint)
             val signature = keys.sign(unsigned, context.signerPoint)
             check(verifyRaw(signature, context.signerPoint, ascii("ZTSE/sign/v2\u0000") +
@@ -228,7 +234,7 @@ internal class ConversationContentCrypto internal constructor(private val keys: 
             }
         }
         internal fun checkInboundUnsigned(unsigned:ByteArray,signerPoint:ByteArray) {
-            require(unsigned.size in 362..33_142 && unsigned.copyOfRange(0,8).contentEquals(byteArrayOf(0x5a,0x54,0x53,0x45,2,2,0,0)))
+            require(unsigned.size in 362..34_018 && unsigned.copyOfRange(0,8).contentEquals(byteArrayOf(0x5a,0x54,0x53,0x45,2,2,0,0)))
             val n=ByteBuffer.wrap(unsigned,8,2).short.toInt() and 65535
             require(n in 172..185)
             val peer=unsigned[178].toInt() and 255;require(peer in 3..16 && n==169+peer)
@@ -240,18 +246,31 @@ internal class ConversationContentCrypto internal constructor(private val keys: 
             DevicePayloadKeyStore.decodePoint(signerPoint)
             require(same(sha(ascii("ZTSE/key/v1\u0000")+byteArrayOf(1,1)+signerPoint),protected.copyOfRange(104,136)))
             val body=ByteBuffer.wrap(unsigned,10+n+12,4).int;require(body in 17..32_784)
-            val at=10+n+16+body;require(at+147==unsigned.size && unsigned[at]==1.toByte() && unsigned[at+1]==2.toByte())
-            DevicePayloadKeyStore.decodePoint(unsigned.copyOfRange(at+34,at+99))
+            val at=10+n+16+body;require(at<unsigned.size)
+            val count=unsigned[at].toInt() and 255;require(count in 1..7 && at+1+count*146==unsigned.size)
+            var prior:ByteArray?=null
+            repeat(count) { i ->
+                val start=at+1+i*146; val role=unsigned[start].toInt() and 255
+                require(role==if(i==0) 2 else 3)
+                val id=unsigned.copyOfRange(start+1,start+33)
+                if(i>1) require(compareReaderIds(checkNotNull(prior),id)<0)
+                prior=id
+                DevicePayloadKeyStore.decodePoint(unsigned.copyOfRange(start+33,start+98))
+            }
         }
-        private fun sealArchiveWrap(header:ByteArray,protected:ByteArray,id:ByteArray,point:ByteArray,cek:ByteArray):ByteArray {
+        private fun compareReaderIds(a:ByteArray,b:ByteArray):Int {
+            for(i in a.indices) { val c=(a[i].toInt() and 255).compareTo(b[i].toInt() and 255); if(c!=0)return c }
+            return 0
+        }
+        private fun sealReaderWrap(header:ByteArray,protected:ByteArray,role:Int,id:ByteArray,point:ByteArray,cek:ByteArray):ByteArray {
             val ephemeral=KeyPairGenerator.getInstance("EC").apply{initialize(ECGenParameterSpec("secp256r1"),SecureRandom())}.generateKeyPair()
             val enc=DevicePayloadKeyStore.encodePoint(ephemeral.public as ECPublicKey)
             val dh=KeyAgreement.getInstance("ECDH").run{init(ephemeral.private);doPhase(DevicePayloadKeyStore.decodePoint(point),true);generateSecret()}
             try {
                 val secret=Draft02PublicJcaKeystoreHpke.deriveSharedSecret(dh,enc,point)
                 try {
-                    val material=Draft02PublicJcaKeystoreHpke.deriveKeyMaterial(secret,ascii("ZTSE/wrap/v2\u0000")+header+protected+byteArrayOf(2)+id)
-                    try {val cipher=Cipher.getInstance("AES/GCM/NoPadding");cipher.init(Cipher.ENCRYPT_MODE,SecretKeySpec(material.key,"AES"),GCMParameterSpec(128,material.nonce));return byteArrayOf(2)+id+enc+cipher.doFinal(cek)}
+                    val material=Draft02PublicJcaKeystoreHpke.deriveKeyMaterial(secret,ascii("ZTSE/wrap/v2\u0000")+header+protected+byteArrayOf(role.toByte())+id)
+                    try {val cipher=Cipher.getInstance("AES/GCM/NoPadding");cipher.init(Cipher.ENCRYPT_MODE,SecretKeySpec(material.key,"AES"),GCMParameterSpec(128,material.nonce));return byteArrayOf(role.toByte())+id+enc+cipher.doFinal(cek)}
                     finally{material.clear()}
                 } finally{secret.fill(0)}
             } finally{dh.fill(0)}
