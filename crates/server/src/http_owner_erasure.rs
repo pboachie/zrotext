@@ -129,6 +129,8 @@ pub(crate) const DELETE_PLAN: &[(&str, &str)] = &[
     (
         "managed_reader_keys",
         "DELETE FROM managed_reader_keys WHERE account_id=$1",
+    ),
+    (
         "provider_receipt_events",
         "DELETE FROM provider_receipt_events WHERE account_id=$1",
     ),
@@ -264,7 +266,6 @@ pub(crate) const DELETE_PLAN: &[(&str, &str)] = &[
         "conversation_confirmation_records",
         "DELETE FROM conversation_confirmation_records WHERE account_id=$1",
     ),
-const DELETE_PLAN: &[(&str, &str)] = &[
     // Contacts and their append-only consent history: erasable account
     // records (unlike the schema-protected opt-out planes), deleted before
     // the memberships their recorder foreign keys point at.
@@ -982,6 +983,8 @@ async fn erase_account(
     }
     for &(table, sql) in DELETE_PLAN {
         if crate::managed_ai::lifecycle::TABLES.contains(&table) && !managed_installed {
+            continue;
+        }
         if ["provider_receipt_events", "provider_receipt_attempts"].contains(&table)
             && !provider_receipts_installed
         {
