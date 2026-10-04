@@ -6,6 +6,7 @@
 //! budgets, durable request idempotency and atomic receipt deduplication. This
 //! bounded in-memory model deliberately cannot resume dispatch after a crash.
 
+pub mod action_descriptor;
 mod telnyx;
 pub use telnyx::verify_receipt;
 

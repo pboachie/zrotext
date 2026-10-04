@@ -91,6 +91,10 @@ impl TokenHasher {
         self.digest(b"workflow-credential-v1", token)
     }
 
+    pub(crate) fn original_reply_credential_hash(&self, token: &str) -> [u8; 32] {
+        self.digest(b"original-reply-credential-v1", token)
+    }
+
     fn digest(&self, domain: &[u8], token: &str) -> [u8; 32] {
         let mut mac = Hmac::<Sha256>::new_from_slice(&self.0).expect("HMAC accepts all key sizes");
         mac.update(domain);

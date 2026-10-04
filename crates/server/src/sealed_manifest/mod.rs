@@ -93,6 +93,22 @@ pub struct VerifiedManifest {
     roles: Vec<RoleRecord>,
 }
 
+pub(crate) struct AccountArchiveStatementRecords {
+    pub account: [u8; 16],
+    pub generation: u64,
+    pub version: u64,
+    pub digest: [u8; 32],
+    pub issued: u64,
+    pub expires: u64,
+    pub root_point: [u8; 65],
+    pub root_id: [u8; 32],
+    pub root_from: u64,
+    pub root_until: u64,
+    pub reader_point: [u8; 65],
+    pub reader_from: u64,
+    pub reader_until: u64,
+}
+
 impl std::fmt::Debug for VerifiedManifest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VerifiedManifest").finish_non_exhaustive()
@@ -293,7 +309,54 @@ pub fn verify(
     })
 }
 
+/// The archive reader and phone conversation signer the reply path depends
+/// on, with each key's cryptographic deadline already capped by the
+/// manifest's own expiry.
+#[derive(Clone, Copy)]
+pub(crate) struct ConversationKeys {
+    pub(crate) reader: [u8; 32],
+    pub(crate) signer: [u8; 32],
+    pub(crate) archive_until: u64,
+    pub(crate) signer_until: u64,
+}
+
 impl VerifiedManifest {
+    /// Owned historical public records only; no installed contact permission.
+    pub(crate) fn account_archive_statement_records(
+        &self,
+        reader_id: &[u8; 32],
+        comparison_ms: u64,
+    ) -> Result<AccountArchiveStatementRecords, &'static str> {
+        freshness(self.issued, self.expires, comparison_ms)?;
+        if self.generation != 1 {
+            return Err("statement generation");
+        }
+        let reader = self
+            .roles
+            .iter()
+            .find(|r| r.role == 2 && r.id == *reader_id && r.scope == 12 && r.active(comparison_ms))
+            .ok_or("statement reader")?;
+        let root = self
+            .roles
+            .iter()
+            .find(|r| r.role == 6 && r.scope == 0 && r.active(comparison_ms))
+            .ok_or("statement root")?;
+        Ok(AccountArchiveStatementRecords {
+            account: self.account,
+            generation: self.generation,
+            version: self.version,
+            digest: self.digest,
+            issued: self.issued,
+            expires: self.expires,
+            root_point: root.point,
+            root_id: root.id,
+            root_from: root.from,
+            root_until: root.until,
+            reader_point: reader.point,
+            reader_from: reader.from,
+            reader_until: reader.until,
+        })
+    }
     pub fn digest(&self) -> &[u8; 32] {
         &self.digest
     }
@@ -361,6 +424,22 @@ impl VerifiedManifest {
         line: &[u8; 16],
         now: u64,
     ) -> Result<([u8; 32], [u8; 32]), &'static str> {
+        let keys = self.conversation_keys_with_deadlines(device, line, now)?;
+        Ok((keys.reader, keys.signer))
+    }
+
+    /// [`Self::conversation_keys`] plus each selected key's cryptographic
+    /// deadline (`archive_until`, `signer_until`), already capped by the
+    /// manifest's own expiry. Reply grants and proofs must not outlive
+    /// either deadline: the archive reader decrypts the sealed history and
+    /// the phone signer proves the conversation, so a credential accepted
+    /// past either key's deadline would rely on expired authority.
+    pub(crate) fn conversation_keys_with_deadlines(
+        &self,
+        device: &[u8; 16],
+        line: &[u8; 16],
+        now: u64,
+    ) -> Result<ConversationKeys, &'static str> {
         freshness(self.issued, self.expires, now)?;
         let reader = self
             .roles
@@ -375,7 +454,12 @@ impl VerifiedManifest {
         if signers.next().is_some() {
             return Err("ambiguous conversation signer");
         }
-        Ok((reader.id, signer.id))
+        Ok(ConversationKeys {
+            reader: reader.id,
+            signer: signer.id,
+            archive_until: reader.until.min(self.expires),
+            signer_until: signer.until.min(self.expires),
+        })
     }
 
     pub(crate) fn admission_deadline(

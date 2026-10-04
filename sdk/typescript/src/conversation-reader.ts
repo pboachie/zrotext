@@ -3,6 +3,7 @@
 import { Aes128Gcm, CipherSuite, DhkemP256HkdfSha256, HkdfSha256 } from "@hpke/core";
 import { decodeBodyText, keyId, parseDraftEnvelope, type DraftEnvelope } from "./draft01.js";
 import { authorizeInbound02, canonicalSignature02, verifiedManifestIdentity02, verifiedManifestTrust02, verifyManifest02, type Manifest02 } from "./draft02-manifest.js";
+import { acceptedOriginalReplySelection, type OriginalReplySelection } from "./original-reply-selection.js";
 const enc=new TextEncoder();
 const ab=(b:Uint8Array):ArrayBuffer=>Uint8Array.from(b).buffer;
 const same=(a:Uint8Array,b:Uint8Array)=>a.length===b.length&&a.every((v,i)=>v===b[i]);
@@ -21,12 +22,14 @@ export function parseConversationInbound02(input:Uint8Array):DraftEnvelope {
 export type ConversationReadContext02=Readonly<{
  account:Uint8Array;device:Uint8Array;line:Uint8Array;peer:string;archiveReader:Uint8Array;
  archivePrivateKey:CryptoKey;historical:Manifest02;current:Manifest02;nowMs:bigint;
+ /** Required for captures with explicitly phone-approved integration wraps. */
+ interval?:Uint8Array;selection?:OriginalReplySelection;
 }>;
 /** Verifies historic signer/wrap authority at receipt time and CURRENT reader authority before opening.
  * The historical manifest must already have accepted chain provenance; this function never pins a root.
  */
 export async function openConversationInbound02(input:Uint8Array,context:ConversationReadContext02):Promise<string>{
- const c={...context,account:Uint8Array.from(context.account),device:Uint8Array.from(context.device),line:Uint8Array.from(context.line),archiveReader:Uint8Array.from(context.archiveReader)};
+ const c={...context,account:Uint8Array.from(context.account),device:Uint8Array.from(context.device),line:Uint8Array.from(context.line),archiveReader:Uint8Array.from(context.archiveReader),interval:context.interval?Uint8Array.from(context.interval):undefined};
  const p=parseConversationInbound02(input),identity=verifiedManifestIdentity02(c.current,c.nowMs);
  if(!same(p.accountId,c.account)||!same(p.deviceId,c.device)||!same(p.lineId,c.line)||p.peer!==c.peer||p.observedMs<=0n||p.observedMs>c.nowMs)throw Error("Conversation inbound scope");
  // Reparse from the verifier's immutable snapshot, never authorize mutable caller-held records.
@@ -34,6 +37,12 @@ export async function openConversationInbound02(input:Uint8Array,context:Convers
  const historical=await verifyManifest02(Uint8Array.from(c.historical.bytes),verifiedManifestTrust02(c.historical,p.observedMs),p.observedMs);
  const old=verifiedManifestIdentity02(historical,p.observedMs);
  if(!same(identity.accountId,c.account)||identity.generation!==old.generation||!same(identity.rootPoint,old.rootPoint)||old.version>identity.version)throw Error("Conversation history root");
+ if(c.selection){
+  const selection=acceptedOriginalReplySelection(c.selection);
+  if(!c.interval||!same(selection.account,c.account)||!same(selection.device,c.device)||!same(selection.line,c.line)||!same(selection.interval,c.interval)||selection.peer!==c.peer||!same(selection.archiveReader,c.archiveReader)||selection.rootGeneration!==identity.generation||old.version<selection.activationVersion)throw Error("Conversation selected readers");
+  const expected=[{role:2,keyId:selection.archiveReader},...selection.readers.map(r=>({role:3,keyId:r.reader}))];
+  if(p.wraps.length!==expected.length||!expected.every(e=>p.wraps.some(w=>w.role===e.role&&same(w.keyId,e.keyId))))throw Error("Conversation selected wraps");
+ }else if(p.wraps.length!==1||p.wraps[0].role!==2||!same(p.wraps[0].keyId,c.archiveReader))throw Error("Conversation archive-only wraps");
  const reader=current.keys.find(k=>k.role===2&&same(k.keyId,c.archiveReader));
  if(!reader||reader.state!==1||!(reader.scope&8)||reader.fromMs>c.nowMs||c.nowMs>=reader.untilMs)throw Error("Conversation current reader revoked");
  authorizeInbound02(historical,{kind:2,accountId:p.accountId,deviceId:p.deviceId,lineId:p.lineId,messageId:p.messageId,eventId:p.eventId!,localSequence:p.localSequence!,manifestDigest:p.manifestDigest,keysetVersion:p.keysetVersion,signerKeyId:p.signerKeyId,wraps:p.wraps},p.observedMs);

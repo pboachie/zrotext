@@ -63,7 +63,7 @@ lettre = { version = "0.11.23", default-features = false, features = ["builder",
 socket2 = "=0.6.5"
 # Ephemeral certificates prove the real post-handshake gate without changing OS trust.
 rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "ring"] }
-tokio = { version = "1.47.1", features = ["test-util"] }
+tokio = { version = "1.47.1", features = ["test-util", "process"] }
 tower = { version = "0.5", features = ["util"] }
 # 0.29 is the version axum already locks, so test builds compile one
 # tungstenite tree instead of two.
