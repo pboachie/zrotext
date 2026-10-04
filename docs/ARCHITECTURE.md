@@ -19,7 +19,7 @@ flowchart LR
   STRIPE[Stripe] -->|Verified billing events| APP
 ```
 
-The current foundation uses an Axum/Tokio application binary with `tokio-postgres` for auth, enrollment and delivery transactions, plus a separate locked migration binary. The planned dashboard uses server-rendered templates, vendored HTMX for non-sensitive interactions, SSE metadata updates and structured redacted tracing. Keep API, device hub, dispatcher, and webhook worker as internal modules until load justifies separate processes. Rust stays on the server first; Android uses Kotlin, Compose, Room and the platform telephony APIs. Do not add UniFFI merely to match the old diagram.
+The current foundation uses an Axum/Tokio application binary with `tokio-postgres` for auth, enrollment and delivery transactions, plus a separate locked migration binary. The owner dashboard serves maintained HTML, CSS and JavaScript from `web/owner`, embedded into the Rust server, with authenticated JSON reads and metadata updates. The billing dashboard has separate static assets under `crates/server/static`. The fleet overview shows writer states and observed device leases; neither establishes carrier readiness. See the [current interface guide](INTERFACE.md) for actual rendered views and their fixture boundaries. Keep API, device hub, dispatcher, and webhook worker as internal modules until load justifies separate processes. Rust stays on the server first; Android uses Kotlin, Compose, Room and the platform telephony APIs.
 
 Toolchain and dependency pins are recorded in [DEPENDENCIES.md](DEPENDENCIES.md). Redis, S3, NATS and partitioning are not required by this design; add them only for a demonstrated need. Durable quotas and queue ownership remain authoritative in PostgreSQL.
 
@@ -33,13 +33,13 @@ crates/migrator/        # advisory-locked numbered schema migrations
 crates/device-sim/      # deterministic fault-injecting test client
 protocol/              # versioned JSON schemas, OpenAPI, shared test vectors
 android/               # Kotlin app, Room queue, telephony adapter
-packages/crypto/       # small browser/TS encryption module, after reviewed spec
-packages/sdk-ts/       # permissively licensed API/crypto client
-web/                   # Askama templates, static CSS, small TS islands
+sdk/typescript/        # sealed-content readers, customer-local tools and vectors
+web/owner/             # maintained owner HTML, CSS and JavaScript
 deploy/compose/        # complete public self-host example
 docs/                  # architecture, threat model, runbooks
-docs/design/           # public application design specs; marketing source separate
 ```
+
+The diagram is an architectural model, not an enabled end-to-end onboarding claim. Sealed-content and conversation components have explicit enrollment, trust, consent and lifecycle boundaries; successful isolated tests do not establish a production setup journey. Select the exact source release and its acceptance scope before enabling a path. Hosted operations and marketing source live outside this public tree.
 
 Authentication and encryption are separate. The account design uses password verification, verified email, secure HttpOnly SameSite cookies, CSRF protection, session revocation and MFA. TLS protects authentication; it does not make passwords invisible to the server. Store server auth secrets independently of content keys. Content vault unlock uses a separate randomly generated recovery/unlock secret; login reset cannot recover content. OPAQUE would require a separate protocol decision and migration.
 
