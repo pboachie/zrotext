@@ -391,6 +391,11 @@ class ConversationMainEntryTest {
         click("Receive confirmed message")
         compose.onNodeWithText("Message reference").performTextInput("00000000-0000-0000-0000-000000000004")
         click("Receive and verify message")
+        assertEquals("Receive must remain pending before background; calls=" + ports.last().receives +
+            "; completion=" + (completion.get() != null) + "; editor=" + fieldValue("conversationMessageEditorOpen") +
+            "; expired=" + fieldValue("conversationReplyExpired"),
+            ConversationMessageReceiveController.Outcome.RECEIVING, fieldValue("conversationMessageOutcome"))
+        assertNotNull("The synthetic receive must reach the deferred transport", completion.get())
         compose.onNodeWithText("Receiving and verifying the confirmed message.").assertExists()
         compose.runOnIdle { field("conversationPickEpoch", fieldValue("conversationUiEpoch")) }
         compose.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
