@@ -42,10 +42,6 @@ impl Prepared {
         let blocker = f.case.f.connect().await;
         f.case.request.permissions =
             Permissions::new(&[Operation::Propose, Operation::ContextContent]).unwrap();
-        // Prepare connections before imposing a short grant deadline.
-        let caller = f.case.f.connect().await;
-        let blocker = f.case.f.connect().await;
-        f.case.request.permissions = Permissions::new(&[Operation::Propose]).unwrap();
         f.case.request.content_envelope = Some(f.case.projection().await);
         f.case.request.expires_ms = f
             .case
@@ -315,7 +311,6 @@ async fn original_lineage_rechecks_earlier_deadline_after_observed_later_hop_wai
         .await
         .unwrap();
     flow.f.case.f.db.batch_execute("ALTER FUNCTION original_reply_source_one_deadline(uuid,uuid) RENAME TO original_reply_source_one_real_deadline; CREATE FUNCTION original_reply_source_one_deadline(wanted_account uuid,wanted_action uuid) RETURNS bigint LANGUAGE plpgsql VOLATILE SET search_path FROM CURRENT AS $$ DECLARE actual_deadline bigint; wait_barrier bigint; BEGIN actual_deadline:=original_reply_source_one_real_deadline(wanted_account,wanted_action); SELECT barrier INTO wait_barrier FROM fixture_original_deadline_barrier WHERE action_id=wanted_action; IF FOUND THEN PERFORM pg_advisory_xact_lock(wait_barrier); END IF; RETURN actual_deadline; END; $$;").await.unwrap();
-    flow.f.case.f.db.batch_execute(&format!("ALTER FUNCTION original_reply_source_one_deadline(uuid,uuid) RENAME TO original_reply_source_one_real_deadline; CREATE FUNCTION original_reply_source_one_deadline(wanted_account uuid,wanted_action uuid) RETURNS bigint LANGUAGE plpgsql VOLATILE SET search_path FROM CURRENT AS $$ DECLARE actual_deadline bigint; BEGIN actual_deadline:=original_reply_source_one_real_deadline(wanted_account,wanted_action); IF wanted_action='{}'::uuid THEN PERFORM pg_advisory_xact_lock({barrier}); END IF; RETURN actual_deadline; END; $$;",first.action_id)).await.unwrap();
     let pid: i32 = flow
         .caller
         .query_one("SELECT pg_backend_pid()", &[])
