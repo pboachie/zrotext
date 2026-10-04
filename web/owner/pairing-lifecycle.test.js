@@ -3,12 +3,9 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const vm = require("node:vm");
-const path = require("node:path");
 
-// Run the real controller with an isolated synthetic DOM and API. No global
-// browser state, network, credentials, dependencies, or product mutations.
+// Run the real controller in this test file's isolated Node process with a
+// synthetic DOM and API. Load a fixed module rather than evaluating file text.
 async function pairingPage() {
   const nodes = new Map();
   const listeners = new Map();
@@ -30,7 +27,7 @@ async function pairingPage() {
   };
   const response = (status, body = {}) => ({ status, ok: status >= 200 && status < 300, json: async () => body });
   const state = { expired: false, deferCreate: null, deferProof: null, deferApprove: null, approveStatus: 201, approvedDevice: null, cancelStatus: 204, clock: 0 };
-  const context = vm.createContext({
+  const context = {
     console, URL, Date, Intl, AbortSignal, performance: { now: () => state.clock },
     document: { hidden: false, activeElement: null,
       cookie: "__Host-zrotext_csrf=synthetic-ui-csrf",
@@ -60,8 +57,10 @@ async function pairingPage() {
       }
       return response(404);
     },
-  });
-  vm.runInContext(fs.readFileSync(path.join(__dirname, "devices.js"), "utf8"), context, { filename: "devices.js" });
+  };
+  Object.assign(globalThis, context);
+  delete require.cache[require.resolve("./devices.js")];
+  require("./devices.js");
   await new Promise(setImmediate);
   await new Promise(setImmediate);
   element("display-name").value = "Example phone";
