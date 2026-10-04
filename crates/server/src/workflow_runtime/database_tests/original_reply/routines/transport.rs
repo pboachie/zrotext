@@ -17,15 +17,29 @@ pub(super) fn database_url_with_schema(raw: &str, schema: &str) -> Result<String
     }
     options.push_str("-csearch_path=");
     options.push_str(schema);
-    let retained: Vec<(String, String)> = url
-        .query_pairs()
-        .filter(|(k, _)| k != "options")
-        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+    // Tokio's URL parser percent-decodes without form-decoding '+'. Preserve
+    // every other raw segment and encode option spaces explicitly as %20.
+    let mut retained: Vec<&str> = url
+        .query()
+        .unwrap_or_default()
+        .split('&')
+        .filter(|segment| !segment.is_empty() && segment.split('=').next() != Some("options"))
         .collect();
-    url.set_query(None);
-    url.query_pairs_mut()
-        .extend_pairs(retained)
-        .append_pair("options", &options);
+    let mut encoded = String::new();
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    for byte in options.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push('%');
+            encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+            encoded.push(char::from(HEX[usize::from(byte & 15)]));
+        }
+    }
+    let option_segment = format!("options={encoded}");
+    retained.push(&option_segment);
+    let query = retained.join("&");
+    url.set_query(Some(&query));
     let result = url.to_string();
     let effective = tokio_postgres::Config::from_str(&result).map_err(|_| ())?;
     if effective.get_options() != Some(options.as_str()) {
@@ -78,4 +92,21 @@ fn fixture_refuses_untrusted_schema_spelling() {
     ] {
         assert!(database_url_with_schema("postgresql://localhost/example", schema).is_err());
     }
+}
+
+#[test]
+fn fixture_preserves_literal_plus_and_percent_encoded_spaces() {
+    let raw = "postgresql://localhost/example?application_name=synthetic+fixture%20space&options=-capplication_name%3Doption%2Bvalue%20-cjoin_collapse_limit%3D1&sslmode=disable";
+    let output = database_url_with_schema(raw, "fixture_123").expect("valid fixture URL");
+    let config = tokio_postgres::Config::from_str(&output).expect("valid configuration");
+    assert_eq!(
+        config.get_application_name(),
+        Some("synthetic+fixture space")
+    );
+    assert_eq!(
+        config.get_options(),
+        Some("-capplication_name=option+value -cjoin_collapse_limit=1 -csearch_path=fixture_123")
+    );
+    assert!(output.contains("application_name=synthetic+fixture%20space"));
+    assert!(output.contains("option%2Bvalue%20-cjoin_collapse_limit"));
 }
