@@ -26,6 +26,9 @@ pub mod preaccount_root_evidence;
 /// One historical contact statement signature with a genuinely recovered root.
 #[cfg(feature = "unlock")]
 pub mod contact_reader_signing;
+/// Typed first manifest signing with independently compared public points.
+#[cfg(feature = "unlock")]
+pub mod conversation_genesis;
 pub mod recovery_kit;
 pub mod root_backup;
 /// Offline unlock signing, compiled only when the `unlock` feature is

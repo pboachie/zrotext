@@ -18,13 +18,13 @@ use zrotext_root_terminal::{Session, verify_process_eligibility};
 #[cfg(feature = "unlock")]
 mod archive_init;
 #[cfg(feature = "unlock")]
+mod contact_reader_signing;
+#[cfg(feature = "unlock")]
 mod conversation_activation;
 #[cfg(feature = "unlock")]
 mod conversation_genesis;
 #[cfg(feature = "unlock")]
 mod conversation_refresh;
-#[cfg(feature = "unlock")]
-mod contact_reader_signing;
 #[cfg(feature = "unlock")]
 mod custody_sign;
 #[cfg(feature = "unlock")]

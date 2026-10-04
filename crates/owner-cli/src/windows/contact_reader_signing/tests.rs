@@ -373,33 +373,69 @@ fn unique_parent() -> PathBuf {
             .as_nanos()
     ))
 }
-fn validate_parent(path: &std::path::Path, stage: &str) -> Result<PathBuf> {
-    if !["success", "decline", "token", "existing", "scope"].contains(&stage) {
+fn fixture_shape(path: &std::path::Path, stage: &str) -> Result<(u32, u128, &'static str)> {
+    let stage = match stage {
+        "success" => "success",
+        "decline" => "decline",
+        "token" => "token",
+        "existing" => "existing",
+        "scope" => "scope",
+        _ => return Err(()),
+    };
+    let root = fixture_root();
+    let mut components = path.strip_prefix(&root).map_err(|_| ())?.components();
+    let Some(std::path::Component::Normal(run)) = components.next() else {
+        return Err(());
+    };
+    let Some(std::path::Component::Normal(actual_stage)) = components.next() else {
+        return Err(());
+    };
+    if components.next().is_some() || actual_stage != OsStr::new(stage) {
         return Err(());
     }
-    let root = fixture_root();
-    if path.parent().and_then(std::path::Path::parent) != Some(root.as_path())
-        || path.file_name().and_then(|s| s.to_str()) != Some(stage)
+    let run = run.to_str().ok_or(())?;
+    if run.len() > 50 {
+        return Err(());
+    }
+    let (pid, nanos) = run.split_once('-').ok_or(())?;
+    if pid.is_empty()
+        || nanos.is_empty()
+        || !pid.bytes().all(|b| b.is_ascii_digit())
+        || !nanos.bytes().all(|b| b.is_ascii_digit())
     {
         return Err(());
     }
-    let id = path
-        .parent()
-        .and_then(std::path::Path::file_name)
-        .and_then(|s| s.to_str())
-        .ok_or(())?;
-    let mut pair = id.split('-');
-    for _ in 0..2 {
-        let n = pair.next().ok_or(())?;
-        if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+    let pid = pid.parse::<u32>().map_err(|_| ())?;
+    let nanos = nanos.parse::<u128>().map_err(|_| ())?;
+    if pid == 0 || nanos == 0 || format!("{pid}-{nanos}") != run {
+        return Err(());
+    }
+    Ok((pid, nanos, stage))
+}
+fn validate_parent(path: &std::path::Path, stage: &str) -> Result<PathBuf> {
+    let (pid, nanos, stage) = fixture_shape(path, stage)?;
+    let root = fixture_root();
+    // Only the fixed root, parsed integers and a static stage reach fixture IO.
+    // TEMP never supplies a directory or filename string to the child fixture.
+    let run = root.join(format!("{pid}-{nanos}"));
+    let parent = run.join(stage);
+    for candidate in [&root, &run, &parent] {
+        no_reparse(candidate)?;
+        if !std::fs::symlink_metadata(candidate)
+            .map_err(|_| ())?
+            .is_dir()
+        {
             return Err(());
         }
     }
-    if pair.next().is_some() {
+    let canonical = parent.canonicalize().map_err(|_| ())?;
+    if path.canonicalize().map_err(|_| ())? != canonical
+        || !canonical.starts_with(root.canonicalize().map_err(|_| ())?)
+    {
         return Err(());
     }
-    no_reparse(path)?;
-    Ok(path.to_owned())
+    // Keep ordinary drive spelling; the production CLI refuses device paths.
+    Ok(parent)
 }
 fn no_reparse(path: &std::path::Path) -> Result<()> {
     use std::os::windows::fs::MetadataExt;
@@ -438,6 +474,46 @@ fn native_contact_signing_consumes_real_sessions_and_preserves_existing_bundle()
         });
         std::process::exit(if result.is_ok() { 0 } else { 90 });
     }
+    let fixed = fixture_root();
+    for stage in ["success", "decline", "token", "existing", "scope"] {
+        assert_eq!(
+            fixture_shape(&fixed.join("123-456").join(stage), stage).unwrap(),
+            (123, 456, stage)
+        );
+    }
+    for run in [
+        "",
+        "123",
+        "-456",
+        "123-",
+        "123-456-7",
+        "a-456",
+        "123-a",
+        "0-456",
+        "123-0",
+        "0123-456",
+        "123-0456",
+    ] {
+        assert!(fixture_shape(&fixed.join(run).join("success"), "success").is_err());
+    }
+    for run in [
+        format!("{}-456", u64::from(u32::MAX) + 1),
+        format!("123-{}0", u128::MAX),
+    ] {
+        assert!(fixture_shape(&fixed.join(run).join("success"), "success").is_err());
+    }
+    for candidate in [
+        fixed.join("123-456"),
+        fixed.join("123-456/success/extra"),
+        fixed.join("../123-456/success"),
+        fixed.join("123-456/../success"),
+        fixed.join("123-456/unknown"),
+        fixed.with_file_name("other").join("123-456/success"),
+    ] {
+        assert!(fixture_shape(&candidate, "success").is_err());
+    }
+    assert!(fixture_shape(&fixed.join("123-456/scope"), "success").is_err());
+    assert!(fixture_shape(&fixed.join("123-456/unknown"), "unknown").is_err());
     assert!(
         validate_parent(
             &fixture_root().join("1-2").join("extra").join("success"),
