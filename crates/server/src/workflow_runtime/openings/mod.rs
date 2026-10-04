@@ -97,7 +97,6 @@ pub async fn create(
         return Err(ConversationError::Forbidden);
     }
     owner_context::fresh_owner(&tx, owner).await?;
-    drop(source);
     drop(authority);
     tx.commit().await?;
     Ok(Outcome {

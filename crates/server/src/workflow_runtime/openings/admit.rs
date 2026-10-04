@@ -175,8 +175,6 @@ pub async fn offer(
         return Err(ConversationError::Forbidden);
     }
     owner_context::fresh_owner(&tx, owner).await?;
-    drop(selected);
-    drop(description);
     drop(authority);
     tx.commit().await?;
     Ok(Outcome {
@@ -342,8 +340,6 @@ pub async fn reserve(
         return Err(ConversationError::Forbidden);
     }
     owner_context::fresh_owner(&tx, owner).await?;
-    drop(selected);
-    drop(description);
     drop(authority);
     tx.commit().await?;
     Ok(Outcome {
@@ -483,8 +479,6 @@ pub async fn confirm(
         return Err(ConversationError::Forbidden);
     }
     owner_context::fresh_owner(&tx, owner).await?;
-    drop(selected);
-    drop(description);
     drop(authority);
     tx.commit().await?;
     Ok(Outcome {
