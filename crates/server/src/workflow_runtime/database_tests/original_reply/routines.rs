@@ -13,6 +13,7 @@ mod acceptance;
 mod authentication_profile;
 mod diagnostics;
 mod planning;
+mod sequential;
 mod transport;
 use diagnostics::{deadline_diagnostic, refusal_class};
 
@@ -202,6 +203,31 @@ impl RoutineCase {
         archive.extend(ephemeral.verifying_key().to_sec1_point(false).as_bytes());
         archive.extend(33u32.to_be_bytes());
         archive.extend([88; 33]);
+        self.owner_publish_archive_and_propose(call, header, archive, None)
+            .await
+    }
+    async fn owner_publish_real_and_propose(
+        &mut self,
+        call: Uuid,
+        archive: Vec<u8>,
+        projection: Vec<u8>,
+    ) -> decisions::ActionKey {
+        let header = wire::parse(&archive).unwrap();
+        assert_eq!(header.context, call);
+        assert_eq!(header.revision, 1);
+        assert_eq!(header.account, self.f.case.header.account);
+        assert_eq!(header.interval, self.f.case.header.interval);
+        assert_eq!(header.peer_digest, self.f.case.header.peer_digest);
+        self.owner_publish_archive_and_propose(call, header, archive, Some(projection))
+            .await
+    }
+    async fn owner_publish_archive_and_propose(
+        &mut self,
+        call: Uuid,
+        header: wire::Header,
+        archive: Vec<u8>,
+        projection: Option<Vec<u8>>,
+    ) -> decisions::ActionKey {
         let hash = decisions::descriptor::hex(&Sha256::digest(&archive));
         let original =
             service::authenticate(&self.f.case.f.db, &self.f.case.hasher, &self.read.token)
@@ -230,7 +256,16 @@ impl RoutineCase {
         self.f.case.request.context = call;
         self.f.case.request.permissions =
             Permissions::new(&[Operation::ContextContent, Operation::Propose]).unwrap();
-        self.f.case.request.content_envelope = Some(self.f.case.projection().await);
+        self.f.case.request.content_envelope = Some(match projection {
+            Some(envelope) => envelope,
+            None => self.f.case.projection().await,
+        });
+        self.f.case.request.expires_ms = self
+            .f
+            .case
+            .request
+            .expires_ms
+            .min(self.f.case.header.expires_ms);
         self.f.bind_workflow_request(self.read.grant_id).await;
         let credential = self.f.case.issue_another().await;
         let output = authenticate(&self.f.case.f.db, &self.f.case.hasher, &credential.token)

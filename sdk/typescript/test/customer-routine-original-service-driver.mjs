@@ -79,7 +79,7 @@ const clippedElapsed=start=>start===null?0:Math.min(60000,Math.max(0,Math.floor(
 let stage='input',settlement='pending',wire='',engine,provider,store;
 try{
   for await(const chunk of process.stdin){wire+=chunk;if(Buffer.byteLength(wire)>262144)throw Error();}
-  const f=JSON.parse(wire);wire='';assert.ok(['seed_context','exercise_original','recover_original'].includes(f.phase));
+  const f=JSON.parse(wire);wire='';assert.ok(['seed_context','exercise_original','recover_original','publish_original'].includes(f.phase));
   const directory=realpathSync(process.cwd()),sourceRoot=realpathSync(new URL('../../../',import.meta.url));
   assert.notEqual(directory,parse(directory).root);assert.notEqual(directory,sourceRoot);assert.ok(!directory.startsWith(sourceRoot+sep));
   stage='history';const accepted=await history(f),manifest=accepted.at(-1);stage='scope';const scope=workflowScope(f);
@@ -106,6 +106,21 @@ try{
     store=new CipherArtifactStore(join(directory,'original-routine-artifacts.sqlite'));
     engine=new CustomerRoutineEngine({enabled:true,service,tools:new WorkflowToolClient({origin,credential:f.input_credential,fetchImpl:fetch}),
       store,provider,originalClient,cryptoContext:{manifest,inputScope:scope,inputPrivateKey:privateKey,archiveReaderId:hex(f.archive_reader_id)}});
+    if(f.phase==='publish_original'){
+      // Explicit owner-local review: no execute/admit/provider call in this phase.
+      const archiveKey=await customerReaderKey(f.archive_private_jwk);
+      const plain=await engine.review(f.request_id,archiveKey);
+      try{assert.equal(new TextDecoder('utf-8',{fatal:true}).decode(plain),'synthetic proposed original answer');}
+      finally{plain.fill(0);}
+      const artifact=store.read(f.request_id,Date.now());
+      const projection=await engine.projection(f.request_id,archiveKey,scope.readerId);
+      try{
+        const markerBytes=readFileSync(join(directory,'original-routine-invocations'));
+        assert.ok(markerBytes.length<=2&&markerBytes.every(byte=>byte===120));
+        process.stdout.write(JSON.stringify({archive_b64:Buffer.from(artifact.envelope).toString('base64'),
+          projection_b64:Buffer.from(projection).toString('base64'),invocations:markerBytes.length}));
+      }finally{artifact.envelope.fill(0);projection.fill(0);}
+    }else{
     const marker=join(directory,'original-routine-invocations');
     const before=existsSync(marker)?readFileSync(marker,'utf8'):'';
     stage='engine_execute';engineStarted=performance.now();const result=await engine.executeOriginal({request_id:f.request_id,context_id:f.routine_policy.context_id,policy_id:f.routine_policy.policy_id,event_id:f.event_id});
@@ -113,6 +128,7 @@ try{
     if(f.phase==='exercise_original'){assert.equal(result.state,'awaiting_owner_publication');assert.equal(after,before+'x');}
     else{assert.equal(result.call.execute_once,false);assert.equal(after,before);}
     process.stdout.write(JSON.stringify(result));
+    }
   }
 }catch(error){
   const outer=originalRoutineDiagnostic(stage,error,settlement);
