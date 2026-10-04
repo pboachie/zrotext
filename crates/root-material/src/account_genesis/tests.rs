@@ -6,6 +6,7 @@ use crate::{
     root_backup::{self, RecoverySecret},
 };
 use p256::ecdsa::signature::Verifier;
+use p256::elliptic_curve::sec1::ToSec1Point;
 use zeroize::Zeroizing;
 
 fn scalar(label: &[u8]) -> Zeroizing<[u8; 32]> {
