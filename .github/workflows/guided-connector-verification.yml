@@ -36,7 +36,7 @@ jobs:
       - name: Install optional official client and disposable fixture prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsecret-tools gnome-keyring dbus-x11 libglib2.0-bin
+          sudo apt-get install -y libsecret-tools gnome-keyring dbus-x11 libglib2.0-bin ripgrep
           python -m venv "$RUNNER_TEMP/connector-venv"
           "$RUNNER_TEMP/connector-venv/bin/python" -m pip install --disable-pip-version-check -r sdk/mcp/verify-requirements.txt
           echo "$RUNNER_TEMP/connector-venv/bin" >> "$GITHUB_PATH"
