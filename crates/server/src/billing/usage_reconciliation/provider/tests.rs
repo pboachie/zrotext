@@ -14,6 +14,7 @@ fn scope() -> Scope {
         end: 1706745600,
         invoice: Some("in_synthetic".into()),
         subscription: Some("sub_synthetic".into()),
+        invoice_binding: None,
     }
 }
 

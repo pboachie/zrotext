@@ -7,6 +7,8 @@ use tokio_postgres::Client as Database;
 use uuid::Uuid;
 use zrotext_delivery_store::billable::{self, ProviderObservation};
 
+mod invoice_period;
+pub(crate) mod lifecycle;
 mod provider;
 mod worker;
 pub use worker::run_queue;
@@ -38,6 +40,7 @@ struct Scope {
     end: i64,
     invoice: Option<String>,
     subscription: Option<String>,
+    invoice_binding: Option<(String, String, String)>,
 }
 
 impl TestUsageReconciler {
@@ -77,6 +80,7 @@ impl TestUsageReconciler {
 
     /// Enabled startup refuses an unapplied observation schema before spawning.
     pub async fn validate_schema(&self, database: &Database) -> Result<(), Error> {
+        database.query("SELECT period_id,policy_version,identity_digest,provider_units,invoice_units FROM billing_invoice_usage_observations LIMIT 0",&[]).await?;
         database.query("SELECT p.stripe_customer_id,p.meter_id,p.event_name,p.mode,p.api_version,            b.period_start,b.period_end,i.invoice_id,i.subscription_id,f.message_id,o.state,o.acknowledged_at,            r.observed_at,r.invoice_units FROM billing_usage_test_policies p            JOIN billing_usage_bindings b USING(account_id,policy_version)            JOIN billing_customers c USING(account_id)            JOIN billing_usage_finalized f USING(account_id,message_id)            JOIN billing_usage_outbox o USING(account_id,message_id)            LEFT JOIN billing_invoice_periods i USING(account_id)            LEFT JOIN billing_usage_reconciliations r USING(account_id,policy_version,period_start) LIMIT 0", &[]).await?;
         Ok(())
     }
@@ -122,6 +126,7 @@ impl TestUsageReconciler {
             end: row.get(5),
             invoice: row.get(6),
             subscription: row.get(7),
+            invoice_binding: None,
         };
         let (provider_units, invoice_units) =
             tokio::time::timeout(Duration::from_secs(20), self.observe(&scope))

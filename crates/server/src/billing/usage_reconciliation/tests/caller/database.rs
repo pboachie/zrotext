@@ -2,6 +2,7 @@
 use super::*;
 use crate::sealed_manifest_store::tests::Fixture;
 use std::sync::atomic::{AtomicBool, Ordering};
+mod invoice_period;
 
 async fn invoice_fixture() -> Fixture {
     let fixture = Fixture::new().await;
@@ -11,6 +12,13 @@ async fn invoice_fixture() -> Fixture {
         .db
         .batch_execute(include_str!(
             "../../../../../../../deploy/compose/migrations/081_invoice_bound_test_billing.sql"
+        ))
+        .await
+        .unwrap();
+    fixture
+        .db
+        .batch_execute(include_str!(
+            "../../../../../../../deploy/compose/migrations/090_invoice_usage_observations.sql"
         ))
         .await
         .unwrap();

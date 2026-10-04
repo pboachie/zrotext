@@ -897,6 +897,14 @@ async fn erase_account(
         Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
     }
 
+    match crate::billing::usage_reconciliation::lifecycle::erase(&tx, account_id).await {
+        Ok(counts) => deleted.extend(
+            counts
+                .into_iter()
+                .map(|(table, rows)| TableCount { table, rows }),
+        ),
+        Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+    }
     match crate::billing::invoice::lifecycle::erase(&tx, account_id).await {
         Ok(counts) => deleted.extend(
             counts

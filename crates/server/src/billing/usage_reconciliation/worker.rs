@@ -18,6 +18,8 @@ pub async fn run_queue(
     let mut tick = tokio::time::interval(Duration::from_secs(300));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut cursor: Option<(Uuid, i64, String)> = None;
+    let mut invoice_cursor: Option<(Uuid, Uuid)> = None;
+    let mut prefer_invoice = false;
     loop {
         if !wait_for_tick(&mut tick, &notify, &draining).await {
             break;
@@ -32,13 +34,49 @@ pub async fn run_queue(
                 continue;
             }
         };
-        if observe_next(&mut db, &worker, &mut cursor, &draining)
-            .await
-            .is_err()
-        {
+        prefer_invoice = !prefer_invoice;
+        let result = if prefer_invoice {
+            match observe_next_invoice(&mut db, &worker, &mut invoice_cursor, &draining).await {
+                Ok(false) => observe_next(&mut db, &worker, &mut cursor, &draining).await,
+                other => other,
+            }
+        } else {
+            match observe_next(&mut db, &worker, &mut cursor, &draining).await {
+                Ok(false) => {
+                    observe_next_invoice(&mut db, &worker, &mut invoice_cursor, &draining).await
+                }
+                other => other,
+            }
+        };
+        if result.is_err() {
             eprintln!("TEST usage observation pending review");
         }
     }
+}
+
+pub(super) async fn observe_next_invoice(
+    db: &mut Database,
+    worker: &TestUsageReconciler,
+    cursor: &mut Option<(Uuid, Uuid)>,
+    draining: &AtomicBool,
+) -> Result<bool, Error> {
+    let account = cursor.as_ref().map(|c| c.0);
+    let period = cursor.as_ref().map(|c| c.1);
+    let row=db.query_opt("SELECT p.account_id,p.id FROM billing_invoice_periods p WHERE ($1::uuid IS NULL OR (p.account_id,p.id)>($1,$2::uuid)) AND NOT EXISTS(SELECT 1 FROM billing_invoice_usage_observations o WHERE (o.account_id,o.period_id)=(p.account_id,p.id) AND o.observed_at>clock_timestamp()-interval '15 minutes') ORDER BY p.account_id,p.id LIMIT 1",&[&account,&period]).await?;
+    let Some(row) = row else {
+        *cursor = None;
+        return Ok(false);
+    };
+    let account = row.get(0);
+    let period = row.get(1);
+    *cursor = Some((account, period));
+    if draining.load(Ordering::SeqCst) {
+        return Ok(false);
+    }
+    worker
+        .reconcile_invoice_period(db, account, period, Uuid::new_v4())
+        .await?;
+    Ok(true)
 }
 
 pub(super) async fn observe_next(

@@ -146,6 +146,17 @@ impl TestUsageReconciler {
                 continue;
             }
             if selected.is_some()
+                || scope.invoice_binding.as_ref().is_some_and(
+                    |(expected_price, expected_line, expected_item)| {
+                        price != expected_price
+                            || line.get("id").and_then(Value::as_str)
+                                != Some(expected_line.as_str())
+                            || line
+                                .pointer("/parent/subscription_item_details/subscription_item")
+                                .and_then(Value::as_str)
+                                != Some(expected_item.as_str())
+                    },
+                )
                 || price_object
                     .pointer("/recurring/usage_type")
                     .and_then(Value::as_str)

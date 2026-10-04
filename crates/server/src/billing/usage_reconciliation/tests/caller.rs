@@ -4,6 +4,7 @@ use serde_json::json;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_rustls::TlsAcceptor;
+mod invoice_binding;
 
 struct Reply {
     path: &'static str,
@@ -31,6 +32,7 @@ fn scope() -> Scope {
         end: 1706745600,
         invoice: Some("in_Synthetic".into()),
         subscription: Some("sub_Synthetic".into()),
+        invoice_binding: None,
     }
 }
 fn meter() -> Value {
