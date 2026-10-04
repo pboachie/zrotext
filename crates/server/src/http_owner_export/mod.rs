@@ -65,6 +65,7 @@ struct ExportQuery {
     invoice_periods_after: Option<Uuid>,
     invoice_usage_after: Option<Uuid>,
     invoice_audit_after: Option<i64>,
+    invoice_observations_after: Option<Uuid>,
     before: Option<Uuid>,
     sealed_before: Option<Uuid>,
     interval_before: Option<Uuid>,
@@ -194,6 +195,7 @@ struct ExportView {
     workflow_schedule: crate::encrypted_schedule::lifecycle::ScheduleExport,
     workflow_integrations: crate::workflow_runtime::lifecycle::Export,
     invoice_billing: crate::billing::invoice::lifecycle::InvoiceExport,
+    invoice_observations: crate::billing::usage_reconciliation::lifecycle::Export,
     encrypted_templates: crate::workflow_templates::lifecycle::Export,
     workflow_context: crate::http_owner_conversations::context::lifecycle::WorkflowExport,
     confirmation_inventory: crate::http_owner_conversations::confirmation_records::ProofInventory,
@@ -520,6 +522,16 @@ async fn export_account(
         workflow_integrations,
         workflow_decisions,
         workflow_schedule,
+        invoice_observations: match crate::billing::usage_reconciliation::lifecycle::export(
+            &mut client,
+            &principal,
+            query.invoice_observations_after,
+        )
+        .await
+        {
+            Ok(view) => view,
+            Err(error) => return error.into_response(),
+        },
         invoice_billing: match crate::billing::invoice::lifecycle::export(
             &mut client,
             &principal,

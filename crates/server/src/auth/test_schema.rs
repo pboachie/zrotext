@@ -386,6 +386,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "089_original_routine_sources.sql",
         include_str!("../../../../deploy/compose/migrations/089_original_routine_sources.sql"),
     ),
+    (
+        "090_invoice_usage_observations.sql",
+        include_str!("../../../../deploy/compose/migrations/090_invoice_usage_observations.sql"),
+    ),
 ];
 
 async fn apply_selected(db: &Client, skip_summary: bool) {
