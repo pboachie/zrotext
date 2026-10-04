@@ -104,8 +104,20 @@ class ConversationProbeDeviceTest {
         val activation=ConversationPhoneActivation(fixture.statement,trust,activationWire,
             {checkNotNull(runtimeRef.get()?.trustedNowMs())},
             {domain,statement,point->check(statement.contentEquals(fixture.statement) && point.contentEquals(decode(ready.getString("signerPoint"))));decode(fixture.sign(domain))})
+        var loseCaptureAck=true
+        val runtimeWire=object:ConversationAuthenticatedWire {
+            override fun currentSession()=socketWire.currentSession()
+            override fun exchange(request:ByteArray):ConversationAuthenticatedWire.Reply {
+                val reply=socketWire.exchange(request)
+                if(request[5].toInt()==12 && loseCaptureAck) {
+                    loseCaptureAck=false
+                    error("Synthetic response loss after actual protected-content commit")
+                }
+                return reply
+            }
+        }
         val runtime=ConversationAuthenticatedRuntime(db.journal(),sends.sends(),activation,fixture.protection,
-            socketWire,{(System.nanoTime()-start)/1_000_000},
+            runtimeWire,{(System.nanoTime()-start)/1_000_000},
             { selected,now -> check(permission && selected==scope && now<fixture.parsed.expiresMs) },
             { selected -> check(selected==scope);decisions++ },
             { request ->
@@ -159,10 +171,10 @@ class ConversationProbeDeviceTest {
             assertEquals(1,decisions);assertEquals(1,installs)
             assertEquals(ConversationPresentationPhase.CONFIRMED_ACTIVE,snapshots.last().phase)
             val token="01".repeat(32);val body="Synthetic authenticated inbound \u03A9\nSecond line"
-            fun syntheticReceipt() {
+            fun syntheticReceipt(receipt:String=token,content:String=body) {
                 ConversationProbeSession.received=java.util.concurrent.CountDownLatch(1)
                 context.sendBroadcast(Intent(ConversationProbeSession.ACTION).setPackage(context.packageName)
-                    .putExtra("token",ConversationProbeSession.token).putExtra("body",body))
+                    .putExtra("token",ConversationProbeSession.token).putExtra("receipt",receipt).putExtra("body",content))
                 assertTrue(ConversationProbeSession.received.await(10,TimeUnit.SECONDS))
             }
             syntheticReceipt();assertEquals(ConversationObservation.CAPTURED,ConversationProbeSession.observation.get())
@@ -178,14 +190,54 @@ class ConversationProbeDeviceTest {
                 val envelope=fixture.envelope(value.body,value.captureId,value.firstObservedAtMs,sequence)
                 sealed.set(envelope);decode(envelope.getString("envelope"))
             }) { accepted -> uploaded.set(accepted);uploadDone.countDown() }
-            assertTrue(uploadDone.await(30,TimeUnit.SECONDS));assertTrue(uploaded.get())
+            assertTrue(uploadDone.await(30,TimeUnit.SECONDS));assertFalse(uploaded.get())
+            assertEquals(1,db.journal().contentCount());assertNull(db.journal().wireCapture(token)!!.acknowledgedDigest)
+            assertNotNull(db.journal().wireCapture(token)!!.protectedEnvelope)
+            val committedFirst=fixture.command("history",event=UUID.fromString(captured.captureId))
+            assertEquals(1,committedFirst.getInt("intervalEvents"));assertEquals(1,committedFirst.getInt("intervalDeliveries"))
+            assertEquals(1,committedFirst.getJSONArray("deliveryIds").length())
+            val retryDone=java.util.concurrent.CountDownLatch(1)
+            runtime.uploadCapture(token,{_,_->error("Lost ACK retry must reuse exact protected packet")}) {
+                accepted->uploaded.set(accepted);retryDone.countDown()
+            }
+            assertTrue(retryDone.await(30,TimeUnit.SECONDS));assertTrue(uploaded.get())
+            assertEquals(0,db.journal().contentCount())
+            assertNull(db.journal().wireCapture(token)!!.protectedEnvelope)
+            assertNotNull(db.journal().wireCapture(token)!!.acknowledgedDigest)
+            // More than one body-capacity window through the actual receiver/runtime/WebSocket/PG.
+            // Every durable upload ACK releases its slot; permanent receipt and sequence fences stay.
+            for(index in 2..129) {
+                val receipt=index.toString(16).padStart(64,'0')
+                val content="Synthetic acknowledged capture $index"
+                syntheticReceipt(receipt,content)
+                assertEquals(ConversationObservation.CAPTURED,ConversationProbeSession.observation.get())
+                val done=java.util.concurrent.CountDownLatch(1)
+                val committed=java.util.concurrent.atomic.AtomicBoolean(false)
+                runtime.uploadCapture(receipt,{value,sequence ->
+                    assertEquals(index.toLong(),sequence)
+                    decode(fixture.envelope(value.body,value.captureId,value.firstObservedAtMs,sequence).getString("envelope"))
+                }) {accepted->committed.set(accepted);done.countDown()}
+                assertTrue(done.await(30,TimeUnit.SECONDS));assertTrue("Exact durable upload ACK $index",committed.get())
+                assertEquals(0,db.journal().contentCount());assertEquals(index,db.journal().receiptCount())
+                val retained=db.journal().wireCapture(receipt)!!
+                assertEquals(index.toLong(),retained.sequence)
+                assertNotNull(retained.acknowledgedDigest);assertNull(retained.protectedEnvelope);assertNull(retained.nonce)
+                assertNull(runtime.retryCapture(receipt))
+                syntheticReceipt(receipt,content)
+                assertEquals(ConversationObservation.DUPLICATE,ConversationProbeSession.observation.get())
+            }
+            assertEquals(129,db.journal().receiptCount())
             val encrypted=checkNotNull(sealed.get())
             val event=UUID.fromString(captured.captureId)
             val before=fixture.command("history",event=event)
+            assertEquals(129,before.getInt("intervalEvents"));assertEquals(129,before.getInt("intervalDeliveries"))
+            assertEquals(committedFirst.getString("envelope"),before.getString("envelope"))
+            assertEquals(committedFirst.getJSONArray("deliveryIds").toString(),before.getJSONArray("deliveryIds").toString())
             assertEquals(body,fixture.open(before.getString("envelope")).getString("opened"))
             assertTrue(fixture.command("renew").getBoolean("ok"))
             val after=fixture.command("history",event=event)
             assertEquals(before.getString("envelope"),after.getString("envelope"))
+            assertEquals(before.getJSONArray("deliveryIds").toString(),after.getJSONArray("deliveryIds").toString())
             val browser=fixture.browser(event,body)
             assertEquals(2,browser.getInt("signed"));assertEquals(1,browser.getInt("verified"));assertEquals(0,browser.getInt("midFlightSubmissions"))
             val packet=browser.getJSONObject("packet")

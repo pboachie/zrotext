@@ -138,7 +138,18 @@ async fn command(
                 .map(|r|json!({"ok":true,"created":r.created,"event":r.event_id})).map_err(|_|ConversationError::Forbidden),
             None=>Err(ConversationError::Invalid),
         },
-        "history"=>match c.event {Some(event)=>read_history(&mut client,&state.owner,event).await.map(|b|json!({"ok":true,"envelope":STANDARD.encode(b)})),None=>Err(ConversationError::Invalid)},
+        "history"=>match c.event {
+            Some(event)=>match read_history(&mut client,&state.owner,event).await {
+                Ok(bytes)=>{
+                    // Scoped real PG identities, never a fixture-side or echoed success counter.
+                    let row=client.query_one("SELECT device_sequence FROM sealed_inbound_events WHERE account_id=$1 AND id=$2",&[&s.account,&event]).await.unwrap();
+                    let ids:Vec<Uuid>=client.query("SELECT id FROM sealed_event_deliveries WHERE account_id=$1 AND event_id=$2 AND interval_id=$3 ORDER BY id LIMIT 6",&[&s.account,&event,&s.interval]).await.unwrap().iter().map(|r|r.get(0)).collect();
+                    assert!(ids.len()<=5);
+                    let counts=client.query_one("SELECT (SELECT count(*) FROM conversation_inbound_provenance WHERE account_id=$1 AND interval_id=$2), (SELECT count(*) FROM sealed_event_deliveries WHERE account_id=$1 AND interval_id=$2)",&[&s.account,&s.interval]).await.unwrap();
+                    Ok(json!({"ok":true,"envelope":STANDARD.encode(bytes),"event":event,"sequence":row.get::<_,i64>(0),"deliveryIds":ids,"intervalEvents":counts.get::<_,i64>(0),"intervalDeliveries":counts.get::<_,i64>(1)}))
+                },Err(error)=>Err(error),
+            },None=>Err(ConversationError::Invalid),
+        },
         "browser_authority"=>active_lease(&mut client,session,s.interval,Uuid::new_v4()).await.map(|lease| json!({"ok":true,"phase":"active","validForMs":lease.valid_for_ms,"manifest":STANDARD.encode(&f.bytes),
             "scope":{"account":s.account,"session":s.originating_session,"interval":s.interval,"device":s.device,"line":s.line,"generation":s.generation.to_string(),"peer":s.peer,"reader":STANDARD.encode(s.reader),"manifest":STANDARD.encode(Sha256::digest(&f.bytes[..f.bytes.len()-64]))}})),
         "send"=>submit_confirmed(&state, &f, &c).await,
@@ -316,10 +327,110 @@ async fn owner_credentials(f: &Fixture, owner: &SessionPrincipal) -> (String, St
     (token, csrf)
 }
 
+// Called by the existing compiled simulator entry point, so emulator CI runs these real SQL cases.
+async fn assert_capture_ack_replay_authority() {
+    let (f, _, statement) = tests::pending().await;
+    tests::activate(&f, &statement).await;
+    let session = super::super::channel::AuthenticatedChannelSession {
+        device: f.session(),
+        phone_session: Uuid::new_v4(),
+        origin_hash: [9; 32],
+    };
+    let event = Uuid::new_v4();
+    let bytes = tests::capture(&f, &statement, event, 1, b"+12")
+        .await
+        .unwrap();
+    let request = |envelope: &[u8]| {
+        let mut out = b"ZTCW\x01\x0c".to_vec();
+        for id in [f.account, f.device, session.phone_session] {
+            out.extend(id.as_bytes());
+        }
+        out.extend(session.device.connection_epoch.to_be_bytes());
+        out.extend(session.device.deployment_epoch.to_be_bytes());
+        out.extend(session.origin_hash);
+        out.extend(Uuid::new_v4().as_bytes());
+        out.extend(super::super::channel::scope(&statement).unwrap());
+        out.extend((envelope.len() as u32).to_be_bytes());
+        out.extend(envelope);
+        out
+    };
+    let reply = super::super::channel::handle(&mut f.connect().await, &session, &request(&bytes))
+        .await
+        .unwrap();
+    assert_eq!(&reply[118..134], event.as_bytes());
+    assert_eq!(&reply[134..166], Sha256::digest(&bytes).as_slice());
+    assert_eq!(
+        reply[166], 0,
+        "Current exact protected-content replay receives a committed ACK"
+    );
+    f.db.execute(
+        "UPDATE sealed_inbound_events SET envelope=NULL WHERE account_id=$1 AND id=$2",
+        &[&f.account, &event],
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(
+            super::super::channel::handle(&mut f.connect().await, &session, &request(&bytes)).await,
+            Err(ConversationError::Forbidden)
+        ),
+        "Erased replay must never receive a capture ACK"
+    );
+    assert!(
+        f.db.query_one(
+            "SELECT envelope IS NULL FROM sealed_inbound_events WHERE account_id=$1 AND id=$2",
+            &[&f.account, &event]
+        )
+        .await
+        .unwrap()
+        .get::<_, bool>(0)
+    );
+    let unscoped = Uuid::new_v4();
+    let observed =
+        f.db.query_one(
+            "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0);
+    let raw = super::super::tests::envelope(&f, unscoped, 2, observed as u64, b"+12");
+    crate::sealed_inbound::ingest::ingest_candidate02(
+        &mut f.connect().await,
+        f.session(),
+        f.line,
+        1,
+        &f.bytes,
+        &raw,
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(
+            super::super::channel::handle(&mut f.connect().await, &session, &request(&raw)).await,
+            Err(ConversationError::Forbidden)
+        ),
+        "Unscoped replay cannot acquire provenance or receive a capture ACK"
+    );
+    assert_eq!(f.db.query_one("SELECT count(*) FROM conversation_inbound_provenance WHERE account_id=$1 AND event_id=$2",&[&f.account,&unscoped]).await.unwrap().get::<_,i64>(0),0);
+    assert_eq!(
+        f.db.query_one(
+            "SELECT envelope FROM sealed_inbound_events WHERE account_id=$1 AND id=$2",
+            &[&f.account, &unscoped]
+        )
+        .await
+        .unwrap()
+        .get::<_, Vec<u8>>(0),
+        raw
+    );
+    f.cleanup().await;
+}
+
 #[tokio::test]
 #[ignore = "requires explicitly selected conversation simulator runner, SDK and disposable PostgreSQL"]
 async fn loopback_journal_bridge() {
     assert!(std::env::var_os("ZT_CONVERSATION_SIM_DIR").is_some());
+    assert_capture_ack_replay_authority().await;
     let (mut f, owner) = super::super::tests::prepared().await;
     if !super::super::confirmation_records::installed(&f.db)
         .await
@@ -332,6 +443,17 @@ async fn loopback_journal_bridge() {
         .unwrap();
     }
     f.db.execute("INSERT INTO usage_quota_policies(account_id,metric,limit_units) VALUES($1,'outbound_message',1000)",&[&f.account]).await.unwrap();
+    // Queue one opted-in synthetic endpoint; this fixture starts no dispatcher or network callback.
+    let endpoint = Uuid::new_v4();
+    let vault = crate::webhook_worker::WebhookSecretVault::new(
+        1,
+        zeroize::Zeroizing::new(crate::test_keys::key(125).to_vec()),
+    )
+    .unwrap();
+    let secret = vault
+        .seal(f.account, endpoint, &crate::test_keys::key(126))
+        .unwrap();
+    f.db.execute("INSERT INTO webhook_endpoints(id,account_id,callback_url,signing_secret_ciphertext,signing_secret_key_version,enabled,sealed_events_enabled) VALUES($1,$2,'https://hooks.example.org/inbox',$3,1,true,true)",&[&endpoint,&f.account,&secret]).await.unwrap();
     let (owner_token, owner_csrf) = owner_credentials(&f, &owner).await;
     let queue_router = queue_router(&f);
     // Additional roles exist only in this fresh owner-signed synthetic manifest.

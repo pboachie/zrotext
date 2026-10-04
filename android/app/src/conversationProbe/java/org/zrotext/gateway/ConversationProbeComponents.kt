@@ -36,9 +36,11 @@ class ConversationProbeService:Service() {
             if(intent.action!=ConversationProbeSession.ACTION || intent.getStringExtra("token")!=ConversationProbeSession.token) return
             val body=intent.getStringExtra("body")?:return
             if(body.length !in 1..32768) return
+            val receipt=intent.getStringExtra("receipt")?:"01".repeat(32)
+            if(!Regex("[0-9a-f]{64}").matches(receipt)) return
             val scope=ConversationProbeSession.scope
             try {ConversationProbeSession.observation.set(mount.receive(mount.firstReceipt(),1,
-                "01".repeat(32),scope.peer,body))}
+                receipt,scope.peer,body))}
             finally {ConversationProbeSession.received.countDown()}
         }
     }
