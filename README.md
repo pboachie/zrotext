@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/assets/zrotext-mark.svg" alt="ZROtext mark" width="64"></p>
+<p align="center"><img src="docs/assets/zrotext-banner.svg" alt="ZROtext: Open-source Android SMS gateway" width="900"></p>
 <h1 align="center">ZROtext</h1>
 <p align="center"><strong>Your phone. Your number. Your SMS API.</strong></p>
 <p align="center">
