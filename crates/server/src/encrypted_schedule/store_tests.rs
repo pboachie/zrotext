@@ -822,3 +822,141 @@ async fn dispatch_cannot_commit_after_consuming_an_expired_prior_claim() {
 async fn cancellation_commits_after_a_same_transaction_claim_expires() {
     delay_admission_commit("cancel").await;
 }
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn verified_original_reply_cancels_scheduled_followup_atomically_and_replay_refunds_once() {
+    use crate::http_owner_conversations::context::decisions::{Correlation, correlate_reply};
+    let (mut c, p) = prepared().await;
+    let first = c.approved().await;
+    let bound = c.bind(first).await;
+    c.dispatch(bound.key).await;
+    c.grant().await.unwrap().unwrap();
+    c.descriptor.action_id = Uuid::new_v4().to_string();
+    let followup = c.approved().await;
+    let o = reserve(
+        &c,
+        &p,
+        followup.key,
+        ScheduleRequest {
+            request_id: Uuid::new_v4(),
+            series_id: Uuid::new_v4(),
+            ordinal: 0,
+        },
+    )
+    .await;
+    let followup_key = followup.key;
+    c.bind_with_dispatch(followup, o.dispatch_id).await;
+    let event = c.capture(1).await;
+    let input = Correlation {
+        context_id: c.base.h.context,
+        context_revision: 1,
+        event_id: event,
+        request_action: Some(bound.key),
+    };
+    let request = Uuid::new_v4();
+    for _ in 0..2 {
+        let result = correlate_reply(
+            &mut c.base.f.connect().await,
+            &c.base.owner,
+            request,
+            input.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.disposition, "qualifying");
+        assert_eq!(result.cancelled_messages, 1);
+        assert_eq!(result.irreversible_messages, 1);
+        let row = c.base.f.db.query_one("SELECT (SELECT phase FROM workflow_schedule_occurrences WHERE id=$1),(SELECT count(*) FROM usage_ledger WHERE entry_kind='refund'),(SELECT count(*) FROM workflow_schedule_audit WHERE operation='cancel')", &[&o.id]).await.unwrap();
+        assert_eq!(row.get::<_, String>(0), "cancelled");
+        assert_eq!(row.get::<_, i64>(1), 1);
+        assert_eq!(row.get::<_, i64>(2), 1);
+    }
+    let mut db = c.base.f.connect().await;
+    let tx = db.transaction().await.unwrap();
+    assert!(
+        lock_approved(&tx, &c.base.owner, followup_key)
+            .await
+            .is_err()
+    );
+    tx.rollback().await.unwrap();
+    c.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn recurring_ordinal_requires_a_distinct_current_owner_approval() {
+    use crate::http_owner_conversations::context::decisions::{decide, model::Decision};
+    let (mut c, mut p) = prepared().await;
+    p.repeat_every_days = Some(1);
+    p.max_occurrences = 2;
+    p.first_local_date = c
+        .base
+        .f
+        .db
+        .query_one(
+            "SELECT to_char((clock_timestamp() AT TIME ZONE 'UTC')-interval '1 day','YYYY-MM-DD')",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    c.descriptor.window_id = p.identity().unwrap();
+    let first = c.approved().await;
+    let series = Uuid::new_v4();
+    reserve(
+        &c,
+        &p,
+        first.key,
+        ScheduleRequest {
+            request_id: Uuid::new_v4(),
+            series_id: series,
+            ordinal: 0,
+        },
+    )
+    .await;
+    c.descriptor.action_id = Uuid::new_v4().to_string();
+    let next = c.propose(c.descriptor.clone()).await;
+    let mut db = c.base.f.connect().await;
+    let tx = db.transaction().await.unwrap();
+    assert!(lock_approved(&tx, &c.base.owner, next.key).await.is_err());
+    tx.rollback().await.unwrap();
+    let approved = decide(
+        &mut c.base.f.connect().await,
+        &c.base.owner,
+        Uuid::new_v4(),
+        1,
+        next.key,
+        Decision::Approve,
+    )
+    .await
+    .unwrap();
+    let occurrence = reserve(
+        &c,
+        &p,
+        approved.key,
+        ScheduleRequest {
+            request_id: Uuid::new_v4(),
+            series_id: series,
+            ordinal: 1,
+        },
+    )
+    .await;
+    assert_eq!(occurrence.ordinal, 1);
+    assert_eq!(occurrence.phase, "waiting_window");
+    assert_ne!(approved.key.action_id, first.key.action_id);
+    assert_eq!(
+        c.base
+            .f
+            .db
+            .query_one(
+                "SELECT count(DISTINCT action_id) FROM workflow_schedule_occurrences",
+                &[]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        2
+    );
+    c.cleanup().await;
+}
