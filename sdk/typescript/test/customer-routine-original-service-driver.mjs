@@ -14,6 +14,7 @@ import {CustomerRoutineService} from '../../assistant/routine-service.mjs';
 import {customerReaderKey} from '../../assistant/customer-routines.mjs';
 import {CipherArtifactStore} from '../../assistant/artifact-store.mjs';
 import {LocalProvider} from '../../assistant/local-provider.mjs';
+import {originalRoutineDiagnostic} from './original-service-diagnostics.mjs';
 globalThis.crypto??=webcrypto;
 const bytes=value=>Uint8Array.from(Buffer.from(value,'base64'));
 const hex=value=>{assert.match(value,/^[0-9a-f]+$/);return Uint8Array.from(Buffer.from(value,'hex'));};
@@ -53,6 +54,9 @@ function transport(f){
   const fetch=(url,init)=>new Promise((resolve,reject)=>{
     const endpoint=new URL(url);if(endpoint.origin!==origin.origin||!paths.has(endpoint.pathname)||endpoint.search||endpoint.hash||init.method!=='POST'){
       reject(Error());return;}
+    let operation;try{operation=JSON.parse(init.body);}catch{operation={};}
+    const labels=endpoint.pathname==='/v1/reply-events'?{current:'original_current',read:'original_read',page:'original_page'}:endpoint.pathname==='/v1/workflow/tools'?{'workflow.context.metadata':'context_metadata','workflow.context.content':'context_content'}:{current:'routine_current',admit_original:'original_admit',current_original:'call_current',produced:'produced'};
+    stage=labels[operation.operation??operation.method]??'transport';
     const req=request({hostname:origin.hostname,port,path:endpoint.pathname,method:'POST',ca:f.ca_pem,headers:init.headers,
       signal:init.signal,rejectUnauthorized:true},response=>{
       const chunks=[];let size=0;response.on('error',reject);
@@ -61,26 +65,26 @@ function transport(f){
     });req.on('error',reject);req.end(init.body);
   });return {origin:origin.origin,fetch};
 }
-let wire='',engine,provider,store;
+let stage='input',wire='',engine,provider,store;
 try{
   for await(const chunk of process.stdin){wire+=chunk;if(Buffer.byteLength(wire)>262144)throw Error();}
   const f=JSON.parse(wire);wire='';assert.ok(['seed_context','exercise_original','recover_original'].includes(f.phase));
   const directory=realpathSync(process.cwd()),sourceRoot=realpathSync(new URL('../../../',import.meta.url));
   assert.notEqual(directory,parse(directory).root);assert.notEqual(directory,sourceRoot);assert.ok(!directory.startsWith(sourceRoot+sep));
-  const accepted=await history(f),manifest=accepted.at(-1),scope=workflowScope(f);
-  provider=install(directory,f.phase==='seed_context');
+  stage='history';const accepted=await history(f),manifest=accepted.at(-1);stage='scope';const scope=workflowScope(f);
+  stage='installation';provider=install(directory,f.phase==='seed_context');
   if(f.phase==='seed_context'){
     const plain=new TextEncoder().encode(JSON.stringify({question:'synthetic owner configured question',answer:'synthetic owner configured answer'}));
     try{
       const now=BigInt(Date.now());
-      const archive=await sealWorkflowContext(manifest,{...scope,readerId:hex(f.archive_reader_id)},now,plain);
+      stage='seed_prepare';const archive=await sealWorkflowContext(manifest,{...scope,readerId:hex(f.archive_reader_id)},now,plain);
       const projection=await sealIntegrationWorkflowContext(manifest,scope,now,plain);
       process.stdout.write(JSON.stringify({archive_b64:Buffer.from(archive).toString('base64'),projection_b64:Buffer.from(projection).toString('base64'),
         adapter_id:provider.identity.adapter_id,artifact_digest:provider.identity.artifact_digest}));
     }finally{plain.fill(0);}
   }else{
     assert.equal(f.routine_policy.adapter_id,provider.identity.adapter_id);assert.equal(f.routine_policy.artifact_digest,provider.identity.artifact_digest);
-    const {origin,fetch}=transport(f),s=f.scope,privateKey=await customerReaderKey(f.role3_private_jwk);
+    stage='client';const {origin,fetch}=transport(f),s=f.scope,privateKey=await customerReaderKey(f.role3_private_jwk);
     const originalClient=new OriginalReplyClient({origin,credential:f.read_credential,scope:{account:uuid(s.account_id),device:uuid(s.device_id),line:uuid(s.line_id),
       interval:uuid(s.interval_id),connector:uuid(s.connector_id),readGrant:uuid(s.read_grant_id),reader:hex(s.reader_id),peer:s.peer},
       privateKey,acceptedHistory:accepted,clock:()=>BigInt(Date.now()),fetch});
@@ -90,12 +94,12 @@ try{
       store,provider,originalClient,cryptoContext:{manifest,inputScope:scope,inputPrivateKey:privateKey,archiveReaderId:hex(f.archive_reader_id)}});
     const marker=join(directory,'original-routine-invocations');
     const before=existsSync(marker)?readFileSync(marker,'utf8'):'';
-    const result=await engine.executeOriginal({request_id:f.request_id,context_id:f.routine_policy.context_id,policy_id:f.routine_policy.policy_id,event_id:f.event_id});
-    const after=existsSync(marker)?readFileSync(marker,'utf8'):'';
+    stage='engine_execute';const result=await engine.executeOriginal({request_id:f.request_id,context_id:f.routine_policy.context_id,policy_id:f.routine_policy.policy_id,event_id:f.event_id});
+    stage='result_assert';const after=existsSync(marker)?readFileSync(marker,'utf8'):'';
     if(f.phase==='exercise_original'){assert.equal(result.state,'awaiting_owner_publication');assert.equal(after,before+'x');}
     else{assert.equal(result.call.execute_once,false);assert.equal(after,before);}
     process.stdout.write(JSON.stringify(result));
   }
-}catch{
-  process.stderr.write('original routine fixture refused\n');process.exitCode=1;
+}catch(error){
+  process.stderr.write(originalRoutineDiagnostic(stage,error));process.exitCode=1;
 }finally{engine?.withdraw();provider?.close();store?.close();}

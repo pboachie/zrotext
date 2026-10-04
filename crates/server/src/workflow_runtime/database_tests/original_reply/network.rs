@@ -96,6 +96,18 @@ fn refusal_diagnostic(bytes: &[u8]) -> &'static str {
             "read",
             "consume",
             "recover",
+            "installation",
+            "original_current",
+            "original_read",
+            "original_page",
+            "context_metadata",
+            "context_content",
+            "routine_current",
+            "original_admit",
+            "call_current",
+            "produced",
+            "engine_execute",
+            "result_assert",
         ]
         .contains(&phase)
         {
@@ -108,6 +120,24 @@ fn refusal_diagnostic(bytes: &[u8]) -> &'static str {
             "signer_authority" => "signer_authority",
             "recipient_identity" => "recipient_identity",
             "recipient_order" => "recipient_order",
+            "forbidden" => "forbidden",
+            "response_unknown" => "response_unknown",
+            "authority_unavailable" => "authority_unavailable",
+            "scope_denied" => "scope_denied",
+            "invalid_scope" => "invalid_scope",
+            "invalid_content" => "invalid_content",
+            "invalid_configuration" => "invalid_configuration",
+            "executor_unavailable" => "executor_unavailable",
+            "provider_unknown" => "provider_unknown",
+            "invalid_output" => "invalid_output",
+            "artifact_changed" => "artifact_changed",
+            "storage_unavailable" => "storage_unavailable",
+            "artifact_unavailable" => "artifact_unavailable",
+            "unknown_no_retry" => "unknown_no_retry",
+            "invalid_invocation" => "invalid_invocation",
+            "not_executable" => "not_executable",
+            "clock_unavailable" => "clock_unavailable",
+
             _ => "unavailable",
         };
     }
@@ -135,6 +165,23 @@ fn refusal_stage(bytes: &[u8]) -> &'static str {
             "signer_authority",
             "recipient_identity",
             "recipient_order",
+            "forbidden",
+            "response_unknown",
+            "authority_unavailable",
+            "scope_denied",
+            "invalid_scope",
+            "invalid_content",
+            "invalid_configuration",
+            "executor_unavailable",
+            "provider_unknown",
+            "invalid_output",
+            "artifact_changed",
+            "storage_unavailable",
+            "artifact_unavailable",
+            "unknown_no_retry",
+            "invalid_invocation",
+            "not_executable",
+            "clock_unavailable",
         ]
         .contains(&code)
         {
@@ -152,10 +199,39 @@ fn refusal_stage(bytes: &[u8]) -> &'static str {
             "read" => "read",
             "consume" => "consume",
             "recover" => "recover",
+            "installation" => "installation",
+            "original_current" => "original_current",
+            "original_read" => "original_read",
+            "original_page" => "original_page",
+            "context_metadata" => "context_metadata",
+            "context_content" => "context_content",
+            "routine_current" => "routine_current",
+            "original_admit" => "original_admit",
+            "call_current" => "call_current",
+            "produced" => "produced",
+
+            "engine_execute" => "engine_execute",
+            "result_assert" => "result_assert",
+
             _ => "unavailable",
         };
     }
     "unavailable"
+}
+#[test]
+fn routine_diagnostics_accept_fixed_stage_and_code_but_refuse_child_canary() {
+    assert_eq!(
+        refusal_stage(b"original reply fixture phase=produced;code=forbidden\n"),
+        "produced"
+    );
+    assert_eq!(
+        refusal_diagnostic(b"original reply fixture phase=engine_execute;code=invalid_output\n"),
+        "invalid_output"
+    );
+    for input in [b"original reply fixture phase=synthetic-private-canary;code=invalid_output\n".as_slice(), b"original reply fixture phase=engine_execute;code=synthetic-private-canary\n".as_slice(), b"original reply fixture phase=engine_execute;code=invalid_output;synthetic-private-canary\n".as_slice()] {
+        assert_eq!(refusal_stage(input), "unavailable");
+        assert_eq!(refusal_diagnostic(input), "unavailable");
+    }
 }
 #[test]
 fn subprocess_diagnostics_accept_only_known_sqlite_warning_and_refuse_secret_canary() {

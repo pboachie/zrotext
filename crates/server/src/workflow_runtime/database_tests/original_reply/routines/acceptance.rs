@@ -1,6 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
 
+fn admission_outcome(result: &Result<routines::contracts::Call, AuthError>) -> &'static str {
+    match result {
+        Ok(_) => "admitted",
+        Err(AuthError::InvalidInput) => "invalid_input",
+        Err(AuthError::InvalidCredentials) => "invalid_credentials",
+        Err(AuthError::EmailNotVerified) => "email_not_verified",
+        Err(AuthError::Unauthorized) => "unauthorized",
+        Err(AuthError::Forbidden) => "forbidden",
+        Err(AuthError::Conflict) => "conflict",
+        Err(AuthError::SmsOwnerKeyActive) => "sms_owner_key_active",
+        Err(AuthError::Database(_)) => "database",
+        Err(AuthError::Password) => "password",
+        Err(AuthError::MfaRequired { .. }) => "mfa_required",
+        Err(AuthError::Crypto) => "crypto",
+        Err(AuthError::RateLimited) => "rate_limited",
+    }
+}
+
 async fn assert_preparable(f: &RoutineCase, key: decisions::ActionKey) {
     assert!(f.current(key.action_id).await.is_ok());
     assert!(
@@ -215,14 +233,24 @@ async fn competing_original_events_spend_the_last_turn_once_and_rollback_losing_
             .get::<_, Vec<u8>>(0),
     );
     let (a, b) = tokio::join!(f.admit(one), f.admit(two));
-    assert!(a.is_ok() ^ b.is_ok());
+    assert!(
+        a.is_ok() ^ b.is_ok(),
+        "first={} second={}",
+        admission_outcome(&a),
+        admission_outcome(&b)
+    );
     let loser = if a.is_ok() { b } else { a };
-    assert!(matches!(loser, Err(AuthError::RateLimited)));
-    let row=f.f.case.f.db.query_one("SELECT (SELECT count(*) FROM workflow_routine_original_sources WHERE account_id=$1),(SELECT sum(calls)::bigint FROM workflow_routine_period_debits WHERE account_id=$1),(SELECT sum(units)::bigint FROM workflow_routine_period_debits WHERE account_id=$1),(SELECT turns FROM workflow_routine_turn_debits WHERE account_id=$1 AND context_id=$2)",&[&f.f.case.f.account,&f.policy.context_id]).await.unwrap();
+    let row=f.f.case.f.db.query_one("SELECT (SELECT count(*) FROM workflow_routine_original_sources WHERE account_id=$1),(SELECT sum(calls)::bigint FROM workflow_routine_period_debits WHERE account_id=$1),(SELECT sum(units)::bigint FROM workflow_routine_period_debits WHERE account_id=$1),(SELECT turns FROM workflow_routine_turn_debits WHERE account_id=$1 AND context_id=$2),(SELECT count(*) FROM workflow_routine_admission_tombstones WHERE account_id=$1)",&[&f.f.case.f.account,&f.policy.context_id]).await.unwrap();
     assert_eq!(row.get::<_, i64>(0), 1);
     assert_eq!(row.get::<_, Option<i64>>(1), Some(1));
     assert_eq!(row.get::<_, Option<i64>>(2), Some(4));
     assert_eq!(row.get::<_, i64>(3), 1);
+    assert_eq!(row.get::<_, i64>(4), 1);
+    assert!(
+        matches!(loser, Err(AuthError::RateLimited)),
+        "loser={}",
+        admission_outcome(&loser)
+    );
     f.finish().await;
 }
 

@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Synthetic fixture diagnostics only. Never serialize exception objects.
+const stages=new Set(['input','history','scope','installation','seed_prepare','client','engine_execute','result_assert','transport','original_current','original_read','original_page','context_metadata','context_content','routine_current','original_admit','call_current','produced']);
+const codes=new Set(['forbidden','response_unknown','authority_unavailable','scope_denied','invalid_scope','invalid_content','invalid_configuration','executor_unavailable','provider_unknown','invalid_output','artifact_changed','storage_unavailable','artifact_unavailable','unknown_no_retry','invalid_invocation','not_executable','clock_unavailable']);
+const known=new Map([
+ ['ZTSE draft-02 manifest: rollback, fork, or chain gap','manifest_chain'],
+ ['ZTSE draft-02 manifest: stale or future signed object','manifest_time'],
+ ['ZTSE draft-02 manifest: inbound reader authority','reader_authority'],
+ ['ZTSE draft-02 manifest: inbound signer authority','signer_authority'],
+ ['ZTSE draft-02 envelope prep: recipient key id','recipient_identity'],
+ ['ZTSE draft-02 envelope prep: wrap order/duplicate','recipient_order'],
+]);
+export function originalRoutineDiagnostic(stage,error){
+ const selected=typeof stage==='string'&&stages.has(stage)?stage:'unavailable';
+ let code='unavailable';
+ try{const candidateCode=error?.code;
+ if(typeof candidateCode==='string'&&codes.has(candidateCode))code=candidateCode;
+ else{const candidateMessage=error?.message;if(typeof candidateMessage==='string')code=known.get(candidateMessage)??code;}}catch{/* Untrusted getters cannot escape fixed diagnostics. */}
+ return `original reply fixture phase=${selected};code=${code}\n`;
+}
