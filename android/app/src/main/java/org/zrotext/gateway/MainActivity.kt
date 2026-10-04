@@ -120,6 +120,10 @@ class MainActivity : ComponentActivity() {
     private val conversationWorker = Executors.newSingleThreadExecutor()
     private var conversationEntryOpen by mutableStateOf(false)
     private var conversationSetupFile by mutableStateOf<Uri?>(null)
+    private var conversationMessageReference by mutableStateOf("")
+    private var conversationMessageEditorOpen by mutableStateOf(false)
+    private var conversationMessageOutcome by mutableStateOf(ConversationMessageReceiveController.Outcome.IDLE)
+    private var conversationMessageController: ConversationMessageReceiveController? = null
     private var conversationReplyText by mutableStateOf("")
     private var conversationReplyEditorOpen by mutableStateOf(false)
     private var conversationReplyObservation by mutableStateOf<ConversationPresentationSnapshot?>(null)
@@ -524,6 +528,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun closeConversationEntry(preservePendingPublicFile: Boolean = false) {
+        cancelConversationMessageReview(close = true)
         conversationSetupEnabled = false
         withdrawConversationReplyChoice()
         closeConversationEnrollment(preservePendingPublicFile)
@@ -614,6 +619,12 @@ class MainActivity : ComponentActivity() {
             }
         }
         DisposableEffect(observedPort) {
+            val messageController = ConversationMessageReceiveController({
+                if (conversationEntryOpen && conversationPort === observedPort &&
+                    lifecycle.currentState == Lifecycle.State.RESUMED)
+                    (observedPort as? ConversationConfirmedMessagePort)?.currentReceiveAuthority() else null
+            }, SystemClock::elapsedRealtime)
+            conversationMessageController = messageController
             conversationReplyObservation = null
             conversationReplyExpired = false
             val token = AtomicBoolean(true)
@@ -623,6 +634,7 @@ class MainActivity : ComponentActivity() {
                     if (token.get() && conversationEntryOpen && conversationPort === observedPort &&
                         value.version > (conversationReplyObservation?.version ?: 0)) {
                         // An action belongs to one observation, never a later active lease.
+                        cancelConversationMessageReview()
                         if (conversationReplyToken != null) cancelConversationReplyImport()
                         conversationReplyObservation = value
                         conversationReplyReceivedAt = received
@@ -632,13 +644,24 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             } }.getOrNull()
-            onDispose { token.set(false); runCatching { subscription?.close() } }
+            onDispose {
+                token.set(false); runCatching { subscription?.close() }; messageController.close()
+                if (conversationMessageController === messageController) conversationMessageController = null
+            }
+        }
+        LaunchedEffect(conversationMessageOutcome, conversationMessageController) {
+            while (conversationMessageOutcome == ConversationMessageReceiveController.Outcome.RECEIVING) {
+                kotlinx.coroutines.delay(50)
+                conversationMessageOutcome = conversationMessageController?.outcome
+                    ?: ConversationMessageReceiveController.Outcome.CANCELLED
+            }
         }
         LaunchedEffect(conversationReplyObservation?.version, conversationReplyReceivedAt) {
             val budget = conversationReplyObservation?.remainingMs ?: 0
             if (budget > 0) {
                 kotlinx.coroutines.delay((budget - (SystemClock.elapsedRealtime() - conversationReplyReceivedAt)).coerceAtLeast(0))
                 conversationReplyExpired = true
+                cancelConversationMessageReview()
                 cancelConversationReplyImport()
             }
         }
@@ -653,14 +676,40 @@ class MainActivity : ComponentActivity() {
                         Text("Close conversation review")
                     }
                     val port = conversationPort
-                    if (port != null) {
+                    if (port != null && conversationMessageEditorOpen) {
+                        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),
+                            verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp)) {
+                            ConversationMessageReceivePane(conversationMessageReference,
+                                conversationReplyIsCurrent() && port is ConversationConfirmedMessagePort,
+                                conversationMessageOutcome,
+                                { conversationMessageReference = it }, {
+                                    val receiver = conversationMessageController
+                                    receiver?.receive(conversationMessageReference)
+                                    conversationMessageOutcome = receiver?.outcome
+                                        ?: ConversationMessageReceiveController.Outcome.REFUSED
+                                }, { cancelConversationMessageReview() })
+                            OutlinedButton(onClick = { cancelConversationMessageReview() },
+                                modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) {
+                                Text("Back to conversation")
+                            }
+                        }
+                    } else if (port != null) {
                         FutureConversationPane(port, { line, generation ->
                             conversationVerifiedLineLabel?.takeIf { conversationSelectedLine == (line to generation) }
                         }, Modifier.weight(1f), onDismiss = { closeConversationEntry() }, onStopRequested = {
+                            cancelConversationMessageReview()
                             conversationSetupEnabled = false
                             withdrawConversationReplyChoice()
                             cancelConversationReplyImport()
                         })
+                        Button(onClick = {
+                            conversationMessageReference = ""
+                            conversationMessageOutcome = ConversationMessageReceiveController.Outcome.IDLE
+                            conversationMessageEditorOpen = true
+                        }, enabled = conversationReplyIsCurrent() && port is ConversationConfirmedMessagePort,
+                            modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) {
+                            Text("Receive confirmed message")
+                        }
                     } else {
                         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),
                             verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp)) {
@@ -846,6 +895,14 @@ class MainActivity : ComponentActivity() {
             }
             override fun close() { cancelled.set(true); owned.getAndSet(null)?.close() }
         }
+    }
+
+    private fun cancelConversationMessageReview(close: Boolean = false) {
+        conversationMessageController?.let { if (close) it.close() else it.cancel() }
+        if (close) conversationMessageController = null
+        conversationMessageReference = ""
+        conversationMessageEditorOpen = false
+        conversationMessageOutcome = ConversationMessageReceiveController.Outcome.CANCELLED
     }
 
     private fun cancelConversationReplyImport() {

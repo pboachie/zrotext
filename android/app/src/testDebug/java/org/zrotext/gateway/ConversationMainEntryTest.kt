@@ -368,12 +368,56 @@ class ConversationMainEntryTest {
         compose.onNodeWithText("Reply authority verified for the current interval. This action did not send a message.").assertDoesNotExist()
     }
 
+    @Test fun confirmedReceiveIsReachableFromOrdinaryReviewAndNeverSubmitsOrPersistsReference() {
+        installFixture()
+        compose.onNodeWithText("Receive confirmed message").assertIsNotEnabled()
+        emit(ConversationPresentationSnapshot(2, ConversationPresentationPhase.CONFIRMED_ACTIVE, interval, line, 1, 60000, true))
+        click("Receive confirmed message")
+        compose.onNodeWithText("Message reference").performTextInput("00000000-0000-0000-0000-000000000004")
+        click("Receive and verify message")
+        compose.onNodeWithText("Confirmed message received and verified.").assertExists()
+        assertEquals(1, ports.last().receives)
+        assertTrue(ports.last().actions.isEmpty())
+        click("Back to conversation"); click("Receive confirmed message")
+        compose.onNodeWithText("Receive and verify message").assertIsNotEnabled()
+        click("Close conversation review")
+        assertEquals(1, handles.last().closes)
+    }
+    @Test fun ordinaryBackgroundClosesPendingReceiveAndLateCompletionCannotPublishVerification() {
+        installFixture()
+        emit(ConversationPresentationSnapshot(2, ConversationPresentationPhase.CONFIRMED_ACTIVE, interval, line, 1, 60000, true))
+        val completion = AtomicReference<((Boolean) -> Unit)>()
+        compose.runOnIdle { ports.last().receiveCompletion = { completion.set(it) } }
+        click("Receive confirmed message")
+        compose.onNodeWithText("Message reference").performTextInput("00000000-0000-0000-0000-000000000004")
+        click("Receive and verify message")
+        compose.onNodeWithText("Receiving and verifying the confirmed message.").assertExists()
+        compose.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
+        compose.runOnIdle { completion.get()(true) }
+        compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+        compose.waitForIdle()
+        compose.onNodeWithText("Confirmed message received and verified.").assertDoesNotExist()
+        assertEquals(1, handles.last().closes)
+        assertEquals(1, ports.last().receives)
+        assertTrue(ports.last().actions.isEmpty())
+    }
+
     private class Handle(val ready: () -> Unit, val failure: Boolean) : ConversationSetupEntrySession.Handle {
         var closes = 0
         override fun begin(): Boolean { ready(); return true }
         override fun close() { closes++; if (failure) error("private details") }
     }
-    private inner class Port : ConversationPresentationPort {
+    private inner class Port : ConversationConfirmedMessagePort {
+        var receives = 0
+        var receiveCompletion: (((Boolean) -> Unit) -> Unit)? = null
+        private val account = UUID.randomUUID().toString()
+        private val device = UUID.randomUUID().toString()
+        private var observedAt = android.os.SystemClock.elapsedRealtime()
+        override fun currentReceiveAuthority() = ConversationMessageReceiveController.Current(this,
+            account, device, state, observedAt, ConversationMessageReceiver { _, complete ->
+                receives++
+                receiveCompletion?.invoke(complete) ?: complete(true)
+            })
         val actions = mutableListOf<String>()
         private val listeners = mutableListOf<(ConversationPresentationSnapshot) -> Unit>()
         var subscriptions = 0
@@ -383,7 +427,10 @@ class ConversationMainEntryTest {
         override fun observe(listener: (ConversationPresentationSnapshot) -> Unit): AutoCloseable {
             subscriptions++; listeners += listener; listener(state); return AutoCloseable { listeners.remove(listener) }
         }
-        fun emit(value: ConversationPresentationSnapshot) { state = value; listeners.toList().forEach { it(value) } }
+        fun emit(value: ConversationPresentationSnapshot) {
+            state = value; observedAt = android.os.SystemClock.elapsedRealtime()
+            listeners.toList().forEach { it(value) }
+        }
         override fun refresh() = Unit
         override fun approvePhoneReview(requestId: String, observedVersion: Long) { actions += "approve:$requestId:$observedVersion" }
         override fun declinePhoneReview(requestId: String, observedVersion: Long) { actions += "decline:$requestId:$observedVersion" }

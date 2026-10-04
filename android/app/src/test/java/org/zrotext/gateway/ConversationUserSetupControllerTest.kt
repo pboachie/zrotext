@@ -181,6 +181,42 @@ class ConversationUserSetupControllerTest {
         assertEquals(ConversationCloseOutcome.DISABLED_CLOSURE_FAILED, snapshot?.close); assertFalse(checkNotNull(snapshot).canStop)
         observation.close(); decision.close()
     }
+    @Test fun receiveSamplingDoesNotRenewTheOriginalObservationAndStopClearsIt() {
+        var now = 100L; var live = true; var receives = 0
+        val decision = ConversationPhoneDecision(f.session, f.scope, f.review, 0, { now }, { f.session })
+        val connection = Any()
+        val snapshot = ConversationPresentationSnapshot(7, ConversationPresentationPhase.CONFIRMED_ACTIVE,
+            f.scope.intervalId, f.scope.lineId, 1, 1000, true)
+        val port = object : ConversationPresentationPort {
+            override fun observe(listener: (ConversationPresentationSnapshot) -> Unit): AutoCloseable {
+                listener(snapshot); return AutoCloseable {}
+            }
+            override fun refresh() = Unit
+            override fun approvePhoneReview(requestId: String, observedVersion: Long) = Unit
+            override fun declinePhoneReview(requestId: String, observedVersion: Long) = Unit
+            override fun requestStop(intervalId: String, observedVersion: Long) = Unit
+        }
+        val wrapper = ConversationUserSetupController.Presentation(port, decision, { check(live) }, { value, at ->
+            ConversationMessageReceiveController.Current(connection, f.scope.accountId, f.scope.deviceId, value, at,
+                ConversationMessageReceiver { _, complete -> receives++; complete(true) })
+        }, { now })
+        assertNull(wrapper.currentReceiveAuthority())
+        val first = wrapper.observe {}
+        assertEquals(100L, checkNotNull(wrapper.currentReceiveAuthority()).observedAt)
+        now = 800
+        val repeated = wrapper.observe {}
+        assertEquals(100L, checkNotNull(wrapper.currentReceiveAuthority()).observedAt)
+        val receiver = ConversationMessageReceiveController(wrapper::currentReceiveAuthority) { now }
+        now = 1100
+        assertFalse(receiver.receive("00000000-0000-0000-0000-000000000004"))
+        assertEquals(0, receives)
+        wrapper.requestStop(f.scope.intervalId, 7)
+        assertNull(wrapper.currentReceiveAuthority())
+        live = false
+        assertNull(wrapper.currentReceiveAuthority())
+        receiver.close(); first.close(); repeated.close(); decision.close()
+    }
+
     private fun socket(sent: (String) -> Unit = {}) = object : okhttp3.WebSocket {
         override fun request() = okhttp3.Request.Builder().url("https://example.org").build()
         override fun queueSize() = 0L
