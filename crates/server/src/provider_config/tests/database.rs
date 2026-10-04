@@ -9,6 +9,7 @@ use axum::{
     http::{Request, StatusCode},
     response::Response,
 };
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio_postgres::{Client, NoTls};
@@ -528,7 +529,8 @@ async fn configuration_owner_isolation_pagination_and_actual_account_erasure_are
         ids.push(id);
     }
     let foreign = Uuid::new_v4();
-    create(&mut f.db, &other, mutation(foreign, Uuid::new_v4(), 0))
+    let foreign_request = Uuid::new_v4();
+    create(&mut f.db, &other, mutation(foreign, foreign_request, 0))
         .await
         .unwrap();
     assert!(matches!(
@@ -537,6 +539,16 @@ async fn configuration_owner_isolation_pagination_and_actual_account_erasure_are
     ));
     assert!(matches!(
         lifecycle::heads(&mut f.db, &f.owner, Some(foreign), false).await,
+        Err(ConversationError::NotFound)
+    ));
+    let foreign_version = URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&json!({"config_id":foreign,"version":1})).unwrap());
+    assert!(matches!(
+        lifecycle::export(&mut f.db, &f.owner, None, Some(&foreign_version), None).await,
+        Err(ConversationError::NotFound)
+    ));
+    assert!(matches!(
+        lifecycle::export(&mut f.db, &f.owner, None, None, Some(foreign_request)).await,
         Err(ConversationError::NotFound)
     ));
     let first = lifecycle::export(&mut f.db, &f.owner, None, None, None)
