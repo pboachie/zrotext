@@ -51,7 +51,7 @@ class Review {
  #now(){const n=Date.now();if(!Number.isSafeInteger(n)||n<1||BigInt(n)>max||n<this.#lastWall)refuse();this.#lastWall=n;return BigInt(n);}
  #live(r){if(this.#closed||this.#doc.hidden||r.abort.signal.aborted||performance.now()>=r.deadline||this.#record!==r)refuse();}
  #arm(r,deadline){r.deadline=Math.min(r.deadline,deadline);this.#live(r);clearTimeout(r.timer);r.timer=setTimeout(()=>this.#forget(r),Math.max(0,r.deadline-performance.now()));}
- #new(){if(this.#closed||this.#busy||this.#doc.hidden)refuse();const token=csrf(this.#doc);if(this.#record)this.#forget(this.#record);const started=performance.now(),r={abort:new AbortController(),deadline:started+10000,reviewDeadline:started+300000,timer:null,store:null,buffers:[],possibleWrite:false,session:null,csrf:token};this.#record=r;this.#busy=true;try{this.#arm(r,r.deadline);return r;}catch(e){this.#forget(r);this.#busy=false;throw e;}}
+ #new(selectedAccount){if(this.#closed||this.#busy||this.#doc.hidden)refuse();const token=csrf(this.#doc);if(this.#record)this.#forget(this.#record);const account=selectedAccount.slice(),expectedAccount=hex(account).replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/,'$1-$2-$3-$4-$5');const started=performance.now(),r={account,expectedAccount,abort:new AbortController(),deadline:started+10000,reviewDeadline:started+300000,timer:null,store:null,buffers:[account],possibleWrite:false,session:null,csrf:token};this.#record=r;this.#busy=true;try{this.#arm(r,r.deadline);return r;}catch(e){this.#forget(r);this.#busy=false;throw e;}}
  #forget(r){
   if(r.possibleWrite&&r.unknown)this.#unknown={...r.unknown};clearTimeout(r.timer);r.abort.abort();if(r.store)r.store.close();for(const b of r.buffers)b.fill(0);r.buffers.length=0;r.manifest=null;r.identity=null;r.before=null;r.session=null;
   if(this.#record===r){this.#record=null;this.#nodes.decision.hidden=true;this.#nodes.tuple.textContent='';this.#status(this.#unknown?'UNKNOWN':'DECLINED',this.#unknown?'A local write may have started. Read the local outcome; do not automatically retry.':'Local decision closed.');}
@@ -67,13 +67,13 @@ class Review {
   return this.#race(p,r);
  }
  async #session(r){
-  this.#live(r);if(csrf(this.#doc)!==r.csrf)refuse();
+  this.#live(r);if(this.#nodes.account.value!==r.expectedAccount||csrf(this.#doc)!==r.csrf)refuse();
   const response=await this.#job(r,()=>this.#win.fetch('/v1/auth/session',{credentials:'same-origin',cache:'no-store',redirect:'error',signal:r.abort.signal}));
   if(response.status!==200||response.redirected||!/^application\/json(?:;\s*charset=utf-8)?$/i.test(response.headers.get('content-type')??'')||!response.body)refuse();
   const reader=response.body.getReader();let b=new Uint8Array(0);
   try{for(;;){const item=await this.#job(r,()=>reader.read());if(item.done)break;if(b.length+item.value.length>1024)refuse();const next=new Uint8Array(b.length+item.value.length);next.set(b);next.set(item.value,b.length);b=next;}}finally{reader.cancel().catch(()=>{});reader.releaseLock();}
   const body=flatJson(new TextDecoder('utf-8',{fatal:true}).decode(b),1024);
-  const s=closed(body,['account_id','user_id','session_id','role']);for(const k of ['account_id','user_id','session_id'])uuid(s[k]);if(s.role!=='owner'||s.account_id!==this.#nodes.account.value||csrf(this.#doc)!==r.csrf)refuse();
+  const s=closed(body,['account_id','user_id','session_id','role']);for(const k of ['account_id','user_id','session_id'])uuid(s[k]);if(s.role!=='owner'||s.account_id!==r.expectedAccount||this.#nodes.account.value!==r.expectedAccount||csrf(this.#doc)!==r.csrf)refuse();
   if(r.session&&['account_id','user_id','session_id','role'].some(k=>r.session[k]!==s[k]))refuse();r.session=s;this.#live(r);return s;
  }
  #selection(node,min,maxSize){const list=node.files;if(!list||list.length!==1||!(list[0] instanceof this.#win.File)||list[0].size<min||list[0].size>maxSize)refuse();return list[0];}
@@ -82,13 +82,13 @@ class Review {
  async prepare(){
   if(this.#unknown)refuse();
   const account=uuid(this.#nodes.account.value),visibleOrigin=origin(this.#nodes.origin.value),fingerprint=unhex(this.#nodes.fingerprint.value,32),cardFile=this.#selection(this.#nodes.card,142,645),manifestFile=this.#selection(this.#nodes.manifest,364,9751);if(visibleOrigin!==this.#win.location.origin)refuse();
-  const r=this.#new();try{
+  const r=this.#new(account);try{
    const card=await this.#file(r,cardFile,142,645),signed=await this.#file(r,manifestFile,364,9751),pin=capturePublicCard(card,visibleOrigin);r.buffers.push(pin);
    const trust=await this.#job(r,()=>enrollRootPin02(pin,fingerprint));if(trust.generation!==1n||!same(trust.accountId,account))refuse();
    await this.#session(r);const store=await this.#open(r),before=await this.#job(r,()=>store.read());if(before&&(before.trust.generation!==1n||!same(before.trust.accountId,account)||!same(before.trust.rootPoint,trust.rootPoint)))refuse();
    const now=this.#now(),manifest=await this.#job(r,()=>verifyManifest02(signed,before?.trust??trust,now)),m={...manifest,...verifiedManifestIdentity02(manifest,now)};
    if(!before||before.trust.version===0n){if(m.version!==1n||m.previousDigest.some(v=>v!==0))refuse();}
-   const life=Number(m.expiresMs-now);if(life<=0)refuse();r.reviewDeadline=Math.min(r.reviewDeadline,performance.now()+life);r.account=account;r.origin=visibleOrigin;r.fingerprint=fingerprint;r.pin=pin;r.signed=signed;r.before=snapshot(before);r.manifest=manifest;r.identity=m;r.comparisonMs=now;r.buffers.push(account,fingerprint);
+   const life=Number(m.expiresMs-now);if(life<=0)refuse();r.reviewDeadline=Math.min(r.reviewDeadline,performance.now()+life);r.origin=visibleOrigin;r.fingerprint=fingerprint;r.pin=pin;r.signed=signed;r.before=snapshot(before);r.manifest=manifest;r.identity=m;r.comparisonMs=now;r.buffers.push(account,fingerprint);
    await this.#session(r);this.#live(r);r.deadline=r.reviewDeadline;this.#arm(r,r.deadline);this.#nodes.tuple.textContent=JSON.stringify({origin:visibleOrigin,fingerprint:hex(fingerprint),priorState:before===null?'NO_LOCAL_ROOT':before.trust.version===0n?'PIN_ONLY':'ACCEPTED_LOCAL_HISTORY',previousVersion:before?.trust.version.toString()??'absent',...scalarView(m)},null,2);this.#nodes.decision.hidden=false;this.#status('REVIEWING','Compare the complete tuple before accepting local history.');return this.status();
   }catch(e){this.#forget(r);throw e;}finally{this.#busy=false;}
  }
@@ -108,7 +108,7 @@ class Review {
  }
  decline(){if(this.#record)this.#forget(this.#record);return this.status();}
  async reconcile(){
-  if(!this.#unknown)refuse();const unknown={...this.#unknown},r=this.#new();let matched=false;try{
+  if(!this.#unknown)refuse();const unknown={...this.#unknown},r=this.#new(uuid(unknown.account));let matched=false;try{
    await this.#session(r);if(r.session.account_id!==unknown.account)refuse();const store=await this.#open(r),before=await this.#job(r,()=>store.read());
    if(!before||before.trust.generation!==1n||!same(before.trust.accountId,uuid(unknown.account)))refuse();
    const pin=new Uint8Array(94);pin.set([90,84,82,80,2]);pin.set(before.trust.accountId,5);new DataView(pin.buffer).setBigUint64(21,1n);pin.set(before.trust.rootPoint,29);

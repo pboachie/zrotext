@@ -58,7 +58,9 @@ The owner explicitly accepts or declines that displayed local history.
 The actual same-origin `/v1/auth/session` GET uses cookies, no-store and refuses
 redirects. Its bounded closed response has account_id, user_id, session_id and
 role; only owner for the independently expected account is accepted. It has no
-session expiry field. Frozen session/user and copied CSRF-reference comparisons
+session expiry field. The selected account is privately copied before the first
+await; changing the visible account refuses rather than becoming a new authority
+expectation. Frozen account/session/user and copied CSRF-reference comparisons
 are application lifecycle checks. This Cookie-only GET provides no held lease
 or server-bound CSRF authentication; future issuer POST authorization is separate.
 
