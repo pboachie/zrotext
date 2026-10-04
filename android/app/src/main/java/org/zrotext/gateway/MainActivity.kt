@@ -620,10 +620,26 @@ class MainActivity : ComponentActivity() {
             }
         }
         DisposableEffect(observedPort) {
-            val messageController = ConversationMessageReceiveController({
-                if (conversationEntryOpen && conversationPort === observedPort &&
+            lateinit var messageController: ConversationMessageReceiveController
+            messageController = ConversationMessageReceiveController({
+                val authority = if (conversationEntryOpen && conversationPort === observedPort &&
                     lifecycle.currentState == Lifecycle.State.RESUMED)
                     (observedPort as? ConversationConfirmedMessagePort)?.currentReceiveAuthority() else null
+                authority?.let { original ->
+                    ConversationMessageReceiveController.Current(original.connection, original.accountId,
+                        original.deviceId, original.snapshot, original.observedAt,
+                        ConversationMessageReceiver { message, complete ->
+                            original.receiver.receive(message) { accepted ->
+                                complete(accepted)
+                                runOnUiThread {
+                                    if (conversationEntryOpen && conversationPort === observedPort &&
+                                        conversationMessageController === messageController && conversationMessageEditorOpen &&
+                                        lifecycle.currentState == Lifecycle.State.RESUMED)
+                                        conversationMessageOutcome = messageController.outcome
+                                }
+                            }
+                        })
+                }
             }, SystemClock::elapsedRealtime)
             conversationMessageController = messageController
             conversationReplyObservation = null
@@ -648,13 +664,6 @@ class MainActivity : ComponentActivity() {
             onDispose {
                 token.set(false); runCatching { subscription?.close() }; messageController.close()
                 if (conversationMessageController === messageController) conversationMessageController = null
-            }
-        }
-        LaunchedEffect(conversationMessageOutcome, conversationMessageController) {
-            while (conversationMessageOutcome == ConversationMessageReceiveController.Outcome.RECEIVING) {
-                kotlinx.coroutines.delay(50)
-                conversationMessageOutcome = conversationMessageController?.outcome
-                    ?: ConversationMessageReceiveController.Outcome.CANCELLED
             }
         }
         LaunchedEffect(conversationReplyObservation?.version, conversationReplyReceivedAt) {
