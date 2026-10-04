@@ -88,6 +88,17 @@ fn accepted() -> Attempt {
 }
 
 #[test]
+fn signed_masked_destination_is_refused_without_relaxing_recipient_identity() {
+    let mut event = fixture("delivered", 10);
+    event["data"]["payload"]["to"][0]["phone_number"] =
+        json!(format!("{}****", &RECIPIENT[..RECIPIENT.len() - 4]));
+    assert_eq!(
+        decode(&event, &request()).err(),
+        Some(Rejection::InvalidCallback)
+    );
+}
+
+#[test]
 fn explicit_plaintext_route_binds_all_request_identity() {
     let original = request();
     assert_eq!(original.check_replay(&request()), Ok(()));
