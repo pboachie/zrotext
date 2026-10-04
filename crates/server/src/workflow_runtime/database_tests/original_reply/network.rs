@@ -70,24 +70,6 @@ fn known_runtime_stderr(bytes: &[u8]) -> bool {
    !pid.is_empty()&&pid.bytes().all(|b|b.is_ascii_digit())&&warning=="ExperimentalWarning: SQLite is an experimental feature and might change at any time"
  })
 }
-fn jwk(key: &SigningKey) -> Value {
-    let point = key.verifying_key().to_sec1_point(false);
-    json!({"kty":"EC","crv":"P-256","x":URL_SAFE_NO_PAD.encode(point.x().unwrap()),"y":URL_SAFE_NO_PAD.encode(point.y().unwrap()),"d":URL_SAFE_NO_PAD.encode(key.to_bytes()),"ext":true})
-}
-fn known_runtime_stderr(bytes: &[u8]) -> bool {
-    if bytes.len() > 512 {
-        return false;
-    }
-    let Ok(text) = std::str::from_utf8(bytes) else {
-        return false;
-    };
-    text.lines().all(|line|{
-   if line=="(Use `node --trace-warnings ...` to show where the warning was created)" {return true}
-   let Some(rest)=line.strip_prefix("(node:")else{return false};
-   let Some((pid,warning))=rest.split_once(") ")else{return false};
-   !pid.is_empty()&&pid.bytes().all(|b|b.is_ascii_digit())&&warning=="ExperimentalWarning: SQLite is an experimental feature and might change at any time"
- })
-}
 #[test]
 fn subprocess_diagnostics_accept_only_known_sqlite_warning_and_refuse_secret_canary() {
     assert!(known_runtime_stderr(b""));
