@@ -1,0 +1,146 @@
+name: Approve public npm preview
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: npm-zrotext-preview
+  cancel-in-progress: false
+jobs:
+  prepare:
+    # An owner must separately configure bootstrap, trust and the protected
+    # environment before opting in. No environment is created by this job.
+    if: github.repository == 'pboachie/zrotext' && github.ref_type == 'tag' && vars.NPM_PUBLICATION_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      checks: read
+      actions: read
+    outputs:
+      artifact: ${{ steps.receipt.outputs.artifact }}
+      receipt_sha: ${{ steps.receipt.outputs.receipt_sha }}
+      filename: ${{ steps.receipt.outputs.filename }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check preview version, exact source checks and configured gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch origin main:refs/remotes/origin/main
+          python3 scripts/npm_release.py preflight
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.13.0'
+      - name: Pin npm without release dependency caching
+        run: npm install --global npm@11.21.0 --ignore-scripts
+      - name: Install, audit and test the locked SDK
+        working-directory: sdk/typescript
+        run: |
+          npm ci --ignore-scripts
+          npm audit --audit-level=high --ignore-scripts --json > "$RUNNER_TEMP/npm-audit.json"
+          npm test
+      - name: Stage and inspect the minimal package
+        run: |
+          node sdk/typescript/node_modules/typescript/bin/tsc -p sdk/npm/tsconfig.json --outDir "$RUNNER_TEMP/npm-build"
+          python3 scripts/package_npm.py stage --compiled "$RUNNER_TEMP/npm-build" --out "$RUNNER_TEMP/npm-package"
+          npm pack "$RUNNER_TEMP/npm-package" --dry-run --ignore-scripts --json > "$RUNNER_TEMP/npm-pack-preview.json"
+          npm pack "$RUNNER_TEMP/npm-package" --ignore-scripts --json --pack-destination "$RUNNER_TEMP" > "$RUNNER_TEMP/npm-pack.json"
+      - name: Verify the exact reviewed bytes and create their receipt
+        id: receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          filename="$(python3 -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"]+"/npm-pack.json"))[0]["filename"])')"
+          tarball="$RUNNER_TEMP/$filename"
+          python3 scripts/package_npm.py verify-tarball "$tarball" > "$RUNNER_TEMP/npm-content.json"
+          node scripts/test_npm_consumer.mjs "$tarball" "$GITHUB_WORKSPACE/sdk/typescript/node_modules/typescript/bin/tsc"
+          # Dry-run does not authenticate or establish registry ownership.
+          npm publish "$tarball" --dry-run --ignore-scripts --access public --tag next --provenance=false
+          python3 scripts/npm_release.py receipt --tarball "$tarball" --receipt "$RUNNER_TEMP/npm-receipt.json"
+          echo "filename=$filename" >> "$GITHUB_OUTPUT"
+          echo "artifact=npm-preview-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+          echo "receipt_sha=$(sha256sum "$RUNNER_TEMP/npm-receipt.json" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - name: Retain the exact tarball and public review evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.receipt.outputs.artifact }}
+          path: |
+            ${{ runner.temp }}/${{ steps.receipt.outputs.filename }}
+            ${{ runner.temp }}/npm-receipt.json
+            ${{ runner.temp }}/npm-content.json
+            ${{ runner.temp }}/npm-pack-preview.json
+            ${{ runner.temp }}/npm-audit.json
+          if-no-files-found: error
+          retention-days: 30
+  notify:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ needs.prepare.outputs.artifact }}
+          path: ${{ runner.temp }}/npm-review
+      - name: Notify the verified maintainer once for these reviewed bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_RECEIPT_SHA: ${{ needs.prepare.outputs.receipt_sha }}
+        run: |
+          echo "$EXPECTED_RECEIPT_SHA  $RUNNER_TEMP/npm-review/npm-receipt.json" | sha256sum --check --status
+          python3 scripts/npm_handoff.py "$RUNNER_TEMP/npm-review/npm-receipt.json"
+  publish:
+    needs: [prepare, notify]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment:
+      name: npm-publication
+      url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    permissions:
+      contents: read
+      checks: read
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.13.0'
+      - name: Pin the trusted-publishing client
+        run: npm install --global npm@11.21.0 --ignore-scripts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ needs.prepare.outputs.artifact }}
+          path: ${{ runner.temp }}/npm-review
+      - name: Recheck source, bytes, registry and actual maintainer approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_RECEIPT_SHA: ${{ needs.prepare.outputs.receipt_sha }}
+          PACKAGE_FILENAME: ${{ needs.prepare.outputs.filename }}
+        run: |
+          echo "$EXPECTED_RECEIPT_SHA  $RUNNER_TEMP/npm-review/npm-receipt.json" | sha256sum --check --status
+          git fetch origin main:refs/remotes/origin/main
+          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          python3 scripts/npm_release.py approved --tarball "$RUNNER_TEMP/npm-review/$PACKAGE_FILENAME" --receipt "$RUNNER_TEMP/npm-review/npm-receipt.json"
+      - name: Publish only the approved preview tarball with OIDC
+        env:
+          PACKAGE_FILENAME: ${{ needs.prepare.outputs.filename }}
+        run: npm publish "$RUNNER_TEMP/npm-review/$PACKAGE_FILENAME" --ignore-scripts --access public --tag next --provenance
+      - name: Verify the registry's exact bytes and provenance presence
+        env:
+          PACKAGE_FILENAME: ${{ needs.prepare.outputs.filename }}
+        run: python3 scripts/npm_release.py verify-published --tarball "$RUNNER_TEMP/npm-review/$PACKAGE_FILENAME" --receipt "$RUNNER_TEMP/npm-review/npm-receipt.json"
