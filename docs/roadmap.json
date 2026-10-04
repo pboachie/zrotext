@@ -296,13 +296,15 @@
             ["agent integration plan", "PRODUCT-PLAN.md#agent-messaging-tools"],
             ["#728", "https://github.com/pboachie/zrotext/pull/728"],
             ["#745", "https://github.com/pboachie/zrotext/pull/745"],
-            ["#771", "https://github.com/pboachie/zrotext/pull/771"]
+            ["#771", "https://github.com/pboachie/zrotext/pull/771"],
+            ["#841", "https://github.com/pboachie/zrotext/pull/841"]
           ],
           "evidence_note": "Python/function adapters use the shared authorized transport; selected sealed event delivery exists, while original-reply consumer composition remains open",
           "done": [
             "Python and provider-neutral function adapters over the shared authorized workflow transport ([#728](https://github.com/pboachie/zrotext/pull/728))",
             "Signature-verified selected sealed inbound delivery with durable receipt/checkpoint primitives ([#745](https://github.com/pboachie/zrotext/pull/745))",
-            "Phone-selected original reply readers exposed with durable consumption ([#771](https://github.com/pboachie/zrotext/pull/771))"
+            "Phone-selected original reply readers exposed with durable consumption ([#771](https://github.com/pboachie/zrotext/pull/771))",
+            "PostgreSQL regressions cover the archive-reader and phone-signer expiry caps with independently shortened expiry manifests ([#841](https://github.com/pboachie/zrotext/pull/841))"
           ],
           "todo": [
             "Bridge original encrypted reply provenance into the selected integration reader and its durable consumption/STOP path (#617)",
@@ -445,7 +447,8 @@
             ["#770", "https://github.com/pboachie/zrotext/pull/770"],
             ["#777", "https://github.com/pboachie/zrotext/pull/777"],
             ["#783", "https://github.com/pboachie/zrotext/pull/783"],
-            ["#813", "https://github.com/pboachie/zrotext/pull/813"]
+            ["#813", "https://github.com/pboachie/zrotext/pull/813"],
+            ["#837", "https://github.com/pboachie/zrotext/pull/837"]
           ],
           "done": [
             "Stripe Checkout and Customer Portal in test mode",
@@ -455,7 +458,8 @@
             "Read-only TEST meter and invoice usage observation and reconciliation without changing billing authority ([#770](https://github.com/pboachie/zrotext/pull/770))",
             "Reusable TEST hosted onboarding controller carrying registration, verification, login/MFA and TEST Checkout/Portal handoffs through one explicit state flow ([#777](https://github.com/pboachie/zrotext/pull/777))",
             "Disabled provider-neutral LIVE-entitlement policy layer with a durable caller-owned transaction adapter and unmounted availability router; TEST billing authority is never reused as a LIVE entitlement ([#783](https://github.com/pboachie/zrotext/pull/783))",
-            "Provider meter identifier length enforced before meter transport ([#813](https://github.com/pboachie/zrotext/pull/813))"
+            "Provider meter identifier length enforced before meter transport ([#813](https://github.com/pboachie/zrotext/pull/813))",
+            "Composed hosted TEST admission with the invoice-attributed ledger in the caller's transaction: immutable namespace/customer/subscription provenance, serialized quota and device checks, original invoice attribution preserved for replay and refunds, and unresolved prior-period liabilities counted against the current cap ([#837](https://github.com/pboachie/zrotext/pull/837))"
           ],
           "todo": [
             "Explicit live-payment isolation and runtime implementation; quota-only limits/plans already exist default-off (#645)",
@@ -559,7 +563,8 @@
             ["#816", "https://github.com/pboachie/zrotext/pull/816"],
             ["#787", "https://github.com/pboachie/zrotext/pull/787"],
             ["#790", "https://github.com/pboachie/zrotext/pull/790"],
-            ["#811", "https://github.com/pboachie/zrotext/pull/811"]
+            ["#811", "https://github.com/pboachie/zrotext/pull/811"],
+            ["#855", "https://github.com/pboachie/zrotext/pull/855"]
           ],
           "evidence_note": "owner contacts/consent API and default-off encrypted conversation/context callers exist; contact vault encryption is server-side and does not establish client sealing",
           "done": [
@@ -573,7 +578,8 @@
             "Unmounted SDK producer for signed contact field and mutation formats binding reader statements, intended scope and prior transitions through an application-supplied nonextractable signing key ([#816](https://github.com/pboachie/zrotext/pull/816))",
             "Dormant owner context authoring with a compatible refresh client ([#787](https://github.com/pboachie/zrotext/pull/787))",
             "Isolated owner facts editor showing exact local plaintext and selected scope, encrypting initial context through the current signed manifest and preserving requests after unknown responses ([#790](https://github.com/pboachie/zrotext/pull/790))",
-            "Isolated local owner provider disclosure review returning bounded metadata commitments with execution unavailable and plaintext scrubbed on completion ([#811](https://github.com/pboachie/zrotext/pull/811))"
+            "Isolated local owner provider disclosure review returning bounded metadata commitments with execution unavailable and plaintext scrubbed on completion ([#811](https://github.com/pboachie/zrotext/pull/811))",
+            "Bounded owner-reviewed contact reader issuance intent persisted through the complete six-operation library caller, with the original reviewed request and frozen public source committed at create and whole-signature, source, owner-session and factor verification at first completion ([#855](https://github.com/pboachie/zrotext/pull/855))"
           ],
           "todo": [
             "Client-sealed contact fields using an existing reviewed envelope and selected-reader contract (#634); the merged verifiers, producer and local-history adapter remain unmounted",
