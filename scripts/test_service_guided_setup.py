@@ -15,9 +15,11 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from urllib.parse import urlsplit
 import guided_workflow_setup as setup
 from workflow_owner_setup import OwnerSession, OwnerSetupError
+from workflow_connector_fixture import OwnedFixtureVault, fixture_node, observed_children_stopped
 
 
 DIAGNOSTIC = {"stage": "start", "operation": "none", "status": 0}
@@ -42,6 +44,7 @@ def run(fixture):
         raise ValueError('invalid_fixture')
     allowed = {'/v1/auth/login', '/v1/auth/login/mfa', '/v1/auth/session',
                '/v1/auth/logout', '/v1/auth/workflow-grants', '/v1/workflow/tools'}
+    hold_metadata, metadata_waiting, release_metadata = threading.Event(), threading.Event(), threading.Event()
     class Proxy(BaseHTTPRequestHandler):
         def log_message(self, *_):
             pass
@@ -58,7 +61,14 @@ def run(fixture):
                 return
             connection = http.client.HTTPConnection('127.0.0.1', upstream.port, timeout=10)
             try:
-                connection.request(self.command, self.path, self.rfile.read(length),
+                payload = self.rfile.read(length)
+                if self.command == 'POST' and self.path == '/v1/workflow/tools' and hold_metadata.is_set():
+                    value = json.loads(payload)
+                    assert value['method'] == 'workflow.context.metadata'
+                    assert value['params']['context_id'] == fixture['scope']['context_id']
+                    metadata_waiting.set()
+                    release_metadata.wait(10)
+                connection.request(self.command, self.path, payload,
                                    {key: value for key, value in self.headers.items() if key.lower() not in ('host', 'connection')})
                 response = connection.getresponse()
                 body = response.read(65537)
@@ -127,7 +137,40 @@ def run(fixture):
             scope_file = root / 'scope.json'
             scope_file.write_text(json.dumps(fixture['scope']))
             broker = Path(fixture['broker'])
-            vault = MemoryVault()
+            vault = OwnedFixtureVault() if fixture.get('verify_installed') else MemoryVault()
+            def verify_installed():
+                from mcp.client import stdio
+                processes = []
+                create = stdio._create_platform_compatible_process
+                async def observe(*args, **kwargs):
+                    process = await create(*args, **kwargs)
+                    processes.append(process)
+                    return process
+                before = config.read_bytes(), setup.intent_path(config).read_bytes(), vault.get(installed['secret_reference'])
+                output = io.StringIO()
+                with patch.object(sys, 'argv', [arguments[0], 'verify', *arguments[2:]]), \
+                     patch.object(setup, 'OwnerSession', side_effect=AssertionError('verification logged in')), \
+                     patch.object(setup, 'operating_system_store', side_effect=AssertionError('parent opened custody')), \
+                     patch.object(stdio, '_create_platform_compatible_process', side_effect=observe), \
+                     contextlib.redirect_stdout(output):
+                    code = setup.main()
+                result = json.loads(output.getvalue())
+                DIAGNOSTIC['verification'] = result.get('code', 'none')
+                if len(processes) != 1 or processes[0].returncode is None:
+                    DIAGNOSTIC['verification'] = 'owned_launcher_still_running'
+                    raise AssertionError('owned launcher cleanup refused')
+                try:
+                    observed_children_stopped(child_receipt)
+                except AssertionError:
+                    DIAGNOSTIC['verification'] = 'owned_node_still_running'
+                    raise
+                assert before == (config.read_bytes(), setup.intent_path(config).read_bytes(), vault.get(installed['secret_reference']))
+                assert narrow not in output.getvalue() and fixture['password'] not in output.getvalue()
+                assert result['sendAvailable'] is False and result['clientAppCompatibility'] == 'unverified'
+                return code, result
+            shim = contextlib.ExitStack()
+            if fixture.get('verify_installed'):
+                child_receipt = shim.enter_context(fixture_node(root, root / 'cert.pem'))
             preview_digest = setup.local.digest(config.read_bytes())
             arguments = ['guided_workflow_setup.py', 'connect', '--client', 'mcp-json',
                          '--config', str(config), '--scope', str(scope_file), '--broker', str(broker),
@@ -166,6 +209,32 @@ def run(fixture):
             reply = json.loads(child.stdout.splitlines()[-1])
             assert reply['result']['structuredContent']['available'] is True
             assert narrow.encode() not in child.stdout
+            if fixture.get('verify_installed'):
+                DIAGNOSTIC['stage'] = 'installed_verify'
+                code, result = verify_installed()
+                assert code == 0 and result['status'] == 'verified'
+                assert result['authenticatedMetadata'] == 'observed'
+                assert result['runtime']['mcp'] == '2.3.0'
+                DIAGNOSTIC['stage'] = 'timeout_verify'
+                hold_metadata.set()
+                started = time.monotonic()
+                try:
+                    with patch('workflow_connector_verify.DEADLINE_SECONDS', 2):
+                        code, result = verify_installed()
+                    elapsed = time.monotonic() - started
+                    if not metadata_waiting.is_set():
+                        DIAGNOSTIC['verification'] = 'metadata_not_waiting'
+                        raise AssertionError('timeout did not reach metadata')
+                    assert code == 2 and result['status'] == 'unverified'
+                    assert result['code'] == 'deadline_exceeded'
+                    assert 'authenticatedMetadata' not in result
+                    # Includes official SDK shutdown grace, beyond operation deadline.
+                    if elapsed >= 10:
+                        DIAGNOSTIC['verification'] = 'timeout_too_slow'
+                        raise AssertionError('timeout cleanup exceeded bound')
+                finally:
+                    hold_metadata.clear()
+                    release_metadata.set()
             DIAGNOSTIC["stage"] = "recovery_login"
             recovery = login(fixture['recovery_login_factor'])
             # Missing CSRF and foreign target cannot mutate the creator.
@@ -183,6 +252,12 @@ def run(fixture):
             recovery.revoke_creator(creator)
             recovery.revoke_creator(creator)
             assert readiness(narrow)[0] == 401
+            if fixture.get('verify_installed'):
+                DIAGNOSTIC['stage'] = 'revoked_verify'
+                code, result = verify_installed()
+                assert code == 2 and result['status'] == 'unverified'
+                assert result['code'] == 'unauthorized' and 'authenticatedMetadata' not in result
+                DIAGNOSTIC['verification'] = 'none'
             # Confirmed cleanup of the exact installed grant and receipt.
             proposal, _, _ = setup.plan(config, 'mcp-json', broker, setup.local.digest(broker.read_bytes()), origin,
                                          installed['grant_id'], installed['secret_reference'], True)
@@ -229,17 +304,28 @@ def run(fixture):
             assert readiness(issued_unknown[0][1])[0] == 401
             assert not receipt.exists()
             return {'creator_logout_fenced': True, 'unknown_recovered': True, 'creator_session':  creator['session_id'], 'foreign_session': fixture['foreign_session'],
-                    'after_teardown': True, 'bootstrap_current': True, 'recovery_fenced': True}
+                    'after_teardown': True, 'bootstrap_current': True, 'recovery_fenced': True,
+                    'installed_verified': bool(fixture.get('verify_installed'))}
         except Exception:
             FAILURE = dict(DIAGNOSTIC)
             raise
         finally:
-            for owner in sessions:
-                owner.close()
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=5)
-            assert not thread.is_alive()
+            try:
+                for owner in sessions:
+                    owner.close()
+            finally:
+                try:
+                    if 'vault' in locals() and isinstance(vault, OwnedFixtureVault):
+                        vault.close()
+                finally:
+                    try:
+                        if 'shim' in locals():
+                            shim.close()
+                    finally:
+                        server.shutdown()
+                        server.server_close()
+                        thread.join(timeout=5)
+                        assert not thread.is_alive()
 
 
 if __name__ == '__main__':

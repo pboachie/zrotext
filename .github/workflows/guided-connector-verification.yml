@@ -1,0 +1,56 @@
+name: Guided connector verification
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  installed-connector:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:18.6-bookworm
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 3s --health-retries 12
+    env:
+      ZT_INBOUND_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/postgres
+      ZT_GUIDED_VERIFY_TEST: '1'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.16.0'
+      - name: Install optional official client and disposable fixture prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsecret-tools gnome-keyring dbus-x11
+          python -m venv "$RUNNER_TEMP/connector-venv"
+          "$RUNNER_TEMP/connector-venv/bin/python" -m pip install --disable-pip-version-check -r sdk/mcp/verify-requirements.txt
+          echo "$RUNNER_TEMP/connector-venv/bin" >> "$GITHUB_PATH"
+          rustup toolchain install 1.97.1 --profile minimal
+      - name: Build actual broker SDK
+        working-directory: sdk/typescript
+        run: npm ci --ignore-scripts && npm run build
+      - name: Verify current and revoked grants through actual installed launcher
+        run: |
+          export XDG_DATA_HOME="$(mktemp -d)"
+          dbus-run-session -- bash -euo pipefail -c '
+            test "${ZT_GUIDED_VERIFY_TEST:-}" = "1"
+            eval "$(printf "" | gnome-keyring-daemon --unlock --components=secrets)"
+            python -m unittest discover -s scripts -p test_workflow_connector_verify.py
+            cargo test --locked -p zrotext-server guided_setup_retains_creator_after_teardown_and_recovery_fences_current_credentials -- --ignored --test-threads=1 --nocapture | tee "$RUNNER_TEMP/connector-proof.txt"
+            rg -q "GUIDED_INSTALLED_CONNECTOR_METADATA_VERIFIED" "$RUNNER_TEMP/connector-proof.txt"
+          '

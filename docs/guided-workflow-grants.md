@@ -78,8 +78,9 @@ Windows uses current-user generic Windows Credential Manager through its native
 API. POSIX requires an installed, unlocked desktop Secret Service and
 `secret-tool`; a headless/missing backend refuses, with no plaintext fallback.
 Recovery deletion confirms absence of matching Secret Service entries; locked,
-remaining or unavailable entries refuse custody cleanup. Synthetic tests do not
-access either real vault. The Windows ABI mock checks
+remaining or unavailable entries refuse custody cleanup. Ordinary unit tests mock
+vault access. The installed verification fixture owns unique synthetic entries
+in actual OS custody and removes only its own recorded names. The Windows ABI mock checks
 best-effort wiping of the returned native copy before release; this does not
 verify the real OS store or erase Python strings, pipes or OS-owned copies. Other users and privileged
 processes, desktop session compromise and same-user access remain OS trust
@@ -134,7 +135,86 @@ owner login/MFA/closed grant requests, native Windows API structure, mocked
 Secret Service invocation, config preservation/rerun, rollback and revocation
 ordering. The composed real-router HTTPS/PostgreSQL fixture exercises the guided
 CLI, private bootstrap, creator-session retention and explicit recovery using
-synthetic credentials and an in-memory vault. These tests do not prove a real vault write, live deployment setup, Android
+synthetic credentials and an in-memory vault by default. The dedicated installed
+verification mode additionally requires actual OS custody and the official MCP
+client; a missing dependency or refused launcher fails the scenario. These tests do not prove live deployment setup, Android
 pairing, current reader enrollment, physical-device operation or carrier delivery.
 The doctor still reports unknown/unavailable device and release prerequisites;
 this metadata connector cannot turn those prerequisites into authority.
+
+## Verify the installed connection
+
+Install the optional client into the same Python environment used to create the
+reviewed launcher. The command never downloads or installs dependencies itself:
+
+```sh
+python -m pip install -r sdk/mcp/verify-requirements.txt
+python scripts/guided_workflow_setup.py verify \
+  --client mcp-json --config /absolute/private/client.json \
+  --scope /absolute/private/reviewed-scope.json \
+  --broker /absolute/trusted/sdk/mcp/secret-broker.mjs \
+  --sha256 REVIEWED_SHA256 --origin https://gateway.example
+```
+
+Use the original reviewed scope, origin and broker digest. `verify` requires an
+unchanged owned entry and scope fingerprint; it refuses an absent, altered or
+widened installation. It neither authenticates an owner nor issues, renews,
+revokes or replaces a grant. Configuration, the intent receipt and vault entries
+are read only. Other configured servers are never launched.
+
+The official [MCP Python client](https://py.sdk.modelcontextprotocol.io/client/)
+launches that exact Python stdio command. The existing launcher retrieves its
+existing narrow credential from OS custody and privately bootstraps the actual
+Node broker. The verifier negotiates the existing handshake protocol, discovers
+tools, requests authenticated readiness, then reads context metadata for the
+same reviewed context. The later metadata request independently rechecks current
+authority. A prior successful readiness result cannot override a later refusal.
+It never calls content, proposals, scheduling, send or cancellation tools.
+On POSIX, the host forwards only the existing `DBUS_SESSION_BUS_ADDRESS` and
+`XDG_RUNTIME_DIR` custody hints beyond the official client's default environment.
+The existing Python launcher still strips these and all credential/TLS overrides
+from its Node child environment.
+
+Exit zero means `status: verified` and `authenticatedMetadata: observed` for that
+exchange. The redacted report names observed Python, Node, SDK and protocol
+versions. It contains no identifiers, metadata bodies, credential references or
+source digests. A failure exits two and contains only an allowlisted diagnosis;
+unknown connection, TLS, custody or malformed-response failures cannot become a
+success. Revoked/expired authority requires explicit owner review; there is no
+automatic reconnect or owner-credential fallback. Recheck custody, the reviewed
+artifact and service access separately when the report is `connection_unknown`.
+
+The optional SDK is pinned to `mcp==2.3.0` with exact resolved dependency versions.
+Its [legacy handshake](https://github.com/modelcontextprotocol/python-sdk/blob/v2.3.0/src/mcp/client/client.py)
+supports the broker's `2025-11-25` and `2025-06-18` protocols; client response
+caching is disabled. The connection operation has a thirty-second deadline including
+the bounded Node version probe. Overall return additionally includes the official
+SDK's bounded shutdown grace; it is not an exactly thirty-second wall-clock promise.
+Windows Job Object creation and assignment are best effort in this SDK; children spawned before
+assignment or when assignment fails are outside its tree guarantee. On POSIX,
+gracefully exited servers may leave descendants alive. The existing Python launcher
+kills and waits for its direct Node child on teardown. Raw SDK logs and child stderr
+are suppressed because validation errors may include input fragments.
+
+The dedicated `Guided connector verification / installed-connector` job selects
+`ZT_GUIDED_VERIFY_TEST=1` before running the existing guided HTTPS/PostgreSQL test.
+It mandates actual SDK initialization, tool discovery, readiness and metadata
+through the installed launcher, and repeats verification after creator revocation.
+It checks unchanged configuration, intent and narrow custody. Linux CI owns an
+isolated Secret Service session; Windows local acceptance uses unique synthetic
+Credential Manager entries. Its test-only PATH shim injects the loopback fixture
+CA before executing the real Node binary; production TLS and launcher environment
+filtering remain unchanged. The default PostgreSQL test exercises its original
+in-memory scenario and does not claim installed verification ran.
+
+The installed path has also been exercised on Windows with Python 3.12.9,
+Node 22.16.0 and official MCP client 2.3.0 against the synthetic HTTPS/PostgreSQL
+fixture. The fixture blocks metadata after authorized readiness to check the
+deadline, bounded return including shutdown grace, and exit of its recorded
+launcher and Node processes; it also checks a revoked grant returns unverified.
+
+This verifies the Python/Node MCP host path, as described by the official
+[host integration guide](https://py.sdk.modelcontextprotocol.io/get-started/real-host/).
+It does not establish a tested Claude Desktop application version, original
+encrypted-content access, Android pairing, or a new-user send/reply journey.
+Those remain separate acceptance gates under #614 and #759.
