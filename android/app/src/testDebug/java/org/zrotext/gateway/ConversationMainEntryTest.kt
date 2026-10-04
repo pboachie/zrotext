@@ -383,7 +383,7 @@ class ConversationMainEntryTest {
         click("Close conversation review")
         assertEquals(1, handles.last().closes)
     }
-    @Test fun ordinaryBackgroundClosesPendingReceiveAndLateCompletionCannotPublishVerification() {
+    @Test fun ordinaryBackgroundWithPendingPickerClearsReceiveAndRejectsLateCompletion() {
         installFixture()
         emit(ConversationPresentationSnapshot(2, ConversationPresentationPhase.CONFIRMED_ACTIVE, interval, line, 1, 60000, true))
         val completion = AtomicReference<((Boolean) -> Unit)>()
@@ -392,7 +392,11 @@ class ConversationMainEntryTest {
         compose.onNodeWithText("Message reference").performTextInput("00000000-0000-0000-0000-000000000004")
         click("Receive and verify message")
         compose.onNodeWithText("Receiving and verifying the confirmed message.").assertExists()
+        compose.runOnIdle { field("conversationPickEpoch", fieldValue("conversationUiEpoch")) }
         compose.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
+        assertEquals("", fieldValue("conversationMessageReference"))
+        assertEquals(false, fieldValue("conversationMessageEditorOpen"))
+        assertNull(fieldValue("conversationMessageController"))
         compose.runOnIdle { completion.get()(true) }
         compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
         compose.waitForIdle()

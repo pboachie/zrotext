@@ -493,6 +493,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun revokeConversationForeground() {
+        cancelConversationMessageReview(close = true)
         conversationExportWriteToken?.set(false)
         conversationSetupEnabled = false
         withdrawConversationReplyChoice()
