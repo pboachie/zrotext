@@ -34,5 +34,6 @@ export async function originalReplyFixture({ observedMs = 2000n, currentMs = obs
   const successorUnsigned = unsigned.slice(); new DataView(successorUnsigned.buffer).setBigUint64(29, 8n); successorUnsigned.set(manifest.digest, 53);
   const successor = await verifyManifest02(join(successorUnsigned, await sign(root, "ZTSE/manifest/v2", successorUnsigned)), verifiedManifestTrust02(manifest, now), now);
   return { scope, manifest, successor, statement, approval, installation, selection, event, envelope: prepared.envelope, privateKey: await importKey(customer, "ECDH", ["deriveBits"]), archivePrivateKey: await importKey(archive, "ECDH", ["deriveBits"]), authority,
+    privateJwk: { kty: "EC", crv: "P-256", x: Buffer.from(customer.point.subarray(1, 33)).toString("base64url"), y: Buffer.from(customer.point.subarray(33)).toString("base64url"), d: Buffer.from(customer.d).toString("base64url"), ext: true },
     signSelection: async bytes => ({ approval: await sign(phone, "zrotext/conversation/approve/v2", bytes), installation: await sign(phone, "zrotext/conversation/install/v2", bytes) }) };
 }

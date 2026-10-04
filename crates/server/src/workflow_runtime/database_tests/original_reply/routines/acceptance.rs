@@ -232,6 +232,30 @@ async fn competing_original_events_spend_the_last_turn_once_and_rollback_losing_
             .unwrap()
             .get::<_, Vec<u8>>(0),
     );
+    // Both contenders must independently pass genuine original-envelope and
+    // current selected-reader checks before testing the last-turn transaction.
+    // These read-only preflights create neither a source nor an admission.
+    for invocation in [&one, &two] {
+        let mut db = f.f.case.f.connect().await;
+        let tx = db.transaction().await.unwrap();
+        let verified = service::verified_event(
+            &tx,
+            &original,
+            invocation.event_id,
+            invocation.accepted_manifest_version,
+        )
+        .await;
+        assert!(
+            verified.is_ok(),
+            "original contender verification must precede the budget race"
+        );
+        let (_, _, digest) = verified.unwrap();
+        assert_eq!(
+            decisions::descriptor::hex(&digest),
+            invocation.event_envelope_digest
+        );
+        tx.rollback().await.unwrap();
+    }
     let (a, b) = tokio::join!(f.admit(one), f.admit(two));
     assert!(
         a.is_ok() ^ b.is_ok(),

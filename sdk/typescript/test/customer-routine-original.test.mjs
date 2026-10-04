@@ -13,12 +13,24 @@ import {CustomerRoutineService,policy} from '../../assistant/routine-service.mjs
 import {CustomerRoutineEngine} from '../../assistant/routine-engine.mjs';
 import {CipherArtifactStore,ciphertextDigest} from '../../assistant/artifact-store.mjs';
 import {LocalProvider} from '../../assistant/local-provider.mjs';
+import {customerReaderKey,customerOriginalReaderKey} from '../../assistant/customer-routines.mjs';
+import {openOriginalReply02} from '../dist/original-reply-reader.js';
 const text=new TextEncoder(),hash=value=>createHash('sha256').update(value).digest('hex');
 const raw=value=>Uint8Array.from(Buffer.from(value.replaceAll('-',''),'hex'));
 const uuid=value=>Buffer.from(value).toString('hex').replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/,'$1-$2-$3-$4-$5');
 const json=value=>new Response(JSON.stringify(value),{headers:{'content-type':'application/json'}});
 const workflowCredential='ztw_'+Buffer.alloc(32,7).toString('base64url');
 const originalCredential='ztr_'+Buffer.alloc(32,8).toString('base64url');
+test('customer original key helper opens actual selected signed HPKE while its extractable workflow sibling refuses',async()=>{
+  const signed=await originalReplyFixture({canonicalIds:true});
+  // The synthetic fixture already owns serialized software key material.
+  const jwk=signed.privateJwk;
+  const originalKey=await customerOriginalReaderKey(jwk),workflowKey=await customerReaderKey(jwk);
+  assert.equal(originalKey.extractable,false);assert.equal(workflowKey.extractable,true);
+  const options={scope:signed.scope,event:signed.event,historical:signed.manifest,selection:signed.selection,readCurrent:async()=>signed.authority};
+  assert.equal(await openOriginalReply02(signed.envelope,{...options,privateKey:originalKey}),'synthetic original reply');
+  await assert.rejects(openOriginalReply02(signed.envelope,{...options,privateKey:workflowKey}),{message:'Original reply unavailable'});
+});
 async function fixture(t,{refuseCurrent=false,refuseAfterChild=false,loseAdmission=false,wrongPeer=false,initialPolicyDelayMs=0,originalMessage='synthetic original reply',providerOutput='synthetic proposed answer'}={}){
   const parent=realpathSync(tmpdir()),directory=mkdtempSync(join(parent,'zt-original-routine-'));chmodSync(directory,0o700);
   const canonical=realpathSync(directory);let store,provider;

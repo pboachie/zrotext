@@ -32,6 +32,11 @@ export function customerReaderKey(jwk){
   // custody. Explicit exportability supports the maintained HPKE public-key path.
   return crypto.subtle.importKey('jwk',jwk,{name:'ECDH',namedCurve:'P-256'},true,['deriveBits']);
 }
+export function customerOriginalReaderKey(jwk){
+  // Original reads supply the verified manifest public key explicitly to HPKE.
+  // Keep this imported CryptoKey nonextractable; serialized JWK custody remains software custody.
+  return crypto.subtle.importKey('jwk',jwk,{name:'ECDH',namedCurve:'P-256'},false,['deriveBits']);
+}
 export async function runCustomerRoutine(config,{operation,requestId,eventId,owner=null}){
   let store,engine,provider;
   try{
@@ -63,7 +68,7 @@ export async function runCustomerRoutine(config,{operation,requestId,eventId,own
       for(const field of ['account','device','line','interval','connector','readGrant','reader'])selected[field]=decode(selected[field]);
       if(typeof selected.peer!=='string')fail('invalid_configuration');
       originalClient=new OriginalReplyClient({origin:config.origin,credential:original.credential,scope:selected,
-        privateKey,acceptedHistory:[manifest],clock:()=>BigInt(Date.now())});
+        privateKey:await customerOriginalReaderKey(config.role3_private_jwk),acceptedHistory:[manifest],clock:()=>BigInt(Date.now())});
     }
     store=new CipherArtifactStore(config.artifact_path);
     engine=new CustomerRoutineEngine({enabled:true,service,tools:new WorkflowToolClient({origin:config.origin,credential:config.input_credential}),store,provider,originalClient,

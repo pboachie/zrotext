@@ -403,6 +403,26 @@ async fn original_reply_child_keeps_first_question_source_fence_after_genuine_is
     let call = f.admit(f.invocation.clone()).await.unwrap();
     let first = f.owner_publish_and_propose(call.call_id).await;
     let approved = f.approve(first).await;
+    let precursors = f.f.case.f.db.query_one(
+        "SELECT workflow_routine_original_current($1,$2),workflow_routine_original_action_current($1,$2),original_reply_source_current($1,$2),original_reply_grant_current($1,$3)",
+        &[&f.f.case.f.account,&first.action_id,&f.read.grant_id],
+    ).await.unwrap();
+    assert!(
+        precursors.get::<_, bool>(0),
+        "original routine source must be current before issuing its output"
+    );
+    assert!(
+        precursors.get::<_, bool>(1),
+        "original output action must be current before issuing its output"
+    );
+    assert!(
+        precursors.get::<_, bool>(2),
+        "original output lineage must be current before issuing its output"
+    );
+    assert!(
+        precursors.get::<_, bool>(3),
+        "original reader grant must be current before issuing its output"
+    );
     let request = super::network::issued_request(&mut f.f, approved).await;
     let second_event = Uuid::new_v4();
     let mut seed = configuration(&f.f, second_event).await;

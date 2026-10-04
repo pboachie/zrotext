@@ -11,7 +11,7 @@ import {WorkflowToolClient} from '../dist/workflow-tool-client.js';
 import {sealWorkflowContext,sealIntegrationWorkflowContext} from '../dist/workflow-context.js';
 import {CustomerRoutineEngine} from '../../assistant/routine-engine.mjs';
 import {CustomerRoutineService} from '../../assistant/routine-service.mjs';
-import {customerReaderKey} from '../../assistant/customer-routines.mjs';
+import {customerReaderKey,customerOriginalReaderKey} from '../../assistant/customer-routines.mjs';
 import {CipherArtifactStore} from '../../assistant/artifact-store.mjs';
 import {LocalProvider} from '../../assistant/local-provider.mjs';
 import {originalRoutineDiagnostic} from './original-service-diagnostics.mjs';
@@ -87,7 +87,7 @@ try{
     stage='client';const {origin,fetch}=transport(f),s=f.scope,privateKey=await customerReaderKey(f.role3_private_jwk);
     const originalClient=new OriginalReplyClient({origin,credential:f.read_credential,scope:{account:uuid(s.account_id),device:uuid(s.device_id),line:uuid(s.line_id),
       interval:uuid(s.interval_id),connector:uuid(s.connector_id),readGrant:uuid(s.read_grant_id),reader:hex(s.reader_id),peer:s.peer},
-      privateKey,acceptedHistory:accepted,clock:()=>BigInt(Date.now()),fetch});
+      privateKey:await customerOriginalReaderKey(f.role3_private_jwk),acceptedHistory:accepted,clock:()=>BigInt(Date.now()),fetch});
     const service=new CustomerRoutineService({origin,inputCredential:f.input_credential,originalCredential:f.read_credential,fetchImpl:fetch});
     store=new CipherArtifactStore(join(directory,'original-routine-artifacts.sqlite'));
     engine=new CustomerRoutineEngine({enabled:true,service,tools:new WorkflowToolClient({origin,credential:f.input_credential,fetchImpl:fetch}),
