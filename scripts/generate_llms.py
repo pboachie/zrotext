@@ -23,6 +23,7 @@ DOCUMENTS = (
     ("Agent recipes", "docs/agent-recipes.md", "Worked examples for agents using the local tools."),
     ("Architecture and delivery outcomes", "docs/ARCHITECTURE.md", "How the server, PostgreSQL store, WebSocket device stream and Android app fit together."),
     ("Delivery state model", "docs/DELIVERY-STATES.md", "Message delivery states and which evidence moves a message between them."),
+    ("Current delivery guarantees and their limits", "docs/GUARANTEES.md", "Implemented delivery, ambiguous-retry, idempotency and writer-fencing controls, with current availability and verification limits."),
     ("Self-hosting", "docs/SELF-HOSTING.md", "Running the Compose stack on your own infrastructure; development use, no hosted service."),
     ("SMS consent and compliance", "docs/SMS-COMPLIANCE.md", "Consent, opt-out and carrier-rule responsibilities for senders."),
     ("Roadmap", "docs/ROADMAP.md", "Stage of each capability; stages show progress, not availability or release dates."),

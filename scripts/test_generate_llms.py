@@ -41,6 +41,13 @@ class PublicDocumentationIndexTests(unittest.TestCase):
                     1,
                 )
 
+    def test_current_delivery_guarantees_page_is_indexed_once(self):
+        rendered = generate_llms.render(self.root)
+        self.assertEqual(
+            rendered.count(f"]({generate_llms.RAW_BASE}docs/GUARANTEES.md)"),
+            1,
+        )
+
     def test_output_is_deterministic_and_has_only_allowlisted_raw_links(self):
         first = generate_llms.render(self.root)
         (self.root / "private-unlisted.md").write_text("synthetic excluded canary")

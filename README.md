@@ -97,6 +97,7 @@ To create the first owner, follow the [local bootstrap steps](docs/SELF-HOSTING.
 - [Current interfaces and setup boundaries](docs/INTERFACE.md)
 - [Architecture and API contracts](docs/ARCHITECTURE.md)
 - [Delivery state model](docs/DELIVERY-STATES.md)
+- [Current delivery guarantees and their limits](docs/GUARANTEES.md)
 - [Agent texting quickstart (simulator)](docs/AGENT-QUICKSTART.md)
 - [Send your first message (API examples)](docs/SEND-FIRST-MESSAGE.md)
 - [Two-location routing and failover design](docs/MULTI-LOCATION.md)
