@@ -468,7 +468,7 @@ Behavior that is deliberate:
   `unknown` and `delivery_unknown`: these mean the writer cannot prove whether the
   SMS left the phone, so a resend can duplicate it. See
   [`docs/DELIVERY-STATES.md`](../../docs/DELIVERY-STATES.md).
-- A network error, timeout or unparseable success body raises
+- A network error, timeout or unparsable success body raises
   `AlphaOutcomeUnknownError` rather than a guess.
 
 **Webhook verification.** `verifyWebhook` checks the `x-zrotext-timestamp` and

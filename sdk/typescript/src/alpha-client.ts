@@ -95,7 +95,7 @@ export class AlphaApiError extends Error {
 
 /**
  * The request may or may not have reached the server (network error,
- * timeout, or an unparseable success response). For a submission the outcome
+ * timeout, or an unparsable success response). For a submission the outcome
  * is unknown: query status, or resubmit the IDENTICAL request with the SAME
  * Idempotency-Key. Never generate a new key for the same logical message.
  */
