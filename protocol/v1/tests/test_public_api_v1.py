@@ -469,7 +469,7 @@ class PublicApiContractTests(unittest.TestCase):
             "not proof of rollback or non-acceptance",
             "submit 408 responses as unknown outcomes",
             "5xx responses without a parsed JSON error code as unknown outcomes",
-            "A parsed JSON 503 instead produces an AlphaApiError",
+            "A 503 with a parsed JSON error code instead produces an AlphaApiError",
             "AlphaApiError",
             "does not establish the database commit outcome",
             "do not automatically retry or invent a new submission identity",
