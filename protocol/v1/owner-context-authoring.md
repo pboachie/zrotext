@@ -1,16 +1,55 @@
-# Isolated owner facts authoring module
+# Owner facts authoring and ordinary page caller
 
 `sdk/typescript/src/owner-context-authoring.ts` provides an isolated browser
 editor for local facts review and initial encrypted owner context publication.
-It is packaged by the existing conversation browser packager. It is **not
-integrated into the ordinary owner page**, and does not mount candidate routes,
-issue credentials, enable SEND or make any application available.
+It is packaged by the existing conversation browser packager. The ordinary
+conversation page provides an explicit initial facts caller after successful
+owner setup and conversation authorization. It does not issue credentials,
+enable SEND, change route configuration or make any application available.
 
 The caller supplies real post-enrollment owner and custody callbacks. All
 required signer/reader enrollments must finish before construction and the fresh
 manifest used to encrypt the facts. Original-reader setup, separately approved
 phone selection and accepted manifest history remain unchanged. The small real
-page integration depends on that setup source and remains separate work.
+page caller preserves that setup source unchanged.
+
+## Ordinary page composition
+
+Review initial facts stays disabled until the actual setup has unlocked the
+existing encrypted archive, completed signer enrollment and installation,
+sampled the final manifest and authorized the conversation. The simulator
+never supplies facts authority. The owner independently enters a canonical
+nonnil context UUID and signed-63-bit Unix millisecond expiry outside the setup
+selection subtree. These controls are copied before asynchronous work and
+disabled once the single initial authoring intent begins.
+
+The page retains actual custodyOptions and its custody result, copies binding
+arrays and performs a further readCurrent before loading the maintained author.
+It passes the real HTTPS document origin, actual current/CSRF callbacks,
+structural archive lease and setup/custody/abort subscriptions. It does not
+manufacture an authenticated lease, current brand or private key. The author
+independently revalidates current facts before review and publication.
+
+The existing browser asset graph now requires owner-context-authoring.js and
+its transitive relative imports. Older incomplete packages refuse startup;
+rebuild with the existing packager. No parallel bundle or SDK helper is added.
+
+The configured owner context service and actual storage/current authorization
+are still required. CUSTOMER_ROUTINES_ENABLED controls the maintained context
+router; conversation Startup is separately configured. This caller enables
+neither gate. Missing/refused service responses cannot establish a successful
+save. Only the actual acknowledgment plus independent latest-byte check does.
+
+The page never remounts its one-shot facts editor. Unknown metadata is copied
+before closing facts and before other setup/custody cleanup; other cleanup
+continues even if closure throws. Identical retry and Check saved facts work
+only while the original author/client/ticket and absolute deadline are live.
+After Clear, identity edit, custody/setup/archive loss, pagehide, hidden
+document or expiry, controls are closed and plaintext is scrubbed. Remaining
+context/request/revision/digest status is not a reconciliation capability or
+cancellation receipt. Unknown status also refuses a replacement Connect/facts
+identity. Successful identical replay clears unknown status only after genuine
+acknowledgment/current verification. No durable cross-reload resolution exists.
 
 ## Closed construction and lifetime
 
@@ -111,11 +150,14 @@ checking and identical retry, archive loss and pagehide. Browser prerequisites
 are an explicit skip in SDK-only environments; ordinary owner-browser CI
 installs them before SDK tests.
 
-This is isolated-module evidence. It does not execute the ordinary setup/sample
-integration, an authenticated mounted server, root/phone enrollment, purpose
-consent, original inbound application journey, physical device or carrier.
-The real-page integration and mounted candidate routes remain unavailable until
-their separate reviewed cuts. Customer routine output publication remains
+The discoverable ordinary page browser control additionally uses the actual
+setup factory, two-file archive unlock, offline public-file signer review,
+enrollment/CAS reread, owner transport and author/client. Its HTTPS owner routes
+and persistence are synthetic. Cookie/CSRF, final enrolled manifest, actual
+HPKE opening, conflict, unknown identical retry/GET-not-ACK, teardown and
+identity/refusal controls do not establish an authenticated mounted server,
+root/phone enrollment, purpose consent, original inbound application journey,
+physical device or carrier acceptance. Customer routine output publication remains
 initial-only with its assigned context/call/digest semantics; local owner facts
 do not rebind a routine, reset quota or grant SEND. Complete catalog acceptance
 remains open.

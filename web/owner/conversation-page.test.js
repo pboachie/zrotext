@@ -52,6 +52,19 @@ test("expiry between prepare and DOM render never repopulates private review tex
 test("page has no implicit transport when the fixture adapter is absent",async()=>{
   const p=await page({adapterAvailable:false});try {assert.deepEqual(p.element("connect").listeners,{});assert.equal(p.accepted(),0);}finally{p.cleanup();}
 });
+
+test("facts never mount through simulator or without genuine completed owner custody",async()=>{
+ for(const options of [{},{adapterAvailable:false,ownerFactory:{create:()=>({close(){}})}}]){
+  const p=await page(options);try{assert.equal(p.element("facts-open").disabled,true);await p.click("facts-open");assert.equal(p.element("facts-editor").children.length,0);assert.equal(p.accepted(),0);}finally{p.cleanup();}
+ }
+});
+
+test("facts intent controls are independent of owner setup and promise only live reconciliation",()=>{
+ const html=require("node:fs").readFileSync(require("node:path").join(__dirname,"conversation.html"),"utf8");
+ assert.ok(html.indexOf('id="facts-setup"')>html.indexOf('id="session-custody"'));
+ for(const id of ["facts-context","facts-expires","facts-open","facts-editor","facts-status"])assert.ok(html.includes(`id="${id}"`));
+ assert.ok(html.includes("Reload recovery is unavailable"));assert.ok(html.includes("does not approve messages"));
+});
 test("owner configuration requires an affirmative session decision before SDK or custody access",async()=>{
  let accesses=0;
  const p=await page({adapterAvailable:false,ownerSetup:{custodyOptions:async()=>{accesses++;throw Error("No implicit custody");}}});
