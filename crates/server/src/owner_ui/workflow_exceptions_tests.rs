@@ -159,7 +159,8 @@ async fn exceptions_gate_keeps_unknown_paths_and_data_apis_absent() {
 #[tokio::test]
 async fn devices_navigation_uses_one_hidden_owner_link_only_when_enabled() {
     assert_eq!(
-        PAGE.matches("<!-- workflow-exceptions-navigation -->").count(),
+        PAGE.matches("<!-- workflow-exceptions-navigation -->")
+            .count(),
         1
     );
     for enabled in [false, true] {
