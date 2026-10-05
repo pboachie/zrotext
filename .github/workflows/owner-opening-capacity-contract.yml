@@ -1,0 +1,23 @@
+name: Owner opening capacity contract
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Validate synthetic opening wire contracts
+        run: |
+          python3 -m venv /tmp/zrotext-opening-capacity-venv
+          /tmp/zrotext-opening-capacity-venv/bin/pip install --disable-pip-version-check jsonschema==4.25.1
+          /tmp/zrotext-opening-capacity-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_owner_opening_capacity_schema.py'
