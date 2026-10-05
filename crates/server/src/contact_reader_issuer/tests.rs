@@ -235,6 +235,15 @@ impl Owner {
             ))
             .await
             .unwrap();
+        // Normal MFA enrollment updates the trusted-browser epoch. This
+        // bounded fixture must install that dependency before enrolling.
+        schema
+            .db
+            .batch_execute(include_str!(
+                "../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"
+            ))
+            .await
+            .unwrap();
         assert!(
             schema
                 .db
@@ -832,7 +841,7 @@ async fn full_receipt_ring_rotates_one_slot_without_unbounded_identity_growth() 
         };
         let commitment = c.commitment(account, ORIGIN).unwrap();
         let unsigned_digest: [u8; 32] = Sha256::digest(authorization.as_bytes()).into();
-        tx.execute("INSERT INTO contact_reader_receipts(account_id,slot,authorization,generation,create_request,create_input_digest,creation_expected_revision,unsigned_digest,terminal_kind,terminal_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'CANCELLED',$9)",&[&account,&slot,&authorization,&generation,&request,&&commitment[..],&expected,&&unsigned_digest[..],&now]).await.unwrap();
+        tx.execute("INSERT INTO contact_reader_receipts(account_id,slot,\"authorization\",generation,create_request,create_input_digest,creation_expected_revision,unsigned_digest,terminal_kind,terminal_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'CANCELLED',$9)",&[&account,&slot,&authorization,&generation,&request,&&commitment[..],&expected,&&unsigned_digest[..],&now]).await.unwrap();
         if slot == 0 {
             first = Some((authorization, generation));
         }
@@ -1443,7 +1452,7 @@ async fn actual_clock(f: &Owner) -> i64 {
 async fn assert_completion_rolled_back(f: &Owner, p: &PendingView) {
     let account = f.principal.tenant.account_id();
     let row = f.schema.db.query_one(
-        "SELECT mutation_revision,phase,current_statement,(SELECT count(*) FROM contact_reader_pending WHERE account_id=$1 AND authorization=$2),(SELECT count(*) FROM contact_reader_receipts WHERE account_id=$1) FROM contact_reader_state WHERE account_id=$1",
+        "SELECT mutation_revision,phase,current_statement,(SELECT count(*) FROM contact_reader_pending WHERE account_id=$1 AND \"authorization\"=$2),(SELECT count(*) FROM contact_reader_receipts WHERE account_id=$1) FROM contact_reader_state WHERE account_id=$1",
         &[&account, &p.authorization.0],
     ).await.unwrap();
     assert_eq!(row.get::<_, i64>(0), p.allocated_revision.0);
