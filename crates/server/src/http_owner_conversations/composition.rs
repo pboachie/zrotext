@@ -205,6 +205,7 @@ mod tests {
             "conversation-refresh-proposal",
             "conversation-activation-proposal",
             "conversation-genesis-proposal",
+            "owner-context-authoring",
         ] {
             package
                 .write(&format!("sdk/{name}.js"), b"export const fixture = true;")
