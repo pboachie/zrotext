@@ -1,4 +1,4 @@
-# ADR 0007: Scoping a plain `send_at` request field
+# ADR 0008: Scoping a plain `send_at` request field
 
 Status: proposed and unapproved. This document selects no scope, field, route,
 approval model or runtime behavior, and it enables nothing. A `send_at` field
