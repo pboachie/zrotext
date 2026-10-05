@@ -92,7 +92,7 @@ pub(crate) async fn installed(tx: &Transaction<'_>) -> Result<bool, Error> {
     ] {
         // Deferred constraint triggers have their own pg_constraint entries;
         // their exact trigger metadata is checked separately below.
-        let rows=tx.query("SELECT conname,contype::text,convalidated,pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid=$1::regclass AND contype IN ('c','f','p','u') ORDER BY conname",&[&table]).await?;
+        let rows=tx.query("SELECT conname,contype::text,convalidated,pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid=$1::text::regclass AND contype IN ('c','f','p','u') ORDER BY conname",&[&table]).await?;
         let mut definitions = Vec::new();
         let mut found = Vec::new();
         for row in rows {
@@ -109,7 +109,19 @@ pub(crate) async fn installed(tx: &Transaction<'_>) -> Result<bool, Error> {
                     .1;
                 let fields = schema
                     .split_whitespace()
-                    .map(|f| f.split_once(':').map(|p| p.0).ok_or(Error::Unavailable))
+                    .map(|f| {
+                        f.split_once(':')
+                            .map(|(name, _)| {
+                                // Match PostgreSQL's exact rendering without
+                                // relaxing the complete constraint comparison.
+                                if name == "authorization" {
+                                    "\"authorization\"".to_owned()
+                                } else {
+                                    name.to_owned()
+                                }
+                            })
+                            .ok_or(Error::Unavailable)
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
                 if row.try_get::<_, String>(3)?
                     != format!("CHECK ({name}_valid({}))", fields.join(", "))
@@ -124,7 +136,7 @@ pub(crate) async fn installed(tx: &Transaction<'_>) -> Result<bool, Error> {
         found.sort();
         let mut expected_checks = checks.into_iter().map(str::to_owned).collect::<Vec<_>>();
         expected_checks.sort();
-        let mut expected=if table=="contact_reader_state"{vec!["PRIMARY KEY (account_id)","FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE"]}else{vec!["PRIMARY KEY (account_id, slot)","FOREIGN KEY (account_id) REFERENCES contact_reader_state(account_id) ON DELETE CASCADE","UNIQUE (account_id, authorization)","UNIQUE (account_id, generation)","UNIQUE (account_id, create_request)"]}.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        let mut expected=if table=="contact_reader_state"{vec!["PRIMARY KEY (account_id)","FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE"]}else{vec!["PRIMARY KEY (account_id, slot)","FOREIGN KEY (account_id) REFERENCES contact_reader_state(account_id) ON DELETE CASCADE","UNIQUE (account_id, \"authorization\")","UNIQUE (account_id, generation)","UNIQUE (account_id, create_request)"]}.into_iter().map(str::to_owned).collect::<Vec<_>>();
         expected.sort();
         definitions.sort();
         if found != expected_checks || definitions != expected {
@@ -243,7 +255,7 @@ pub(crate) async fn installed(tx: &Transaction<'_>) -> Result<bool, Error> {
             .find(|(name, _)| *name == function)
             .ok_or(Error::Unavailable)?
             .1;
-        let row=tx.query_opt("SELECT p.proname,t.tgtype,t.tgdeferrable,t.tginitdeferred,t.tgenabled::text,t.tgqual IS NULL,t.tgnargs,t.tgattr=''::int2vector,t.tgfoid FROM pg_trigger t JOIN pg_proc p ON p.oid=t.tgfoid WHERE t.tgrelid=$1::regclass AND t.tgname=$2 AND NOT t.tgisinternal",&[&table,&name]).await?.ok_or(Error::Unavailable)?;
+        let row=tx.query_opt("SELECT p.proname,t.tgtype,t.tgdeferrable,t.tginitdeferred,t.tgenabled::text,t.tgqual IS NULL,t.tgnargs,t.tgattr=''::int2vector,t.tgfoid FROM pg_trigger t JOIN pg_proc p ON p.oid=t.tgfoid WHERE t.tgrelid=$1::text::regclass AND t.tgname=$2 AND NOT t.tgisinternal",&[&table,&name]).await?.ok_or(Error::Unavailable)?;
         if row.try_get::<_, String>(0)? != function
             || row.try_get::<_, i16>(1)? != kind
             || row.try_get::<_, bool>(2)? != deferred
