@@ -23,18 +23,7 @@ pub(super) async fn begin(client: &mut Client) -> Result<Transaction<'_>, Conver
 /// Optional dormant tables. Partial installation is an error in the caller's
 /// transaction; it must never be mistaken for an uninstalled no-op lifecycle.
 pub(crate) async fn installed(tx: &Transaction<'_>) -> Result<bool, tokio_postgres::Error> {
-    let row = tx.query_one("SELECT to_regclass('workflow_openings') IS NOT NULL,to_regclass('workflow_opening_offers') IS NOT NULL,to_regclass('workflow_opening_allocations') IS NOT NULL,to_regclass('workflow_opening_requests') IS NOT NULL", &[]).await?;
-    let count = (0..4).filter(|index| row.get::<_, bool>(*index)).count();
-    if count == 0 {
-        return Ok(false);
-    }
-    if count != 4 {
-        tx.batch_execute(
-            "DO $$ BEGIN RAISE EXCEPTION 'opening schema incomplete' USING ERRCODE='42P01'; END $$",
-        )
-        .await?;
-    }
-    Ok(true)
+    super::schema::installed(tx).await
 }
 
 pub(super) fn digest(
