@@ -22,6 +22,7 @@ abstract class GatewayAccessibilityChecks {
     protected abstract val primaryMetricsSideBySide: Boolean
     protected abstract fun onScreen(page: String = "HOME", revealStatus: Boolean = false,
         revealObservations: Boolean = false,
+        revealManualPairing: Boolean = false,
         check: (RootForTest) -> Unit)
 
     /** The MMS spike section (#438) exists only in debug builds. */
@@ -41,7 +42,7 @@ abstract class GatewayAccessibilityChecks {
             "SETUP/SIM" -> listOf("Set up this phone", "Choose a SIM")
             "SETUP/PAIRING" -> listOf("Set up this phone", "Device pairing")
             "CONNECTION" -> listOf("Conversation content", "Authenticated device heartbeat", "Message summary reader")
-            "TOOLS" -> listOf("Advanced pilots", "Gateway connection test", "Controlled SMS test") +
+            "TOOLS" -> listOf("Owner custody", "Advanced pilots", "Gateway connection test", "Controlled SMS test") +
                 debugOnly("Controlled MMS spike")
             else -> error("Unknown test screen")
         }
@@ -178,7 +179,7 @@ abstract class GatewayAccessibilityChecks {
     @Test fun fieldsKeepLabelsAndTokensRemainPasswordFields() = everyScreen { page, root ->
         val expected = when (page) {
             "HOME", "SETUP", "SETUP/ACCESS", "SETUP/SIM" -> emptyList()
-            "SETUP/PAIRING" -> listOf("HTTPS server origin", "Pairing ID", "One-use pairing token")
+            "SETUP/PAIRING" -> listOf("HTTPS server origin")
             "CONNECTION" -> listOf("WSS device stream URL", "Approved device UUID", "Summary HTTPS origin", "Summary device UUID", "Separate messages-read API key")
             "TOOLS" -> listOf("WSS test endpoint", "Short-lived test token", "Controlled recipient +E.164") +
                 debugOnly("Controlled MMS recipient +E.164", "Optional subject")
@@ -189,6 +190,22 @@ abstract class GatewayAccessibilityChecks {
         assertEquals(expected.filter { it.contains("token") || it == "Separate messages-read API key" },
             fields.filter { it.config.contains(SemanticsProperties.Password) }.map(::text))
     }
+
+    @Test fun explicitManualPairingKeepsLabelsAndTokenPasswordSemantics() =
+        onScreen("SETUP/PAIRING", revealManualPairing = true) { root ->
+            val fields = nodes(root).filter { it.config.contains(SemanticsProperties.EditableText) }
+            assertEquals(listOf("HTTPS server origin", "Pairing ID", "One-use pairing token"), fields.map(::text))
+            assertEquals(listOf("One-use pairing token"),
+                fields.filter { it.config.contains(SemanticsProperties.Password) }.map(::text))
+            val regions = nodes(root).filter { it.config.contains(SemanticsProperties.LiveRegion) }
+            assertEquals(listOf("Pairing status"), regions.map { text(it).substringBefore(":") })
+            assertTrue(regions.all { it.config[SemanticsProperties.LiveRegion] == LiveRegionMode.Polite })
+            nodes(root).filter { it.config.getOrNull(SemanticsProperties.Role) == Role.Button }.forEach { button ->
+                assertTrue("${text(button)} keeps a named manual-mode action", text(button).isNotBlank())
+                assertTrue("${text(button)} manual-mode width", button.size.width / root.density.density >= 48f)
+                assertTrue("${text(button)} manual-mode height", button.size.height / root.density.density >= 48f)
+            }
+        }
 
     @Test fun actionsRetainNamesAndMinimumTouchTargetsAtCurrentTextScale() = everyScreen { page, root ->
         val buttons = nodes(root).filter { it.config.getOrNull(SemanticsProperties.Role) == Role.Button }
