@@ -2,6 +2,7 @@
 """Offline rejection checks for the native custodian's Android page-size gate."""
 
 import subprocess
+import re
 import unittest
 from unittest.mock import patch
 from importlib.util import module_from_spec, spec_from_file_location
@@ -37,6 +38,30 @@ class NativePageAlignmentTests(unittest.TestCase):
             "  LOAD 0x000000 0x00000000 0x00000000 0x010000 0x010000 R E 0x4000\n"
             "  LOAD 0x010000 0x00010000 0x00010000 0x000100 0x000200 RW 0x4000\n"
         )
+
+
+class HostedNativeToolingTests(unittest.TestCase):
+    def test_every_apk_builder_provisions_the_required_ndk_and_four_rust_targets(self):
+        workflows = {
+            "ci.yml": ["android"],
+            "android-release-candidate.yml": ["candidate"],
+            "android-device-smoke.yml": ["selected-device-tests"],
+            "conversation-emulator.yml": ["conversation-emulator"],
+            "conversation-simulator.yml": ["conversation-simulator", "sealed-setup-consumer"],
+            "sealed-interop.yml": ["sealed-interop"],
+        }
+        root = Path(__file__).resolve().parents[2]
+        for filename, jobs in workflows.items():
+            text = (root / ".github/workflows" / filename).read_text(encoding="utf-8").split("jobs:", 1)[1]
+            for job in jobs:
+                with self.subTest(workflow=filename, job=job):
+                    match = re.search(r"^  " + re.escape(job) + r":\n([\s\S]*?)(?=^  [A-Za-z0-9_-]+:|\Z)", text, re.M)
+                    self.assertIsNotNone(match)
+                    body = match.group(1)
+                    self.assertIn("'ndk;28.2.13676358'", body)
+                    self.assertIn("rustup target add", body)
+                    for target, _ in build.ABIS.values():
+                        self.assertIn(target, body)
 
 
 class TypedJniExportTests(unittest.TestCase):

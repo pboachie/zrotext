@@ -188,9 +188,11 @@ val buildAndroidOwnerCustodyNative = tasks.register<Exec>("buildAndroidOwnerCust
     outputs.dir(layout.buildDirectory.dir("generated/ownerCustodyJniLibs"))
     // Cargo checks the actual pinned toolchain/NDK/linker inputs on every build.
     outputs.upToDateWhen { false }
-    val python = providers.gradleProperty("ownerCustodyPython").orElse("python3")
+    val python = providers.gradleProperty("ownerCustodyPython")
+        .orElse(if (System.getProperty("os.name").startsWith("Windows")) "python" else "python3")
     val ndk = providers.gradleProperty("ownerCustodyNdk")
-        .orElse(providers.environmentVariable("ANDROID_NDK_HOME"))
+        // Hosted images may advertise an older preinstalled NDK in their environment.
+        // Default to the reviewed SDK installation; explicit operator overrides stay explicit.
         .orElse(androidComponents.sdkComponents.sdkDirectory.map { it.asFile.resolve("ndk/28.2.13676358").absolutePath })
     // Resolve public build arguments during configuration: an execution closure
     // capturing the Kotlin script cannot be saved by the configuration cache.
