@@ -25,7 +25,7 @@ test('ordinary facts page uses final enrollment, real archive custody and one or
   browser=await chromium.launch({headless:true});
   for(const mode of ['save','unknown','unknown-close','editor-close','conflict','clear-review','pagehide','late','scope','csrf','bad-pin','expiry']){
    const f=await archiveFixture({nowMs:BigInt(Date.now())}),binding=f.review.binding,reader=f.predecessor.keys.find(k=>k.role===2),phone=f.predecessor.keys.find(k=>k.role===1),signer=f.predecessor.keys.find(k=>k.role===4);
-   let manifest=f.predecessor,installs=0,posts=0,head=null,heldReply=null;const requests=[],bootstrapVersions=[];
+   let manifest=f.predecessor,installs=0,posts=0,head=null,heldReply=null,csrfRotated=false,changedTokenBootstraps=0;const requests=[],bootstrapVersions=[];
    const context=await browser.newContext({serviceWorkers:'block'});
    try{
     await context.addCookies([{name:'__Host-zrotext_session',value:'synthetic-facts-owner',url:f.origin,httpOnly:true,secure:true,sameSite:'Strict'},{name:'__Host-zrotext_csrf',value:'synthetic-facts-review',url:f.origin,secure:true,sameSite:'Strict'}]);
@@ -36,8 +36,10 @@ test('ordinary facts page uses final enrollment, real archive custody and one or
      }
      if(url.pathname.startsWith('/v1/owner/conversation/')||url.pathname.startsWith('/v1/owner/workflow/contexts')){
       const headers=await request.allHeaders(),body=request.postDataBuffer();requests.push({method:request.method(),url:url.pathname,headers,body});
-      assert.ok(headers.cookie.includes('__Host-zrotext_session=synthetic-facts-owner'));assert.equal(headers['x-zrotext-csrf'],'synthetic-facts-review');assert.equal(headers.authorization,undefined);
+      const rotatedBootstrap=mode==='csrf'&&csrfRotated&&url.pathname==='/v1/owner/conversation/bootstrap';
+      assert.ok(headers.cookie.includes('__Host-zrotext_session=synthetic-facts-owner'));assert.equal(headers['x-zrotext-csrf'],rotatedBootstrap?'changed-facts-review':'synthetic-facts-review');assert.equal(headers.authorization,undefined);
       if(url.pathname==='/v1/owner/conversation/bootstrap'){
+       if(rotatedBootstrap)changedTokenBootstraps++;
        bootstrapVersions.push(manifest.version.toString());
        return route.fulfill({contentType:'application/json',body:JSON.stringify({v:1,trust_candidate:true,owner_session_live:true,account_id:uuid(binding.account),session_id:uuid(binding.session),device_id:uuid(binding.device),line_id:uuid(binding.line),binding_generation:1,peer:binding.peer,phase:'active',consent_live:true,interval_id:uuid(binding.interval),server_now_ms:Date.now().toString(),manifest_version:manifest.version.toString(),trust_generation:'1',root_pin:b64(join(new TextEncoder().encode('ZTRP'),Uint8Array.of(2),binding.account,new Uint8Array([0,0,0,0,0,0,0,1]),manifest.rootPoint)),root_fingerprint:b64(f.comparedRootFingerprint),current_manifest:b64(manifest.bytes),manifest_digest:b64(manifest.digest),phone_reader_id:b64(phone.keyId),phone_reader_point:b64(phone.point),archive_reader_id:b64(reader.keyId),archive_reader_point:b64(reader.point),phone_signer_id:b64(signer.keyId),phone_signer_point:b64(signer.point)})});
       }
@@ -86,12 +88,13 @@ test('ordinary facts page uses final enrollment, real archive custody and one or
     await page.getByRole('button',{name:'Review facts',exact:true}).click();await page.getByRole('button',{name:'Save encrypted facts',exact:true}).waitFor();await page.waitForFunction(()=>!Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Save encrypted facts').disabled);
     assert.equal(await page.locator('#facts-editor pre').textContent(),canary);assert.equal(posts,0);
     if(mode==='clear-review'||mode==='pagehide'||mode==='expiry'){
-     if(mode==='clear-review')await page.locator('#clear').click();else if(mode==='pagehide')await page.evaluate(()=>window.dispatchEvent(new Event('pagehide')));else await page.waitForFunction(()=>document.querySelector('[aria-label="Facts"]').disabled,{},{timeout:12000});
-     assert.equal(posts,0);assert.equal(await page.getByRole('textbox',{name:'Facts',exact:true}).inputValue(),'');assert.equal(await page.locator('#facts-editor pre').count(),0);continue;
+     if(mode==='clear-review')await page.locator('#clear').click();else if(mode==='pagehide')await page.evaluate(()=>window.dispatchEvent(new Event('pagehide')));
+     if(mode==='expiry')await page.waitForFunction(()=>document.querySelector('#facts-editor [role="status"]').textContent==='Facts editor closed.',{},{timeout:12000});else await page.waitForFunction(()=>document.querySelector('#facts-editor [role="status"]').textContent==='Facts editor closed.');
+     assert.equal(await page.getByRole('textbox',{name:'Facts',exact:true}).isDisabled(),true,mode);assert.equal(posts,0,mode);assert.equal(await page.getByRole('textbox',{name:'Facts',exact:true}).inputValue(),'',mode);assert.equal(await page.locator('#facts-editor pre').count(),0,mode);continue;
     }
-    if(mode==='csrf')await context.addCookies([{name:'__Host-zrotext_csrf',value:'changed-facts-review',url:f.origin,secure:true,sameSite:'Strict'}]);
+    if(mode==='csrf'){await context.addCookies([{name:'__Host-zrotext_csrf',value:'changed-facts-review',url:f.origin,secure:true,sameSite:'Strict'}]);csrfRotated=true;}
     await page.getByRole('button',{name:'Save encrypted facts',exact:true}).click();
-    if(mode==='csrf'){await page.waitForFunction(()=>document.querySelector('[aria-label="Facts"]').disabled);assert.equal(posts,0);assert.equal(await page.getByRole('textbox',{name:'Facts',exact:true}).inputValue(),'');continue;}
+    if(mode==='csrf'){await page.waitForFunction(()=>document.querySelector('#facts-editor [role="status"]').textContent==='Facts editor closed.');assert.equal(await page.getByRole('textbox',{name:'Facts',exact:true}).isDisabled(),true,mode);assert.ok(changedTokenBootstraps>0,mode);assert.equal(changedTokenBootstraps,requests.filter(r=>r.url==='/v1/owner/conversation/bootstrap'&&r.headers['x-zrotext-csrf']==='changed-facts-review').length,mode);assert.equal(posts,0,mode);assert.equal(requests.filter(r=>r.url.startsWith('/v1/owner/workflow/contexts')&&r.method==='POST').length,0,mode);assert.equal(await page.getByRole('textbox',{name:'Facts',exact:true}).inputValue(),'',mode);assert.equal(await page.locator('#facts-editor pre').count(),0,mode);assert.equal(await page.getByRole('button',{name:'Save encrypted facts',exact:true}).isDisabled(),true,mode);continue;}
     if(mode==='late'){
      await page.waitForFunction(()=>Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Save encrypted facts').disabled);while(!heldReply)await new Promise(resolve=>setTimeout(resolve,10));
      await page.locator('#clear').click();const text=await page.locator('#facts-status').textContent();heldReply();await page.waitForTimeout(50);assert.equal(await page.locator('#facts-status').textContent(),text);assert.equal(await page.locator('#facts-open').isDisabled(),true);assert.ok(!await page.locator('#facts-editor').textContent().then(t=>t.includes('saved and current')));continue;
