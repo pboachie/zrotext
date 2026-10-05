@@ -10,6 +10,7 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
+import {createHash} from 'node:crypto';
 import {refreshFixture,signFixtureSuccessor02} from './conversation-refresh-fixture.mjs';
 import {verifiedManifestTrust02} from '../dist/draft02-manifest.js';
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../../..'),require=createRequire(import.meta.url);
@@ -25,8 +26,8 @@ test('actual packaged Chromium facts review saves ciphertext and preserves unkno
     assert.ok((await readFile(path.join(assets,'sdk/owner-context-authoring.js'),'utf8')).includes('createOwnerContextAuthoring'));
     const f=await refreshFixture(),manifest=await signFixtureSuccessor02(f),trust=verifiedManifestTrust02(f.predecessor,f.nowMs);
     browser=await chromium.launch({headless:true});
-    for(const mode of ['save','conflict','unknown','archive','pagehide']){
-      const context=await browser.newContext();let posts=0,head;const requests=[];
+    for(const mode of ['save','conflict','unknown','archive','pagehide','head-changed','latest-close']){
+      const context=await browser.newContext();let posts=0,head,releaseLatest;const requests=[];
       try{
         await context.addCookies([{name:'__Host-zrotext_session',value:'synthetic-facts-session',url:f.origin,httpOnly:true,secure:true,sameSite:'Strict'},
           {name:'__Host-zrotext_csrf',value:'synthetic-facts-csrf',url:f.origin,secure:true,sameSite:'Strict'}]);
@@ -39,7 +40,7 @@ test('actual packaged Chromium facts review saves ciphertext and preserves unkno
             if(request.method()==='POST'){
               posts++;head=body;assert.equal(headers.origin,f.origin);assert.equal(headers['x-zrotext-context-revision'],'0');assert.equal(body.includes(Buffer.from(canary)),false);
               if(mode==='conflict')await route.fulfill({status:409,body:''});else if(mode==='unknown'&&posts===1)await route.fulfill({status:503,body:''});else await route.fulfill({contentType:'application/json',body:'{"revision":1}'});
-            }else{assert.equal(url.search,'');await route.fulfill({contentType:'application/vnd.zrotext.workflow-context.v1',body:head});}return;
+            }else{assert.equal(url.search,'');if(mode==='latest-close')await new Promise(resolve=>releaseLatest=resolve);const latest=Buffer.from(head);if(mode==='head-changed')latest[latest.length-1]^=1;await route.fulfill({contentType:'application/vnd.zrotext.workflow-context.v1',body:latest});}return;
           }
           await route.fulfill({contentType:'text/html',body:'<!doctype html><main id="facts"></main>'});
         });
@@ -54,8 +55,10 @@ test('actual packaged Chromium facts review saves ciphertext and preserves unkno
             readCurrent:async()=>({binding,manifest,nowMs:now,ownerSessionLive:true,consentLive:true}),currentCsrf:()=>document.cookie.split('; ').find(v=>v.startsWith('__Host-zrotext_csrf='))?.split('=')[1],
             archiveLease:{onClose:listener=>{listeners.archive.push(listener);return()=>{};},withKey:()=>{throw Error('No key access');},close:()=>{}},onSetupClose:listener=>{listeners.setup.push(listener);},onCustodyClose:listener=>{listeners.custody.push(listener);},signal:new AbortController().signal,timeoutMs:4000,observationMs:4000});
         },{binding:serialize(f.review.binding),trust:serialize(trust),manifest:Array.from(manifest),now:f.nowMs.toString()});
+        assert.equal(await page.evaluate(()=>factAuthor.savedSource()),null);
         await page.getByRole('textbox',{name:'Facts',exact:true}).fill(canary);await page.getByRole('button',{name:'Review facts',exact:true}).click();
         await page.waitForFunction(()=>factAuthor.state().phase==='review');assert.equal(posts,0);
+        assert.equal(await page.evaluate(()=>factAuthor.savedSource()),null);
         assert.equal(await page.getByRole('region',{name:'Owner facts'}).locator('pre').textContent(),canary);
         assert.equal(await page.locator('pre not-markup').count(),0);
         if(mode==='archive'||mode==='pagehide'){
@@ -63,19 +66,32 @@ test('actual packaged Chromium facts review saves ciphertext and preserves unkno
           await page.waitForFunction(()=>factAuthor.state().phase==='closed');assert.equal(posts,0);
         }else{
           await page.getByRole('button',{name:'Save encrypted facts',exact:true}).click();
-          await page.waitForFunction(()=>['saved','unknown','refused'].includes(factAuthor.state().phase));
+          if(mode==='latest-close'){
+            await page.waitForFunction(()=>factAuthor.state().phase==='saving');
+            for(let n=0;n<300&&!releaseLatest;n++)await new Promise(resolve=>setTimeout(resolve,5));assert.ok(releaseLatest);
+            assert.equal(await page.evaluate(()=>factAuthor.savedSource()),null);await page.evaluate(()=>factAuthor.close());releaseLatest();
+            await page.waitForFunction(()=>factAuthor.state().phase==='closed');assert.equal(await page.evaluate(()=>factAuthor.savedSource()),null);
+          }else await page.waitForFunction(()=>['saved','unknown','refused'].includes(factAuthor.state().phase));
           if(mode==='save'){assert.equal(await page.evaluate(()=>factAuthor.state().phase),'saved');assert.equal(requests.length,2);assert.equal(new DataView(head.buffer,head.byteOffset).getBigUint64(118),f.predecessor.version+1n);}
-          if(mode==='conflict')assert.equal(await page.evaluate(()=>factAuthor.state().phase),'refused');
+          if(mode==='conflict'||mode==='head-changed'){assert.equal(await page.evaluate(()=>factAuthor.state().phase),'refused');assert.equal(await page.evaluate(()=>factAuthor.savedSource()),null);}
           if(mode==='unknown'){
             const pending=await page.evaluate(()=>factAuthor.state().pending);assert.ok(pending);
+            assert.equal(await page.evaluate(()=>factAuthor.savedSource()),null);
             await page.getByRole('button',{name:'Check saved facts',exact:true}).click();await page.waitForFunction(()=>factAuthor.state().phase==='unknown');assert.deepEqual(await page.evaluate(()=>factAuthor.state().pending),pending);assert.equal(posts,1);
+            assert.equal(await page.evaluate(()=>factAuthor.savedSource()),null);
             await page.getByRole('button',{name:'Retry same save',exact:true}).click();await page.waitForFunction(()=>factAuthor.state().phase==='saved');assert.equal(posts,2);
             const sent=requests.filter(v=>v.method==='POST');assert.deepEqual(sent[0].body,sent[1].body);assert.equal(sent[0].headers['idempotency-key'],sent[1].headers['idempotency-key']);
+          }
+          if(mode==='save'||mode==='unknown'){
+            const count=requests.length,source=await page.evaluate(()=>{const first=factAuthor.savedSource(),second=factAuthor.savedSource();if(!first||!second)throw Error('Acknowledged source missing');if(!Object.isFrozen(first)||!Object.isFrozen(first.receipt)||first===second||first.receipt===second.receipt)throw Error('Source copy boundary missing');return first;});
+            assert.equal(source.accountId,Buffer.from(f.review.binding.account).toString('hex').replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/,'$1-$2-$3-$4-$5'));
+            const post=requests.find(v=>v.method==='POST');assert.deepEqual(source.receipt,{requestId:post.headers['idempotency-key'],contextId:'06060606-0606-0606-0606-060606060606',revision:1,envelopeDigest:createHash('sha256').update(post.body).digest('hex'),state:'verified_current_snapshot',requestAcknowledged:true});assert.deepEqual(Object.keys(source).sort(),['accountId','receipt']);assert.equal(requests.length,count);
           }
         }
         assert.equal(await page.getByRole('textbox',{name:'Facts',exact:true}).inputValue(),'');assert.equal(await page.locator('pre').count(),0);
         assert.equal(await page.evaluate(()=>document.cookie.includes('__Host-zrotext_session')),false);assert.equal(await page.evaluate(()=>localStorage.length+sessionStorage.length),0);
         await page.evaluate(()=>factAuthor.close());
+        assert.equal(await page.evaluate(()=>factAuthor.savedSource()),null);
       }finally{await context.close();}
     }
   }finally{await browser?.close();await rm(assets,{recursive:true,force:true});}
