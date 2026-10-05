@@ -564,7 +564,8 @@
             ["#787", "https://github.com/pboachie/zrotext/pull/787"],
             ["#790", "https://github.com/pboachie/zrotext/pull/790"],
             ["#811", "https://github.com/pboachie/zrotext/pull/811"],
-            ["#855", "https://github.com/pboachie/zrotext/pull/855"]
+            ["#855", "https://github.com/pboachie/zrotext/pull/855"],
+            ["#898", "https://github.com/pboachie/zrotext/pull/898"]
           ],
           "evidence_note": "owner contacts/consent API and default-off encrypted conversation/context callers exist; contact vault encryption is server-side and does not establish client sealing",
           "done": [
@@ -579,7 +580,8 @@
             "Dormant owner context authoring with a compatible refresh client ([#787](https://github.com/pboachie/zrotext/pull/787))",
             "Isolated owner facts editor showing exact local plaintext and selected scope, encrypting initial context through the current signed manifest and preserving requests after unknown responses ([#790](https://github.com/pboachie/zrotext/pull/790))",
             "Isolated local owner provider disclosure review returning bounded metadata commitments with execution unavailable and plaintext scrubbed on completion ([#811](https://github.com/pboachie/zrotext/pull/811))",
-            "Bounded owner-reviewed contact reader issuance intent persisted through the complete six-operation library caller, with the original reviewed request and frozen public source committed at create and whole-signature, source, owner-session and factor verification at first completion ([#855](https://github.com/pboachie/zrotext/pull/855))"
+            "Bounded owner-reviewed contact reader issuance intent persisted through the complete six-operation library caller, with the original reviewed request and frozen public source committed at create and whole-signature, source, owner-session and factor verification at first completion ([#855](https://github.com/pboachie/zrotext/pull/855))",
+            "Owner root-review page paired with bounded contact-reader intent review, public proposal export for the offline signer, whole-signature import and explicit completion under one absolute approval budget; unknown recovery never renews approval ([#898](https://github.com/pboachie/zrotext/pull/898))"
           ],
           "todo": [
             "Client-sealed contact fields using an existing reviewed envelope and selected-reader contract (#634); the merged verifiers, producer and local-history adapter remain unmounted",
