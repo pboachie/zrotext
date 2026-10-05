@@ -278,15 +278,21 @@ pub(super) async fn installed(tx: &Transaction<'_>) -> Result<bool, tokio_postgr
         let mut keys = Vec::new();
         let mut foreign = Vec::new();
         for row in constraints {
+            let kind: String = row.try_get(0)?;
+            let no_inherit: bool = row.try_get(12)?;
+            let unexpected_inheritance = match kind.as_str() {
+                "c" => no_inherit,
+                "p" | "u" | "f" => !no_inherit,
+                _ => false,
+            };
             if !row.try_get::<_, bool>(1)?
                 || row.try_get::<_, bool>(2)?
                 || row.try_get::<_, bool>(3)?
-                || (row.try_get::<_, bool>(12)? && row.try_get::<_, String>(0)? != "n")
+                || unexpected_inheritance
                 || !row.try_get::<_, bool>(13)?
             {
                 refuse(tx).await?;
             }
-            let kind: String = row.try_get(0)?;
             let columns = row.try_get::<_, Vec<String>>(5)?.join(",");
             match kind.as_str() {
                 "n" => {} // PostgreSQL18 catalogs NOT NULL; column shape checked above.
