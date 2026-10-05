@@ -64,14 +64,15 @@ Deployment modes exercised, all local and loopback-only:
 The MCP library clients previously verified against this server over stdio
 (official JavaScript SDK 1.31.0 and Python MCP client 2.2.0) are recorded in
 [mcp-local-tools.md](mcp-local-tools.md); those remain library clients, not
-tested end-user applications. This run used the `sh`-style command forms above
-in Git Bash on Windows; Linux/POSIX platforms and the PowerShell command forms
-were not separately exercised.
+tested end-user applications. This run used the `sh`-style command forms later
+on this page, in Git Bash on Windows; Linux/POSIX platforms and the PowerShell
+command forms were not separately exercised.
 
 ### Measured setup path
 
 Ordered steps that completed on the host above, from a fresh checkout. Elapsed
-times describe that machine and cache state; they are not support commitments.
+figures are a one-time record of that machine and cache state; expect different
+values elsewhere, and treat none of them as support commitments.
 
 1. Build and test the SDK: `npm ci --ignore-scripts` then `npm test` in
    `sdk/typescript` (install about 6 seconds; the suite reported 874 passed,
@@ -86,7 +87,8 @@ times describe that machine and cache state; they are not support commitments.
    `radio_calls_modelled: 1` — a modeled boundary count, never a radio
    operation. Build plus run took about 11 seconds on this host.
 4. Local stack: copy `.env.example` to `.env`; set one long random local value
-   in both `POSTGRES_PASSWORD` and `DATABASE_URL`, and independently generate
+   that stays valid inside the `DATABASE_URL` (hexadecimal is convenient) in
+   both `POSTGRES_PASSWORD` and `DATABASE_URL`, and independently generate
    32 random bytes as 64 hexadecimal characters for `RUNTIME_DATABASE_PASSWORD`.
    Then `docker compose --env-file .env -f deploy/compose/compose.yaml
    up -d --build`. The database became healthy, the migration and runtime-role
@@ -94,15 +96,18 @@ times describe that machine and cache state; they are not support commitments.
    under 2 minutes warm). `curl http://127.0.0.1:8080/healthz` returned
    `200 {"status":"live"}` and `/readyz` returned `200 {"status":"ready"}`.
    Health answers describe process and database availability, not SMS. Tear a
-   scratch stack down afterwards with `docker compose --env-file .env
-   -f deploy/compose/compose.yaml down -v`.
+   scratch stack down afterwards with `docker compose -p <scratch-project>
+   --env-file .env -f deploy/compose/compose.yaml down -v`. The Compose file
+   pins its default project name, so `down -v` without `-p` removes the default
+   project's database volume; never run it against a volume you keep.
 5. Reviewed MCP setup against the built `sdk/mcp/server.mjs` and its computed
    SHA-256 fingerprint: `doctor` (exit 0; `artifactVerified: true`; Node and
    Python versions echoed; `clientVersion` still `"unknown"`), `demo` (exit 0;
    synthetic fixture exchange, 0.11 seconds), `install` preview then
    `install --apply --review-digest` into a scratch `mcp-json` file (exit 0;
    one `zrotext-local-preview` entry launched through this script's `stdio`
-   subcommand), and `disconnect` preview then `--apply` (exit 0; entry removed).
+   subcommand), and `disconnect` preview then `disconnect --apply
+   --review-digest` (exit 0; entry removed).
 6. Closed-gate check: an unauthenticated `POST /v1/alpha/messages` against the
    running stack with placeholder values returned HTTP 404 while the
    synthetic-alpha gate was off. That is the documented closed behavior
