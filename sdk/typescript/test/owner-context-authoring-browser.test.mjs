@@ -26,7 +26,7 @@ test('actual packaged Chromium facts review saves ciphertext and preserves unkno
     assert.ok((await readFile(path.join(assets,'sdk/owner-context-authoring.js'),'utf8')).includes('createOwnerContextAuthoring'));
     const f=await refreshFixture(),manifest=await signFixtureSuccessor02(f),trust=verifiedManifestTrust02(f.predecessor,f.nowMs);
     browser=await chromium.launch({headless:true});
-    for(const mode of ['save','conflict','unknown','archive','pagehide','head-changed','latest-close']){
+    for(const mode of ['save','conflict','unknown','archive','pagehide','same-revision-changed','latest-close']){
       const context=await browser.newContext();let posts=0,head,releaseLatest;const requests=[];
       try{
         await context.addCookies([{name:'__Host-zrotext_session',value:'synthetic-facts-session',url:f.origin,httpOnly:true,secure:true,sameSite:'Strict'},
@@ -40,7 +40,7 @@ test('actual packaged Chromium facts review saves ciphertext and preserves unkno
             if(request.method()==='POST'){
               posts++;head=body;assert.equal(headers.origin,f.origin);assert.equal(headers['x-zrotext-context-revision'],'0');assert.equal(body.includes(Buffer.from(canary)),false);
               if(mode==='conflict')await route.fulfill({status:409,body:''});else if(mode==='unknown'&&posts===1)await route.fulfill({status:503,body:''});else await route.fulfill({contentType:'application/json',body:'{"revision":1}'});
-            }else{assert.equal(url.search,'');if(mode==='latest-close')await new Promise(resolve=>releaseLatest=resolve);const latest=Buffer.from(head);if(mode==='head-changed')latest[latest.length-1]^=1;await route.fulfill({contentType:'application/vnd.zrotext.workflow-context.v1',body:latest});}return;
+            }else{assert.equal(url.search,'');if(mode==='latest-close')await new Promise(resolve=>releaseLatest=resolve);const latest=Buffer.from(head);if(mode==='same-revision-changed')latest[latest.length-1]^=1;await route.fulfill({contentType:'application/vnd.zrotext.workflow-context.v1',body:latest});}return;
           }
           await route.fulfill({contentType:'text/html',body:'<!doctype html><main id="facts"></main>'});
         });
@@ -73,7 +73,13 @@ test('actual packaged Chromium facts review saves ciphertext and preserves unkno
             await page.waitForFunction(()=>factAuthor.state().phase==='closed');assert.equal(await page.evaluate(()=>factAuthor.savedSource()),null);
           }else await page.waitForFunction(()=>['saved','unknown','refused'].includes(factAuthor.state().phase));
           if(mode==='save'){assert.equal(await page.evaluate(()=>factAuthor.state().phase),'saved');assert.equal(requests.length,2);assert.equal(new DataView(head.buffer,head.byteOffset).getBigUint64(118),f.predecessor.version+1n);}
-          if(mode==='conflict'||mode==='head-changed'){assert.equal(await page.evaluate(()=>factAuthor.state().phase),'refused');assert.equal(await page.evaluate(()=>factAuthor.savedSource()),null);}
+          if(mode==='conflict'){assert.equal(await page.evaluate(()=>factAuthor.state().phase),'refused');assert.equal(await page.evaluate(()=>factAuthor.savedSource()),null);}
+          if(mode==='same-revision-changed'){
+            assert.equal(await page.evaluate(()=>factAuthor.state().phase),'unknown');assert.equal(await page.evaluate(()=>factAuthor.savedSource()),null);
+            const post=requests.find(v=>v.method==='POST'),pending={requestId:post.headers['idempotency-key'],contextId:'06060606-0606-0606-0606-060606060606',revision:1,envelopeDigest:createHash('sha256').update(post.body).digest('hex')};
+            assert.deepEqual(await page.evaluate(()=>factAuthor.state().pending),pending);
+            await page.getByRole('button',{name:'Check saved facts',exact:true}).click();await page.waitForFunction(()=>factAuthor.state().phase==='unknown');assert.deepEqual(await page.evaluate(()=>factAuthor.state().pending),pending);assert.equal(posts,1);assert.equal(await page.evaluate(()=>factAuthor.savedSource()),null);
+          }
           if(mode==='unknown'){
             const pending=await page.evaluate(()=>factAuthor.state().pending);assert.ok(pending);
             assert.equal(await page.evaluate(()=>factAuthor.savedSource()),null);

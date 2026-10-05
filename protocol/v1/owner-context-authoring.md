@@ -78,7 +78,10 @@ encrypted-envelope digest. State is `verified_current_snapshot` and
 `requestAcknowledged` is literally true. Each getter returns new primitive-only
 copies; no caller-owned receipt or account byte array is retained.
 
-A matching latest read after an unknown write still returns null. Only actual
+A matching latest read after an unknown write still returns null. Nonidentical
+latest ciphertext at the same revision remains unknown with the original
+pending tuple and no saved source; it is not a validated higher-revision head.
+Only actual
 POST acknowledgement followed by the maintained independent latest-byte and
 owner checks can yield this metadata. An already returned copy is historical
 and cannot be revoked or treated as proof of the current head. Account and tuple
