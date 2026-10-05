@@ -189,6 +189,12 @@ async fn malformed_complete_candidate_refuses_and_rolls_back_each_drift() {
         (
             "workflow_openings",
             "c",
+            "%capacity%",
+            "ALTER TABLE workflow_openings ADD CHECK (capacity BETWEEN 1 AND 100) NO INHERIT",
+        ),
+        (
+            "workflow_openings",
+            "c",
             "%octet_length(description_digest)%",
             "ALTER TABLE workflow_openings ADD CHECK (octet_length(description_digest) >= 32)",
         ),
