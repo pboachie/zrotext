@@ -25,11 +25,12 @@ schedule execution through shared workflow authority"
 ([roadmap](../ROADMAP.md)). Its exact-action contract binds `not_before` and
 `expires_at` to every approved action
 ([workflow action contract](../../protocol/v1/workflow-action-contract.md)),
-requires a fresh owner confirmation per occurrence, re-verifies current
+requires a fresh owner confirmation per occurrence
+([encrypted scheduling](../encrypted-scheduling.md)), re-verifies current
 authority at dispatch, and treats a change to timing as a new approval. The
-dormant scheduling library is explicitly "not an activated scheduling service"
-([encrypted scheduling](../encrypted-scheduling.md)). Nothing in this scope is
-a caller-chosen timestamp on an ordinary API send.
+dormant scheduling library is explicitly "not an activated scheduling
+service". Nothing in this scope is a caller-chosen timestamp on an ordinary
+API send.
 
 ## What the immediate send path does today
 
@@ -47,8 +48,8 @@ The allowlisted synthetic route `POST /v1/alpha/messages`
   the pre-grant work.
 - Durable idempotency keys retain a request digest that includes
   `expires_at_ms`; a changed request under one key conflicts. Keys are kept
-  for 7 days and an exact replay returns the original result even after the
-  message has expired.
+  7 days by default (deployment-configurable) and an exact replay returns
+  the original result even after the message has expired.
 - A periodic sweep marks ungranted queued or claimed work past its deadline
   as terminal `expired` and refunds its usage reservation. The delivery state
   model reaches `expired` only from accepted, queued or claimed — never after
@@ -60,9 +61,11 @@ The allowlisted synthetic route `POST /v1/alpha/messages`
   the post-grant confirmation re-checks that both the message and the fence
   are still unexpired before any frame is emitted.
 
-A dormant scheduler worker already advances occurrence expiry during owner
-review and while waiting for a window, renderer or phone, and never extends a
-deadline because a component is absent
+When the separately opted-in workflow runtime is mounted, a scheduler worker
+advances occurrence expiry during owner review and while waiting for a
+window, renderer or phone, and never extends a deadline because a component
+is absent. In a default deployment no worker runs; the library remains a
+dormant candidate
 ([worker](../../crates/server/src/encrypted_schedule/worker.rs),
 [store](../../crates/server/src/encrypted_schedule/store.rs)).
 
