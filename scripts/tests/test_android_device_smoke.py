@@ -17,6 +17,58 @@ def result(class_name, name="sample", code=0):
 
 
 class DeviceSmokeTests(unittest.TestCase):
+    def test_journal_upgrade_is_selected_with_only_its_explicit_emulator_gate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            absent = smoke.selected_tests(root)
+            self.assertNotIn(smoke.JOURNAL_UPGRADE, absent)
+            self.assertNotIn("journalUpgradeIsolatedEmulator", smoke.instrumentation_arguments(absent))
+            source = root / "android/app/src/androidTest/java/org/zrotext/gateway/JournalDeviceUpgradeTest.kt"
+            source.parent.mkdir(parents=True)
+            source.touch()
+            expected = {smoke.PRECONDITIONS: 1, smoke.JOURNAL_UPGRADE: 2}
+            self.assertEqual(smoke.selected_tests(root), expected)
+            arguments = smoke.instrumentation_arguments(expected)
+            self.assertIn(smoke.JOURNAL_UPGRADE, arguments[arguments.index("class") + 1].split(","))
+            position = arguments.index("journalUpgradeIsolatedEmulator")
+            self.assertEqual(arguments[position - 1:position + 2], ["-e", "journalUpgradeIsolatedEmulator", "true"])
+            self.assertEqual(arguments.count("journalUpgradeIsolatedEmulator"), 1)
+            self.assertNotIn("entryOptInIsolatedEmulator", arguments)
+
+    def test_journal_upgrade_requires_both_named_successes_and_retains_custody_results(self):
+        expected = {smoke.PRECONDITIONS: 1, smoke.JOURNAL_UPGRADE: 2, smoke.ROOT_STORAGE: 3}
+        output = result(smoke.PRECONDITIONS)
+        output += "".join(result(smoke.JOURNAL_UPGRADE, name) for name in sorted(smoke.JOURNAL_UPGRADE_METHODS))
+        output += "".join(result(smoke.ROOT_STORAGE, f"case{index}") for index in range(3))
+        for custody in ("unsupported", "platform-reported-hardware"):
+            suffix = f"INSTRUMENTATION_RESULT: rootStorageCustody={custody}\nINSTRUMENTATION_CODE: -1\n"
+            self.assertEqual(smoke.verify_results(output + suffix, expected), custody)
+        with self.assertRaises(ValueError):
+            smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n", expected)
+
+    def test_journal_upgrade_missing_old_duplicate_substituted_and_skipped_results_refuse(self):
+        expected = {smoke.PRECONDITIONS: 1, smoke.JOURNAL_UPGRADE: 2}
+        names = sorted(smoke.JOURNAL_UPGRADE_METHODS)
+        cases = [result(smoke.JOURNAL_UPGRADE, name) for name in names]
+        prefix, suffix = result(smoke.PRECONDITIONS), "INSTRUMENTATION_CODE: -1\n"
+        smoke.verify_results(prefix + "".join(cases) + suffix, expected)
+        refused = ["", cases[0], cases[1],
+                   result(smoke.JOURNAL_UPGRADE, "installedJournalOpensAtVersionTwelveWithIdentityBoundOutbox"),
+                   cases[0] * 2, "".join(cases) + cases[0],
+                   cases[0] + result(smoke.JOURNAL_UPGRADE, "unrelatedPassingTest")]
+        refused += [cases[0] + result(smoke.JOURNAL_UPGRADE, names[1], code) for code in (-1, -2, -3, -4)]
+        for output in refused:
+            with self.subTest(output=output), self.assertRaises(ValueError):
+                smoke.verify_results(prefix + output + suffix, expected)
+        with self.assertRaises(ValueError):
+            smoke.verify_results(prefix + "".join(cases) + suffix, {smoke.PRECONDITIONS: 1})
+        for ending in ("", "INSTRUMENTATION_CODE: 0\n", suffix * 2,
+                       "INSTRUMENTATION_CODE: unsupported\n", suffix + "INSTRUMENTATION_FAILED\n"):
+            with self.subTest(ending=ending), self.assertRaises(ValueError):
+                smoke.verify_results(prefix + "".join(cases) + ending, expected)
+        with self.assertRaises(ValueError):
+            smoke.verify_results(prefix + cases[0] + "INSTRUMENTATION_STATUS_CODE: unsupported\n" + suffix, expected)
+
     def test_failed_identity_is_public_only_and_preserves_nonpassing_status(self):
         expected = {smoke.PRECONDITIONS: 1}
         for code in (-1, -2, -3, -4):

@@ -32,6 +32,11 @@ ENTRY_OPT_IN = PACKAGE + "ConversationEntryOptInDeviceTest"
 ENTRY_OPT_IN_METHOD = "explicitOptInReachesOrdinarySetupAndRejectsMissingCustodyWithoutApproval"
 ENROLLMENT_CONSENT = PACKAGE + "EnrollmentConsentBoundaryDeviceTest"
 ENROLLMENT_CONSENT_METHOD = "enrollmentAndIndependentChoicesRefuseWithoutCreatingAuthority"
+JOURNAL_UPGRADE = PACKAGE + "JournalDeviceUpgradeTest"
+JOURNAL_UPGRADE_METHODS = frozenset({
+    "versionOnePlatformMigrationRetainsUnknownAttemptAcrossReopen",
+    "versionElevenPlatformMigrationRetainsBoundEvidenceAndStopAcrossReopen",
+})
 SERIAL = "emulator-5562"
 
 
@@ -62,6 +67,8 @@ def selected_tests(root=ROOT):
         expected[ENTRY_OPT_IN] = 1
     if (root / "android/app/src/androidTest/java/org/zrotext/gateway/EnrollmentConsentBoundaryDeviceTest.kt").is_file():
         expected[ENROLLMENT_CONSENT] = 1
+    if (root / "android/app/src/androidTest/java/org/zrotext/gateway/JournalDeviceUpgradeTest.kt").is_file():
+        expected[JOURNAL_UPGRADE] = 2
     return expected
 
 
@@ -71,6 +78,8 @@ def instrumentation_arguments(expected):
             "-e", "networkServiceIsolatedEmulator", "true"]
     if ENTRY_OPT_IN in expected or ENROLLMENT_CONSENT in expected:
         args.extend(["-e", "entryOptInIsolatedEmulator", "true"])
+    if JOURNAL_UPGRADE in expected:
+        args.extend(["-e", "journalUpgradeIsolatedEmulator", "true"])
     return [*args, "org.zrotext.gateway.test/androidx.test.runner.AndroidJUnitRunner"]
 
 
@@ -156,6 +165,10 @@ def verify_results(output, expected):
         observed = {name for cls, name in completed if cls == ENROLLMENT_CONSENT}
         if observed != {ENROLLMENT_CONSENT_METHOD}:
             raise ValueError("Enrollment did not exercise the exact consent acceptance test")
+    if JOURNAL_UPGRADE in expected:
+        observed = {name for cls, name in completed if cls == JOURNAL_UPGRADE}
+        if observed != JOURNAL_UPGRADE_METHODS:
+            raise ValueError("Journal upgrade did not exercise the exact migration and reopen corpus")
     if SEALED_PREPARATION in expected:
         custody = re.findall(r"^INSTRUMENTATION_RESULT: preparationCustody=(.*)$", output, re.MULTILINE)
         if len(custody) != 1 or custody[0].strip() not in ("unsupported", "platform-reported-hardware"):
