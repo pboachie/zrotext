@@ -57,7 +57,7 @@ async fn authenticated_invalid_headers_queries_and_bodies_have_no_opening_effect
         let response = router(c.state.clone())
             .oneshot(
                 c.request("/v1/owner/workflow/openings")
-                    .body(Body::from(body))
+                    .body(Body::from(body.to_owned()))
                     .unwrap(),
             )
             .await
