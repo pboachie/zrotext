@@ -34,7 +34,9 @@ an authenticated registry of exact public proposals. Each context is revalidated
 after native signing before output is published. Missing hosted contracts fail
 closed.
 
-Browser public imports use frozen process-local bytes. A separate archive
+Browser public imports use frozen process-local bytes. The ordinary gateway
+registers both import providers as unexported with URI grants disabled; the
+archive provider retains its document metadata contract. A separate archive
 recovery import requires native consent displaying the full account, origin,
 root fingerprint, archive identity and encrypted-backup digest. Fresh native
 AEAD verification of the selected recovery material and a fresh same-session
