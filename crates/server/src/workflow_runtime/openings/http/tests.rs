@@ -15,7 +15,10 @@ fn disconnected() -> OwnerConversationsState {
 
 fn protected(response: &Response) {
     assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
-    assert_eq!(response.headers()[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+    assert_eq!(
+        response.headers()[header::X_CONTENT_TYPE_OPTIONS],
+        "nosniff"
+    );
 }
 
 #[tokio::test]
@@ -31,7 +34,8 @@ async fn anonymous_and_bearer_openings_refuse_before_body_or_database() {
             }
             let response = router(disconnected())
                 .oneshot(request.body(Body::from(vec![0; 8193])).unwrap())
-                .await.unwrap();
+                .await
+                .unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
             protected(&response);
         }
@@ -42,16 +46,33 @@ async fn anonymous_and_bearer_openings_refuse_before_body_or_database() {
 async fn status_is_post_only_and_disabled_composition_has_no_opening_routes() {
     let path = "/v1/owner/workflow/openings/00000000-0000-0000-0000-000000000001/status";
     let response = router(disconnected())
-        .oneshot(Request::builder().method("GET").uri(path).body(Body::empty()).unwrap())
-        .await.unwrap();
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(path)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
     protected(&response);
     for enabled_original in [false, true] {
         let app = crate::workflow_runtime::routines::http::owner_router_with_original(
-            disconnected(), false, enabled_original,
+            disconnected(),
+            false,
+            enabled_original,
         );
-        let response = app.oneshot(Request::builder().method("POST")
-            .uri("/v1/owner/workflow/openings").body(Body::empty()).unwrap()).await.unwrap();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/owner/workflow/openings")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }

@@ -4,7 +4,9 @@
 use crate::{
     api_json::ApiJson,
     http_auth::preauth::OwnerMutation,
-    http_owner_conversations::{ConversationError, OwnerConversationsState, context::http::connection},
+    http_owner_conversations::{
+        ConversationError, OwnerConversationsState, context::http::connection,
+    },
 };
 use axum::{
     Json, Router,
@@ -35,8 +37,12 @@ async fn owner_response(request: Request, next: Next) -> Response {
     } else {
         next.run(request).await
     };
-    response.headers_mut().insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
-    response.headers_mut().insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    response
+        .headers_mut()
+        .insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
     response
 }
 
@@ -53,7 +59,9 @@ impl FromRequestParts<Arc<OwnerConversationsState>> for OpeningOwner {
     ) -> Result<Self, Response> {
         let owner = OwnerMutation::from_request_parts(parts, state).await?;
         let mut values = parts.headers.get_all(ACCOUNT_HEADER).iter();
-        let intended = values.next().and_then(|value| value.to_str().ok())
+        let intended = values
+            .next()
+            .and_then(|value| value.to_str().ok())
             .and_then(|value| wire::canonical_uuid(value).ok());
         if values.next().is_some() || intended != Some(owner.0.tenant.account_id()) {
             return Err(ConversationError::Forbidden.into_response());
@@ -76,7 +84,9 @@ async fn create(
     let account = owner.tenant.account_id();
     let mut client = connection(&state).await?;
     let outcome = super::create(&mut client, &owner, request).await?;
-    Ok(Json(wire::created(account, request_id, opening_id, outcome)?))
+    Ok(Json(wire::created(
+        account, request_id, opening_id, outcome,
+    )?))
 }
 
 async fn status(
