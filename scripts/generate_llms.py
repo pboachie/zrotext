@@ -15,6 +15,9 @@ RAW_BASE = "https://raw.githubusercontent.com/pboachie/zrotext/main/"
 DOCUMENTS = (
     ("Project overview", "README.md", "What ZROtext is, its development status and how to run the local stack."),
     ("Agent texting quickstart (simulator)", "docs/AGENT-QUICKSTART.md", "Local walkthrough of the agent send flow against the simulator; sends no real SMS."),
+    ("Send-first-message examples (restricted)", "docs/SEND-FIRST-MESSAGE.md", "Synthetic-alpha submit/status and webhook examples tested with local stubs and vectors; no general send route."),
+    ("Public HTTP API reference", "docs/API-REFERENCE.md", "Generated current-route and planned-operation reference; outbound examples use the restricted synthetic-alpha plane."),
+    ("Guarded agent send tools (simulator)", "docs/agent-send-guardrails.md", "Experimental local MCP guardrails with owner approval, idempotency and limits; simulator only, sends no real SMS."),
     ("Local agent setup", "docs/agent-local-setup.md", "Setting up a local development stack for agent testing."),
     ("Local MCP tools", "docs/mcp-local-tools.md", "Local Model Context Protocol tools for the development stack."),
     ("Agent recipes", "docs/agent-recipes.md", "Worked examples for agents using the local tools."),
