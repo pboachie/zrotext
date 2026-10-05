@@ -513,8 +513,67 @@ async fn original_reply_child_keeps_first_question_source_fence_after_genuine_is
         .unwrap();
     let mut descriptor = f.f.case.descriptor().await;
     descriptor.routine_id = call.call_id.to_string();
-    let deadline:i64=f.f.case.f.db.query_one("SELECT LEAST(g.expires_ms,r.expires_ms) FROM original_reply_grants g JOIN original_reply_requests r ON r.account_id=g.account_id WHERE g.account_id=$1 AND g.grant_id=$2 AND r.request_id=$3",&[&f.f.case.f.account,&second_read.grant_id,&request]).await.unwrap().get(0);
-    descriptor.expires_at = deadline / 1000;
+    // The maintained output has its own generation, independent of input policy 3.
+    let selected = f.f.case.f.db.query_one(
+        "SELECT c.output_context_id,r.context_id,r.generation FROM workflow_routine_calls c JOIN workflow_routines r ON (r.account_id,r.id)=(c.account_id,c.id) WHERE c.account_id=$1 AND c.id=$2",
+        &[&f.f.case.f.account, &call.call_id],
+    ).await.unwrap();
+    assert_eq!(selected.get::<_, Uuid>(0), f.f.case.header.context);
+    assert_eq!(selected.get::<_, Uuid>(1), f.f.case.header.context);
+    assert_eq!(selected.get::<_, i64>(2), 1);
+    assert_eq!(descriptor.authority_generation, selected.get::<_, i64>(2));
+    let issued = f.f.case.f.db.query_one(
+        "SELECT r.action_id,r.revision,r.binding_digest,LEAST(g.expires_ms,r.expires_ms),workflow_routine_original_current(r.account_id,r.action_id),workflow_routine_original_action_current(r.account_id,r.action_id),original_reply_source_current(r.account_id,r.action_id),original_reply_grant_current(r.account_id,g.grant_id) FROM original_reply_grants g JOIN original_reply_requests r ON r.account_id=g.account_id WHERE g.account_id=$1 AND g.grant_id=$2 AND r.request_id=$3",
+        &[&f.f.case.f.account, &second_read.grant_id, &request],
+    ).await.unwrap();
+    assert_eq!(issued.get::<_, Uuid>(0), first.action_id);
+    assert_eq!(issued.get::<_, i64>(1), first.revision);
+    assert_eq!(
+        issued.get::<_, Vec<u8>>(2).as_slice(),
+        first.binding_digest.as_slice()
+    );
+    assert!(
+        issued.get::<_, bool>(4),
+        "issued original routine source must remain current"
+    );
+    assert!(
+        issued.get::<_, bool>(5),
+        "issued original output action must remain current"
+    );
+    assert!(
+        issued.get::<_, bool>(6),
+        "issued original lineage must remain current"
+    );
+    assert!(
+        issued.get::<_, bool>(7),
+        "second reader grant must be current"
+    );
+    let deadline: i64 = issued.get(3);
+    {
+        let mut diagnostic = f.f.case.f.connect().await;
+        let tx = diagnostic.transaction().await.unwrap();
+        let (proof, statement) =
+            service::locked(&tx, &original, f.invocation.accepted_manifest_version)
+                .await
+                .expect("second reader must have current original authority");
+        assert_eq!(statement.interval, f.f.statement.interval);
+        assert_eq!(proof.interval_id, f.f.statement.interval);
+        descriptor.expires_at = deadline.min(proof.expires_at_ms) / 1000;
+        assert!(proof.observed_at_ms < descriptor.expires_at_ms().unwrap());
+        let checked = crate::workflow_runtime::scope::lock_scope(
+            &tx,
+            &output,
+            f.f.case.header.context,
+            Operation::Propose,
+        )
+        .await
+        .expect("published output scope must be current");
+        checked
+            .check_descriptor(&descriptor)
+            .expect("child descriptor must match the published output scope");
+        drop(checked);
+        tx.rollback().await.unwrap();
+    }
     let child = service::consumption::consume(
         &mut f.f.case.f.connect().await,
         &original,

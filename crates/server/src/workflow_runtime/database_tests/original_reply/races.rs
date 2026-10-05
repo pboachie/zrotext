@@ -238,6 +238,47 @@ async fn original_lineage_rechecks_earlier_deadline_after_observed_later_hop_wai
     let mut config = configuration(&flow.f, next_event).await;
     config["local_sequence"] = serde_json::json!("2");
     capture(&flow.f, &mut config, &flow.scratch, next_event).await;
+    // Prepare the independent output before issuing the short original authority.
+    // These checks are prerequisite snapshots, never permits for the later consume.
+    let mut descriptor = flow.f.case.descriptor().await;
+    let output = authenticate(&flow.caller, &flow.f.case.hasher, &flow.output.token)
+        .await
+        .unwrap();
+    let request_state = flow.f.case.f.db.query_one(
+        "SELECT action_id,revision,binding_digest,expires_ms,original_reply_source_current(account_id,action_id),workflow_action_origin_current(account_id,action_id) FROM original_reply_requests WHERE account_id=$1 AND request_id=$2",
+        &[&flow.f.case.f.account, &next_request],
+    ).await.unwrap();
+    assert_eq!(request_state.get::<_, Uuid>(0), first.action_id);
+    assert_eq!(request_state.get::<_, i64>(1), first.revision);
+    assert_eq!(
+        request_state.get::<_, Vec<u8>>(2).as_slice(),
+        first.binding_digest.as_slice()
+    );
+    let request_deadline: i64 = request_state.get(3);
+    assert!(
+        request_state.get::<_, bool>(4),
+        "issued parent source must be current"
+    );
+    assert!(
+        request_state.get::<_, bool>(5),
+        "issued parent origin must be current"
+    );
+    {
+        let tx = flow.caller.transaction().await.unwrap();
+        let checked = crate::workflow_runtime::scope::lock_scope(
+            &tx,
+            &output,
+            flow.f.case.header.context,
+            Operation::Propose,
+        )
+        .await
+        .expect("independent output scope must be current");
+        checked
+            .check_descriptor(&descriptor)
+            .expect("prepared output descriptor must match its scope");
+        drop(checked);
+        tx.rollback().await.unwrap();
+    }
     // Both caller/blocker were opened before issuing this bounded short authority.
     let second_read = flow.f.issue_with_lifetime(10000).await;
     let deadline: i64 = flow
@@ -252,14 +293,27 @@ async fn original_lineage_rechecks_earlier_deadline_after_observed_later_hop_wai
         .await
         .unwrap()
         .get(0);
-    let mut descriptor = flow.f.case.descriptor().await;
-    descriptor.expires_at = deadline / 1000;
+    // Preserve the independent live request and the original ten-second target.
+    assert!(request_deadline > deadline);
+    descriptor.expires_at = deadline.min(request_deadline) / 1000;
     let p = service::authenticate(&flow.caller, &flow.f.case.hasher, &second_read.token)
         .await
         .unwrap();
-    let output = authenticate(&flow.caller, &flow.f.case.hasher, &flow.output.token)
-        .await
-        .unwrap();
+    {
+        let tx = flow.caller.transaction().await.unwrap();
+        let (proof, statement) = service::locked(&tx, &p, flow.f.statement.activation_version)
+            .await
+            .expect("second reader must have current original authority");
+        assert_eq!(statement.interval, flow.f.statement.interval);
+        assert_eq!(proof.interval_id, flow.f.statement.interval);
+        assert_eq!(
+            proof.expires_at_ms, deadline,
+            "short grant must remain the limiting original authority"
+        );
+        assert!(proof.observed_at_ms < deadline);
+        assert!(descriptor.expires_at_ms().unwrap() <= proof.expires_at_ms);
+        tx.rollback().await.unwrap();
+    }
     let second = service::consumption::consume(
         &mut flow.caller,
         &p,
