@@ -123,6 +123,9 @@ android {
             }
         }
     }
+    // Package the locally built typed custodian in the ordinary gateway too.
+    sourceSets.getByName("main").jniLibs.srcDir(layout.buildDirectory.dir("generated/ownerCustodyJniLibs").get().asFile)
+
     // The same signature corpus runs in CI's JVM suite and on an Android device.
     for (testSource in listOf("test", "androidTest")) {
         sourceSets.getByName(testSource) {
@@ -172,6 +175,32 @@ androidComponents {
     }
 }
 
+
+// Build from reviewed source for every ordinary APK; never silently package an
+// unavailable or old signer. This is build-host tooling, not an owner desktop step.
+val buildAndroidOwnerCustodyNative = tasks.register<Exec>("buildAndroidOwnerCustodyNative") {
+    val repoDir = rootProject.projectDir.parentFile
+    workingDir(repoDir)
+    inputs.files(fileTree(repoDir.resolve("crates/android-owner-custody")) { include("**/*.rs", "Cargo.toml") })
+    inputs.files(fileTree(repoDir.resolve("crates/root-material")) { include("**/*.rs", "Cargo.toml") })
+    inputs.files(repoDir.resolve("Cargo.toml"), repoDir.resolve("Cargo.lock"),
+        repoDir.resolve("rust-toolchain.toml"), repoDir.resolve("scripts/build_android_owner_custody.py"))
+    outputs.dir(layout.buildDirectory.dir("generated/ownerCustodyJniLibs"))
+    // Cargo checks the actual pinned toolchain/NDK/linker inputs on every build.
+    outputs.upToDateWhen { false }
+    val python = providers.gradleProperty("ownerCustodyPython").orElse("python3")
+    val ndk = providers.gradleProperty("ownerCustodyNdk")
+        .orElse(providers.environmentVariable("ANDROID_NDK_HOME"))
+        .orElse(androidComponents.sdkComponents.sdkDirectory.map { it.asFile.resolve("ndk/28.2.13676358").absolutePath })
+    // Resolve public build arguments during configuration: an execution closure
+    // capturing the Kotlin script cannot be saved by the configuration cache.
+    val command = mutableListOf(python.get(), "scripts/build_android_owner_custody.py", "--ndk", ndk.get(),
+        "--output", layout.buildDirectory.dir("generated/ownerCustodyJniLibs").get().asFile.absolutePath)
+    providers.gradleProperty("ownerCustodyTargetDir").orNull?.let { command.addAll(listOf("--target-dir", it)) }
+    commandLine(command)
+}
+tasks.named("preBuild").configure { dependsOn(buildAndroidOwnerCustodyNative) }
+
 kotlin {
     compilerOptions {
         jvmTarget.set(JvmTarget.JVM_17)
@@ -189,6 +218,12 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("com.squareup.okhttp3:okhttp:5.5.0")
     implementation("androidx.core:core-ktx:1.19.1")
+    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
+    constraints {
+        implementation("androidx.fragment:fragment:1.8.9") {
+            because("Scanner transitive Fragment must support the existing ActivityResult APIs")
+        }
+    }
     implementation("androidx.room:room-runtime:2.8.5")
     ksp("androidx.room:room-compiler:2.8.5")
     // Drives Compose frames reliably for navigation and permission-dialog regression tests.
