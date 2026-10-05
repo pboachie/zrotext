@@ -16,7 +16,9 @@ async fn absent_pristine_and_partial_schema_have_distinct_outcomes() {
         .unwrap()
         .get(0);
     let tx = db.transaction().await.unwrap();
-    tx.batch_execute("SET LOCAL search_path = ''").await.unwrap();
+    tx.batch_execute("SET LOCAL search_path = ''")
+        .await
+        .unwrap();
     assert!(
         tx.query_one("SELECT current_schema() IS NULL", &[])
             .await
@@ -38,7 +40,13 @@ async fn absent_pristine_and_partial_schema_have_distinct_outcomes() {
             .unwrap()
             .is_empty()
     );
-    assert_eq!(tx.query_one("SELECT 1", &[]).await.unwrap().get::<_, i32>(0), 1);
+    assert_eq!(
+        tx.query_one("SELECT 1", &[])
+            .await
+            .unwrap()
+            .get::<_, i32>(0),
+        1
+    );
     tx.rollback().await.unwrap();
     assert_eq!(
         db.query_one("SELECT current_setting('search_path')", &[])
