@@ -28,7 +28,10 @@ fn create_and_nested_source_require_objects_not_positional_sequences() {
     let positional = format!(r#"["{ID}","{ID}",1,{source},"1"]"#);
     assert!(!valid(&positional));
     let nested = body().replace(
-        &format!(r#"{{"context_id":"{ID}","revision":1,"digest":"{}"}}"#, "ab".repeat(32)),
+        &format!(
+            r#"{{"context_id":"{ID}","revision":1,"digest":"{}"}}"#,
+            "ab".repeat(32)
+        ),
         &source,
     );
     assert!(!valid(&nested));
@@ -81,7 +84,11 @@ fn streamed_members_reject_duplicates_unknown_authority_and_missing_fields() {
         r#""revision":1,"\u0072evision":1"#,
     )));
     for unknown in ["account_id", "owner_id", "session_id", "permit"] {
-        assert!(!valid(&body().replacen('{', &format!("{{\"{unknown}\":true,"), 1)));
+        assert!(!valid(&body().replacen(
+            '{',
+            &format!("{{\"{unknown}\":true,"),
+            1
+        )));
         assert!(!valid(&body().replace(
             r#""revision":1"#,
             &format!(r#""revision":1,"{unknown}":true"#),
@@ -135,8 +142,18 @@ fn deadline_is_a_positive_canonical_i64_string_without_loss() {
         .unwrap();
     assert_eq!(request.decision_deadline_ms, i64::MAX);
     for value in [
-        "", "0", "01", "+1", "-1", " 1", "1 ", "1.0", "1e0", "\u{661}",
-        "9223372036854775808", "11111111111111111111",
+        "",
+        "0",
+        "01",
+        "+1",
+        "-1",
+        " 1",
+        "1 ",
+        "1.0",
+        "1e0",
+        "\u{661}",
+        "9223372036854775808",
+        "11111111111111111111",
     ] {
         assert!(!valid(&body().replace(
             r#""decision_deadline_ms":"1""#,
@@ -161,7 +178,15 @@ fn capacity_and_revision_retain_integer_ranges_and_digest_validation() {
             )));
         }
         for value in [
-            "0", "-1", "-0", "1.0", "1e0", "\"1\"", "null", "true", "9223372036854775808",
+            "0",
+            "-1",
+            "-0",
+            "1.0",
+            "1e0",
+            "\"1\"",
+            "null",
+            "true",
+            "9223372036854775808",
         ] {
             assert!(!valid(&body().replace(
                 &format!(r#""{field}":1"#),
@@ -226,7 +251,10 @@ fn create_and_status_project_closed_decimal_metadata_and_historical_acknowledgme
         assert_eq!(projection.as_object().unwrap().len(), 7);
         assert_eq!(projection["opening"].as_object().unwrap().len(), 3);
         assert_eq!(projection["opening"]["opening_id"], ID);
-        assert_eq!(projection["opening"]["definition_version"], i64::MAX.to_string());
+        assert_eq!(
+            projection["opening"]["definition_version"],
+            i64::MAX.to_string()
+        );
         assert_eq!(projection["opening"]["state_version"], i64::MAX.to_string());
         assert_eq!(projection["pending"], "0");
         assert_eq!(projection["confirmed"], "100");
@@ -247,7 +275,12 @@ fn impossible_library_projections_fail_unavailable_without_publishing_metadata()
             0 => input.opening.opening_id = other,
             1 => input.opening.definition_version = 0,
             2 => input.opening.state_version = -1,
-            3 => input.offer = Some(contracts::OfferKey { offer_id: id, state_version: 1 }),
+            3 => {
+                input.offer = Some(contracts::OfferKey {
+                    offer_id: id,
+                    state_version: 1,
+                })
+            }
             4 => input.allocation_id = Some(id),
             5 => input.allocation_version = Some(1),
             6 => input.phase = "offered".into(),
@@ -257,7 +290,10 @@ fn impossible_library_projections_fail_unavailable_without_publishing_metadata()
             10 => input.confirmed = i64::MAX,
             _ => input.pending = 1,
         }
-        assert!(matches!(status(id, id, input), Err(ConversationError::Unavailable)));
+        assert!(matches!(
+            status(id, id, input),
+            Err(ConversationError::Unavailable)
+        ));
     }
     assert!(status(Uuid::nil(), id, receipt()).is_err());
     assert!(status(id, Uuid::nil(), receipt()).is_err());
