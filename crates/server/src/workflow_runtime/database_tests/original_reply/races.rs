@@ -279,6 +279,92 @@ async fn original_lineage_rechecks_earlier_deadline_after_observed_later_hop_wai
         drop(checked);
         tx.rollback().await.unwrap();
     }
+    // Verify the newly captured event under the actual still-live first reader
+    // before issuing the ten-second credential. This never supplies a cached
+    // proof to the later consume, which reauthenticates and verifies it again.
+    let history_reader = service::authenticate(&flow.caller, &flow.f.case.hasher, &flow.read.token)
+        .await
+        .unwrap();
+    {
+        let tx = flow.caller.transaction().await.unwrap();
+        let history_started = std::time::Instant::now();
+        let history = service::verified_event(
+            &tx,
+            &history_reader,
+            next_event,
+            flow.f.statement.activation_version,
+        )
+        .await;
+        let code = match &history {
+            Ok(_) => "ok",
+            Err(ConversationError::Forbidden) => "forbidden",
+            Err(ConversationError::Database(_)) => "database",
+            Err(_) => "other_refusal",
+        };
+        eprintln!(
+            "original_reply_consume phase=event_history reader=parent code={code} elapsed_ms={}",
+            history_started.elapsed().as_millis()
+        );
+        let verified = history.map(|(_, statement, _)| statement.interval);
+        tx.rollback().await.unwrap();
+        assert!(
+            verified
+                .map_err(|_| ())
+                .expect("captured second event history must verify")
+                == flow.f.statement.interval,
+            "verified event must retain the selected interval"
+        );
+    }
+    // Sample the actual parent ceilings before the target consume. These are
+    // diagnostic snapshots, never authority retained across the next call.
+    let parent_snapshot_started = std::time::Instant::now();
+    let parent_before = flow.f.case.f.db.query_one(
+        "SELECT r.expires_ms,v.expires_at_ms,v.context_authority_deadline_ms,c.expires_at_ms,original_reply_integration_origin_deadline(a.account_id,a.integration_origin_grant,a.id),CASE WHEN EXISTS(SELECT 1 FROM workflow_routine_original_sources o WHERE (o.account_id,o.call_id)=(a.account_id,a.id)) THEN workflow_routine_original_deadline(a.account_id,a.id) ELSE original_reply_source_one_deadline(a.account_id,a.id) END FROM original_reply_requests r JOIN workflow_actions a ON (a.account_id,a.id,a.revision,a.binding_digest)=(r.account_id,r.action_id,r.revision,r.binding_digest) JOIN workflow_action_versions v ON (v.account_id,v.action_id,v.revision,v.binding_digest)=(a.account_id,a.id,a.revision,a.binding_digest) JOIN workflow_contexts c ON (c.account_id,c.id)=(a.account_id,a.context_id) WHERE r.account_id=$1 AND r.request_id=$2",
+        &[&flow.f.case.f.account, &next_request],
+    ).await.ok();
+    let parent_before_clock = flow
+        .f
+        .case
+        .f
+        .db
+        .query_one(
+            "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+            &[],
+        )
+        .await
+        .ok()
+        .map(|row| row.get::<_, i64>(0));
+    eprintln!(
+        "original_reply_consume phase=parent_before available={} clock_present={} elapsed_ms={}",
+        parent_before.is_some(),
+        parent_before_clock.is_some(),
+        parent_snapshot_started.elapsed().as_millis()
+    );
+    for (index, label) in [
+        "parent_request",
+        "parent_action",
+        "parent_authority",
+        "parent_context",
+        "parent_origin",
+        "parent_ancestry",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let cap = parent_before
+            .as_ref()
+            .and_then(|row| row.get::<_, Option<i64>>(index));
+        let remaining = cap
+            .zip(parent_before_clock)
+            .map(|(cap, now)| cap.saturating_sub(now));
+        eprintln!(
+            "original_reply_consume phase=parent_before cap={label} present={} sampled={} live={} remaining_ms={}",
+            cap.is_some(),
+            remaining.is_some(),
+            remaining.is_some_and(|v| v > 0),
+            remaining.unwrap_or(0)
+        );
+    }
     // Both caller/blocker were opened before issuing this bounded short authority.
     let second_read = flow.f.issue_with_lifetime(10000).await;
     let deadline: i64 = flow
@@ -314,22 +400,141 @@ async fn original_lineage_rechecks_earlier_deadline_after_observed_later_hop_wai
         assert!(descriptor.expires_at_ms().unwrap() <= proof.expires_at_ms);
         tx.rollback().await.unwrap();
     }
-    let second = service::consumption::consume(
+    let consumption_id = Uuid::new_v4();
+    let selected_child = descriptor.key().unwrap().action_id;
+    let child_deadline = descriptor.expires_at_ms().unwrap();
+    let consume_before_clock = flow
+        .f
+        .case
+        .f
+        .db
+        .query_one(
+            "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+            &[],
+        )
+        .await
+        .ok()
+        .map(|row| row.get::<_, i64>(0));
+    let consume_started = std::time::Instant::now();
+    let second_attempt = service::consumption::consume(
         &mut flow.caller,
         &p,
         flow.f.statement.activation_version,
         service::consumption::Request {
-            request_id: Uuid::new_v4(),
+            request_id: consumption_id,
             event_id: next_event,
             active_request_id: Some(next_request),
             descriptor: Some(descriptor),
         },
         Some(&output),
     )
-    .await
-    .unwrap()
-    .action
-    .unwrap();
+    .await;
+    let consume_elapsed_ms = consume_started.elapsed().as_millis();
+    if second_attempt.is_err() {
+        // The consume has already settled. These read-only diagnostics cannot
+        // change its returned refusal, renew authority, or replace its assertion.
+        let code = match &second_attempt {
+            Err(ConversationError::Forbidden) => "forbidden",
+            Err(ConversationError::Database(_)) => "database",
+            Err(_) => "other_refusal",
+            Ok(_) => "ok",
+        };
+        let post_started = std::time::Instant::now();
+        let settled_clock = flow
+            .f
+            .case
+            .f
+            .db
+            .query_one(
+                "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+                &[],
+            )
+            .await
+            .ok()
+            .map(|row| row.get::<_, i64>(0));
+        let parent_after = flow.f.case.f.db.query_one(
+            "SELECT r.expires_ms,v.expires_at_ms,v.context_authority_deadline_ms,c.expires_at_ms,original_reply_integration_origin_deadline(a.account_id,a.integration_origin_grant,a.id),CASE WHEN EXISTS(SELECT 1 FROM workflow_routine_original_sources o WHERE (o.account_id,o.call_id)=(a.account_id,a.id)) THEN workflow_routine_original_deadline(a.account_id,a.id) ELSE original_reply_source_one_deadline(a.account_id,a.id) END FROM original_reply_requests r JOIN workflow_actions a ON (a.account_id,a.id,a.revision,a.binding_digest)=(r.account_id,r.action_id,r.revision,r.binding_digest) JOIN workflow_action_versions v ON (v.account_id,v.action_id,v.revision,v.binding_digest)=(a.account_id,a.id,a.revision,a.binding_digest) JOIN workflow_contexts c ON (c.account_id,c.id)=(a.account_id,a.context_id) WHERE r.account_id=$1 AND r.request_id=$2",
+            &[&flow.f.case.f.account, &next_request],
+        ).await.ok();
+        let status = flow.f.case.f.db.query_one(
+            "SELECT original_reply_grant_current($1,$2),original_reply_source_current($1,$3),workflow_action_origin_current($1,$3),EXISTS(SELECT 1 FROM workflow_actions WHERE account_id=$1 AND id=$4),EXISTS(SELECT 1 FROM original_reply_sources WHERE account_id=$1 AND action_id=$4),EXISTS(SELECT 1 FROM original_reply_consumptions WHERE account_id=$1 AND consumption_id=$5)",
+            &[&flow.f.case.f.account, &second_read.grant_id, &first.action_id, &selected_child, &consumption_id],
+        ).await.ok();
+        let after_clock = flow
+            .f
+            .case
+            .f
+            .db
+            .query_one(
+                "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+                &[],
+            )
+            .await
+            .ok()
+            .map(|row| row.get::<_, i64>(0));
+        eprintln!(
+            "original_reply_consume phase=settled code={code} consume_elapsed_ms={consume_elapsed_ms} clock_span_sampled={} clock_span_ms={} child_before_sampled={} child_before_remaining_ms={} child_settled_sampled={} child_settled_remaining_ms={} post_elapsed_ms={} caps_available={} status_available={}",
+            consume_before_clock.zip(settled_clock).is_some(),
+            consume_before_clock
+                .zip(settled_clock)
+                .map(|(before, after)| after.saturating_sub(before))
+                .unwrap_or(0),
+            consume_before_clock.is_some(),
+            consume_before_clock
+                .map(|now| child_deadline.saturating_sub(now))
+                .unwrap_or(0),
+            settled_clock.is_some(),
+            settled_clock
+                .map(|now| child_deadline.saturating_sub(now))
+                .unwrap_or(0),
+            post_started.elapsed().as_millis(),
+            parent_after.is_some(),
+            status.is_some()
+        );
+        for (index, label) in [
+            "parent_request",
+            "parent_action",
+            "parent_authority",
+            "parent_context",
+            "parent_origin",
+            "parent_ancestry",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let cap = parent_after
+                .as_ref()
+                .and_then(|row| row.get::<_, Option<i64>>(index));
+            let remaining = cap
+                .zip(after_clock)
+                .map(|(cap, now)| cap.saturating_sub(now));
+            eprintln!(
+                "original_reply_consume phase=post_refusal cap={label} present={} sampled={} live={} remaining_ms={}",
+                cap.is_some(),
+                remaining.is_some(),
+                remaining.is_some_and(|v| v > 0),
+                remaining.unwrap_or(0)
+            );
+        }
+        for (index, label) in [
+            "reader_current",
+            "parent_source_current",
+            "parent_origin_current",
+            "child_action_present",
+            "child_source_present",
+            "consume_receipt_present",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            eprintln!(
+                "original_reply_consume phase=post_refusal status={label} available={} value={}",
+                status.is_some(),
+                status.as_ref().is_some_and(|row| row.get::<_, bool>(index))
+            );
+        }
+    }
+    let second = second_attempt.unwrap().action.unwrap();
     for key in [first, second] {
         assert!(
             flow.f
