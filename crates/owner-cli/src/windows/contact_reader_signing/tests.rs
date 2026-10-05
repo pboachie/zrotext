@@ -944,7 +944,7 @@ fn inspect_issuer_packet(parent: &std::path::Path) -> Result<()> {
     let facts = parsed.inspect(&expected, before)?.facts();
     let source_end = number(&parsed.pending.creation_source.signed_until_ms, false)?;
     if facts.until_ms != expected.requested_until_ms || source_end <= facts.until_ms
-        || number(&emission.captured_ms, false)? < number(&parsed.pending.current.observed_ms, false)?
+        || number(&emission.captured_ms, false)? < parsed.pending.current.values()?.observed
     { return Err(()); }
     let mut negative_cases = 0_usize;
     let mut rejected = |refused: bool| -> Result<()> {
