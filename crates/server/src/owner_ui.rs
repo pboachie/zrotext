@@ -9,6 +9,10 @@ use axum::{
 };
 
 const PAGE: &str = include_str!("../../../web/owner/devices.html");
+const EXCEPTIONS_NAV_SLOT: &str = "<!-- workflow-exceptions-navigation -->";
+const EXCEPTIONS_NAV_LINK: &str = "<a href=\"/owner/workflow-exceptions\" data-owner-only hidden>Workflow exceptions</a>";
+const EXCEPTIONS_PAGE: &str = include_str!("../../../web/owner/workflow-exceptions.html");
+const EXCEPTIONS_SCRIPT: &str = include_str!("../../../web/owner/workflow-exceptions.js");
 const SCRIPT: &str = include_str!("../../../web/owner/devices.js");
 const SHELL_SCRIPT: &str = include_str!("../../../web/owner/owner-shell.js");
 const STYLE: &str = include_str!("../../../web/owner/devices.css");
@@ -51,8 +55,17 @@ fn if_none_match_matches(if_none_match: Option<&HeaderValue>, etag: &str) -> boo
 }
 
 pub fn router() -> Router {
-    Router::new()
-        .route("/owner/devices", get(page))
+    router_with_customer_routines(false)
+}
+
+/// Static exceptions assets and navigation share the existing routines gate.
+/// This controls discovery only; API authentication remains independent.
+pub fn router_with_customer_routines(customer_routines_enabled: bool) -> Router {
+    let router = Router::new()
+        .route(
+            "/owner/devices",
+            get(move || async move { page(customer_routines_enabled).await }),
+        )
         .route("/owner/devices.js", get(script))
         .route("/owner/owner-shell.js", get(shell_script))
         .route("/owner/devices.css", get(style))
@@ -68,7 +81,17 @@ pub fn router() -> Router {
         .route("/owner/template-preview", get(template_page))
         .route("/owner/template-preview.js", get(template_script))
         .route("/owner/template-preview-core.js", get(template_core))
-        .route("/owner/template-preview.css", get(template_style))
+        .route("/owner/template-preview.css", get(template_style));
+    if customer_routines_enabled {
+        router
+            .route("/owner/workflow-exceptions", get(workflow_exceptions_page))
+            .route(
+                "/owner/workflow-exceptions.js",
+                get(workflow_exceptions_script),
+            )
+    } else {
+        router
+    }
 }
 
 /// Mounted only by explicitly enabled conversation startup composition.
@@ -237,8 +260,30 @@ fn cached_asset(
     response
 }
 
-async fn page() -> Response {
-    secure_response(Html(PAGE).into_response(), "text/html; charset=utf-8")
+async fn page(customer_routines_enabled: bool) -> Response {
+    let navigation = if customer_routines_enabled {
+        EXCEPTIONS_NAV_LINK
+    } else {
+        ""
+    };
+    secure_response(
+        Html(PAGE.replace(EXCEPTIONS_NAV_SLOT, navigation)).into_response(),
+        "text/html; charset=utf-8",
+    )
+}
+
+async fn workflow_exceptions_page() -> Response {
+    secure_response(
+        Html(EXCEPTIONS_PAGE).into_response(),
+        "text/html; charset=utf-8",
+    )
+}
+
+async fn workflow_exceptions_script() -> Response {
+    secure_response(
+        EXCEPTIONS_SCRIPT.into_response(),
+        "text/javascript; charset=utf-8",
+    )
 }
 
 async fn script(headers: HeaderMap) -> Response {
@@ -387,6 +432,9 @@ async fn template_style(headers: HeaderMap) -> Response {
         headers.get(header::IF_NONE_MATCH),
     )
 }
+
+#[cfg(test)]
+mod workflow_exceptions_tests;
 
 #[cfg(test)]
 mod tests {
