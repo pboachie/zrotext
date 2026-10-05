@@ -130,9 +130,9 @@ fn canonical_timestamp(value: &str) -> bool {
         ]
         .iter()
         .any(|&(at, expected)| b[at] != expected)
-        || b.iter().enumerate().any(|(at, digit)| {
-            ![4, 7, 10, 13, 16, 19, 26].contains(&at) && !digit.is_ascii_digit()
-        })
+        || b.iter()
+            .enumerate()
+            .any(|(at, digit)| ![4, 7, 10, 13, 16, 19, 26].contains(&at) && !digit.is_ascii_digit())
     {
         return false;
     }
