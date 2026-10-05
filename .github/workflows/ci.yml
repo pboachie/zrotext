@@ -324,7 +324,12 @@ jobs:
         if: env.RUN_ANDROID == 'true'
       - name: Install Android SDK platform
         if: env.RUN_ANDROID == 'true'
-        run: sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0'
+        run: sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;28.2.13676358'
+      - name: Install pinned owner-custody Android Rust targets
+        if: env.RUN_ANDROID == 'true'
+        run: |
+          rustup show active-toolchain
+          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
       - name: Lint, test and build debug APK
         if: env.RUN_ANDROID == 'true'
         working-directory: android
