@@ -9,6 +9,7 @@ pub mod model;
 mod reduce;
 pub use admit::{confirm, offer, reserve};
 pub mod export;
+mod schema;
 mod source;
 mod store;
 use crate::{

@@ -7,6 +7,19 @@ Tests install the candidate explicitly into disposable schemas. No mutation
 route, SDK caller, application journey, interval-overlap booking, external
 calendar, provider call or SMS dispatch is enabled by this foundation.
 
+The optional schema gate checks the actual resolved relations in the current
+schema, their complete columns and defaults, validated checks, primary and
+unique keys, foreign-key targets and actions, and required usable indexes.
+An absent candidate remains optional for lifecycle/export callers and unavailable
+for opening commands. Partial or inconsistent installed objects abort the caller
+transaction before opening effects; status also passes this gate because it can
+expire pending holds. This validation neither installs the candidate nor enables
+an HTTP route, client journey or production migration. The inspection is
+read-only and retains existing transaction lock order and time bounds. Privileged
+candidate installation and schema DDL require controlled coordination; this
+guard does not prove resistance to arbitrary concurrent operator DDL after its
+inspection and grants no application or owner DDL authority.
+
 Current conversation storage admits at most one pending, install-pending or
 active interval per account. The maintained activation authorizer retains that
 account-wide boundary. Capacity race tests use genuine signed replies in one
