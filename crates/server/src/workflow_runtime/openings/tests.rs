@@ -713,7 +713,9 @@ async fn later_receipt_and_erasure_failures_roll_back_state_and_authority_scrubb
     // Retain both clients so teardown runs on success and assertion failure.
     let reset = db.batch_execute("ROLLBACK; RESET ROLE").await;
     drop(db);
-    let cleanup = std::panic::AssertUnwindSafe(c.cleanup()).catch_unwind().await;
+    let cleanup = std::panic::AssertUnwindSafe(c.cleanup())
+        .catch_unwind()
+        .await;
     let drop_role = admin.batch_execute(&drop_role_sql).await;
     if let Err(payload) = result {
         if reset.is_err() || cleanup.is_err() || drop_role.is_err() {
