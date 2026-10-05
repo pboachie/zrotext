@@ -54,9 +54,38 @@ acknowledgment/current verification. No durable cross-reload resolution exists.
 ## Closed construction and lifetime
 
 `createOwnerContextAuthoring(options)` returns a frozen object exposing only
-`close()` and `state()`. State contains the presentation phase and a copied
+`close()`, `state()` and `savedSource()`. State contains the presentation phase and a copied
 minimal pending unknown identity; it never exposes plaintext, keys, ciphertext
 or the client's opaque ticket.
+
+## Acknowledged source metadata
+
+`savedSource()` is a synchronous, content-free historical handoff. It returns
+null before acknowledged success, during saving or unknown reconciliation, and
+after closure or the original absolute deadline. It performs no network,
+authority callback or key access. The getter checks abort/hidden/deadline loss
+even after a successful save has cleared the idle timer; it never renews that
+deadline. Setup/custody/archive loss and pagehide also clear the internal record.
+Closure clears it before abort dispatch and all cleanup callbacks.
+
+A successful handoff is a fresh frozen `OwnerAcknowledgedSourceSnapshot` with
+exactly `accountId` and `receipt`. The canonical account UUID comes from the
+binding copied before asynchronous work. The separately frozen receipt contains
+exactly `requestId`, `contextId`, `revision`, `envelopeDigest`, `state` and
+`requestAcknowledged`. Both acknowledged commit and identical retry validate
+these values against the original request/context, revision 1 and complete
+encrypted-envelope digest. State is `verified_current_snapshot` and
+`requestAcknowledged` is literally true. Each getter returns new primitive-only
+copies; no caller-owned receipt or account byte array is retained.
+
+A matching latest read after an unknown write still returns null. Only actual
+POST acknowledgement followed by the maintained independent latest-byte and
+owner checks can yield this metadata. An already returned copy is historical
+and cannot be revoked or treated as proof of the current head. Account and tuple
+metadata are correlatable; they are not plaintext or keys. Consumers must use
+the real server source check and final recheck, with their own current lifecycle
+and admission rules. This accessor creates no authority brand, input credential,
+SEND capability, additional write, or opening-page integration.
 
 Required options are:
 
