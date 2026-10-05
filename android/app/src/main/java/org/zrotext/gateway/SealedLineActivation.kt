@@ -107,7 +107,7 @@ internal class SealedLineActivationDevice(private val apiLevel: () -> Int,
         val frozen = c.copy(nonce = c.nonce.copyOf())
         val now = nowMs()
         val api = apiLevel()
-        val sim = SimCardContinuity.activationCandidate(observe())
+        val sim = SimCardContinuity.activationCandidate(observe(), selection.subscriptionId)
         val point = existingSignerPoint().copyOf()
         if (now <= 0 || !selection.matches(frozen) || api !in 31..65535 || sim == null ||
             sim.subscriptionId != selection.subscriptionId || selectedSubscriptionId() != sim.subscriptionId ||
@@ -136,8 +136,11 @@ internal class SealedLineActivationDevice(private val apiLevel: () -> Int,
             MessageDigest.isEqual(selection.fingerprint(), SealedLineActivationTranscript.digest(point)) &&
             SealedLineActivationTranscript.verify(point, proof.statement(), proof.signature())
         // Hardware/SIM/verification providers can block. Never use their pre-call clock at publication.
+        val stillSelected = valid && selectedSubscriptionId() == selection.subscriptionId &&
+            SimCardContinuity.matches(proof.sim, observe()) &&
+            selectedSubscriptionId() == selection.subscriptionId
         val after = nowMs()
-        valid && after >= now && after < end &&
+        stillSelected && after >= now && after < end &&
             c.expiresAtMs - after <= SealedLineActivationTranscript.CHALLENGE_LIFETIME_MS
     } catch (_: Exception) { false }
     fun now() = nowMs()
