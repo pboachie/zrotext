@@ -53,7 +53,6 @@ def main():
     parser.add_argument("--ndk", type=Path, required=True,
                         help="Official Android NDK directory (r28 or newer)")
     parser.add_argument("--abis", nargs="+", choices=tuple(ABIS), default=list(ABIS))
-    parser.add_argument("--cargo", default="cargo")
     parser.add_argument("--target-dir", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -88,7 +87,7 @@ def main():
             "-C link-arg=-Wl,-z,max-page-size=16384 "
             "-C link-arg=-Wl,-z,common-page-size=16384")
         subprocess.run([
-            args.cargo, "build", "--locked", "--release", "--package",
+            "cargo", "build", "--locked", "--release", "--package",
             "zrotext-android-owner-custody", "--target", target,
             "--target-dir", str(target_dir),
         ], cwd=repo, env=env, check=True)

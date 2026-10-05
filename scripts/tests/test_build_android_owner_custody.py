@@ -3,7 +3,11 @@
 
 import subprocess
 import re
+import sys
+import tempfile
 import unittest
+from contextlib import redirect_stderr
+from io import StringIO
 from unittest.mock import patch
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
@@ -13,6 +17,58 @@ _spec = spec_from_file_location(
 )
 build = module_from_spec(_spec)
 _spec.loader.exec_module(build)
+
+
+class NativeCommandBoundaryTests(unittest.TestCase):
+    def test_executable_override_is_refused_before_any_tool_is_invoked(self):
+        with patch.object(sys, "argv", ["native-builder", "--ndk", "synthetic-ndk", "--cargo", "synthetic-other-tool"]), \
+                patch.object(build.subprocess, "run") as run, redirect_stderr(StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                build.main()
+            self.assertEqual(error.exception.code, 2)
+            run.assert_not_called()
+
+    def test_reviewed_paths_remain_distinct_arguments_to_fixed_locked_cargo(self):
+        with tempfile.TemporaryDirectory(prefix="native-argv-control-") as directory:
+            root = Path(directory)
+            ndk = root / "synthetic NDK"
+            ndk.mkdir()
+            (ndk / "source.properties").write_text("Pkg.Revision = 28.2.13676358\n")
+            host = "windows-x86_64" if sys.platform == "win32" else (
+                "darwin-x86_64" if sys.platform == "darwin" else "linux-x86_64")
+            toolbin = ndk / "toolchains" / "llvm" / "prebuilt" / host / "bin"
+            toolbin.mkdir(parents=True)
+            executable = ".exe" if sys.platform == "win32" else ""
+            (toolbin / ("llvm-readelf" + executable)).touch()
+            (toolbin / ("aarch64-linux-android28-clang" + (".cmd" if sys.platform == "win32" else ""))).touch()
+            target_dir = root / "target with & literal separators"
+            library = target_dir / "aarch64-linux-android" / "release" / build.LIBRARY
+            library.parent.mkdir(parents=True)
+            library.write_bytes(b"synthetic ELF fixture")
+            output = root / "output with spaces"
+            commands = []
+
+            def tool(command, **kwargs):
+                commands.append((command, kwargs))
+                if "--program-headers" in command:
+                    stdout = "  LOAD 0x0 0x0 0x0 0x100 0x100 R E 0x4000\n"
+                elif "--dynamic" in command:
+                    prefix = "Java_org_zrotext_gateway_AndroidOwnerCustodyNativeBridge_"
+                    stdout = "\n".join("0000 T " + prefix + method for method in build.TYPED_JNI_METHODS)
+                else:
+                    stdout = ""
+                return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+            args = ["native-builder", "--ndk", str(ndk), "--abis", "arm64-v8a",
+                    "--target-dir", str(target_dir), "--output", str(output)]
+            with patch.object(sys, "argv", args), patch.object(build.subprocess, "run", side_effect=tool):
+                build.main()
+            command, kwargs = commands[0]
+            self.assertEqual(command[:6], ["cargo", "build", "--locked", "--release", "--package", "zrotext-android-owner-custody"])
+            self.assertEqual(command[6:], ["--target", "aarch64-linux-android", "--target-dir", str(target_dir.resolve())])
+            self.assertTrue(kwargs["check"])
+            self.assertFalse(kwargs.get("shell", False))
+            self.assertEqual((output / "arm64-v8a" / build.LIBRARY).read_bytes(), b"synthetic ELF fixture")
 
 
 class NativePageAlignmentTests(unittest.TestCase):
