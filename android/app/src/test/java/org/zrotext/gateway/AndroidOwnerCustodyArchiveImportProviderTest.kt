@@ -3,6 +3,7 @@ package org.zrotext.gateway
 
 import android.content.pm.ProviderInfo
 import android.content.pm.ResolveInfo
+import android.content.ComponentName
 import android.content.Intent
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
@@ -110,8 +111,14 @@ class AndroidOwnerCustodyArchiveImportProviderTest {
     @Test fun missingDocumentIntentRegistrationNeverGrantsPrivateUri() {
         val owner = UUID.randomUUID()
         // The ordinary merged manifest also supplies this registration now.
-        shadowOf(context.packageManager).removePackage(context.packageName)
-        shadowOf(context.packageManager).setResolveInfosForIntent(Intent(DocumentsContract.PROVIDER_INTERFACE), emptyList())
+        val packageManager = context.packageManager
+        val authority = context.packageName + ".owner-archive-import"
+        val component = ComponentName(context, AndroidOwnerCustodyArchiveImportProvider::class.java)
+        assertNotNull("The ordinary manifest provider must exist before removing it",
+            shadowOf(packageManager).removeProvider(component))
+        shadowOf(packageManager).setResolveInfosForIntent(Intent(DocumentsContract.PROVIDER_INTERFACE), emptyList())
+        assertNull("The negative fixture must actually lack the archive provider",
+            packageManager.resolveContentProvider(authority, 0))
         val tree = DocumentsContract.buildTreeDocumentUri(context.packageName + ".owner-archive-import", "synthetic-missing-document")
         assertFalse("The negative fixture must actually lack document metadata registration",
             DocumentsContract.isDocumentUri(context, DocumentsContract.buildDocumentUriUsingTree(tree, "synthetic-missing-document")))

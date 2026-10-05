@@ -2,6 +2,7 @@
 import contextlib
 import io
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -17,6 +18,46 @@ def result(class_name, name="sample", code=0):
 
 
 class DeviceSmokeTests(unittest.TestCase):
+    def test_incomplete_runner_reports_selected_public_identity_without_accepting_it(self):
+        expected = {smoke.PRECONDITIONS: 2}
+        output = result(smoke.PRECONDITIONS, "finished") + result(smoke.PRECONDITIONS, "interrupted", 1)
+        output += "INSTRUMENTATION_RESULT: shortMsg=Process crashed.\n"
+        with mock.patch.object(smoke, "public_test_methods", return_value={"finished", "interrupted"}):
+            report = smoke.public_failure_diagnostic(output, expected)
+        self.assertEqual(report["classes"], [{"class": smoke.PRECONDITIONS, "expected": 2, "completed": 1}])
+        self.assertEqual(report["status_events"][-1], {"class": smoke.PRECONDITIONS, "test": "interrupted", "status": 1})
+        self.assertEqual(report["final_code_count"], 0)
+        self.assertTrue(report["process_crash_marker"])
+        with self.assertRaisesRegex(ValueError, "exact expected test counts"):
+            smoke.verify_results(output, expected)
+
+    def test_public_failure_protocol_never_exposes_unknown_names_stacks_or_runner_messages(self):
+        expected = {smoke.PRECONDITIONS: 1}
+        private = "synthetic-private-diagnostic"
+        output = result(private, private, -2) + result(smoke.PRECONDITIONS, private, 1)
+        output += f"INSTRUMENTATION_STATUS: stack={private}\nINSTRUMENTATION_RESULT: shortMsg={private}\n"
+        output += f"INSTRUMENTATION_CODE: {private}\n"
+        with mock.patch.object(smoke, "public_test_methods", return_value={"sample"}):
+            report = smoke.public_failure_diagnostic(output, expected)
+        self.assertNotIn(private, json.dumps(report))
+        self.assertEqual(report["status_events"][0], {"class": "unselected", "test": "unavailable", "status": -2})
+        self.assertEqual(report["status_events"][1]["test"], "unavailable")
+        self.assertEqual(report["final_codes"], ["unsupported"])
+        self.assertTrue(report["runner_message_present"])
+        self.assertFalse(report["process_crash_marker"])
+
+    def test_public_failure_protocol_bounds_events_and_keeps_strict_refusal(self):
+        expected = {smoke.PRECONDITIONS: 1}
+        output = result(smoke.PRECONDITIONS, code=1) * (smoke.MAX_PUBLIC_STATUS_EVENTS + 3)
+        output += "INSTRUMENTATION_CODE: 0\n" * 7
+        report = smoke.public_failure_diagnostic(output, expected)
+        self.assertEqual(len(report["status_events"]), smoke.MAX_PUBLIC_STATUS_EVENTS)
+        self.assertEqual(report["omitted_status_events"], 3)
+        self.assertEqual(report["final_codes"], [0] * 4)
+        self.assertEqual(report["final_code_count"], 7)
+        with self.assertRaises(ValueError):
+            smoke.verify_results(output, expected)
+
     def test_journal_upgrade_is_selected_with_only_its_explicit_emulator_gate(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
