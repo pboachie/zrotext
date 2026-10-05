@@ -152,7 +152,7 @@ test('held current observation refusal cannot free an unsettled callback slot',a
 });
 
 test('original operation deadline cannot be renewed by retry or a late review',async()=>{
-  const f=await fixture(),held=deferred();let entered=false;try{const c=createOwnerOpeningCapacityClient({...f.options,totalTimeoutMs:1000,consumeCreateReview:()=>{entered=true;return held.promise;}});f.clients.push(c);const work=c.prepareCreate(f.input());void work.catch(()=>{});await until(()=>entered);await assert.rejects(work);assert.equal(c.state().closed,true);held.resolve();await until(()=>!c.state().busy);await assert.rejects(c.prepareCreate(f.input()));assert.equal(f.state.calls.length,0);}finally{held.resolve();f.close();}
+  const f=await fixture(),held=deferred();let entered=false;try{const c=createOwnerOpeningCapacityClient({...f.options,totalTimeoutMs:1000,consumeCreateReview:()=>{entered=true;return held.promise;}});const originalLatestCutoff=performance.now()+1000;f.clients.push(c);const work=c.prepareCreate(f.input());void work.catch(()=>{});await until(()=>entered);await assert.rejects(work);assert.equal(c.state().busy,true);while(performance.now()<originalLatestCutoff)await delay(Math.max(1,Math.ceil(originalLatestCutoff-performance.now())));await delay(0);assert.equal(c.state().closed,true);assert.equal(c.state().busy,true);held.resolve();await until(()=>!c.state().busy);assert.equal(c.state().closed,true);await assert.rejects(c.prepareCreate(f.input()));assert.equal(f.state.calls.length,0);}finally{held.resolve();f.close();}
 });
 
 test('setup custody parent abort and full close preserve only ambiguous content-free identity',async()=>{
