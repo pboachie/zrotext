@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Ordinary MainActivity and gateway source under a separate LOCAL debug app ID.
+// No probe Activity, release artifact, or existing gateway app data is involved.
+gradle.taskGraph.whenReady { graph ->
+    if (graph.allTasks.any { it.name.toLowerCase(java.util.Locale.ROOT).contains('release') }) {
+        throw new GradleException('Local owner onboarding debug build cannot package release variants')
+    }
+}
+gradle.beforeProject { project ->
+    if (project.path == ':app') {
+        project.plugins.withId('com.android.application') {
+            project.extensions.getByName('androidComponents').finalizeDsl { android ->
+                android.defaultConfig.applicationId = 'org.zrotext.gateway.owneronboardinglocal'
+                android.defaultConfig.testApplicationId = 'org.zrotext.gateway.owneronboardinglocal.test'
+                android.sourceSets.androidTest.java.srcDir('src/ownerOnboardingLocalTest/java')
+            }
+        }
+    }
+}

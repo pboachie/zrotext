@@ -81,7 +81,8 @@ jobs:
       - name: Install existing toolchain versions
         run: |
           rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
-          sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0'
+          rustup target add --toolchain 1.97.1 aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
+          sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;28.2.13676358'
       - name: Cache Rust build artifacts
         # Dependency cache shared with the CI rust job; PR runs only read it.
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2

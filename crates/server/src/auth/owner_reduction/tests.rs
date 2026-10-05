@@ -64,7 +64,9 @@ async fn final_ordinary_fence_refuses_lost_owner_session_and_regressed_clock() {
     let mut db = f.connect().await;
     for sql in [
         "UPDATE accounts SET disabled_at=clock_timestamp() WHERE id=$1",
-        "UPDATE memberships SET revoked_at=clock_timestamp() WHERE account_id=$1",
+        // Owner memberships cannot be marked revoked. Losing the row is a
+        // schema-valid authority loss; final_check must still refuse it.
+        "DELETE FROM memberships WHERE account_id=$1",
         "UPDATE sessions SET revoked_at=clock_timestamp() WHERE account_id=$1",
         "UPDATE sessions SET last_used_at=clock_timestamp()-interval '73 hours' WHERE account_id=$1",
         "UPDATE sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE account_id=$1",

@@ -569,6 +569,11 @@ pub(super) async fn prepared() -> (Fixture, SessionPrincipal) {
     ))
     .await
     .unwrap();
+    f.db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/091_original_reply_origin_binding.sql"
+    ))
+    .await
+    .unwrap();
     let owner = owner(&f).await;
     (f, owner)
 }
