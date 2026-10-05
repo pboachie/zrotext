@@ -60,6 +60,7 @@ class NativeInventoryTest(unittest.TestCase):
         graph = {d["ref"]: d["dependsOn"] for d in self.bom["dependencies"]}
         self.assertEqual(set(graph[root["purl"]]),
                          {"pkg:cargo/zrotext-root-material@0.1.0", "pkg:cargo/serde@1.0.0"})
+        self.assertTrue({root["purl"] + f"?arch={abi}" for abi in inventory.ABIS}.issubset(graph["app"]))
         self.assertNotIn(str(self.repo), json.dumps(self.bom))
         self.assertEqual(self.base["components"], [{"type": "library", "purl": "pkg:maven/example/library@1", "bom-ref": "maven"}])
 
@@ -99,7 +100,7 @@ class NativeInventoryTest(unittest.TestCase):
                 inventory.verify_inventory(bom, self.entries, self.commit)
 
     def test_missing_root_material_dangling_edges_or_duplicate_refs_are_refused(self):
-        for mutation in ("material", "edge", "duplicate", "node"):
+        for mutation in ("material", "edge", "duplicate", "node", "application"):
             bom = copy.deepcopy(self.bom)
             if mutation == "material":
                 removed = "pkg:cargo/zrotext-root-material@0.1.0"
@@ -111,8 +112,10 @@ class NativeInventoryTest(unittest.TestCase):
                 bom["dependencies"][-1]["dependsOn"] = ["missing"]
             elif mutation == "duplicate":
                 bom["components"].append(copy.deepcopy(bom["components"][-1]))
-            else:
+            elif mutation == "node":
                 bom["dependencies"] = [d for d in bom["dependencies"] if d["ref"] != "pkg:cargo/serde@1.0.0"]
+            else:
+                next(d for d in bom["dependencies"] if d["ref"] == "app")["dependsOn"] = ["maven"]
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 inventory.verify_inventory(bom, self.entries, self.commit)
 

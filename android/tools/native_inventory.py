@@ -125,6 +125,16 @@ def merge_inventory(bom, lock_bytes, trees, entries, commit, repo):
         edges[identity] = {root}
     dependencies.extend({"ref": identity, "dependsOn": sorted(edges[identity])}
                         for identity in sorted(edges))
+    application = result["metadata"]["component"]
+    application_ref = application.setdefault("bom-ref", "zrotext:android-application")
+    application_edges = [edge for edge in dependencies if edge.get("ref") == application_ref]
+    if len(application_edges) > 1:
+        raise ValueError("SBOM application dependency record is duplicated")
+    if not application_edges:
+        application_edges = [{"ref": application_ref, "dependsOn": []}]
+        dependencies.extend(application_edges)
+    children = application_edges[0].setdefault("dependsOn", [])
+    children.extend(root + f"?arch={abi}" for abi in ABIS)
     properties = result["metadata"].setdefault("properties", [])
     if any(prop.get("name") == PROPERTY for prop in properties):
         raise ValueError("SBOM already contains a native inventory")
@@ -203,6 +213,8 @@ def verify_inventory(bom, entries, commit):
         if actual_entries != expected_entries:
             raise ValueError("APK does not contain exactly four native owner libraries")
         artifacts = {root + f"?arch={abi}" for abi in ABIS}
+        if not application_ref or not artifacts.issubset(graph.get(application_ref, set())):
+            raise ValueError("SBOM application omits its native library dependencies")
         for abi, target in ABIS.items():
             identity = root + f"?arch={abi}"
             component = components[identity]
