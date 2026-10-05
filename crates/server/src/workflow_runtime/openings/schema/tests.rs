@@ -10,6 +10,43 @@ const CANDIDATE: &str = include_str!(
 async fn absent_pristine_and_partial_schema_have_distinct_outcomes() {
     let c = Case::new().await;
     let mut db = c.base.f.connect().await;
+    let original_path: String = db
+        .query_one("SELECT current_setting('search_path')", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let tx = db.transaction().await.unwrap();
+    tx.batch_execute("SET LOCAL search_path = ''").await.unwrap();
+    assert!(
+        tx.query_one("SELECT current_schema() IS NULL", &[])
+            .await
+            .unwrap()
+            .get::<_, bool>(0)
+    );
+    for (table, _) in TABLES {
+        assert!(
+            tx.query_one("SELECT to_regclass($1) IS NULL", &[&table])
+                .await
+                .unwrap()
+                .get::<_, bool>(0)
+        );
+    }
+    assert!(!installed(&tx).await.unwrap());
+    assert!(
+        super::super::lifecycle::erase_account(&tx, c.base.f.account)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(tx.query_one("SELECT 1", &[]).await.unwrap().get::<_, i32>(0), 1);
+    tx.rollback().await.unwrap();
+    assert_eq!(
+        db.query_one("SELECT current_setting('search_path')", &[])
+            .await
+            .unwrap()
+            .get::<_, String>(0),
+        original_path
+    );
     let tx = db.transaction().await.unwrap();
     assert!(!installed(&tx).await.unwrap());
     assert!(

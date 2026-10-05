@@ -103,7 +103,8 @@ const KEYS: [(&str, &[&str]); 4] = [
     ),
     ("workflow_opening_requests", &["account_id,request_id"]),
 ];
-const FOREIGN: [(&str, &[(&str, &str, &str, &str)]); 4] = [
+type ForeignKeySpec = (&'static str, &'static str, &'static str, &'static str);
+const FOREIGN: [(&str, &[ForeignKeySpec]); 4] = [
     (
         "workflow_openings",
         &[
@@ -208,20 +209,24 @@ pub(super) async fn installed(tx: &Transaction<'_>) -> Result<bool, tokio_postgr
         objects.push((
             name,
             row.try_get::<_, Option<u32>>(0)?,
-            row.try_get::<_, u32>(1)?,
+            row.try_get::<_, Option<u32>>(1)?,
         ));
     }
     if objects.iter().all(|(_, oid, _)| oid.is_none()) {
         return Ok(false);
     }
-    if objects.iter().any(|(_, oid, _)| oid.is_none()) {
+    if objects
+        .iter()
+        .any(|(_, oid, namespace)| oid.is_none() || namespace.is_none())
+    {
         refuse(tx).await?;
         return Ok(false);
     }
     for ((name, schema), (_, oid, namespace)) in TABLES.iter().zip(&objects) {
         let oid = oid.expect("presence checked");
+        let namespace = namespace.expect("namespace checked");
         let row=tx.query_one("SELECT relnamespace,relkind::text,relpersistence::text,relrowsecurity,relforcerowsecurity,EXISTS(SELECT 1 FROM pg_inherits WHERE inhrelid=$1 OR inhparent=$1),EXISTS(SELECT 1 FROM pg_rewrite WHERE ev_class=$1),EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid=$1 AND NOT tgisinternal) FROM pg_class WHERE oid=$1", &[&oid]).await?;
-        if row.try_get::<_, u32>(0)? != *namespace
+        if row.try_get::<_, u32>(0)? != namespace
             || row.try_get::<_, String>(1)? != "r"
             || row.try_get::<_, String>(2)? != "p"
             || (3..8).any(|i| row.get::<_, bool>(i))
@@ -358,7 +363,7 @@ pub(super) async fn installed(tx: &Transaction<'_>) -> Result<bool, tokio_postgr
                 refuse(tx).await?;
                 return Ok(false);
             };
-            if row.try_get::<_, u32>(1)? != *namespace {
+            if row.try_get::<_, u32>(1)? != namespace {
                 refuse(tx).await?;
             }
             expected_foreign.push((
@@ -392,7 +397,7 @@ pub(super) async fn installed(tx: &Transaction<'_>) -> Result<bool, tokio_postgr
                 refuse(tx).await?;
                 return Ok(false);
             };
-            if row.try_get::<_, u32>(1)? != *namespace
+            if row.try_get::<_, u32>(1)? != namespace
                 || row.try_get::<_, Vec<String>>(2)?.join(",") != columns
                 || !index_valid(tx, row.try_get(0)?, oid, false).await?
             {
