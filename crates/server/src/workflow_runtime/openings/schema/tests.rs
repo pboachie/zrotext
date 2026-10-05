@@ -154,7 +154,14 @@ async fn malformed_complete_candidate_refuses_and_rolls_back_each_drift() {
     let c = Case::new().await;
     c.base.f.db.batch_execute(CANDIDATE).await.unwrap();
     let mut db = c.base.f.connect().await;
+    let tx = db.transaction().await.unwrap();
+    assert!(
+        installed(&tx).await.unwrap(),
+        "pristine candidate before drift"
+    );
+    tx.rollback().await.unwrap();
     for drift in [
+        "CREATE TABLE opening_external_child(account_id uuid,request_id uuid,FOREIGN KEY(account_id,request_id) REFERENCES workflow_opening_requests(account_id,request_id) ON DELETE CASCADE)",
         "ALTER TABLE workflow_openings ALTER COLUMN capacity DROP NOT NULL",
         "ALTER TABLE workflow_opening_requests ALTER COLUMN admission_charged SET DEFAULT false",
         "ALTER TABLE workflow_openings ADD COLUMN unreviewed text",

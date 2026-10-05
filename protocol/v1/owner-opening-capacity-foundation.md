@@ -10,6 +10,8 @@ calendar, provider call or SMS dispatch is enabled by this foundation.
 The optional schema gate checks the actual resolved relations in the current
 schema, their complete columns and defaults, validated checks, primary and
 unique keys, foreign-key targets and actions, and required usable indexes.
+Internal foreign-key triggers must belong to the exact candidate relations;
+external incoming foreign-key dependencies are refused.
 An absent candidate remains optional for lifecycle/export callers and unavailable
 for opening commands. Partial or inconsistent installed objects abort the caller
 transaction before opening effects; status also passes this gate because it can
