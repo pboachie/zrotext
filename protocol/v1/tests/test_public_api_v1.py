@@ -18,6 +18,8 @@ import re
 import unittest
 from pathlib import Path
 
+from jsonschema import Draft202012Validator
+
 
 DOCUMENT = json.loads(
     (Path(__file__).resolve().parents[1] / "openapi" / "public-v1.json").read_text()
@@ -33,6 +35,7 @@ IMPLEMENTED_PATH_METHODS = {
     "/v1/webhooks/{endpoint_id}/enable": {"post"},
     "/v1/webhooks/{endpoint_id}/disable": {"post"},
     "/v1/webhooks/{endpoint_id}/rotate": {"post"},
+    "/v1/webhooks/{endpoint_id}/sealed-events": {"post"},
     "/v1/owner/messages": {"get"},
     "/v1/alpha/messages": {"post"},
     "/v1/alpha/messages/{message_id}": {"get"},
@@ -336,6 +339,7 @@ class PublicApiContractTests(unittest.TestCase):
                     "enableWebhookEndpoint",
                     "disableWebhookEndpoint",
                     "rotateWebhookEndpoint",
+                    "selectWebhookSealedEvents",
                 ]
             ),
         )
@@ -535,6 +539,51 @@ class PublicApiContractTests(unittest.TestCase):
         self.assertIn("before the body is read", create["description"])
         self.assertIn("preauth.rs", create["description"])
 
+    def test_sealed_selection_pins_default_off_owner_authorization_and_refusals(self):
+        selection = DOCUMENT["paths"]["/v1/webhooks/{endpoint_id}/sealed-events"]["post"]
+        self.assertTrue(selection["x-implemented"])
+        self.assertEqual(selection["security"], OWNER_SESSION_SECURITY)
+        self.assertEqual(selection["x-runtime-gate"], {
+            "environmentVariable": "SEALED_WEBHOOK_DELIVERY_ENABLED",
+            "default": False,
+            "disabledStatus": 404,
+        })
+        self.assertIn("defaults to false", selection["description"])
+        self.assertIn("before the body is read", selection["description"])
+        self.assertIn("no reader", selection["description"])
+        self.assertTrue(selection["requestBody"]["required"])
+        self.assertEqual(selection["requestBody"]["content"]["application/json"]["schema"],
+                         {"$ref": "#/components/schemas/WebhookSealedSelectionRequest"})
+        self.assertEqual(set(selection["responses"]),
+                         {"204", "400", "401", "403", "404", "408", "409", "413", "429", "503"})
+        self.assertNotIn("content", selection["responses"]["204"])
+        self.assertIn("five", selection["responses"]["409"]["description"])
+        self.assertIn("disabled", selection["responses"]["404"]["description"])
+        self.assertIn("text/plain", selection["responses"]["400"]["content"])
+
+    def test_sealed_selection_schema_accepts_disable_but_requires_confirmed_enable(self):
+        schema = DOCUMENT["components"]["schemas"]["WebhookSealedSelectionRequest"]
+        Draft202012Validator.check_schema(schema)
+        validator = Draft202012Validator(schema)
+        valid = {"enabled": True, "encrypted_transfer_confirmed": True,
+                 "disclosure_version": "sealed-events-v1"}
+        for enabled, confirmed in ((True, True), (False, True), (False, False)):
+            with self.subTest(enabled=enabled, confirmed=confirmed):
+                validator.validate({**valid, "enabled": enabled,
+                                    "encrypted_transfer_confirmed": confirmed})
+        invalid = [
+            {**valid, "encrypted_transfer_confirmed": False},
+            {**valid, "disclosure_version": "unsupported"},
+            {**valid, "enabled": "true"},
+            {**valid, "encrypted_transfer_confirmed": 1},
+            {**valid, "reader_key": "synthetic"},
+        ]
+        invalid.extend({key: value for key, value in valid.items() if key != missing}
+                       for missing in valid)
+        for payload in invalid:
+            with self.subTest(payload=payload):
+                self.assertFalse(validator.is_valid(payload))
+
     def test_shared_transport_responses_are_stated_and_referenced(self):
         description = DOCUMENT["info"]["description"]
         self.assertIn("Shared transport responses", description)
@@ -643,11 +692,6 @@ ROUTE_SOURCES = {
 }
 # The server routes under these prefixes must all be documented here.
 DOCUMENTED_PREFIXES = ("/v1/webhooks", "/v1/owner/messages", "/v1/alpha", "/v1/enrollment/devices")
-# Real routes under a documented prefix that this document does not pin yet.
-KNOWN_UNDOCUMENTED = {
-    ("/v1/webhooks/{endpoint_id}/sealed-events", "post"):
-        "mounted only when sealed delivery is enabled; see protocol/v1/webhook-endpoints.md",
-}
 
 
 def server_routes():
@@ -688,16 +732,14 @@ class ServerRouteDriftTests(unittest.TestCase):
         for path, method in sorted(server_routes()):
             if not path.startswith(DOCUMENTED_PREFIXES):
                 continue
-            if (path, method) in KNOWN_UNDOCUMENTED:
-                continue
             self.assertIn((path, method), documented, f"{method} {path} is mounted but undocumented")
 
-    def test_known_undocumented_entries_still_exist_and_stay_undocumented(self):
+    def test_gated_sealed_selection_is_mounted_and_documented(self):
         routes = server_routes()
         documented = {(path, method) for path, method, _ in operations(DOCUMENT)}
-        for entry in KNOWN_UNDOCUMENTED:
-            self.assertIn(entry, routes, "remove the stale exemption")
-            self.assertNotIn(entry, documented, "remove the exemption now that it is documented")
+        selection = ("/v1/webhooks/{endpoint_id}/sealed-events", "post")
+        self.assertIn(selection, routes)
+        self.assertIn(selection, documented)
 
 
 if __name__ == "__main__":

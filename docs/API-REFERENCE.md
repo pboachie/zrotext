@@ -181,6 +181,34 @@ Authentication: `ownerSession`, `ownerCsrf`.
 | 408 | Shared ingress deadline rejection (crates/server/src/ingress.rs): the request body did not finish arriving within ten seconds of admission, or the handler did not produce a response within thirty seconds. Bare status with an empty body. |
 | 503 | unavailable: storage or the secret vault is temporarily unavailable. The shared bare admission 503 (empty body, Retry-After: 1) can also replace this response; see components/responses/AdmissionUnavailable. |
 
+### `POST /v1/webhooks/{endpoint_id}/sealed-events`
+
+Select or disable future opaque sealed-event transfer for one endpoint. Status: Implemented.
+
+Implemented in crates/server/src/http_webhooks.rs select_sealed_events only when SEALED_WEBHOOK_DELIVERY_ENABLED is true; the gate defaults to false and the route is otherwise absent (404). Requires the current owner session cookie, double-submit CSRF cookie/header and exact configured HTTPS Origin; bearer API keys are not owner authority. Authentication and the per-account four-request in-flight slot are checked before the body is read. The closed JSON body has a 4096-byte limit. Enabling requires encrypted_transfer_confirmed=true, disclosure_version=sealed-events-v1 and an enabled endpoint in the owner account; at most five enabled endpoints per account may select sealed events. Disabling still requires the fixed disclosure version but not positive transfer confirmation. The transaction locks the owner and endpoint and rechecks the live owner before commit. This selection creates no reader or key authority, enables no capture or decryption, and grants no send authority. Existing conversation, capture and sender gates retain their independent defaults. Legacy webhook history and replay do not expose the separate sealed outbox. See protocol/v1/sealed-event-delivery.md.
+
+Authentication: `ownerSession`, `ownerCsrf`.
+
+| Parameter | In | Required | Description |
+|---|---|---|---|
+| `endpoint_id` | path | yes | The webhook endpoint identity. |
+| `Origin` | header | yes | The exact configured HTTPS origin of the owner deployment; mutations reject a missing or mismatched Origin. |
+
+Request body: [WebhookSealedSelectionRequest](#webhooksealedselectionrequest).
+
+| Status | Meaning |
+|---|---|
+| 204 | Selection persisted; empty response. Enabling selects future eligible opaque captures only, not historical replay or sending authority. |
+| 400 | invalid_webhook_endpoint: nil endpoint identity, unsupported disclosure version, enabling without encrypted-transfer confirmation, or enabling selection on a disabled endpoint. ApiJson instead returns invalid_request for malformed JSON, incorrect Content-Type, unknown or missing members, or incorrect member types. A malformed path UUID is a framework plain-text 400 before authentication. |
+| 401 | unauthorized: missing session cookie or unknown, expired or revoked session. |
+| 403 | forbidden: missing or mismatched CSRF proof, or a missing or mismatched Origin. |
+| 404 | The route is absent when SEALED_WEBHOOK_DELIVERY_ENABLED is disabled; that framework 404 need not contain a JSON envelope. When mounted, not_found is the JSON response for an endpoint outside the current owner account or an unknown endpoint. |
+| 408 | Shared ingress deadline rejection (crates/server/src/ingress.rs): the request body did not finish arriving within ten seconds of admission, or the handler did not produce a response within thirty seconds. Bare status with an empty body. |
+| 409 | endpoint_limit: five other enabled endpoints in this account already select sealed events. |
+| 413 | The selection request body exceeded 4096 bytes. The framework's plain-text 413 is kept verbatim; it is not the JSON error envelope. |
+| 429 | rate_limited: the account already holds its cap of four authenticated body-carrying requests in flight in this process (the per-account admission slot taken after the session, CSRF and Origin checks succeed). JSON error document without a Retry-After header. |
+| 503 | unavailable: owner lookup or selection storage is unavailable. A failure at transaction commit does not establish that the selection was unchanged. The shared bare admission 503 (empty body, Retry-After: 1) can also replace this response; see components/responses/AdmissionUnavailable. |
+
 ## owner-messages
 
 Owner message timeline as implemented today in crates/server/src/http_owner_messages.rs. Writer metadata only: never the recipient, transport payload or device-side inbound content.
@@ -442,6 +470,16 @@ The error body emitted by the implemented routes that return JSON errors. Owner-
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `code` | enum: `invalid_request`, `unauthorized`, `forbidden`, `not_found`, `conflict`, `rate_limited`, `queue_full`, `quota_exceeded`, `billing_pending`, `payment_hold`, `recipient_suppressed`, `invalid_webhook_endpoint`, `endpoint_limit`, `replay_not_eligible`, `replay_limit`, `unavailable` | yes | Stable machine-readable reason code for the failure. |
+
+### WebhookSealedSelectionRequest
+
+The SealedSelection body in crates/server/src/http_webhooks.rs; unknown members are rejected.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `enabled` | boolean | yes | Select future eligible opaque events, or disable this endpoint selection. |
+| `encrypted_transfer_confirmed` | boolean | yes | Must be true when enabling; either boolean is accepted when disabling. |
+| `disclosure_version` | enum: `sealed-events-v1` | yes |  |
 
 ### WebhookCreateRequest
 
