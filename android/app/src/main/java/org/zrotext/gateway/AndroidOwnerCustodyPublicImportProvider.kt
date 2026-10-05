@@ -29,8 +29,12 @@ class AndroidOwnerCustodyPublicImportProvider : ContentProvider() {
         selectionArgs: Array<out String>?, sortOrder: String?): Cursor {
         val bytes = snapshot(uri)
         return try {
-            MatrixCursor(arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE)).apply {
-                addRow(arrayOf<Any>("public-owner-import.bin", bytes.size))
+            val columns = projection?.copyOf() ?: arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE)
+            require(columns.size <= 2 && columns.all { it == OpenableColumns.DISPLAY_NAME || it == OpenableColumns.SIZE })
+            MatrixCursor(columns).apply {
+                addRow(columns.map { column ->
+                    if (column == OpenableColumns.SIZE) bytes.size else "public-owner-import.bin"
+                }.toTypedArray<Any>())
             }
         } finally { bytes.fill(0) }
     }

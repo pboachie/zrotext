@@ -4,6 +4,7 @@ package org.zrotext.gateway
 import android.content.pm.ProviderInfo
 import android.net.Uri
 import android.os.Process
+import android.provider.OpenableColumns
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
@@ -47,6 +48,43 @@ class AndroidOwnerCustodyPublicImportProviderTest {
             AndroidOwnerCustodyPublicImportProvider.clear(owner)
             try { provider.openFile(uri, "r"); fail("Cleared staged URI reopened") }
             catch (_: FileNotFoundException) { }
+        } finally { AndroidOwnerCustodyPublicImportProvider.clear(owner) }
+    }
+
+    @Test fun sizeOnlyAndReorderedMetadataProjectionsRetainExactRequestedColumns() {
+        val owner = UUID.randomUUID()
+        try {
+            val uri = AndroidOwnerCustodyPublicImportProvider.stage(context, owner, ByteArray(64) { 7 })
+            provider.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null).use {
+                assertArrayEquals(arrayOf(OpenableColumns.SIZE), it.columnNames)
+                assertTrue(it.moveToFirst()); assertEquals(64L, it.getLong(0))
+            }
+            provider.query(uri, arrayOf(OpenableColumns.SIZE, OpenableColumns.DISPLAY_NAME), null, null, null).use {
+                assertArrayEquals(arrayOf(OpenableColumns.SIZE, OpenableColumns.DISPLAY_NAME), it.columnNames)
+                assertTrue(it.moveToFirst()); assertEquals(64L, it.getLong(0))
+                assertEquals("public-owner-import.bin", it.getString(1))
+            }
+            provider.query(uri, null, null, null, null).use {
+                assertArrayEquals(arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), it.columnNames)
+                assertTrue(it.moveToFirst()); assertEquals(64L, it.getLong(1))
+            }
+            assertArrayEquals(ByteArray(64) { 7 }, readProxyFixture(uri, 64))
+        } finally { AndroidOwnerCustodyPublicImportProvider.clear(owner) }
+    }
+
+    @Test fun unsupportedAndUnboundedMetadataProjectionsNeverExposeOrConsumePublicInput() {
+        val owner = UUID.randomUUID()
+        try {
+            val uri = AndroidOwnerCustodyPublicImportProvider.stage(context, owner, ByteArray(64) { 7 })
+            for (projection in listOf(arrayOf("synthetic-unknown-column"),
+                arrayOf(OpenableColumns.SIZE, OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE))) {
+                try { provider.query(uri, projection, null, null, null); fail("Unsupported metadata projection accepted") }
+                catch (_: IllegalArgumentException) { }
+            }
+            provider.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null).use {
+                assertTrue(it.moveToFirst()); assertEquals(64L, it.getLong(0))
+            }
+            assertArrayEquals(ByteArray(64) { 7 }, readProxyFixture(uri, 64))
         } finally { AndroidOwnerCustodyPublicImportProvider.clear(owner) }
     }
 

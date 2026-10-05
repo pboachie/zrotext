@@ -109,7 +109,12 @@ class AndroidOwnerCustodyArchiveImportProviderTest {
 
     @Test fun missingDocumentIntentRegistrationNeverGrantsPrivateUri() {
         val owner = UUID.randomUUID()
+        // The ordinary merged manifest also supplies this registration now.
+        shadowOf(context.packageManager).removePackage(context.packageName)
         shadowOf(context.packageManager).setResolveInfosForIntent(Intent(DocumentsContract.PROVIDER_INTERFACE), emptyList())
+        val tree = DocumentsContract.buildTreeDocumentUri(context.packageName + ".owner-archive-import", "synthetic-missing-document")
+        assertFalse("The negative fixture must actually lack document metadata registration",
+            DocumentsContract.isDocumentUri(context, DocumentsContract.buildDocumentUriUsingTree(tree, "synthetic-missing-document")))
         try {
             AndroidOwnerCustodyArchiveImportProvider.stage(context, owner, ByteArray(32) { 7 }, { true }) { true }
             fail("Missing document metadata registration granted private URI")
