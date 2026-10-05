@@ -32,7 +32,10 @@ after signing. Expected line scope comes from the original persisted pending
 proposal returned through authenticated status. Other proposal scopes require
 an authenticated registry of exact public proposals. Each context is revalidated
 after native signing before output is published. Missing hosted contracts fail
-closed.
+closed. The server in this source does not yet expose the required authenticated
+session-time field and Android proposal registry. The ordinary owner journey
+remains unavailable until a separately reviewed compatible backend is integrated;
+packaging or installation does not satisfy that gate.
 
 Browser public imports use frozen process-local bytes. The ordinary gateway
 registers both import providers as unexported with URI grants disabled; the
