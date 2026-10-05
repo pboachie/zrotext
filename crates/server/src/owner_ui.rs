@@ -10,7 +10,8 @@ use axum::{
 
 const PAGE: &str = include_str!("../../../web/owner/devices.html");
 const EXCEPTIONS_NAV_SLOT: &str = "<!-- workflow-exceptions-navigation -->";
-const EXCEPTIONS_NAV_LINK: &str = "<a href=\"/owner/workflow-exceptions\" data-owner-only hidden>Workflow exceptions</a>";
+const EXCEPTIONS_NAV_LINK: &str =
+    "<a href=\"/owner/workflow-exceptions\" data-owner-only hidden>Workflow exceptions</a>";
 const EXCEPTIONS_PAGE: &str = include_str!("../../../web/owner/workflow-exceptions.html");
 const EXCEPTIONS_SCRIPT: &str = include_str!("../../../web/owner/workflow-exceptions.js");
 const SCRIPT: &str = include_str!("../../../web/owner/devices.js");
