@@ -14,6 +14,8 @@ import subprocess
 import sys
 import zipfile
 
+import native_inventory
+
 
 ROOT = Path(__file__).resolve().parents[2]
 ANDROID = ROOT / "android"
@@ -61,7 +63,7 @@ MAX_RECEIPT_BYTES = 16 * 1024
 MAX_SBOM_BYTES = 16 * 1024 * 1024
 MAX_CHECKSUM_BYTES = 256
 SBOM_NAME = "release-runtime.cdx.json"
-SBOM_CONFIGURATION = "releaseRuntimeClasspath"
+SBOM_CONFIGURATION = "releaseRuntimeClasspath+lockedAndroidNativeBuildGraph"
 SBOM_PREDICATE = "https://cyclonedx.org/bom"
 ATTESTATION_WORKFLOW = "pboachie/zrotext/.github/workflows/android-release-candidate.yml"
 # The candidate workflow runs by manual dispatch on main or when a release is published.
@@ -415,7 +417,7 @@ def checked_sbom(path: Path) -> tuple[str, dict[str, object]]:
             or not all(isinstance(component, dict)
                        and component.get("type") == "library"
                        and isinstance(component.get("purl"), str)
-                       and component["purl"].startswith("pkg:maven/")
+                       and component["purl"].startswith(("pkg:maven/", "pkg:cargo/"))
                        for component in bom["components"])):
         raise ValueError("Release runtime SBOM has no usable dependency inventory")
     return hashlib.sha256(raw).hexdigest(), bom
@@ -439,13 +441,16 @@ def build_unsigned(commit: str, out: Path) -> None:
     verify_source_asset(unsigned, commit)
     identity = apk_identity(unsigned)
     generated_sbom = ANDROID / "app/build/reports/cyclonedx-direct/bom.json"
-    checked_sbom(generated_sbom)
+    _, maven_bom = checked_sbom(generated_sbom)
+    release_bom = native_inventory.collect_inventory(
+        maven_bom, apk_entry_digests(unsigned), commit, ROOT, unsigned_build_env())
+    source_commit(commit)  # Inventory resolution must also retain a clean checkout.
     secure_directory(out, create=True)
     copy = out / "unsigned.apk"
     shutil.copyfile(unsigned, copy)
     digest = sha256(copy)
     sbom_copy = out / SBOM_NAME
-    shutil.copyfile(generated_sbom, sbom_copy)
+    sbom_copy.write_text(json.dumps(release_bom, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     sbom_hash, _ = checked_sbom(sbom_copy)
     (out / "unsigned.json").write_text(json.dumps({
         "source_commit": commit,
@@ -481,6 +486,7 @@ def checked_unsigned(
             or receipt.get("sbom_configuration") != SBOM_CONFIGURATION:
         raise ValueError("Unsigned APK receipt does not match the clean checkout and artifact")
     verify_source_asset(unsigned, commit)
+    native_inventory.verify_inventory(bom, apk_entry_digests(unsigned), commit)
     identity = apk_identity(unsigned)
     if receipt.get("apk_identity") != identity:
         raise ValueError("Unsigned APK identity does not match its receipt")

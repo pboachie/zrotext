@@ -18,6 +18,16 @@
         android:label="ZROtext: SMS Gateway"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:usesCleartextTraffic="false">
+        <provider android:name=".AndroidOwnerCustodyPublicImportProvider"
+            android:authorities="${applicationId}.owner-public-import"
+            android:exported="false" android:grantUriPermissions="false" />
+        <provider android:name=".AndroidOwnerCustodyArchiveImportProvider"
+            android:authorities="${applicationId}.owner-archive-import"
+            android:exported="false" android:grantUriPermissions="false">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
         <activity android:name=".MainActivity" android:exported="true"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>

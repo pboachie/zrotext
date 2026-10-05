@@ -150,9 +150,11 @@ class GatewayCompanionInteractionTest {
         }
     }
 
-    @Test fun navigationRetainsMaskedPairingInputAndBackReturnsHome() {
+    @Test fun navigationClearsMaskedPairingInputAndBackReturnsHome() {
         compose.openGatewayPage("Setup")
         compose.onNodeWithText("3. Pair this phone").performScrollTo().performClick()
+        compose.onNodeWithText("One-use pairing token").assertDoesNotExist()
+        compose.onNodeWithText("Use existing manual pairing").performScrollTo().performClick()
         compose.onNodeWithText("One-use pairing token").performScrollTo().performTextInput("synthetic-token")
         val maskedBefore = compose.onNodeWithText("One-use pairing token").fetchSemanticsNode()
             .config[SemanticsProperties.EditableText].text
@@ -160,14 +162,19 @@ class GatewayCompanionInteractionTest {
         compose.openGatewayPage("Connection")
         compose.onNodeWithText("Authenticated device heartbeat").assertExists()
         compose.openGatewayPage("Setup")
+        compose.onNodeWithText("Use existing manual pairing").performScrollTo().performClick()
         val field = compose.onNodeWithText("One-use pairing token").fetchSemanticsNode()
         assertTrue(field.config.contains(SemanticsProperties.Password))
-        assertEquals(maskedBefore, field.config[SemanticsProperties.EditableText].text)
+        assertEquals("Leaving the scanner pane clears its pending manual secret", "", field.config[SemanticsProperties.EditableText].text)
         compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
         compose.onNodeWithText("3. Pair this phone").assertExists()
         compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
         compose.onNodeWithText("Gateway home").assertExists()
-        compose.runOnIdle { assertEquals("Paused", AuthenticatedGatewayStatus.value) }
+        compose.runOnIdle {
+            assertEquals("Paused", AuthenticatedGatewayStatus.value)
+            assertNull(shadowOf(compose.activity).lastRequestedPermission)
+            assertTrue(shadowOf(compose.activity).allStartedServices.isEmpty())
+        }
     }
 
     @Test fun invalidPilotCredentialsShowFeedbackOnTools() {
