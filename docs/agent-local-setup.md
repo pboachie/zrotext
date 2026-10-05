@@ -90,14 +90,16 @@ values elsewhere, and treat none of them as support commitments.
    that stays valid inside the `DATABASE_URL` (hexadecimal is convenient) in
    both `POSTGRES_PASSWORD` and `DATABASE_URL`, and independently generate
    32 random bytes as 64 hexadecimal characters for `RUNTIME_DATABASE_PASSWORD`.
-   Then `docker compose --env-file .env -f deploy/compose/compose.yaml
-   up -d --build`. The database became healthy, the migration and runtime-role
+   Then run
+   `docker compose --env-file .env -f deploy/compose/compose.yaml up -d --build`.
+   The database became healthy, the migration and runtime-role
    jobs exited 0, and the API started (about 5 minutes with a cold image cache;
    under 2 minutes warm). `curl http://127.0.0.1:8080/healthz` returned
    `200 {"status":"live"}` and `/readyz` returned `200 {"status":"ready"}`.
    Health answers describe process and database availability, not SMS. Tear a
-   scratch stack down afterwards with `docker compose -p <scratch-project>
-   --env-file .env -f deploy/compose/compose.yaml down -v`. The Compose file
+   scratch stack down afterwards with
+   `docker compose -p <scratch-project> --env-file .env -f deploy/compose/compose.yaml down -v`.
+   The Compose file
    pins its default project name, so `down -v` without `-p` removes the default
    project's database volume; never run it against a volume you keep.
 5. Reviewed MCP setup against the built `sdk/mcp/server.mjs` and its computed
@@ -106,8 +108,8 @@ values elsewhere, and treat none of them as support commitments.
    synthetic fixture exchange, 0.11 seconds), `install` preview then
    `install --apply --review-digest` into a scratch `mcp-json` file (exit 0;
    one `zrotext-local-preview` entry launched through this script's `stdio`
-   subcommand), and `disconnect` preview then `disconnect --apply
-   --review-digest` (exit 0; entry removed).
+   subcommand), and `disconnect` preview then `disconnect --apply --review-digest`
+   (exit 0; entry removed).
 6. Closed-gate check: an unauthenticated `POST /v1/alpha/messages` against the
    running stack with placeholder values returned HTTP 404 while the
    synthetic-alpha gate was off. That is the documented closed behavior
