@@ -1,0 +1,471 @@
+{
+  "cases": [
+    {
+      "name": "create_minimum",
+      "type": "CreateRequest",
+      "schema_valid": true,
+      "valid": true,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789abc",
+        "opening_id": "12345678-1234-1234-1234-123456789abc",
+        "capacity": 1,
+        "description": {
+          "context_id": "12345678-1234-1234-1234-123456789abc",
+          "revision": 1,
+          "digest": "abababababababababababababababababababababababababababababababab"
+        },
+        "decision_deadline_ms": "1"
+      }
+    },
+    {
+      "name": "create_maximum",
+      "type": "CreateRequest",
+      "schema_valid": true,
+      "valid": true,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789abc",
+        "opening_id": "12345678-1234-1234-1234-123456789abc",
+        "capacity": 100,
+        "description": {
+          "context_id": "12345678-1234-1234-1234-123456789abc",
+          "revision": 128,
+          "digest": "abababababababababababababababababababababababababababababababab"
+        },
+        "decision_deadline_ms": "9223372036854775807"
+      }
+    },
+    {
+      "name": "status_empty",
+      "type": "StatusRequest",
+      "schema_valid": true,
+      "valid": true,
+      "value": {}
+    },
+    {
+      "name": "created_acknowledged",
+      "type": "Created",
+      "schema_valid": true,
+      "valid": true,
+      "value": {
+        "account_id": "12345678-1234-1234-1234-123456789abc",
+        "request_id": "12345678-1234-1234-1234-123456789abc",
+        "outcome": {
+          "receipt": {
+            "opening": {
+              "opening_id": "12345678-1234-1234-1234-123456789abc",
+              "definition_version": "1",
+              "state_version": "9223372036854775807"
+            },
+            "offer": null,
+            "allocation_id": null,
+            "allocation_version": null,
+            "phase": "open",
+            "pending": "0",
+            "confirmed": "100"
+          },
+          "applied": true,
+          "recorded": true
+        }
+      }
+    },
+    {
+      "name": "created_historical_acknowledged",
+      "type": "Created",
+      "schema_valid": true,
+      "valid": true,
+      "value": {
+        "account_id": "12345678-1234-1234-1234-123456789abc",
+        "request_id": "12345678-1234-1234-1234-123456789abc",
+        "outcome": {
+          "receipt": {
+            "opening": {
+              "opening_id": "12345678-1234-1234-1234-123456789abc",
+              "definition_version": "1",
+              "state_version": "9223372036854775807"
+            },
+            "offer": null,
+            "allocation_id": null,
+            "allocation_version": null,
+            "phase": "open",
+            "pending": "0",
+            "confirmed": "100"
+          },
+          "applied": false,
+          "recorded": true
+        }
+      }
+    },
+    {
+      "name": "status_metadata",
+      "type": "StatusResponse",
+      "schema_valid": true,
+      "valid": true,
+      "value": {
+        "account_id": "12345678-1234-1234-1234-123456789abc",
+        "receipt": {
+          "opening": {
+            "opening_id": "12345678-1234-1234-1234-123456789abc",
+            "definition_version": "1",
+            "state_version": "9223372036854775807"
+          },
+          "offer": null,
+          "allocation_id": null,
+          "allocation_version": null,
+          "phase": "open",
+          "pending": "0",
+          "confirmed": "100"
+        }
+      }
+    },
+    {
+      "name": "status_closed",
+      "type": "StatusResponse",
+      "schema_valid": true,
+      "valid": true,
+      "value": {
+        "account_id": "12345678-1234-1234-1234-123456789abc",
+        "receipt": {
+          "opening": {
+            "opening_id": "12345678-1234-1234-1234-123456789abc",
+            "definition_version": "1",
+            "state_version": "9223372036854775807"
+          },
+          "offer": null,
+          "allocation_id": null,
+          "allocation_version": null,
+          "phase": "closed",
+          "pending": "0",
+          "confirmed": "100"
+        }
+      }
+    },
+    {
+      "name": "status_cancelled",
+      "type": "StatusResponse",
+      "schema_valid": true,
+      "valid": true,
+      "value": {
+        "account_id": "12345678-1234-1234-1234-123456789abc",
+        "receipt": {
+          "opening": {
+            "opening_id": "12345678-1234-1234-1234-123456789abc",
+            "definition_version": "1",
+            "state_version": "9223372036854775807"
+          },
+          "offer": null,
+          "allocation_id": null,
+          "allocation_version": null,
+          "phase": "cancelled",
+          "pending": "0",
+          "confirmed": "100"
+        }
+      }
+    },
+    {
+      "name": "deadline_overflow",
+      "type": "CreateRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789abc",
+        "opening_id": "12345678-1234-1234-1234-123456789abc",
+        "capacity": 1,
+        "description": {
+          "context_id": "12345678-1234-1234-1234-123456789abc",
+          "revision": 1,
+          "digest": "abababababababababababababababababababababababababababababababab"
+        },
+        "decision_deadline_ms": "9223372036854775808"
+      }
+    },
+    {
+      "name": "deadline_number",
+      "type": "CreateRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789abc",
+        "opening_id": "12345678-1234-1234-1234-123456789abc",
+        "capacity": 1,
+        "description": {
+          "context_id": "12345678-1234-1234-1234-123456789abc",
+          "revision": 1,
+          "digest": "abababababababababababababababababababababababababababababababab"
+        },
+        "decision_deadline_ms": 1
+      }
+    },
+    {
+      "name": "deadline_leading_zero",
+      "type": "CreateRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789abc",
+        "opening_id": "12345678-1234-1234-1234-123456789abc",
+        "capacity": 1,
+        "description": {
+          "context_id": "12345678-1234-1234-1234-123456789abc",
+          "revision": 1,
+          "digest": "abababababababababababababababababababababababababababababababab"
+        },
+        "decision_deadline_ms": "01"
+      }
+    },
+    {
+      "name": "deadline_newline",
+      "type": "CreateRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789abc",
+        "opening_id": "12345678-1234-1234-1234-123456789abc",
+        "capacity": 1,
+        "description": {
+          "context_id": "12345678-1234-1234-1234-123456789abc",
+          "revision": 1,
+          "digest": "abababababababababababababababababababababababababababababababab"
+        },
+        "decision_deadline_ms": "1\n"
+      }
+    },
+    {
+      "name": "nil_request",
+      "type": "CreateRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "00000000-0000-0000-0000-000000000000",
+        "opening_id": "12345678-1234-1234-1234-123456789abc",
+        "capacity": 1,
+        "description": {
+          "context_id": "12345678-1234-1234-1234-123456789abc",
+          "revision": 1,
+          "digest": "abababababababababababababababababababababababababababababababab"
+        },
+        "decision_deadline_ms": "1"
+      }
+    },
+    {
+      "name": "uppercase_context",
+      "type": "CreateRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789abc",
+        "opening_id": "12345678-1234-1234-1234-123456789abc",
+        "capacity": 1,
+        "description": {
+          "context_id": "12345678-1234-1234-1234-123456789ABC",
+          "revision": 1,
+          "digest": "abababababababababababababababababababababababababababababababab"
+        },
+        "decision_deadline_ms": "1"
+      }
+    },
+    {
+      "name": "zero_digest",
+      "type": "CreateRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789abc",
+        "opening_id": "12345678-1234-1234-1234-123456789abc",
+        "capacity": 1,
+        "description": {
+          "context_id": "12345678-1234-1234-1234-123456789abc",
+          "revision": 1,
+          "digest": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "decision_deadline_ms": "1"
+      }
+    },
+    {
+      "name": "capacity_excess",
+      "type": "CreateRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789abc",
+        "opening_id": "12345678-1234-1234-1234-123456789abc",
+        "capacity": 101,
+        "description": {
+          "context_id": "12345678-1234-1234-1234-123456789abc",
+          "revision": 1,
+          "digest": "abababababababababababababababababababababababababababababababab"
+        },
+        "decision_deadline_ms": "1"
+      }
+    },
+    {
+      "name": "revision_excess",
+      "type": "CreateRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789abc",
+        "opening_id": "12345678-1234-1234-1234-123456789abc",
+        "capacity": 1,
+        "description": {
+          "context_id": "12345678-1234-1234-1234-123456789abc",
+          "revision": 129,
+          "digest": "abababababababababababababababababababababababababababababababab"
+        },
+        "decision_deadline_ms": "1"
+      }
+    },
+    {
+      "name": "nested_sequence",
+      "type": "CreateRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789abc",
+        "opening_id": "12345678-1234-1234-1234-123456789abc",
+        "capacity": 1,
+        "description": [
+          "12345678-1234-1234-1234-123456789abc",
+          1,
+          "abababababababababababababababababababababababababababababababab"
+        ],
+        "decision_deadline_ms": "1"
+      }
+    },
+    {
+      "name": "root_sequence",
+      "type": "CreateRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": [
+        "12345678-1234-1234-1234-123456789abc",
+        "12345678-1234-1234-1234-123456789abc",
+        1,
+        [
+          "12345678-1234-1234-1234-123456789abc",
+          1,
+          "abababababababababababababababababababababababababababababababab"
+        ],
+        "1"
+      ]
+    },
+    {
+      "name": "status_sequence",
+      "type": "StatusRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": []
+    },
+    {
+      "name": "status_authority_field",
+      "type": "StatusRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "account_id": "12345678-1234-1234-1234-123456789abc"
+      }
+    },
+    {
+      "name": "floating_integer_token",
+      "type": "CreateRequest",
+      "schema_valid": true,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789abc",
+        "opening_id": "12345678-1234-1234-1234-123456789abc",
+        "capacity": 1.0,
+        "description": {
+          "context_id": "12345678-1234-1234-1234-123456789abc",
+          "revision": 1,
+          "digest": "abababababababababababababababababababababababababababababababab"
+        },
+        "decision_deadline_ms": "1"
+      }
+    },
+    {
+      "name": "combined_occupancy_excess",
+      "type": "StatusResponse",
+      "schema_valid": true,
+      "valid": false,
+      "value": {
+        "account_id": "12345678-1234-1234-1234-123456789abc",
+        "receipt": {
+          "opening": {
+            "opening_id": "12345678-1234-1234-1234-123456789abc",
+            "definition_version": "1",
+            "state_version": "9223372036854775807"
+          },
+          "offer": null,
+          "allocation_id": null,
+          "allocation_version": null,
+          "phase": "open",
+          "pending": "1",
+          "confirmed": "100"
+        }
+      }
+    },
+    {
+      "name": "unrecorded_result",
+      "type": "Created",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "account_id": "12345678-1234-1234-1234-123456789abc",
+        "request_id": "12345678-1234-1234-1234-123456789abc",
+        "outcome": {
+          "receipt": {
+            "opening": {
+              "opening_id": "12345678-1234-1234-1234-123456789abc",
+              "definition_version": "1",
+              "state_version": "9223372036854775807"
+            },
+            "offer": null,
+            "allocation_id": null,
+            "allocation_version": null,
+            "phase": "open",
+            "pending": "0",
+            "confirmed": "100"
+          },
+          "applied": true,
+          "recorded": false
+        }
+      }
+    },
+    {
+      "name": "allocation_payload",
+      "type": "StatusResponse",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "account_id": "12345678-1234-1234-1234-123456789abc",
+        "receipt": {
+          "opening": {
+            "opening_id": "12345678-1234-1234-1234-123456789abc",
+            "definition_version": "1",
+            "state_version": "9223372036854775807"
+          },
+          "offer": null,
+          "allocation_id": "12345678-1234-1234-1234-123456789abc",
+          "allocation_version": null,
+          "phase": "open",
+          "pending": "0",
+          "confirmed": "100"
+        }
+      }
+    }
+  ],
+  "raw_rejections": [
+    {
+      "name": "duplicate_capacity",
+      "type": "CreateRequest",
+      "raw": "{\"request_id\":\"12345678-1234-1234-1234-123456789abc\",\"opening_id\":\"12345678-1234-1234-1234-123456789abc\",\"capacity\":1,\"capacity\":1,\"description\":{\"context_id\":\"12345678-1234-1234-1234-123456789abc\",\"revision\":1,\"digest\":\"abababababababababababababababababababababababababababababababab\"},\"decision_deadline_ms\":\"1\"}",
+      "server_test": "streamed_members_reject_duplicates_unknown_authority_and_missing_fields"
+    },
+    {
+      "name": "escaped_duplicate_revision",
+      "type": "CreateRequest",
+      "server_test": "streamed_members_reject_duplicates_unknown_authority_and_missing_fields",
+      "raw_file": "owner-opening-capacity-escaped-duplicate-revision.json"
+    }
+  ],
+  "raw_rejection_note": "These raw duplicate vectors reference Rust streamed parser controls. JSON Schema sees a parsed value and cannot prove duplicate-member refusal; Python does not execute the server."
+}

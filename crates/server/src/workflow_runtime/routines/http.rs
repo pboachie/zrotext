@@ -153,6 +153,7 @@ pub fn owner_router_with_original(
         return Router::new();
     }
     let publication = owner::context::http::router(state.clone());
+    let openings = crate::workflow_runtime::openings::http::router(state.clone());
     Router::new()
         .route("/v1/owner/workflow/routines/policy", post(configure))
         .route("/v1/owner/workflow/routines/output", post(bind))
@@ -166,6 +167,7 @@ pub fn owner_router_with_original(
         .layer(middleware::from_fn(no_store))
         .with_state(Arc::new(state))
         .merge(publication)
+        .merge(openings)
 }
 // Run before authentication extractors: disabling original ingress must also
 // disable alternate original execution paths, while keeping ordinary routines.

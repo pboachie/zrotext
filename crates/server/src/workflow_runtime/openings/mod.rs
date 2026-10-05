@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Owner-confirmed opening allocation foundation. No route is mounted and no
-//! integration permission, message receipt or model result grants allocation.
+//! Owner-confirmed opening allocation foundation. Owner create/status routes
+//! require the existing disabled-by-default customer-routines composition and
+//! an explicitly installed valid candidate schema.
+//! No integration permission, message receipt or model result grants allocation.
 mod admit;
 mod contact;
 pub mod contracts;
@@ -9,6 +11,7 @@ pub mod model;
 mod reduce;
 pub use admit::{confirm, offer, reserve};
 pub mod export;
+pub mod http;
 mod schema;
 mod source;
 mod store;
