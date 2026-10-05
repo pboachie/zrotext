@@ -186,10 +186,16 @@ test('saving and late latest-read settlement cannot expose acknowledged source a
   await f.prepare();f.click('Save encrypted facts');await until(()=>release);assert.equal(f.author.state().phase,'saving');assert.equal(f.author.savedSource(),null);f.author.close();release();await delay(0);assert.equal(f.author.savedSource(),null);assert.equal(f.author.state().phase,'closed');assert.equal(f.state.calls.length,2);
 });
 
-test('changed actual latest ciphertext never becomes a saved source on commit or retry',async()=>{
+test('same-revision changed latest ciphertext stays unknown with exact pending identity on commit or retry',async()=>{
   for(const retry of [false,true]){let f,posts=0;f=await fixture({fetchImpl:async(url,init)=>{
     f.state.calls.push({url,init,body:init.body?new Uint8Array(init.body).slice():null});if(init.method==='POST'){f.state.head=new Uint8Array(init.body).slice();if(retry&&++posts===1)return new Response(null,{status:503});return new Response('{"revision":1}',{headers:{'content-type':'application/json'}});}const changed=Uint8Array.from(f.state.head);changed[changed.length-1]^=1;return new Response(changed,{headers:{'content-type':'application/vnd.zrotext.workflow-context.v1'}});
-  }});try{await f.save();if(retry){assert.equal(f.author.state().phase,'unknown');assert.equal(f.author.savedSource(),null);f.click('Retry same save');await until(()=>f.author.state().phase==='refused');}assert.equal(f.author.state().phase,'refused');assert.equal(f.author.savedSource(),null);}finally{f.author.close();}}
+  }});try{
+    await f.save();assert.equal(f.author.state().phase,'unknown');assert.equal(f.author.savedSource(),null);
+    const first=f.state.calls.find(v=>v.init.method==='POST'),pending={requestId:first.init.headers['idempotency-key'],contextId:accountId(f.options.contextId),revision:1,envelopeDigest:createHash('sha256').update(first.body).digest('hex')};
+    assert.deepEqual(f.author.state().pending,pending);
+    if(retry){f.click('Retry same save');assert.equal(f.author.state().phase,'saving');await until(()=>f.author.state().phase==='unknown');const sent=f.state.calls.filter(v=>v.init.method==='POST');assert.equal(sent.length,2);assert.deepEqual(sent[0].body,sent[1].body);assert.deepEqual(sent[0].init.headers,sent[1].init.headers);}
+    assert.equal(f.author.state().phase,'unknown');assert.deepEqual(f.author.state().pending,pending);assert.equal(f.author.savedSource(),null);
+  }finally{f.author.close();}}
 });
 
 test('both acknowledged paths reject altered receipt output after genuine client verification',async()=>{
