@@ -38,7 +38,8 @@ open class GatewayAccessibilityTest : GatewayAccessibilityChecks() {
     protected open val testFontScale = 2f
     protected open val testLayoutDirection: Int? = null
     override val primaryMetricsSideBySide = false
-    override fun onScreen(page: String, revealStatus: Boolean, revealObservations: Boolean, check: (RootForTest) -> Unit) {
+    override fun onScreen(page: String, revealStatus: Boolean, revealObservations: Boolean,
+        revealManualPairing: Boolean, check: (RootForTest) -> Unit) {
         RuntimeEnvironment.setFontScale(testFontScale)
         val app = RuntimeEnvironment.getApplication()
         val originalApplicationFlags = app.applicationInfo.flags
@@ -64,6 +65,17 @@ open class GatewayAccessibilityTest : GatewayAccessibilityChecks() {
             controller.get().window.decorView.requestLayout()
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(300))
             root.measureAndLayoutForTest()
+            if (revealManualPairing) {
+                val manual = nodes(root).single { text(it) == "Use existing manual pairing" }
+                assertTrue(requireNotNull(manual.config[SemanticsActions.OnClick].action).invoke())
+                Snapshot.sendApplyNotifications()
+                compose.mainClock.advanceTimeBy(300)
+                compose.waitForIdle()
+                shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(300))
+                root.measureAndLayoutForTest()
+                assertNull(shadowOf(controller.get()).lastRequestedPermission)
+                assertTrue(shadowOf(app).allStartedServices.isEmpty())
+            }
             testLayoutDirection?.let {
                 assertEquals("The fixture must actually render its requested layout direction", it,
                     (root as ViewRootForTest).view.layoutDirection)
