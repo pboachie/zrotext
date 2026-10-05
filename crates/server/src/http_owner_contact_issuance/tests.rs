@@ -403,11 +403,17 @@ struct CliDescriptor {
 }
 fn cli_hash(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 fn cli_file(bytes: &[u8]) -> CliFile {
     assert!(!bytes.is_empty());
-    CliFile { bytes: bytes.len().to_string(), sha256: cli_hash(bytes) }
+    CliFile {
+        bytes: bytes.len().to_string(),
+        sha256: cli_hash(bytes),
+    }
 }
 fn cli_no_link(path: &std::path::Path) {
     for ancestor in path.ancestors() {
@@ -429,9 +435,18 @@ fn cli_confined(root: &std::path::Path, run: &std::path::Path) {
     cli_no_link(root);
     cli_no_link(run);
     assert!(root.is_dir() && run.is_dir());
-    assert_eq!(run.canonicalize().unwrap().parent(), Some(root.canonicalize().unwrap().as_path()));
+    assert_eq!(
+        run.canonicalize().unwrap().parent(),
+        Some(root.canonicalize().unwrap().as_path())
+    );
 }
-fn cli_write(root: &std::path::Path, run: &std::path::Path, leaf: &'static str, bytes: &[u8], cap: usize) {
+fn cli_write(
+    root: &std::path::Path,
+    run: &std::path::Path,
+    leaf: &'static str,
+    bytes: &[u8],
+    cap: usize,
+) {
     use std::io::{Read, Write};
     assert!(!bytes.is_empty() && bytes.len() <= cap);
     std::str::from_utf8(bytes).unwrap();
@@ -443,7 +458,9 @@ fn cli_write(root: &std::path::Path, run: &std::path::Path, leaf: &'static str, 
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
-        options.share_mode(0).custom_flags(0x0020_0000 | 0x0200_0000);
+        options
+            .share_mode(0)
+            .custom_flags(0x0020_0000 | 0x0200_0000);
     }
     let mut file = options.open(&path).unwrap();
     file.write_all(bytes).unwrap();
@@ -461,7 +478,9 @@ fn cli_write(root: &std::path::Path, run: &std::path::Path, leaf: &'static str, 
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
-        options.share_mode(0).custom_flags(0x0020_0000 | 0x0200_0000);
+        options
+            .share_mode(0)
+            .custom_flags(0x0020_0000 | 0x0200_0000);
     }
     let mut file = options.open(&path).unwrap();
     let m = file.metadata().unwrap();
@@ -472,7 +491,10 @@ fn cli_write(root: &std::path::Path, run: &std::path::Path, leaf: &'static str, 
         assert_eq!(m.file_attributes() & 0x0400, 0);
     }
     let mut readback = Vec::new();
-    std::io::Read::by_ref(&mut file).take(cap as u64 + 1).read_to_end(&mut readback).unwrap();
+    std::io::Read::by_ref(&mut file)
+        .take(cap as u64 + 1)
+        .read_to_end(&mut readback)
+        .unwrap();
     assert!(readback.len() <= cap && readback.len() as u64 == m.len());
     assert_eq!(readback, bytes);
     assert_eq!(cli_hash(&readback), cli_hash(bytes));
@@ -483,12 +505,17 @@ fn cli_write(root: &std::path::Path, run: &std::path::Path, leaf: &'static str, 
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; sequential genuine owner/MFA, synthetic extant admission, retained public parser artifacts"]
 async fn actual_router_emits_public_pending_for_unchanged_cli() {
-    use crate::contact_reader_issuer::{model::{Fixed, Id, Number}, tests::{ORIGIN, Owner}};
+    use crate::contact_reader_issuer::{
+        model::{Fixed, Id, Number},
+        tests::{ORIGIN, Owner},
+    };
     use tower::ServiceExt;
     let f = Owner::new(true, true).await;
     let input = f.input().await;
     let records = f.schema.bytes[151..f.schema.bytes.len() - 64].chunks_exact(149);
-    let matching = records.filter(|r| r[0] == 2 && r[1..33] == f.reader).collect::<Vec<_>>();
+    let matching = records
+        .filter(|r| r[0] == 2 && r[1..33] == f.reader)
+        .collect::<Vec<_>>();
     assert_eq!(matching.len(), 1);
     let point: [u8; 65] = matching[0][33..98].try_into().unwrap();
     assert_eq!(point[0], 4);
@@ -496,17 +523,31 @@ async fn actual_router_emits_public_pending_for_unchanged_cli() {
     let expected = serde_json::to_vec(&CliExpected {
         account: f.principal.tenant.account_id().to_string(),
         origin: ORIGIN.into(),
-        fingerprint: serde_json::from_value::<String>(serde_json::to_value(Fixed(f.fingerprint)).unwrap()).unwrap(),
-        reader_id: serde_json::from_value::<String>(serde_json::to_value(Fixed(f.reader)).unwrap()).unwrap(),
-        reader_point: serde_json::from_value::<String>(serde_json::to_value(Fixed(point)).unwrap()).unwrap(),
+        fingerprint: serde_json::from_value::<String>(
+            serde_json::to_value(Fixed(f.fingerprint)).unwrap(),
+        )
+        .unwrap(),
+        reader_id: serde_json::from_value::<String>(serde_json::to_value(Fixed(f.reader)).unwrap())
+            .unwrap(),
+        reader_point: serde_json::from_value::<String>(serde_json::to_value(Fixed(point)).unwrap())
+            .unwrap(),
         requested_until_ms: input.requested_until_ms.0.to_string(),
-    }).unwrap();
+    })
+    .unwrap();
     assert!(expected.len() <= 4096);
     let expected_meta = cli_file(&expected);
     let create = serde_json::to_vec(&input).unwrap();
     assert!(create.len() <= 8192);
     let create_meta = cli_file(&create);
-    let response = app(&f).oneshot(request(&f, "POST", &format!("{PREFIX}/intents"), create.clone())).await.unwrap();
+    let response = app(&f)
+        .oneshot(request(
+            &f,
+            "POST",
+            &format!("{PREFIX}/intents"),
+            create.clone(),
+        ))
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
     assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
@@ -514,7 +555,8 @@ async fn actual_router_emits_public_pending_for_unchanged_cli() {
     let v: serde_json::Value = serde_json::from_slice(&pending).unwrap();
     assert_eq!(v["kind"], "pending");
     assert_eq!(v["until_ms"], input.requested_until_ms.0.to_string());
-    let ceiling: Number = serde_json::from_value(v["creation_source"]["signed_until_ms"].clone()).unwrap();
+    let ceiling: Number =
+        serde_json::from_value(v["creation_source"]["signed_until_ms"].clone()).unwrap();
     assert!(ceiling.0 > input.requested_until_ms.0);
     let requested: Id = serde_json::from_value(v["create_request"].clone()).unwrap();
     assert!(requested == input.create_request);
@@ -524,7 +566,9 @@ async fn actual_router_emits_public_pending_for_unchanged_cli() {
     proposal.extend_from_slice(&pending);
     proposal.push(b'}');
     assert!(proposal.len() <= 32_768);
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
     let captured = u64::try_from(now.as_millis()).unwrap();
     assert!(captured > 0 && captured <= i64::MAX as u64);
     let pid = std::process::id();
@@ -532,27 +576,50 @@ async fn actual_router_emits_public_pending_for_unchanged_cli() {
     assert!(pid > 0 && nanos > 0);
     let component = format!("{pid}-{nanos}");
     assert!(component.len() <= 50);
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target").join("tmp-contact-issuer-packet");
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("tmp-contact-issuer-packet");
     cli_no_link(&root);
     std::fs::create_dir_all(&root).unwrap();
     let run = root.join(component);
     std::fs::create_dir(&run).unwrap();
     cli_confined(&root, &run);
-    for (leaf, raw, cap) in [("create.json", create.as_slice(), 8192), ("pending.json", pending.as_ref(), 20_480), ("proposal.json", proposal.as_slice(), 32_768), ("expected.json", expected.as_slice(), 4096)] {
+    for (leaf, raw, cap) in [
+        ("create.json", create.as_slice(), 8192),
+        ("pending.json", pending.as_ref(), 20_480),
+        ("proposal.json", proposal.as_slice(), 32_768),
+        ("expected.json", expected.as_slice(), 4096),
+    ] {
         cli_write(&root, &run, leaf, raw, cap);
     }
     let emission = serde_json::to_vec(&CliEmission {
         kind: "contact_reader_cli_emission_v1",
         reviewed_base: "a76cbf3467f9dc5101e536be6a5aa669fcaded02",
-        pid: pid.to_string(), unix_nanos: nanos.to_string(), captured_ms: captured.to_string(),
-        files: CliFiles { create: create_meta, pending: cli_file(&pending), proposal: cli_file(&proposal), expected: expected_meta },
-    }).unwrap();
+        pid: pid.to_string(),
+        unix_nanos: nanos.to_string(),
+        captured_ms: captured.to_string(),
+        files: CliFiles {
+            create: create_meta,
+            pending: cli_file(&pending),
+            proposal: cli_file(&proposal),
+            expected: expected_meta,
+        },
+    })
+    .unwrap();
     cli_write(&root, &run, "emission.json", &emission, 4096);
     let path = run.to_str().unwrap();
     assert!(path.len() <= 512 && path.bytes().all(|b| (0x20..=0x7e).contains(&b)));
-    let descriptor = serde_json::to_vec(&CliDescriptor { kind: "contact_reader_cli_descriptor_v1", run_path: path.into(), emission: cli_file(&emission) }).unwrap();
+    let descriptor = serde_json::to_vec(&CliDescriptor {
+        kind: "contact_reader_cli_descriptor_v1",
+        run_path: path.into(),
+        emission: cli_file(&emission),
+    })
+    .unwrap();
     assert!(descriptor.len() <= 4096);
     assert_eq!(AccountSlot::in_flight(f.principal.tenant.account_id()), 0);
     f.schema.cleanup().await;
-    println!("ZT_CONTACT_ISSUER_PACKET_V1 {}", std::str::from_utf8(&descriptor).unwrap());
+    println!(
+        "ZT_CONTACT_ISSUER_PACKET_V1 {}",
+        std::str::from_utf8(&descriptor).unwrap()
+    );
 }

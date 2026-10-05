@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Explicit local fixture build only. Never mutates the normal release variant.
+gradle.taskGraph.whenReady { graph ->
+    if (graph.allTasks.any { it.name.toLowerCase(java.util.Locale.ROOT).contains('release') }) {
+        throw new GradleException('Owner custody fixture cannot build or package a release variant')
+    }
+}
+gradle.beforeProject { project ->
+    if (project.path == ':app') {
+        project.plugins.withId('com.android.application') {
+            project.extensions.getByName('androidComponents').finalizeDsl { android ->
+                android.defaultConfig.applicationId = 'org.zrotext.gateway.ownercustodyfixture'
+                android.defaultConfig.testApplicationId = 'org.zrotext.gateway.ownercustodyfixture.test'
+                android.sourceSets.main.manifest.srcFile('src/ownerCustodyProbe/AndroidManifest.xml')
+                android.sourceSets.debug.manifest.srcFile('src/ownerCustodyProbe/DebugAndroidManifest.xml')
+                android.sourceSets.main.java.srcDir('src/ownerCustodyProbe/java')
+                android.sourceSets.androidTest.java.srcDir('src/ownerCustodyProbeTest/java')
+                android.sourceSets.main.jniLibs.srcDir(project.layout.buildDirectory.dir('generated/ownerCustodyJniLibs').get().asFile)
+            }
+        }
+    }
+}

@@ -308,6 +308,9 @@ jobs:
       - name: Validate Gradle wrapper JAR
         if: env.RUN_ANDROID == 'true'
         uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+      - name: Test Android release and native inventory boundaries
+        if: env.RUN_ANDROID == 'true'
+        run: python3 -m unittest discover -s android/tools -p 'test_*.py'
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         if: env.RUN_ANDROID == 'true'
         with:
@@ -324,7 +327,12 @@ jobs:
         if: env.RUN_ANDROID == 'true'
       - name: Install Android SDK platform
         if: env.RUN_ANDROID == 'true'
-        run: sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0'
+        run: sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;28.2.13676358'
+      - name: Install pinned owner-custody Android Rust targets
+        if: env.RUN_ANDROID == 'true'
+        run: |
+          rustup show active-toolchain
+          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
       - name: Lint, test and build debug APK
         if: env.RUN_ANDROID == 'true'
         working-directory: android

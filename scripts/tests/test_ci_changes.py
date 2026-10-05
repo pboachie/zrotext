@@ -41,10 +41,17 @@ class SuitesTest(unittest.TestCase):
         )
 
     def test_server_only_skips_android(self):
-        for path in ("crates/server/src/main.rs", "Cargo.lock", "web/owner/devices.js",
-                     "deploy/compose/migrations/001_foundation.sql", "rust-toolchain.toml"):
+        for path in ("crates/server/src/main.rs", "web/owner/devices.js",
+                     "deploy/compose/migrations/001_foundation.sql"):
             with self.subTest(path=path):
                 self.assertEqual(ci_changes.suites([path]), {"rust": True, "android": False})
+
+    def test_native_owner_inputs_run_android_and_rust(self):
+        for path in ("crates/android-owner-custody/src/typed.rs",
+                     "crates/root-material/src/root_backup.rs", "Cargo.toml", "Cargo.lock",
+                     "rust-toolchain.toml"):
+            with self.subTest(path=path):
+                self.assertEqual(ci_changes.suites([path]), {"rust": True, "android": True})
 
     def test_shared_inputs_run_both_suites(self):
         for path in ("protocol/v1/vectors/root-backup-01.json",

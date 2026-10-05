@@ -40,7 +40,8 @@ jobs:
       - name: Install existing toolchains and isolated browser tooling
         run: |
           rustup toolchain install 1.97.1 --profile minimal
-          sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'emulator' 'system-images;android-28;google_apis;x86_64'
+          rustup target add --toolchain 1.97.1 aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
+          sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;28.2.13676358' 'emulator' 'system-images;android-28;google_apis;x86_64'
           npm install --prefix "$RUNNER_TEMP/conversation-browser-tools" --no-save --ignore-scripts playwright@1.58.2
           node "$RUNNER_TEMP/conversation-browser-tools/node_modules/playwright/cli.js" install --with-deps chromium
           echo "ZT_CONVERSATION_BROWSER_TOOLS=$RUNNER_TEMP/conversation-browser-tools" >> "$GITHUB_ENV"
