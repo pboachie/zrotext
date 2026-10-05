@@ -28,6 +28,19 @@ class PublicDocumentationIndexTests(unittest.TestCase):
     def test_checked_in_index_is_current(self):
         generate_llms.synchronize(check=True)
 
+    def test_existing_agent_and_api_pages_are_indexed_once(self):
+        rendered = generate_llms.render(self.root)
+        for relative in (
+            "docs/SEND-FIRST-MESSAGE.md",
+            "docs/API-REFERENCE.md",
+            "docs/agent-send-guardrails.md",
+        ):
+            with self.subTest(relative=relative):
+                self.assertEqual(
+                    rendered.count(f"]({generate_llms.RAW_BASE}{relative})"),
+                    1,
+                )
+
     def test_output_is_deterministic_and_has_only_allowlisted_raw_links(self):
         first = generate_llms.render(self.root)
         (self.root / "private-unlisted.md").write_text("synthetic excluded canary")
