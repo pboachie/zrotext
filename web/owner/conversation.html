@@ -78,6 +78,15 @@
   <label><input id="session-custody" type="checkbox"> Use a session-only signing key for this exact conversation. Leaving, logging out or expiry closes it; setup requires my existing owner-root approval.</label>
   <button id="connect" type="button" disabled>Check conversation authorization</button>
   <p id="selection"></p><section aria-label="Conversation"><div id="messages" aria-live="polite"></div></section>
+  <fieldset id="facts-setup"><legend>Initial private facts</legend>
+    <p>After authorizing this conversation, choose one initial facts context and expiry independently. The server must have the owner context service configured. Saving facts does not approve messages or grant reader access.</p>
+    <label>Initial context UUID <input id="facts-context" maxlength="36" autocomplete="off"></label>
+    <label>Facts expiry (Unix milliseconds) <input id="facts-expires" inputmode="numeric" maxlength="19" autocomplete="off"></label>
+    <button id="facts-open" type="button" disabled>Review initial facts</button>
+    <p id="facts-status" role="status" aria-live="polite">Facts require current conversation authorization and archive custody.</p>
+    <div id="facts-editor"></div>
+    <p>Check or retry an unknown save only while its original editor and deadline remain open. Clear or leaving closes those controls; retain the displayed identity and do not create a replacement. Reload recovery is unavailable.</p>
+  </fieldset>
   <fieldset id="composer" disabled><legend>Write to the approved peer</legend>
     <label for="body">Message text</label><textarea id="body" rows="5" maxlength="32768" autocomplete="off" spellcheck="false" aria-describedby="body-help"></textarea>
     <p id="body-help">Up to 32,768 UTF-8 bytes. Review preserves every character and space. Queuing does not confirm carrier delivery.</p>

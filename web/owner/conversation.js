@@ -9,8 +9,22 @@
   let controller = adapter ? ZtConversation.create(adapter) : null;
   let setupPending = false, setupRevision = 0;
   let custodyLifetime = null, rootEnrollment = null, rootLifetime = null, lineSetup = null, lineLifetime = null;
+  let factsSource = null, facts = null, factsPending = null, factsUsed = false, factsPreparing = false;
+  const factsIdentity = () => ({ context: el("facts-context").value, expires: el("facts-expires").value });
+  const retainFactsPending = () => { const state = facts?.state(); if (state?.phase === "saved") factsPending = null; else if (state?.pending) factsPending = Object.freeze({ ...state.pending }); return state; };
+  function renderFacts() {
+    const state = retainFactsPending();
+    el("facts-open").disabled = !ordinary || !factsSource || !controller?.state().scope || setupPending || factsUsed;
+    el("facts-context").disabled = factsUsed; el("facts-expires").disabled = factsUsed;
+    if (factsPending) {
+      el("facts-status").textContent = `Save outcome unknown. Context ${factsPending.contextId}, request ${factsPending.requestId}, revision ${factsPending.revision}, digest ${factsPending.envelopeDigest}. After closing, only this status remains; do not create a replacement context.`;
+      el("connect").disabled = true;
+    } else if (state?.phase === "saved") el("facts-status").textContent = "Encrypted facts saved. Currentness was checked when saved.";
+    else if (state?.phase === "closed" || state?.phase === "refused") el("facts-status").textContent = "Facts editor closed. No new initial facts identity is created in this page.";
+  }
   let hadScope = false;
   function render() {
+    renderFacts();
     lineSetup?.state(); // Local identity/expiry guard only; no background HTTP.
     const s = controller ? controller.state() : { scope: null, draft: "", review: null, canConfirm: false, busy: setupPending, messages: [] };
     if (s.scope) hadScope = true;
@@ -36,10 +50,12 @@
   el("connect").disabled = false;
   el("connect").addEventListener("click", () => action(async () => {
     if (controller?.state().uncertain) throw Error("Check delivery before sending again");
+    retainFactsPending(); if (factsPending) throw Error("Original facts outcome remains unknown");
     if (setupPending) throw Error("Setup in progress");
     setupPending = true; el("connect").disabled = true;
     el("status").textContent = "Checking conversation authorization.";
     let ticket = ++setupRevision;
+    let selectedFactsSource = null;
     try {
     if (setup && !globalThis.ZtConversationSimulatorAdapter) {
       if (!el("session-custody").checked) throw Error("Explicit session custody decision required");
@@ -54,12 +70,15 @@
       try { adapter = ZtConversationOwnerTransport.create({ ...setup.transportOptions, enabled: true, custody }); }
       catch (error) { custody.close(); throw error; }
       controller = ZtConversation.create(adapter);
+      selectedFactsSource = { options, custody, signal: custodyLifetime.signal };
       adapter.onClose?.(clear);
       setup.onClose?.(clear);
     }
     await controller.authorize(); el("status").textContent = setup ? "Conversation authorized for this session." : "Fixture conversation authorized.";
     if (adapter.initialEvent) await controller.read(adapter.initialEvent);
-    } finally { setupPending = false; el("connect").disabled = false; }
+    if (ticket !== setupRevision || custodyLifetime?.signal.aborted) throw Error("Setup closed");
+    factsSource = selectedFactsSource;
+    } finally { setupPending = false; el("connect").disabled = Boolean(factsPending); }
   }));
   el("body").addEventListener("input", () => { try { controller.edit(el("body").value); } catch { controller.clear(); } render(); });
   el("review").addEventListener("click", () => action(async () => {
@@ -73,13 +92,42 @@
   const clear = () => {
     setupRevision++;
     let failure;
-    for(const close of [()=>lineLifetime?.abort(),()=>lineSetup?.close(),()=>rootLifetime?.abort(),()=>rootEnrollment?.close(),()=>custodyLifetime?.abort(),()=>{if(ordinary)setup.close();},()=>adapter?.close?.()])try{close();}catch(error){failure??=error;}
+    retainFactsPending(); factsSource = null;
+    for(const close of [()=>facts?.close(),()=>lineLifetime?.abort(),()=>lineSetup?.close(),()=>rootLifetime?.abort(),()=>rootEnrollment?.close(),()=>custodyLifetime?.abort(),()=>{if(ordinary)setup.close();},()=>adapter?.close?.()])try{close();}catch(error){failure??=error;}
+    retainFactsPending();
     lineSetup=null;rootEnrollment=null;
     try {
       for(const id of ["root-mfa","line-mfa","root-backup-file","root-card-file","root-signatures-file","line-phone-point-file","line-root-signature-file","activation-file","genesis-phone-file","genesis-archive-file"])try{el(id).value="";}catch(error){failure??=error;}
     } finally {try{controller?.clear();}finally{hadScope=false;el("status").textContent="Conversation cleared. Check authorization again.";render();}}
     if(failure)throw failure;
   };
+  // Initial facts use the actual post-enrollment setup/custody, never the simulator.
+  el("facts-open").addEventListener("click", async () => {
+    const actionRevision = setupRevision;
+    try {
+    if (!ordinary || !factsSource || factsUsed || factsPreparing || setupPending || !controller?.state().scope) throw Error("Facts setup unavailable");
+    const selected = factsIdentity(), source = factsSource, ticket = setupRevision;
+    if (selected.context.length !== 36 || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(selected.context) || selected.context === "00000000-0000-0000-0000-000000000000" || !/^[1-9][0-9]{0,18}$/.test(selected.expires) || /[^0-9]/.test(selected.expires)) throw Error("Explicit context and expiry required");
+    const expiresMs = BigInt(selected.expires); if (expiresMs >= (1n << 63n)) throw Error("Facts expiry unavailable");
+    const contextId = Uint8Array.from(selected.context.replaceAll("-", "").match(/../g), value => parseInt(value, 16));
+    const binding = { ...source.options.binding };
+    for (const name of ["account", "device", "line", "interval", "session", "phoneReader", "archiveReader"]) binding[name] = Uint8Array.from(binding[name]);
+    factsUsed = true; factsPreparing = true; renderFacts();
+    const live = () => { if (ticket !== setupRevision || source !== factsSource || source.signal.aborted || document.hidden || selected.context !== el("facts-context").value || selected.expires !== el("facts-expires").value) throw Error("Facts setup closed"); };
+    let candidate;
+    try {
+      live(); await source.options.readCurrent(); live();
+      const sdk = await import("/v1/owner/conversation-sdk/sdk/owner-context-authoring.js"); live();
+      candidate = sdk.createOwnerContextAuthoring({ enabled: true, origin: window.location.origin, host: el("facts-editor"), binding, contextId, expiresMs,
+        readCurrent: () => source.options.readCurrent(), currentCsrf: () => setup.transportOptions.currentCsrf(), archiveLease: source.options.archiveLease,
+        onSetupClose: listener => setup.onClose(listener), onCustodyClose: listener => source.custody.onClose(listener), signal: source.signal });
+      live(); facts = candidate; el("facts-status").textContent = "Review local facts before saving. Availability requires the configured owner context service; a refusal is not a save.";
+    } catch (error) { candidate?.close(); throw error; }
+    finally { factsPreparing = false; renderFacts(); }
+    } catch { if (actionRevision === setupRevision && !document.hidden) el("facts-status").textContent = "Facts unavailable. Check authorization and the independently selected context and expiry; no automatic retry occurs."; }
+    render();
+  });
+  for (const id of ["facts-context", "facts-expires"]) el(id).addEventListener("input", () => { if (factsUsed || factsPreparing) clear(); });
   if (ordinary && globalThis.ZtConversationLineSetup) {
     const lineSelection=()=>({enabled:el("owner-enabled").checked,sessionConsent:el("line-session-consent").checked,account_id:el("owner-account").value,device_id:el("owner-device").value,line_id:el("owner-line").value,nextGeneration:el("owner-generation").value,rootFingerprint:el("owner-fingerprint").value,pairedFingerprint:el("line-paired-fingerprint").value,origin:el("root-origin").value});
     const lineButtons=phase=>{for(const [id,phases]of [["line-complete",["awaiting_root"]],["line-reconcile",["registration_unknown"]],["line-open",["registered"]],["line-check",["awaiting_device","awaiting_owner","activation_committed","activation_unknown"]],["line-approve",["awaiting_owner"]]])el(id).disabled=!phases.includes(phase);};
