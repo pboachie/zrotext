@@ -22,7 +22,9 @@ RUST_DOCUMENT_INPUTS = {"docs/AGENT-QUICKSTART.md"}
 # Paths the Android build and its JVM tests never read. Android test resources
 # come from protocol/v1/vectors and sdk/typescript/test/vectors, so those stay.
 NOT_ANDROID_PREFIXES = ("crates/", "deploy/", "web/")
-NOT_ANDROID_FILES = {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "about.toml", "about.hbs"}
+NOT_ANDROID_FILES = {"about.toml", "about.hbs"}
+# The ordinary APK builds the native owner custodian from these sources.
+ANDROID_NATIVE_PREFIXES = ("crates/android-owner-custody/", "crates/root-material/")
 
 
 def is_docs(path: str) -> bool:
@@ -36,7 +38,7 @@ def suites(paths: list[str]) -> dict[str, bool]:
     rust = any(p in RUST_DOCUMENT_INPUTS or not (is_docs(p) or p.startswith(NOT_RUST_PREFIXES))
                for p in paths)
     android = any(
-        not (is_docs(p) or p.startswith(NOT_ANDROID_PREFIXES) or p in NOT_ANDROID_FILES)
+        p.startswith(ANDROID_NATIVE_PREFIXES) or not (is_docs(p) or p.startswith(NOT_ANDROID_PREFIXES) or p in NOT_ANDROID_FILES)
         for p in paths
     )
     return {"rust": rust, "android": android}

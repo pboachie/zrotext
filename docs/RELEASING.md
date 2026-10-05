@@ -71,10 +71,19 @@ artifact is named `android-unsigned-candidate-<tag>` for a release and
 signing secret and never attaches anything to the release; signing stays local
 as described below. It uploads the unsigned APK, its CycloneDX
 release-runtime SBOM, and a receipt containing both
-SHA-256 digests. The pinned CycloneDX Gradle task resolves only
-`releaseRuntimeClasspath`; test, KSP, and other build-only dependencies remain
-in the Gradle lockfile and dependency graph, outside this shipped-app
-inventory. GitHub attests the SBOM as a predicate of the exact unsigned APK and
+SHA-256 digests. The pinned CycloneDX Gradle task resolves
+`releaseRuntimeClasspath`; Java test and KSP dependencies remain outside that
+inventory. The release helper adds the native owner's locked Cargo normal/build
+dependency graph for each of the four packaged Android targets, including build
+dependencies and proc macros. This is a conservative native build-source
+inventory, not a claim that every listed crate contributes bytes to the binary.
+Registry crates retain their locked source-package checksums; workspace crates
+are identified by the reviewed source commit. Target feature sets and dependency
+references are retained, and four architecture-qualified components record the
+exact packaged owner-library entry hashes. The helper refuses missing native
+inventory, missing libraries, substituted library bytes, inconsistent source or
+target identity, and dangling dependency references. GitHub attests the combined
+SBOM as a predicate of the exact unsigned APK and
 verifies the receipt, APK identity, SBOM inventory, and signed attestation against
 the checked-out source commit before uploading the files. Artifacts from this public
 repository can be downloaded by readers, so do not put an Android signing key
