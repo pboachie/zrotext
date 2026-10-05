@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Unverified OpenRouter data-only request body subset",
+  "$comment": "Structural output shape only. Supplied values are not authenticated task/policy/model/region authority. Routing/privacy flags request external behavior, not proof. The Rust encoder additionally enforces combined strict UTF-8 input bytes <=8192 and output bytes <=65536; JSON Schema string lengths count characters.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["model", "messages", "max_completion_tokens", "stream", "provider"],
+  "properties": {
+    "model": {"$ref": "#/$defs/slug"},
+    "messages": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["role", "content"],
+          "properties": {
+            "role": {"const": "system"},
+            "content": {"$ref": "#/$defs/text"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["role", "content"],
+          "properties": {
+            "role": {"const": "user"},
+            "content": {"$ref": "#/$defs/text"}
+          }
+        }
+      ],
+      "items": false
+    },
+    "max_completion_tokens": {"type": "integer", "minimum": 1, "maximum": 65536},
+    "stream": {"type": "boolean", "const": false},
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["only", "allow_fallbacks", "require_parameters", "data_collection", "zdr"],
+      "properties": {
+        "only": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {"$ref": "#/$defs/slug"}
+        },
+        "allow_fallbacks": {"type": "boolean", "const": false},
+        "require_parameters": {"type": "boolean", "const": true},
+        "data_collection": {"type": "string", "const": "deny"},
+        "zdr": {"type": "boolean", "const": true}
+      }
+    }
+  },
+  "$defs": {
+    "slug": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$",
+      "not": {"pattern": "[^A-Za-z0-9/._-]"}
+    },
+    "text": {"type": "string", "minLength": 1, "maxLength": 8192}
+  }
+}
