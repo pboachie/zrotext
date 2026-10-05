@@ -235,6 +235,15 @@ impl Owner {
             ))
             .await
             .unwrap();
+        // Normal MFA enrollment updates the trusted-browser epoch. This
+        // bounded fixture must install that dependency before enrolling.
+        schema
+            .db
+            .batch_execute(include_str!(
+                "../../../../deploy/compose/migrations/055_trusted_browser_epoch.sql"
+            ))
+            .await
+            .unwrap();
         assert!(
             schema
                 .db
