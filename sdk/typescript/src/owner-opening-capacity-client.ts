@@ -37,7 +37,7 @@ export class OpeningCapacityError extends Error {
   constructor(readonly code: string) { super('Opening operation unavailable'); this.name='OpeningCapacityError'; }
 }
 const MAX=(1n<<63n)-1n, CAP=8192, enc=new TextEncoder();
-const fail=(code='invalid'):never=>{throw new OpeningCapacityError(code);};
+function fail(code='invalid'):never {throw new OpeningCapacityError(code);}
 const names=['enabled','origin','binding','contextId','sourceExpiresMs','readSavedSource','readCurrent','currentCsrf','consumeCreateReview','signal','onSetupClose','onCustodyClose','totalTimeoutMs','attemptTimeoutMs','observationTimeoutMs','maxAttempts'];
 const bindingNames=['account','device','line','interval','session','generation','peer','phoneReader','archiveReader'];
 const byteNames=['account','device','line','interval','session','phoneReader','archiveReader'] as const;
@@ -99,7 +99,7 @@ class Client {
     const o=data(input,names,['fetchImpl']);
     if(typeof o.enabled!=='boolean'||!(o.signal instanceof AbortSignal)||['readSavedSource','readCurrent','currentCsrf','consumeCreateReview','onSetupClose','onCustodyClose'].some(k=>typeof o[k]!=='function')||o.fetchImpl!==undefined&&typeof o.fetchImpl!=='function')fail();
     if(typeof o.origin!=='string'||o.origin.length<1||o.origin.length>512||/[^\x21-\x7e]/.test(o.origin))fail();
-    let url:URL;try{url=new URL(o.origin);}catch{return fail();}if(url.protocol!=='https:'||url.origin!==o.origin||typeof location!=='undefined'&&location.origin!==o.origin)fail();
+    let url:URL;try{url=new URL(o.origin);}catch{throw new OpeningCapacityError('invalid');}if(url.protocol!=='https:'||url.origin!==o.origin||typeof location!=='undefined'&&location.origin!==o.origin)fail();
     for(const k of ['totalTimeoutMs','attemptTimeoutMs','observationTimeoutMs','maxAttempts'])if(!Number.isSafeInteger(o[k])||o[k]<1||o[k]>(k==='totalTimeoutMs'?60000:k==='maxAttempts'?3:10000))fail();
     const b=binding(o.binding),context=bytes(o.contextId,16);positive(o.sourceExpiresMs);
     this.#o={...o,binding:b,contextId:context} as OwnerOpeningCapacityOptions;this.#binding=b;this.#account=uuid(b.account);this.#context=uuid(context);this.#deadline=performance.now()+o.totalTimeoutMs;
