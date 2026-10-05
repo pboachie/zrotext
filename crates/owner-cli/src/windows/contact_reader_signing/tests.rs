@@ -832,18 +832,25 @@ impl IssuerExpected {
         }
         p256::ecdsa::VerifyingKey::from_sec1_bytes(&point).map_err(|_| ())?;
         Ok(signing::Expected {
-            account: uuid(&self.account)?, origin: self.origin.clone(),
-            fingerprint: fixed(&self.fingerprint)?, reader_id: fixed(&self.reader_id)?,
-            reader_point: point, requested_until_ms: number(&self.requested_until_ms, false)?,
+            account: uuid(&self.account)?,
+            origin: self.origin.clone(),
+            fingerprint: fixed(&self.fingerprint)?,
+            reader_id: fixed(&self.reader_id)?,
+            reader_point: point,
+            requested_until_ms: number(&self.requested_until_ms, false)?,
         })
     }
 }
 impl IssuerFile {
     fn check(&self, raw: &[u8], cap: usize) -> Result<()> {
         let length = number(&self.bytes, false)?;
-        if length > cap as u64 || length != raw.len() as u64
+        if length > cap as u64
+            || length != raw.len() as u64
             || self.sha256.len() != 64
-            || !self.sha256.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            || !self
+                .sha256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
             || self.sha256 == "0".repeat(64)
             || self.sha256 != display_hex(&hash(raw))
         {
@@ -865,26 +872,43 @@ fn issuer_read(parent: &std::path::Path, leaf: &'static str, cap: usize) -> Resu
     let name = wide(path.as_os_str());
     // SAFETY: terminated bounded fixed-leaf path, no inherited handle or sharing.
     let handle = unsafe {
-        CreateFileW(name.as_ptr(), FILE_GENERIC_READ, 0, std::ptr::null(), OPEN_EXISTING,
+        CreateFileW(
+            name.as_ptr(),
+            FILE_GENERIC_READ,
+            0,
+            std::ptr::null(),
+            OPEN_EXISTING,
             FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-            std::ptr::null_mut())
+            std::ptr::null_mut(),
+        )
     };
-    if handle as isize == -1 { return Err(()); }
+    if handle as isize == -1 {
+        return Err(());
+    }
     // SAFETY: transfer the successful handle exactly once into its owning File.
     let mut file = unsafe { std::fs::File::from_raw_handle(handle as _) };
     let metadata = file.metadata().map_err(|_| ())?;
-    if !metadata.is_file() || metadata.file_attributes() & 0x0400 != 0
+    if !metadata.is_file()
+        || metadata.file_attributes() & 0x0400 != 0
         || !(1..=cap as u64).contains(&metadata.len())
-    { return Err(()); }
+    {
+        return Err(());
+    }
     let mut raw = vec![0; cap + 1];
     let mut filled = 0;
     loop {
         let n = file.read(&mut raw[filled..]).map_err(|_| ())?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         filled += n;
-        if filled > cap { return Err(()); }
+        if filled > cap {
+            return Err(());
+        }
     }
-    if filled as u64 != metadata.len() { return Err(()); }
+    if filled as u64 != metadata.len() {
+        return Err(());
+    }
     raw.truncate(filled);
     std::str::from_utf8(&raw).map_err(|_| ())?;
     no_reparse(&path)?;
@@ -905,16 +929,23 @@ fn issuer_emission(raw: &[u8], parent: &std::path::Path, before: u64) -> Result<
     let emission: IssuerEmission = issuer_closed(raw)?;
     if emission.kind != "contact_reader_cli_emission_v1"
         || emission.reviewed_base != "a76cbf3467f9dc5101e536be6a5aa669fcaded02"
-        || emission.pid != pid.to_string() || emission.unix_nanos != nanos.to_string()
+        || emission.pid != pid.to_string()
+        || emission.unix_nanos != nanos.to_string()
         || number(&emission.captured_ms, false)? > before
-    { return Err(()); }
+    {
+        return Err(());
+    }
     Ok(emission)
 }
 fn issuer_negative_file(parent: &std::path::Path, leaf: &'static str, raw: &[u8]) -> Result<()> {
     validate_parent(parent, "success")?;
     let path = parent.join(leaf);
     no_reparse(&path)?;
-    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|_| ())?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|_| ())?;
     file.write_all(raw).map_err(|_| ())?;
     file.sync_all().map_err(|_| ())?;
     no_reparse(&path)?;
@@ -939,16 +970,24 @@ fn inspect_issuer_packet(parent: &std::path::Path) -> Result<()> {
     emission.files.pending.check(&pending, 20_480)?;
     emission.files.proposal.check(&proposal, 32_768)?;
     emission.files.expected.check(&raw_expected, 4096)?;
-    if proposal != issuer_packet_bytes(&create, &pending) { return Err(()); }
+    if proposal != issuer_packet_bytes(&create, &pending) {
+        return Err(());
+    }
     let parsed = decode(&proposal)?;
     let facts = parsed.inspect(&expected, before)?.facts();
     let source_end = number(&parsed.pending.creation_source.signed_until_ms, false)?;
-    if facts.until_ms != expected.requested_until_ms || source_end <= facts.until_ms
-        || number(&emission.captured_ms, false)? < number(&parsed.pending.current.observed_ms, false)?
-    { return Err(()); }
+    if facts.until_ms != expected.requested_until_ms
+        || source_end <= facts.until_ms
+        || number(&emission.captured_ms, false)?
+            < number(&parsed.pending.current.observed_ms, false)?
+    {
+        return Err(());
+    }
     let mut negative_cases = 0_usize;
     let mut rejected = |refused: bool| -> Result<()> {
-        if !refused { return Err(()); }
+        if !refused {
+            return Err(());
+        }
         negative_cases += 1;
         Ok(())
     };
@@ -966,10 +1005,24 @@ fn inspect_issuer_packet(parent: &std::path::Path) -> Result<()> {
     rejected(issuer_read(parent, "reparse.json", 32_768).is_err())?;
     rejected(decode(&vec![b' '; MAX_WRAPPER + 1]).is_err())?;
     for (c, p) in [
-        ([create.as_slice(), &vec![b' '; 8193]].concat(), pending.clone()),
-        (create.clone(), [pending.as_slice(), &vec![b' '; 20_481]].concat()),
-    ] { rejected(decode(&issuer_packet_bytes(&c, &p)).is_err())?; }
-    rejected(emission.files.proposal.check(&[proposal.as_slice(), b" "].concat(), 32_768).is_err())?;
+        (
+            [create.as_slice(), &vec![b' '; 8193]].concat(),
+            pending.clone(),
+        ),
+        (
+            create.clone(),
+            [pending.as_slice(), &vec![b' '; 20_481]].concat(),
+        ),
+    ] {
+        rejected(decode(&issuer_packet_bytes(&c, &p)).is_err())?;
+    }
+    rejected(
+        emission
+            .files
+            .proposal
+            .check(&[proposal.as_slice(), b" "].concat(), 32_768)
+            .is_err(),
+    )?;
     let expected_text = std::str::from_utf8(&raw_expected).map_err(|_| ())?;
     let emission_text = std::str::from_utf8(&raw_emission).map_err(|_| ())?;
     for bad in [
@@ -978,14 +1031,18 @@ fn inspect_issuer_packet(parent: &std::path::Path) -> Result<()> {
         expected_text.replacen('{', "{\"account\":\"bad\",", 1),
         expected_text.replacen("\"account\"", r#""\u0061ccount""#, 1),
         format!("{expected_text}{}", " ".repeat(4097)),
-    ] { rejected(issuer_closed::<IssuerExpected>(bad.as_bytes()).is_err())?; }
+    ] {
+        rejected(issuer_closed::<IssuerExpected>(bad.as_bytes()).is_err())?;
+    }
     for bad in [
         format!("{emission_text} {{}}"),
         emission_text.replacen('{', "{\"extra\":true,", 1),
         emission_text.replacen('{', "{\"pid\":\"1\",", 1),
         emission_text.replacen("\"pid\"", r#""p\u0069d""#, 1),
         format!("{emission_text}{}", " ".repeat(4097)),
-    ] { rejected(issuer_emission(bad.as_bytes(), parent, before).is_err())?; }
+    ] {
+        rejected(issuer_emission(bad.as_bytes(), parent, before).is_err())?;
+    }
     for field in ["account", "requested_until_ms", "reader_point"] {
         let mut bad: IssuerExpected = issuer_closed(&raw_expected)?;
         match field {
@@ -1004,30 +1061,62 @@ fn inspect_issuer_packet(parent: &std::path::Path) -> Result<()> {
             "unix_nanos" => bad.unix_nanos.insert(0, '0'),
             _ => bad.captured_ms = (before + 1).to_string(),
         }
-        rejected(issuer_emission(&serde_json::to_vec(&bad).map_err(|_| ())?, parent, before).is_err())?;
+        rejected(
+            issuer_emission(&serde_json::to_vec(&bad).map_err(|_| ())?, parent, before).is_err(),
+        )?;
     }
     for bad in [
-        IssuerFile { bytes: "01".into(), sha256: display_hex(&hash(&proposal)) },
-        IssuerFile { bytes: proposal.len().to_string(), sha256: "0".repeat(64) },
-        IssuerFile { bytes: proposal.len().to_string(), sha256: "A".repeat(64) },
-        IssuerFile { bytes: (proposal.len() + 1).to_string(), sha256: display_hex(&hash(&proposal)) },
-    ] { rejected(bad.check(&proposal, 32_768).is_err())?; }
+        IssuerFile {
+            bytes: "01".into(),
+            sha256: display_hex(&hash(&proposal)),
+        },
+        IssuerFile {
+            bytes: proposal.len().to_string(),
+            sha256: "0".repeat(64),
+        },
+        IssuerFile {
+            bytes: proposal.len().to_string(),
+            sha256: "A".repeat(64),
+        },
+        IssuerFile {
+            bytes: (proposal.len() + 1).to_string(),
+            sha256: display_hex(&hash(&proposal)),
+        },
+    ] {
+        rejected(bad.check(&proposal, 32_768).is_err())?;
+    }
     let actual: Value = serde_json::from_slice(&proposal).map_err(|_| ())?;
     for (section, field, replacement) in [
-        ("create", "create_request", json!(uuid::Uuid::from_bytes([13; 16]).to_string())),
+        (
+            "create",
+            "create_request",
+            json!(uuid::Uuid::from_bytes([13; 16]).to_string()),
+        ),
         ("create", "expected_revision", json!("1")),
         ("create", "selected_reader_id", json!(base64(&[3; 32]))),
-        ("create", "compared_root_fingerprint", json!(base64(&[3; 32]))),
+        (
+            "create",
+            "compared_root_fingerprint",
+            json!(base64(&[3; 32])),
+        ),
         ("pending", "create_input_digest", json!(base64(&[3; 32]))),
         ("pending", "issued_ms", json!("01")),
         ("pending", "unsigned_digest", json!("AA==\n")),
         ("pending", "generation", json!(null)),
-        ("pending", "created_session", json!(uuid::Uuid::nil().to_string())),
+        (
+            "pending",
+            "created_session",
+            json!(uuid::Uuid::nil().to_string()),
+        ),
         ("pending", "kind", json!("unavailable")),
     ] {
         let mut bad = actual.clone();
         bad[section][field] = replacement;
-        rejected(decode(&bytes(&bad)).and_then(|p| p.inspect(&expected, before)).is_err())?;
+        rejected(
+            decode(&bytes(&bad))
+                .and_then(|p| p.inspect(&expected, before))
+                .is_err(),
+        )?;
     }
     for (field, replacement) in [
         ("signed_until_ms", json!((source_end + 1).to_string())),
@@ -1037,11 +1126,20 @@ fn inspect_issuer_packet(parent: &std::path::Path) -> Result<()> {
     ] {
         let mut bad = actual.clone();
         bad["pending"]["creation_source"][field] = replacement;
-        rejected(decode(&bytes(&bad)).and_then(|p| p.inspect(&expected, before)).is_err())?;
+        rejected(
+            decode(&bytes(&bad))
+                .and_then(|p| p.inspect(&expected, before))
+                .is_err(),
+        )?;
     }
     let mut bad = actual.clone();
-    bad["pending"]["creation_source"]["reader"]["public_point_b64"] = actual["pending"]["creation_source"]["root_writer"]["public_point_b64"].clone();
-    rejected(decode(&bytes(&bad)).and_then(|p| p.inspect(&expected, before)).is_err())?;
+    bad["pending"]["creation_source"]["reader"]["public_point_b64"] =
+        actual["pending"]["creation_source"]["root_writer"]["public_point_b64"].clone();
+    rejected(
+        decode(&bytes(&bad))
+            .and_then(|p| p.inspect(&expected, before))
+            .is_err(),
+    )?;
     let mut bad = actual.clone();
     let beyond = expected.requested_until_ms.checked_add(1).ok_or(())?;
     let mut unsigned = parsed.unsigned.clone();
@@ -1050,13 +1148,23 @@ fn inspect_issuer_packet(parent: &std::path::Path) -> Result<()> {
     bad["pending"]["unsigned"] = json!(base64(&unsigned));
     bad["pending"]["unsigned_digest"] = json!(base64(&hash(&unsigned)));
     bad["pending"]["until_ms"] = json!(beyond.to_string());
-    rejected(decode(&bytes(&bad)).and_then(|p| p.inspect(&expected, before)).is_err())?;
+    rejected(
+        decode(&bytes(&bad))
+            .and_then(|p| p.inspect(&expected, before))
+            .is_err(),
+    )?;
     let text = std::str::from_utf8(&proposal).map_err(|_| ())?;
     for bad in [
         text.replacen("\"create\":", "\"create\":{},\"create\":", 1),
         text.replacen("\"expires_ms\":", "\"extra\":true,\"expires_ms\":", 1),
-        text.replacen("\"create_request\":", r#""create_request":"bad","create_\u0072equest":"#, 1),
-    ] { rejected(decode(bad.as_bytes()).is_err())?; }
+        text.replacen(
+            "\"create_request\":",
+            r#""create_request":"bad","create_\u0072equest":"#,
+            1,
+        ),
+    ] {
+        rejected(decode(bad.as_bytes()).is_err())?;
+    }
     rejected(parsed.inspect(&expected, parsed.expires_ms).is_err())?;
     rejected(parsed.inspect(&expected, facts.issued_ms - 1).is_err())?;
     // The unchanged parser permits a consistent shorter end, unlike the page.
@@ -1069,18 +1177,33 @@ fn inspect_issuer_packet(parent: &std::path::Path) -> Result<()> {
     shorter["pending"]["unsigned_digest"] = json!(base64(&hash(&unsigned)));
     shorter["pending"]["until_ms"] = json!(shorter_end.to_string());
     decode(&bytes(&shorter))?.inspect(&expected, before)?;
-    if negative_cases != 53 { return Err(()); }
+    if negative_cases != 53 {
+        return Err(());
+    }
     let after = now_millis()?;
-    if after < before { return Err(()); }
+    if after < before {
+        return Err(());
+    }
     parsed.inspect(&expected, after)?;
     validate_parent(parent, "success")?;
     // Original five positive files must still equal their opened input bytes.
-    for (leaf, raw, cap) in [("create.json", &create, 8192), ("pending.json", &pending, 20_480), ("expected.json", &raw_expected, 4096), ("emission.json", &raw_emission, 4096)] {
-        if issuer_read(parent, leaf, cap)? != *raw { return Err(()); }
+    for (leaf, raw, cap) in [
+        ("create.json", &create, 8192),
+        ("pending.json", &pending, 20_480),
+        ("expected.json", &raw_expected, 4096),
+        ("emission.json", &raw_emission, 4096),
+    ] {
+        if issuer_read(parent, leaf, cap)? != *raw {
+            return Err(());
+        }
     }
-    if read_proposal(proposal_path.to_str().ok_or(())?)? != proposal { return Err(()); }
+    if read_proposal(proposal_path.to_str().ok_or(())?)? != proposal {
+        return Err(());
+    }
     let final_now = now_millis()?;
-    if final_now < after { return Err(()); }
+    if final_now < after {
+        return Err(());
+    }
     parsed.inspect(&expected, final_now)?;
     println!("ZT_CONTACT_ISSUER_PARSER_PASS_V1 {}", serde_json::to_string(&json!({
         "kind":"contact_reader_cli_parser_pass_v1", "proposal_sha256":display_hex(&hash(&proposal)),
