@@ -1,9 +1,9 @@
 # Optional managed AI: data-handling proposal
 
 > [!IMPORTANT]
-> **Proposal only.** Nothing on this page is implemented, and ZROtext has no
-> managed AI service. It records the properties such a service must have
-> before any runtime work starts, following the
+> **Managed service proposal.** ZROtext has no managed AI service. This page
+> describes the proposed service; the dormant source foundations below do not
+> make it available. The service must meet these properties, following the
 > [product plan](PRODUCT-PLAN.md#managed-ai-and-larger-campaigns). No model
 > provider, region, retention period, price or budget amount has been chosen;
 > each is listed under [open decisions](#open-decisions).
@@ -17,6 +17,18 @@ anything else, and phone-based workflows must stay usable without it.
 The [selected-reader and task lifecycle contract](../protocol/v1/managed-ai-grant-contract.md)
 pins the generic authority, wrapping and checkpoint rules. Its synthetic vectors
 and test-only oracle do not implement a managed service.
+
+Source already includes a [dormant grant metadata foundation](../protocol/v1/managed-reader-grants-foundation.md)
+and a [pure signed-evidence verifier](../protocol/v1/managed-reader-policy.md).
+The grant foundation includes exact selections, immutable versions, narrowing,
+revocation and conditional consent-withdrawal, owner-export and account-erasure
+hooks. Its SQL proposal is not installed by migrations; complete absence
+preserves ordinary export and erasure, while partial installation fails closed.
+The default grant constructor refuses issuance, and the candidate constructor
+exists only in tests. The pure verifier checks signed bindings and history;
+it does not establish current authority or truthful key custody. Neither
+foundation supplies a production reader/policy issuer, content wraps, tasks,
+workers or provider transport. No service or activation is enabled.
 
 A managed service is a new **content reader**. Under the
 [sealed-content design](SECURITY-DESIGN.md#claims-and-trust-boundaries), the
@@ -115,15 +127,17 @@ boundary test in the [product plan](PRODUCT-PLAN.md#validation-and-release-evide
 
 ## Export
 
-The owner export (`GET /v1/owner/export`) would add, for each grant: its
-scope, lifetime and revocation, its access records, and the sealed drafts it
-produced. The export contains ciphertext for sealed items, like other sealed
-content. This is the "assistant access records" part of the
+The conditional grant-metadata owner export (`GET /v1/owner/export`) is
+already in source. A managed service would additionally export each grant's
+access records and sealed drafts alongside its scope, lifetime and revocation.
+The proposed service export would contain ciphertext for sealed items, like other
+sealed content. This is the "assistant access records" part of the
 [export and deletion roadmap item](ROADMAP.md#cap-export).
 
 ## Account erasure
 
-Account erasure would:
+Beyond the existing conditional grant-metadata erasure hook, a managed
+service's account erasure would:
 
 1. revoke every grant and destroy the service's key material for that
    account;
