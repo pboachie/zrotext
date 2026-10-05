@@ -4,15 +4,180 @@ use super::{ConversationError, SessionPrincipal, authorize, load};
 use crate::sealed_manifest_store::outbound::lock_current;
 use serde::Serialize;
 use serde_json::Value;
-use tokio_postgres::{Client, Transaction};
+use tokio_postgres::{Client, Row, Transaction};
 use uuid::Uuid;
 const PAGE: usize = 20;
 
 #[derive(Serialize)]
 pub struct ExceptionsPage {
-    pub items: Vec<Value>,
+    pub account_id: Uuid,
+    pub context_id: Uuid,
+    pub items: Vec<ExceptionRow>,
     pub next_cursor: Option<Uuid>,
 }
+
+/// Closed metadata projection; ciphertext and arbitrary database columns stay private.
+#[derive(Serialize)]
+pub struct ExceptionRow {
+    account_id: Uuid,
+    context_id: Uuid,
+    id: Uuid,
+    context_revision: i64,
+    source_kind: i16,
+    source_id: Uuid,
+    reason: i16,
+    request_digest: String,
+    revision: i64,
+    state: String,
+    resolution_request_id: Option<Uuid>,
+    resolved_at: Option<String>,
+    created_at: String,
+}
+
+struct ExceptionRecord {
+    account_id: Uuid,
+    context_id: Uuid,
+    id: Uuid,
+    context_revision: i64,
+    source_kind: i16,
+    source_id: Uuid,
+    reason: i16,
+    request_digest: Vec<u8>,
+    revision: i64,
+    state: String,
+    resolution_request_id: Option<Uuid>,
+    resolved_at: Option<String>,
+    created_at: String,
+}
+
+impl ExceptionRecord {
+    fn from_row(row: &Row) -> Result<Self, ConversationError> {
+        Ok(Self {
+            account_id: row.try_get(0)?,
+            context_id: row.try_get(1)?,
+            id: row.try_get(2)?,
+            context_revision: row.try_get(3)?,
+            source_kind: row.try_get(4)?,
+            source_id: row.try_get(5)?,
+            reason: row.try_get(6)?,
+            request_digest: row.try_get(7)?,
+            revision: row.try_get(8)?,
+            state: row.try_get(9)?,
+            resolution_request_id: row.try_get(10)?,
+            resolved_at: row.try_get(11)?,
+            created_at: row.try_get(12)?,
+        })
+    }
+
+    fn into_wire(self, account: Uuid, context: Uuid) -> Result<ExceptionRow, ConversationError> {
+        let resolution_valid = match (self.revision, self.state.as_str()) {
+            (1, "pending") => self.resolution_request_id.is_none() && self.resolved_at.is_none(),
+            (2, "resolved") => {
+                self.resolution_request_id.is_some_and(|id| !id.is_nil())
+                    && self.resolved_at.as_deref().is_some_and(canonical_timestamp)
+            }
+            _ => false,
+        };
+        if self.account_id != account
+            || self.context_id != context
+            || [account, context, self.id, self.source_id]
+                .iter()
+                .any(Uuid::is_nil)
+            || !(1..=128).contains(&self.context_revision)
+            || !matches!((self.source_kind, self.reason), (1, 1 | 5) | (2, 2..=4))
+            || self.request_digest.len() != 32
+            || !resolution_valid
+            || !canonical_timestamp(&self.created_at)
+        {
+            return Err(ConversationError::Unavailable);
+        }
+        let mut request_digest = String::with_capacity(66);
+        request_digest.push_str("\\x");
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        for byte in self.request_digest {
+            request_digest.push(char::from(HEX[usize::from(byte >> 4)]));
+            request_digest.push(char::from(HEX[usize::from(byte & 15)]));
+        }
+        Ok(ExceptionRow {
+            account_id: account,
+            context_id: context,
+            id: self.id,
+            context_revision: self.context_revision,
+            source_kind: self.source_kind,
+            source_id: self.source_id,
+            reason: self.reason,
+            request_digest,
+            revision: self.revision,
+            state: self.state,
+            resolution_request_id: self.resolution_request_id,
+            resolved_at: self.resolved_at,
+            created_at: self.created_at,
+        })
+    }
+}
+
+fn canonical_timestamp(value: &str) -> bool {
+    let b = value.as_bytes();
+    if b.len() != 27
+        || [
+            (4, b'-'),
+            (7, b'-'),
+            (10, b'T'),
+            (13, b':'),
+            (16, b':'),
+            (19, b'.'),
+            (26, b'Z'),
+        ]
+        .iter()
+        .any(|&(at, expected)| b[at] != expected)
+        || b.iter().enumerate().any(|(at, digit)| {
+            ![4, 7, 10, 13, 16, 19, 26].contains(&at) && !digit.is_ascii_digit()
+        })
+    {
+        return false;
+    }
+    let number = |from: usize, to: usize| {
+        b[from..to]
+            .iter()
+            .fold(0u32, |n, digit| n * 10 + u32::from(digit - b'0'))
+    };
+    let year = number(0, 4);
+    let month = number(5, 7);
+    let day = number(8, 10);
+    let leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
+    let days = match month {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        _ => 0,
+    };
+    year > 0
+        && day > 0
+        && day <= days
+        && number(11, 13) <= 23
+        && number(14, 16) <= 59
+        && number(17, 19) <= 59
+}
+
+// CASE distinguishes a SQL NULL resolution from unsupported non-null timestamps.
+// Both timestamps are explicitly UTC, independent of TimeZone, DateStyle and bytea_output.
+const EXCEPTIONS_QUERY: &str = r#"
+SELECT account_id, context_id, id, context_revision, source_kind, source_id, reason,
+       request_digest, revision, state, resolution_request_id,
+       CASE WHEN resolved_at IS NULL THEN NULL
+            WHEN isfinite(resolved_at)
+                 AND extract(year FROM resolved_at AT TIME ZONE 'UTC') BETWEEN 1 AND 9999
+            THEN to_char(resolved_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+            ELSE '' END,
+       CASE WHEN isfinite(created_at)
+                 AND extract(year FROM created_at AT TIME ZONE 'UTC') BETWEEN 1 AND 9999
+            THEN to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+            ELSE '' END
+FROM workflow_exceptions
+WHERE account_id=$1 AND context_id=$2 AND ($3::uuid IS NULL OR id>$3)
+ORDER BY id LIMIT 21 FOR SHARE
+"#;
 pub async fn exceptions(
     client: &mut Client,
     owner: &SessionPrincipal,
@@ -34,25 +199,33 @@ pub async fn exceptions(
         .await?
         .ok_or(ConversationError::NotFound)?;
     }
-    let rows=tx.query("SELECT id,to_jsonb(e)::text FROM workflow_exceptions e WHERE account_id=$1 AND context_id=$2 AND ($3::uuid IS NULL OR id>$3) ORDER BY id LIMIT 21 FOR SHARE",&[&account,&context,&before]).await?;
-    let next_cursor = if rows.len() > PAGE {
-        Some(rows[PAGE - 1].get(0))
+    let rows = tx
+        .query(EXCEPTIONS_QUERY, &[&account, &context, &before])
+        .await?;
+    // Validate the lookahead too: an unsupported selected row cannot yield partial success.
+    let mut items = rows
+        .iter()
+        .map(|row| ExceptionRecord::from_row(row)?.into_wire(account, h.context))
+        .collect::<Result<Vec<_>, _>>()?;
+    let next_cursor = if items.len() > PAGE {
+        Some(items[PAGE - 1].id)
     } else {
         None
     };
-    let items = rows
-        .iter()
-        .take(PAGE)
-        .map(|r| {
-            serde_json::from_str::<Value>(&r.get::<_, String>(1))
-                .map_err(|_| ConversationError::Unavailable)
-        })
-        .collect::<Result<_, _>>()?;
+    items.truncate(PAGE);
     authorize(&tx, owner, &mut authority, &h, false).await?;
     drop(authority);
     tx.commit().await?;
-    Ok(ExceptionsPage { items, next_cursor })
+    Ok(ExceptionsPage {
+        account_id: account,
+        context_id: h.context,
+        items,
+        next_cursor,
+    })
 }
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Serialize)]
 pub(crate) struct ExportPage {
