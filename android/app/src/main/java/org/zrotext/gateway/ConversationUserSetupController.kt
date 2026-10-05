@@ -146,7 +146,20 @@ internal class ConversationUserSetupController(
             }, { value ->
                 requireOpen()
                 val inputs = checkNotNull(owned)
-                val presentation = Presentation(value.presentation, inputs.decision, ::requireOpen)
+                val presentation = Presentation(value.presentation, inputs.decision, {
+                    requireOpen(); check(connection.get() === value); value.requireLive()
+                }, { snapshot, observedAt ->
+                    ConversationMessageReceiveController.Current(value, selection.identity.accountId,
+                        selection.identity.deviceId, snapshot, observedAt,
+                        ConversationMessageReceiver { message, complete ->
+                            requireOpen(); check(connection.get() === value); value.requireLive()
+                            value.receiveConfirmed(message) { accepted ->
+                                complete(accepted && runCatching {
+                                    requireOpen(); check(connection.get() === value); value.requireLive()
+                                }.isSuccess)
+                            }
+                        })
+                }, elapsedMillis)
                 inputs.decision.observePresentation(value.presentation)
                 check(connection.compareAndSet(null, value))
                 requireOpen()
@@ -263,9 +276,27 @@ internal class ConversationUserSetupController(
 
     /** Same observed domain and Stop outcome; this wrapper manufactures no active/closed state. */
     internal class Presentation(private val delegate: ConversationPresentationPort,
-        private val decision: ConversationPhoneDecision, private val requireLive: () -> Unit) : ConversationPresentationPort {
+        private val decision: ConversationPhoneDecision, private val requireLive: () -> Unit,
+        private val receiveAuthority: (ConversationPresentationSnapshot, Long) -> ConversationMessageReceiveController.Current? = { _, _ -> null },
+        private val elapsedMillis: () -> Long = SystemClock::elapsedRealtime) : ConversationConfirmedMessagePort {
+        constructor(delegate: ConversationPresentationPort, decision: ConversationPhoneDecision,
+            requireLive: () -> Unit) : this(delegate, decision, requireLive, { _, _ -> null }, SystemClock::elapsedRealtime)
+        private val observationGate = Any()
+        private var original: Pair<ConversationPresentationSnapshot, Long>? = null
+        override fun currentReceiveAuthority(): ConversationMessageReceiveController.Current? = runCatching {
+            requireLive()
+            val observed = synchronized(observationGate) { original } ?: return@runCatching null
+            receiveAuthority(observed.first, observed.second).also { requireLive() }
+        }.getOrNull()
         override fun observe(listener: (ConversationPresentationSnapshot) -> Unit): AutoCloseable {
-            requireLive(); return delegate.observe { value -> requireLive(); listener(value) }
+            requireLive(); return delegate.observe { value ->
+                requireLive()
+                val received = elapsedMillis()
+                synchronized(observationGate) {
+                    if (value.version > (original?.first?.version ?: 0)) original = value to received
+                }
+                listener(value)
+            }
         }
         override fun refresh() { requireLive(); delegate.refresh() }
         override fun approvePhoneReview(requestId: String, observedVersion: Long) {
@@ -276,7 +307,9 @@ internal class ConversationUserSetupController(
             requireLive(); delegate.declinePhoneReview(requestId, observedVersion)
         }
         override fun requestStop(intervalId: String, observedVersion: Long) {
-            requireLive(); delegate.requestStop(intervalId, observedVersion)
+            requireLive()
+            synchronized(observationGate) { original = null }
+            delegate.requestStop(intervalId, observedVersion)
         }
     }
     companion object {
