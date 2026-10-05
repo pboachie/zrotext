@@ -21,6 +21,7 @@ ACCESSIBILITY_METHODS = frozenset({
     "homeObservationsKeepReadOnlyLabelsAndReadingOrderAtCurrentTextScale",
     "platformNodesExposeHeadingsAndVisibleStatusRegions",
     "fieldsKeepLabelsAndTokensRemainPasswordFields",
+    "explicitManualPairingKeepsLabelsAndTokenPasswordSemantics",
     "actionsRetainNamesAndMinimumTouchTargetsAtCurrentTextScale",
 })
 MANIFEST_AUTHORITY = PACKAGE + "ManifestAuthorityDeviceTest"
@@ -48,7 +49,7 @@ def selected_tests(root=ROOT):
         expected[RCS_RISK] = 1
     source = root / "android/app/src/androidTest/java/org/zrotext/gateway/GatewayAccessibilityDeviceTest.kt"
     if source.is_file():
-        expected[ACCESSIBILITY] = 6
+        expected[ACCESSIBILITY] = 7
     source = root / "android/app/src/androidTest/java/org/zrotext/gateway/ManifestAuthorityDeviceTest.kt"
     if source.is_file():
         expected[MANIFEST_AUTHORITY] = 12

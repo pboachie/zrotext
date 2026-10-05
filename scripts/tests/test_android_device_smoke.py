@@ -3,6 +3,7 @@ import contextlib
 import io
 import importlib.util
 import json
+import re
 from pathlib import Path
 import tempfile
 import unittest
@@ -18,6 +19,30 @@ def result(class_name, name="sample", code=0):
 
 
 class DeviceSmokeTests(unittest.TestCase):
+    def test_shared_compiled_accessibility_corpus_matches_explicit_device_inventory(self):
+        source = smoke.ROOT / "android/app/src/sharedTest/java/org/zrotext/gateway/GatewayAccessibilityChecks.kt"
+        methods = re.findall(r"@Test\s+fun\s+([A-Za-z_][A-Za-z0-9_]*)", source.read_text(encoding="utf-8"))
+        device = smoke.ROOT / "android/app/src/androidTest/java/org/zrotext/gateway/GatewayAccessibilityDeviceTest.kt"
+        self.assertRegex(device.read_text(encoding="utf-8"), r"class GatewayAccessibilityDeviceTest\s*:\s*GatewayAccessibilityChecks\(\)")
+        self.assertEqual(len(methods), 7)
+        self.assertEqual(frozenset(methods), smoke.ACCESSIBILITY_METHODS)
+        self.assertEqual(smoke.selected_tests()[smoke.ACCESSIBILITY], len(methods))
+
+    def test_manual_pairing_success_is_required_in_addition_to_all_six_previous_accessibility_cases(self):
+        expected = {smoke.ACCESSIBILITY: 7}
+        manual = "explicitManualPairingKeepsLabelsAndTokenPasswordSemantics"
+        self.assertIn(manual, smoke.ACCESSIBILITY_METHODS)
+        previous = "".join(result(smoke.ACCESSIBILITY, name) for name in sorted(smoke.ACCESSIBILITY_METHODS - {manual}))
+        final = "INSTRUMENTATION_CODE: -1\n"
+        smoke.verify_results(previous + result(smoke.ACCESSIBILITY, manual) + final, expected)
+        with self.assertRaisesRegex(ValueError, "exact expected test counts"):
+            smoke.verify_results(previous + final, expected)
+        for code in (-1, -2, -3, -4):
+            with self.subTest(code=code), self.assertRaises(ValueError):
+                smoke.verify_results(previous + result(smoke.ACCESSIBILITY, manual, code) + final, expected)
+        with self.assertRaisesRegex(ValueError, "exact Home acceptance corpus"):
+            smoke.verify_results(previous + result(smoke.ACCESSIBILITY, "unrelatedPassingTest") + final, expected)
+
     def test_incomplete_runner_reports_selected_public_identity_without_accepting_it(self):
         expected = {smoke.PRECONDITIONS: 2}
         output = result(smoke.PRECONDITIONS, "finished") + result(smoke.PRECONDITIONS, "interrupted", 1)
@@ -208,11 +233,11 @@ class DeviceSmokeTests(unittest.TestCase):
         smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n", {smoke.PRECONDITIONS: 1})
         for name in sorted(smoke.ACCESSIBILITY_METHODS):
             output += result(smoke.ACCESSIBILITY, name)
-        smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n", {smoke.PRECONDITIONS: 1, smoke.ACCESSIBILITY: 6})
+        smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n", {smoke.PRECONDITIONS: 1, smoke.ACCESSIBILITY: 7})
         for index in range(12):
             output += result(smoke.MANIFEST_AUTHORITY, f"example{index}")
         smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n",
-                             {smoke.PRECONDITIONS: 1, smoke.ACCESSIBILITY: 6, smoke.MANIFEST_AUTHORITY: 12})
+                             {smoke.PRECONDITIONS: 1, smoke.ACCESSIBILITY: 7, smoke.MANIFEST_AUTHORITY: 12})
 
     def test_failure_skips_and_incomplete_runs_fail(self):
         for code in [-1, -2, -3, -4]:
@@ -236,7 +261,7 @@ class DeviceSmokeTests(unittest.TestCase):
             source = root / "android/app/src/androidTest/java/org/zrotext/gateway/GatewayAccessibilityDeviceTest.kt"
             source.parent.mkdir(parents=True)
             source.touch()
-            expected = {smoke.PRECONDITIONS: 1, smoke.ACCESSIBILITY: 6}
+            expected = {smoke.PRECONDITIONS: 1, smoke.ACCESSIBILITY: 7}
             self.assertEqual(smoke.selected_tests(root), expected)
             partial = result(smoke.PRECONDITIONS) + ''.join(
                 result(smoke.ACCESSIBILITY, name) for name in sorted(smoke.ACCESSIBILITY_METHODS)
@@ -247,7 +272,7 @@ class DeviceSmokeTests(unittest.TestCase):
                                  + 'INSTRUMENTATION_CODE: -1\n', expected)
 
     def test_same_count_cannot_replace_home_acceptance_with_another_test(self):
-        expected = {smoke.ACCESSIBILITY: 6}
+        expected = {smoke.ACCESSIBILITY: 7}
         home = "homeObservationsKeepReadOnlyLabelsAndReadingOrderAtCurrentTextScale"
         output = "".join(result(smoke.ACCESSIBILITY, name) for name in smoke.ACCESSIBILITY_METHODS)
         smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n", expected)
