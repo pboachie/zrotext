@@ -1197,7 +1197,7 @@ impl RegisteredOwnerCase {
         )
         .await?;
         Self::assert_schema(&setup, &schema, deadline).await?;
-        config.options(&format!("-csearch_path={schema}"));
+        config.options(format!("-csearch_path={schema}"));
         let mut db = RegisteredConnection::connect(&config, deadline).await?;
         let cleanup = RegisteredConnection::connect(&config, deadline).await?;
         Self::assert_schema(&db, &schema, deadline).await?;
