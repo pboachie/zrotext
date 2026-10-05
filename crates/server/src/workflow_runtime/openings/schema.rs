@@ -222,6 +222,10 @@ pub(super) async fn installed(tx: &Transaction<'_>) -> Result<bool, tokio_postgr
         refuse(tx).await?;
         return Ok(false);
     }
+    let candidate_oids: Vec<u32> = objects
+        .iter()
+        .map(|(_, oid, _)| oid.expect("presence checked"))
+        .collect();
     for ((name, schema), (_, oid, namespace)) in TABLES.iter().zip(&objects) {
         let oid = oid.expect("presence checked");
         let namespace = namespace.expect("namespace checked");
@@ -233,7 +237,7 @@ pub(super) async fn installed(tx: &Transaction<'_>) -> Result<bool, tokio_postgr
         {
             refuse(tx).await?;
         }
-        let invalid_internal:bool=tx.query_one("SELECT EXISTS(SELECT 1 FROM pg_trigger t LEFT JOIN pg_constraint k ON k.oid=t.tgconstraint LEFT JOIN pg_proc p ON p.oid=t.tgfoid LEFT JOIN pg_namespace n ON n.oid=p.pronamespace WHERE t.tgrelid=$1 AND t.tgisinternal AND (t.tgenabled<>'O' OR k.contype IS DISTINCT FROM 'f' OR n.nspname IS DISTINCT FROM 'pg_catalog' OR p.proname NOT LIKE 'RI_FKey_%'))", &[&oid]).await?.try_get(0)?;
+        let invalid_internal:bool=tx.query_one("SELECT EXISTS(SELECT 1 FROM pg_trigger t LEFT JOIN pg_constraint k ON k.oid=t.tgconstraint LEFT JOIN pg_proc p ON p.oid=t.tgfoid LEFT JOIN pg_namespace n ON n.oid=p.pronamespace WHERE t.tgrelid=$1 AND t.tgisinternal AND (t.tgenabled<>'O' OR k.contype IS DISTINCT FROM 'f' OR NOT (k.conrelid=ANY($2::oid[])) OR t.tgrelid NOT IN (k.conrelid,k.confrelid) OR n.nspname IS DISTINCT FROM 'pg_catalog' OR p.proname NOT LIKE 'RI_FKey_%'))", &[&oid,&candidate_oids]).await?.try_get(0)?;
         if invalid_internal {
             refuse(tx).await?;
         }
