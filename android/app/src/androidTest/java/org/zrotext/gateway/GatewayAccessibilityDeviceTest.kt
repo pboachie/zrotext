@@ -6,6 +6,7 @@ import android.os.Build
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.node.RootForTest
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assume.assumeTrue
@@ -45,6 +46,21 @@ class GatewayAccessibilityDeviceTest : GatewayAccessibilityChecks() {
                     assertTrue(requireNotNull(manual.config[SemanticsActions.OnClick].action).invoke())
                 }
                 instrumentation.waitForIdleSync()
+                // Main-queue idleness can precede the frame that recomposes the
+                // explicitly disclosed manual fields. Wait for actual semantics.
+                var ready = false
+                for (attempt in 0 until 20) {
+                    instrumentation.runOnMainSync {
+                        val root = requireNotNull(findRoot(activity.window.decorView))
+                        root.measureAndLayoutForTest()
+                        ready = nodes(root).filter { it.config.contains(SemanticsProperties.EditableText) }
+                            .map(::text) == listOf("HTTPS server origin", "Pairing ID", "One-use pairing token")
+                    }
+                    if (ready) break
+                    instrumentation.waitForIdleSync()
+                    Thread.sleep(100)
+                }
+                assertTrue("Explicit manual pairing fields must render before accessibility checks", ready)
             }
             if (revealStatus || revealObservations) {
                 for (attempt in 0 until 20) {
