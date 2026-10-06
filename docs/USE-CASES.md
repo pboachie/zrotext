@@ -25,6 +25,18 @@ Priority describes delivery order, not a release date. Capabilities are counted 
 
 ## Shared expectations
 
+Every proposed experience follows the same loop: routine work runs inside limits the owner approved, and anything new goes back to a person.
+
+```mermaid
+flowchart LR
+  IN["Inbound text"] --> AS["Assistant reads<br/>selected content"]
+  AS --> D{"Inside an approved<br/>routine and budget?"}
+  D -->|"yes"| SEND["Send within limits"]
+  D -->|"no: price, booking,<br/>commitment, unclear"| OWN["Owner approves,<br/>edits or takes over"]
+  OWN --> SEND
+  SEND --> ST["Honest state:<br/>submitted, delivered or unknown"]
+```
+
 - Start with one owner, a dedicated Android phone/SIM and small, paced contact lists. Supported capacity depends on measured device behavior and the permitted sending route; there is no advertised throughput yet.
 - Recipients use ordinary SMS. A dashboard operator needs a browser, and an assistant needs an authorized connector. The recipient does not need to install ZROtext.
 - Automatic messages must fit owner-approved routines, recipient permissions, timing and budgets. Human review handles commitments, unusual requests and ambiguous replies.

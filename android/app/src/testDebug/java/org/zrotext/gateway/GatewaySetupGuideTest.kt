@@ -45,17 +45,22 @@ class GatewaySetupGuideTest {
         setup()
         compose.onNodeWithText("1. Review access").performScrollTo().performClick()
         compose.onNodeWithText("Go to pairing without SMS access").performScrollTo().performClick()
+        compose.onNodeWithText("One-use pairing token").assertDoesNotExist()
+        compose.onNodeWithText("Pairing status: Scan the current pairing QR, or use the existing manual pairing fields.").assertExists()
+        compose.onNodeWithText("Use existing manual pairing").performScrollTo().performClick()
         compose.onNodeWithText("One-use pairing token").assertExists()
-        compose.onNodeWithText("Pairing status: Not paired").assertExists()
         noAction()
     }
 
     @Test fun recreationKeepsGuideStepButDoesNotPersistPairingSecret() {
         setup()
         compose.onNodeWithText("3. Pair this phone").performScrollTo().performClick()
+        compose.onNodeWithText("Use existing manual pairing").performScrollTo().performClick()
         compose.onNodeWithText("One-use pairing token").performScrollTo().performTextInput("synthetic-token")
         compose.activityRule.scenario.recreate()
         compose.onNodeWithText("Device pairing").assertExists()
+        compose.onNodeWithText("One-use pairing token").assertDoesNotExist()
+        compose.onNodeWithText("Use existing manual pairing").performScrollTo().performClick()
         val token = compose.onNodeWithText("One-use pairing token").fetchSemanticsNode()
         assertTrue(token.config.contains(SemanticsProperties.Password))
         assertEquals("", token.config[SemanticsProperties.EditableText].text)

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <!-- Isolated synthetic custody fixture: no SMS, networking or gateway service. -->
+    <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
+    <application android:allowBackup="false" android:label="Owner custody fixture"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <provider android:name="org.zrotext.gateway.AndroidOwnerCustodyPublicImportProvider"
+            android:authorities="${applicationId}.owner-public-import"
+            android:exported="false" android:grantUriPermissions="false" />
+        <provider android:name="org.zrotext.gateway.AndroidOwnerCustodyArchiveImportProvider"
+            android:authorities="${applicationId}.owner-archive-import"
+            android:exported="false" android:grantUriPermissions="false">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
+        <activity android:name="org.zrotext.gateway.AndroidOwnerCustodyFixtureActivity"
+            android:exported="true" android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

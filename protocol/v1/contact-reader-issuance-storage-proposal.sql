@@ -25,10 +25,10 @@ LANGUAGE sql IMMUTABLE SET search_path FROM CURRENT AS $contact_reader_state_sha
     OR (phase='WITHDRAWN' AND current_statement IS NULL)))
  ),false)
 $contact_reader_state_shape_body$;
-CREATE FUNCTION contact_reader_pending_bounds_valid(account_id uuid,slot smallint,authorization uuid,generation bigint,create_request uuid,created_by_user uuid,created_session uuid,origin text,create_input_digest bytea,creation_expected_revision bigint,allocated_revision bigint,prior_phase text,prior_authorization uuid,prior_generation bigint,prior_digest bytea,requested_until_ms bigint,unsigned bytea,unsigned_digest bytea,manifest bytea,manifest_version bigint,manifest_digest bytea,reader_id bytea,root_writer_id bytea,reader_point bytea,root_point bytea,reader_from bigint,root_from bigint,reader_until bigint,root_until bigint,manifest_issued bigint,manifest_until bigint,creation_observed_ms bigint,issued bigint,expires bigint,until_ms bigint) RETURNS boolean
+CREATE FUNCTION contact_reader_pending_bounds_valid(account_id uuid,slot smallint,"authorization" uuid,generation bigint,create_request uuid,created_by_user uuid,created_session uuid,origin text,create_input_digest bytea,creation_expected_revision bigint,allocated_revision bigint,prior_phase text,prior_authorization uuid,prior_generation bigint,prior_digest bytea,requested_until_ms bigint,unsigned bytea,unsigned_digest bytea,manifest bytea,manifest_version bigint,manifest_digest bytea,reader_id bytea,root_writer_id bytea,reader_point bytea,root_point bytea,reader_from bigint,root_from bigint,reader_until bigint,root_until bigint,manifest_issued bigint,manifest_until bigint,creation_observed_ms bigint,issued bigint,expires bigint,until_ms bigint) RETURNS boolean
 LANGUAGE sql IMMUTABLE SET search_path FROM CURRENT AS $contact_reader_pending_bounds_body$
  SELECT COALESCE((
-  slot BETWEEN 0 AND 3 AND authorization<>'00000000-0000-0000-0000-000000000000'::uuid
+  slot BETWEEN 0 AND 3 AND "authorization"<>'00000000-0000-0000-0000-000000000000'::uuid
   AND create_request<>'00000000-0000-0000-0000-000000000000'::uuid
   AND created_by_user<>'00000000-0000-0000-0000-000000000000'::uuid
   AND created_session<>'00000000-0000-0000-0000-000000000000'::uuid
@@ -53,7 +53,7 @@ LANGUAGE sql IMMUTABLE SET search_path FROM CURRENT AS $contact_reader_pending_b
   AND until_ms=requested_until_ms AND until_ms<=manifest_until AND until_ms<=reader_until AND until_ms<=root_until
  ),false)
 $contact_reader_pending_bounds_body$;
-CREATE FUNCTION contact_reader_pending_prior_valid(account_id uuid,slot smallint,authorization uuid,generation bigint,create_request uuid,created_by_user uuid,created_session uuid,origin text,create_input_digest bytea,creation_expected_revision bigint,allocated_revision bigint,prior_phase text,prior_authorization uuid,prior_generation bigint,prior_digest bytea,requested_until_ms bigint,unsigned bytea,unsigned_digest bytea,manifest bytea,manifest_version bigint,manifest_digest bytea,reader_id bytea,root_writer_id bytea,reader_point bytea,root_point bytea,reader_from bigint,root_from bigint,reader_until bigint,root_until bigint,manifest_issued bigint,manifest_until bigint,creation_observed_ms bigint,issued bigint,expires bigint,until_ms bigint) RETURNS boolean
+CREATE FUNCTION contact_reader_pending_prior_valid(account_id uuid,slot smallint,"authorization" uuid,generation bigint,create_request uuid,created_by_user uuid,created_session uuid,origin text,create_input_digest bytea,creation_expected_revision bigint,allocated_revision bigint,prior_phase text,prior_authorization uuid,prior_generation bigint,prior_digest bytea,requested_until_ms bigint,unsigned bytea,unsigned_digest bytea,manifest bytea,manifest_version bigint,manifest_digest bytea,reader_id bytea,root_writer_id bytea,reader_point bytea,root_point bytea,reader_from bigint,root_from bigint,reader_until bigint,root_until bigint,manifest_issued bigint,manifest_until bigint,creation_observed_ms bigint,issued bigint,expires bigint,until_ms bigint) RETURNS boolean
 LANGUAGE sql IMMUTABLE SET search_path FROM CURRENT AS $contact_reader_pending_prior_body$
  SELECT COALESCE((
   (prior_phase='EMPTY' AND prior_authorization IS NULL AND prior_generation IS NULL AND prior_digest IS NULL)
@@ -63,17 +63,17 @@ LANGUAGE sql IMMUTABLE SET search_path FROM CURRENT AS $contact_reader_pending_p
    AND prior_digest IS NOT NULL AND octet_length(prior_digest)=32 AND prior_digest<>decode(repeat('00',32),'hex'))
  ),false)
 $contact_reader_pending_prior_body$;
-CREATE FUNCTION contact_reader_receipts_bounds_valid(account_id uuid,slot smallint,authorization uuid,generation bigint,create_request uuid,create_input_digest bytea,creation_expected_revision bigint,unsigned_digest bytea,terminal_kind text,terminal_ms bigint,signed_statement bytea,statement_digest bytea) RETURNS boolean
+CREATE FUNCTION contact_reader_receipts_bounds_valid(account_id uuid,slot smallint,"authorization" uuid,generation bigint,create_request uuid,create_input_digest bytea,creation_expected_revision bigint,unsigned_digest bytea,terminal_kind text,terminal_ms bigint,signed_statement bytea,statement_digest bytea) RETURNS boolean
 LANGUAGE sql IMMUTABLE SET search_path FROM CURRENT AS $contact_reader_receipts_bounds_body$
  SELECT COALESCE((
-  slot BETWEEN 0 AND 31 AND authorization<>'00000000-0000-0000-0000-000000000000'::uuid
+  slot BETWEEN 0 AND 31 AND "authorization"<>'00000000-0000-0000-0000-000000000000'::uuid
   AND create_request<>'00000000-0000-0000-0000-000000000000'::uuid
   AND generation>0 AND creation_expected_revision>=0 AND terminal_ms>0
   AND octet_length(create_input_digest)=32 AND create_input_digest<>decode(repeat('00',32),'hex')
   AND octet_length(unsigned_digest)=32 AND unsigned_digest<>decode(repeat('00',32),'hex')
  ),false)
 $contact_reader_receipts_bounds_body$;
-CREATE FUNCTION contact_reader_receipts_shape_valid(account_id uuid,slot smallint,authorization uuid,generation bigint,create_request uuid,create_input_digest bytea,creation_expected_revision bigint,unsigned_digest bytea,terminal_kind text,terminal_ms bigint,signed_statement bytea,statement_digest bytea) RETURNS boolean
+CREATE FUNCTION contact_reader_receipts_shape_valid(account_id uuid,slot smallint,"authorization" uuid,generation bigint,create_request uuid,create_input_digest bytea,creation_expected_revision bigint,unsigned_digest bytea,terminal_kind text,terminal_ms bigint,signed_statement bytea,statement_digest bytea) RETURNS boolean
 LANGUAGE sql IMMUTABLE SET search_path FROM CURRENT AS $contact_reader_receipts_shape_body$
  SELECT COALESCE((
   (terminal_kind='COMPLETED' AND signed_statement IS NOT NULL AND octet_length(signed_statement) BETWEEN 314 AND 817
@@ -102,7 +102,7 @@ CREATE TABLE contact_reader_state (
 CREATE TABLE contact_reader_pending (
  account_id uuid NOT NULL REFERENCES contact_reader_state(account_id) ON DELETE CASCADE,
  slot smallint NOT NULL,
- authorization uuid NOT NULL,
+ "authorization" uuid NOT NULL,
  generation bigint NOT NULL,
  create_request uuid NOT NULL,
  created_by_user uuid NOT NULL,
@@ -136,14 +136,14 @@ CREATE TABLE contact_reader_pending (
  expires bigint NOT NULL,
  until_ms bigint NOT NULL,
  PRIMARY KEY(account_id,slot),
- UNIQUE(account_id,authorization), UNIQUE(account_id,generation), UNIQUE(account_id,create_request),
- CONSTRAINT contact_reader_pending_bounds CHECK (contact_reader_pending_bounds_valid(account_id,slot,authorization,generation,create_request,created_by_user,created_session,origin,create_input_digest,creation_expected_revision,allocated_revision,prior_phase,prior_authorization,prior_generation,prior_digest,requested_until_ms,unsigned,unsigned_digest,manifest,manifest_version,manifest_digest,reader_id,root_writer_id,reader_point,root_point,reader_from,root_from,reader_until,root_until,manifest_issued,manifest_until,creation_observed_ms,issued,expires,until_ms)),
- CONSTRAINT contact_reader_pending_prior CHECK (contact_reader_pending_prior_valid(account_id,slot,authorization,generation,create_request,created_by_user,created_session,origin,create_input_digest,creation_expected_revision,allocated_revision,prior_phase,prior_authorization,prior_generation,prior_digest,requested_until_ms,unsigned,unsigned_digest,manifest,manifest_version,manifest_digest,reader_id,root_writer_id,reader_point,root_point,reader_from,root_from,reader_until,root_until,manifest_issued,manifest_until,creation_observed_ms,issued,expires,until_ms))
+ UNIQUE(account_id,"authorization"), UNIQUE(account_id,generation), UNIQUE(account_id,create_request),
+ CONSTRAINT contact_reader_pending_bounds CHECK (contact_reader_pending_bounds_valid(account_id,slot,"authorization",generation,create_request,created_by_user,created_session,origin,create_input_digest,creation_expected_revision,allocated_revision,prior_phase,prior_authorization,prior_generation,prior_digest,requested_until_ms,unsigned,unsigned_digest,manifest,manifest_version,manifest_digest,reader_id,root_writer_id,reader_point,root_point,reader_from,root_from,reader_until,root_until,manifest_issued,manifest_until,creation_observed_ms,issued,expires,until_ms)),
+ CONSTRAINT contact_reader_pending_prior CHECK (contact_reader_pending_prior_valid(account_id,slot,"authorization",generation,create_request,created_by_user,created_session,origin,create_input_digest,creation_expected_revision,allocated_revision,prior_phase,prior_authorization,prior_generation,prior_digest,requested_until_ms,unsigned,unsigned_digest,manifest,manifest_version,manifest_digest,reader_id,root_writer_id,reader_point,root_point,reader_from,root_from,reader_until,root_until,manifest_issued,manifest_until,creation_observed_ms,issued,expires,until_ms))
 );
 CREATE TABLE contact_reader_receipts (
  account_id uuid NOT NULL REFERENCES contact_reader_state(account_id) ON DELETE CASCADE,
  slot smallint NOT NULL,
- authorization uuid NOT NULL,
+ "authorization" uuid NOT NULL,
  generation bigint NOT NULL,
  create_request uuid NOT NULL,
  create_input_digest bytea NOT NULL,
@@ -154,9 +154,9 @@ CREATE TABLE contact_reader_receipts (
  signed_statement bytea,
  statement_digest bytea,
  PRIMARY KEY(account_id,slot),
- UNIQUE(account_id,authorization), UNIQUE(account_id,generation), UNIQUE(account_id,create_request),
- CONSTRAINT contact_reader_receipts_bounds CHECK (contact_reader_receipts_bounds_valid(account_id,slot,authorization,generation,create_request,create_input_digest,creation_expected_revision,unsigned_digest,terminal_kind,terminal_ms,signed_statement,statement_digest)),
- CONSTRAINT contact_reader_receipts_shape CHECK (contact_reader_receipts_shape_valid(account_id,slot,authorization,generation,create_request,create_input_digest,creation_expected_revision,unsigned_digest,terminal_kind,terminal_ms,signed_statement,statement_digest))
+ UNIQUE(account_id,"authorization"), UNIQUE(account_id,generation), UNIQUE(account_id,create_request),
+ CONSTRAINT contact_reader_receipts_bounds CHECK (contact_reader_receipts_bounds_valid(account_id,slot,"authorization",generation,create_request,create_input_digest,creation_expected_revision,unsigned_digest,terminal_kind,terminal_ms,signed_statement,statement_digest)),
+ CONSTRAINT contact_reader_receipts_shape CHECK (contact_reader_receipts_shape_valid(account_id,slot,"authorization",generation,create_request,create_input_digest,creation_expected_revision,unsigned_digest,terminal_kind,terminal_ms,signed_statement,statement_digest))
 );
 
 CREATE FUNCTION contact_reader_state_guard() RETURNS trigger
