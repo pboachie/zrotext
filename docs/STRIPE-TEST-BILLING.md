@@ -227,5 +227,9 @@ and production readiness remain separate acceptance work.
 Local billing records follow existing export, erasure and retention controls;
 this change stores no card details, invoices, hosted session URLs or new ledger.
 
+The [portal scenario ledger](STRIPE-TEST-PORTAL-SCENARIOS.md) records which
+issue #676 TEST scenarios have local test evidence, which are gaps and which
+need a deliberate Stripe TEST run.
+
 API references: [configuration retrieval](https://docs.stripe.com/api/customer_portal/configurations/retrieve)
 and [explicit session configuration](https://docs.stripe.com/api/customer_portal/sessions/create).
