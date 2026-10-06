@@ -1,0 +1,16 @@
+{
+  "model": "synthetic/model-alpha",
+  "messages": [
+    {"role": "system", "content": "Summarize synthetic text.\nPreserve \"quotes\" and a final slash: \\"},
+    {"role": "user", "content": "Aster blooms. \u03bb\u96ea\u0001"}
+  ],
+  "max_completion_tokens": 17,
+  "stream": false,
+  "provider": {
+    "only": ["synthetic-provider"],
+    "allow_fallbacks": false,
+    "require_parameters": true,
+    "data_collection": "deny",
+    "zdr": true
+  }
+}
