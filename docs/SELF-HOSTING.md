@@ -16,6 +16,15 @@ The [Compose guide](../deploy/compose/README.md) covers migrations, volumes, shu
 
 ### From a healthy stack to a phone
 
+```mermaid
+flowchart LR
+  A["Healthy stack<br/>/healthz + /readyz"] --> B["Owner registration<br/>HTTPS origin + email"]
+  B --> C["Create one-use<br/>pairing request"]
+  C --> D["Enter values on phone<br/>Setup screen"]
+  D --> E["Compare codes,<br/>owner approves"]
+  E --> F["Connection test<br/>not SMS readiness"]
+```
+
 1. Configure the exact HTTPS account origin and verification mail, then follow [owner registration](#owner-registration). Open `/owner/account` for account and MFA controls and `/owner/devices` for the fleet overview.
 2. Create a one-use pairing request in the owner dashboard. On the phone, use the gear menu to open **Setup**, review access purposes separately, and enter the pairing values. Compare the phone and browser before owner approval. Pairing can proceed without a SIM or SMS access; connection controls currently require a selected SIM.
 3. Treat **Connection** as an explicit test/control surface. A socket connection or heartbeat does not establish SMS readiness. The controlled SMS pilot requires its separate documented authority and a recipient you control; do not enable it merely to evaluate the UI.

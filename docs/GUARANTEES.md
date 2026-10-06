@@ -19,6 +19,16 @@ tests](../crates/domain/src/lib.rs) include `submitted_is_not_delivered`.
 
 ## Ambiguous submission is not retry permission
 
+```mermaid
+flowchart TD
+  U["Attempt is unknown<br/>the radio may have sent it"] --> E{"What evidence arrives?"}
+  E -->|"late sent callback"| SUB["submitted"]
+  E -->|"late failure callback"| F["failed"]
+  E -->|"proven no-submit"| Q["back to queued<br/>same message identity"]
+  E -->|"nothing"| STAY["stays unknown"]
+  STAY --> X["No automatic resend,<br/>no grant on another phone"]
+```
+
 A crash, timeout or conflicting callback can leave a radio attempt `unknown`.
 That outcome does not authorize an automatic resend or a replacement grant on
 another phone. Late evidence can reconcile the original attempt; proven
@@ -52,6 +62,14 @@ The [send-first-message examples](SEND-FIRST-MESSAGE.md) use the restricted
 synthetic-alpha plane; they do not expose general sending.
 
 ## One authoritative writer, with explicit fences
+
+```mermaid
+flowchart LR
+  PHONE["Phone session"] --> CHECK{"Writer status,<br/>deployment epoch,<br/>enabled site?"}
+  CHECK -->|"all current"| LEASE["Session bound to site, instance,<br/>connection epoch and unexpired lease"]
+  CHECK -->|"any stale"| REFUSE["Refused<br/>no ownership renewal"]
+  LEASE --> WRITE[("Single PostgreSQL writer")]
+```
 
 The server checks writer status, deployment epoch and enabled site, and binds
 device sessions to a site, instance, connection epoch and unexpired lease.
