@@ -439,7 +439,7 @@ Keep message content out of reach of the server, and give owners control of thei
 - [x] Isolated no-radio Android preparation probe pins recipient public-key custody, reported security level and observed boot count across separate runs; missing, duplicate or substituted baseline evidence fails closed ([#765](https://github.com/pboachie/zrotext/pull/765))
 - [x] Scoped payload-key custody retained through the operation and final local identity revalidation, expiring on exit and rejecting cross-thread or nested use ([#791](https://github.com/pboachie/zrotext/pull/791))
 - [x] Sealed setup ACL diagnostics report fixed closed-phase observations for entry, owned-leaf validation and ACL completion; only allowlisted phase/outcome/elapsed data is retained ([#842](https://github.com/pboachie/zrotext/pull/842))
-- [ ] Resolve the production Android recipient/profile gate: candidate empty HPKE AAD does not satisfy the required distinct nonempty info/AAD transcript (#625); options are listed, unselected, in [ADR 0009](adr/0009-sealed-hpke-aad-and-receiver-options-proposal.md)
+- [ ] Resolve the production Android recipient/profile gate: candidate empty HPKE AAD does not satisfy the required distinct nonempty info/AAD transcript (#625)
 - [ ] Complete same-root/generation provisioning across server/browser/CLI and maintained Android consumer, supported custody and recovery acceptance (#623)
 - [ ] Exercise actual selected-reader/agent/routine consumers, current consent and integrated downgrade/leakage/crash/replay acceptance before enabling real messages
 - [ ] Controlled physical-device enrollment, send, reply, opt-out, reboot and revocation evidence; vectors and emulator runs do not prove carrier delivery
