@@ -90,6 +90,27 @@ account-wide boundary. Capacity race tests use genuine signed replies in one
 eligible interval; they prove atomic unit ownership within that scope.
 Multi-peer intake and complete application journeys under #759 remain unaccepted.
 
+## Offer and allocation mutation wire (proposal)
+
+The [allocation schema](owner-opening-allocation.schema.json) and
+[synthetic vectors](vectors/owner-opening-allocation.json) propose closed JSON
+shapes for the library's offer, reserve, confirm, release, cancel and close
+requests and their shared response. **No such route is mounted and no handler
+exists**; this is a reviewable contract only, so a later route and SDK slice
+cannot drift from the typed library requests. Request fields mirror
+`contracts.rs` exactly (a unit test compares them to the Rust structs), use the
+create/status primitives unchanged (canonical UUIDs, decimal-string versions
+and deadlines, lowercase nonzero digests) and carry no account, owner,
+SEND `ActionKey`, delivery, acceptance or model field: authority comes only from
+the authenticated owner and current server state. The response repeats the
+create envelope (`account_id`, `request_id`, `outcome`) with a receipt that may
+now carry `offer` and `allocation_id`/`allocation_version`. `recorded` may be
+false for an already-terminal no-op. A schema pass does not prove duplicate
+member refusal, the combined 100-unit bound, that allocation identity and version
+are both null or both present, replay, authentication or availability; those are
+semantic and server controls, listed in the vectors as `schema_valid: true,
+valid: false`.
+
 The current authenticated account owner selects exact current encrypted
 workflow context IDs, revisions and digests. The maintained selected-reader
 authorizer requires writing authority; a permanent context stop fence also

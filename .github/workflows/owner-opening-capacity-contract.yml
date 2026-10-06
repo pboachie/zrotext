@@ -21,3 +21,4 @@ jobs:
           python3 -m venv /tmp/zrotext-opening-capacity-venv
           /tmp/zrotext-opening-capacity-venv/bin/pip install --disable-pip-version-check jsonschema==4.25.1
           /tmp/zrotext-opening-capacity-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_owner_opening_capacity_schema.py'
+          /tmp/zrotext-opening-capacity-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_owner_opening_allocation_schema.py'

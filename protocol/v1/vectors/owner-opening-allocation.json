@@ -1,0 +1,904 @@
+{
+  "note": "Synthetic proposal vectors for owner offer/allocation mutation wire shapes. valid=false with schema_valid=true marks semantic controls a schema cannot express. No server route exists; no execution is claimed.",
+  "cases": [
+    {
+      "name": "offer_request",
+      "type": "OfferRequest",
+      "schema_valid": true,
+      "valid": true,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "opening": {
+          "opening_id": "12345678-1234-1234-1234-123456789001",
+          "definition_version": "1",
+          "state_version": "1"
+        },
+        "offer_id": "12345678-1234-1234-1234-123456789004",
+        "contact_id": "12345678-1234-1234-1234-123456789005",
+        "purpose": "transactional",
+        "source": {
+          "context_id": "12345678-1234-1234-1234-123456789002",
+          "revision": 1,
+          "digest": "abababababababababababababababababababababababababababababababab"
+        },
+        "expires_ms": "1"
+      }
+    },
+    {
+      "name": "offer_marketing_purpose",
+      "type": "OfferRequest",
+      "schema_valid": true,
+      "valid": true,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "opening": {
+          "opening_id": "12345678-1234-1234-1234-123456789001",
+          "definition_version": "1",
+          "state_version": "1"
+        },
+        "offer_id": "12345678-1234-1234-1234-123456789004",
+        "contact_id": "12345678-1234-1234-1234-123456789005",
+        "purpose": "marketing",
+        "source": {
+          "context_id": "12345678-1234-1234-1234-123456789002",
+          "revision": 1,
+          "digest": "abababababababababababababababababababababababababababababababab"
+        },
+        "expires_ms": "1"
+      }
+    },
+    {
+      "name": "reserve_request",
+      "type": "ReserveRequest",
+      "schema_valid": true,
+      "valid": true,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "opening": {
+          "opening_id": "12345678-1234-1234-1234-123456789001",
+          "definition_version": "1",
+          "state_version": "1"
+        },
+        "offer": {
+          "offer_id": "12345678-1234-1234-1234-123456789004",
+          "state_version": "1"
+        },
+        "allocation_id": "12345678-1234-1234-1234-123456789006",
+        "event_id": "12345678-1234-1234-1234-123456789007",
+        "event_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+      }
+    },
+    {
+      "name": "confirm_or_release_request",
+      "type": "AllocationMutationRequest",
+      "schema_valid": true,
+      "valid": true,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "opening": {
+          "opening_id": "12345678-1234-1234-1234-123456789001",
+          "definition_version": "1",
+          "state_version": "1"
+        },
+        "allocation_id": "12345678-1234-1234-1234-123456789006",
+        "allocation_version": "1"
+      }
+    },
+    {
+      "name": "close_or_cancel_request",
+      "type": "OpeningMutationRequest",
+      "schema_valid": true,
+      "valid": true,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "opening": {
+          "opening_id": "12345678-1234-1234-1234-123456789001",
+          "definition_version": "1",
+          "state_version": "1"
+        }
+      }
+    },
+    {
+      "name": "offered_response",
+      "type": "MutationResponse",
+      "schema_valid": true,
+      "valid": true,
+      "value": {
+        "account_id": "12345678-1234-1234-1234-123456789008",
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "outcome": {
+          "receipt": {
+            "opening": {
+              "opening_id": "12345678-1234-1234-1234-123456789001",
+              "definition_version": "1",
+              "state_version": "1"
+            },
+            "offer": {
+              "offer_id": "12345678-1234-1234-1234-123456789004",
+              "state_version": "2"
+            },
+            "allocation_id": null,
+            "allocation_version": null,
+            "phase": "open",
+            "pending": "0",
+            "confirmed": "0"
+          },
+          "applied": true,
+          "recorded": true
+        }
+      }
+    },
+    {
+      "name": "reserved_response",
+      "type": "MutationResponse",
+      "schema_valid": true,
+      "valid": true,
+      "value": {
+        "account_id": "12345678-1234-1234-1234-123456789008",
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "outcome": {
+          "receipt": {
+            "opening": {
+              "opening_id": "12345678-1234-1234-1234-123456789001",
+              "definition_version": "1",
+              "state_version": "1"
+            },
+            "offer": {
+              "offer_id": "12345678-1234-1234-1234-123456789004",
+              "state_version": "2"
+            },
+            "allocation_id": "12345678-1234-1234-1234-123456789006",
+            "allocation_version": "1",
+            "phase": "open",
+            "pending": "1",
+            "confirmed": "0"
+          },
+          "applied": true,
+          "recorded": true
+        }
+      }
+    },
+    {
+      "name": "confirmed_response",
+      "type": "MutationResponse",
+      "schema_valid": true,
+      "valid": true,
+      "value": {
+        "account_id": "12345678-1234-1234-1234-123456789008",
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "outcome": {
+          "receipt": {
+            "opening": {
+              "opening_id": "12345678-1234-1234-1234-123456789001",
+              "definition_version": "1",
+              "state_version": "1"
+            },
+            "offer": {
+              "offer_id": "12345678-1234-1234-1234-123456789004",
+              "state_version": "2"
+            },
+            "allocation_id": "12345678-1234-1234-1234-123456789006",
+            "allocation_version": "2",
+            "phase": "open",
+            "pending": "0",
+            "confirmed": "1"
+          },
+          "applied": true,
+          "recorded": true
+        }
+      }
+    },
+    {
+      "name": "terminal_noop_response",
+      "type": "MutationResponse",
+      "schema_valid": true,
+      "valid": true,
+      "value": {
+        "account_id": "12345678-1234-1234-1234-123456789008",
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "outcome": {
+          "receipt": {
+            "opening": {
+              "opening_id": "12345678-1234-1234-1234-123456789001",
+              "definition_version": "1",
+              "state_version": "1"
+            },
+            "offer": null,
+            "allocation_id": null,
+            "allocation_version": null,
+            "phase": "closed",
+            "pending": "0",
+            "confirmed": "0"
+          },
+          "applied": false,
+          "recorded": false
+        }
+      }
+    },
+    {
+      "name": "closed_preserving_confirmed",
+      "type": "MutationResponse",
+      "schema_valid": true,
+      "valid": true,
+      "value": {
+        "account_id": "12345678-1234-1234-1234-123456789008",
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "outcome": {
+          "receipt": {
+            "opening": {
+              "opening_id": "12345678-1234-1234-1234-123456789001",
+              "definition_version": "1",
+              "state_version": "1"
+            },
+            "offer": null,
+            "allocation_id": null,
+            "allocation_version": null,
+            "phase": "closed",
+            "pending": "0",
+            "confirmed": "3"
+          },
+          "applied": true,
+          "recorded": true
+        }
+      }
+    },
+    {
+      "name": "allocation_id_without_version",
+      "type": "MutationResponse",
+      "schema_valid": true,
+      "valid": false,
+      "value": {
+        "account_id": "12345678-1234-1234-1234-123456789008",
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "outcome": {
+          "receipt": {
+            "opening": {
+              "opening_id": "12345678-1234-1234-1234-123456789001",
+              "definition_version": "1",
+              "state_version": "1"
+            },
+            "offer": null,
+            "allocation_id": "12345678-1234-1234-1234-123456789006",
+            "allocation_version": null,
+            "phase": "open",
+            "pending": "0",
+            "confirmed": "0"
+          },
+          "applied": true,
+          "recorded": true
+        }
+      }
+    },
+    {
+      "name": "version_without_allocation_id",
+      "type": "MutationResponse",
+      "schema_valid": true,
+      "valid": false,
+      "value": {
+        "account_id": "12345678-1234-1234-1234-123456789008",
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "outcome": {
+          "receipt": {
+            "opening": {
+              "opening_id": "12345678-1234-1234-1234-123456789001",
+              "definition_version": "1",
+              "state_version": "1"
+            },
+            "offer": null,
+            "allocation_id": null,
+            "allocation_version": "1",
+            "phase": "open",
+            "pending": "0",
+            "confirmed": "0"
+          },
+          "applied": true,
+          "recorded": true
+        }
+      }
+    },
+    {
+      "name": "combined_count_above_capacity_bound",
+      "type": "MutationResponse",
+      "schema_valid": true,
+      "valid": false,
+      "value": {
+        "account_id": "12345678-1234-1234-1234-123456789008",
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "outcome": {
+          "receipt": {
+            "opening": {
+              "opening_id": "12345678-1234-1234-1234-123456789001",
+              "definition_version": "1",
+              "state_version": "1"
+            },
+            "offer": null,
+            "allocation_id": null,
+            "allocation_version": null,
+            "phase": "open",
+            "pending": "60",
+            "confirmed": "41"
+          },
+          "applied": true,
+          "recorded": true
+        }
+      }
+    },
+    {
+      "name": "offer_forged_account_id",
+      "type": "OfferRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "opening": {
+          "opening_id": "12345678-1234-1234-1234-123456789001",
+          "definition_version": "1",
+          "state_version": "1"
+        },
+        "offer_id": "12345678-1234-1234-1234-123456789004",
+        "contact_id": "12345678-1234-1234-1234-123456789005",
+        "purpose": "transactional",
+        "source": {
+          "context_id": "12345678-1234-1234-1234-123456789002",
+          "revision": 1,
+          "digest": "abababababababababababababababababababababababababababababababab"
+        },
+        "expires_ms": "1",
+        "account_id": "12345678-1234-1234-1234-123456789008"
+      }
+    },
+    {
+      "name": "reserve_forged_account_id",
+      "type": "ReserveRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "opening": {
+          "opening_id": "12345678-1234-1234-1234-123456789001",
+          "definition_version": "1",
+          "state_version": "1"
+        },
+        "offer": {
+          "offer_id": "12345678-1234-1234-1234-123456789004",
+          "state_version": "1"
+        },
+        "allocation_id": "12345678-1234-1234-1234-123456789006",
+        "event_id": "12345678-1234-1234-1234-123456789007",
+        "event_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "account_id": "12345678-1234-1234-1234-123456789008"
+      }
+    },
+    {
+      "name": "offer_forged_owner_id",
+      "type": "OfferRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "opening": {
+          "opening_id": "12345678-1234-1234-1234-123456789001",
+          "definition_version": "1",
+          "state_version": "1"
+        },
+        "offer_id": "12345678-1234-1234-1234-123456789004",
+        "contact_id": "12345678-1234-1234-1234-123456789005",
+        "purpose": "transactional",
+        "source": {
+          "context_id": "12345678-1234-1234-1234-123456789002",
+          "revision": 1,
+          "digest": "abababababababababababababababababababababababababababababababab"
+        },
+        "expires_ms": "1",
+        "owner_id": "12345678-1234-1234-1234-123456789008"
+      }
+    },
+    {
+      "name": "reserve_forged_owner_id",
+      "type": "ReserveRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "opening": {
+          "opening_id": "12345678-1234-1234-1234-123456789001",
+          "definition_version": "1",
+          "state_version": "1"
+        },
+        "offer": {
+          "offer_id": "12345678-1234-1234-1234-123456789004",
+          "state_version": "1"
+        },
+        "allocation_id": "12345678-1234-1234-1234-123456789006",
+        "event_id": "12345678-1234-1234-1234-123456789007",
+        "event_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "owner_id": "12345678-1234-1234-1234-123456789008"
+      }
+    },
+    {
+      "name": "offer_forged_action_key",
+      "type": "OfferRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "opening": {
+          "opening_id": "12345678-1234-1234-1234-123456789001",
+          "definition_version": "1",
+          "state_version": "1"
+        },
+        "offer_id": "12345678-1234-1234-1234-123456789004",
+        "contact_id": "12345678-1234-1234-1234-123456789005",
+        "purpose": "transactional",
+        "source": {
+          "context_id": "12345678-1234-1234-1234-123456789002",
+          "revision": 1,
+          "digest": "abababababababababababababababababababababababababababababababab"
+        },
+        "expires_ms": "1",
+        "action_key": "x"
+      }
+    },
+    {
+      "name": "reserve_forged_action_key",
+      "type": "ReserveRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "opening": {
+          "opening_id": "12345678-1234-1234-1234-123456789001",
+          "definition_version": "1",
+          "state_version": "1"
+        },
+        "offer": {
+          "offer_id": "12345678-1234-1234-1234-123456789004",
+          "state_version": "1"
+        },
+        "allocation_id": "12345678-1234-1234-1234-123456789006",
+        "event_id": "12345678-1234-1234-1234-123456789007",
+        "event_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "action_key": "x"
+      }
+    },
+    {
+      "name": "offer_forged_delivered",
+      "type": "OfferRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "opening": {
+          "opening_id": "12345678-1234-1234-1234-123456789001",
+          "definition_version": "1",
+          "state_version": "1"
+        },
+        "offer_id": "12345678-1234-1234-1234-123456789004",
+        "contact_id": "12345678-1234-1234-1234-123456789005",
+        "purpose": "transactional",
+        "source": {
+          "context_id": "12345678-1234-1234-1234-123456789002",
+          "revision": 1,
+          "digest": "abababababababababababababababababababababababababababababababab"
+        },
+        "expires_ms": "1",
+        "delivered": true
+      }
+    },
+    {
+      "name": "reserve_forged_delivered",
+      "type": "ReserveRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "opening": {
+          "opening_id": "12345678-1234-1234-1234-123456789001",
+          "definition_version": "1",
+          "state_version": "1"
+        },
+        "offer": {
+          "offer_id": "12345678-1234-1234-1234-123456789004",
+          "state_version": "1"
+        },
+        "allocation_id": "12345678-1234-1234-1234-123456789006",
+        "event_id": "12345678-1234-1234-1234-123456789007",
+        "event_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "delivered": true
+      }
+    },
+    {
+      "name": "offer_forged_accepted",
+      "type": "OfferRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "opening": {
+          "opening_id": "12345678-1234-1234-1234-123456789001",
+          "definition_version": "1",
+          "state_version": "1"
+        },
+        "offer_id": "12345678-1234-1234-1234-123456789004",
+        "contact_id": "12345678-1234-1234-1234-123456789005",
+        "purpose": "transactional",
+        "source": {
+          "context_id": "12345678-1234-1234-1234-123456789002",
+          "revision": 1,
+          "digest": "abababababababababababababababababababababababababababababababab"
+        },
+        "expires_ms": "1",
+        "accepted": true
+      }
+    },
+    {
+      "name": "reserve_forged_accepted",
+      "type": "ReserveRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "opening": {
+          "opening_id": "12345678-1234-1234-1234-123456789001",
+          "definition_version": "1",
+          "state_version": "1"
+        },
+        "offer": {
+          "offer_id": "12345678-1234-1234-1234-123456789004",
+          "state_version": "1"
+        },
+        "allocation_id": "12345678-1234-1234-1234-123456789006",
+        "event_id": "12345678-1234-1234-1234-123456789007",
+        "event_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "accepted": true
+      }
+    },
+    {
+      "name": "offer_forged_model_approved",
+      "type": "OfferRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "opening": {
+          "opening_id": "12345678-1234-1234-1234-123456789001",
+          "definition_version": "1",
+          "state_version": "1"
+        },
+        "offer_id": "12345678-1234-1234-1234-123456789004",
+        "contact_id": "12345678-1234-1234-1234-123456789005",
+        "purpose": "transactional",
+        "source": {
+          "context_id": "12345678-1234-1234-1234-123456789002",
+          "revision": 1,
+          "digest": "abababababababababababababababababababababababababababababababab"
+        },
+        "expires_ms": "1",
+        "model_approved": true
+      }
+    },
+    {
+      "name": "reserve_forged_model_approved",
+      "type": "ReserveRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "opening": {
+          "opening_id": "12345678-1234-1234-1234-123456789001",
+          "definition_version": "1",
+          "state_version": "1"
+        },
+        "offer": {
+          "offer_id": "12345678-1234-1234-1234-123456789004",
+          "state_version": "1"
+        },
+        "allocation_id": "12345678-1234-1234-1234-123456789006",
+        "event_id": "12345678-1234-1234-1234-123456789007",
+        "event_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "model_approved": true
+      }
+    },
+    {
+      "name": "offer_forged_phone",
+      "type": "OfferRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "opening": {
+          "opening_id": "12345678-1234-1234-1234-123456789001",
+          "definition_version": "1",
+          "state_version": "1"
+        },
+        "offer_id": "12345678-1234-1234-1234-123456789004",
+        "contact_id": "12345678-1234-1234-1234-123456789005",
+        "purpose": "transactional",
+        "source": {
+          "context_id": "12345678-1234-1234-1234-123456789002",
+          "revision": 1,
+          "digest": "abababababababababababababababababababababababababababababababab"
+        },
+        "expires_ms": "1",
+        "phone": "+15550100"
+      }
+    },
+    {
+      "name": "reserve_forged_phone",
+      "type": "ReserveRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "opening": {
+          "opening_id": "12345678-1234-1234-1234-123456789001",
+          "definition_version": "1",
+          "state_version": "1"
+        },
+        "offer": {
+          "offer_id": "12345678-1234-1234-1234-123456789004",
+          "state_version": "1"
+        },
+        "allocation_id": "12345678-1234-1234-1234-123456789006",
+        "event_id": "12345678-1234-1234-1234-123456789007",
+        "event_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "phone": "+15550100"
+      }
+    },
+    {
+      "name": "reserve_event_digest_zero",
+      "type": "ReserveRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "opening": {
+          "opening_id": "12345678-1234-1234-1234-123456789001",
+          "definition_version": "1",
+          "state_version": "1"
+        },
+        "offer": {
+          "offer_id": "12345678-1234-1234-1234-123456789004",
+          "state_version": "1"
+        },
+        "allocation_id": "12345678-1234-1234-1234-123456789006",
+        "event_id": "12345678-1234-1234-1234-123456789007",
+        "event_digest": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "name": "reserve_event_digest_upper",
+      "type": "ReserveRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "opening": {
+          "opening_id": "12345678-1234-1234-1234-123456789001",
+          "definition_version": "1",
+          "state_version": "1"
+        },
+        "offer": {
+          "offer_id": "12345678-1234-1234-1234-123456789004",
+          "state_version": "1"
+        },
+        "allocation_id": "12345678-1234-1234-1234-123456789006",
+        "event_id": "12345678-1234-1234-1234-123456789007",
+        "event_digest": "CDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCD"
+      }
+    },
+    {
+      "name": "offer_unknown_purpose",
+      "type": "OfferRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "opening": {
+          "opening_id": "12345678-1234-1234-1234-123456789001",
+          "definition_version": "1",
+          "state_version": "1"
+        },
+        "offer_id": "12345678-1234-1234-1234-123456789004",
+        "contact_id": "12345678-1234-1234-1234-123456789005",
+        "purpose": "promotional",
+        "source": {
+          "context_id": "12345678-1234-1234-1234-123456789002",
+          "revision": 1,
+          "digest": "abababababababababababababababababababababababababababababababab"
+        },
+        "expires_ms": "1"
+      }
+    },
+    {
+      "name": "offer_numeric_expiry",
+      "type": "OfferRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "opening": {
+          "opening_id": "12345678-1234-1234-1234-123456789001",
+          "definition_version": "1",
+          "state_version": "1"
+        },
+        "offer_id": "12345678-1234-1234-1234-123456789004",
+        "contact_id": "12345678-1234-1234-1234-123456789005",
+        "purpose": "transactional",
+        "source": {
+          "context_id": "12345678-1234-1234-1234-123456789002",
+          "revision": 1,
+          "digest": "abababababababababababababababababababababababababababababababab"
+        },
+        "expires_ms": 1
+      }
+    },
+    {
+      "name": "alloc_numeric_version",
+      "type": "AllocationMutationRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "opening": {
+          "opening_id": "12345678-1234-1234-1234-123456789001",
+          "definition_version": "1",
+          "state_version": "1"
+        },
+        "allocation_id": "12345678-1234-1234-1234-123456789006",
+        "allocation_version": 1
+      }
+    },
+    {
+      "name": "alloc_zero_version",
+      "type": "AllocationMutationRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "opening": {
+          "opening_id": "12345678-1234-1234-1234-123456789001",
+          "definition_version": "1",
+          "state_version": "1"
+        },
+        "allocation_id": "12345678-1234-1234-1234-123456789006",
+        "allocation_version": "0"
+      }
+    },
+    {
+      "name": "alloc_missing_opening",
+      "type": "AllocationMutationRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "allocation_id": "12345678-1234-1234-1234-123456789006",
+        "allocation_version": "1"
+      }
+    },
+    {
+      "name": "opening_mutation_with_allocation",
+      "type": "OpeningMutationRequest",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "opening": {
+          "opening_id": "12345678-1234-1234-1234-123456789001",
+          "definition_version": "1",
+          "state_version": "1"
+        },
+        "allocation_id": "12345678-1234-1234-1234-123456789006"
+      }
+    },
+    {
+      "name": "response_recorded_null",
+      "type": "MutationResponse",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "account_id": "12345678-1234-1234-1234-123456789008",
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "outcome": {
+          "receipt": {
+            "opening": {
+              "opening_id": "12345678-1234-1234-1234-123456789001",
+              "definition_version": "1",
+              "state_version": "1"
+            },
+            "offer": null,
+            "allocation_id": null,
+            "allocation_version": null,
+            "phase": "open",
+            "pending": "0",
+            "confirmed": "0"
+          },
+          "applied": true,
+          "recorded": null
+        }
+      }
+    },
+    {
+      "name": "response_phase_offered",
+      "type": "MutationResponse",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "account_id": "12345678-1234-1234-1234-123456789008",
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "outcome": {
+          "receipt": {
+            "opening": {
+              "opening_id": "12345678-1234-1234-1234-123456789001",
+              "definition_version": "1",
+              "state_version": "1"
+            },
+            "offer": null,
+            "allocation_id": null,
+            "allocation_version": null,
+            "phase": "offered",
+            "pending": "0",
+            "confirmed": "0"
+          },
+          "applied": true,
+          "recorded": true
+        }
+      }
+    },
+    {
+      "name": "response_extra_body_field",
+      "type": "MutationResponse",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "account_id": "12345678-1234-1234-1234-123456789008",
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "outcome": {
+          "receipt": {
+            "opening": {
+              "opening_id": "12345678-1234-1234-1234-123456789001",
+              "definition_version": "1",
+              "state_version": "1"
+            },
+            "offer": null,
+            "allocation_id": null,
+            "allocation_version": null,
+            "phase": "open",
+            "pending": "0",
+            "confirmed": "0",
+            "context_digest": "abababababababababababababababababababababababababababababababab"
+          },
+          "applied": true,
+          "recorded": true
+        }
+      }
+    },
+    {
+      "name": "response_nil_allocation",
+      "type": "MutationResponse",
+      "schema_valid": false,
+      "valid": false,
+      "value": {
+        "account_id": "12345678-1234-1234-1234-123456789008",
+        "request_id": "12345678-1234-1234-1234-123456789003",
+        "outcome": {
+          "receipt": {
+            "opening": {
+              "opening_id": "12345678-1234-1234-1234-123456789001",
+              "definition_version": "1",
+              "state_version": "1"
+            },
+            "offer": null,
+            "allocation_id": "00000000-0000-0000-0000-000000000000",
+            "allocation_version": "1",
+            "phase": "open",
+            "pending": "0",
+            "confirmed": "0"
+          },
+          "applied": true,
+          "recorded": true
+        }
+      }
+    }
+  ]
+}

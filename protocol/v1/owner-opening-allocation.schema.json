@@ -1,0 +1,331 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/zrotext/protocol/v1/owner-opening-allocation.schema.json",
+  "title": "Owner opening offer and allocation mutation wire proposal",
+  "$comment": "PROPOSAL: shape only. No offer, reserve, confirm, release, cancel or close route is mounted. Mirrors the typed library requests in crates/server/src/workflow_runtime/openings/contracts.rs, using the decimal-string and canonical-UUID conventions of owner-opening-capacity.schema.json. Semantic controls (pending+confirmed<=100, integer-token capacity/revision, allocation_id/allocation_version both null or both present, offer present only when allocation_id is, duplicate members, account binding, authority) are not expressible here and are not proven by a shape pass.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/OfferRequest"
+    },
+    {
+      "$ref": "#/$defs/ReserveRequest"
+    },
+    {
+      "$ref": "#/$defs/AllocationMutationRequest"
+    },
+    {
+      "$ref": "#/$defs/OpeningMutationRequest"
+    },
+    {
+      "$ref": "#/$defs/MutationResponse"
+    }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![0-9]|[^0-9])",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    "positive_i64": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 19,
+      "pattern": "^(?:[1-9][0-9]{0,17}|(?:[1-8][0-9]{18}|9(?:(?:[0-1][0-9]{17}|2(?:(?:[0-1][0-9]{16}|2(?:(?:[0-2][0-9]{15}|3(?:(?:[0-2][0-9]{14}|3(?:(?:[0-6][0-9]{13}|7(?:(?:[0-1][0-9]{12}|2(?:0(?:(?:[0-2][0-9]{10}|3(?:(?:[0-5][0-9]{9}|6(?:(?:[0-7][0-9]{8}|8(?:(?:[0-4][0-9]{7}|5(?:(?:[0-3][0-9]{6}|4(?:(?:[0-6][0-9]{5}|7(?:(?:[0-6][0-9]{4}|7(?:(?:[0-4][0-9]{3}|5(?:(?:[0-7][0-9]{2}|8(?:0(?:(?:[0-6]|7))))))))))))))))))))))))))))))))))))(?![0-9]|[^0-9])",
+      "$comment": "Exact positive signed 64-bit bound: shorter 1..18-digit strings or a nested digit-by-digit lexicographic automaton for the maximum. Each branch either selects a smaller digit and any remaining digits, or equals the bound digit and continues. The final negative lookahead partitions any remaining character into digit or nondigit, so only absolute end passes, including across every line terminator in Python and ECMAScript."
+    },
+    "count": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9][0-9]?|100)(?![0-9]|[^0-9])"
+    },
+    "digest": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}(?![0-9]|[^0-9])",
+      "not": {
+        "const": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    "Source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "context_id",
+        "revision",
+        "digest"
+      ],
+      "properties": {
+        "context_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 128
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "Opening": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "opening_id",
+        "definition_version",
+        "state_version"
+      ],
+      "properties": {
+        "opening_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "definition_version": {
+          "$ref": "#/$defs/positive_i64"
+        },
+        "state_version": {
+          "$ref": "#/$defs/positive_i64"
+        }
+      }
+    },
+    "OfferKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "offer_id",
+        "state_version"
+      ],
+      "properties": {
+        "offer_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "state_version": {
+          "$ref": "#/$defs/positive_i64"
+        }
+      }
+    },
+    "Purpose": {
+      "enum": [
+        "transactional",
+        "operational",
+        "marketing"
+      ]
+    },
+    "Phase": {
+      "enum": [
+        "open",
+        "closed",
+        "cancelled"
+      ]
+    },
+    "OfferRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "opening",
+        "offer_id",
+        "contact_id",
+        "purpose",
+        "source",
+        "expires_ms"
+      ],
+      "properties": {
+        "request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "opening": {
+          "$ref": "#/$defs/Opening"
+        },
+        "offer_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "contact_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "purpose": {
+          "$ref": "#/$defs/Purpose"
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "expires_ms": {
+          "$ref": "#/$defs/positive_i64"
+        }
+      }
+    },
+    "ReserveRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "opening",
+        "offer",
+        "allocation_id",
+        "event_id",
+        "event_digest"
+      ],
+      "properties": {
+        "request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "opening": {
+          "$ref": "#/$defs/Opening"
+        },
+        "offer": {
+          "$ref": "#/$defs/OfferKey"
+        },
+        "allocation_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "event_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "event_digest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "AllocationMutationRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "opening",
+        "allocation_id",
+        "allocation_version"
+      ],
+      "properties": {
+        "request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "opening": {
+          "$ref": "#/$defs/Opening"
+        },
+        "allocation_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "allocation_version": {
+          "$ref": "#/$defs/positive_i64"
+        }
+      }
+    },
+    "OpeningMutationRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "opening"
+      ],
+      "properties": {
+        "request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "opening": {
+          "$ref": "#/$defs/Opening"
+        }
+      }
+    },
+    "MutationReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "opening",
+        "offer",
+        "allocation_id",
+        "allocation_version",
+        "phase",
+        "pending",
+        "confirmed"
+      ],
+      "properties": {
+        "opening": {
+          "$ref": "#/$defs/Opening"
+        },
+        "offer": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/OfferKey"
+            }
+          ]
+        },
+        "allocation_id": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/uuid"
+            }
+          ]
+        },
+        "allocation_version": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/positive_i64"
+            }
+          ]
+        },
+        "phase": {
+          "$ref": "#/$defs/Phase"
+        },
+        "pending": {
+          "$ref": "#/$defs/count"
+        },
+        "confirmed": {
+          "$ref": "#/$defs/count"
+        }
+      }
+    },
+    "MutationOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "receipt",
+        "applied",
+        "recorded"
+      ],
+      "properties": {
+        "receipt": {
+          "$ref": "#/$defs/MutationReceipt"
+        },
+        "applied": {
+          "type": "boolean"
+        },
+        "recorded": {
+          "type": "boolean"
+        }
+      }
+    },
+    "MutationResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "account_id",
+        "request_id",
+        "outcome"
+      ],
+      "properties": {
+        "account_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "outcome": {
+          "$ref": "#/$defs/MutationOutcome"
+        }
+      }
+    }
+  }
+}
