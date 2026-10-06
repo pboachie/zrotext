@@ -1,0 +1,432 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:zrotext:provider-proposal-history-vectors",
+  "title": "Provider proposal history conformance vector document",
+  "description": "This schema validates a synthetic vector DOCUMENT, not production requests. The referenced unchanged02 schema is registered locally; validation never requires network access.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "document_kind",
+    "authority",
+    "limits",
+    "specimens",
+    "binding_mutations",
+    "internal_edits",
+    "internal_edit_refusals",
+    "replay",
+    "unavailable_effects",
+    "legacy01_digest_unchanged"
+  ],
+  "properties": {
+    "document_kind": {
+      "const": "provider-proposal-history-conformance-01"
+    },
+    "authority": {
+      "const": "synthetic metadata only; no accepted route, reader, grant, review or send authority"
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "descriptor_bytes",
+        "request_bytes",
+        "revision"
+      ],
+      "properties": {
+        "descriptor_bytes": {
+          "const": 4096
+        },
+        "request_bytes": {
+          "const": 8192
+        },
+        "revision": {
+          "const": 128
+        }
+      }
+    },
+    "specimens": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "descriptor",
+          "canonical_descriptor",
+          "descriptor_bytes",
+          "binding_digest",
+          "key",
+          "request_id",
+          "canonical_request",
+          "request_bytes",
+          "state"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "descriptor": {
+            "$ref": "urn:zrotext:workflow-action-02-proposal"
+          },
+          "canonical_descriptor": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "descriptor_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4096
+          },
+          "binding_digest": {
+            "type": "string",
+            "minLength": 64,
+            "maxLength": 64,
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "key": {
+            "$ref": "#/$defs/key"
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 36,
+            "maxLength": 36,
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "not": {
+              "const": "00000000-0000-0000-0000-000000000000"
+            }
+          },
+          "canonical_request": {
+            "type": "string",
+            "maxLength": 8192
+          },
+          "request_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 8192
+          },
+          "state": {
+            "$ref": "#/$defs/state"
+          }
+        }
+      },
+      "minItems": 6,
+      "maxItems": 6
+    },
+    "binding_mutations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "field",
+          "value",
+          "binding_digest",
+          "key"
+        ],
+        "properties": {
+          "field": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "enum": [
+                  "action",
+                  "route",
+                  "reader",
+                  "disclosure"
+                ]
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "value": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          },
+          "binding_digest": {
+            "type": "string",
+            "minLength": 64,
+            "maxLength": 64,
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "key": {
+            "$ref": "#/$defs/key"
+          }
+        }
+      },
+      "minItems": 36,
+      "maxItems": 36
+    },
+    "internal_edits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "previous",
+          "next",
+          "previous_key",
+          "expected_record_version",
+          "request_id",
+          "changed_field",
+          "expected_state"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "previous": {
+            "type": "string"
+          },
+          "next": {
+            "type": "string"
+          },
+          "previous_key": {
+            "$ref": "#/$defs/key"
+          },
+          "expected_record_version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9223372036854775807
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 36,
+            "maxLength": 36,
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "not": {
+              "const": "00000000-0000-0000-0000-000000000000"
+            }
+          },
+          "changed_field": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "enum": [
+                  "action",
+                  "route",
+                  "reader",
+                  "disclosure"
+                ]
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "expected_state": {
+            "$ref": "#/$defs/state"
+          }
+        }
+      },
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "internal_edit_refusals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "target",
+          "value",
+          "expected"
+        ],
+        "properties": {
+          "target": {
+            "type": "string"
+          },
+          "value": {
+            "description": "Deliberately invalid synthetic control input, not production wire."
+          },
+          "expected": {
+            "enum": [
+              "previous_key",
+              "record_version",
+              "request_id",
+              "profile",
+              "identity",
+              "lineage",
+              "revision",
+              "grammar",
+              "unchanged",
+              "phase"
+            ]
+          }
+        }
+      },
+      "minItems": 21,
+      "maxItems": 21
+    },
+    "replay": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "operation",
+          "actor_id",
+          "request_id",
+          "previous_specimen",
+          "next_specimen",
+          "expected_record_version",
+          "request_digest"
+        ],
+        "properties": {
+          "name": {
+            "enum": [
+              "register",
+              "cancel",
+              "edit"
+            ]
+          },
+          "operation": {
+            "enum": [
+              1,
+              2,
+              3
+            ]
+          },
+          "actor_id": {
+            "type": "string",
+            "minLength": 36,
+            "maxLength": 36,
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "not": {
+              "const": "00000000-0000-0000-0000-000000000000"
+            }
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 36,
+            "maxLength": 36,
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "not": {
+              "const": "00000000-0000-0000-0000-000000000000"
+            }
+          },
+          "previous_specimen": {
+            "type": "string"
+          },
+          "next_specimen": {
+            "type": "string"
+          },
+          "expected_record_version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9223372036854775807
+          },
+          "request_digest": {
+            "type": "string",
+            "minLength": 64,
+            "maxLength": 64,
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "serialized_tuple": {
+            "type": "string",
+            "description": "One literal cancel tuple pins internal Serialize order, not HTTP wire."
+          }
+        }
+      },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "unavailable_effects": {
+      "const": [
+        "approve",
+        "locked_action",
+        "bind",
+        "dispatch",
+        "schedule",
+        "send",
+        "liability"
+      ]
+    },
+    "legacy01_digest_unchanged": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "$defs": {
+    "key": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "account_id",
+        "action_id",
+        "revision",
+        "binding_digest"
+      ],
+      "properties": {
+        "account_id": {
+          "type": "string",
+          "minLength": 36,
+          "maxLength": 36,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "action_id": {
+          "type": "string",
+          "minLength": 36,
+          "maxLength": 36,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 128
+        },
+        "binding_digest": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "record_version",
+        "phase"
+      ],
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/key"
+        },
+        "record_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "phase": {
+          "enum": [
+            "proposed",
+            "invalidated",
+            "cancelled"
+          ]
+        }
+      }
+    }
+  }
+}

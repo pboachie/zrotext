@@ -242,7 +242,9 @@ pub async fn correlate_reply(
         if key.account_id != account {
             return Err(ConversationError::NotFound);
         }
-        let d = store::descriptor(&tx, key).await?;
+        // A retained provider proposal is not a phone request/reply grant.
+        // Refuse the complete profile before correlation/stop/exception writes.
+        let d = store::profile(&tx, key).await?.phone()?;
         if d.identities()?.content != h.context {
             return Err(ConversationError::NotFound);
         }

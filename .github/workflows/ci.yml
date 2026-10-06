@@ -144,6 +144,8 @@ jobs:
         run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_provider_submit_body_codec.py'
       - name: Candidate exact workflow decision requests
         run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_workflow_decisions.py'
+      - name: Candidate provider proposal history
+        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_provider_proposal_history.py'
       - name: Proposed sealed execution grant vectors
         run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_sealed_execution_grant_vectors.py'
       - name: Sealed dispatch contract
