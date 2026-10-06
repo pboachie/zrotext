@@ -993,7 +993,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .merge(http_owner_events::router(owner_events_state))
             .merge(http_owner_review::router(owner_review_state))
             .merge(http_owner_contacts::router(owner_contacts_state))
-            .merge(owner_ui::router())
+            .merge(owner_ui::router_with_customer_routines(
+                config.customer_routines_enabled,
+            ))
             .merge(device_router);
         app = app.merge(zrotext_server::original_reply::http::router(
             zrotext_server::original_reply::http::StateData {
