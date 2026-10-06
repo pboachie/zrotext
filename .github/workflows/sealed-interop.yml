@@ -14,6 +14,7 @@ on:
       - 'protocol/**'
       - 'sdk/typescript/**'
       - 'android/**'
+      - 'scripts/build_android_owner_custody.py'
       - '.github/workflows/sealed-interop.yml'
   push:
     branches: [main]

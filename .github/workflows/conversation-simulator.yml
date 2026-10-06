@@ -14,6 +14,7 @@ on:
       - 'protocol/**'
       - 'sdk/typescript/**'
       - 'android/**'
+      - 'scripts/build_android_owner_custody.py'
       - 'scripts/conversation_simulator.py'
       - 'scripts/sealed_setup_ci.py'
       - 'scripts/sealed_setup_ci_driver.mjs'
