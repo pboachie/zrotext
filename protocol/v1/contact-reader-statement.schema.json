@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Synthetic dormant contact reader statement vector",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["profile", "synthetic", "comparison", "origin", "account_hex", "root_pin_hex", "expected_root_fingerprint_hex", "accepted_previous_version", "accepted_previous_digest_hex", "accepted_manifest_hex", "statement_hex", "unsigned_hex", "statement_digest_hex", "declared_issued_ms", "declared_until_ms", "result_kind"],
+  "properties": {
+    "profile": {"const": "ZTKA01"},
+    "synthetic": {"const": true},
+    "comparison": {"const": "declared_issued_ms"},
+    "result_kind": {"const": "historical_integrity"},
+    "origin": {"type": "string", "minLength": 9, "maxLength": 512, "pattern": "^https://[!-~]+$", "not": {"pattern": "[^!-~]"}},
+    "account_hex": {"type": "string", "minLength": 32, "maxLength": 32, "pattern": "^[0-9a-f]{32}$", "not": {"anyOf": [{"const": "00000000000000000000000000000000"}, {"pattern": "[^0-9a-f]"}]}},
+    "root_pin_hex": {"type": "string", "minLength": 188, "maxLength": 188, "pattern": "^[0-9a-f]{188}$", "not": {"pattern": "[^0-9a-f]"}},
+    "expected_root_fingerprint_hex": {"$ref": "#/$defs/digest"},
+    "accepted_previous_version": {"$ref": "#/$defs/positive"},
+    "accepted_previous_digest_hex": {"$ref": "#/$defs/digest"},
+    "accepted_manifest_hex": {"type": "string", "minLength": 1026, "maxLength": 19502, "pattern": "^([0-9a-f]{2})+$", "not": {"pattern": "[^0-9a-f]"}},
+    "statement_hex": {"type": "string", "minLength": 628, "maxLength": 1634, "pattern": "^([0-9a-f]{2})+$", "not": {"pattern": "[^0-9a-f]"}},
+    "unsigned_hex": {"type": "string", "minLength": 500, "maxLength": 1506, "pattern": "^([0-9a-f]{2})+$", "not": {"pattern": "[^0-9a-f]"}},
+    "statement_digest_hex": {"$ref": "#/$defs/digest"},
+    "declared_issued_ms": {"$ref": "#/$defs/positive"},
+    "declared_until_ms": {"$ref": "#/$defs/positive"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[0-9a-f]{64}$", "not": {"anyOf": [{"const": "0000000000000000000000000000000000000000000000000000000000000000"}, {"pattern": "[^0-9a-f]"}]}},
+    "positive": {"type": "string", "minLength": 1, "maxLength": 19, "pattern": "^[1-9][0-9]{0,18}$", "not": {"pattern": "[^0-9]"}}
+  }
+}

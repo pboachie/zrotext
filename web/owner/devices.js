@@ -3,6 +3,13 @@
 
 const byId = (id) => document.getElementById(id);
 let activePairingId = null;
+let pairingGeneration = 0;
+let pairingExpiryTimer = null;
+let pairingDeadline = null;
+let retiredPairingId = null;
+let pairingApproval = null;
+const pairingLifetimeMs = 5 * 60 * 1000;
+const pairingClock = () => typeof performance !== "undefined" ? performance.now() : Date.now();
 let nextDeviceCursor = null;
 let shownDeviceCount = 0;
 let nextMessageCursor = null;
@@ -355,7 +362,7 @@ function unauthorizedDescription(path) {
   return "Your sign-in expired. Sign in again.";
 }
 
-async function api(path, method = "GET", body = undefined) {
+async function api(path, method = "GET", body = undefined, expectedStatus = null) {
   const requestEpoch = ownerEpoch;
   const headers = {};
   const unauthenticated = unauthenticatedPaths.has(path);
@@ -391,6 +398,9 @@ async function api(path, method = "GET", body = undefined) {
     const error = new Error(description || `Request failed (${response.status}).`);
     error.status = response.status;
     throw error;
+  }
+  if (expectedStatus !== null && response.status !== expectedStatus) {
+    throw new Error("The server did not confirm the requested operation.");
   }
   // Review decisions return 201 with an intentionally empty body.
   if (response.status === 204 || (response.status === 201 && path === "/v1/owner/opt-out-review/decisions")) return null;
@@ -451,16 +461,104 @@ function loadBelowFoldSections() {
 }
 
 function clearPairing() {
+  pairingGeneration += 1;
+  if (pairingExpiryTimer !== null) window.clearTimeout(pairingExpiryTimer);
+  pairingExpiryTimer = null;
+  pairingDeadline = null;
   activePairingId = null;
   byId("pair-cap-devices-link").hidden = true;
   byId("pair-ticket").hidden = true;
   byId("approve-form").hidden = true;
-  for (const id of ["pair-id", "pair-token", "browser-code", "browser-fingerprint", "phone-code", "phone-fingerprint"]) {
+  for (const id of ["server-origin", "pair-id", "pair-token", "browser-code", "browser-fingerprint", "phone-code", "phone-fingerprint"]) {
     const element = byId(id);
     element.textContent = "";
     if ("value" in element) element.value = "";
   }
   byId("compared").checked = false;
+  if (typeof ZrotextPairingCode !== "undefined") ZrotextPairingCode.clear(byId("pair-qr"));
+  const panel = byId("pair-qr-panel");
+  if (panel) panel.hidden = true;
+  for (const id of ["pair-expiry", "pair-qr-status"]) {
+    const element = byId(id);
+    if (element) element.textContent = "";
+  }
+  const manual = byId("pair-manual");
+  if (manual) manual.open = false;
+  const recovery = byId("resolve-pairing");
+  if (recovery) recovery.hidden = !pairingApproval;
+}
+
+function retirePairingView() {
+  if (activePairingId) retiredPairingId = activePairingId;
+  clearPairing();
+}
+
+function pairingIsCurrent(id, generation) {
+  return dashboardPageActive && id === activePairingId && generation === pairingGeneration &&
+    (pairingDeadline === null || pairingClock() < pairingDeadline);
+}
+
+function agePairing() {
+  if (pairingExpiryTimer !== null) window.clearTimeout(pairingExpiryTimer);
+  pairingExpiryTimer = null;
+  if (!activePairingId || pairingDeadline === null) return;
+  const remaining = pairingDeadline - pairingClock();
+  if (remaining <= 0) {
+    retirePairingView();
+    message("pair-status", "Pairing display expired. Create a new pairing when your phone is ready. The previous ticket will be retired first.");
+    return;
+  }
+  const expiry = byId("pair-expiry");
+  if (expiry) expiry.textContent = `Use within ${Math.ceil(remaining / 60000)} minute${remaining > 60000 ? "s" : ""}. The server checks expiry before accepting the phone.`;
+  const generation = pairingGeneration;
+  pairingExpiryTimer = window.setTimeout(() => {
+    pairingExpiryTimer = null;
+    if (generation === pairingGeneration) agePairing();
+  }, Math.min(remaining, remaining % 60000 || 60000));
+}
+
+function renderPairingCode(ticket) {
+  const panel = byId("pair-qr-panel");
+  const manual = byId("pair-manual");
+  const status = byId("pair-qr-status");
+  if (!panel || !status) return;
+  try {
+    if (typeof ZrotextPairingCode === "undefined") throw new Error("QR unavailable");
+    ZrotextPairingCode.render(byId("pair-qr"), ZrotextPairingCode.encode(window.location.origin, ticket.pairing_id, ticket.token));
+    panel.hidden = false;
+    status.textContent = "Scan with a supported gateway app, then confirm this server on the phone. You will still compare and approve the phone below.";
+  } catch {
+    if (typeof ZrotextPairingCode !== "undefined") ZrotextPairingCode.clear(byId("pair-qr"));
+    panel.hidden = true;
+    if (manual) manual.open = true;
+    status.textContent = "QR display is unavailable. Use the manual details below; the same verification and expiry apply.";
+  }
+}
+
+// Keep only public approval IDs, bound to this owner epoch, across departure.
+async function reconcilePairingApproval() {
+  const attempt = pairingApproval;
+  if (!attempt) return;
+  let deviceId = attempt.deviceId;
+  try {
+    const view = await api(`/v1/enrollment/pairings/${encodeURIComponent(attempt.id)}`);
+    if (uuidPattern.test(view.approved_device_id)) deviceId = view.approved_device_id;
+  } catch (_error) {
+    // Missing does not prove failure. A same-epoch successful response does
+    // establish approval without retaining any pairing or owner secret.
+  }
+  if (attempt.epoch !== ownerEpoch || pairingApproval !== attempt || !dashboardPageActive) return;
+  deviceId ||= attempt.deviceId;
+  if (!uuidPattern.test(deviceId)) {
+    message("pair-status", "The previous approval outcome is unknown. Use Check or cancel interrupted pairing before repeating setup.");
+    return;
+  }
+  pairingApproval = null;
+  if (retiredPairingId === attempt.id) retiredPairingId = null;
+  clearPairing();
+  message("approved-result", `Approved device UUID: ${deviceId}`);
+  message("pair-status", "The previous pairing completed. Continue on that phone and check its connection below. Create another pairing only if you intend to add another phone.");
+  await Promise.all([loadDevices(), loadDeviceCapacity()]);
 }
 
 function clearKeySecret() {
@@ -513,6 +611,9 @@ function clearWebhookEndpoints() {
 }
 
 function clearOwnerState() {
+  retiredPairingId = null;
+  pairingApproval = null;
+  message("approved-result", "");
   summaryBusy = false;
   summaryActiveRequest = null;
   summaryLastAttempt = 0;
@@ -1595,12 +1696,17 @@ async function createOwnerHold() {
 }
 
 async function checkPairing() {
+  agePairing();
+  if (pairingApproval) { await reconcilePairingApproval(); return; }
   if (!activePairingId) return;
   const pairingId = activePairingId;
+  const generation = pairingGeneration;
+  const requestEpoch = ownerEpoch;
   message("pair-status", "Checking phone proof…");
   try {
     const view = await api(`/v1/enrollment/pairings/${encodeURIComponent(pairingId)}`);
     if (pairingId !== activePairingId) return;
+    if (requestEpoch !== ownerEpoch || !pairingIsCurrent(pairingId, generation)) { agePairing(); return; }
     if (view.approved_device_id) {
       message("approved-result", `Approved device UUID: ${view.approved_device_id}`);
       message("pair-status", "Pairing complete.");
@@ -1621,6 +1727,7 @@ async function checkPairing() {
     byId("approve-form").hidden = false;
     message("pair-status", "Key proof accepted. Compare the code and fingerprint with the phone before approval.");
   } catch (error) {
+    if (requestEpoch !== ownerEpoch || !pairingIsCurrent(pairingId, generation)) { agePairing(); return; }
     message("pair-status", `Could not check pairing. ${error.message}`);
     byId("approve-form").hidden = true;
     // A 404 includes expiry, cancellation and exhaustion. Retire the
@@ -1794,53 +1901,125 @@ byId("revoke-other-sessions-form").addEventListener("submit", async (event) => {
 
 byId("create-form").addEventListener("submit", exclusive(async (event) => {
   event.preventDefault();
+  agePairing();
+  if (pairingApproval) { await reconcilePairingApproval(); return; }
   if (activePairingId) {
     message("pair-status", "Finish or cancel the current pairing before creating another.");
     return;
   }
   clearPairing();
   message("approved-result", "");
-  message("pair-status", "Creating pairing…");
+  message("pair-status", "Creating pairing.");
+  const generation = pairingGeneration;
+  const requestEpoch = ownerEpoch;
+  const started = pairingClock();
+  const stale = () => requestEpoch !== ownerEpoch || generation !== pairingGeneration || !dashboardPageActive;
   try {
+    if (retiredPairingId) {
+      const retired = retiredPairingId;
+      try { await api(`/v1/enrollment/pairings/${encodeURIComponent(retired)}/cancel`, "POST"); }
+      catch (error) { if (error.status !== 404) throw error; }
+      if (stale()) return;
+      if (retiredPairingId === retired) retiredPairingId = null;
+    }
     const ticket = await api("/v1/enrollment/pairings", "POST", { display_name: byId("display-name").value });
+    if (requestEpoch !== ownerEpoch) return;
+    if (stale()) {
+      if (uuidPattern.test(ticket.pairing_id)) retiredPairingId = ticket.pairing_id;
+      return;
+    }
     activePairingId = ticket.pairing_id;
-    byId("server-origin").textContent = window.location.origin;
-    byId("pair-id").textContent = ticket.pairing_id;
-    byId("pair-token").textContent = ticket.token;
+    pairingDeadline = started + pairingLifetimeMs;
+    if (pairingClock() >= pairingDeadline) { agePairing(); return; }
+    for (const [id, value] of [["server-origin", window.location.origin], ["pair-id", ticket.pairing_id], ["pair-token", ticket.token]]) {
+      byId(id).textContent = value;
+      if ("value" in byId(id)) byId(id).value = value;
+    }
     byId("pair-ticket").hidden = false;
-    message("pair-status", "Pairing created. Enter the ID and token on the phone within five minutes.");
+    renderPairingCode(ticket);
+    agePairing();
+    message("pair-status", "Pairing ready. Scan it with a supported app or enter the manual details. Then check the phone proof and compare both values before approval.");
   } catch (error) {
+    if (stale()) return;
     message("pair-status", `Could not create pairing. ${error.message}`);
   }
 }));
 
 byId("check-proof").addEventListener("click", checkPairing);
-byId("cancel-pairing").addEventListener("click", exclusive(async () => {
-  if (!activePairingId) return;
+const resolvePairingButton = byId("resolve-pairing");
+if (resolvePairingButton) resolvePairingButton.addEventListener("click", exclusive(async () => {
+  const attempt = pairingApproval;
+  if (!attempt) return;
+  await reconcilePairingApproval();
+  const stale = () => attempt !== pairingApproval || attempt.epoch !== ownerEpoch || !dashboardPageActive;
+  if (stale()) return;
   try {
-    await api(`/v1/enrollment/pairings/${encodeURIComponent(activePairingId)}/cancel`, "POST");
+    // Explicit cancellation serializes with approval; only success proves
+    // retirement. Cancellation404 remains ambiguous and must not release it.
+    await api(`/v1/enrollment/pairings/${encodeURIComponent(attempt.id)}/cancel`, "POST", undefined, 204);
+    if (stale()) return;
+    pairingApproval = null;
+    if (retiredPairingId === attempt.id) retiredPairingId = null;
+    clearPairing();
+    message("pair-status", "Interrupted pairing cancelled. Create a new one when ready.");
+  } catch (_error) {
+    if (stale()) return;
+    message("pair-status", "Could not confirm cancellation. Check or cancel interrupted pairing again when the service is available; do not repeat setup yet.");
+  }
+}));
+
+byId("cancel-pairing").addEventListener("click", exclusive(async () => {
+  if (pairingApproval) { await reconcilePairingApproval(); return; }
+  if (!activePairingId) return;
+  const pairingId = activePairingId;
+  const generation = pairingGeneration;
+  const requestEpoch = ownerEpoch;
+  try {
+    await api(`/v1/enrollment/pairings/${encodeURIComponent(pairingId)}/cancel`, "POST");
+    if (requestEpoch !== ownerEpoch || generation !== pairingGeneration) return;
     clearPairing();
     message("pair-status", "Pairing cancelled. Create a new one when ready.");
   } catch (error) {
+    if (requestEpoch !== ownerEpoch || generation !== pairingGeneration) return;
     message("pair-status", `Could not cancel pairing. ${error.message}`);
   }
 }));
 
 byId("approve-form").addEventListener("submit", exclusive(async (event) => {
   event.preventDefault();
+  agePairing();
+  if (pairingApproval) { await reconcilePairingApproval(); return; }
   if (!activePairingId || !byId("compared").checked) return;
-  message("pair-status", "Approving device…");
+  const pairingId = activePairingId;
+  const generation = pairingGeneration;
+  const requestEpoch = ownerEpoch;
+  const attempt = { id: pairingId, epoch: requestEpoch, deviceId: null };
+  pairingApproval = attempt;
+  message("pair-status", "Approving device.");
   byId("pair-cap-devices-link").hidden = true;
   try {
-    const result = await api(`/v1/enrollment/pairings/${encodeURIComponent(activePairingId)}/approve`, "POST", {
+    const result = await api(`/v1/enrollment/pairings/${encodeURIComponent(pairingId)}/approve`, "POST", {
       comparison_code: byId("phone-code").value,
       key_fingerprint: byId("phone-fingerprint").value.toUpperCase(),
     });
+    if (requestEpoch !== ownerEpoch || pairingApproval !== attempt) return;
+    if (!uuidPattern.test(result.device_id)) throw new Error("The approval response was invalid.");
+    attempt.deviceId = result.device_id;
+    if (!pairingIsCurrent(pairingId, generation)) { agePairing(); return; }
+    pairingApproval = null;
     message("approved-result", `Approved device UUID: ${result.device_id}`);
     message("pair-status", "Pairing complete. Enter this UUID on the phone, then start its gateway connection. Approval does not confirm the phone is connected or ready to send.");
     clearPairing();
     await Promise.all([loadDevices(), loadDeviceCapacity()]);
   } catch (error) {
+    if (requestEpoch !== ownerEpoch || pairingApproval !== attempt) return;
+    if (error.status >= 400 && error.status < 500 && error.status !== 404) pairingApproval = null;
+    if (!pairingIsCurrent(pairingId, generation)) { agePairing(); return; }
+    if (pairingApproval) {
+      retirePairingView();
+      message("pair-status", "Approval outcome is unknown. Use Check or cancel interrupted pairing before repeating setup.");
+      return;
+    }
     if (error.status === 409) {
       message("pair-status", "Device limit reached. Existing devices keep working. Choose which device to revoke below, then retry when your plan has available capacity. Nothing was removed automatically.");
       byId("pair-cap-devices-link").hidden = false;
@@ -1869,12 +2048,14 @@ byId("auto-refresh").addEventListener("change", () => {
   scheduleDashboardRefresh();
 });
 document.addEventListener("visibilitychange", () => {
+  agePairing();
   resumeSummary();
   syncLiveUpdates();
   scheduleDashboardRefresh();
   agePreconditions();
 });
 window.addEventListener("pagehide", () => {
+  retirePairingView();
   if (summaryTimer !== null) window.clearTimeout(summaryTimer);
   summaryTimer = null;
   dashboardPageActive = false;

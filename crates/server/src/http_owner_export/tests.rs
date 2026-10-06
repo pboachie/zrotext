@@ -37,7 +37,7 @@ macro_rules! export_schema {
             [$(($name, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/compose/migrations/", $name)))),+]
         };
     }
-const EXPORT_SCHEMA: [(&str, &str); 87] = export_schema!(
+const EXPORT_SCHEMA: [(&str, &str); 91] = export_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -125,6 +125,10 @@ const EXPORT_SCHEMA: [(&str, &str); 87] = export_schema!(
     "085_customer_routine_calls.sql",
     "086_sealed_line_key_registration.sql",
     "087_sealed_line_activation_exchanges.sql",
+    "088_original_reply_readers.sql",
+    "089_original_routine_sources.sql",
+    "090_invoice_usage_observations.sql",
+    "091_original_reply_origin_binding.sql",
 );
 #[test]
 fn export_schema_includes_every_checked_in_migration() {
@@ -468,6 +472,36 @@ async fn export_is_tenant_bound_and_carries_owner_content() {
         .await
         .unwrap();
     assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+    // An ordinary installation has no proposal and returns only an empty
+    // metadata page after the same owner checks as an installed proposal.
+    let absent = app
+        .clone()
+        .oneshot(get("/v1/owner/export", Some(&session_a)))
+        .await
+        .unwrap();
+    assert_eq!(absent.status(), StatusCode::OK);
+    assert_eq!(
+        body(absent).await["provider_receipts"]["items"],
+        serde_json::json!([])
+    );
+    use crate::provider_sms::receipts::{self, test_support as provider_fixture};
+    db.batch_execute(provider_fixture::PROPOSAL).await.unwrap();
+    let provider_a = Uuid::new_v4();
+    let provider_b = Uuid::new_v4();
+    provider_fixture::seed(&db, a.account_id, provider_a).await;
+    provider_fixture::seed(&db, b.account_id, provider_b).await;
+    let event = provider_fixture::receipt(
+        &provider_fixture::request(a.account_id),
+        Uuid::new_v4(),
+        "sent",
+    );
+    receipts::record_known_receipt(
+        &mut db,
+        &receipts::ElectedWriterPermit::synthetic(a.account_id, provider_fixture::SITE, 1),
+        &event,
+    )
+    .await
+    .unwrap();
     let response = app
         .clone()
         .oneshot(get("/v1/owner/export", Some(&session_a)))
@@ -477,6 +511,38 @@ async fn export_is_tenant_bound_and_carries_owner_content() {
     assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
     let raw = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
     let takeout: Value = serde_json::from_slice(&raw).unwrap();
+    assert_eq!(
+        takeout["provider_receipts"]["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let provider_item = &takeout["provider_receipts"]["items"][0];
+    assert_eq!(provider_item["attempt_id"], provider_a.to_string());
+    assert_eq!(provider_item["state"], "submitted");
+    for field in [
+        "provider_message_id",
+        "event_id",
+        "semantic_digest",
+        "route_fingerprint",
+        "request_digest",
+        "recipient",
+        "sender",
+        "body",
+        "signature",
+    ] {
+        assert!(provider_item.get(field).is_none());
+    }
+    let foreign_cursor = app
+        .clone()
+        .oneshot(get(
+            &format!("/v1/owner/export?provider_receipts_after={provider_b}"),
+            Some(&session_a),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(foreign_cursor.status(), StatusCode::NOT_FOUND);
     assert!(takeout["conversation_inventory"]["consent"].is_null());
     assert_eq!(
         takeout["conversation_inventory"]["sealed_events"],
@@ -570,6 +636,81 @@ async fn export_is_tenant_bound_and_carries_owner_content() {
     let foreign_messages = foreign["messages"].as_array().unwrap();
     assert_eq!(foreign_messages.len(), 1);
     assert_eq!(foreign_messages[0]["message_id"], b_id.to_string());
+    assert_eq!(
+        foreign["provider_receipts"]["items"][0]["attempt_id"],
+        provider_b.to_string()
+    );
+    receipts::erase_receipt_attempt(
+        &mut db,
+        &receipts::ElectedWriterPermit::synthetic(a.account_id, provider_fixture::SITE, 1),
+        provider_a,
+    )
+    .await
+    .unwrap();
+    let erased = app
+        .clone()
+        .oneshot(get("/v1/owner/export", Some(&session_a)))
+        .await
+        .unwrap();
+    assert_eq!(
+        body(erased).await["provider_receipts"]["items"],
+        serde_json::json!([])
+    );
+    let mut expected_attempts = Vec::new();
+    for _ in 0..25 {
+        let attempt = Uuid::new_v4();
+        provider_fixture::seed_for_message(&db, a.account_id, attempt, Uuid::new_v4()).await;
+        expected_attempts.push(attempt.to_string());
+    }
+    expected_attempts.sort();
+    let first = body(
+        app.clone()
+            .oneshot(get("/v1/owner/export", Some(&session_a)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let first_page = &first["provider_receipts"];
+    assert_eq!(first_page["items"].as_array().unwrap().len(), 20);
+    let cursor = first_page["next_cursor"].as_str().unwrap();
+    let second = body(
+        app.clone()
+            .oneshot(get(
+                &format!("/v1/owner/export?provider_receipts_after={cursor}"),
+                Some(&session_a),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        second["provider_receipts"]["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        5
+    );
+    assert_eq!(second["provider_receipts"]["next_cursor"], Value::Null);
+    let actual_attempts: Vec<_> = first_page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(second["provider_receipts"]["items"].as_array().unwrap())
+        .map(|item| item["attempt_id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        actual_attempts, expected_attempts,
+        "bounded pages neither omit nor repeat attempts"
+    );
+    db.batch_execute("ALTER TABLE provider_receipt_events RENAME TO receipt_partial_events")
+        .await
+        .unwrap();
+    let partial = app
+        .clone()
+        .oneshot(get("/v1/owner/export", Some(&session_a)))
+        .await
+        .unwrap();
+    assert_eq!(partial.status(), StatusCode::SERVICE_UNAVAILABLE);
     admin
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await

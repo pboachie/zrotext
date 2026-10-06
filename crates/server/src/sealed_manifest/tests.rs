@@ -797,3 +797,65 @@ fn later_generation_requires_transition_anchor_even_with_valid_owner_signature()
         "manifest chain"
     );
 }
+
+#[test]
+fn conversation_key_deadlines_track_each_roles_own_until() {
+    // The reply path must not outlive the archive reader (role 2) or the
+    // phone conversation signer (role 4): each selected key contributes its
+    // own cryptographic deadline, independent of the role-3 integration
+    // reader's, and each is capped by the manifest's own expiry.
+    let mut fixture = SignedFixture::new();
+    let device: [u8; 16] = fixture.manifest[fixture.record(4) + 98..fixture.record(4) + 114]
+        .try_into()
+        .unwrap();
+    let line: [u8; 16] = fixture.manifest[fixture.record(4) + 114..fixture.record(4) + 130]
+        .try_into()
+        .unwrap();
+    let verified = fixture.verified();
+    let base = verified
+        .conversation_keys_with_deadlines(&device, &line, fixture.now)
+        .unwrap()
+        .signer_until;
+    // The base deadline is the role until already capped by the manifest's
+    // own expiry, which sits inside the full role window.
+    assert!(base <= fixture.now + DAY_MS);
+    assert!(base > fixture.now);
+
+    // Shorten only the role-2 archive reader's deadline: the signer deadline
+    // must be unaffected, and vice versa.
+    let archive_short = fixture.now + 60_000;
+    let archive_record = fixture.record(2);
+    fixture.manifest[archive_record + 140..archive_record + 148]
+        .copy_from_slice(&archive_short.to_be_bytes());
+    fixture.resign();
+    let verified = verify(
+        &fixture.pin,
+        &fixture.manifest,
+        &fixture.trust(),
+        fixture.now,
+    )
+    .unwrap();
+    let keys = verified
+        .conversation_keys_with_deadlines(&device, &line, fixture.now)
+        .unwrap();
+    assert_eq!(keys.archive_until, archive_short);
+    assert_eq!(keys.signer_until, base);
+
+    let signer_short = fixture.now + 120_000;
+    let signer_record = fixture.record(4);
+    fixture.manifest[signer_record + 140..signer_record + 148]
+        .copy_from_slice(&signer_short.to_be_bytes());
+    fixture.resign();
+    let verified = verify(
+        &fixture.pin,
+        &fixture.manifest,
+        &fixture.trust(),
+        fixture.now,
+    )
+    .unwrap();
+    let keys = verified
+        .conversation_keys_with_deadlines(&device, &line, fixture.now)
+        .unwrap();
+    assert_eq!(keys.archive_until, archive_short);
+    assert_eq!(keys.signer_until, signer_short);
+}

@@ -2,6 +2,8 @@
 import contextlib
 import io
 import importlib.util
+import json
+import re
 from pathlib import Path
 import tempfile
 import unittest
@@ -17,6 +19,122 @@ def result(class_name, name="sample", code=0):
 
 
 class DeviceSmokeTests(unittest.TestCase):
+    def test_shared_compiled_accessibility_corpus_matches_explicit_device_inventory(self):
+        source = smoke.ROOT / "android/app/src/sharedTest/java/org/zrotext/gateway/GatewayAccessibilityChecks.kt"
+        methods = re.findall(r"@Test\s+fun\s+([A-Za-z_][A-Za-z0-9_]*)", source.read_text(encoding="utf-8"))
+        device = smoke.ROOT / "android/app/src/androidTest/java/org/zrotext/gateway/GatewayAccessibilityDeviceTest.kt"
+        self.assertRegex(device.read_text(encoding="utf-8"), r"class GatewayAccessibilityDeviceTest\s*:\s*GatewayAccessibilityChecks\(\)")
+        self.assertEqual(len(methods), 7)
+        self.assertEqual(frozenset(methods), smoke.ACCESSIBILITY_METHODS)
+        self.assertEqual(smoke.selected_tests()[smoke.ACCESSIBILITY], len(methods))
+
+    def test_manual_pairing_success_is_required_in_addition_to_all_six_previous_accessibility_cases(self):
+        expected = {smoke.ACCESSIBILITY: 7}
+        manual = "explicitManualPairingKeepsLabelsAndTokenPasswordSemantics"
+        self.assertIn(manual, smoke.ACCESSIBILITY_METHODS)
+        previous = "".join(result(smoke.ACCESSIBILITY, name) for name in sorted(smoke.ACCESSIBILITY_METHODS - {manual}))
+        final = "INSTRUMENTATION_CODE: -1\n"
+        smoke.verify_results(previous + result(smoke.ACCESSIBILITY, manual) + final, expected)
+        with self.assertRaisesRegex(ValueError, "exact expected test counts"):
+            smoke.verify_results(previous + final, expected)
+        for code in (-1, -2, -3, -4):
+            with self.subTest(code=code), self.assertRaises(ValueError):
+                smoke.verify_results(previous + result(smoke.ACCESSIBILITY, manual, code) + final, expected)
+        with self.assertRaisesRegex(ValueError, "exact Home acceptance corpus"):
+            smoke.verify_results(previous + result(smoke.ACCESSIBILITY, "unrelatedPassingTest") + final, expected)
+
+    def test_incomplete_runner_reports_selected_public_identity_without_accepting_it(self):
+        expected = {smoke.PRECONDITIONS: 2}
+        output = result(smoke.PRECONDITIONS, "finished") + result(smoke.PRECONDITIONS, "interrupted", 1)
+        output += "INSTRUMENTATION_RESULT: shortMsg=Process crashed.\n"
+        with mock.patch.object(smoke, "public_test_methods", return_value={"finished", "interrupted"}):
+            report = smoke.public_failure_diagnostic(output, expected)
+        self.assertEqual(report["classes"], [{"class": smoke.PRECONDITIONS, "expected": 2, "completed": 1}])
+        self.assertEqual(report["status_events"][-1], {"class": smoke.PRECONDITIONS, "test": "interrupted", "status": 1})
+        self.assertEqual(report["final_code_count"], 0)
+        self.assertTrue(report["process_crash_marker"])
+        with self.assertRaisesRegex(ValueError, "exact expected test counts"):
+            smoke.verify_results(output, expected)
+
+    def test_public_failure_protocol_never_exposes_unknown_names_stacks_or_runner_messages(self):
+        expected = {smoke.PRECONDITIONS: 1}
+        private = "synthetic-private-diagnostic"
+        output = result(private, private, -2) + result(smoke.PRECONDITIONS, private, 1)
+        output += f"INSTRUMENTATION_STATUS: stack={private}\nINSTRUMENTATION_RESULT: shortMsg={private}\n"
+        output += f"INSTRUMENTATION_CODE: {private}\n"
+        with mock.patch.object(smoke, "public_test_methods", return_value={"sample"}):
+            report = smoke.public_failure_diagnostic(output, expected)
+        self.assertNotIn(private, json.dumps(report))
+        self.assertEqual(report["status_events"][0], {"class": "unselected", "test": "unavailable", "status": -2})
+        self.assertEqual(report["status_events"][1]["test"], "unavailable")
+        self.assertEqual(report["final_codes"], ["unsupported"])
+        self.assertTrue(report["runner_message_present"])
+        self.assertFalse(report["process_crash_marker"])
+
+    def test_public_failure_protocol_bounds_events_and_keeps_strict_refusal(self):
+        expected = {smoke.PRECONDITIONS: 1}
+        output = result(smoke.PRECONDITIONS, code=1) * (smoke.MAX_PUBLIC_STATUS_EVENTS + 3)
+        output += "INSTRUMENTATION_CODE: 0\n" * 7
+        report = smoke.public_failure_diagnostic(output, expected)
+        self.assertEqual(len(report["status_events"]), smoke.MAX_PUBLIC_STATUS_EVENTS)
+        self.assertEqual(report["omitted_status_events"], 3)
+        self.assertEqual(report["final_codes"], [0] * 4)
+        self.assertEqual(report["final_code_count"], 7)
+        with self.assertRaises(ValueError):
+            smoke.verify_results(output, expected)
+
+    def test_journal_upgrade_is_selected_with_only_its_explicit_emulator_gate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            absent = smoke.selected_tests(root)
+            self.assertNotIn(smoke.JOURNAL_UPGRADE, absent)
+            self.assertNotIn("journalUpgradeIsolatedEmulator", smoke.instrumentation_arguments(absent))
+            source = root / "android/app/src/androidTest/java/org/zrotext/gateway/JournalDeviceUpgradeTest.kt"
+            source.parent.mkdir(parents=True)
+            source.touch()
+            expected = {smoke.PRECONDITIONS: 1, smoke.JOURNAL_UPGRADE: 2}
+            self.assertEqual(smoke.selected_tests(root), expected)
+            arguments = smoke.instrumentation_arguments(expected)
+            self.assertIn(smoke.JOURNAL_UPGRADE, arguments[arguments.index("class") + 1].split(","))
+            position = arguments.index("journalUpgradeIsolatedEmulator")
+            self.assertEqual(arguments[position - 1:position + 2], ["-e", "journalUpgradeIsolatedEmulator", "true"])
+            self.assertEqual(arguments.count("journalUpgradeIsolatedEmulator"), 1)
+            self.assertNotIn("entryOptInIsolatedEmulator", arguments)
+
+    def test_journal_upgrade_requires_both_named_successes_and_retains_custody_results(self):
+        expected = {smoke.PRECONDITIONS: 1, smoke.JOURNAL_UPGRADE: 2, smoke.ROOT_STORAGE: 3}
+        output = result(smoke.PRECONDITIONS)
+        output += "".join(result(smoke.JOURNAL_UPGRADE, name) for name in sorted(smoke.JOURNAL_UPGRADE_METHODS))
+        output += "".join(result(smoke.ROOT_STORAGE, f"case{index}") for index in range(3))
+        for custody in ("unsupported", "platform-reported-hardware"):
+            suffix = f"INSTRUMENTATION_RESULT: rootStorageCustody={custody}\nINSTRUMENTATION_CODE: -1\n"
+            self.assertEqual(smoke.verify_results(output + suffix, expected), custody)
+        with self.assertRaises(ValueError):
+            smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n", expected)
+
+    def test_journal_upgrade_missing_old_duplicate_substituted_and_skipped_results_refuse(self):
+        expected = {smoke.PRECONDITIONS: 1, smoke.JOURNAL_UPGRADE: 2}
+        names = sorted(smoke.JOURNAL_UPGRADE_METHODS)
+        cases = [result(smoke.JOURNAL_UPGRADE, name) for name in names]
+        prefix, suffix = result(smoke.PRECONDITIONS), "INSTRUMENTATION_CODE: -1\n"
+        smoke.verify_results(prefix + "".join(cases) + suffix, expected)
+        refused = ["", cases[0], cases[1],
+                   result(smoke.JOURNAL_UPGRADE, "installedJournalOpensAtVersionTwelveWithIdentityBoundOutbox"),
+                   cases[0] * 2, "".join(cases) + cases[0],
+                   cases[0] + result(smoke.JOURNAL_UPGRADE, "unrelatedPassingTest")]
+        refused += [cases[0] + result(smoke.JOURNAL_UPGRADE, names[1], code) for code in (-1, -2, -3, -4)]
+        for output in refused:
+            with self.subTest(output=output), self.assertRaises(ValueError):
+                smoke.verify_results(prefix + output + suffix, expected)
+        with self.assertRaises(ValueError):
+            smoke.verify_results(prefix + "".join(cases) + suffix, {smoke.PRECONDITIONS: 1})
+        for ending in ("", "INSTRUMENTATION_CODE: 0\n", suffix * 2,
+                       "INSTRUMENTATION_CODE: unsupported\n", suffix + "INSTRUMENTATION_FAILED\n"):
+            with self.subTest(ending=ending), self.assertRaises(ValueError):
+                smoke.verify_results(prefix + "".join(cases) + ending, expected)
+        with self.assertRaises(ValueError):
+            smoke.verify_results(prefix + cases[0] + "INSTRUMENTATION_STATUS_CODE: unsupported\n" + suffix, expected)
+
     def test_failed_identity_is_public_only_and_preserves_nonpassing_status(self):
         expected = {smoke.PRECONDITIONS: 1}
         for code in (-1, -2, -3, -4):
@@ -115,11 +233,11 @@ class DeviceSmokeTests(unittest.TestCase):
         smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n", {smoke.PRECONDITIONS: 1})
         for name in sorted(smoke.ACCESSIBILITY_METHODS):
             output += result(smoke.ACCESSIBILITY, name)
-        smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n", {smoke.PRECONDITIONS: 1, smoke.ACCESSIBILITY: 6})
+        smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n", {smoke.PRECONDITIONS: 1, smoke.ACCESSIBILITY: 7})
         for index in range(12):
             output += result(smoke.MANIFEST_AUTHORITY, f"example{index}")
         smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n",
-                             {smoke.PRECONDITIONS: 1, smoke.ACCESSIBILITY: 6, smoke.MANIFEST_AUTHORITY: 12})
+                             {smoke.PRECONDITIONS: 1, smoke.ACCESSIBILITY: 7, smoke.MANIFEST_AUTHORITY: 12})
 
     def test_failure_skips_and_incomplete_runs_fail(self):
         for code in [-1, -2, -3, -4]:
@@ -143,7 +261,7 @@ class DeviceSmokeTests(unittest.TestCase):
             source = root / "android/app/src/androidTest/java/org/zrotext/gateway/GatewayAccessibilityDeviceTest.kt"
             source.parent.mkdir(parents=True)
             source.touch()
-            expected = {smoke.PRECONDITIONS: 1, smoke.ACCESSIBILITY: 6}
+            expected = {smoke.PRECONDITIONS: 1, smoke.ACCESSIBILITY: 7}
             self.assertEqual(smoke.selected_tests(root), expected)
             partial = result(smoke.PRECONDITIONS) + ''.join(
                 result(smoke.ACCESSIBILITY, name) for name in sorted(smoke.ACCESSIBILITY_METHODS)
@@ -154,7 +272,7 @@ class DeviceSmokeTests(unittest.TestCase):
                                  + 'INSTRUMENTATION_CODE: -1\n', expected)
 
     def test_same_count_cannot_replace_home_acceptance_with_another_test(self):
-        expected = {smoke.ACCESSIBILITY: 6}
+        expected = {smoke.ACCESSIBILITY: 7}
         home = "homeObservationsKeepReadOnlyLabelsAndReadingOrderAtCurrentTextScale"
         output = "".join(result(smoke.ACCESSIBILITY, name) for name in smoke.ACCESSIBILITY_METHODS)
         smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n", expected)

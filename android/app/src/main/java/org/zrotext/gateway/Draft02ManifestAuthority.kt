@@ -114,6 +114,15 @@ internal class Draft02ManifestAuthority private constructor(
         override fun toString(): String = "ManifestEnvelopeContext"
     }
 
+    /** Selected points are lookup-only from this exact verified context and rechecked at use. */
+    fun readerPoint(context: Context, reader: Reader, nowMs: Long): ByteArray {
+        require(context.generation==generation && context.version==version && same(context.manifestDigest,semanticDigest))
+        val checked=this.context(Request(context.direction,context.accountId,context.messageId,context.deviceId,
+            context.lineId,context.peer,context.signerKeyId,context.readers),nowMs)
+        require(checked.readers.any { it.role==reader.role && same(it.keyId,reader.keyId) })
+        return records.single { it.role==reader.role && same(it.id,reader.keyId) }.point.copyOf()
+    }
+
     /** Rechecks time at use. Durable chain and live grant checks remain the caller's responsibility. */
     fun context(request: Request, nowMs: Long): Context {
         window(issued, expires, nowMs)

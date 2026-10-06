@@ -26,13 +26,13 @@ class SealedLineActivationTest {
         val proof = checkNotNull(f.device.prepare(f.challenge, f.selection))
         assertFalse(SealedLineActivationTranscript.verify(f.point, sms, proof.signature()))
     }
-    @Test fun api30AmbiguousEmbeddedMissingOrDifferentSimNeverSigns() {
+    @Test fun api30AmbiguousSelectedEmbeddedMissingOrDifferentSimNeverSigns() {
         val f = SealedLineActivationFixture()
         f.api = 30; assertNull(f.device.prepare(f.challenge, f.selection))
         f.api = 31
         for (cards in listOf(null, emptyList(), listOf(ActiveSimCard(7, null)),
             listOf(ActiveSimCard(7, 42, true)), listOf(ActiveSimCard(8, 42)),
-            listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43)))) {
+            listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 42)))) {
             f.cards = cards; assertNull(f.device.prepare(f.challenge, f.selection))
         }
         assertEquals(0, f.signatures)
@@ -161,5 +161,60 @@ class SealedLineActivationTest {
         val f = SealedLineActivationFixture(); val proof = checkNotNull(f.device.prepare(f.challenge, f.selection))
         f.duringPointRead = { f.now -= 1 }
         assertFalse(f.device.validate(proof, f.selection, true))
+    }
+
+    @Test fun exactSelectedPhysicalSimWithEmbeddedPeerCompletesDurableAckPath() {
+        val f = SealedLineActivationFixture()
+        f.cards = listOf(ActiveSimCard(8, 43, true), ActiveSimCard(7, 42))
+        val provider = f.provider()
+        val (_, ack) = f.start(provider)
+        assertNotNull(provider.accept(f.activated(ack)))
+        assertEquals(ActivatedSimCard(7, 42), f.installedProof?.sim)
+        assertEquals(listOf("install", "commit"), f.events)
+        assertFalse(provider.installationReceiptConfirmed())
+        provider.accept(SealedLineActivationFrames.Incoming.InstallAck(
+            SealedLineActivationFrames.Ack(42, ack.challengeId, true)))
+        assertTrue(provider.installationReceiptConfirmed())
+        f.cards = listOf(ActiveSimCard(7, 42), ActiveSimCard(9, null, true))
+        assertTrue(provider.installationReceiptConfirmed())
+    }
+
+    @Test fun unrelatedPeerChangeDuringSigningPreservesSelectedPhysicalProof() {
+        val f = SealedLineActivationFixture()
+        f.cards = listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43))
+        f.afterSign = { f.cards = listOf(ActiveSimCard(7, 42), ActiveSimCard(9, -1)) }
+        val proof = checkNotNull(f.device.prepare(f.challenge, f.selection))
+        assertEquals(ActivatedSimCard(7, 42), proof.sim)
+        assertEquals(1, f.signatures)
+    }
+
+    @Test fun selectedLossDuringStorageCannotCommitReceiptOrClaimReadyWithPeerPresent() {
+        for (mutation in 0..2) {
+            val f = SealedLineActivationFixture()
+            f.cards = listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43))
+            val provider = f.provider(); val (_, ack) = f.start(provider)
+            f.afterInstall = { when (mutation) {
+                0 -> f.selected = 8
+                1 -> f.cards = listOf(ActiveSimCard(8, 43))
+                else -> f.cards = listOf(ActiveSimCard(7, 44), ActiveSimCard(8, 43))
+            } }
+            assertNull(provider.accept(f.activated(ack)))
+            assertEquals(listOf("install"), f.events)
+            assertNull(f.stored)
+            assertFalse(provider.installationReceiptConfirmed())
+        }
+    }
+
+    @Test fun selectedChangeInsideFinalObservationRefusesValidatedProof() {
+        val f = SealedLineActivationFixture()
+        val proof = checkNotNull(f.device.prepare(f.challenge, f.selection))
+        var observations = 0
+        val device = SealedLineActivationDevice({ 31 }, { f.selected }, {
+            observations++
+            if (observations == 2) f.selected = 8
+            listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43))
+        }, { f.point }, { _, _, _, _ -> error("Validation must not sign") }, { f.now })
+        assertFalse(device.validate(proof, f.selection, true))
+        assertEquals(2, observations)
     }
 }

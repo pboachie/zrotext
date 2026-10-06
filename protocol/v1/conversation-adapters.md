@@ -525,3 +525,42 @@ before their referenced parents. Existing immutable trust/line erasure blockers
 still apply. This candidate is outside the ordinary migration directory and
 remains unmounted until its allocation, review and aggregate validation gates
 are satisfied. It does not authorize real SMS or create credentials.
+### Active authenticated time maintenance
+
+The conversation runtime can refresh its own authenticated time through the existing
+nonce-, session- and epoch-bound channel. This operation requires the exact currently
+eligible capture scope before and after the exchange. It preserves the original
+admission lease and never renews phone consent, reopens a stopped scope, or retries a
+protected packet whose acknowledgement is unknown.
+
+The runtime retains a conservative monotonic witness captured before its previous
+successful time exchange. That witness remains authoritative for the old deadline
+through the new exchange and final authority checks, even after the clock installs
+the new authenticated sample. Equality at the old deadline refuses and closes
+admission. Using exchange start rather than reply receipt can expire this witness
+earlier by the bounded exchange duration; it never increases the unchanged
+30-second age limit. First-receipt and current-scope checks also retain this old
+witness until final publication. Missing, regressed or overflowing monotonic time,
+session loss, revoked authority and failed/late replies fail closed.
+
+The explicitly assembled connection may own one maintenance scheduler, using the
+application's existing shared timeout executor. Confirmed-active presentation only
+triggers submission; it grants no authority. An immediate attempt and subsequent
+10-second cadence use at most one owned future and one pending operation. The
+scheduler does no database, key, authority or network work. Construction without
+that optional scheduler creates no maintenance owner; ordinary dormant mounts stay
+disabled. Close cancels only owned scheduling before existing runtime teardown.
+
+The existing serial executor can discard accepted queued work after a preceding
+fatal worker failure. Such work does not run its cleanup or promise a completion.
+One abandoned reservation remains bounded until connection close or lifecycle epoch
+retirement; no callback, retry or replacement request is invented. Late work cannot
+release another operation or publish success after retirement. Scheduling cadence
+does not guarantee renewal during OS, queue or network stalls. Original admission
+expiry remains independent, including the unchanged maximum admission duration.
+
+The synthetic capture journey explicitly calls this same runtime operation between
+bounded groups while retaining every original receipt, exact durable ACK,
+persistence, deduplication, scrubbing, Stop and withdrawal assertion. These callers
+do not establish physical-device custody, accepted HPKE provider, carrier delivery,
+activation-lease renewal or backup/restore acceptance.

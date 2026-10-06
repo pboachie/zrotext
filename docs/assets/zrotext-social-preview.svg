@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title description">
+  <title id="title">ZROtext project preview</title>
+  <desc id="description">The green ZROtext mark above the project name and the description Open-source Android SMS gateway.</desc>
+  <rect width="1200" height="630" rx="24" fill="#0b100b"/>
+  <g transform="translate(84 78) scale(3.3333)">
+    <rect width="48" height="48" rx="11" fill="#b6f36a"/>
+    <path d="M12 14h24L15 33h21M13 24h9" fill="none" stroke="#0b100b" stroke-width="4" stroke-linecap="square" stroke-linejoin="miter"/>
+  </g>
+  <text x="78" y="397" fill="#b6f36a" font-family="sans-serif" font-size="112" font-weight="700">ZROtext</text>
+  <text x="84" y="479" fill="#b6f36a" font-family="sans-serif" font-size="42">Open-source Android SMS gateway</text>
+</svg>

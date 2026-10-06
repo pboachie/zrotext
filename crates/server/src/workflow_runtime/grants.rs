@@ -24,6 +24,10 @@ pub struct GrantRequest {
     /// reader. Owner confirmation declares its source revision; the server
     /// cannot prove plaintext equivalence and never decrypts either envelope.
     pub content_envelope: Option<Vec<u8>>,
+    /// Explicit owner-selected original-reader authority. Its exact identity
+    /// remains attached to the workflow grant; another reader grant cannot
+    /// restore this grant after withdrawal.
+    pub original_grant_id: Option<Uuid>,
 }
 
 /// Returned once after commit. Deliberately has no Debug or Serialize that
@@ -39,6 +43,39 @@ fn registry_error(error: RegistryError) -> AuthError {
         RegistryError::Authentication(error) => error,
         RegistryError::Rejected(_) => AuthError::Forbidden,
     }
+}
+
+async fn registry_binding_deadline(
+    tx: &Transaction<'_>,
+    account: Uuid,
+    request: &GrantRequest,
+    header: &wire::Header,
+    reader: &[u8; 32],
+) -> Result<i64, AuthError> {
+    if let Some(original) = request.original_grant_id {
+        tx.query_opt(
+            "SELECT grant_id FROM original_reply_grants WHERE account_id=$1 AND grant_id=$2 FOR SHARE",
+            &[&account, &original],
+        )
+        .await?
+        .ok_or(AuthError::Forbidden)?;
+    }
+    tx.query_one(
+        "SELECT workflow_registry_binding_deadline($1,$2,$3,$4,$5,$6,$7,$8)",
+        &[
+            &account,
+            &request.connector,
+            &reader.as_slice(),
+            &header.interval,
+            &header.trust_generation,
+            &header.manifest_version,
+            &header.manifest_digest.as_slice(),
+            &request.original_grant_id,
+        ],
+    )
+    .await?
+    .get::<_, Option<i64>>(0)
+    .ok_or(AuthError::Forbidden)
 }
 
 async fn current_connector_grants(
@@ -82,6 +119,7 @@ pub async fn issue_grant(
     if [request.connector, request.context, request.contact]
         .iter()
         .any(Uuid::is_nil)
+        || request.original_grant_id.is_some_and(|id| id.is_nil())
         || (request.permissions.bits() & 72 != 0 && request.signer.is_none())
     {
         return Err(AuthError::InvalidInput);
@@ -173,16 +211,22 @@ pub async fn issue_grant(
                 header.manifest_version,
                 header.manifest_digest,
             )
-        || (
-            snapshot.generation,
-            snapshot.version,
-            snapshot.digest.as_slice(),
-        ) != (
-            registration.get(2),
-            registration.get(3),
-            registration.get::<_, Vec<u8>>(4).as_slice(),
-        )
+        || (request.original_grant_id.is_none()
+            && (
+                snapshot.generation,
+                snapshot.version,
+                snapshot.digest.as_slice(),
+            ) != (
+                registration.get(2),
+                registration.get(3),
+                registration.get::<_, Vec<u8>>(4).as_slice(),
+            ))
     {
+        return Err(AuthError::Forbidden);
+    }
+    let selected_deadline =
+        registry_binding_deadline(&tx, account, request, &header, &reader).await?;
+    if request.original_grant_id.is_some() && request.expires_ms > selected_deadline {
         return Err(AuthError::Forbidden);
     }
     let readers = activation::readers(&s);
@@ -267,8 +311,8 @@ pub async fn issue_grant(
     let hash = hasher.workflow_credential_hash(&token);
     let grant = Uuid::new_v4();
     let signer = request.signer.map(|value| value.to_vec());
-    tx.execute("INSERT INTO workflow_integration_grants(account_id,grant_id,credential_hash,connector_id,reader_key_id,signer_key_id,device_id,line_id,binding_generation,trust_generation,manifest_version,manifest_digest,context_id,context_revision,contact_id,purpose,permissions,created_by_user,created_session,created_ms,expires_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)",
-        &[&account,&grant,&hash.as_slice(),&request.connector,&reader.as_slice(),&signer,&header.device,&header.line,&header.binding_generation,&snapshot.generation,&snapshot.version,&snapshot.digest.as_slice(),&header.context,&header.revision,&request.contact,&request.purpose.slug(),&request.permissions.bits(),&owner.user_id,&owner.session_id,&snapshot.accepted_ms,&request.expires_ms]).await?;
+    tx.execute("INSERT INTO workflow_integration_grants(account_id,grant_id,credential_hash,connector_id,reader_key_id,signer_key_id,device_id,line_id,binding_generation,trust_generation,manifest_version,manifest_digest,context_id,context_revision,contact_id,purpose,permissions,created_by_user,created_session,created_ms,expires_ms,supplemental_original_grant_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)",
+        &[&account,&grant,&hash.as_slice(),&request.connector,&reader.as_slice(),&signer,&header.device,&header.line,&header.binding_generation,&snapshot.generation,&snapshot.version,&snapshot.digest.as_slice(),&header.context,&header.revision,&request.contact,&request.purpose.slug(),&request.permissions.bits(),&owner.user_id,&owner.session_id,&snapshot.accepted_ms,&request.expires_ms,&request.original_grant_id]).await?;
     if let Some(envelope) = &request.content_envelope {
         let digest = Sha256::digest(envelope);
         tx.execute("INSERT INTO workflow_connector_context_envelopes(account_id,grant_id,context_id,context_revision,request_id,envelope_digest,envelope,created_by_user,created_ms) VALUES($1,$2,$3,$4,$2,$5,$6,$7,$8)",
@@ -328,6 +372,8 @@ pub async fn issue_grant(
         AND k.valid_from_ms<=floor(extract(epoch FROM clock_timestamp())*1000)::bigint \
         AND k.valid_until_ms>floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
         &[&account,&request.connector,&owner.session_id]).await?.ok_or(AuthError::Forbidden)?.get::<_,i64>(0);
+    let selected_deadline =
+        registry_binding_deadline(&tx, account, request, &header, &reader).await?;
     // The final signer and connector queries can wait after the snapshot's
     // clock. Compare locked authority and ceremony deadlines against a fresh
     // database clock after those queries, before returning a credential.
@@ -337,10 +383,12 @@ pub async fn issue_grant(
     if final_now < final_snapshot.accepted_ms
         || final_now >= request.expires_ms
         || final_now >= s.expires_ms
+        || (request.original_grant_id.is_some() && request.expires_ms > selected_deadline)
         || final_now
             >= origin_deadline
                 .min(connector_deadline)
                 .min(connector_grant_deadline)
+                .min(selected_deadline)
         || !factor.current_at(final_now as u64)
     {
         return Err(AuthError::Forbidden);

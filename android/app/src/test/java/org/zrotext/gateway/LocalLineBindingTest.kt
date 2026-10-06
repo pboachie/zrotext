@@ -60,6 +60,27 @@ class LocalLineBindingTest {
         } finally { db.close() }
     }
 
+    @Test fun exactSelectedDualSimBindingKeepsPhysicalIdentityWhenPeerChanges() {
+        val db = Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(),
+            SmsJournalDatabase::class.java).allowMainThreadQueries().build()
+        try {
+            val dao = db.attempts()
+            val binding = LocalLineBinding(accountId = account, deviceId = device,
+                lineId = line, generation = 1, subscriptionId = 7, installedAtMs = 1000, cardId = 42)
+            assertTrue(dao.installVerifiedLineBinding(binding,
+                listOf(ActiveSimCard(8, 43, true), ActiveSimCard(7, 42))))
+            assertEquals(binding, dao.currentLineBinding())
+            val sealed = InboundVault.sealSenderWithKey(testKey, testSender, firstPdu)
+            assertTrue(dao.recordLocalWithdrawal(firstPdu, sender, InboundClassification.OPT_OUT, 7,
+                listOf(ActiveSimCard(7, 42), ActiveSimCard(9, null, true)), 2000,
+                sealed.ciphertext, sealed.nonce))
+            assertEquals(line, dao.localWithdrawal(firstPdu)?.lineId)
+            assertEquals(1L, dao.localWithdrawal(firstPdu)?.bindingGeneration)
+            assertEquals(7, dao.currentLineBinding()?.subscriptionId)
+            assertEquals(42, dao.currentLineBinding()?.cardId)
+        } finally { db.close() }
+    }
+
     @Test fun verifiedBindingRequiresOneSelectedSubscriptionAndIncreasingGeneration() {
         val db = Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(),
             SmsJournalDatabase::class.java).allowMainThreadQueries().build()
@@ -70,7 +91,7 @@ class LocalLineBindingTest {
                 cardId = 42)
             assertFalse(dao.installVerifiedLineBinding(first, emptyList()))
             assertFalse(dao.installVerifiedLineBinding(first,
-                listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43))))
+                listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 42))))
             assertFalse(dao.installVerifiedLineBinding(first, listOf(ActiveSimCard(8, 43))))
             assertFalse(dao.installVerifiedLineBinding(first, listOf(ActiveSimCard(7, 43))))
             assertFalse(dao.installVerifiedLineBinding(first,
@@ -118,11 +139,11 @@ class LocalLineBindingTest {
             assertArrayEquals(sealed.nonce, stored.senderNonce)
             assertEquals(testSender, InboundVault.openSenderWithKey(testKey,
                 InboundVault.Sealed(stored.encryptedSender!!, stored.senderNonce!!), firstPdu))
-            // A second SIM or missing subscription evidence can only make a global local block.
+            // A selected-card collision or missing subscription evidence remains unattributed.
             val ambiguous = "c".repeat(64)
             assertTrue(dao.recordLocalWithdrawal(ambiguous, sender,
                 InboundClassification.OPT_OUT_REVIEW, 7,
-                listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43)), 2002))
+                listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 42)), 2002))
             assertNull(dao.localWithdrawal(ambiguous)?.lineId)
             assertNull(dao.localWithdrawal(ambiguous)?.bindingGeneration)
             assertNull(dao.localWithdrawal(ambiguous)?.encryptedSender)
@@ -165,7 +186,7 @@ class LocalLineBindingTest {
             val sealed = InboundVault.sealSenderWithKey(testKey, testSender, firstPdu)
             val observations = listOf<List<ActiveSimCard>?>(
                 listOf(ActiveSimCard(7, 43)), null, listOf(ActiveSimCard(7, -2)),
-                listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43)),
+                listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 42)),
                 listOf(ActiveSimCard(7, 42, isEmbedded = true)))
             observations.forEachIndexed { index, observation ->
                 val token = ('b' + index).toString().repeat(64)

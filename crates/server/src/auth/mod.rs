@@ -38,6 +38,8 @@ pub mod account;
 pub mod agent_grants;
 pub mod collaboration;
 pub mod mfa;
+mod owner_reduction;
+pub(crate) use owner_reduction::OwnerReductionFence;
 mod password_work;
 #[cfg(test)]
 mod roles_tests;
@@ -89,6 +91,10 @@ impl TokenHasher {
 
     pub(crate) fn workflow_credential_hash(&self, token: &str) -> [u8; 32] {
         self.digest(b"workflow-credential-v1", token)
+    }
+
+    pub(crate) fn original_reply_credential_hash(&self, token: &str) -> [u8; 32] {
+        self.digest(b"original-reply-credential-v1", token)
     }
 
     fn digest(&self, domain: &[u8], token: &str) -> [u8; 32] {

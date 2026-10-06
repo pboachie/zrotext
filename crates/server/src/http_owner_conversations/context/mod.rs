@@ -219,7 +219,7 @@ pub async fn write(
     Ok(h.revision)
 }
 
-async fn load(
+pub(crate) async fn load(
     tx: &Transaction<'_>,
     account: Uuid,
     id: Uuid,
@@ -245,6 +245,33 @@ async fn load(
         return Err(ConversationError::Forbidden);
     }
     Ok(bytes)
+}
+
+/// Load only the current immutable head and authorize the actual archive reader.
+/// Grant references intentionally do not keep purged archive bytes alive.
+pub(crate) async fn managed_grant_source(
+    tx: &Transaction<'_>,
+    owner: &SessionPrincipal,
+    authority: &mut CurrentAuthority<'_, '_>,
+    id: Uuid,
+    revision: i64,
+    digest: &[u8; 32],
+) -> Result<(wire::Header, i64), ConversationError> {
+    let bytes = load(tx, owner.tenant.account_id(), id, None).await?;
+    let header = wire::parse(&bytes)?;
+    if header.revision != revision || Sha256::digest(&bytes).as_slice() != digest {
+        return Err(ConversationError::Forbidden);
+    }
+    authorize(tx, owner, authority, &header, true).await?;
+    let interval = activation::load(tx, header.account, header.interval).await?;
+    let readers = activation::readers(&interval.statement);
+    let wanted = activation::wanted(&interval.statement, header.context, &readers);
+    let deadline = authority
+        .admission_deadline(&wanted)
+        .await?
+        .min(header.expires_ms)
+        .min(interval.statement.expires_ms);
+    Ok((header, deadline))
 }
 
 pub async fn read(

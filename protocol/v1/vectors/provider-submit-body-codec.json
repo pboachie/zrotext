@@ -1,0 +1,111 @@
+{
+  "format": "provider-submit-body-codec-v1",
+  "positive": [
+    {
+      "name": "ascii",
+      "route": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "organization_id": "00000000-0000-0000-0000-000000000002",
+        "profile_id": "00000000-0000-0000-0000-000000000003",
+        "revision": 1,
+        "sender": "+15550000100"
+      },
+      "recipient": "+15550000101",
+      "text": "Synthetic SMS",
+      "recipient_hash_hex": "6a0ac1ab330f3c0e32efa31e0a9cb2cff22a6fddb241a3603360a5aa8e0deecf",
+      "body_hash_hex": "0d8c7ff3b61435d138840693a6bd0f30027975b31fa1fb123a4bc6032cfa0322",
+      "request_digest_hex": "ff42384c1f839b18654b2c88376d2282cf17e65652065a58b9456c673a2ca5ee",
+      "wire_utf8_hex": "7b2266726f6d223a222b3135353530303030313030222c226d6573736167696e675f70726f66696c655f6964223a2230303030303030302d303030302d303030302d303030302d303030303030303030303033222c22746f223a222b3135353530303030313031222c2274657874223a2253796e74686574696320534d53222c2274797065223a22534d53222c22656e636f64696e67223a2275637332227d"
+    },
+    {
+      "name": "bmp-omega",
+      "route": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "organization_id": "00000000-0000-0000-0000-000000000002",
+        "profile_id": "00000000-0000-0000-0000-000000000003",
+        "revision": 1,
+        "sender": "+15550000100"
+      },
+      "recipient": "+15550000101",
+      "text": "Synthetic Ω",
+      "recipient_hash_hex": "6a0ac1ab330f3c0e32efa31e0a9cb2cff22a6fddb241a3603360a5aa8e0deecf",
+      "body_hash_hex": "33924dce5321a23bc75344a65ff5492fa51a9e9407e2b26948a049e077d7d190",
+      "request_digest_hex": "a245be759d9d9098cc4dc324795841b64f698294ac7a23e8ebdc72671b5ffb89",
+      "wire_utf8_hex": "7b2266726f6d223a222b3135353530303030313030222c226d6573736167696e675f70726f66696c655f6964223a2230303030303030302d303030302d303030302d303030302d303030303030303030303033222c22746f223a222b3135353530303030313031222c2274657874223a2253796e74686574696320cea9222c2274797065223a22534d53222c22656e636f64696e67223a2275637332227d"
+    },
+    {
+      "name": "json-escapes",
+      "route": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "organization_id": "00000000-0000-0000-0000-000000000002",
+        "profile_id": "00000000-0000-0000-0000-000000000003",
+        "revision": 1,
+        "sender": "+15550000100"
+      },
+      "recipient": "+15550000101",
+      "text": "Synthetic \"quote\"\\ \n\t\u0000",
+      "recipient_hash_hex": "6a0ac1ab330f3c0e32efa31e0a9cb2cff22a6fddb241a3603360a5aa8e0deecf",
+      "body_hash_hex": "c88440ba8f801fbfc58a9429200cc4a29b46fba59802e0fe52609c97ad490d3f",
+      "request_digest_hex": "8caadf5731602cb7857322e9035c771e206f8b94588e6e719e9f6c4b1447290b",
+      "wire_utf8_hex": "7b2266726f6d223a222b3135353530303030313030222c226d6573736167696e675f70726f66696c655f6964223a2230303030303030302d303030302d303030302d303030302d303030303030303030303033222c22746f223a222b3135353530303030313031222c2274657874223a2253796e746865746963205c2271756f74655c225c5c205c6e5c745c7530303030222c2274797065223a22534d53222c22656e636f64696e67223a2275637332227d"
+    },
+    {
+      "name": "bmp-upper-bound",
+      "route": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "organization_id": "00000000-0000-0000-0000-000000000002",
+        "profile_id": "00000000-0000-0000-0000-000000000003",
+        "revision": 1,
+        "sender": "+15550000100"
+      },
+      "recipient": "+15550000101",
+      "text": "Synthetic ￿",
+      "recipient_hash_hex": "6a0ac1ab330f3c0e32efa31e0a9cb2cff22a6fddb241a3603360a5aa8e0deecf",
+      "body_hash_hex": "bcead22b02b5655dc42b1efdf5224e3746c6434c63e91a92856f331d013def3a",
+      "request_digest_hex": "d92a04c8c82e258c8af7d24935d416e0b00aa2faacd0acc264dbb0854dbca0ed",
+      "wire_utf8_hex": "7b2266726f6d223a222b3135353530303030313030222c226d6573736167696e675f70726f66696c655f6964223a2230303030303030302d303030302d303030302d303030302d303030303030303030303033222c22746f223a222b3135353530303030313031222c2274657874223a2253796e74686574696320efbfbf222c2274797065223a22534d53222c22656e636f64696e67223a2275637332227d"
+    }
+  ],
+  "negative": [
+    {
+      "name": "empty-text",
+      "base": "ascii",
+      "text": ""
+    },
+    {
+      "name": "over-byte-cap",
+      "base": "ascii",
+      "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    {
+      "name": "supplementary-scalar",
+      "base": "ascii",
+      "text": "𐀀"
+    },
+    {
+      "name": "sealed-content",
+      "base": "ascii",
+      "content_kind": "sealed-phone-envelope"
+    },
+    {
+      "name": "wrong-recipient",
+      "base": "ascii",
+      "recipient": "+15550000102"
+    },
+    {
+      "name": "wrong-text",
+      "base": "ascii",
+      "text": "Synthetic other"
+    },
+    {
+      "name": "invalid-recipient",
+      "base": "ascii",
+      "recipient": "+012"
+    },
+    {
+      "name": "retained-digest-corruption",
+      "base": "ascii",
+      "request_digest_hex": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ]
+}

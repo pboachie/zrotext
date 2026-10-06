@@ -33,6 +33,8 @@ WEB_FILES = (
     "web/owner/devices.css",
     "web/owner/account.html",
     "web/owner/account.js",
+    "web/owner/account-root-trust.html",
+    "web/owner/account-root-trust.js",
     "web/owner/sms-lines.html",
     "web/owner/sms-lines.js",
     "web/owner/sms-line-signing.js",

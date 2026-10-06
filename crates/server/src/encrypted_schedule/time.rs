@@ -123,6 +123,35 @@ pub async fn resolve<C: GenericClient + Sync>(
     let Some(zone) = window.timezone.filter(|z| !z.is_empty() && z.len() <= 128) else {
         return Ok(Resolution::OwnerReview(ReviewReason::UnknownTimezone));
     };
+    if zone == "UTC" {
+        let open = i32::from(window.opens_minute);
+        let close = i32::from(window.closes_minute);
+        let overnight = i32::from(window.closes_minute < window.opens_minute);
+        // UTC has one fixed zero offset. Keep PostgreSQL's calendar parsing,
+        // but avoid named-zone enumeration on each current authority check.
+        let row = db.query_one(
+            "SELECT (extract(epoch FROM (($1::text::date + $2::integer * interval '1 minute') AT TIME ZONE 'UTC'))*1000)::bigint, \
+             (extract(epoch FROM (($1::text::date + $3::integer * interval '1 minute' + $4::integer * interval '1 day') AT TIME ZONE 'UTC'))*1000)::bigint",
+            &[&window.date, &open, &close, &overnight],
+        ).await.map_err(WindowError::calendar)?;
+        let opens_at_ms: i64 = row.get(0);
+        let closes_at_ms: i64 = row.get(1);
+        if opens_at_ms >= closes_at_ms {
+            return Err(WindowError::Invalid);
+        }
+        return Ok(Resolution::Ready {
+            opens_at_ms,
+            closes_at_ms,
+        });
+    }
+    resolve_named(db, window, zone).await
+}
+
+async fn resolve_named<C: GenericClient + Sync>(
+    db: &C,
+    window: LocalWindow<'_>,
+    zone: &str,
+) -> Result<Resolution, WindowError> {
     if db
         .query_opt("SELECT name FROM pg_timezone_names WHERE name=$1", &[&zone])
         .await?

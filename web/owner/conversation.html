@@ -23,6 +23,11 @@
     <label>Independently accepted manifest digest (64 lowercase hex characters) <input id="owner-digest" autocomplete="off" maxlength="64"></label>
     <label>Optional received event UUID <input id="owner-event" autocomplete="off" maxlength="36"></label>
     <label><input id="content-consent" type="checkbox"> Allow phone SMS body transfer for this exact line and peer. Pairing and SMS permission do not grant this consent; separate phone approval is required.</label>
+    <fieldset><legend>Optional customer-controlled reply readers</legend>
+    <p>Select up to six existing customer-controlled readers whose public keys and read grants you have independently approved. Each line lists the connector UUID, read-grant UUID and reader key fingerprint, separated by commas. Empty selection transfers only to the paired browser. Reader access does not approve or send replies.</p>
+    <label>Approved readers <textarea id="integration-readers" rows="4" maxlength="2048" autocomplete="off" spellcheck="false"></textarea></label>
+    <label><input id="integration-transfer-consent" type="checkbox"> Allow encrypted SMS content for this exact phone line and conversation to be transferred to the explicitly listed customer-controlled readers. Stop closes new capture and transfer; retained encrypted content is deleted separately. Separate phone approval of the exact reader list is required.</label>
+    </fieldset>
     <fieldset><legend>First reader manifest</legend>
     <p>For an account with an independently accepted root receipt and no manifest, enter version 0 and a digest of 64 zeroes above. Import the selected phone's public key export and compare its fingerprint directly on that phone. Import your existing encrypted archive and compare its key ID with your separate archive receipt. These files contain public review information; header comparison does not decrypt or authenticate the archive backup.</p>
     <label>Independently accepted paired phone signing fingerprint (64 lowercase hex characters) <input id="genesis-phone-signing-fingerprint" autocomplete="off" maxlength="64"></label>
@@ -73,6 +78,15 @@
   <label><input id="session-custody" type="checkbox"> Use a session-only signing key for this exact conversation. Leaving, logging out or expiry closes it; setup requires my existing owner-root approval.</label>
   <button id="connect" type="button" disabled>Check conversation authorization</button>
   <p id="selection"></p><section aria-label="Conversation"><div id="messages" aria-live="polite"></div></section>
+  <fieldset id="facts-setup"><legend>Initial private facts</legend>
+    <p>After authorizing this conversation, choose one initial facts context and expiry independently. The server must have the owner context service configured. Saving facts does not approve messages or grant reader access.</p>
+    <label>Initial context UUID <input id="facts-context" maxlength="36" autocomplete="off"></label>
+    <label>Facts expiry (Unix milliseconds) <input id="facts-expires" inputmode="numeric" maxlength="19" autocomplete="off"></label>
+    <button id="facts-open" type="button" disabled>Review initial facts</button>
+    <p id="facts-status" role="status" aria-live="polite">Facts require current conversation authorization and archive custody.</p>
+    <div id="facts-editor"></div>
+    <p>Check or retry an unknown save only while its original editor and deadline remain open. Clear or leaving closes those controls; retain the displayed identity and do not create a replacement. Reload recovery is unavailable.</p>
+  </fieldset>
   <fieldset id="composer" disabled><legend>Write to the approved peer</legend>
     <label for="body">Message text</label><textarea id="body" rows="5" maxlength="32768" autocomplete="off" spellcheck="false" aria-describedby="body-help"></textarea>
     <p id="body-help">Up to 32,768 UTF-8 bytes. Review preserves every character and space. Queuing does not confirm carrier delivery.</p>

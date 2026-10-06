@@ -14,8 +14,11 @@ Run: python -m unittest discover -s protocol/v1/tests -p 'test_public_api_v1.py'
 """
 
 import json
+import re
 import unittest
 from pathlib import Path
+
+from jsonschema import Draft202012Validator
 
 
 DOCUMENT = json.loads(
@@ -32,6 +35,7 @@ IMPLEMENTED_PATH_METHODS = {
     "/v1/webhooks/{endpoint_id}/enable": {"post"},
     "/v1/webhooks/{endpoint_id}/disable": {"post"},
     "/v1/webhooks/{endpoint_id}/rotate": {"post"},
+    "/v1/webhooks/{endpoint_id}/sealed-events": {"post"},
     "/v1/owner/messages": {"get"},
     "/v1/alpha/messages": {"post"},
     "/v1/alpha/messages/{message_id}": {"get"},
@@ -335,6 +339,7 @@ class PublicApiContractTests(unittest.TestCase):
                     "enableWebhookEndpoint",
                     "disableWebhookEndpoint",
                     "rotateWebhookEndpoint",
+                    "selectWebhookSealedEvents",
                 ]
             ),
         )
@@ -436,6 +441,46 @@ class PublicApiContractTests(unittest.TestCase):
             DOMAIN_MESSAGE_STATES,
         )
 
+    def test_alpha_submit_uncertainty_preserves_the_original_identity(self):
+        submit = DOCUMENT["paths"]["/v1/alpha/messages"]["post"]
+        description = submit["description"]
+        for contract in (
+            "202 only after the delivery transaction commits",
+            "a 408 deadline or a bare unexpected 5xx",
+            "does not establish whether acceptance committed",
+            "does not deliberately emit 500",
+            "the identical request with the same Idempotency-Key and client_message_id",
+            "within the retained replay boundary",
+            "Neither client automatically retries",
+            "distinct from a stored unknown or delivery_unknown delivery state",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, description)
+        self.assertNotIn("500", submit["responses"])
+        self.assertEqual(submit["responses"]["408"],
+                         {"$ref": "#/components/responses/RequestDeadlineExceeded"})
+
+    def test_alpha_json_unavailable_is_not_a_rollback_receipt(self):
+        unavailable = DOCUMENT["paths"]["/v1/alpha/messages"]["post"]["responses"]["503"]
+        description = unavailable["description"]
+        for contract in (
+            "billing_pending carries Retry-After: 10 and is a specific admission refusal",
+            "unavailable can report a database error while awaiting commit",
+            "not proof of rollback or non-acceptance",
+            "submit 408 responses as unknown outcomes",
+            "5xx responses without a parsed JSON error code as unknown outcomes",
+            "A 503 with a parsed JSON error code instead produces an AlphaApiError",
+            "AlphaApiError",
+            "does not establish the database commit outcome",
+            "do not automatically retry or invent a new submission identity",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, description)
+        self.assertEqual(unavailable["headers"]["Retry-After"]["$ref"],
+                         "#/components/headers/RetryAfter10")
+        self.assertEqual(unavailable["content"]["application/json"]["schema"],
+                         {"$ref": "#/components/schemas/Error"})
+
     def test_alpha_admission_failures_declare_retry_after(self):
         submit = DOCUMENT["paths"]["/v1/alpha/messages"]["post"]["responses"]
         self.assertIn("402", submit)
@@ -534,6 +579,51 @@ class PublicApiContractTests(unittest.TestCase):
         self.assertIn("before the body is read", create["description"])
         self.assertIn("preauth.rs", create["description"])
 
+    def test_sealed_selection_pins_default_off_owner_authorization_and_refusals(self):
+        selection = DOCUMENT["paths"]["/v1/webhooks/{endpoint_id}/sealed-events"]["post"]
+        self.assertTrue(selection["x-implemented"])
+        self.assertEqual(selection["security"], OWNER_SESSION_SECURITY)
+        self.assertEqual(selection["x-runtime-gate"], {
+            "environmentVariable": "SEALED_WEBHOOK_DELIVERY_ENABLED",
+            "default": False,
+            "disabledStatus": 404,
+        })
+        self.assertIn("defaults to false", selection["description"])
+        self.assertIn("before the body is read", selection["description"])
+        self.assertIn("no reader", selection["description"])
+        self.assertTrue(selection["requestBody"]["required"])
+        self.assertEqual(selection["requestBody"]["content"]["application/json"]["schema"],
+                         {"$ref": "#/components/schemas/WebhookSealedSelectionRequest"})
+        self.assertEqual(set(selection["responses"]),
+                         {"204", "400", "401", "403", "404", "408", "409", "413", "429", "503"})
+        self.assertNotIn("content", selection["responses"]["204"])
+        self.assertIn("five", selection["responses"]["409"]["description"])
+        self.assertIn("disabled", selection["responses"]["404"]["description"])
+        self.assertIn("text/plain", selection["responses"]["400"]["content"])
+
+    def test_sealed_selection_schema_accepts_disable_but_requires_confirmed_enable(self):
+        schema = DOCUMENT["components"]["schemas"]["WebhookSealedSelectionRequest"]
+        Draft202012Validator.check_schema(schema)
+        validator = Draft202012Validator(schema)
+        valid = {"enabled": True, "encrypted_transfer_confirmed": True,
+                 "disclosure_version": "sealed-events-v1"}
+        for enabled, confirmed in ((True, True), (False, True), (False, False)):
+            with self.subTest(enabled=enabled, confirmed=confirmed):
+                validator.validate({**valid, "enabled": enabled,
+                                    "encrypted_transfer_confirmed": confirmed})
+        invalid = [
+            {**valid, "encrypted_transfer_confirmed": False},
+            {**valid, "disclosure_version": "unsupported"},
+            {**valid, "enabled": "true"},
+            {**valid, "encrypted_transfer_confirmed": 1},
+            {**valid, "reader_key": "synthetic"},
+        ]
+        invalid.extend({key: value for key, value in valid.items() if key != missing}
+                       for missing in valid)
+        for payload in invalid:
+            with self.subTest(payload=payload):
+                self.assertFalse(validator.is_valid(payload))
+
     def test_shared_transport_responses_are_stated_and_referenced(self):
         description = DOCUMENT["info"]["description"]
         self.assertIn("Shared transport responses", description)
@@ -628,6 +718,68 @@ class PublicApiContractTests(unittest.TestCase):
         self.assertIn("before the body is read", submit["description"])
         self.assertIn("401", submit["responses"])
         self.assertIn("400", submit["responses"])
+
+
+SERVER_SRC = Path(__file__).resolve().parents[3] / "crates" / "server" / "src"
+
+# Source files that mount the routes this document pins, with the nest prefix
+# main.rs gives each router ("" when the routes carry their full path).
+ROUTE_SOURCES = {
+    "http_webhooks.rs": "",
+    "http_owner_messages.rs": "",
+    "http_messages/mod.rs": "/v1/alpha",
+    "http_enrollment/mod.rs": "/v1/enrollment",
+}
+# The server routes under these prefixes must all be documented here.
+DOCUMENTED_PREFIXES = ("/v1/webhooks", "/v1/owner/messages", "/v1/alpha", "/v1/enrollment/devices")
+
+
+def server_routes():
+    """Every (path, method) mounted by ROUTE_SOURCES, read from the Rust source."""
+    found = set()
+    for name, prefix in ROUTE_SOURCES.items():
+        source = (SERVER_SRC / name).read_text()
+        for start in re.finditer(r"\.route\(", source):
+            depth, index = 1, start.end()
+            while depth:
+                depth += {"(": 1, ")": -1}.get(source[index], 0)
+                index += 1
+            call = source[start.end():index - 1]
+            path = re.match(r'\s*"([^"]+)"', call).group(1)
+            for method in re.findall(r"\b(get|post|put|patch|delete)\(", call):
+                found.add((prefix + path, method))
+    return found
+
+
+class ServerRouteDriftTests(unittest.TestCase):
+    def test_nest_prefixes_match_main(self):
+        main = (SERVER_SRC / "main.rs").read_text()
+        for name, prefix in ROUTE_SOURCES.items():
+            if prefix:
+                module = name.split("/")[0].removesuffix(".rs")
+                self.assertRegex(main, rf'\.nest\(\s*"{prefix}",\s*{module}::router')
+
+    def test_server_routes_were_found(self):
+        self.assertGreaterEqual(len(server_routes()), 12)
+
+    def test_every_documented_implemented_route_exists_in_the_server(self):
+        routes = server_routes()
+        for path, method, _ in implemented_operations():
+            self.assertIn((path, method), routes, f"{method} {path} is documented but not mounted")
+
+    def test_every_server_route_in_scope_is_documented(self):
+        documented = {(path, method) for path, method, _ in operations(DOCUMENT)}
+        for path, method in sorted(server_routes()):
+            if not path.startswith(DOCUMENTED_PREFIXES):
+                continue
+            self.assertIn((path, method), documented, f"{method} {path} is mounted but undocumented")
+
+    def test_gated_sealed_selection_is_mounted_and_documented(self):
+        routes = server_routes()
+        documented = {(path, method) for path, method, _ in operations(DOCUMENT)}
+        selection = ("/v1/webhooks/{endpoint_id}/sealed-events", "post")
+        self.assertIn(selection, routes)
+        self.assertIn(selection, documented)
 
 
 if __name__ == "__main__":

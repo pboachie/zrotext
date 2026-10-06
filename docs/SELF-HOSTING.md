@@ -16,6 +16,15 @@ The [Compose guide](../deploy/compose/README.md) covers migrations, volumes, shu
 
 ### From a healthy stack to a phone
 
+```mermaid
+flowchart LR
+  A["Healthy stack<br/>/healthz + /readyz"] --> B["Owner registration<br/>HTTPS origin + email"]
+  B --> C["Create one-use<br/>pairing request"]
+  C --> D["Enter values on phone<br/>Setup screen"]
+  D --> E["Compare codes,<br/>owner approves"]
+  E --> F["Connection test<br/>not SMS readiness"]
+```
+
 1. Configure the exact HTTPS account origin and verification mail, then follow [owner registration](#owner-registration). Open `/owner/account` for account and MFA controls and `/owner/devices` for the fleet overview.
 2. Create a one-use pairing request in the owner dashboard. On the phone, use the gear menu to open **Setup**, review access purposes separately, and enter the pairing values. Compare the phone and browser before owner approval. Pairing can proceed without a SIM or SMS access; connection controls currently require a selected SIM.
 3. Treat **Connection** as an explicit test/control surface. A socket connection or heartbeat does not establish SMS readiness. The controlled SMS pilot requires its separate documented authority and a recipient you control; do not enable it merely to evaluate the UI.
@@ -715,6 +724,15 @@ expiry has passed reads as expired with no write. Marketing grants must
 carry an expiry of at most two years; withdrawals never carry one.
 An event cannot precede the latest effective event for that purpose;
 backdated transitions return `409 consent_conflict` without appending history.
+Recording a withdrawal also permanently revokes existing workflow integration
+grants for that account, contact and purpose, scrubs their connector envelope
+bytes, withdraws their customer routine policies and stops already-created
+routine outputs. These changes commit with the consent event under the same
+account lock as workflow admission. A later grant requires fresh workflow
+credentials and policies; it cannot restore the old identities. Other purposes
+and contacts retain their authority. Existing call records, replay tombstones
+and usage debits remain, including unknown outcomes; withdrawal does not imply
+that an already-started external effect was undone.
 Creating or importing a contact never creates consent, and nothing in the
 contacts API clears a suppression, releases an off-channel hold or revives
 cancelled work: those signed and owner-recorded planes are untouched.
@@ -727,9 +745,39 @@ same number survive with their own lifecycle. The owner takeout
 (`GET /v1/owner/export`) includes the account's contacts with decrypted
 names and notes and the full consent history (paged with
 `?contacts_before=` when large), and account erasure deletes contacts and
+their consent records with everything else. The default-off workflow services
+check current purpose consent alongside their exact owner approval and other
+authority fences. Ordinary message admission retains its existing suppression
+and hold checks.
 their consent records with everything else. The contacts and consent
 records do not gate message sending; admission and suppression checks are
 unchanged by this data.
+
+## Owner-confirmed capacity foundation
+
+The single-opening capacity library is dormant. Its unnumbered
+`deploy/compose/migration-candidates/owner_opening_capacity.sql` is excluded
+from normal installation and is applied explicitly by disposable tests. No
+mutation route, SDK caller, appointment, volunteer or acknowledgment journey
+is enabled by this library. Production migration promotion and application
+acceptance remain separately required.
+
+Pending reservations and confirmed allocations consume capacity. The owner
+confirms business meaning after local decryption; delivery or ciphertext does
+not establish a booking. Consent withdrawal and takeover stop future admission
+and cancel pending reservations. Confirmed occupancy remains until explicit
+owner release or cancellation, including after contact/source deletion.
+
+When the candidate tables are present, existing contact deletion and source
+retention hooks scrub their related authority and receipt fields; owner takeout
+includes bounded pages of the remaining metadata. Current owners can release
+an occupied unit using its opening/allocation identity without deleted contact
+or source data. Account erasure deletes all four tables child-first and reports
+their counts; a partial candidate installation or later delete failure rolls
+the entire erasure back. Full application and device/provider acceptance is
+not established by disposable database proof. The exact authority, lifecycle
+and storage bounds are in
+[`owner-opening-capacity-foundation.md`](../protocol/v1/owner-opening-capacity-foundation.md).
 
 ## Source for modified deployments
 

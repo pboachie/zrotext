@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Review account root</title></head>
+<body><main><h1>Review account root</h1><p>Compare the account, origin and full fingerprint with your independently retained public kit. This page stores public trust history locally. It does not recover a key or grant contact access.</p>
+<form id="inputs"><fieldset><legend>Independent public kit</legend>
+<label>Account <input id="account" required autocomplete="off"></label>
+<label>Kit origin <input id="origin" required autocomplete="off"></label>
+<label>Full root fingerprint <input id="fingerprint" required autocomplete="off"></label>
+<label>Public card <input id="card" type="file" required></label>
+<label>Signed manifest <input id="manifest" type="file" required></label>
+<button id="review" type="submit" disabled>Review public trust</button></fieldset></form>
+<section id="decision" hidden><h2>Compare before accepting</h2><pre id="tuple"></pre><button id="accept" disabled>Accept this local history</button><button id="decline">Decline</button></section>
+<p id="status" role="status">Preparing local review.</p><button id="reconcile" hidden>Read local outcome</button>
+<details><summary>Review an existing reader statement</summary><p>Enter the complete expected identity from your independently reviewed owner intent. The signed statement cannot supply its own expected identity.</p><label>Expected intent JSON <textarea id="expected"></textarea></label><label>Signed reader statement <input id="statement" type="file"></label><button id="verify-statement" disabled>Review historical integrity</button></details>
+<section><h2>Review a contact reader</h2>
+<p>This candidate is unavailable without an admitted owner state and authenticated issuer. Local history and a signature do not grant contact access or prove private key custody.</p>
+<fieldset><legend>Independent reader and existing kit</legend>
+<label>Existing kit ID (32 lowercase hex characters) <input id="bundle" autocomplete="off"></label>
+<label>Reader ID (64 lowercase hex characters) <input id="reader-id" autocomplete="off"></label>
+<label>Reader public point (130 lowercase hex characters) <input id="reader-point" autocomplete="off"></label>
+<label>Requested end time (Unix milliseconds) <input id="requested-until" inputmode="numeric" autocomplete="off"></label>
+<button id="issuer-review" disabled>Read and review owner state</button></fieldset>
+<pre id="issuer-facts"></pre><p id="issuer-status" role="status">Reader issuance unavailable.</p>
+<button id="issuer-create" disabled>Approve this original intent</button><button id="issuer-retry" disabled>Retry the same intent</button><button id="issuer-decline" disabled>End positive approval</button>
+<p>One approval lasts at most 60 seconds and permits at most three intent and completion requests combined. Offline signing may take longer; a late signature cannot renew approval.</p>
+<button id="issuer-export" disabled>Export public signing proposal</button><button id="issuer-recovery-export" disabled>Export read-only recovery request</button>
+<label>Whole offline signed statement <input id="issuer-signature" type="file"></label><button id="issuer-import" disabled>Review this whole signature</button>
+<label>Fresh owner factor <input id="issuer-factor" type="password" autocomplete="off"></label><button id="issuer-complete" disabled>Approve completion of this statement</button>
+<p>A lost response stays unknown. Read its exact original outcome; do not replace its identity or signature. No automatic completion retry is offered.</p>
+<button id="issuer-lookup" disabled>Read original outcome</button><button id="issuer-cancel" disabled>Cancel original pending intent</button><button id="issuer-withdraw" disabled>Withdraw original active statement</button>
+<details><summary>Read an original recovery request</summary><p>Import only the bounded public original request for read-only lookup. It cannot restore positive approval, local history or custody.</p><label>Public recovery request <input id="issuer-recovery" type="file"></label><button id="issuer-recover">Import for read-only lookup</button></details>
+</section>
+<p><a href="/owner/account">Back to account</a></p></main><script type="module" src="/owner/account/root-trust.js"></script></body></html>

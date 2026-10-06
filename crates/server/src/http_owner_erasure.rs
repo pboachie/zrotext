@@ -107,12 +107,68 @@ const OPTIONAL_BLOCKED_TABLES: &[&str] = &["sealed_line_activation_exchanges"];
 /// counts stay honest.
 pub(crate) const DELETE_PLAN: &[(&str, &str)] = &[
     (
+        "managed_reader_events",
+        "DELETE FROM managed_reader_events WHERE account_id=$1",
+    ),
+    (
+        "managed_reader_selections",
+        "DELETE FROM managed_reader_selections WHERE account_id=$1",
+    ),
+    (
+        "managed_reader_grant_versions",
+        "DELETE FROM managed_reader_grant_versions WHERE account_id=$1",
+    ),
+    (
+        "managed_reader_grants",
+        "DELETE FROM managed_reader_grants WHERE account_id=$1",
+    ),
+    (
+        "managed_reader_policies",
+        "DELETE FROM managed_reader_policies WHERE account_id=$1",
+    ),
+    (
+        "managed_reader_keys",
+        "DELETE FROM managed_reader_keys WHERE account_id=$1",
+    ),
+    (
+        "provider_receipt_events",
+        "DELETE FROM provider_receipt_events WHERE account_id=$1",
+    ),
+    (
+        "provider_receipt_attempts",
+        "DELETE FROM provider_receipt_attempts WHERE account_id=$1",
+    ),
+    (
         "sealed_event_delivery_attempts",
         "DELETE FROM sealed_event_delivery_attempts WHERE delivery_id IN (SELECT id FROM sealed_event_deliveries WHERE account_id=$1)",
     ),
     (
         "sealed_event_deliveries",
         "DELETE FROM sealed_event_deliveries WHERE account_id=$1",
+    ),
+    (
+        "original_reply_access",
+        "DELETE FROM original_reply_access WHERE account_id=$1",
+    ),
+    (
+        "original_reply_sources",
+        "DELETE FROM original_reply_sources WHERE account_id=$1",
+    ),
+    (
+        "original_reply_consumptions",
+        "DELETE FROM original_reply_consumptions WHERE account_id=$1",
+    ),
+    (
+        "original_reply_requests",
+        "DELETE FROM original_reply_requests WHERE account_id=$1",
+    ),
+    (
+        "original_reply_grants",
+        "DELETE FROM original_reply_grants WHERE account_id=$1",
+    ),
+    (
+        "original_reply_manifest_history",
+        "DELETE FROM original_reply_manifest_history WHERE account_id=$1",
     ),
     (
         "exposure_reservation_scopes",
@@ -745,6 +801,11 @@ async fn erase_account(
     {
         return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
     }
+    // Inspect optional proposal storage before the final owner/MFA fence.
+    let managed_installed = match crate::managed_ai::lifecycle::installed(&tx).await {
+        Ok(value) => value,
+        Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+    };
     // Inspect proof storage before the final fence: schema preparation can wait.
     let confirmation_installed =
         match crate::http_owner_conversations::confirmation_records::installed(&tx).await {
@@ -804,6 +865,20 @@ async fn erase_account(
             return error_response(StatusCode::SERVICE_UNAVAILABLE,"unavailable");
         }
     }
+    // Proposal presence is inspected before the final proof: ordinary installs
+    // have neither table, while partial installation must fail closed.
+    let provider_receipts_installed =
+        match crate::provider_sms::receipts::lifecycle::installed(&tx).await {
+            Ok(value) => value,
+            Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+        };
+    // Optional issuer catalog preparation can wait, so finish it before auth.
+    // The returned value borrows this exact transaction and permits only deletes.
+    let issuer_erasure =
+        match crate::contact_reader_issuer::export::prepare_erase(&tx, account_id).await {
+            Ok(value) => value,
+            Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+        };
     // FINAL AUTH FENCE. Ordering inside this transaction is deliberate:
     // every read that can wait on a row lock — all the blocked-table
     // preflight counts above — has already run, and this fence is the last
@@ -864,6 +939,22 @@ async fn erase_account(
         Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
     };
     let mut deleted = Vec::new();
+    match crate::provider_config::lifecycle::erase_account(&tx, account_id).await {
+        Ok(counts) => deleted.extend(
+            counts
+                .into_iter()
+                .map(|(table, rows)| TableCount { table, rows }),
+        ),
+        Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+    }
+    match issuer_erasure.erase().await {
+        Ok(counts) => deleted.extend(
+            counts
+                .into_iter()
+                .map(|(table, rows)| TableCount { table, rows }),
+        ),
+        Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+    }
     match crate::workflow_templates::lifecycle::erase(&tx, account_id).await {
         Ok(counts) => deleted.extend(
             counts
@@ -873,6 +964,14 @@ async fn erase_account(
         Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
     }
 
+    match crate::billing::usage_reconciliation::lifecycle::erase(&tx, account_id).await {
+        Ok(counts) => deleted.extend(
+            counts
+                .into_iter()
+                .map(|(table, rows)| TableCount { table, rows }),
+        ),
+        Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+    }
     match crate::billing::invoice::lifecycle::erase(&tx, account_id).await {
         Ok(counts) => deleted.extend(
             counts
@@ -889,7 +988,23 @@ async fn erase_account(
         ),
         Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
     }
+    match crate::workflow_runtime::openings::lifecycle::erase_account(&tx, account_id).await {
+        Ok(counts) => deleted.extend(
+            counts
+                .into_iter()
+                .map(|(table, rows)| TableCount { table, rows }),
+        ),
+        Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+    }
     for &(table, sql) in DELETE_PLAN {
+        if crate::managed_ai::lifecycle::TABLES.contains(&table) && !managed_installed {
+            continue;
+        }
+        if ["provider_receipt_events", "provider_receipt_attempts"].contains(&table)
+            && !provider_receipts_installed
+        {
+            continue;
+        }
         if table == "conversation_execution_records" && !execution_installed {
             continue;
         }

@@ -11,6 +11,10 @@ use axum::body::{Body, to_bytes};
 use serde_json::{Value, json};
 use totp_rs::{Builder, Secret};
 use tower::ServiceExt;
+mod managed_grants;
+mod opening_capacity;
+#[path = "provider_receipts_tests.rs"]
+mod provider_receipts;
 
 const ORIGIN: &str = "https://test.example";
 
@@ -383,6 +387,27 @@ const MIGRATIONS: &[(&str, &str)] = &[
             "../../../../deploy/compose/migrations/087_sealed_line_activation_exchanges.sql"
         ),
     ),
+    (
+        "088_original_reply_readers.sql",
+        include_str!("../../../../deploy/compose/migrations/088_original_reply_readers.sql"),
+    ),
+    // Explicit fixture-only proposal. The production migrator never discovers it.
+    (
+        "../migration-candidates/managed_reader_grants.sql",
+        include_str!("../../../../deploy/compose/migration-candidates/managed_reader_grants.sql"),
+    ),
+    (
+        "089_original_routine_sources.sql",
+        include_str!("../../../../deploy/compose/migrations/089_original_routine_sources.sql"),
+    ),
+    (
+        "090_invoice_usage_observations.sql",
+        include_str!("../../../../deploy/compose/migrations/090_invoice_usage_observations.sql"),
+    ),
+    (
+        "091_original_reply_origin_binding.sql",
+        include_str!("../../../../deploy/compose/migrations/091_original_reply_origin_binding.sql"),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in
@@ -477,6 +502,12 @@ fn migrations_fixture_is_every_checked_in_migration() {
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn erasure_plans_name_only_tables_of_the_migrated_schema() {
     let (admin, db, _database_url, schema) = migrated_schema("tables").await;
+    // These two entries are conditional proposal deletions, not ordinary
+    // migrations. Validate their exact installed shape without weakening the
+    // inventory proof for every mandatory migrated table.
+    db.batch_execute(crate::provider_sms::receipts::test_support::PROPOSAL)
+        .await
+        .unwrap();
     let mut missing = Vec::new();
     for table in DELETE_PLAN
         .iter()
@@ -1007,6 +1038,29 @@ async fn erasure_deletes_every_account_row_and_ends_the_session() {
     let (admin, mut db, database_url, schema) = migrated_schema("full").await;
     let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(23)).unwrap());
     let (a, session_a, b, _session_b, app) = fixture(&mut db, &hasher, &database_url, None).await;
+    // Minimal original-action provenance has account-lifetime custody. This
+    // full-schema, genuinely erasable account exercises the deferred DELETE
+    // constraint through the actual owner route and its committed transaction.
+    db.execute(
+        "INSERT INTO original_reply_sources(account_id,action_id,revision,binding_digest,source_grant_id,source_event_id,request_id,expires_at_ms) VALUES($1,$2,1,$3,$4,$5,$6,1)",
+        &[&a.account_id,&Uuid::new_v4(),&[9u8;32].as_slice(),&Uuid::new_v4(),&Uuid::new_v4(),&Uuid::new_v4()],
+    ).await.unwrap();
+
+    use crate::provider_sms::receipts::{self, test_support as provider_fixture};
+    db.batch_execute(provider_fixture::PROPOSAL).await.unwrap();
+    provider_fixture::seed(&db, a.account_id, Uuid::new_v4()).await;
+    let event = provider_fixture::receipt(
+        &provider_fixture::request(a.account_id),
+        Uuid::new_v4(),
+        "sent",
+    );
+    receipts::record_known_receipt(
+        &mut db,
+        &receipts::ElectedWriterPermit::synthetic(a.account_id, provider_fixture::SITE, 1),
+        &event,
+    )
+    .await
+    .unwrap();
     let response = app
         .clone()
         .oneshot(erasure_post(
@@ -1022,7 +1076,21 @@ async fn erasure_deletes_every_account_row_and_ends_the_session() {
     assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
     let report = body(response).await;
     assert_eq!(report["account_id"], a.account_id.to_string());
+    assert_eq!(deleted_count(&report, "original_reply_sources"), 1);
+    assert_eq!(
+        db.query_one(
+            "SELECT count(*) FROM original_reply_sources WHERE account_id=$1",
+            &[&a.account_id]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        0
+    );
+
     for (table, rows) in [
+        ("provider_receipt_events", 1),
+        ("provider_receipt_attempts", 1),
         ("recipient_suppressions", 1),
         ("webhook_attempts", 1),
         ("webhook_replay_requests", 1),
@@ -1316,6 +1384,21 @@ async fn schema_protected_consent_rows_block_the_whole_erasure() {
     let (admin, mut db, database_url, schema) = migrated_schema("blocked").await;
     let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
     let (a, session_a, _b, _session_b, app) = fixture(&mut db, &hasher, &database_url, None).await;
+    use crate::provider_sms::receipts::{self, test_support as provider_fixture};
+    db.batch_execute(provider_fixture::PROPOSAL).await.unwrap();
+    provider_fixture::seed(&db, a.account_id, Uuid::new_v4()).await;
+    let event = provider_fixture::receipt(
+        &provider_fixture::request(a.account_id),
+        Uuid::new_v4(),
+        "sent",
+    );
+    receipts::record_known_receipt(
+        &mut db,
+        &receipts::ElectedWriterPermit::synthetic(a.account_id, provider_fixture::SITE, 1),
+        &event,
+    )
+    .await
+    .unwrap();
     db.execute(
         "INSERT INTO owner_recipient_holds(id,account_id,recipient_e164,channel,reason,reported_at,created_by) \
          VALUES($1,$2,'+15559999999','email','opt_out',now()-interval '1 hour',$3)",
@@ -1341,6 +1424,8 @@ async fn schema_protected_consent_rows_block_the_whole_erasure() {
     assert_eq!(blocked_count(&blocked, "owner_recipient_holds"), 1);
     // The rollback is complete: every fixture row is still present.
     for sql in [
+        "SELECT count(*) FROM provider_receipt_attempts WHERE account_id=$1",
+        "SELECT count(*) FROM provider_receipt_events WHERE account_id=$1",
         "SELECT count(*) FROM accounts WHERE id=$1",
         "SELECT count(*) FROM messages WHERE account_id=$1",
         "SELECT count(*) FROM sessions WHERE account_id=$1",
@@ -3190,7 +3275,16 @@ async fn erasing_thousands_of_referenced_rows_completes_within_the_runtime_timeo
         );
         let tx = db.transaction().await.unwrap();
         let started = std::time::Instant::now();
-        for &(_, sql) in DELETE_PLAN {
+        let provider_receipts_installed = crate::provider_sms::receipts::lifecycle::installed(&tx)
+            .await
+            .unwrap();
+        assert!(!provider_receipts_installed, "ordinary migrated fixture");
+        for &(table, sql) in DELETE_PLAN {
+            if ["provider_receipt_events", "provider_receipt_attempts"].contains(&table)
+                && !provider_receipts_installed
+            {
+                continue;
+            }
             tx.execute(sql, &[&a.account_id]).await.unwrap();
         }
         eprintln!(

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
 #[path = "scratch.rs"]
-mod scratch;
+pub(crate) mod scratch;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use p256::ecdsa::SigningKey;
 use serde_json::{Value, json};

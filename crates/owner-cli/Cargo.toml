@@ -9,9 +9,12 @@ license.workspace = true
 default = []
 # Candidate offline unlock signing, disabled by default: the default build has
 # no unlock command at all, and no release artifact or workflow enables this.
-unlock = ["zrotext-root-material/unlock"]
+unlock = ["zrotext-root-material/unlock", "dep:serde", "dep:serde_json"]
 
 [target.'cfg(windows)'.dependencies]
+# The real offline command directly decodes bounded, closed public issuer values.
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true, features = ["raw_value"] }
 zrotext-root-material = { path = "../root-material" }
 zrotext-root-bundle = { path = "../root-bundle" }
 zrotext-root-terminal = { path = "../root-terminal" }

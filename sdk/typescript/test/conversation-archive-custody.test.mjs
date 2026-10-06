@@ -6,6 +6,22 @@ import {unlockExistingArchive02} from "../dist/conversation-archive-custody.js";
 import {archiveFixture} from "./conversation-archive-fixture.mjs";
 import {verifyManifest02,verifiedManifestTrust02,canonicalSignature02} from "../dist/draft02-manifest.js";
 import {join,signFixtureSuccessor02} from "./conversation-refresh-fixture.mjs";
+// Prepare both authenticated successors before a lease's monotonic lifetime starts.
+async function signedExpiryPair(f,bound,lifetime){
+ const unsigned=Uint8Array.from(f.review.unsigned),view=new DataView(unsigned.buffer),short=f.nowMs+BigInt(lifetime);
+ if(bound==="manifest")view.setBigUint64(45,short);else for(let at=151;at<unsigned.length;at+=149)if(unsigned[at]===2)view.setBigUint64(at+140,short);
+ const initial=await verifyManifest02(await signFixtureSuccessor02(f,unsigned),verifiedManifestTrust02(f.predecessor,f.nowMs),f.nowMs);
+ const renewed=Uint8Array.from(unsigned),next=new DataView(renewed.buffer);next.setBigUint64(29,initial.version+1n);renewed.set(initial.digest,53);next.setBigUint64(45,f.nowMs+3600000n);
+ for(let at=151;at<renewed.length;at+=149)if(renewed[at]===2)next.setBigUint64(at+140,f.nowMs+3600000n);
+ return {initial,renewed:await verifyManifest02(await signFixtureSuccessor02(f,renewed),verifiedManifestTrust02(initial,f.nowMs),f.nowMs)};
+}
+function observeExpiry(lease,started,lifetime){
+ let notifications=0,closedAt,watchdog;const closed=new Promise((resolve,reject)=>{
+  lease.onClose(()=>{notifications++;closedAt=performance.now();resolve();});
+  watchdog=setTimeout(()=>reject(Error("Expected the original bounded lease to notify closure")),Math.max(0,started+lifetime+750-performance.now()));
+ });
+ return {closed,check(){assert.equal(notifications,1);assert.ok(closedAt>=started+lifetime-10,"closure must be the actual original expiry");assert.ok(closedAt<=started+lifetime+750,"renewal must not extend the first monotonic deadline");},dispose(){clearTimeout(watchdog);}};
+}
 test("existing archive decrypts to nonextractable memory lease with explicit accountwide decision",async()=>{const f=await archiveFixture(),lease=await unlockExistingArchive02(f.options);try{assert.equal(f.state.decisions,1);await lease.withKey(f.options.binding,async key=>{assert.equal(key.extractable,false);assert.equal(key.algorithm.name,"ECDH");await assert.rejects(crypto.subtle.exportKey("jwk",key));});}finally{lease.close();}await assert.rejects(lease.withKey(f.options.binding,async()=>{}),/unavailable/);});
 test("wrong recovery and authenticated same-shape wrong scalar are refused",async()=>{let f=await archiveFixture();await assert.rejects(unlockExistingArchive02({...f.options,recovery:new Uint8Array(32).fill(9)}));f=await archiveFixture({scalar:2});await assert.rejects(unlockExistingArchive02(f.options),/actual point differs/);});
 test("archive framing identity AAD and ciphertext mutations fail closed",async()=>{const f=await archiveFixture();for(const offset of [0,4,5,6,22,38,46,78,110,175,177,199,230,245,280,f.options.encrypted.length-1]){const encrypted=Uint8Array.from(f.options.encrypted);encrypted[offset]^=1;await assert.rejects(unlockExistingArchive02({...f.options,encrypted}));}for(const encrypted of [f.options.encrypted.subarray(0,-1),join(f.options.encrypted,Uint8Array.of(0)),new Uint8Array(846)])await assert.rejects(unlockExistingArchive02({...f.options,encrypted}));});
@@ -20,8 +36,35 @@ test("benign signed role5 renewal preserves existing archive lease",async()=>{co
 test("current archive revocation blocks history even with matching old ciphertext",async()=>{const f=await archiveFixture(),lease=await unlockExistingArchive02(f.options);try{const unsigned=Uint8Array.from(f.review.unsigned),records=[];unsigned[151+149+148]=2;for(let at=151;at<unsigned.length;at+=149)records.push(unsigned.slice(at,at+149));const d=new Uint8Array(32);d[31]=6;const ecdh=createECDH("prime256v1");ecdh.setPrivateKey(d);d.fill(0);const point=new Uint8Array(ecdh.getPublicKey()),replacement=Uint8Array.from(records.find(r=>r[0]===2));replacement.set(await keyId(0x10,point),1);replacement.set(point,33);replacement[148]=1;records.push(replacement);records.sort((a,b)=>Buffer.compare(Buffer.from(a.subarray(0,33)),Buffer.from(b.subarray(0,33))));const header=unsigned.slice(0,151);header[150]=records.length;const next=await verifyManifest02(await signFixtureSuccessor02(f,join(header,...records)),verifiedManifestTrust02(f.predecessor,f.nowMs),f.nowMs);f.state.current={...f.state.current,manifest:next};await assert.rejects(lease.withKey(f.options.binding,async()=>"synthetic old plaintext"),/reader unavailable/);await assert.rejects(lease.withKey(f.options.binding,async()=>{}),/unavailable/);}finally{lease.close();}});
 
 test("lease close notifies every subscriber despite a throwing subscriber",async()=>{const f=await archiveFixture(),lease=await unlockExistingArchive02(f.options);let cleared=0;lease.onClose(()=>{throw Error("Synthetic subscriber failure");});lease.onClose(()=>cleared++);f.controller.abort();assert.equal(cleared,1);await assert.rejects(lease.withKey(f.options.binding,async()=>{}),/unavailable/);lease.close();assert.equal(cleared,1);});
-test("actual bounded expiry closes key lease and notifies subscribers",async()=>{const f=await archiveFixture(),lease=await unlockExistingArchive02({...f.options,untilMs:f.nowMs+80n});let cleared=0;lease.onClose(()=>cleared++);try{await new Promise(resolve=>setTimeout(resolve,120));assert.equal(cleared,1);await assert.rejects(lease.withKey(f.options.binding,async()=>{}),/unavailable/);}finally{lease.close();}});
+test("80ms expiry during held unlock decision refuses late lease publication",async()=>{
+ const f=await archiveFixture();let enter,release,decisions=0;const entered=new Promise(resolve=>{enter=resolve;}),held=new Promise(resolve=>{release=resolve;});
+ const result=unlockExistingArchive02({...f.options,untilMs:f.nowMs+80n,consumeUnlockDecision:async()=>{decisions++;enter();await held;}});
+ try{await Promise.race([entered,result.then(()=>assert.fail("No lease may escape the held decision"))]);assert.equal(decisions,1);await new Promise(resolve=>setTimeout(resolve,120));release();await assert.rejects(result,/closed|expired|authority lost/);}finally{release();f.controller.abort();}
+});
+test("actual bounded expiry closes an admitted key lease and notifies once without another operation",async()=>{
+ const f=await archiveFixture(),lifetime=2000;let started,reads=0;const lease=await unlockExistingArchive02({...f.options,untilMs:f.nowMs+BigInt(lifetime),readCurrent:async()=>{started??=performance.now();reads++;return f.state.current;}}),observed=observeExpiry(lease,started,lifetime),admittedReads=reads;
+ try{await observed.closed;observed.check();assert.equal(reads,admittedReads);await assert.rejects(lease.withKey(f.options.binding,async()=>assert.fail("Expired key callback")),/unavailable/);lease.close();observed.check();}finally{observed.dispose();lease.close();}
+});
 
 test("already aborted composed custody closes the supplied archive lease",async()=>{const f=await archiveFixture(),lease=await unlockExistingArchive02(f.options),controller=new AbortController();let closed=0;lease.onClose(()=>closed++);controller.abort();await assert.rejects(prepareConversationCustody02({binding:f.options.binding,archiveLease:lease,signal:controller.signal}),/closed/);assert.equal(closed,1);});
 
-for(const signedBound of ["reader","manifest"])test(`signed ${signedBound} expiry closes lease without another operation and cannot be extended by renewal`,async()=>{const f=await archiveFixture(),unsigned=Uint8Array.from(f.review.unsigned),short=f.nowMs+100n,view=new DataView(unsigned.buffer);if(signedBound==="manifest")view.setBigUint64(45,short);else for(let at=151;at<unsigned.length;at+=149)if(unsigned[at]===2)view.setBigUint64(at+140,short);f.state.current={...f.state.current,manifest:await verifyManifest02(await signFixtureSuccessor02(f,unsigned),verifiedManifestTrust02(f.predecessor,f.nowMs),f.nowMs)};const lease=await unlockExistingArchive02(f.options);let cleared=0;lease.onClose(()=>cleared++);try{const renewed=Uint8Array.from(unsigned);new DataView(renewed.buffer).setBigUint64(29,f.state.current.manifest.version+1n);renewed.set(f.state.current.manifest.digest,53);new DataView(renewed.buffer).setBigUint64(45,f.nowMs+3600000n);for(let at=151;at<renewed.length;at+=149)if(renewed[at]===2)new DataView(renewed.buffer).setBigUint64(at+140,f.nowMs+3600000n);f.state.current={...f.state.current,manifest:await verifyManifest02(await signFixtureSuccessor02(f,renewed),verifiedManifestTrust02(f.state.current.manifest,f.nowMs),f.nowMs)};await lease.withKey(f.options.binding,async()=>{});await new Promise(resolve=>setTimeout(resolve,150));assert.equal(cleared,1);await assert.rejects(lease.withKey(f.options.binding,async()=>{}),/unavailable/);}finally{lease.close();}});
+for(const signedBound of ["reader","manifest"]){
+ test(`100ms signed ${signedBound} expiry during held renewal refuses key callback and notifies`,async()=>{
+  const f=await archiveFixture(),pair=await signedExpiryPair(f,signedBound,100);let enter,release,heldRead=false,keyCalls=0,cleared=0;
+  const entered=new Promise(resolve=>{enter=resolve;}),held=new Promise(resolve=>{release=resolve;});
+  const lease=await unlockExistingArchive02({...f.options,readCurrent:async()=>{if(heldRead){enter();await held;}return f.state.current;}});lease.onClose(()=>cleared++);
+  f.state.current={...f.state.current,manifest:pair.initial};heldRead=true;
+  const result=lease.withKey(f.options.binding,async()=>{keyCalls++;return "synthetic plaintext";});
+  try{await Promise.race([entered,result.then(()=>assert.fail("No result may escape held renewal"))]);await new Promise(resolve=>setTimeout(resolve,150));release();await assert.rejects(result,/closed|expired|authority lost/);assert.equal(keyCalls,0);assert.equal(cleared,1);await assert.rejects(lease.withKey(f.options.binding,async()=>{}),/unavailable/);}finally{release();lease.close();}
+ });
+ test(`signed ${signedBound} renewal cannot extend the admitted lease's original observed expiry`,async()=>{
+  const f=await archiveFixture(),lifetime=2000,pair=await signedExpiryPair(f,signedBound,lifetime);f.state.current={...f.state.current,manifest:pair.initial};let started,reads=0,keyCalls=0;
+  const lease=await unlockExistingArchive02({...f.options,readCurrent:async()=>{started??=performance.now();reads++;return f.state.current;}}),observed=observeExpiry(lease,started,lifetime);
+  try{f.state.current={...f.state.current,manifest:pair.renewed};await lease.withKey(f.options.binding,async key=>{
+   keyCalls++;assert.equal(key.extractable,false);
+   // Cross a known part of the first lifetime before the post-operation renewal
+   // check. A fresh monotonic deadline here would visibly exceed the first bound.
+   await new Promise(resolve=>setTimeout(resolve,Math.max(0,started+lifetime/2-performance.now())));
+  });assert.equal(keyCalls,1);const renewedReads=reads;await observed.closed;observed.check();assert.equal(reads,renewedReads);await assert.rejects(lease.withKey(f.options.binding,async()=>assert.fail("Expired renewed key callback")),/unavailable/);lease.close();observed.check();}finally{observed.dispose();lease.close();}
+ });
+}

@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/assets/zrotext-mark.svg" alt="ZROtext mark" width="64"></p>
+<p align="center"><img src="docs/assets/zrotext-banner.svg" alt="ZROtext: Open-source Android SMS gateway" width="900"></p>
 <h1 align="center">ZROtext</h1>
 <p align="center"><strong>Your phone. Your number. Your SMS API.</strong></p>
 <p align="center">
@@ -12,6 +12,17 @@ ZROtext is an open-source Android SMS gateway. It is designed to connect a dedic
 <p align="center"><img src="docs/assets/ui/phone-home.png" alt="Gateway Home on a fresh emulator: connection paused, zero connections and message counts unavailable" width="360"></p>
 <p align="center"><sub>Actual Android UI from current source · fresh emulator · no SIM, account or SMS activity</sub></p>
 
+## Let your AI send a text
+
+Give your own agent, assistant or script a way to text you with its work, then review what it proposes before anything else goes out. Today this runs **only against the delivery simulator**: it sends no SMS, needs no phone, SIM, account or credentials, and contacts nobody. Real sending through a connected phone is not available yet.
+
+```sh
+cd sdk/typescript && npm ci --ignore-scripts && npm run build && cd ../..
+python scripts/agent_setup.py journey
+```
+
+This needs Node.js 22+ and Python 3.12+. It walks a scripted agent that queues a task-completion text, receives a reply that grants it no authority, and holds its next action for owner approval. For the underlying delivery decisions, run `cargo run --locked -p zrotext-device-sim`. Read the [agent texting quickstart](docs/AGENT-QUICKSTART.md) for each step and what it does not prove. A direct HTTP send example is not offered here because the dev stack needs an owner account and an enrolled phone first.
+
 ## Project status
 
 ZROtext is in active development. The repository includes a Rust server, PostgreSQL migrations, a delivery simulator, and an Android app. The local stack is for development. Some phone and billing flows are limited to controlled tests; a hosted SMS service is not available. See the [roadmap](docs/ROADMAP.md) for planned product work.
@@ -19,6 +30,13 @@ ZROtext is in active development. The repository includes a Rust server, Postgre
 [v0.1.6](https://github.com/pboachie/zrotext/releases/tag/v0.1.6) publishes Android APK/AAB artifacts from `e54a306e`, with version code 10. It remains a restricted pilot. Artifact publication does not establish Google Play approval, hosted deployment, physical hardware custody or carrier delivery. Development `main` can contain later work; use the release's receipts and limitations when evaluating a downloaded artifact. Normal onboarding integration is still in progress; a tested mobile custody component does not establish a complete supported setup journey.
 
 The [current interface guide](docs/INTERFACE.md) shows real Android screens and the rendered owner dashboard with synthetic responses. It distinguishes these captures from the design studies below.
+
+| Phone setup | Access choices | Connection controls |
+|:---:|:---:|:---:|
+| <img src="docs/assets/ui/phone-setup.png" alt="Phone setup overview: SIM not selected, not paired, and separate access, SIM and pairing steps" width="220"> | <img src="docs/assets/ui/phone-access.png" alt="Setup access step: SIM information, SMS sending and SMS receiving access are not granted" width="220"> | <img src="docs/assets/ui/phone-connection.png" alt="Connection controls: heartbeat paused, zero acknowledgments and empty WSS and approved device ID fields" width="220"> |
+
+<p align="center"><img src="docs/assets/ui/owner-overview.png" alt="Rendered owner fleet overview with synthetic writer counts, two synthetic gateways and an unknown outbound result" width="820"></p>
+<p align="center"><sub>Android captures from a fresh emulator with nothing granted or paired · owner dashboard rendered with synthetic fixture data</sub></p>
 
 ## How it is designed
 
@@ -28,45 +46,43 @@ The [current interface guide](docs/INTERFACE.md) shows real Android screens and 
 - **Managed option.** Hosted accounts, device monitoring, backups, upgrades, and billing are planned as an operated service built from the public application source.
 - **Two-location architecture.** The design supports routing API and device connections across sites while keeping one authoritative database writer and fenced device ownership.
 
-<details>
-<summary><b>Delivery state model</b></summary>
+### How a message travels
 
-Each state change needs evidence from the phone or a timeout. An ambiguous radio submission becomes `unknown` and is never retried automatically, because a retry could send a duplicate SMS. A conflicting callback in any active state also moves the message to `unknown`. See [message semantics](docs/ARCHITECTURE.md#message-semantics-and-the-duplicate-send-problem).
+Your software talks to the server over HTTPS. The server keeps every message in PostgreSQL and hands work to your phone over an authenticated WebSocket. The phone sends an ordinary SMS through its SIM, then reports what actually happened. Replies come back the same way and reach you as a signed webhook.
 
 ```mermaid
-stateDiagram-v2
-    direction LR
-    [*] --> accepted
-    accepted --> queued: enqueue
-    queued --> claimed: device claims
-    claimed --> submitting: submit intent saved
-    submitting --> submitted: sent callback OK
-    submitting --> failed: sent callback failed
-    submitting --> unknown: crash, timeout or partial
-    claimed --> unknown: grant timeout
-    unknown --> submitted: late sent callback
-    unknown --> failed: late failure callback
-    claimed --> queued: proven no submit
-    submitting --> queued: proven no submit
-    unknown --> queued: proven no submit
-    submitted --> delivered: delivery callback
-    submitted --> delivery_unknown: no receipt in time
-    delivery_unknown --> delivered: late receipt
-    accepted --> cancelled
-    queued --> cancelled
-    claimed --> cancelled
-    accepted --> expired
-    queued --> expired
-    claimed --> expired
+flowchart LR
+  APP["Your app, script<br/>or AI agent"] -->|"1 · HTTPS"| API["ZROtext server<br/>Rust API"]
+  API <--> DB[("PostgreSQL<br/>single writer")]
+  API <-->|"2 · authenticated WSS<br/>work out, state + replies back"| PHONE["Your Android<br/>phone + SIM"]
+  PHONE -->|"3 · ordinary SMS<br/>via the carrier"| PERSON["Recipient"]
+  PERSON -.->|"reply"| PHONE
+  API -.->|"4 · signed webhook"| HOOK["Your webhook<br/>receiver"]
 ```
 
-</details>
+<sub>Solid arrows carry an outbound message; dotted arrows carry replies back to you. This is the design. Today outbound sending is limited to the restricted synthetic-alpha test plane described in [send your first message](docs/SEND-FIRST-MESSAGE.md).</sub>
+
+### Honest delivery states
+
+Each step needs evidence from the phone. Leaving the phone is not the same as arriving, and a lost answer is never guessed.
+
+```mermaid
+flowchart LR
+  Q["queued<br/>server holds it"] --> S["submitting<br/>phone saved its intent"]
+  S -->|"sent callback OK"| SUB["submitted<br/>left the phone"]
+  SUB -->|"delivery receipt"| D["delivered"]
+  SUB -->|"no receipt in time"| DU["delivery_unknown"]
+  S -->|"radio reported failure"| F["failed"]
+  S -->|"crash or timeout"| U["unknown<br/>never retried automatically"]
+```
+
+This is a simplified view; the full [delivery state model](docs/DELIVERY-STATES.md) shows every transition, including claims, cancellation and expiry. An ambiguous submission becomes `unknown` and is never retried automatically, so an AI cannot cause a duplicate text.
 
 The architecture describes intended behavior. Check the current code and release notes before relying on a capability.
 
 ## Sending responsibly
 
-Only send messages to recipients for whom you have an appropriate basis to send that type of SMS. Keep consent records, honor withdrawal and opt-out requests, and check the rules for your recipients' locations and your carrier or mobile plan. The restricted synthetic pilot suppresses recognized opt-out replies and lets owners record withdrawals received through other channels. Holds block admission and new send grants, and cancel queued work before a grant. Owner review decisions do not lift blocks. Production line activation, general inbound content and end-to-end device evidence remain incomplete, so do not use it for general or bulk sending. See [SMS compliance and current limits](docs/SMS-COMPLIANCE.md).
+Only message recipients you have an appropriate basis to text, keep consent records, and honor opt-outs. Production line activation, general inbound content and end-to-end device evidence remain incomplete, so do not use ZROtext for general or bulk sending. See [SMS compliance and current limits](docs/SMS-COMPLIANCE.md).
 
 ## Roadmap
 
@@ -85,7 +101,7 @@ The proposed product direction is **your number, connected to your business, you
 Explore [all proposed use cases](docs/USE-CASES.md), including event invitations and RSVPs, repair updates, appointment waitlists and volunteer coordination. The [product implementation plan](docs/PRODUCT-PLAN.md) connects them to ordered development work and acceptance criteria.
 
 <!-- roadmap:overview -->
-<p align="center"><a href="docs/ROADMAP.md"><img src="docs/assets/roadmap-overview.svg" alt="Roadmap at a glance: 25 capabilities in five tracks. Four are in a restricted pilot, eighteen are being built, one is in design and two are planned. None has reached general release." width="820"></a></p>
+<p align="center"><a href="docs/ROADMAP.md"><img src="docs/assets/roadmap-overview.svg" alt="Roadmap at a glance: 25 capabilities in five tracks. Four are in a restricted pilot, eighteen are being built and three are in design. None has reached general release." width="820"></a></p>
 <!-- /roadmap:overview -->
 
 ## Design preview
@@ -109,14 +125,39 @@ curl http://127.0.0.1:8080/healthz
 curl http://127.0.0.1:8080/readyz
 ```
 
+```mermaid
+flowchart LR
+  ENV[".env<br/>local secrets"] -.-> DB
+  DB[("db<br/>PostgreSQL")] --> MIG["migrate<br/>numbered SQL migrations"]
+  MIG --> ROLE["db-runtime<br/>restricted runtime role"]
+  ROLE --> APP["app<br/>API on port 8080"]
+  ROLE -.->|"--profile two-hub"| APPB["app_b<br/>second API on port 8081"]
+```
+
 The stack runs database migrations before the API starts. Dispatch is disabled by default. To run a second local API instance against the same PostgreSQL writer, add `--profile two-hub` before `up`; it listens on `127.0.0.1:8081`. See the [Compose guide](deploy/compose/README.md) for migration and volume details, and the [writer-promotion runbook](docs/WRITER-PROMOTION.md) for rehearsing a fenced move of authority between the two sites.
 
 To create the first owner, follow the [local bootstrap steps](docs/SELF-HOSTING.md#owner-registration). Later invited owners can register and verify their email at `/owner/account` on the configured HTTPS origin; MFA management is on the same page after sign-in.
 
 ## Documentation
 
+Not sure where to begin? Pick the path that matches what you want to do.
+
+```mermaid
+flowchart LR
+  START{"What do you<br/>want to do?"}
+  START -->|"Try it with no phone"| A["Agent texting quickstart"]
+  START -->|"Call the API"| B["Send your first message"]
+  START -->|"Run a server"| C["Self-hosting"]
+  START -->|"Understand the design"| D["Architecture and<br/>delivery guarantees"]
+  START -->|"Work on the phone app"| E["Android development<br/>and testing"]
+```
+
 - [Current interfaces and setup boundaries](docs/INTERFACE.md)
 - [Architecture and API contracts](docs/ARCHITECTURE.md)
+- [Delivery state model](docs/DELIVERY-STATES.md)
+- [Current delivery guarantees and their limits](docs/GUARANTEES.md)
+- [Agent texting quickstart (simulator)](docs/AGENT-QUICKSTART.md)
+- [Send your first message (API examples)](docs/SEND-FIRST-MESSAGE.md)
 - [Two-location routing and failover design](docs/MULTI-LOCATION.md)
 - [Security design](docs/SECURITY-DESIGN.md)
 - [SMS compliance and current limits](docs/SMS-COMPLIANCE.md)
@@ -132,6 +173,6 @@ To create the first owner, follow the [local bootstrap steps](docs/SELF-HOSTING.
 
 ## Contributing
 
-Issues and discussions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for the development checks, sign-off requirement, and pull request process. Report vulnerabilities through the private channel in [SECURITY.md](SECURITY.md).
+Chat with the community on [Discord](https://discord.gg/DugVBzpngQ). Questions, ideas and show-and-tell go in [GitHub Discussions](https://github.com/pboachie/zrotext/discussions); bugs and device reports go in [issues](https://github.com/pboachie/zrotext/issues). Do not post phone numbers, message content, device identifiers or credentials in any of them. Read [CONTRIBUTING.md](CONTRIBUTING.md) for the development checks, sign-off requirement, and pull request process. Report vulnerabilities through the private channel in [SECURITY.md](SECURITY.md).
 
 ZROtext is licensed under [AGPL-3.0-only](LICENSE). Contributors retain their copyright under the terms described in [CONTRIBUTING.md](CONTRIBUTING.md).

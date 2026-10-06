@@ -97,6 +97,7 @@ struct Config {
     workflow_tools_enabled: bool,
     customer_routines_enabled: bool,
     exposure_test_enabled: bool,
+    original_reply_enabled: bool,
     retention: RetentionPolicy,
     draining: Arc<AtomicBool>,
     drain_notify: Arc<Notify>,
@@ -199,6 +200,8 @@ fn validate_sealed_setup_prerequisites(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let account_root_trust_enabled = optional_bool("ACCOUNT_ROOT_TRUST_ENABLED")?;
+    let account_root_trust_directory = env::var_os("ACCOUNT_ROOT_TRUST_SDK_DIRECTORY");
     let conversation_enabled = optional_bool("CONVERSATION_ENABLED")?;
     let sealed_setup_enabled = optional_bool("SEALED_LINE_SETUP_ENABLED")?;
     if sealed_setup_enabled && !conversation_enabled {
@@ -272,6 +275,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             meter_enabled,
             billing_test.is_some(),
             meter_key,
+        )?;
+    let usage_reconcile_enabled = optional_bool("STRIPE_TEST_USAGE_RECONCILE_ENABLED")?;
+    let usage_reconcile_key = if usage_reconcile_enabled {
+        Some(required("STRIPE_TEST_USAGE_RECONCILE_SECRET_KEY")?)
+    } else {
+        None
+    };
+    let usage_reconciler =
+        zrotext_server::billing::usage_reconciliation::TestUsageReconciler::configured(
+            usage_reconcile_enabled,
+            billing_test.is_some(),
+            usage_reconcile_key,
         )?;
     // Usage-limit plans are quota-only operator configuration with no price
     // or provider; the feature is disabled by default and encodes no default
@@ -354,9 +369,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sealed_admission_enabled = optional_bool("SEALED_ADMISSION_ENABLED")?;
     let sealed_webhook_delivery_enabled = optional_bool("SEALED_WEBHOOK_DELIVERY_ENABLED")?;
     let sealed_dispatch_enabled = optional_bool("SEALED_DISPATCH_ENABLED")?;
+    let original_reply_enabled = optional_bool("ORIGINAL_REPLY_READER_ENABLED")?;
     let customer_routines_enabled = optional_bool("CUSTOMER_ROUTINES_ENABLED")?;
     let exposure_test_enabled = optional_bool("EXPOSURE_TEST_ENABLED")?;
     customer_routines_config_check(customer_routines_enabled, workflow_tools_enabled)?;
+    if original_reply_enabled
+        && (!workflow_tools_enabled || !optional_bool("CONVERSATION_ENABLED")?)
+    {
+        return Err("ORIGINAL_REPLY_READER_ENABLED requires CONVERSATION_ENABLED and WORKFLOW_TOOLS_ENABLED".into());
+    }
     // Independent-quorum failover executor and member-side reporting loop.
     // Disabled by default; when off (or absent) nothing further is read and
     // no thread, database or store access exists. When on, the validated
@@ -431,6 +452,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         workflow_tools_enabled,
         customer_routines_enabled,
         exposure_test_enabled,
+        original_reply_enabled,
         retention: RetentionPolicy::from_env()?,
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
@@ -526,8 +548,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let mut quotas_reset = false;
     let mut billing_auth_state = None;
-    if let Some((auth_state, enrollment_state)) = account_routes(&config).await? {
+    let configured_accounts = account_routes(&config).await?;
+    let account_root_trust_router =
+        zrotext_server::http_owner_account_root_trust::configured_router(
+            account_root_trust_enabled,
+            account_root_trust_directory
+                .as_deref()
+                .map(std::path::Path::new),
+            configured_accounts.is_some(),
+        )?;
+    if let Some((auth_state, enrollment_state)) = configured_accounts {
+        app = app.merge(account_root_trust_router);
         billing_auth_state = Some(auth_state.clone());
+        if config.original_reply_enabled {
+            let db = zrotext_server::runtime_db::connect(&config.database_url).await?;
+            let installed:bool=db.query_one("SELECT to_regclass('original_reply_sources') IS NOT NULL AND to_regprocedure('original_reply_source_current(uuid,uuid)') IS NOT NULL",&[]).await?.get(0);
+            if !installed {
+                return Err(
+                    "ORIGINAL_REPLY_READER_ENABLED requires the original reply schema".into(),
+                );
+            }
+        }
         ensure_mfa_startup(
             &config.database_url,
             auth_state.mfa_cipher.as_deref(),
@@ -954,6 +995,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .merge(http_owner_contacts::router(owner_contacts_state))
             .merge(owner_ui::router())
             .merge(device_router);
+        app = app.merge(zrotext_server::original_reply::http::router(
+            zrotext_server::original_reply::http::StateData {
+                database_url: config.database_url.clone(),
+                hasher: workflow_state.hasher.clone(),
+            },
+            config.original_reply_enabled,
+        ));
         app = app.merge(zrotext_server::workflow_runtime::http::router(
             workflow_state.clone(),
             config.workflow_tools_enabled,
@@ -963,14 +1011,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 routine_owner_state.clone(),
                 config.exposure_test_enabled,
             ))
-            .merge(zrotext_server::workflow_runtime::routines::http::router(
-                workflow_state,
-                config.customer_routines_enabled,
-            ))
             .merge(
-                zrotext_server::workflow_runtime::routines::http::owner_router(
+                zrotext_server::workflow_runtime::routines::http::router_with_original(
+                    workflow_state,
+                    config.customer_routines_enabled,
+                    config.original_reply_enabled,
+                ),
+            )
+            .merge(
+                zrotext_server::workflow_runtime::routines::http::owner_router_with_original(
                     routine_owner_state,
                     config.customer_routines_enabled,
+                    config.original_reply_enabled,
                 ),
             );
         if config.alpha_policy.enabled() {
@@ -1068,6 +1120,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let billing_notify = config.drain_notify.clone();
         let worker = Arc::new(worker);
         let permits = Arc::new(tokio::sync::Semaphore::new(concurrency));
+        if let Some(reconciler) = usage_reconciler {
+            let schema_db = zrotext_server::runtime_db::connect(&billing_database)
+                .await
+                .map_err(|_| "TEST usage observation startup database unavailable")?;
+            reconciler
+                .validate_schema(&schema_db)
+                .await
+                .map_err(|_| "TEST usage observation startup schema unavailable")?;
+            drop(schema_db);
+            tokio::spawn(zrotext_server::billing::usage_reconciliation::run_queue(
+                billing_database.clone(),
+                reconciler,
+                billing_draining.clone(),
+                billing_notify.clone(),
+                permits.clone(),
+            ));
+        }
         if let Some(transport) = meter_transport {
             tokio::spawn(zrotext_server::billing::meter_transport::run_queue(
                 billing_database.clone(),
@@ -1210,7 +1279,11 @@ fn customer_routines_config_check(
 }
 
 fn validate_unconfigured_account_routes(config: &Config) -> Result<(), &'static str> {
-    if config.mfa_recovery_only || config.mfa_enrollment_enabled || config.root_custody_enabled {
+    if config.mfa_recovery_only
+        || config.mfa_enrollment_enabled
+        || config.root_custody_enabled
+        || config.original_reply_enabled
+    {
         return Err("MFA or root custody mode requires configured account routes");
     }
     Ok(())
@@ -1306,9 +1379,15 @@ async fn account_routes(
         }
         auth_state = auth_state.with_mfa_enrollment_enabled();
     }
+    if config.original_reply_enabled
+        && (auth_state.mfa_cipher.is_none() || config.mfa_recovery_only)
+    {
+        return Err("ORIGINAL_REPLY_READER_ENABLED requires active MFA_ENCRYPTION_KEY_B64".into());
+    }
     auth_state = auth_state
         .with_root_custody_opt_in(config.root_custody_enabled, config.mfa_recovery_only)?
-        .with_workflow_grants_enabled(config.workflow_tools_enabled);
+        .with_workflow_grants_enabled(config.workflow_tools_enabled)
+        .with_original_reply_enabled(config.original_reply_enabled);
     if config.sms_line_activation_enabled {
         auth_state = auth_state.with_sms_line_activation_enabled();
     }
@@ -1804,6 +1883,7 @@ mod tests {
             workflow_tools_enabled: false,
             customer_routines_enabled: false,
             exposure_test_enabled: false,
+            original_reply_enabled: false,
             retention: RetentionPolicy::default(),
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),
@@ -2006,6 +2086,7 @@ mod tests {
             workflow_tools_enabled: false,
             customer_routines_enabled: false,
             exposure_test_enabled: false,
+            original_reply_enabled: false,
             retention: RetentionPolicy::default(),
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),

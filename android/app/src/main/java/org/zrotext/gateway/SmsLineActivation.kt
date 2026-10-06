@@ -135,15 +135,15 @@ internal class SmsLineActivationDevice(
         val api = apiLevel()
         val selected = selectedSubscriptionId()
         val initial = observe()
-        val sim = SimCardContinuity.activationCandidate(initial)
-        if (api < 29 || sim == null || sim.subscriptionId != selected ||
+        val sim = SimCardContinuity.activationCandidate(initial, selected)
+        if (api < 29 || sim == null || sim.subscriptionId != selected || selectedSubscriptionId() != selected ||
             frozen.accountId != authenticatedAccountId ||
             frozen.deviceId != authenticatedDeviceId ||
             frozen.expiresAtMs - now !in 1..CHALLENGE_LIFETIME_MS) null
         else {
             val statement = SmsLineActivationTranscript.deviceStatement(frozen, api, selected)
             val signature = sign(frozen, api, selected)
-            val afterSigning = SimCardContinuity.activationCandidate(observe())
+            val afterSigning = SimCardContinuity.activationCandidate(observe(), selected)
             if (signature.size !in 8..80 || nowMs() >= frozen.expiresAtMs ||
                 selectedSubscriptionId() != selected || afterSigning != sim) null
             else PreparedSmsLineActivation(frozen, api, selected, sim,
@@ -169,11 +169,20 @@ internal class SmsLineActivationDevice(
             authenticatedDeviceId != challenge.deviceId ||
             proof.simAfterSigning != proof.sim ||
             !SimCardContinuity.matches(proof.sim, active)) false
-        else dao.installVerifiedLineBinding(LocalLineBinding(accountId =
-            challenge.accountId.toString(), deviceId = challenge.deviceId.toString(),
-            lineId = challenge.lineId.toString(), generation = challenge.generation,
-            subscriptionId = proof.selectedSubscriptionId, installedAtMs = now,
-            cardId = proof.sim.cardId), active)
+        else {
+            val installed = dao.installVerifiedLineBinding(LocalLineBinding(accountId =
+                challenge.accountId.toString(), deviceId = challenge.deviceId.toString(),
+                lineId = challenge.lineId.toString(), generation = challenge.generation,
+                subscriptionId = proof.selectedSubscriptionId, installedAtMs = now,
+                cardId = proof.sim.cardId), active)
+            // Storage can block. A successful write is not a live continuity assertion.
+            val stillSelected = installed && apiLevel() == proof.apiLevel &&
+                selectedSubscriptionId() == proof.selectedSubscriptionId &&
+                SimCardContinuity.matches(proof.sim, observe()) &&
+                selectedSubscriptionId() == proof.selectedSubscriptionId
+            val after = nowMs()
+            stillSelected && after >= now && after < challenge.expiresAtMs + ACK_GRACE_MS
+        }
     } catch (_: Exception) { false }
 
     companion object {

@@ -20,8 +20,9 @@ const integer = (v, min, max) => Number.isSafeInteger(v) && v >= min && v <= max
 export function policy(value) {
   const fields=['request_id','policy_id','context_id','routine_id','generation','kind','executor','period','expires_ms','call_limit','unit_limit','units_per_call','turn_limit','timeout_ms','window'];
   const legacy=value&&typeof value==='object'&&!Object.hasOwn(value,'adapter_id')&&!Object.hasOwn(value,'artifact_digest');
-  const normalized=legacy?{...closed(value,fields),adapter_id:null,artifact_digest:null}:value;
-  const p = closed(normalized,[...fields,'adapter_id','artifact_digest']);
+  const normalized=legacy?{...closed(value,Object.hasOwn(value,'original_input')?[...fields,'original_input']:fields),adapter_id:null,artifact_digest:null}:value;
+  const executorFields=[...fields,'adapter_id','artifact_digest'];
+  const p = closed(Object.hasOwn(normalized,'original_input')?normalized:{...closed(normalized,executorFields),original_input:null},[...executorFields,'original_input']);
   if (!['request_id','policy_id','context_id','routine_id'].every(k => id(p[k])) ||
       !['faq','intake','note','reminder','owner_reply'].includes(p.kind) || !['deterministic_local','local_process'].includes(p.executor) || p.period !== 'utc_day' ||
       !integer(p.generation,1,Number.MAX_SAFE_INTEGER) || !integer(p.expires_ms,1,Number.MAX_SAFE_INTEGER) ||
@@ -29,6 +30,11 @@ export function policy(value) {
       !integer(p.turn_limit,1,3) || !integer(p.timeout_ms,10,30000)) fail('invalid_request');
   if(p.executor==='deterministic_local' ? (p.adapter_id!==null||p.artifact_digest!==null) :
     (!/^[a-z][a-z0-9_-]{0,63}$/.test(p.adapter_id)||!digest(p.artifact_digest)))fail('invalid_request');
+  if(p.original_input!==null){
+    const binding=closed(p.original_input,['grant_id']);
+    if(!id(binding.grant_id)||p.executor!=='local_process')fail('invalid_request');
+    p.original_input=Object.freeze(binding);
+  }else delete p.original_input;
   const w = closed(p.window,['timezone','first_local_date','opens_minute','closes_minute','repeat_every_days','max_occurrences','pacing_seconds']);
   if (!(w.timezone === null || (typeof w.timezone === 'string' && /^[!-~]{1,128}$/.test(w.timezone))) ||
       !/^\d{4}-\d{2}-\d{2}$/.test(w.first_local_date) || !integer(w.opens_minute,0,1439) ||
@@ -51,8 +57,8 @@ export function call(value) {
     (c.action_id!==null||c.binding_digest!==null))fail('response_unknown','unknown');
   return Object.freeze(c);
 }
-function credential(value) {
-  if (typeof value !== 'string' || !/^ztw_[A-Za-z0-9_-]{43}$/.test(value)) fail('invalid_configuration');
+function credential(value,original=false) {
+  if (typeof value !== 'string' || !(original?/^ztr_[A-Za-z0-9_-]{43}$/:/^ztw_[A-Za-z0-9_-]{43}$/).test(value)) fail('invalid_configuration');
   const bytes = Buffer.from(value.slice(4),'base64url');
   if (bytes.length !== 32 || bytes.toString('base64url') !== value.slice(4)) fail('invalid_configuration');
   return value;
@@ -67,11 +73,12 @@ async function boundedJson(response) {
 }
 /** Explicit trusted startup configuration. Neither credential is a tool argument. */
 export class CustomerRoutineService {
-  #origin; #input; #output; #fetch; #timeout; #owner;
-  constructor({origin,inputCredential,outputCredential=null,fetchImpl=fetch,timeoutMs=10000,owner=null}) {
+  #origin; #input; #output; #fetch; #timeout; #owner; #original;
+  constructor({origin,inputCredential,outputCredential=null,originalCredential=null,fetchImpl=fetch,timeoutMs=10000,owner=null}) {
     let parsed; try { parsed=new URL(origin); } catch { fail('invalid_configuration'); }
     if(parsed.protocol!=='https:' || parsed.username || parsed.password || parsed.search || parsed.hash || parsed.pathname!=='/' || !integer(timeoutMs,10,10000)) fail('invalid_configuration');
     this.#origin=parsed.origin; this.#input=credential(inputCredential); this.#output=outputCredential===null?null:credential(outputCredential);
+    this.#original=originalCredential===null?null:credential(originalCredential,true);
     this.#fetch=fetchImpl; this.#timeout=timeoutMs;
     // A separately supplied live owner session; never reconstructed from an integration grant.
     if(owner!==null) {
@@ -80,8 +87,9 @@ export class CustomerRoutineService {
       this.#owner=o;
     }
   }
-  async #request(path,body,{owner=false,dual=false,binary=false,headers={},expected=200,signal}={}) {
+  async #request(path,body,{owner=false,dual=false,original=false,binary=false,headers={},expected=200,signal}={}) {
     if(owner && !this.#owner) fail('owner_required'); if(dual && !this.#output) fail('output_grant_required');
+    if(original && !this.#original)fail('original_grant_required');
     const controller=new AbortController(); let timer,abort;
     const cancellation=new Promise((_,reject)=>{if(signal){abort=()=>{controller.abort();reject(new CustomerRoutineError('response_unknown','unknown'));};if(signal.aborted)abort();else signal.addEventListener('abort',abort,{once:true});}});
     const snapshot=binary?Uint8Array.from(body):JSON.stringify(body);
@@ -95,7 +103,8 @@ export class CustomerRoutineService {
             ...(owner?{Cookie:this.#owner.cookie,Origin:this.#origin,'x-zrotext-csrf':this.#owner.csrf,
               ...(path.includes('/routines/')?{'x-zrotext-routine-input':this.#input}:{})}:
               {Authorization:`Bearer ${dual?this.#output:this.#input}`}),
-            ...(dual?{[owner?'x-zrotext-routine-output':'x-zrotext-routine-input']:owner?this.#output:this.#input}:{}),...headers}});
+            ...(dual?{[owner?'x-zrotext-routine-output':'x-zrotext-routine-input']:owner?this.#output:this.#input}:{}),
+            ...(original?{'x-zrotext-original-reader':this.#original}:{}),...headers}});
         if(response.redirected || (response.url && response.url!==url)) fail('response_unknown','unknown');
         const value=await boundedJson(response);
         if(response.status!==expected) {
@@ -110,13 +119,19 @@ export class CustomerRoutineService {
     finally { clearTimeout(timer);if(abort)signal.removeEventListener('abort',abort); controller.abort(); }
   }
   async current(contextId,policyId,{signal}={}) {
+    return this.#currentPolicy(contextId,policyId,false,signal);
+  }
+  async currentOriginalPolicy(contextId,policyId,{signal}={}) {
+    return this.#currentPolicy(contextId,policyId,true,signal);
+  }
+  async #currentPolicy(contextId,policyId,original,signal) {
     if(!id(contextId)||!id(policyId)) fail('invalid_request');
-    const v=closed(await this.#request('/v1/workflow/routines',{operation:'current',params:{context_id:contextId,policy_id:policyId}},{signal}),['kind','result']);
+    const v=closed(await this.#request('/v1/workflow/routines',{operation:'current',params:{context_id:contextId,policy_id:policyId}},{original,signal}),['kind','result']);
     if(v.kind!=='policy') fail('response_unknown','unknown'); const p=policy(v.result);
     if(p.context_id!==contextId||p.policy_id!==policyId) fail('response_unknown','unknown'); return p;
   }
-  async #call(operation,params,dual=false) {
-    const v=closed(await this.#request('/v1/workflow/routines',{operation,params},{dual}),['kind','result']);
+  async #call(operation,params,dual=false,options={}) {
+    const v=closed(await this.#request('/v1/workflow/routines',{operation,params},{dual,...options}),['kind','result']);
     if(v.kind!=='call') fail('response_unknown','unknown'); return call(v.result);
   }
   async admit(value) {
@@ -124,13 +139,25 @@ export class CustomerRoutineService {
     if(!id(v.request_id)||!id(v.policy_id)||!id(v.context_id)||!integer(v.input_revision,1,128)||!digest(v.input_source_digest)||v.direction!=='owner_declared') fail('invalid_request');
     const result=await this.#call('admit',v); if(result.policy_id!==v.policy_id||result.call_id!==v.request_id) fail('response_unknown','unknown'); return result;
   }
+  async admitOriginal(value,{signal}={}) {
+    const v=closed(value,['request_id','policy_id','context_id','input_revision','input_source_digest','event_id','accepted_manifest_version','event_envelope_digest']);
+    if(!['request_id','policy_id','context_id','event_id'].every(k=>id(v[k]))||!integer(v.input_revision,1,128)||
+      !digest(v.input_source_digest)||!digest(v.event_envelope_digest)||!integer(v.accepted_manifest_version,1,Number.MAX_SAFE_INTEGER))fail('invalid_request');
+    const result=await this.#call('admit_original',v,false,{original:true,signal});
+    if(result.policy_id!==v.policy_id||result.call_id!==v.request_id)fail('response_unknown','unknown');return result;
+  }
+  async currentOriginal(callId,{signal}={}) {
+    if(!id(callId))fail('invalid_request');
+    const result=await this.#call('current_original',{call_id:callId},false,{original:true,signal});
+    if(result.call_id!==callId||result.execute_once)fail('response_unknown','unknown');return result;
+  }
   async produced(contextId,callId,archiveDigest) {
     if(!id(contextId)||!id(callId)||!digest(archiveDigest)) fail('invalid_request');
-    const result=await this.#call('produced',{context_id:contextId,call_id:callId,archive_ciphertext_digest:archiveDigest});
+    const result=await this.#call('produced',{context_id:contextId,call_id:callId,archive_ciphertext_digest:archiveDigest},false,{original:this.#original!==null});
     if(result.call_id!==callId||result.phase!=='produced'||result.execute_once) fail('response_unknown','unknown'); return result;
   }
-  async resume(callId) { if(!id(callId)) fail('invalid_request'); const result=await this.#call('resume',{call_id:callId},true); if(result.call_id!==callId) fail('response_unknown','unknown'); return result; }
-  async configure(value) { const p=policy(value); const result=closed(await this.#request('/v1/owner/workflow/routines/policy',p,{owner:true}),['configured']); if(result.configured!==true)fail('response_unknown','unknown');return result; }
+  async resume(callId) { if(!id(callId)) fail('invalid_request'); const result=await this.#call('resume',{call_id:callId},true,{original:this.#original!==null}); if(result.call_id!==callId) fail('response_unknown','unknown'); return result; }
+  async configure(value) { const p=policy(value); const result=closed(await this.#request('/v1/owner/workflow/routines/policy',p,{owner:true,original:p.original_input!=null}),['configured']); if(result.configured!==true)fail('response_unknown','unknown');return result; }
   async publishArchive(requestId,envelope) {
     if(!id(requestId)||!(envelope instanceof Uint8Array)) fail('invalid_request');
     const r=closed(await this.#request('/v1/owner/workflow/contexts',envelope,{owner:true,binary:true,headers:{'idempotency-key':requestId,'x-zrotext-context-revision':'0'}}),['revision']);
@@ -139,12 +166,15 @@ export class CustomerRoutineService {
   async bindOutput(value) {
     const v=closed(value,['request_id','call_id','output_context_id','output_revision','output_source_digest','produced_digest']);
     if(!id(v.request_id)||!id(v.call_id)||v.output_context_id!==v.call_id||v.output_revision!==1||!digest(v.output_source_digest)||!digest(v.produced_digest)) fail('invalid_request');
-    const r=closed(await this.#request('/v1/owner/workflow/routines/output',v,{owner:true,dual:true}),['kind','result']);
+    const r=closed(await this.#request('/v1/owner/workflow/routines/output',v,{owner:true,dual:true,original:this.#original!==null}),['kind','result']);
     if(r.kind!=='call') fail('response_unknown','unknown'); const result=call(r.result); if(result.call_id!==v.call_id) fail('response_unknown','unknown'); return result;
   }
   /** Explicit live-owner password/MFA ceremony. Never invoked by the executor. */
   async issueOutputGrant(value) {
-    const v=closed(value,['current_password','code','connector_id','context_id','contact_id','purpose','permissions','signer_key_id','expires_at_ms','content_envelope_base64url']);
+    const fields=['current_password','code','connector_id','context_id','contact_id','purpose','permissions','signer_key_id','expires_at_ms','content_envelope_base64url'];
+    const selected=value&&Object.hasOwn(value,'original_grant_id');
+    const v=closed(value,selected?[...fields,'original_grant_id']:fields);
+    if(selected&&v.original_grant_id!==null&&!id(v.original_grant_id))fail('invalid_request');
     if(!id(v.connector_id)||!id(v.context_id)||!id(v.contact_id)||!['transactional','operational','marketing'].includes(v.purpose)||
       typeof v.current_password!=='string'||!v.current_password||v.current_password.length>1024||typeof v.code!=='string'||!v.code||v.code.length>128||
       !Array.isArray(v.permissions)||v.permissions.length<1||v.permissions.length>7||new Set(v.permissions).size!==v.permissions.length||

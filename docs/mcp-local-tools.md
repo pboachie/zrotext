@@ -6,6 +6,8 @@ prepares metadata for an existing owner-confirmed sealed message; it does not
 create content, approve an action, submit to a radio, or prove delivery.
 The gateway HTTP mount is independently disabled by default.
 
+For a separate simulator-only server whose send tool enforces owner-approved recipients, rate limits, required idempotency keys and opt-out, see [guarded agent send tools](agent-send-guardrails.md).
+
 ## Run from source
 
 Use Node.js 22 and the repository checkout. Build the SDK first:

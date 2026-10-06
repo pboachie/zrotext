@@ -8,6 +8,8 @@ use serde_json::Value;
 use tokio_postgres::{Client, Transaction};
 use uuid::Uuid;
 
+pub(crate) mod consent;
+
 #[derive(Default, Serialize)]
 pub struct Page {
     pub items: Vec<Value>,
@@ -121,6 +123,7 @@ pub async fn scrub_context(
     account: Uuid,
     context: Uuid,
 ) -> Result<u64, tokio_postgres::Error> {
+    super::openings::lifecycle::erase_context(tx, account, context).await?;
     if !installed(tx).await? {
         return Ok(0);
     }
@@ -134,6 +137,7 @@ pub async fn erase_context(
     account: Uuid,
     context: Uuid,
 ) -> Result<(), tokio_postgres::Error> {
+    super::openings::lifecycle::erase_context(tx, account, context).await?;
     super::routines::lifecycle::erase_context(tx, account, context).await?;
     if !installed(tx).await? {
         return Ok(());
@@ -155,7 +159,8 @@ pub async fn erase_context(
 /// Bounded expiry/revocation scrub. Removing old records is handled alongside
 /// their source context so replay identities cannot become reusable grants.
 pub async fn prune(client: &mut Client, limit: i64) -> Result<u64, tokio_postgres::Error> {
-    let routine_changes = super::routines::lifecycle::prune(client, limit).await?;
+    let routine_changes = super::routines::lifecycle::prune(client, limit).await?
+        + crate::original_reply::lifecycle::prune(client, limit).await?;
     let tx = client.transaction().await?;
     if !installed(&tx).await? {
         return Ok(routine_changes);
@@ -200,6 +205,7 @@ pub async fn erase_contact(
     account: Uuid,
     contact: Uuid,
 ) -> Result<(), tokio_postgres::Error> {
+    super::openings::lifecycle::erase_contact(tx, account, contact).await?;
     super::routines::lifecycle::erase_contact(tx, account, contact).await?;
     if !installed(tx).await? {
         return Ok(());

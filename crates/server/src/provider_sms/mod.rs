@@ -1,13 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Dormant, network-free provider SMS contract. No runtime caller or authority.
+//! Dormant provider SMS contracts. No provider network caller or send authority.
+//! Known receipt persistence is a separate, manually installed proposal with
+//! no production writer-permit issuer or correlation creator.
 //!
 //! Snapshots are trusted caller inputs, NOT proof of authorization. A future
 //! writer transaction must enforce account authority, shared suppression,
 //! budgets, durable request idempotency and atomic receipt deduplication. This
 //! bounded in-memory model deliberately cannot resume dispatch after a crash.
 
+pub mod action_descriptor;
+pub mod submit_codec;
 mod telnyx;
 pub use telnyx::verify_receipt;
+pub mod receipts;
 
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;

@@ -22,7 +22,8 @@ pub(crate) async fn recheck_descriptor(
     if activation::now(tx).await? >= d.expires_at_ms()? {
         return Err(ConversationError::Forbidden);
     }
-    fresh_owner(tx, owner).await
+    fresh_owner(tx, owner).await?;
+    crate::workflow_runtime::routines::original_action_current(tx, d).await
 }
 
 pub(crate) async fn checked_descriptor<'tx, 'connection>(
@@ -60,11 +61,25 @@ pub(crate) async fn contact(
     descriptor: &Descriptor,
     header: &wire::Header,
 ) -> Result<(), ConversationError> {
+    crate::original_reply::source::recheck(tx, descriptor).await?;
+    crate::workflow_runtime::routines::original_action_current(tx, descriptor).await?;
     let ids = descriptor.identities()?;
+    contact_scope(tx, ids.recipient, descriptor.purpose()?, header)
+        .await
+        .map(|_| ())
+}
+
+/// A contact-purpose fence without manufacturing an action or SEND authority.
+pub(crate) async fn contact_scope(
+    tx: &Transaction<'_>,
+    contact: Uuid,
+    purpose: &str,
+    header: &wire::Header,
+) -> Result<i64, ConversationError> {
     let row = tx
         .query_opt(
             "SELECT recipient_e164 FROM contacts WHERE account_id=$1 AND id=$2 FOR SHARE",
-            &[&header.account, &ids.recipient],
+            &[&header.account, &contact],
         )
         .await?
         .ok_or(ConversationError::NotFound)?;
@@ -72,9 +87,8 @@ pub(crate) async fn contact(
     if Sha256::digest(peer.as_bytes()).as_slice() != header.peer_digest {
         return Err(ConversationError::Forbidden);
     }
-    let purpose = descriptor.purpose()?;
-    let consent=tx.query_opt("SELECT action,effective_at<=clock_timestamp(),expires_at IS NULL OR expires_at>clock_timestamp() FROM contact_consent_records WHERE account_id=$1 AND contact_id=$2 AND purpose=$3 ORDER BY effective_at DESC,recorded_at DESC,id DESC LIMIT 1 FOR SHARE",
-        &[&header.account,&ids.recipient,&purpose]).await?.ok_or(ConversationError::Forbidden)?;
+    let consent=tx.query_opt("SELECT action,effective_at<=clock_timestamp(),expires_at IS NULL OR expires_at>clock_timestamp(),COALESCE(floor(extract(epoch FROM expires_at)*1000)::bigint,9223372036854775807::bigint) FROM contact_consent_records WHERE account_id=$1 AND contact_id=$2 AND purpose=$3 ORDER BY effective_at DESC,recorded_at DESC,id DESC LIMIT 1 FOR SHARE",
+        &[&header.account,&contact,&purpose]).await?.ok_or(ConversationError::Forbidden)?;
     if consent.get::<_, String>(0) != "grant"
         || !consent.get::<_, bool>(1)
         || !consent.get::<_, bool>(2)
@@ -83,7 +97,7 @@ pub(crate) async fn contact(
     }
     if tx.query_one("SELECT EXISTS(SELECT 1 FROM recipient_suppressions WHERE account_id=$1 AND recipient_e164=$2 AND active) OR EXISTS(SELECT 1 FROM owner_recipient_holds WHERE account_id=$1 AND recipient_e164=$2 AND released_at IS NULL)",
         &[&header.account,&peer]).await?.get::<_,bool>(0){return Err(ConversationError::Forbidden);}
-    Ok(())
+    Ok(consent.get(3))
 }
 
 pub(crate) async fn live_routine(

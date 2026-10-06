@@ -63,8 +63,10 @@ class ConversationConnectionFactoryTest {
     private fun session() = ConversationPhoneSession(account, device, UUID.randomUUID(), 7, 3, identity.originHash)
     private fun factory(proposal: (ConversationPhoneSession) -> ConversationConnectionProposal = { providers++; proposal() },
         inputs: (ConversationPhoneSession) -> ConversationConnectionInputs = { error("Missing verified providers") },
-        publish: (ConversationConnectionFactory.Connection) -> Unit = { publications++ }) =
-        ConversationConnectionFactory("fixture-site", "fixture-instance", { 100L }, worker, { session, _ -> proposal(session) }, inputs, publish, mount)
+        publish: (ConversationConnectionFactory.Connection) -> Unit = { publications++ },
+        scheduler: java.util.concurrent.ScheduledExecutorService? = null) =
+        ConversationConnectionFactory("fixture-site", "fixture-instance", { 100L }, worker, { session, _ -> proposal(session) }, inputs, publish, mount,
+            timeMaintenanceScheduler=scheduler)
     private fun negotiate(factory: ConversationConnectionFactory): ConversationSocketNegotiation {
         val connection = factory.create(socket, identity, 7); connections.add(connection); connection.start()
         connection.accept(JSONObject().put("v",1).put("type","conversation_session")
@@ -173,6 +175,20 @@ class ConversationConnectionFactoryTest {
         } finally { release.countDown() }
         drain(); assertEquals(1,publications); assertEquals(1, releases.get())
         connection.close(); drain(); assertEquals(1, releases.get())
+    }
+    @Test fun negotiatedOwnerWithoutPhoneApprovalNeverStartsMaintenanceOrShutsDownSharedScheduler() {
+        val timer=object:java.util.concurrent.ScheduledThreadPoolExecutor(1) {
+            override fun schedule(command:Runnable,delay:Long,unit:TimeUnit):java.util.concurrent.ScheduledFuture<*> =
+                error("An unapproved real assembly must not schedule maintenance")
+        }
+        val entered=CountDownLatch(1);val release=CountDownLatch(1)
+        val connection=negotiate(factory(inputs={inputs()},scheduler=timer,publish={
+            entered.countDown();check(release.await(5,TimeUnit.SECONDS))
+        }))
+        try {
+            assertTrue(entered.await(2,TimeUnit.SECONDS));connection.close();assertNull(mount.firstReceipt())
+            assertFalse(timer.isShutdown)
+        } finally {release.countDown();drain();timer.shutdownNow()}
     }
     @Test fun aClosedOldHandleCannotPauseReplacementAssembly() {
         val provided = inputs()

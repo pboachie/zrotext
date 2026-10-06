@@ -89,6 +89,23 @@ class RuntimeReadsTest(unittest.TestCase):
         module = Path(env.ROOT, "crates/owner-cli/src/windows/custody_sign.rs").read_text(encoding="utf-8")
         self.assertRegex(module, r'#\[cfg\(test\)\]\s*mod tests;')
 
+    def test_contact_signing_markers_are_excluded_only_in_the_test_module(self):
+        flags = {"TEMP", "ZT_CONTACT_SIGN_NATIVE_CASE"}
+        source = ('std::env::var_os("TEMP"); '
+                  'std::env::var("ZT_CONTACT_SIGN_NATIVE_CASE")')
+        fixture = "crates/owner-cli/src/windows/contact_reader_signing/tests.rs"
+        self.assertEqual(env.runtime_reads(source, fixture), set())
+        self.assertEqual(env.runtime_reads(source + '; required("RUNTIME_SETTING")', fixture),
+                         {"RUNTIME_SETTING"})
+        for runtime in ["crates/owner-cli/src/windows/contact_reader_signing.rs",
+                        "crates/owner-cli/src/windows.rs",
+                        "crates/server/src/main.rs",
+                        "crates/owner-cli/src/windows/contact_reader_signing/native_tests.rs",
+                        "crates/owner-cli/src/windows/custody_sign/contact_reader_signing/tests.rs"]:
+            self.assertEqual(env.runtime_reads(source, runtime), flags)
+        module = Path(env.ROOT, "crates/owner-cli/src/windows/contact_reader_signing.rs").read_text(encoding="utf-8")
+        self.assertRegex(module, r'#\[cfg\(test\)\]\s*mod tests;')
+
     def test_archive_marker_is_excluded_only_in_its_fixture(self):
         source = 'std::env::var_os("ZT_ARCHIVE_INTEROP"); optional_bool("CONVERSATION_ENABLED")'
         self.assertEqual(env.runtime_reads(source, "crates/root-material/src/archive_backup/tests.rs"),

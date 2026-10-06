@@ -97,7 +97,7 @@ class SmsLineActivationTest {
         assertNull(producer.prepare(challenge, account, device))
         active = listOf(ActiveSimCard(7, -2))
         assertNull(producer.prepare(challenge, account, device))
-        active = listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43))
+        active = listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 42))
         assertNull(producer.prepare(challenge, account, device))
         active = null
         assertNull(producer.prepare(challenge, account, device))
@@ -186,6 +186,85 @@ class SmsLineActivationTest {
         val producer = SmsLineActivationDevice({ 28 }, { 7 },
             { listOf(ActiveSimCard(7, 42)) }, ::signer, { 1_000 })
         assertNull(producer.prepare(challenge, account, device))
+    }
+
+    @Test fun exactSelectedPhysicalSimPreparesAndInstallsWithUnrelatedSecondSim() {
+        val active = listOf(ActiveSimCard(8, 43, true), ActiveSimCard(7, 42))
+        val producer = SmsLineActivationDevice({ 30 }, { 7 }, { active }, ::signer, { 1_000 })
+        val proof = checkNotNull(producer.prepare(challenge, account, device))
+        assertEquals(ActivatedSimCard(7, 42), proof.sim)
+        val db = Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(),
+            SmsJournalDatabase::class.java).allowMainThreadQueries().build()
+        try {
+            assertTrue(producer.installAfterAuthenticatedAck(db.attempts(), proof, ack(proof), account, device))
+            assertEquals(7, db.attempts().currentLineBinding()?.subscriptionId)
+            assertEquals(42, db.attempts().currentLineBinding()?.cardId)
+        } finally { db.close() }
+    }
+
+    @Test fun unrelatedPeerChangeDuringSigningDoesNotChangeChosenStatement() {
+        var active = listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43))
+        val producer = SmsLineActivationDevice({ 30 }, { 7 }, { active }, { c, api, selected ->
+            signer(c, api, selected).also { active = listOf(ActiveSimCard(9, null, true), ActiveSimCard(7, 42)) }
+        }, { 1_000 })
+        val proof = checkNotNull(producer.prepare(challenge, account, device))
+        assertEquals(ActivatedSimCard(7, 42), proof.simAfterSigning)
+        assertArrayEquals(SmsLineActivationTranscript.deviceStatement(challenge, 30, 7), proof.deviceStatement())
+    }
+
+    @Test fun dualSimSelectionLossOrSelectedCollisionDuringSigningRefusesPublication() {
+        for (mutation in 0..2) {
+            var selected = 7
+            var active = listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43))
+            val producer = SmsLineActivationDevice({ 30 }, { selected }, { active }, { c, api, sub ->
+                signer(c, api, sub).also {
+                    when (mutation) {
+                        0 -> selected = 8
+                        1 -> active = listOf(ActiveSimCard(8, 43))
+                        else -> active = listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 42))
+                    }
+                }
+            }, { 1_000 })
+            assertNull(producer.prepare(challenge, account, device))
+        }
+    }
+
+    @Test fun selectedMutationOrExpiryAfterActualDaoWriteCannotClaimLiveInstallation() {
+        for (mutation in 0..2) {
+            val db = Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(),
+                SmsJournalDatabase::class.java).allowMainThreadQueries().build()
+            try {
+                val dao = db.attempts()
+                var selected = 7
+                var active = listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43))
+                var now = 1_000L
+                val producer = SmsLineActivationDevice({ 30 }, { selected }, {
+                    // Observe a real committed binding before injecting the post-storage loss.
+                    if (dao.currentLineBinding() != null) when (mutation) {
+                        0 -> selected = 8
+                        1 -> active = listOf(ActiveSimCard(7, 44), ActiveSimCard(8, 43))
+                        else -> now = challenge.expiresAtMs + SmsLineActivationDevice.ACK_GRACE_MS
+                    }
+                    active
+                }, ::signer, { now })
+                val proof = checkNotNull(producer.prepare(challenge, account, device))
+                assertFalse(producer.installAfterAuthenticatedAck(dao, proof, ack(proof), account, device))
+                // The durable record is still the exact proof; it is never replaced with the peer.
+                assertEquals(7, dao.currentLineBinding()?.subscriptionId)
+                assertEquals(42, dao.currentLineBinding()?.cardId)
+            } finally { db.close() }
+        }
+    }
+
+    @Test fun selectionChangeInsideInitialObservationNeverSignsStaleChosenSubscription() {
+        var selected = 7
+        var signatures = 0
+        val producer = SmsLineActivationDevice({ 30 }, { selected }, {
+            selected = 8
+            listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43))
+        }, { c, api, subscription -> signatures++; signer(c, api, subscription) }, { 1_000 })
+        assertNull(producer.prepare(challenge, account, device))
+        assertEquals(0, signatures)
     }
 
     private fun sha256(bytes: ByteArray): ByteArray =

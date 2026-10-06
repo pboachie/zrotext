@@ -554,6 +554,26 @@ pub(super) async fn prepared() -> (Fixture, SessionPrincipal) {
     ))
     .await
     .unwrap();
+    f.db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/088_original_reply_readers.sql"
+    ))
+    .await
+    .unwrap();
+    f.db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/089_original_routine_sources.sql"
+    ))
+    .await
+    .unwrap();
+    f.db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/090_invoice_usage_observations.sql"
+    ))
+    .await
+    .unwrap();
+    f.db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/091_original_reply_origin_binding.sql"
+    ))
+    .await
+    .unwrap();
     let owner = owner(&f).await;
     (f, owner)
 }

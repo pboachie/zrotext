@@ -72,6 +72,11 @@ object GatewayStatus {
 }
 
 class MainActivity : ComponentActivity() {
+    private companion object {
+        // Also fence another Activity instance while an old synchronous request settles.
+        val pairingTransportInFlight = AtomicBoolean(false)
+        val pairingStorageUncertain = AtomicBoolean(false)
+    }
     private var sims by mutableStateOf<List<Pair<Int, String>>>(emptyList())
     private var selectedSim by mutableStateOf<Int?>(null)
     private var endpoint by mutableStateOf("")
@@ -83,6 +88,12 @@ class MainActivity : ComponentActivity() {
     private var pairingId by mutableStateOf("")
     private var pairingToken by mutableStateOf("")
     private var pairingStatus by mutableStateOf("Not paired")
+    private var pairingManual by mutableStateOf(false)
+    private var pairingUnknown by mutableStateOf(false)
+    private var pairingCanUseManual by mutableStateOf(false)
+    private var pairingScanner: AndroidPairingQrScanner? = null
+    private var pairingOperationId: String? = null
+    private var pairingScannerGeneration: Long? = null
     private var comparisonCode by mutableStateOf("")
     private var signingFingerprint by mutableStateOf("")
     private var signingSecurity by mutableStateOf("")
@@ -111,7 +122,6 @@ class MainActivity : ComponentActivity() {
     private var summaryResumed = false
     private var summaryRequested = false
     private val summaryAge = Runnable { updateSummaryView() }
-    private val pairingWorker = Executors.newSingleThreadExecutor()
     // Foreground-only user opt-in. No intent, saved state or preference enables it.
     internal var conversationSetupEnabled by mutableStateOf(false)
         private set
@@ -120,6 +130,10 @@ class MainActivity : ComponentActivity() {
     private val conversationWorker = Executors.newSingleThreadExecutor()
     private var conversationEntryOpen by mutableStateOf(false)
     private var conversationSetupFile by mutableStateOf<Uri?>(null)
+    private var conversationMessageReference by mutableStateOf("")
+    private var conversationMessageEditorOpen by mutableStateOf(false)
+    private var conversationMessageOutcome by mutableStateOf(ConversationMessageReceiveController.Outcome.IDLE)
+    private var conversationMessageController: ConversationMessageReceiveController? = null
     private var conversationReplyText by mutableStateOf("")
     private var conversationReplyEditorOpen by mutableStateOf(false)
     private var conversationReplyObservation by mutableStateOf<ConversationPresentationSnapshot?>(null)
@@ -138,6 +152,7 @@ class MainActivity : ComponentActivity() {
         private set
     private var conversationReplyChoiceGeneration by mutableStateOf(0L)
     private var conversationEnrollmentOpen by mutableStateOf(false)
+    private var ownerCustodyOpen by mutableStateOf(false)
     private var conversationEnrollmentBusy by mutableStateOf(false)
     private var conversationEnrollmentStatus by mutableStateOf("")
     private var conversationReaderExport by mutableStateOf("")
@@ -176,6 +191,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // A public outcome marker survives process loss; no ticket or key is persisted.
+        pairingUnknown = pairingStorageUncertain.get() || getSharedPreferences("pairing-outcome", MODE_PRIVATE).getBoolean("unresolved", false)
+        if (pairingUnknown) pairingStatus = "Pairing outcome unknown. Reconcile the original ticket in the browser."
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(GatewayColors.background.toArgb()),
             navigationBarStyle = SystemBarStyle.dark(GatewayColors.background.toArgb())
@@ -192,6 +210,14 @@ class MainActivity : ComponentActivity() {
         defaultSmsAppRcsRisk = DefaultSmsAppRcsRisk.observe(this)
         setContent {
             GatewayTheme {
+                if (ownerCustodyOpen) Dialog(onDismissRequest = { ownerCustodyOpen = false },
+                    properties = DialogProperties(usePlatformDefaultWidth = false,
+                        securePolicy = androidx.compose.ui.window.SecureFlagPolicy.SecureOn)) {
+                    Surface(Modifier.fillMaxSize()) {
+                        AndroidOwnerCustodyScreen(onClose = { ownerCustodyOpen = false },
+                            modifier = Modifier.fillMaxSize().safeDrawingPadding().imePadding())
+                    }
+                }
                 if (conversationEntryOpen) ConversationEntryContent()
                 if (sealedLineReviewOpen) SealedLineReviewPane(
                     sealedLineReviewLine, sealedLineReviewGeneration,
@@ -260,6 +286,9 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                     if (page == GatewayPage.SETUP) {
+                        GatewayButton(onClick = { ownerCustodyOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Set up or recover owner custody on Android")
+                        }
                         GatewaySetupGuide(
                             selectedSim = sims.firstOrNull { it.first == selectedSim }?.second ?: "Not selected",
                             pairingStatus = pairingStatus,
@@ -292,14 +321,91 @@ class MainActivity : ComponentActivity() {
                                 }
                             },
                             pairingContent = {
-                                Text("Enter the one-use pairing ID and token from the owner account. The phone will prove possession of its Keystore key. Compare both values below with the browser before approving there.")
                                 OutlinedTextField(value = pairingOrigin, onValueChange = { pairingOrigin = it },
                                     label = { Text("HTTPS server origin") })
-                                OutlinedTextField(value = pairingId, onValueChange = { pairingId = it },
-                                    label = { Text("Pairing ID") })
-                                OutlinedTextField(value = pairingToken, onValueChange = { pairingToken = it },
-                                    label = { Text("One-use pairing token") }, visualTransformation = PasswordVisualTransformation())
-                                GatewayButton(onClick = { beginPairing() }) { Text("Claim pairing and prove key") }
+                                if (!pairingUnknown) AndroidPairingQrScannerPane(
+                                    knownOrigin = { pairingOrigin },
+                                    claimAndProve = { origin, id, token ->
+                                        check(!pairingUnknown && !pairingStorageUncertain.get() && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+                                        check(pairingTransportInFlight.compareAndSet(false, true))
+                                        try {
+                                            synchronized(pairingTransportInFlight) {
+                                                val outcomes = getSharedPreferences("pairing-outcome", MODE_PRIVATE)
+                                                check(!pairingStorageUncertain.get() && !outcomes.getBoolean("unresolved", false))
+                                                val operation = java.util.UUID.randomUUID().toString()
+                                                check(commitPairingOutcome(outcomes.edit().putBoolean("unresolved", true)
+                                                    .putString("operation", operation)))
+                                                pairingOperationId = operation
+                                            }
+                                            PairingClient(DeviceSigningKeyStore(applicationContext)).claimAndProve(origin, id, token)
+                                        } finally { pairingTransportInFlight.set(false) }
+                                    },
+                                    onVerified = { result ->
+                                        val recorded = synchronized(pairingTransportInFlight) {
+                                            val outcomes = getSharedPreferences("pairing-outcome", MODE_PRIVATE)
+                                            !pairingStorageUncertain.get() && pairingOperationId != null && outcomes.getString("operation", null) == pairingOperationId &&
+                                                commitPairingOutcome(outcomes.edit().putBoolean("unresolved", false).remove("operation"))
+                                        }
+                                        if (recorded) {
+                                            comparisonCode = result.comparisonCode
+                                            signingFingerprint = result.fingerprintHex
+                                            signingSecurity = result.keySecurity.name +
+                                                if (result.strongBoxFallbackOnCreation == true) " (StrongBox unavailable; fallback used)" else ""
+                                            pairingStatus = "Key proof accepted; compare and approve in the browser"
+                                        } else pairingUnknown = true
+                                    },
+                                    onManual = { pairingManual = true },
+                                    // The integrated labeled region below owns scanner announcements.
+                                    renderStatus = false,
+                                    onUnknown = { pairingUnknown = true; pairingStatus = "Pairing outcome unknown. Reconcile the original ticket in the browser before starting again." },
+                                    onState = { state ->
+                                        if (pairingScannerGeneration != state.generation) {
+                                            pairingId = ""; pairingToken = ""
+                                            pairingScannerGeneration = state.generation
+                                        }
+                                        pairingCanUseManual = state.canUseManual
+                                        pairingStatus = state.status
+                                        if (!state.canUseManual) { pairingId = ""; pairingToken = "" }
+                                        if (state.phase != AndroidPairingQrScanner.Phase.VERIFIED) {
+                                            comparisonCode = ""; signingFingerprint = ""; signingSecurity = ""
+                                        }
+                                        if (state.phase == AndroidPairingQrScanner.Phase.UNKNOWN) pairingUnknown = true
+                                    },
+                                    onScannerReady = { next ->
+                                        if (next == null) {
+                                            pairingId = ""; pairingToken = ""; comparisonCode = ""; signingFingerprint = ""; signingSecurity = ""
+                                        }
+                                        if (next == null && pairingScanner?.snapshot()?.phase in setOf(
+                                                AndroidPairingQrScanner.Phase.CLAIMING, AndroidPairingQrScanner.Phase.UNKNOWN)) pairingUnknown = true
+                                        pairingScanner = next
+                                    }
+                                )
+                                if (pairingUnknown) {
+                                    Text("Check or cancel the original ticket in the browser, then create a fresh one-use ticket. No claim will be retried automatically.")
+                                    Button(onClick = {
+                                        val reconciled = synchronized(pairingTransportInFlight) {
+                                            !pairingTransportInFlight.get() && commitPairingOutcome(getSharedPreferences("pairing-outcome", MODE_PRIVATE)
+                                                .edit().putBoolean("unresolved", false).remove("operation"))
+                                        }
+                                        if (reconciled) {
+                                            pairingStorageUncertain.set(false)
+                                            pairingOperationId = null
+                                            pairingId = ""; pairingToken = ""; pairingManual = false
+                                            comparisonCode = ""; signingFingerprint = ""; signingSecurity = ""
+                                            pairingUnknown = false
+                                            pairingStatus = "Use the fresh ticket from your browser."
+                                        }
+                                    }) { Text("I reconciled the original ticket; use a fresh ticket") }
+                                }
+                                if (pairingManual && !pairingUnknown) {
+                                    Text("Manual fallback: use the current one-use ticket from this server. Claiming sends the phone key proof; browser comparison and approval remain separate.")
+                                    OutlinedTextField(value = pairingId, onValueChange = { pairingId = it }, enabled = pairingCanUseManual,
+                                        label = { Text("Pairing ID") })
+                                    OutlinedTextField(value = pairingToken, onValueChange = { pairingToken = it }, enabled = pairingCanUseManual,
+                                        label = { Text("One-use pairing token") }, visualTransformation = PasswordVisualTransformation())
+                                    Button(onClick = { beginPairing() }, enabled = pairingCanUseManual,
+                                        modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)) { Text("Claim pairing and prove key") }
+                                }
                                 GatewayStatusText("Pairing status", pairingStatus)
                                 if (comparisonCode.isNotEmpty()) {
                                     Text("Comparison code: $comparisonCode")
@@ -361,6 +467,10 @@ class MainActivity : ComponentActivity() {
 
                     }
                     if (page == GatewayPage.TOOLS) {
+                        GatewaySectionTitle("Owner custody")
+                        GatewayButton(onClick = { ownerCustodyOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Open Android owner setup")
+                        }
                         GatewaySectionTitle("Advanced pilots")
                         GatewayButton(onClick = {
                             closeSealedLineReview()
@@ -463,6 +573,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
+        if (pairingScanner?.snapshot()?.phase in setOf(AndroidPairingQrScanner.Phase.CLAIMING, AndroidPairingQrScanner.Phase.UNKNOWN)) pairingUnknown = true
+        pairingId = ""; pairingToken = ""; comparisonCode = ""; signingFingerprint = ""; signingSecurity = ""
         closeSealedLineReview()
         revokeConversationForeground()
         summaryResumed = false
@@ -478,7 +590,6 @@ class MainActivity : ComponentActivity() {
         conversationWorker.shutdownNow()
         clearSummaryReader(clearKey = true)
         summaryWorker.shutdownNow()
-        pairingWorker.shutdownNow()
         super.onDestroy()
     }
 
@@ -489,6 +600,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun revokeConversationForeground() {
+        cancelConversationMessageReview(close = true)
         conversationExportWriteToken?.set(false)
         conversationSetupEnabled = false
         withdrawConversationReplyChoice()
@@ -524,6 +636,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun closeConversationEntry(preservePendingPublicFile: Boolean = false) {
+        cancelConversationMessageReview(close = true)
         conversationSetupEnabled = false
         withdrawConversationReplyChoice()
         closeConversationEnrollment(preservePendingPublicFile)
@@ -614,6 +727,28 @@ class MainActivity : ComponentActivity() {
             }
         }
         DisposableEffect(observedPort) {
+            lateinit var messageController: ConversationMessageReceiveController
+            messageController = ConversationMessageReceiveController({
+                val authority = if (conversationEntryOpen && conversationPort === observedPort &&
+                    lifecycle.currentState == Lifecycle.State.RESUMED)
+                    (observedPort as? ConversationConfirmedMessagePort)?.currentReceiveAuthority() else null
+                authority?.let { original ->
+                    ConversationMessageReceiveController.Current(original.connection, original.accountId,
+                        original.deviceId, original.snapshot, original.observedAt,
+                        ConversationMessageReceiver { message, complete ->
+                            original.receiver.receive(message) { accepted ->
+                                complete(accepted)
+                                runOnUiThread {
+                                    if (conversationEntryOpen && conversationPort === observedPort &&
+                                        conversationMessageController === messageController && conversationMessageEditorOpen &&
+                                        lifecycle.currentState == Lifecycle.State.RESUMED)
+                                        conversationMessageOutcome = messageController.outcome
+                                }
+                            }
+                        })
+                }
+            }, SystemClock::elapsedRealtime)
+            conversationMessageController = messageController
             conversationReplyObservation = null
             conversationReplyExpired = false
             val token = AtomicBoolean(true)
@@ -623,6 +758,7 @@ class MainActivity : ComponentActivity() {
                     if (token.get() && conversationEntryOpen && conversationPort === observedPort &&
                         value.version > (conversationReplyObservation?.version ?: 0)) {
                         // An action belongs to one observation, never a later active lease.
+                        cancelConversationMessageReview()
                         if (conversationReplyToken != null) cancelConversationReplyImport()
                         conversationReplyObservation = value
                         conversationReplyReceivedAt = received
@@ -632,13 +768,17 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             } }.getOrNull()
-            onDispose { token.set(false); runCatching { subscription?.close() } }
+            onDispose {
+                token.set(false); runCatching { subscription?.close() }; messageController.close()
+                if (conversationMessageController === messageController) conversationMessageController = null
+            }
         }
         LaunchedEffect(conversationReplyObservation?.version, conversationReplyReceivedAt) {
             val budget = conversationReplyObservation?.remainingMs ?: 0
             if (budget > 0) {
                 kotlinx.coroutines.delay((budget - (SystemClock.elapsedRealtime() - conversationReplyReceivedAt)).coerceAtLeast(0))
                 conversationReplyExpired = true
+                cancelConversationMessageReview()
                 cancelConversationReplyImport()
             }
         }
@@ -653,14 +793,40 @@ class MainActivity : ComponentActivity() {
                         Text("Close conversation review")
                     }
                     val port = conversationPort
-                    if (port != null) {
+                    if (port != null && conversationMessageEditorOpen) {
+                        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),
+                            verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp)) {
+                            ConversationMessageReceivePane(conversationMessageReference,
+                                conversationReplyIsCurrent() && port is ConversationConfirmedMessagePort,
+                                conversationMessageOutcome,
+                                { conversationMessageReference = it }, {
+                                    val receiver = conversationMessageController
+                                    receiver?.receive(conversationMessageReference)
+                                    conversationMessageOutcome = receiver?.outcome
+                                        ?: ConversationMessageReceiveController.Outcome.REFUSED
+                                }, { cancelConversationMessageReview() })
+                            OutlinedButton(onClick = { cancelConversationMessageReview() },
+                                modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) {
+                                Text("Back to conversation")
+                            }
+                        }
+                    } else if (port != null) {
                         FutureConversationPane(port, { line, generation ->
                             conversationVerifiedLineLabel?.takeIf { conversationSelectedLine == (line to generation) }
                         }, Modifier.weight(1f), onDismiss = { closeConversationEntry() }, onStopRequested = {
+                            cancelConversationMessageReview()
                             conversationSetupEnabled = false
                             withdrawConversationReplyChoice()
                             cancelConversationReplyImport()
                         })
+                        Button(onClick = {
+                            conversationMessageReference = ""
+                            conversationMessageOutcome = ConversationMessageReceiveController.Outcome.IDLE
+                            conversationMessageEditorOpen = true
+                        }, enabled = conversationReplyIsCurrent() && port is ConversationConfirmedMessagePort,
+                            modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) {
+                            Text("Receive confirmed message")
+                        }
                     } else {
                         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),
                             verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp)) {
@@ -846,6 +1012,14 @@ class MainActivity : ComponentActivity() {
             }
             override fun close() { cancelled.set(true); owned.getAndSet(null)?.close() }
         }
+    }
+
+    private fun cancelConversationMessageReview(close: Boolean = false) {
+        conversationMessageController?.let { if (close) it.close() else it.cancel() }
+        if (close) conversationMessageController = null
+        conversationMessageReference = ""
+        conversationMessageEditorOpen = false
+        conversationMessageOutcome = ConversationMessageReceiveController.Outcome.CANCELLED
     }
 
     private fun cancelConversationReplyImport() {
@@ -1095,35 +1269,21 @@ class MainActivity : ComponentActivity() {
             summaryHandler.postDelayed(summaryAge, minOf(1_000L, summaryView.freshForMs))
     }
 
+    private fun commitPairingOutcome(editor: android.content.SharedPreferences.Editor): Boolean {
+        val committed = runCatching { editor.commit() }.getOrDefault(false)
+        if (!committed) pairingStorageUncertain.set(true)
+        return committed
+    }
     private fun beginPairing() {
         val origin = pairingOrigin
         val id = pairingId
         val token = pairingToken
-        pairingToken = ""
-        pairingStatus = "Claiming and proving key"
-        comparisonCode = ""
-        signingFingerprint = ""
-        signingSecurity = ""
-        pairingWorker.execute {
-            try {
-                val result = PairingClient(DeviceSigningKeyStore(applicationContext))
-                    .claimAndProve(origin, id, token)
-                runOnUiThread {
-                    if (isDestroyed) return@runOnUiThread
-                    comparisonCode = result.comparisonCode
-                    signingFingerprint = result.fingerprintHex
-                    signingSecurity = result.keySecurity.name +
-                        if (result.strongBoxFallbackOnCreation == true) " (StrongBox unavailable; fallback used)" else ""
-                    pairingStatus = "Key proof accepted; waiting for owner approval"
-                }
-            } catch (_: Exception) {
-                runOnUiThread {
-                    if (!isDestroyed) pairingStatus = "Pairing did not finish. Start a new one-use pairing if the token was claimed."
-                }
-            }
-        }
+        pairingId = ""; pairingToken = ""
+        comparisonCode = ""; signingFingerprint = ""; signingSecurity = ""
+        if (pairingUnknown || pairingScanner?.claimManual(origin, id, token, confirmed = true) != true)
+            pairingStatus = "Pairing input refused or another operation is active. Check the current server and browser ticket."
+        else pairingStatus = "Claiming and proving key; compare in the browser before approval"
     }
-
     private fun startHeartbeat(rebootResume: Boolean) {
         if (selectedSim == null) {
             AuthenticatedGatewayStatus.value = "Select a SIM first"

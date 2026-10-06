@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Optional original-reader binding in an owner workflow grant request",
+  "description": "The optional extension only. The full owner request still requires its existing authentication, scope and permission fields.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "original_grant_id": {
+      "anyOf": [
+        { "type": "null" },
+        { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" }
+      ]
+    }
+  }
+}

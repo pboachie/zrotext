@@ -23,18 +23,45 @@ internal class ConversationAuthenticatedRuntime(
     private val blocked = AtomicBoolean(true)
     private val epoch = AtomicLong(0)
     private val selected = AtomicReference<ConversationPhoneSession?>(null)
+    private class TimeWitness(val started: Long, val session: ConversationPhoneSession, val epoch: Long) {
+        val deadline = Math.addExact(started, ConversationTrustedClock.MAX_AGE_MS)
+        private var lastElapsed = started
+        @Synchronized fun beforeDeadline(elapsedMillis: () -> Long): Long {
+            val now = try { elapsedMillis() } catch (_: Exception) { throw TimeUnavailable() }
+            if (now < 0 || now < lastElapsed || now >= deadline) throw TimeUnavailable()
+            lastElapsed = now
+            return now
+        }
+    }
+    private class Maintenance(val scope: ConversationCaptureScope, val witness: TimeWitness)
+    private class TimeUnavailable : IllegalStateException("Authenticated time unavailable")
+    private val timeWitness = AtomicReference<TimeWitness?>(null)
+    private val maintenance = AtomicReference<Maintenance?>(null)
     private val bindingLock = Any()
     private val serial = Serial(worker)
     private val clock = ConversationTrustedClock(elapsedMillis, wire::currentSession)
     private val transport = ConversationAuthorityTransport(ConversationSerializedChannel(wire), clock,
         wire::currentSession, elapsedMillis)
     private val contentTransport = ConversationContentTransport(wire)
+    private fun freshWitness(session: ConversationPhoneSession, ticket: Long): TimeWitness {
+        val start = try { elapsedMillis() } catch (_: Exception) { throw TimeUnavailable() }
+        if (start < 0 || start > Long.MAX_VALUE - ConversationTrustedClock.MAX_AGE_MS) throw TimeUnavailable()
+        return TimeWitness(start, session, ticket)
+    }
+    private fun requireWitness(value: TimeWitness) {
+        check(timeWitness.get() === value && epoch.get() == value.epoch && selected.get() == value.session)
+        value.beforeDeadline(elapsedMillis)
+        check(wire.currentSession() == value.session) { "Authenticated session changed" }
+    }
     private fun current(scope: ConversationCaptureScope) {
         check(!blocked.get()) { "Admission suspended" }
+        val witness = checkNotNull(timeWitness.get())
+        requireWitness(witness)
         val session = checkNotNull(selected.get())
         check(wire.currentSession() == session && session.account.toString() == scope.accountId &&
             session.device.toString() == scope.deviceId) { "Authenticated session changed" }
         requireAuthority(scope, checkNotNull(clock.nowMs()) { "Authenticated time unavailable" })
+        requireWitness(witness)
         check(!blocked.get() && wire.currentSession() == session)
     }
     private val guarded = object : ConversationActivationVerifier {
@@ -58,21 +85,27 @@ internal class ConversationAuthenticatedRuntime(
         val ticket = epoch.get()
         try { serial.execute {
             try {
+                val session = checkNotNull(wire.currentSession())
+                val candidate = freshWitness(session, ticket)
                 transport.refreshTime()
                 val scope = verifier.verifiedPreparation(owned.copyOf())
-                val session = checkNotNull(wire.currentSession())
+                check(wire.currentSession() == session)
                 require(session.account.toString() == scope.accountId && session.device.toString() == scope.deviceId)
                 requireAuthority(scope, checkNotNull(clock.nowMs()))
                 synchronized(bindingLock) {
                     check(epoch.get() == ticket) { "Proposal cancelled by lifecycle" }
-                    selected.set(session); blocked.set(false)
+                    candidate.beforeDeadline(elapsedMillis)
+                    check(wire.currentSession() == session) { "Authenticated session changed" }
+                    selected.set(session); timeWitness.set(candidate); blocked.set(false)
                 }
                 domain.propose(review, owned)
             } catch (_: Exception) {
+                timeWitness.set(null); maintenance.set(null)
                 blocked.set(true); admission.disableForLifecycle(); clock.invalidate(); domain.authorityUnavailable()
             } finally { owned.fill(0); runtime.refresh() }
         } } catch (_: Exception) {
             owned.fill(0)
+            timeWitness.set(null); maintenance.set(null)
             blocked.set(true); admission.disableForLifecycle(); clock.invalidate()
             runtime.submissionFailed()
         }
@@ -80,10 +113,85 @@ internal class ConversationAuthenticatedRuntime(
 
     /** Closes eligibility before returning, including while activation is waiting on transport. */
     fun lifecycleLost(reason: ConversationStopReason, afterAttempt: (() -> Unit)? = null) {
-        synchronized(bindingLock) { blocked.set(true); epoch.incrementAndGet() }
+        synchronized(bindingLock) {
+            blocked.set(true); epoch.incrementAndGet(); timeWitness.set(null); maintenance.set(null)
+        }
         admission.disableForLifecycle()
         clock.invalidate()
         runtime.lifecycleStop(reason, afterAttempt)
+    }
+
+    /** Point-in-time result only. Refresh never renews admission or retries protected content. */
+    internal fun maintainAuthenticatedTime(expectedScope: ConversationCaptureScope, complete: (Boolean) -> Unit) {
+        val witness = timeWitness.get()
+        if (blocked.get() || witness == null || epoch.get() != witness.epoch) {
+            deliverMaintenance(false, complete); return
+        }
+        val operation = Maintenance(expectedScope, witness)
+        if (!maintenance.compareAndSet(null, operation)) { deliverMaintenance(false, complete); return }
+        try { serial.execute {
+            var candidate: TimeWitness? = null
+            var originalLeaseDeadline = 0L
+            val result = try {
+                check(maintenance.get() === operation)
+                check(operation.witness === witness)
+                admission.withCurrentScope(operation.scope) { it() }
+                // Sample BEFORE remainingMs: any authority wait can only shorten this bound.
+                val leaseStarted = witness.beforeDeadline(elapsedMillis)
+                val remaining = admission.remainingMs(operation.scope)
+                check(remaining > 0)
+                originalLeaseDeadline = Math.addExact(leaseStarted, remaining)
+                val started = witness.beforeDeadline(elapsedMillis)
+                if (started >= originalLeaseDeadline) throw TimeUnavailable()
+                val refreshed = freshWitness(witness.session, witness.epoch)
+                candidate = refreshed
+                check(refreshed.started >= started)
+                transport.refreshTime() // No admission/DAO/authority monitor crosses the exchange.
+                witness.beforeDeadline(elapsedMillis)
+                check(wire.currentSession() == witness.session)
+                admission.withCurrentScope(operation.scope) { fresh ->
+                    fresh() // Includes genuine authority after blocking work, under original lease.
+                    synchronized(bindingLock) {
+                        check(!blocked.get() && maintenance.get() === operation)
+                        requireWitness(witness)
+                        if (witness.beforeDeadline(elapsedMillis) >= originalLeaseDeadline) throw TimeUnavailable()
+                        if (refreshed.beforeDeadline(elapsedMillis) >= originalLeaseDeadline) throw TimeUnavailable()
+                        check(wire.currentSession() == witness.session) { "Authenticated session changed" }
+                        timeWitness.set(refreshed)
+                    }
+                }
+                true
+            } catch (error: Throwable) {
+                lifecycleLost(if (error is TimeUnavailable) ConversationStopReason.LEASE_EXPIRED
+                    else ConversationStopReason.PHONE_SESSION_LOST)
+                if (error !is Exception) throw error
+                false
+            } finally {
+                // A discarded, never-started Serial task does NOT run this. Epoch/close retires it.
+                maintenance.compareAndSet(operation, null)
+            }
+            val completedWitness = candidate
+            deliverMaintenance(result, complete) {
+                !blocked.get() && epoch.get() == witness.epoch && timeWitness.get() === completedWitness &&
+                    runCatching {
+                        val liveWitness = checkNotNull(completedWitness)
+                        requireWitness(liveWitness)
+                        check(liveWitness.beforeDeadline(elapsedMillis) < originalLeaseDeadline)
+                        check(wire.currentSession() == liveWitness.session) { "Authenticated session changed" }
+                    }.isSuccess
+            }
+        } } catch (_: Exception) {
+            maintenance.compareAndSet(operation, null)
+            lifecycleLost(ConversationStopReason.WORKER_SHUTDOWN)
+            deliverMaintenance(false, complete)
+        }
+    }
+    private fun deliverMaintenance(result: Boolean, complete: (Boolean) -> Unit, stillCurrent: () -> Boolean = { true }) {
+        try { delivery.execute {
+            val accepted = result && runCatching(stillCurrent).getOrDefault(false)
+            if (result && !accepted) lifecycleLost(ConversationStopReason.LEASE_EXPIRED)
+            runCatching { complete(accepted) }
+        } } catch (_: Exception) { lifecycleLost(ConversationStopReason.WORKER_SHUTDOWN) }
     }
 
 
@@ -168,7 +276,11 @@ internal class ConversationAuthenticatedRuntime(
         db: SmsJournalDatabase, keys: DevicePayloadKeyStore,
         preparation: (Draft02OutboundPreparation.Grant) -> Draft02OutboundPreparation.Current?) =
         ConversationExecutionBoundary(admission, clock, authority, db, keys, preparation)
-    fun firstReceiptBoundary() = admission.firstReceiptBoundary { if (blocked.get()) 0 else clock.nowMs() ?: 0 }
+    fun firstReceiptBoundary() = admission.firstReceiptBoundary {
+        val witness = timeWitness.get()
+        if (blocked.get() || witness == null || runCatching { requireWitness(witness) }.isFailure) 0
+        else clock.nowMs() ?: 0
+    }
     fun observeAtBoundary(boundary: ConversationCaptureAdmission.ReceiptBoundary, token: String,
                           peer: String, line: String, generation: Long, body: String) =
         admission.observeAtBoundary(boundary, token, peer, line, generation, body)

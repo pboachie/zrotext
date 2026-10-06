@@ -14,6 +14,9 @@ mapping and the stored event name. Meter configuration must match those names.
 Credentials never come from a model, request or tenant routing pointer. The
 transport does not follow redirects, use ambient proxies or automatically retry.
 A four-second response/body deadline and sixteen-KiB response bound apply.
+Before HTTP, identifiers must contain at most 100 ASCII letters, digits,
+underscores or hyphens, and must match the idempotency key exactly.
+Existing generated ledger identifiers remain within this bound.
 
 The existing worker first commits its durable claim and releases transaction
 locks before HTTP. Its stable meter identifier is also the idempotency key;
@@ -34,10 +37,11 @@ enter review rather than silently deleting usage or generating a new identifier.
 Signed meter-error events and reviewed recovery continue through the existing
 billing error/review APIs. Local dashboard totals remain the authoritative local
 ledger projection and do not poll Stripe. Existing append-only provider snapshot
-comparison remains a separately trusted reconciliation input: this transport does
-not fetch provider aggregates or invoice quantities, approve corrections, or turn
-an acknowledgement into a reconciled invoice. Those broader integration/policy
-requirements of #673 remain open. Unknown delivery liability is not refunded here.
+comparison uses a separate optional [read-only TEST worker](test-usage-reconciliation.md).
+Forwarding itself does not fetch provider aggregates or invoice quantities,
+approve corrections, or turn an acknowledgement into a reconciled invoice.
+Broader charge-unit and adjustment policy requirements of #673 remain open.
+Unknown delivery liability is not refunded here.
 
 Synthetic tests use real loopback HTTPS and a separately trusted synthetic
 certificate, plus isolated PostgreSQL finalized delivery/outbox fixtures. They

@@ -4,6 +4,7 @@
 pub mod contracts;
 pub mod http;
 pub(crate) mod lifecycle;
+mod original;
 mod output;
 mod store;
 use super::{
@@ -19,7 +20,10 @@ use crate::{
     },
 };
 use contracts::*;
+pub(crate) use original::{admit as admit_original, current as current_original};
 pub use output::{bind_output, resume};
+#[cfg(test)]
+pub(crate) use output::{bind_with_original, resume_with_original};
 use sha2::{Digest, Sha256};
 use tokio_postgres::{Client, Transaction};
 use uuid::Uuid;
@@ -45,7 +49,9 @@ fn decode(value: &str) -> Result<Vec<u8>, AuthError> {
 }
 async fn begin(client: &mut Client) -> Result<Transaction<'_>, AuthError> {
     let tx = client.transaction().await?;
-    tx.batch_execute("SET LOCAL lock_timeout='3s'; SET LOCAL statement_timeout='5s'")
+    // These authority queries start from exact grant/policy keys. Bound join
+    // search within this transaction without changing connection defaults.
+    tx.batch_execute("SET LOCAL lock_timeout='3s'; SET LOCAL statement_timeout='5s'; SET LOCAL join_collapse_limit=1")
         .await?;
     Ok(tx)
 }
@@ -123,6 +129,16 @@ pub async fn configure(
     input: &IntegrationPrincipal,
     p: Policy,
 ) -> Result<(), AuthError> {
+    configure_with_original(client, owner, input, None, p).await
+}
+
+pub(crate) async fn configure_with_original(
+    client: &mut Client,
+    owner: &SessionPrincipal,
+    input: &IntegrationPrincipal,
+    original: Option<&crate::original_reply::Principal>,
+    p: Policy,
+) -> Result<(), AuthError> {
     if !p.validate() || owner.tenant.account_id() != input.account_id() {
         return Err(AuthError::InvalidInput);
     }
@@ -130,6 +146,7 @@ pub async fn configure(
     let mut checked =
         scope::lock_scope(&tx, input, p.context_id, Operation::ContextContent).await?;
     owner::lock_owner(&tx, owner).await.map_err(error)?;
+    original::configure_check(&tx, input, original, &checked, &p).await?;
     let now = activation::now(&tx).await.map_err(error)?;
     if p.expires_ms <= now
         || p.expires_ms - now > 86_400_000
@@ -152,6 +169,7 @@ pub async fn configure(
     .await?;
     live(&tx, &mut checked, &p).await?;
     owner::fresh_owner(&tx, owner).await.map_err(error)?;
+    original::configure_check(&tx, input, original, &checked, &p).await?;
     drop(checked);
     tx.commit().await?;
     Ok(())
@@ -171,14 +189,15 @@ pub async fn admit(
     let mut checked =
         scope::lock_scope(&tx, input, v.context_id, Operation::ContextContent).await?;
     let policy = store::policy(&tx, input, v.policy_id).await?;
-    if policy.context_id != v.context_id
+    if policy.original_input.is_some()
+        || policy.context_id != v.context_id
         || checked.header.revision != v.input_revision
         || decode(&v.input_source_digest)?.as_slice() != checked.source_digest()
     {
         return Err(AuthError::Forbidden);
     }
     live(&tx, &mut checked, &policy).await?;
-    let result = store::admit(&tx, input, &policy, &v, &digest(&v)?).await?;
+    let result = store::admit(&tx, input, &policy, v.request_id, &digest(&v)?).await?;
     live(&tx, &mut checked, &policy).await?;
     store::policy(&tx, input, v.policy_id).await?;
     drop(checked);
@@ -196,6 +215,16 @@ pub async fn produced(
     call: Uuid,
     result_digest: String,
 ) -> Result<Call, AuthError> {
+    produced_with_original(client, input, None, context, call, result_digest).await
+}
+pub(crate) async fn produced_with_original(
+    client: &mut Client,
+    input: &IntegrationPrincipal,
+    original: Option<&crate::original_reply::Principal>,
+    context: Uuid,
+    call: Uuid,
+    result_digest: String,
+) -> Result<Call, AuthError> {
     let hash = decode(&result_digest)?;
     let tx = begin(client).await?;
     let mut checked = scope::lock_scope(&tx, input, context, Operation::ContextContent).await?;
@@ -204,9 +233,11 @@ pub async fn produced(
         return Err(AuthError::Forbidden);
     }
     live(&tx, &mut checked, &p).await?;
+    original::recheck(&tx, input, original, call, &p, &checked).await?;
     let result = store::produced(&tx, input, call, &hash).await?;
     live(&tx, &mut checked, &p).await?;
     store::policy(&tx, input, p.policy_id).await?;
+    original::recheck(&tx, input, original, call, &p, &checked).await?;
     drop(checked);
     tx.commit().await?;
     Ok(result)
@@ -219,6 +250,15 @@ pub async fn current(
     context: Uuid,
     policy: Uuid,
 ) -> Result<Policy, AuthError> {
+    current_with_original(client, input, None, context, policy).await
+}
+pub(crate) async fn current_with_original(
+    client: &mut Client,
+    input: &IntegrationPrincipal,
+    original: Option<&crate::original_reply::Principal>,
+    context: Uuid,
+    policy: Uuid,
+) -> Result<Policy, AuthError> {
     let tx = begin(client).await?;
     let mut checked = scope::lock_scope(&tx, input, context, Operation::ContextContent).await?;
     let p = store::policy(&tx, input, policy).await?;
@@ -226,6 +266,7 @@ pub async fn current(
         return Err(AuthError::Forbidden);
     }
     live(&tx, &mut checked, &p).await?;
+    original::configure_check(&tx, input, original, &checked, &p).await?;
     drop(checked);
     tx.commit().await?;
     Ok(p)
@@ -250,4 +291,41 @@ pub async fn withdraw(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
+
+/// Optional-schema compatibility applies only to installations without this
+/// candidate ledger. Once a source marker exists it cannot be erased separately
+/// or reclassified as an ordinary action, including later action revisions.
+pub(crate) async fn original_action_current(
+    tx: &Transaction<'_>,
+    descriptor: &Descriptor,
+) -> Result<(), owner::ConversationError> {
+    if !tx
+        .query_one(
+            "SELECT to_regclass('workflow_routine_original_sources') IS NOT NULL",
+            &[],
+        )
+        .await?
+        .get::<_, bool>(0)
+    {
+        return Ok(());
+    }
+    let key = descriptor.key()?;
+    if let Some(row)=tx.query_opt("SELECT contact_id,purpose,line_id,expires_ms FROM workflow_routine_original_sources WHERE account_id=$1 AND call_id=$2 FOR SHARE",&[&key.account_id,&key.action_id]).await? {
+        let ids=descriptor.identities()?;
+        if ids.content!=key.action_id || ids.routine!=key.action_id || ids.recipient!=row.get::<_,Uuid>(0)
+            || descriptor.purpose()?!=row.get::<_,String>(1) || ids.line!=row.get::<_,Uuid>(2)
+            || descriptor.expires_at_ms()?>row.get::<_,i64>(3) {return Err(owner::ConversationError::Forbidden);}
+    }
+    if !tx
+        .query_one(
+            "SELECT workflow_routine_original_action_current($1,$2)",
+            &[&key.account_id, &key.action_id],
+        )
+        .await?
+        .get::<_, bool>(0)
+    {
+        return Err(owner::ConversationError::Forbidden);
+    }
+    Ok(())
+}

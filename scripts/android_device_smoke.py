@@ -3,6 +3,7 @@
 """Run an explicit no-radio test allowlist on CI's disposable emulator only."""
 
 from collections import Counter
+import json
 import os
 from pathlib import Path
 import re
@@ -20,6 +21,7 @@ ACCESSIBILITY_METHODS = frozenset({
     "homeObservationsKeepReadOnlyLabelsAndReadingOrderAtCurrentTextScale",
     "platformNodesExposeHeadingsAndVisibleStatusRegions",
     "fieldsKeepLabelsAndTokensRemainPasswordFields",
+    "explicitManualPairingKeepsLabelsAndTokenPasswordSemantics",
     "actionsRetainNamesAndMinimumTouchTargetsAtCurrentTextScale",
 })
 MANIFEST_AUTHORITY = PACKAGE + "ManifestAuthorityDeviceTest"
@@ -32,6 +34,11 @@ ENTRY_OPT_IN = PACKAGE + "ConversationEntryOptInDeviceTest"
 ENTRY_OPT_IN_METHOD = "explicitOptInReachesOrdinarySetupAndRejectsMissingCustodyWithoutApproval"
 ENROLLMENT_CONSENT = PACKAGE + "EnrollmentConsentBoundaryDeviceTest"
 ENROLLMENT_CONSENT_METHOD = "enrollmentAndIndependentChoicesRefuseWithoutCreatingAuthority"
+JOURNAL_UPGRADE = PACKAGE + "JournalDeviceUpgradeTest"
+JOURNAL_UPGRADE_METHODS = frozenset({
+    "versionOnePlatformMigrationRetainsUnknownAttemptAcrossReopen",
+    "versionElevenPlatformMigrationRetainsBoundEvidenceAndStopAcrossReopen",
+})
 SERIAL = "emulator-5562"
 
 
@@ -42,7 +49,7 @@ def selected_tests(root=ROOT):
         expected[RCS_RISK] = 1
     source = root / "android/app/src/androidTest/java/org/zrotext/gateway/GatewayAccessibilityDeviceTest.kt"
     if source.is_file():
-        expected[ACCESSIBILITY] = 6
+        expected[ACCESSIBILITY] = 7
     source = root / "android/app/src/androidTest/java/org/zrotext/gateway/ManifestAuthorityDeviceTest.kt"
     if source.is_file():
         expected[MANIFEST_AUTHORITY] = 12
@@ -62,6 +69,8 @@ def selected_tests(root=ROOT):
         expected[ENTRY_OPT_IN] = 1
     if (root / "android/app/src/androidTest/java/org/zrotext/gateway/EnrollmentConsentBoundaryDeviceTest.kt").is_file():
         expected[ENROLLMENT_CONSENT] = 1
+    if (root / "android/app/src/androidTest/java/org/zrotext/gateway/JournalDeviceUpgradeTest.kt").is_file():
+        expected[JOURNAL_UPGRADE] = 2
     return expected
 
 
@@ -71,10 +80,13 @@ def instrumentation_arguments(expected):
             "-e", "networkServiceIsolatedEmulator", "true"]
     if ENTRY_OPT_IN in expected or ENROLLMENT_CONSENT in expected:
         args.extend(["-e", "entryOptInIsolatedEmulator", "true"])
+    if JOURNAL_UPGRADE in expected:
+        args.extend(["-e", "journalUpgradeIsolatedEmulator", "true"])
     return [*args, "org.zrotext.gateway.test/androidx.test.runner.AndroidJUnitRunner"]
 
 
 MAX_PRIVATE_EVIDENCE_BYTES = 256 * 1024
+MAX_PUBLIC_STATUS_EVENTS = 128
 
 
 def public_test_methods(root=ROOT):
@@ -98,6 +110,58 @@ def failure_identity(status, expected, code):
     return f"class={class_name}; test={method}; status={reported_code}"
 
 
+def public_failure_diagnostic(output, expected):
+    """Report bounded public test identities and protocol state, never raw diagnostics.
+
+    This report is diagnostic only. Exact completion and custody checks below still
+    decide acceptance, including after a runner exits without completing a test.
+    """
+    methods = public_test_methods()
+    status = {}
+    events = []
+    completed = set()
+    final_codes = []
+    event_count = 0
+    final_count = 0
+    for line in output.splitlines():
+        if line.startswith("INSTRUMENTATION_STATUS: "):
+            key, separator, value = line.removeprefix("INSTRUMENTATION_STATUS: ").partition("=")
+            if separator and key in {"class", "test"}:
+                status[key] = value
+        elif line.startswith("INSTRUMENTATION_STATUS_CODE: "):
+            raw_code = line.removeprefix("INSTRUMENTATION_STATUS_CODE: ")
+            code = int(raw_code) if raw_code in {"-4", "-3", "-2", "-1", "0", "1"} else "unsupported"
+            class_name = status.get("class")
+            method = status.get("test")
+            if code == 0 and class_name in expected and method:
+                completed.add((class_name, method))
+            public_class = class_name if class_name in expected else "unselected"
+            public_method = method if public_class != "unselected" and method in methods else "unavailable"
+            events.append({"class": public_class, "test": public_method, "status": code})
+            events = events[-MAX_PUBLIC_STATUS_EVENTS:]
+            event_count += 1
+            status = {}
+        elif line.startswith("INSTRUMENTATION_CODE: "):
+            raw_code = line.removeprefix("INSTRUMENTATION_CODE: ").strip()
+            final_codes.append(int(raw_code) if raw_code in {"-1", "0", "1"} else "unsupported")
+            final_codes = final_codes[-4:]
+            final_count += 1
+    counts = Counter(cls for cls, _ in completed)
+    return {
+        "version": 1,
+        "classes": [{"class": cls, "expected": count, "completed": counts[cls]}
+                    for cls, count in sorted(expected.items())],
+        "status_events": events,
+        "omitted_status_events": event_count - len(events),
+        "final_codes": final_codes,
+        "final_code_count": final_count,
+        "runner_failure_marker": "INSTRUMENTATION_FAILED" in output,
+        "test_failure_marker": "FAILURES!!!" in output,
+        "process_crash_marker": "INSTRUMENTATION_RESULT: shortMsg=Process crashed." in output,
+        "runner_message_present": "INSTRUMENTATION_RESULT: shortMsg=" in output,
+    }
+
+
 def verify_with_private_evidence(output, expected):
     """Keep bounded raw diagnostics only in owner-created private temporary storage."""
     try:
@@ -112,6 +176,7 @@ def verify_with_private_evidence(output, expected):
             os.chmod(path, 0o600)
             stream.write(bounded)
         print("Bounded private instrumentation evidence retained in runner temporary storage")
+        print("Public no-radio failure protocol: " + json.dumps(public_failure_diagnostic(output, expected), sort_keys=True))
         raise
 
 
@@ -156,6 +221,10 @@ def verify_results(output, expected):
         observed = {name for cls, name in completed if cls == ENROLLMENT_CONSENT}
         if observed != {ENROLLMENT_CONSENT_METHOD}:
             raise ValueError("Enrollment did not exercise the exact consent acceptance test")
+    if JOURNAL_UPGRADE in expected:
+        observed = {name for cls, name in completed if cls == JOURNAL_UPGRADE}
+        if observed != JOURNAL_UPGRADE_METHODS:
+            raise ValueError("Journal upgrade did not exercise the exact migration and reopen corpus")
     if SEALED_PREPARATION in expected:
         custody = re.findall(r"^INSTRUMENTATION_RESULT: preparationCustody=(.*)$", output, re.MULTILINE)
         if len(custody) != 1 or custody[0].strip() not in ("unsupported", "platform-reported-hardware"):

@@ -22,13 +22,16 @@ test('actual HTTPS dual credential resume and owner publication never delegate o
     await writeFile(join(directory,'leaf.ext'),'subjectAltName=DNS:localhost\nbasicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n');
     run(['x509','-req','-in','leaf.csr','-CA','ca.pem','-CAkey','ca.key','-CAcreateserial','-days','1','-extfile','leaf.ext','-out','leaf.pem']);
     const captured=[];
+    const policyVector=JSON.parse(await readFile(new URL('../../../protocol/v1/vectors/customer-routine-original-01.json',import.meta.url),'utf8')).policy;
     server=createServer({key:await readFile(join(directory,'leaf.key')),cert:await readFile(join(directory,'leaf.pem'))},async(req,res)=>{
       const chunks=[];for await(const b of req)chunks.push(b);
       captured.push({path:req.url,headers:req.headers,body:Buffer.concat(chunks)});
       // Real successful credential issuance belongs to the Rust/PG fixture;
       // this synthetic policy only proves the exact route and closed refusal.
       res.writeHead(req.url==='/v1/auth/workflow-grants'?403:200,{'content-type':'application/json','cache-control':'no-store'});
-      res.end(JSON.stringify(req.url==='/v1/auth/workflow-grants'?{error:{code:'forbidden'}}:req.url==='/v1/owner/workflow/contexts'?{revision:1}:{kind:'call',result:call}));
+      const body=Buffer.concat(chunks);
+      const current=req.url==='/v1/workflow/routines'&&JSON.parse(body).operation==='current';
+      res.end(JSON.stringify(req.url==='/v1/auth/workflow-grants'?{error:{code:'forbidden'}}:req.url==='/v1/owner/workflow/contexts'?{revision:1}:current?{kind:'policy',result:policyVector}:{kind:'call',result:call}));
     });
     server.on('connection',s=>{sockets.add(s);s.on('close',()=>sockets.delete(s));});
     await new Promise(resolve=>server.listen(0,'localhost',resolve));const origin=`https://localhost:${server.address().port}`;
@@ -47,8 +50,22 @@ test('actual HTTPS dual credential resume and owner publication never delegate o
     assert.equal(captured[2].headers.authorization,undefined);assert.equal(captured[2].headers.cookie,'synthetic-owner-session');assert.equal(captured[2].headers['x-zrotext-csrf'],'synthetic-csrf');
     assert.equal(captured[2].headers['x-zrotext-context-revision'],'0');assert.equal(captured[2].body.length,308);
     await assert.rejects(service.issueOutputGrant({current_password:'example',code:'synthetic factor',connector_id:id(7),context_id:id(5),contact_id:id(8),purpose:'transactional',permissions:['context_content','propose'],signer_key_id:null,expires_at_ms:100000,content_envelope_base64url:'YWJj'}),e=>e.code==='forbidden'&&e.state==='refused');
+    await assert.rejects(service.issueOutputGrant({current_password:'example',code:'synthetic factor',connector_id:id(7),context_id:id(5),contact_id:id(8),purpose:'transactional',permissions:['context_content','propose'],signer_key_id:null,expires_at_ms:100000,content_envelope_base64url:'YWJj',original_grant_id:id(9)}),e=>e.code==='forbidden'&&e.state==='refused');
+    assert.equal(JSON.parse(captured.at(-1).body).original_grant_id,id(9));
     assert.equal(captured[3].path,'/v1/auth/workflow-grants');assert.equal(captured[3].headers.authorization,undefined);assert.equal(captured[3].headers['x-zrotext-csrf'],'synthetic-csrf');
     const untrusted=new CustomerRoutineService({origin,inputCredential:input,outputCredential:output});
-    await assert.rejects(untrusted.resume(id(5)),e=>e.code==='response_unknown'&&e.state==='unknown');assert.equal(captured.length,4);
+    await assert.rejects(untrusted.resume(id(5)),e=>e.code==='response_unknown'&&e.state==='unknown');assert.equal(captured.length,5);
+    const originalCredential='ztr_'+Buffer.alloc(32,9).toString('base64url');
+    const selected=new CustomerRoutineService({origin,inputCredential:input,originalCredential,fetchImpl});
+    await selected.current(policyVector.context_id,policyVector.policy_id);
+    assert.equal(captured.at(-1).headers['x-zrotext-original-reader'],undefined);
+    const legacyWire=captured.at(-1).body.toString();
+    await selected.currentOriginalPolicy(policyVector.context_id,policyVector.policy_id);
+    assert.equal(captured.at(-1).headers['x-zrotext-original-reader'],originalCredential);
+    assert.equal(captured.at(-1).headers.authorization,`Bearer ${input}`);
+    assert.equal(captured.at(-1).headers.cookie,undefined);
+    assert.equal(captured.at(-1).body.toString(),legacyWire);
+    await assert.rejects(service.currentOriginalPolicy(policyVector.context_id,policyVector.policy_id),{code:'original_grant_required'});
+    assert.equal(captured.length,7);
   }finally{for(const socket of sockets)socket.destroy();if(server)await new Promise(resolve=>server.close(resolve));await rm(directory,{recursive:true,force:true});}
 });
