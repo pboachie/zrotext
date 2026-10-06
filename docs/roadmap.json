@@ -1,5 +1,5 @@
 {
-  "snapshot": "2026-10-04",
+  "snapshot": "2026-10-06",
   "tracks": [
     {
       "id": "gateway",
@@ -219,13 +219,17 @@
             ["#691", "https://github.com/pboachie/zrotext/pull/691"],
             ["#698", "https://github.com/pboachie/zrotext/pull/698"],
             ["#707", "https://github.com/pboachie/zrotext/pull/707"],
-            ["#735", "https://github.com/pboachie/zrotext/pull/735"]
+            ["#735", "https://github.com/pboachie/zrotext/pull/735"],
+            ["#881", "https://github.com/pboachie/zrotext/pull/881"],
+            ["#885", "https://github.com/pboachie/zrotext/pull/885"]
           ],
           "done": [
             "Versioned device stream schema and OpenAPI contract distinguishing implemented restricted routes from planned public aliases",
             "TypeScript envelope composition, exact-byte submission, scoped lifecycle/device/usage clients and cross-client vectors",
             "Default-off negotiated grants and device-bound payload fetch ([#698](https://github.com/pboachie/zrotext/pull/698))",
-            "Maintained Android service connects authenticated sealed dispatch to the journaled executor when explicit process-local authority is installed; no cold-start activation ([#735](https://github.com/pboachie/zrotext/pull/735))"
+            "Maintained Android service connects authenticated sealed dispatch to the journaled executor when explicit process-local authority is installed; no cold-start activation ([#735](https://github.com/pboachie/zrotext/pull/735))",
+            "Route-drift check compares the public OpenAPI document with the mounted routes, and a generated API reference stays in step with it ([#881](https://github.com/pboachie/zrotext/pull/881))",
+            "Minimal TypeScript and Python clients for the allowlisted alpha plane: explicit idempotency keys, no automatic retry, uncertain outcomes surfaced as unknown, and webhook signature verification ([#885](https://github.com/pboachie/zrotext/pull/885))"
           ],
           "todo": [
             "Supported SDK/runtime compatibility with the selected sealed profile, root provisioning, recipient custody and physical-device acceptance",
@@ -274,13 +278,15 @@
             ["local connector setup", "SELF-HOSTING.md#experimental-local-agent-setup"],
             ["#702", "https://github.com/pboachie/zrotext/pull/702"],
             ["#729", "https://github.com/pboachie/zrotext/pull/729"],
-            ["#740", "https://github.com/pboachie/zrotext/pull/740"]
+            ["#740", "https://github.com/pboachie/zrotext/pull/740"],
+            ["#884", "https://github.com/pboachie/zrotext/pull/884"]
           ],
           "evidence_note": "customer-run stdio and authorized workflow transport are implemented; remote transport and real-message availability remain separately gated",
           "done": [
             "Typed readiness, preview, permitted submission, status and cancellation tools with distinct integration grants",
             "Exact owner-approved dispatch and current scope, consent, suppression, budget, revocation and takeover checks outside the model",
-            "Canonical delivery metadata exposed through scoped workflow status; delivery is not acknowledgment"
+            "Canonical delivery metadata exposed through scoped workflow status; delivery is not acknowledgment",
+            "Local guarded text-send tools for the simulator: owner-approved first recipients, per-agent limits, required idempotency keys, suppression and an unknown-state block ([#884](https://github.com/pboachie/zrotext/pull/884))"
           ],
           "todo": [
             "Supported-client acceptance and complete selected original-reply journey",
@@ -320,13 +326,15 @@
             ["local connector setup", "SELF-HOSTING.md#experimental-local-agent-setup"],
             ["#724", "https://github.com/pboachie/zrotext/pull/724"],
             ["#747", "https://github.com/pboachie/zrotext/pull/747"],
-            ["#780", "https://github.com/pboachie/zrotext/pull/780"]
+            ["#780", "https://github.com/pboachie/zrotext/pull/780"],
+            ["#967", "https://github.com/pboachie/zrotext/pull/967"]
           ],
           "evidence_note": "guided synthetic notification/reply/approval exchange and quickstart validation are merged; complete authenticated custody and supported-client setup acceptance remain open",
           "done": [
             "Composed guided synthetic first exchange and reproducible scope, replay, revocation, opt-out and unknown-outcome cases",
             "Mechanical quickstart checklist and output verification; simulation has no SMS or AI-provider effects",
-            "Read-only verification of installed guided connectors through authenticated MCP metadata with a pinned client; incomplete exchanges stay unverified and never widen permissions or configuration ([#780](https://github.com/pboachie/zrotext/pull/780))"
+            "Read-only verification of installed guided connectors through authenticated MCP metadata with a pinned client; incomplete exchanges stay unverified and never widen permissions or configuration ([#780](https://github.com/pboachie/zrotext/pull/780))",
+            "Tested agent setup configurations and a measured clean-setup path published ([#967](https://github.com/pboachie/zrotext/pull/967))"
           ],
           "todo": [
             "Complete authenticated guided setup, scoped pairing, OS credential custody, configuration preservation and disconnect (#618)",

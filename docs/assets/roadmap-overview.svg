@@ -200,6 +200,6 @@ text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 <text x="274" y="1250" class="foot">Next stage</text>
 <rect x="416" y="1239" width="28" height="12" rx="3" class="seg off"/>
 <text x="454" y="1250" class="foot">Not started</text>
-<text x="1144" y="1250" text-anchor="end" class="foot">Roadmap snapshot, 2026-10-04 · direction, not release dates</text>
+<text x="1144" y="1250" text-anchor="end" class="foot">Roadmap snapshot, 2026-10-06 · direction, not release dates</text>
 <text x="56" y="1274" class="foot">Restricted pilot = allowlisted accounts and recipients, synthetic or controlled tests. No general or hosted SMS service is available.</text>
 </svg>
