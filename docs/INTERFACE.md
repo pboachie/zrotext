@@ -8,7 +8,16 @@ The published [v0.1.6 release](https://github.com/pboachie/zrotext/releases/tag/
 
 ## Android companion
 
-Home leads with observed connection state. Tap Connections or Messages for details; use the gear menu for Setup, Connection and Tools. Unavailable message counts remain unavailable until a separately authorized summary reader is connected.
+Home leads with observed connection state. Tap Connections or Messages for details; use the gear menu for Setup, Connection and Tools.
+
+```mermaid
+flowchart LR
+  HOME["Home<br/>connection state"] --> CONN["Connections"]
+  HOME --> MSG["Messages"]
+  HOME -->|"gear menu"| SETUP["Setup<br/>access, SIM, pairing"]
+  HOME -->|"gear menu"| CTRL["Connection<br/>controlled tests"]
+  HOME -->|"gear menu"| TOOLS["Tools"]
+``` Unavailable message counts remain unavailable until a separately authorized summary reader is connected.
 
 | Home | Setup |
 |:---:|:---:|

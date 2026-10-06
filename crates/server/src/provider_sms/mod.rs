@@ -9,6 +9,7 @@
 //! bounded in-memory model deliberately cannot resume dispatch after a crash.
 
 pub mod action_descriptor;
+pub mod submit_codec;
 mod telnyx;
 pub use telnyx::verify_receipt;
 pub mod receipts;

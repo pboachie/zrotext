@@ -31,6 +31,13 @@ ZROtext is in active development. The repository includes a Rust server, Postgre
 
 The [current interface guide](docs/INTERFACE.md) shows real Android screens and the rendered owner dashboard with synthetic responses. It distinguishes these captures from the design studies below.
 
+| Phone setup | Access choices | Connection controls |
+|:---:|:---:|:---:|
+| <img src="docs/assets/ui/phone-setup.png" alt="Phone setup overview: SIM not selected, not paired, and separate access, SIM and pairing steps" width="220"> | <img src="docs/assets/ui/phone-access.png" alt="Setup access step: SIM information, SMS sending and SMS receiving access are not granted" width="220"> | <img src="docs/assets/ui/phone-connection.png" alt="Connection controls: heartbeat paused, zero acknowledgments and empty WSS and approved device ID fields" width="220"> |
+
+<p align="center"><img src="docs/assets/ui/owner-overview.png" alt="Rendered owner fleet overview with synthetic writer counts, two synthetic gateways and an unknown outbound result" width="820"></p>
+<p align="center"><sub>Android captures from a fresh emulator with nothing granted or paired · owner dashboard rendered with synthetic fixture data</sub></p>
+
 ## How it is designed
 
 - **Bring your own number.** A dedicated Android phone and SIM provide the SMS connection. Carrier charges and carrier rules still apply.
@@ -39,7 +46,37 @@ The [current interface guide](docs/INTERFACE.md) shows real Android screens and 
 - **Managed option.** Hosted accounts, device monitoring, backups, upgrades, and billing are planned as an operated service built from the public application source.
 - **Two-location architecture.** The design supports routing API and device connections across sites while keeping one authoritative database writer and fenced device ownership.
 
-**Honest delivery states** are summarized above; the full [delivery state model](docs/DELIVERY-STATES.md) shows every transition. An ambiguous submission becomes `unknown` and is never retried automatically, so an AI cannot cause a duplicate text.
+### How a message travels
+
+Your software talks to the server over HTTPS. The server keeps every message in PostgreSQL and hands work to your phone over an authenticated WebSocket. The phone sends an ordinary SMS through its SIM, then reports what actually happened. Replies come back the same way and reach you as a signed webhook.
+
+```mermaid
+flowchart LR
+  APP["Your app, script<br/>or AI agent"] -->|"1 · HTTPS"| API["ZROtext server<br/>Rust API"]
+  API <--> DB[("PostgreSQL<br/>single writer")]
+  API <-->|"2 · authenticated WSS<br/>work out, state + replies back"| PHONE["Your Android<br/>phone + SIM"]
+  PHONE -->|"3 · ordinary SMS<br/>via the carrier"| PERSON["Recipient"]
+  PERSON -.->|"reply"| PHONE
+  API -.->|"4 · signed webhook"| HOOK["Your webhook<br/>receiver"]
+```
+
+<sub>Solid arrows carry an outbound message; dotted arrows carry replies back to you. This is the design. Today outbound sending is limited to the restricted synthetic-alpha test plane described in [send your first message](docs/SEND-FIRST-MESSAGE.md).</sub>
+
+### Honest delivery states
+
+Each step needs evidence from the phone. Leaving the phone is not the same as arriving, and a lost answer is never guessed.
+
+```mermaid
+flowchart LR
+  Q["queued<br/>server holds it"] --> S["submitting<br/>phone saved its intent"]
+  S -->|"sent callback OK"| SUB["submitted<br/>left the phone"]
+  SUB -->|"delivery receipt"| D["delivered"]
+  SUB -->|"no receipt in time"| DU["delivery_unknown"]
+  S -->|"radio reported failure"| F["failed"]
+  S -->|"crash or timeout"| U["unknown<br/>never retried automatically"]
+```
+
+This is a simplified view; the full [delivery state model](docs/DELIVERY-STATES.md) shows every transition, including claims, cancellation and expiry. An ambiguous submission becomes `unknown` and is never retried automatically, so an AI cannot cause a duplicate text.
 
 The architecture describes intended behavior. Check the current code and release notes before relying on a capability.
 
@@ -88,11 +125,32 @@ curl http://127.0.0.1:8080/healthz
 curl http://127.0.0.1:8080/readyz
 ```
 
+```mermaid
+flowchart LR
+  ENV[".env<br/>local secrets"] -.-> DB
+  DB[("db<br/>PostgreSQL")] --> MIG["migrate<br/>numbered SQL migrations"]
+  MIG --> ROLE["db-runtime<br/>restricted runtime role"]
+  ROLE --> APP["app<br/>API on port 8080"]
+  ROLE -.->|"--profile two-hub"| APPB["app_b<br/>second API on port 8081"]
+```
+
 The stack runs database migrations before the API starts. Dispatch is disabled by default. To run a second local API instance against the same PostgreSQL writer, add `--profile two-hub` before `up`; it listens on `127.0.0.1:8081`. See the [Compose guide](deploy/compose/README.md) for migration and volume details, and the [writer-promotion runbook](docs/WRITER-PROMOTION.md) for rehearsing a fenced move of authority between the two sites.
 
 To create the first owner, follow the [local bootstrap steps](docs/SELF-HOSTING.md#owner-registration). Later invited owners can register and verify their email at `/owner/account` on the configured HTTPS origin; MFA management is on the same page after sign-in.
 
 ## Documentation
+
+Not sure where to begin? Pick the path that matches what you want to do.
+
+```mermaid
+flowchart LR
+  START{"What do you<br/>want to do?"}
+  START -->|"Try it with no phone"| A["Agent texting quickstart"]
+  START -->|"Call the API"| B["Send your first message"]
+  START -->|"Run a server"| C["Self-hosting"]
+  START -->|"Understand the design"| D["Architecture and<br/>delivery guarantees"]
+  START -->|"Work on the phone app"| E["Android development<br/>and testing"]
+```
 
 - [Current interfaces and setup boundaries](docs/INTERFACE.md)
 - [Architecture and API contracts](docs/ARCHITECTURE.md)
