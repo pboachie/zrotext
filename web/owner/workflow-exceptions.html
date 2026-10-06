@@ -1,0 +1,15 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Workflow exceptions</title></head>
+<body data-workflow-exceptions><main>
+<h1>Workflow exceptions</h1>
+<p>This isolated page requires an authenticated account and context response. The current legacy service response is unavailable here. Serving and navigation remain separate prerequisites.</p>
+<p>Reads show metadata at one check. They do not approve work, send messages or promise continuous authorization.</p>
+<label>Independently intended account <input id="exceptions-account" autocomplete="off" spellcheck="false" maxlength="36"></label>
+<label>Known context <input id="exceptions-context" autocomplete="off" spellcheck="false" maxlength="36"></label>
+<label><input id="exceptions-ack" type="checkbox">I checked this account and context.</label>
+<p><button id="exceptions-read" type="button">Read exceptions</button> <button id="exceptions-next" type="button" disabled>Next page</button> <button id="exceptions-clear" type="button">Clear and close</button></p>
+<p id="exceptions-status" role="status" aria-live="polite">Select an account and context before reading.</p>
+<ul id="exceptions-rows" aria-label="Exception metadata"></ul>
+<p>Clearing or leaving closes this visit. Reload for a new selection. No metadata is stored by this page.</p>
+</main><script type="module" src="workflow-exceptions.js"></script></body></html>
