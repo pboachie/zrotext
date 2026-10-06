@@ -1646,6 +1646,7 @@ struct SessionBody {
     user_id: Uuid,
     session_id: Uuid,
     role: &'static str,
+    server_now_ms: String,
 }
 
 async fn session(
@@ -1662,11 +1663,15 @@ async fn session(
         false,
     )
     .await?;
+    let server_now_ms = auth::session_time::sample(&client, &member)
+        .await
+        .map_err(map_auth)?;
     let mut response = Json(SessionBody {
         account_id: member.tenant.account_id(),
         user_id: member.user_id,
         session_id: member.session_id,
         role: member.role.as_str(),
+        server_now_ms,
     })
     .into_response();
     no_store(&mut response);
