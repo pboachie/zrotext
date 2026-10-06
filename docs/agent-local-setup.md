@@ -30,6 +30,133 @@ The format follows the official
 Other formats are refused. Select the client configuration file explicitly; the
 tool does not discover or edit a guessed global configuration location.
 
+## Tested configurations and measured setup path
+
+This records one measured verification run of the documented local path on a
+single contributor host. It states which runtimes and deployment modes the
+instructions on this page were exercised against. It is **not** an availability
+claim, a supported-release matrix, or evidence of phone, SIM, carrier or
+end-user-client readiness. All traffic was synthetic; nothing was sent.
+
+### Versions and deployment modes tested
+
+| Component | Tested version | Measured result on this host |
+| --- | --- | --- |
+| Host | Windows 11 Pro; commands run in a Git Bash (POSIX) shell | Complete documented path ran |
+| Node.js runtime (SDK, MCP stdio server, guided journey fixture) | v24.13.0 (meets the documented 22+ prerequisite) | Full path ran |
+| npm | 11.6.2 | `npm ci --ignore-scripts` completed; 0 vulnerabilities reported |
+| Python runtime (setup tooling) | 3.12.9 | Full path ran |
+| TypeScript SDK (`@zrotext/sealed-draft-v1`, built from this checkout; unpublished) | 0.0.0-draft | `npm test`: 884 tests — 874 passed, 10 skipped, 0 failed |
+| MCP stdio server artifact (`sdk/mcp/server.mjs`, built from the same checkout) | reviewed per-revision SHA-256 fingerprint (computed at review time; not pinned here) | Doctor verified the artifact; synthetic demo exchange completed |
+| Rust toolchain (simulator) | 1.97.1 (pinned in `rust-toolchain.toml`) | Simulator built and ran |
+| Docker / Compose | 29.2.1 / Compose v5.1.0 | Stack built, migrated and served both health endpoints |
+| End-user MCP client application (for example Claude Desktop) | none | Untested; doctor reports `clientVersion: "unknown"` and this page validates configuration formats, not an application version |
+
+Deployment modes exercised, all local and loopback-only:
+
+- **Simulator only** (no containers): `scripts/agent_setup.py journey` and the
+  `zrotext-device-sim` delivery model.
+- **Local dev Compose stack**: plain HTTP on loopback port 8080, no TLS edge and
+  no HTTPS account origin.
+- **Local-preview MCP setup**: doctor, synthetic demo, and preview/apply
+  install and disconnect into a scratch `mcp-json` configuration file.
+
+The MCP library clients previously verified against this server over stdio
+(official JavaScript SDK 1.31.0 and Python MCP client 2.2.0) are recorded in
+[mcp-local-tools.md](mcp-local-tools.md); those remain library clients, not
+tested end-user applications. This run used the `sh`-style command forms later
+on this page, in Git Bash on Windows; Linux/POSIX platforms and the PowerShell
+command forms were not separately exercised.
+
+### Measured setup path
+
+Ordered steps that completed on the host above, from a fresh checkout. Elapsed
+figures are a one-time record of that machine and cache state; expect different
+values elsewhere, and treat none of them as support commitments.
+
+1. Build and test the SDK: `npm ci --ignore-scripts` then `npm test` in
+   `sdk/typescript` (install about 6 seconds; the suite reported 874 passed,
+   10 skipped, 0 failed in about 44 seconds, and the test script builds `dist/`
+   as a dependency of the run).
+2. Guided simulator journey: `python scripts/agent_setup.py journey` from the
+   checkout root. Exit 0; all 16 fixture steps returned their pinned states;
+   the measured fixture subprocess time was 0.33 seconds; the output carried
+   `synthetic: true` and `available: false`.
+3. Delivery model: `cargo run --locked -p zrotext-device-sim`. The printed
+   matrix included `agent_journey` with `final_state: submitted` and
+   `radio_calls_modelled: 1` — a modeled boundary count, never a radio
+   operation. Build plus run took about 11 seconds on this host.
+4. Local stack: copy `.env.example` to `.env`; set one long random local value
+   that stays valid inside the `DATABASE_URL` (hexadecimal is convenient) in
+   both `POSTGRES_PASSWORD` and `DATABASE_URL`, and independently generate
+   32 random bytes as 64 hexadecimal characters for `RUNTIME_DATABASE_PASSWORD`.
+   Then run
+   `docker compose --env-file .env -f deploy/compose/compose.yaml up -d --build`.
+   The database became healthy, the migration and runtime-role
+   jobs exited 0, and the API started (about 5 minutes with a cold image cache;
+   under 2 minutes warm). `curl http://127.0.0.1:8080/healthz` returned
+   `200 {"status":"live"}` and `/readyz` returned `200 {"status":"ready"}`.
+   Health answers describe process and database availability, not SMS. Tear a
+   scratch stack down afterwards with
+   `docker compose -p <scratch-project> --env-file .env -f deploy/compose/compose.yaml down -v`.
+   The Compose file
+   pins its default project name, so `down -v` without `-p` removes the default
+   project's database volume; never run it against a volume you keep.
+5. Reviewed MCP setup against the built `sdk/mcp/server.mjs` and its computed
+   SHA-256 fingerprint: `doctor` (exit 0; `artifactVerified: true`; Node and
+   Python versions echoed; `clientVersion` still `"unknown"`), `demo` (exit 0;
+   synthetic fixture exchange, 0.11 seconds), `install` preview then
+   `install --apply --review-digest` into a scratch `mcp-json` file (exit 0;
+   one `zrotext-local-preview` entry launched through this script's `stdio`
+   subcommand), and `disconnect` preview then `disconnect --apply --review-digest`
+   (exit 0; entry removed).
+6. Closed-gate check: an unauthenticated `POST /v1/alpha/messages` against the
+   running stack with placeholder values returned HTTP 404 while the
+   synthetic-alpha gate was off. That is the documented closed behavior
+   ([send your first message](SEND-FIRST-MESSAGE.md)), not a defect.
+
+One host quirk worth repeating: `POSTGRES_PASSWORD` applies only when a fresh
+database volume is initialized. A volume left by an earlier run keeps its
+original credential, and the migration job then fails with a PostgreSQL
+connection error. Keep the original password for an existing volume
+([database role separation](../deploy/compose/README.md#database-role-separation))
+or run scratch verifications against a fresh Compose project and volume, as
+this run did after its first attempt failed that way.
+
+Not exercised by this run: any authenticated or owner-account flow, Android
+installation, SIM or line activation, a public HTTPS origin, and any named
+end-user client application. The steps that precede a phone are in
+[self-hosting](SELF-HOSTING.md).
+
+### Remaining manual phone, SIM and permission steps
+
+These steps stay manual and are not verified by the measured path above; this
+setup neither performs nor authorizes them:
+
+1. Configure the exact HTTPS account origin, TLS edge and verification mail
+   ([public HTTPS and device WSS](SELF-HOSTING.md#public-https-and-device-wss)),
+   then create the first owner with the local admin CLI
+   ([owner registration](SELF-HOSTING.md#owner-registration)).
+2. Provide a dedicated Android phone, install a reviewed artifact, and grant
+   the gateway its Android permissions, including any default-SMS-app role it
+   requests. Check [device compatibility](DEVICE-COMPATIBILITY.md) and
+   [Android testing](ANDROID-TESTING.md); a local build can differ from a
+   published artifact.
+3. Create a one-use pairing request in the owner dashboard and pair the phone
+   after reviewing each access purpose. Connection controls require a selected
+   SIM ([from a healthy stack to a phone](SELF-HOSTING.md#from-a-healthy-stack-to-a-phone)).
+4. Provide and activate the SIM/line through the owner-approved activation
+   flow when that pilot path is available. Carrier charges and carrier rules
+   apply to any real message.
+5. Issue the scoped workflow grant, keep its credential in the customer OS
+   secret store, and select it for the connector
+   ([workflow grants](guided-workflow-grants.md)). Grant revocation during
+   disconnect remains future work.
+6. Before any availability claim, run the controlled-device pilot covering
+   revocation, suppression, offline expiry, event replay and honest delivery
+   states on a controlled device with the maintainer present (tracked under
+   [#614](https://github.com/pboachie/zrotext/issues/614)).
+
 ## Guided local workflow
 
 An explicit [narrow workflow grant setup candidate](guided-workflow-grants.md)
@@ -182,6 +309,11 @@ the preview; refusal does not authorize overwriting a conflicting entry.
 Doctor's `artifactVerified: true` verifies the selected file fingerprint only.
 `liveAvailable: false` and unknown phone/SIM observations are expected for this
 local preview; repeated installation cannot turn them into live readiness.
+
+The tested client runtimes, deployment modes, measured local path and the
+remaining manual phone, SIM and permission steps are recorded in
+[tested configurations](#tested-configurations-and-measured-setup-path) above;
+the controlled-device pilot stays outstanding there.
 
 Remaining #618 acceptance: authenticated short-lived pairing and least-privilege
 grants/secret-store custody; authoritative server/version/gate/line/Android/SIM
