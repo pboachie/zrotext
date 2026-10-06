@@ -102,7 +102,7 @@ function Test-ReducedOutput([string[]]$Lines) {
 # The unlock candidate is a non-default cargo feature: the default owner binary
 # must keep refusing the command (its suite above stays at 4), while the feature
 # build exercises the reviewed owner ceremonies and pure codec/crypto suites.
-$unlockSuites=@(@{Package='zrotext-owner';Passed=@(39)},@{Package='zrotext-root-material';Passed=@(100,8)})
+$unlockSuites=@(@{Package='zrotext-owner';Passed=@(39)},@{Package='zrotext-root-material';Passed=@(106,8)})
 function Test-UnlockOutput([string[]]$Lines) {
     foreach($line in $Lines) {
         if($line -match '^test result: ' -and $line -notmatch '^test result: ok\. \d+ passed; 0 failed; 0 ignored;'){return $false}
