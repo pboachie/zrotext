@@ -64,4 +64,6 @@ impl From<crate::sealed_manifest_store::AdmissionError> for Error {
 }
 
 #[cfg(test)]
+mod signing_input_shape;
+#[cfg(test)]
 pub(crate) mod tests;
