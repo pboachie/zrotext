@@ -377,6 +377,40 @@ pub extern "system" fn Java_org_zrotext_gateway_AndroidOwnerCustodyNativeBridge_
     });
 }
 
+/// Keep prepared output owned until every outer input cleanup has settled.
+/// Cleanup failures refuse publication; panics are contained for the JNI caller.
+fn finish_prepared<C, T>(
+    context: &mut C,
+    input_count: usize,
+    body: impl FnOnce(&mut C) -> Result<T, ()>,
+    mut clear_input: impl FnMut(&mut C, usize) -> Result<(), ()>,
+    discard: impl FnOnce(&mut C, T) -> Result<(), ()>,
+) -> (Result<T, ()>, bool) {
+    let result = catch_unwind(AssertUnwindSafe(|| body(context)));
+    let mut panicked = result.is_err();
+    let mut cleaned = true;
+    for index in 0..input_count {
+        match catch_unwind(AssertUnwindSafe(|| clear_input(context, index))) {
+            Ok(Ok(())) => {}
+            Ok(Err(())) => cleaned = false,
+            Err(_) => {
+                cleaned = false;
+                panicked = true;
+            }
+        }
+    }
+    let output = match result {
+        Ok(Ok(value)) if cleaned => Ok(value),
+        Ok(Ok(value)) => {
+            let discarded = catch_unwind(AssertUnwindSafe(|| discard(context, value)));
+            panicked |= discarded.is_err();
+            Err(())
+        }
+        _ => Err(()),
+    };
+    (output, panicked)
+}
+
 struct NativeTypedOutput<'local> {
     array: jobjectArray,
     secret: Option<JByteArray<'local>>,
@@ -425,6 +459,44 @@ fn typed_arrays<'local>(
                 array: result.into_raw(),
                 secret: Some(secret),
             })
+        }
+    }
+}
+
+fn discard_typed(env: &mut JNIEnv<'_>, output: NativeTypedOutput<'_>) -> Result<(), ()> {
+    if let Some(secret) = output.secret {
+        clear_token(env, &secret)?;
+    }
+    Ok(())
+}
+
+fn prepared_boundary<'local>(
+    env: &mut JNIEnv<'local>,
+    tokens: &[&JByteArray<'_>],
+    body: impl FnOnce(&mut JNIEnv<'local>) -> Result<NativeTypedOutput<'local>, ()>,
+) -> jobjectArray {
+    let (result, panicked) = finish_prepared(
+        env,
+        tokens.len(),
+        body,
+        |env, index| clear_token(env, tokens[index]),
+        discard_typed,
+    );
+    match result {
+        Ok(output) => output.array,
+        Err(()) => {
+            if panicked {
+                service().close_all();
+                typed_service().close_all();
+            }
+            if env.exception_check().unwrap_or(false) {
+                let _ = env.exception_clear();
+            }
+            let _ = env.throw_new(
+                "java/lang/IllegalStateException",
+                "Owner custody operation rejected",
+            );
+            std::ptr::null_mut()
         }
     }
 }
@@ -510,10 +582,9 @@ pub extern "system" fn Java_org_zrotext_gateway_AndroidOwnerCustodyNativeBridge_
     let parsed = positive(handle)
         .ok()
         .and_then(|value| OperationHandle::from_u64(value).ok());
-    let result = boundary(
+    let result = prepared_boundary(
         &mut env,
         &[&root_token, &archive_recovery],
-        std::ptr::null_mut(),
         |env| {
             let handle = parsed.ok_or(())?;
             let authority = authority(env, &current_account, &current_user, &current_session)?;
@@ -532,12 +603,9 @@ pub extern "system" fn Java_org_zrotext_gateway_AndroidOwnerCustodyNativeBridge_
                     elapsed,
                     typed_arrays,
                     |env, output| {
-                        if let Some(secret) = output.secret {
-                            let _ = clear_token(env, &secret);
-                        }
+                        let _ = discard_typed(env, output);
                     },
                 )
-                .map(|output| output.array)
                 .map_err(|_| ())
         },
     );
@@ -573,3 +641,6 @@ pub extern "system" fn Java_org_zrotext_gateway_AndroidOwnerCustodyNativeBridge_
         Ok(1)
     })
 }
+
+#[cfg(test)]
+mod tests;
