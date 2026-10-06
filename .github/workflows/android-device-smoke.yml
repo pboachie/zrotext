@@ -3,6 +3,12 @@ on:
   pull_request:
     paths:
       - 'android/**'
+      - 'crates/android-owner-custody/**'
+      - 'crates/root-material/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'scripts/build_android_owner_custody.py'
       - 'protocol/v1/vectors/**'
       - 'sdk/typescript/test/vectors/**'
       - 'scripts/android_device_smoke.py'
@@ -14,6 +20,12 @@ on:
     branches: [main]
     paths:
       - 'android/**'
+      - 'crates/android-owner-custody/**'
+      - 'crates/root-material/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'scripts/build_android_owner_custody.py'
       - 'protocol/v1/vectors/**'
       - 'sdk/typescript/test/vectors/**'
       - 'scripts/android_device_smoke.py'
