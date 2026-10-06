@@ -44,6 +44,25 @@ Browser support for a primitive is not support for HPKE/OPAQUE as a complete pro
 
 ## Proposed outbound flow
 
+**Proposed, not implemented.** The diagram summarizes the numbered steps below.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant Owner as Owner client
+  participant SDK as Customer SDK
+  participant Relay as ZROtext relay
+  participant Phone as Selected phone
+  Owner->>SDK: signed key manifest, root fingerprint pinned
+  SDK->>SDK: encrypt body once, wrap key to phone + archive
+  SDK->>Relay: signed envelope + routing metadata
+  Note over Relay: checks tenant scope and limits,<br/>cannot read the body
+  Relay->>Phone: ciphertext + execution grant
+  Phone->>Phone: verify signature, manifest, AAD, expiry
+  Phone->>Phone: decrypt, then plaintext SMS to carrier
+  Phone-->>Relay: authenticated status
+```
+
 1. Pairing registers a device-auth key and separate encryption key through a short-lived one-use session. Owner compares a code/fingerprint on phone and browser; unlocked owner client approves a versioned signed key manifest. QR carries no account-wide API token.
 2. SDK pins the account authorization fingerprint on first setup; it rejects a replaced root, rollback of manifest version, unknown keys, wrong scopes, or expired approval. Subsequent rotation needs an owner-approved signed chain; server directory lookup alone is insufficient.
 3. Client creates stable message ID, random content key and nonce; encrypts body once; HPKE-wraps the content key to **the selected device and account archive key**, plus only explicitly approved readers. Do not wrap every message to every fleet device. No server-side rerouting to an unwrapped device.
