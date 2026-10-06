@@ -7,6 +7,7 @@ mod http;
 mod invoice;
 mod resilience;
 mod retention;
+mod transaction;
 
 struct Fixture {
     case: Case,
