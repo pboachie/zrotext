@@ -2,6 +2,7 @@
 use super::*;
 use crate::http_owner_conversations::context::decisions::tests::Case;
 use contracts::{AllocationMutation, Offer, OpeningMutation, Reserve, Source};
+use futures_util::FutureExt;
 use sha2::{Digest, Sha256};
 
 async fn fixture() -> Case {
@@ -602,73 +603,131 @@ async fn later_receipt_and_erasure_failures_roll_back_state_and_authority_scrubb
         1,
     )
     .await;
-    c.base.f.db.batch_execute("CREATE FUNCTION synthetic_opening_receipt_failure() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic receipt failure'; END $$; CREATE TRIGGER synthetic_opening_receipt_failure BEFORE INSERT ON workflow_opening_requests FOR EACH ROW EXECUTE FUNCTION synthetic_opening_receipt_failure()").await.unwrap();
-    assert!(
-        reserve(
-            &mut c.base.f.connect().await,
-            &c.base.owner,
-            request.clone()
-        )
-        .await
-        .is_err()
-    );
-    assert_eq!(
-        status(
-            &mut c.base.f.connect().await,
-            &c.base.owner,
-            created.receipt.opening.opening_id
-        )
-        .await
-        .unwrap()
-        .pending,
-        0
-    );
-    c.base
-        .f
-        .db
-        .batch_execute(
-            "DROP TRIGGER synthetic_opening_receipt_failure ON workflow_opening_requests",
-        )
-        .await
-        .unwrap();
-    let reserved = reserve(&mut c.base.f.connect().await, &c.base.owner, request)
-        .await
-        .unwrap();
-    let confirmed = confirm(
-        &mut c.base.f.connect().await,
-        &c.base.owner,
-        allocation(&reserved),
-    )
-    .await
-    .unwrap();
-    c.base.f.db.batch_execute("CREATE TRIGGER synthetic_opening_scrub_failure BEFORE UPDATE ON workflow_opening_requests FOR EACH ROW EXECUTE FUNCTION synthetic_opening_receipt_failure()").await.unwrap();
+    let role = format!("opening_fault_{}", Uuid::new_v4().simple());
+    let schema = c.base.f.schema.clone();
+    let admin = c.base.f.connect().await;
     let mut db = c.base.f.connect().await;
-    let tx = db.transaction().await.unwrap();
-    owner_context::lock_owner(&tx, &c.base.owner).await.unwrap();
-    assert!(
-        crate::workflow_runtime::lifecycle::erase_contact(&tx, c.base.f.account, c.contact)
-            .await
-            .is_err()
-    );
-    tx.rollback().await.unwrap();
-    let row=c.base.f.db.query_one("SELECT phase,binding_scrubbed,contact_identity,event_id FROM workflow_opening_allocations WHERE account_id=$1 AND id=$2", &[&c.base.f.account,&confirmed.receipt.allocation_id]).await.unwrap();
-    assert_eq!(row.get::<_, String>(0), "confirmed");
-    assert!(!row.get::<_, bool>(1));
-    assert_eq!(row.get::<_, Option<Uuid>>(2), Some(c.contact));
-    assert!(row.get::<_, Option<Uuid>>(3).is_some());
-    assert!(
-        c.base
-            .f
-            .db
-            .query_opt(
-                "SELECT id FROM contacts WHERE account_id=$1 AND id=$2",
-                &[&c.base.f.account, &c.contact]
-            )
+    let role_sql = admin.query_one("SELECT format('CREATE ROLE %I NOLOGIN', $1::text), format('SET ROLE %I', $1::text), format('SET LOCAL ROLE %I', $1::text), format('DROP ROLE %I', $1::text)", &[&role]).await.unwrap();
+    let create_sql: String = role_sql.get(0);
+    let set_role_sql: String = role_sql.get(1);
+    let local_role_sql: String = role_sql.get(2);
+    let drop_role_sql: String = role_sql.get(3);
+    // The disposable hosted PostgreSQL fixture uses its bootstrap administrator.
+    // A missing CREATE ROLE privilege is a test failure, never a skipped case.
+    admin.batch_execute(&create_sql).await.unwrap();
+    let result = std::panic::AssertUnwindSafe(async {
+        let sql: String = admin.query_one("SELECT format('GRANT USAGE ON SCHEMA %I TO %I; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %I TO %I', $1::text,$2::text,$1::text,$2::text)", &[&schema,&role]).await.unwrap().get(0);
+        admin.batch_execute(&sql).await.unwrap();
+        db.batch_execute(&set_role_sql).await.unwrap();
+        let role_active: bool = db
+            .query_one("SELECT current_user::text=$1::text", &[&role])
             .await
             .unwrap()
-            .is_some()
-    );
-    c.cleanup().await;
+            .get(0);
+        assert!(role_active, "fault injection must use the owned restricted role");
+
+        let tx = db.transaction().await.unwrap();
+        assert!(schema::installed(&tx).await.unwrap());
+        tx.rollback().await.unwrap();
+        let sql: String = c.base.f.db.query_one("SELECT format('REVOKE INSERT ON workflow_opening_requests FROM %I', $1::text)", &[&role]).await.unwrap().get(0);
+        c.base.f.db.batch_execute(&sql).await.unwrap();
+        let may_insert: bool = db.query_one("SELECT has_table_privilege(current_user,'workflow_opening_requests','INSERT')", &[]).await.unwrap().get(0);
+        assert!(!may_insert);
+        let error = reserve(&mut db, &c.base.owner, request.clone()).await.unwrap_err();
+        let ConversationError::Database(error) = error else {
+            panic!("receipt INSERT must fail with a database permission error");
+        };
+        let error = error.as_db_error().unwrap();
+        assert_eq!(error.code().code(), "42501");
+        assert_eq!(error.message(), "permission denied for table workflow_opening_requests");
+        db.batch_execute("RESET ROLE").await.unwrap();
+        let state = status(&mut db, &c.base.owner, created.receipt.opening.opening_id)
+            .await
+            .unwrap();
+        assert_eq!(state.pending, 0);
+        assert_eq!(state.opening.state_version, offered.receipt.opening.state_version);
+        let row = c.base.f.db.query_one("SELECT (SELECT count(*) FROM workflow_opening_allocations WHERE account_id=$1),(SELECT count(*) FROM workflow_opening_requests WHERE account_id=$1 AND request_id=$2)", &[&c.base.f.account,&request.request_id]).await.unwrap();
+        assert_eq!(row.get::<_, i64>(0), 0);
+        assert_eq!(row.get::<_, i64>(1), 0);
+        // Restore the actual role's permission before retrying the identical request.
+        let grant: String = c.base.f.db.query_one("SELECT format('GRANT INSERT ON workflow_opening_requests TO %I', $1::text)", &[&role]).await.unwrap().get(0);
+        c.base.f.db.batch_execute(&grant).await.unwrap();
+        // SET ROLE is scoped to this client, not the fixture administrator.
+        db.batch_execute(&set_role_sql).await.unwrap();
+        let reserved = reserve(&mut db, &c.base.owner, request).await.unwrap();
+        let confirmed = confirm(&mut db, &c.base.owner, allocation(&reserved)).await.unwrap();
+        db.batch_execute("RESET ROLE").await.unwrap();
+        let snapshot_sql = "SELECT (SELECT jsonb_agg(to_jsonb(t) ORDER BY request_id)::text FROM workflow_opening_requests t WHERE account_id=$1),(SELECT to_jsonb(t)::text FROM workflow_opening_allocations t WHERE account_id=$1 AND id=$2),(SELECT to_jsonb(t)::text FROM workflow_opening_offers t WHERE account_id=$1 AND id=$3)";
+        let offer_id = offered.receipt.offer.unwrap().offer_id;
+        let params: &[&(dyn tokio_postgres::types::ToSql + Sync)] = &[
+            &c.base.f.account,
+            &confirmed.receipt.allocation_id,
+            &offer_id,
+        ];
+        let before = c.base.f.db.query_one(snapshot_sql, params).await.unwrap();
+        let before: Vec<String> = (0..3).map(|i| before.get(i)).collect();
+        let sql: String = c.base.f.db.query_one("SELECT format('REVOKE UPDATE ON workflow_opening_allocations FROM %I; GRANT UPDATE(phase,state_version) ON workflow_opening_allocations TO %I', $1::text,$1::text)", &[&role]).await.unwrap().get(0);
+        c.base.f.db.batch_execute(&sql).await.unwrap();
+        let tx = db.transaction().await.unwrap();
+        tx.batch_execute(&local_role_sql).await.unwrap();
+        let privileges = tx.query_one("SELECT has_table_privilege(current_user,'workflow_opening_allocations','SELECT'),has_column_privilege(current_user,'workflow_opening_allocations','phase','UPDATE'),has_column_privilege(current_user,'workflow_opening_allocations','state_version','UPDATE'),has_column_privilege(current_user,'workflow_opening_allocations','binding_scrubbed','UPDATE')", &[]).await.unwrap();
+        assert!((0..3).all(|i| privileges.get::<_, bool>(i)));
+        assert!(!privileges.get::<_, bool>(3));
+        assert!(schema::installed(&tx).await.unwrap());
+        owner_context::lock_owner(&tx, &c.base.owner).await.unwrap();
+        let error =
+            crate::workflow_runtime::lifecycle::erase_contact(&tx, c.base.f.account, c.contact)
+                .await
+                .unwrap_err();
+        let error = error.as_db_error().unwrap();
+        assert_eq!(error.code().code(), "42501");
+        assert_eq!(error.message(), "permission denied for table workflow_opening_allocations");
+        let aborted = tx.query_one("SELECT 1", &[]).await.unwrap_err();
+        assert_eq!(aborted.as_db_error().unwrap().code().code(), "25P02");
+        tx.rollback().await.unwrap();
+        db.batch_execute("RESET ROLE").await.unwrap();
+        let after = c.base.f.db.query_one(snapshot_sql, params).await.unwrap();
+        let after: Vec<String> = (0..3).map(|i| after.get(i)).collect();
+        assert_eq!(after, before, "later scrub failure rolls back complete receipts and bindings");
+        let row=c.base.f.db.query_one("SELECT phase,binding_scrubbed,contact_identity,event_id FROM workflow_opening_allocations WHERE account_id=$1 AND id=$2", &[&c.base.f.account,&confirmed.receipt.allocation_id]).await.unwrap();
+        assert_eq!(row.get::<_, String>(0), "confirmed");
+        assert!(!row.get::<_, bool>(1));
+        assert_eq!(row.get::<_, Option<Uuid>>(2), Some(c.contact));
+        assert!(row.get::<_, Option<Uuid>>(3).is_some());
+        assert!(
+            c.base
+                .f
+                .db
+                .query_opt(
+                    "SELECT id FROM contacts WHERE account_id=$1 AND id=$2",
+                    &[&c.base.f.account, &c.contact]
+                )
+                .await
+                .unwrap()
+                .is_some()
+        );
+    })
+    .catch_unwind()
+    .await;
+    // Dropping a panicking borrowed transaction queues rollback on this client.
+    // Retain both clients so teardown runs on success and assertion failure.
+    let reset = db.batch_execute("ROLLBACK; RESET ROLE").await;
+    drop(db);
+    let cleanup = std::panic::AssertUnwindSafe(c.cleanup())
+        .catch_unwind()
+        .await;
+    let drop_role = admin.batch_execute(&drop_role_sql).await;
+    if let Err(payload) = result {
+        if reset.is_err() || cleanup.is_err() || drop_role.is_err() {
+            eprintln!("opening fault fixture teardown also failed");
+        }
+        std::panic::resume_unwind(payload);
+    }
+    reset.unwrap();
+    if let Err(payload) = cleanup {
+        std::panic::resume_unwind(payload);
+    }
+    drop_role.unwrap();
 }
 
 #[tokio::test]
