@@ -100,7 +100,7 @@ Success is HTTP 202:
 {"message_id":"00000000-0000-4000-8000-0000000000b1","created":true}
 ```
 
-`created: false` means the same `Idempotency-Key` and content were already accepted, and you got the stored message back instead of a second send. Errors are `{"code":"..."}`: `invalid_request` (400), `unauthorized` (401), `payment_hold` (402), `not_found` (404, also for anything off the allowlist), `conflict` (409, the same key with different content), `rate_limited`, `queue_full` and `quota_exceeded` (429, with `Retry-After`), `billing_pending` and `unavailable` (503), and `recipient_suppressed` (403, after an opt-out). Do not retry a 4xx other than 429.
+`created: false` means the same `Idempotency-Key` and content were already accepted, and you got the stored message back instead of a second send. Errors are `{"code":"..."}`: `invalid_request` (400), `unauthorized` (401), `payment_hold` (402), `not_found` (404, also for anything off the allowlist), `conflict` (409, the same key with different content), `rate_limited`, `queue_full` and `quota_exceeded` (429, with `Retry-After`), `billing_pending` and `unavailable` (503), and `recipient_suppressed` (403, after an opt-out). Do not retry a 4xx other than 429. A 408, or a 5xx without the server's JSON `code` (for example from a proxy), is an **unknown outcome**: the message may have been accepted. You have no `message_id` to poll, so resubmit the identical request with the same `Idempotency-Key` and `client_message_id` (while `expires_at_ms` is still in the future); a `created: false` answer carries the `message_id`. Never mint a new key to resolve it.
 
 ## 2. Check the state
 
