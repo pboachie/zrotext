@@ -1,7 +1,10 @@
 # Encrypted workflow context candidate
 
 ZTWC01 is a proposed, implemented library/API candidate for owner-entered jobs,
-appointments and general context. Its router is not mounted by `main`. It neither
+appointments and general context. The context API is conditionally mounted by
+`main` when default-off `CUSTOMER_ROUTINES_ENABLED` is enabled; that setting
+requires `WORKFLOW_TOOLS_ENABLED`. This describes source composition, not enabled
+deployment, optional schema installation or pilot acceptance. The API neither
 enables conversation capture nor sends SMS, schedules jobs, calls calendars/CRM,
 charges payments or authorizes an agent. It extends an existing approved
 `conversation_intervals` identity; it does not create another conversation store.
@@ -77,10 +80,11 @@ ciphertext are immutable; retention may scrub bytes but cannot rehydrate them.
 Runtime service composition and lifecycle integration remain an unfinished
 candidate; these library operations do not mount routes or activate dispatch.
 
-## Dormant owner API
+## Conditional owner context API
 
-The independently unmounted router requires an owner session; bearer credentials
-are refused. Mutations use the existing same-origin/CSRF owner mutation extractor.
+The context router requires an owner session; bearer credentials are refused.
+Reads require the matching session-cookie/CSRF proof. Mutations use the existing
+same-origin/CSRF owner mutation extractor.
 Every response, including errors, is no-store and nosniff.
 
 - `POST /v1/owner/workflow/contexts`: binary envelope with content type
@@ -93,10 +97,67 @@ Every response, including errors, is no-store and nosniff.
 - `POST /v1/owner/workflow/exceptions`: context ID/revision, source kind/ID and
   reason. No message body, freeform explanation or inferred approval is accepted.
 - `GET /v1/owner/workflow/contexts/{id}/exceptions?before=UUID`: 20 scoped metadata
-  rows and an optional next cursor. Foreign context/cursor identities are refused.
+  rows in the closed authenticated envelope below. Foreign context/cursor
+  identities are refused.
 - `POST /v1/owner/workflow/exceptions/{id}/resolve`: UUID request ID and expected
   exception revision 1. Transition to resolved revision 2 is irreversible; an
   exact retry succeeds without another audit record.
+
+The exceptions response has exactly four fields: `account_id`, `context_id`,
+`items` and `next_cursor`. Account identity comes from the authenticated Owner
+principal; context identity comes from the loaded, validated encrypted header.
+Both identities are present even when `items` is empty and `next_cursor` is null.
+The service retains its authority, Owner/session and exact archive-reader checks
+before and after selecting rows, and returns the envelope only after the final
+authorization and transaction commit. Reading does not create or resolve rows.
+
+Each item has exactly these thirteen fields:
+
+| Fields | Wire values |
+|---|---|
+| `account_id`, `context_id`, `id`, `source_id` | Nonzero canonical lower-case UUID strings; row scope equals envelope scope |
+| `context_revision` | Integer 1..128 |
+| `source_kind`, `reason` | Integer pairs (1,1), (1,5), (2,2), (2,3) or (2,4) |
+| `request_digest` | Literal `\x` followed by 64 lower-case hexadecimal digits from the stored 32 bytes |
+| `revision`, `state` | Exactly 1/`pending` or 2/`resolved` |
+| `resolution_request_id`, `resolved_at` | Both null for pending; nonzero canonical UUID and timestamp for resolved |
+| `created_at` | Mandatory timestamp |
+
+Timestamps are finite UTC strings of exactly 27 characters:
+`YYYY-MM-DDTHH:MM:SS.ffffffZ`, with six fractional digits and UTC years 0001..9999.
+The projection is independent of PostgreSQL `bytea_output`, `DateStyle` and
+`TimeZone`. Infinity, BC or out-of-range UTC years and any unsupported stored
+identity, digest, kind/reason or resolution shape refuse the entire selected page;
+they do not produce a partially successful response. No ciphertext, message body,
+peer, freeform explanation, audit record or future database column is included.
+
+The historical query name `before` means an exclusive ascending UUID cursor:
+only IDs greater than it are selected. The cursor must already exist under the
+same authenticated account and context. The service locks and fetches at most 21
+rows, validates the lookahead too, and returns at most 20. `next_cursor` is the
+twentieth returned ID only if a twenty-first row exists; otherwise it is null.
+An empty final page still binds the authenticated account and validated context.
+The existing 32-exception context cap remains unchanged. The compact closed
+projection is bounded below the client 65536-byte streamed response limit;
+source controls measure actual Rust/Axum serialization when executed. This wire
+contract grants no approval, sending permission or continuous authority.
+
+The standalone exceptions page, its static assets and owner navigation require
+separate serving integration. This API contract does not establish a rendered,
+authenticated page/SQL pairing or authorize enabling broad runtime features.
+
+The maintained structural contract is
+[`workflow-exceptions-response.schema.json`](vectors/workflow-exceptions-response.schema.json),
+with independent [empty](vectors/workflow-exceptions-empty.json) and
+[twenty-row](vectors/workflow-exceptions-page.json) synthetic response vectors.
+The existing protocol test module checks closed fields, ranges, calendar values,
+raw UTF-8/duplicate keys and the byte budget, then compares scope, ordering and
+continuation with independently supplied expected account/context/original cursor.
+Standard JSON Schema cannot compare row scope to the envelope or expected
+selection, order UUIDs, bind a cursor to the last row, or prove that a twenty-first
+SQL row exists. Neither a valid vector nor these structural checks establish an
+authenticated Owner, source provenance, actual PostgreSQL output or runtime
+acceptance; those remain server/client and separately executed pairing controls.
 
 Source kind 1 is a verified inbound event with original provenance for the exact
 interval/device/line/binding. Reasons 1 (ambiguous reply) and 5 (approval mismatch)

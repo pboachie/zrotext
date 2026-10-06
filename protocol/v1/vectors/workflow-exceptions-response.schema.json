@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Closed workflow exceptions response",
+  "$comment": "Structural wire contract only. Use asserted date-time format and Gregorian calendar validation. JSON Schema does not bind row scope to authenticated expected account/context, compare UUID order/cursors, detect duplicate JSON keys, or attest Owner authorization, PostgreSQL provenance or runtime acceptance.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["account_id", "context_id", "items", "next_cursor"],
+  "properties": {
+    "account_id": {"$ref": "#/$defs/uuid"},
+    "context_id": {"$ref": "#/$defs/uuid"},
+    "items": {"type": "array", "maxItems": 20, "items": {"$ref": "#/$defs/row"}},
+    "next_cursor": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/uuid"}]}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"next_cursor": {"type": "string"}}},
+      "then": {"properties": {"items": {"minItems": 20}}}
+    }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "minLength": 27,
+      "maxLength": 27,
+      "format": "date-time",
+      "pattern": "^(?!0000)[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\\.[0-9]{6}Z$",
+      "allOf": [
+        {"not": {"pattern": "^[0-9]{4}-(02-(30|31)|(04|06|09|11)-31)T"}},
+        {
+          "if": {"pattern": "^[0-9]{4}-02-29T"},
+          "then": {"pattern": "^([0-9]{2}(0[48]|[2468][048]|[13579][26])|(0[48]|[2468][048]|[13579][26])00)-02-29T"}
+        }
+      ]
+    },
+    "row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["account_id", "context_id", "id", "context_revision", "source_kind", "source_id", "reason", "request_digest", "revision", "state", "resolution_request_id", "resolved_at", "created_at"],
+      "properties": {
+        "account_id": {"$ref": "#/$defs/uuid"},
+        "context_id": {"$ref": "#/$defs/uuid"},
+        "id": {"$ref": "#/$defs/uuid"},
+        "context_revision": {"type": "integer", "minimum": 1, "maximum": 128},
+        "source_kind": {"type": "integer", "enum": [1, 2]},
+        "source_id": {"$ref": "#/$defs/uuid"},
+        "reason": {"type": "integer", "minimum": 1, "maximum": 5},
+        "request_digest": {"type": "string", "minLength": 66, "maxLength": 66, "pattern": "^\\\\x[0-9a-f]{64}$"},
+        "revision": {"type": "integer", "enum": [1, 2]},
+        "state": {"type": "string", "enum": ["pending", "resolved"]},
+        "resolution_request_id": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/uuid"}]},
+        "resolved_at": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/timestamp"}]},
+        "created_at": {"$ref": "#/$defs/timestamp"}
+      },
+      "allOf": [
+        {
+          "oneOf": [
+            {"properties": {"source_kind": {"const": 1}, "reason": {"enum": [1, 5]}}},
+            {"properties": {"source_kind": {"const": 2}, "reason": {"enum": [2, 3, 4]}}}
+          ]
+        },
+        {
+          "oneOf": [
+            {"properties": {"revision": {"const": 1}, "state": {"const": "pending"}, "resolution_request_id": {"type": "null"}, "resolved_at": {"type": "null"}}},
+            {"properties": {"revision": {"const": 2}, "state": {"const": "resolved"}, "resolution_request_id": {"$ref": "#/$defs/uuid"}, "resolved_at": {"$ref": "#/$defs/timestamp"}}}
+          ]
+        }
+      ]
+    }
+  }
+}
