@@ -139,26 +139,46 @@ impl TestExposure {
             return Err(Error::Unavailable);
         }
         let tx = client.transaction().await?;
+        let result = self
+            .reserve_in_tx(&tx, owner, action, route_policy, reservation_id)
+            .await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Prepare TEST metadata inside the caller's transaction. Only the caller
+    /// owns commit; rollback or commit failure must discard the returned value.
+    async fn reserve_in_tx(
+        &self,
+        tx: &Transaction<'_>,
+        owner: &SessionPrincipal,
+        action: ActionKey,
+        route_policy: Uuid,
+        reservation_id: Uuid,
+    ) -> Result<Reservation, Error> {
+        self.require_enabled()?;
+        if route_policy.is_nil() || reservation_id.is_nil() {
+            return Err(Error::Unavailable);
+        }
         // Global serialization precedes root/customer/account/action locks.
         // Settlement follows deployment -> sorted scope rows without taking
         // an account or root lock, so it cannot invert authority lock order.
-        let deployment = store::deployment(&tx, None).await?;
-        let _root = lock_current(&tx, owner.tenant.account_id())
+        let deployment = store::deployment(tx, None).await?;
+        let _root = lock_current(tx, owner.tenant.account_id())
             .await
             .map_err(|_| Error::Unavailable)?;
-        store::lock_customer(&tx, owner.tenant.account_id()).await?;
-        let mut permit = decisions::lock_approved(&tx, owner, action).await?;
+        store::lock_customer(tx, owner.tenant.account_id()).await?;
+        let mut permit = decisions::lock_approved(tx, owner, action).await?;
         let account = permit.key().account_id;
-        store::entitlement(&tx, account).await?;
-        let policy = store::route(&tx, account, route_policy, deployment.id).await?;
-        if let Some(prior) = store::prior(&tx, account, action, &policy.operation).await? {
+        store::entitlement(tx, account).await?;
+        let policy = store::route(tx, account, route_policy, deployment.id).await?;
+        if let Some(prior) = store::prior(tx, account, action, &policy.operation).await? {
             if prior.route != route_policy || prior.id != reservation_id {
                 return Err(Error::Conflict);
             }
             permit.recheck().await?;
             drop(permit);
             drop(_root);
-            tx.commit().await?;
             return Ok(prior.reservation);
         }
         let maximum = ExposureUnits::model_maximum(
@@ -191,13 +211,13 @@ impl TestExposure {
         ];
         let mut budgets = Vec::with_capacity(scopes.len());
         for scope in scopes {
-            budgets.push(store::scope(&tx, account, scope).await?);
+            budgets.push(store::scope(tx, account, scope).await?);
         }
-        let now = store::now(&tx).await?;
-        let mut warning = store::check_deployment(&tx, &deployment, maximum, now).await?;
+        let now = store::now(tx).await?;
+        let mut warning = store::check_deployment(tx, &deployment, maximum, now).await?;
         for budget in &budgets {
-            let outstanding = store::scope_outstanding(&tx, account, budget).await?;
-            let finalized = store::scope_finalized(&tx, account, budget).await?;
+            let outstanding = store::scope_outstanding(tx, account, budget).await?;
+            let finalized = store::scope_finalized(tx, account, budget).await?;
             budget.require_period(now)?;
             let projected = projected_liability(finalized, outstanding, maximum, budget.hard)?;
             warning |= projected >= budget.soft;
@@ -209,23 +229,22 @@ impl TestExposure {
               &permit.routine_id(),&permit.routine_generation(),&permit.actor_user_id(),&permit.actor_session_id(),
               &maximum.get(),&deployment.start,&deployment.end]).await?;
         for budget in &budgets {
-            store::debit_scope(&tx, account, reservation_id, budget, maximum.get()).await?;
+            store::debit_scope(tx, account, reservation_id, budget, maximum.get()).await?;
         }
         tx.execute("UPDATE exposure_deployment_budgets SET outstanding_units=outstanding_units+$2 WHERE id=$1",
             &[&deployment.id,&maximum.get()]).await?;
         // Waiting for any dimension lock cannot reuse cached consent, owner
         // session, action expiry or routine generation from initial admission.
         permit.recheck().await?;
-        store::require_live_policies(&tx, account, route_policy, &deployment, &budgets).await?;
+        store::require_live_policies(tx, account, route_policy, &deployment, &budgets).await?;
         permit.recheck().await?;
-        let final_now = store::now(&tx).await?;
+        let final_now = store::now(tx).await?;
         deployment.require_period(final_now)?;
         for budget in &budgets {
             budget.require_period(final_now)?;
         }
         drop(permit);
         drop(_root);
-        tx.commit().await?;
         Ok(Reservation {
             id: reservation_id,
             maximum_units: maximum.get(),
@@ -244,6 +263,23 @@ impl TestExposure {
     ) -> Result<TestIntent, Error> {
         self.require_enabled()?;
         let tx = client.transaction().await?;
+        let result = self
+            .first_test_intent_in_tx(&tx, owner, action, reservation)
+            .await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Prepare the single synthetic intent without publishing it. The caller
+    /// must discard this process-local value if its transaction does not commit.
+    async fn first_test_intent_in_tx(
+        &self,
+        tx: &Transaction<'_>,
+        owner: &SessionPrincipal,
+        action: ActionKey,
+        reservation: Uuid,
+    ) -> Result<TestIntent, Error> {
+        self.require_enabled()?;
         let deployment_id: Uuid = tx
             .query_opt(
                 "SELECT deployment_id FROM exposure_reservations WHERE account_id=$1 AND id=$2",
@@ -252,13 +288,13 @@ impl TestExposure {
             .await?
             .ok_or(Error::Unavailable)?
             .get(0);
-        let deployment = store::deployment(&tx, Some(deployment_id)).await?;
-        let _root = lock_current(&tx, owner.tenant.account_id())
+        let deployment = store::deployment(tx, Some(deployment_id)).await?;
+        let _root = lock_current(tx, owner.tenant.account_id())
             .await
             .map_err(|_| Error::Unavailable)?;
-        store::lock_customer(&tx, owner.tenant.account_id()).await?;
-        let mut permit = decisions::lock_approved(&tx, owner, action).await?;
-        store::entitlement(&tx, action.account_id).await?;
+        store::lock_customer(tx, owner.tenant.account_id()).await?;
+        let mut permit = decisions::lock_approved(tx, owner, action).await?;
+        store::entitlement(tx, action.account_id).await?;
         let row = tx.query_opt(
             "SELECT action_id,revision,binding_digest,route_policy_id,state FROM exposure_reservations WHERE account_id=$1 AND id=$2 AND live_action_id=action_id AND live_revision=revision AND live_binding_digest=binding_digest FOR UPDATE",
             &[&action.account_id,&reservation]).await?.ok_or(Error::Unavailable)?;
@@ -270,11 +306,11 @@ impl TestExposure {
             return Err(Error::Conflict);
         }
         let route: Uuid = row.get(3);
-        store::route(&tx, action.account_id, route, deployment.id).await?;
-        let budgets = store::bound_scopes(&tx, action.account_id, reservation).await?;
-        store::require_live_policies(&tx, action.account_id, route, &deployment, &budgets).await?;
+        store::route(tx, action.account_id, route, deployment.id).await?;
+        let budgets = store::bound_scopes(tx, action.account_id, reservation).await?;
+        store::require_live_policies(tx, action.account_id, route, &deployment, &budgets).await?;
         permit.recheck().await?;
-        let now = store::now(&tx).await?;
+        let now = store::now(tx).await?;
         deployment.require_period(now)?;
         if now
             < permit
@@ -300,9 +336,9 @@ impl TestExposure {
         tx.execute("UPDATE exposure_reservations SET state='executing',lease_id=$3,lease_until_ms=$4 WHERE account_id=$1 AND id=$2",
             &[&action.account_id,&reservation,&nonce,&until]).await?;
         permit.recheck().await?;
-        store::require_live_policies(&tx, action.account_id, route, &deployment, &budgets).await?;
+        store::require_live_policies(tx, action.account_id, route, &deployment, &budgets).await?;
         permit.recheck().await?;
-        let final_now = store::now(&tx).await?;
+        let final_now = store::now(tx).await?;
         deployment.require_period(final_now)?;
         for budget in &budgets {
             budget.require_period(final_now)?;
@@ -312,7 +348,6 @@ impl TestExposure {
         }
         drop(permit);
         drop(_root);
-        tx.commit().await?;
         Ok(TestIntent {
             account: action.account_id,
             reservation,
