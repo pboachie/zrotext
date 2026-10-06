@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 /** Isolated initial owner facts editor. No page integration or execution authority. */
-import { OwnerWorkflowContextClient, OwnerContextError, type OwnerContextCurrent, type OwnerContextPending, type OwnerContextWriteReview } from './owner-workflow-context-client.js';
+import { OwnerWorkflowContextClient, OwnerContextError, type OwnerContextCurrent, type OwnerContextPending, type OwnerContextReceipt, type OwnerContextWriteReview } from './owner-workflow-context-client.js';
 import { authorizeWorkflowContext02, verifiedManifestIdentity02, verifiedManifestTrust02, verifyManifest02 } from './draft02-manifest.js';
 import type { ConversationSignerBinding02, ConversationSignerCurrent02 } from './conversation-signer.js';
 import type { ArchiveReaderLease02 } from './conversation-archive-custody.js';
@@ -16,7 +16,8 @@ export interface OwnerContextAuthoringOptions {
 }
 export type OwnerAuthoringPhase = 'editing'|'preparing'|'review'|'saving'|'saved'|'unknown'|'refused'|'closed';
 export type OwnerAuthoringState = Readonly<{phase: OwnerAuthoringPhase; pending: OwnerContextPending|null}>;
-export type OwnerContextAuthoring = Readonly<{close(): void; state(): OwnerAuthoringState}>;
+export type OwnerAcknowledgedSourceSnapshot = Readonly<{accountId: string; receipt: Readonly<OwnerContextReceipt & {requestAcknowledged: true}>}>;
+export type OwnerContextAuthoring = Readonly<{close(): void; state(): OwnerAuthoringState; savedSource(): OwnerAcknowledgedSourceSnapshot|null}>;
 const names=['enabled','origin','host','binding','contextId','expiresMs','readCurrent','currentCsrf','archiveLease','onSetupClose','onCustodyClose','signal'];
 const bindingNames=['account','device','line','interval','session','generation','peer','phoneReader','archiveReader'];
 const same=(a:Uint8Array,b:Uint8Array)=>a.length===b.length&&a.every((n,i)=>n===b[i]);
@@ -40,6 +41,7 @@ function equalBinding(a:ConversationSignerBinding02,b:ConversationSignerBinding0
 class Authoring {
   #o:OwnerContextAuthoringOptions;#binding:ConversationSignerBinding02;#context:Uint8Array;#document:Document;#window:Window;
   #phase:OwnerAuthoringPhase='editing';#closed=false;#pending:OwnerContextPending|null=null;
+  #saved:OwnerAcknowledgedSourceSnapshot|null=null;
   #controller=new AbortController();#client:OwnerWorkflowContextClient|null=null;#ticket:object|null=null;
   #deadline=Infinity;#timer:ReturnType<typeof setTimeout>|undefined;#cleanup:Array<()=>void>=[];
   #now=0n;#content:Uint8Array|null=null;#envelope:Uint8Array|null=null;#text='';#scope:WorkflowContextScope|null=null;#request='';#digest='';
@@ -79,6 +81,18 @@ class Authoring {
     host.append(this.#pane);this.#render();
   }
   state():OwnerAuthoringState{return Object.freeze({phase:this.#phase,pending:this.#pending?Object.freeze({...this.#pending}):null});}
+  savedSource():OwnerAcknowledgedSourceSnapshot|null{
+    if(this.#closed)return null;
+    if(this.#o.signal.aborted||this.#document.hidden||performance.now()>=this.#deadline){this.close();return null;}
+    if(this.#phase!=='saved'||!this.#saved)return null;
+    const r=this.#saved.receipt;
+    return Object.freeze({accountId:this.#saved.accountId,receipt:Object.freeze({requestId:r.requestId,contextId:r.contextId,revision:r.revision,envelopeDigest:r.envelopeDigest,state:r.state,requestAcknowledged:true as const})});
+  }
+  #retain(result:OwnerContextReceipt):void{
+    const r=data(result,['requestId','contextId','revision','envelopeDigest','state','requestAcknowledged']);
+    if(r.requestId!==this.#request||r.contextId!==uuid(this.#context)||r.revision!==1||r.envelopeDigest!==this.#digest||r.state!=='verified_current_snapshot'||r.requestAcknowledged!==true)fail();
+    this.#saved=Object.freeze({accountId:uuid(this.#binding.account),receipt:Object.freeze({requestId:this.#request,contextId:uuid(this.#context),revision:1,envelopeDigest:this.#digest,state:'verified_current_snapshot' as const,requestAcknowledged:true as const})});
+  }
   #render():void{
     this.#editor.disabled=this.#closed||this.#phase!=='editing';
     for(const [key,b]of Object.entries(this.#buttons))b.disabled=this.#closed||!(key==='review'&&this.#phase==='editing'||key==='save'&&this.#phase==='review'||key==='retry'&&this.#phase==='unknown'&&this.#posts<3||key==='check'&&this.#phase==='unknown'&&this.#checks<3||key==='clear');
@@ -87,7 +101,7 @@ class Authoring {
   }
   #scrub():void{this.#content?.fill(0);this.#content=null;this.#envelope?.fill(0);this.#envelope=null;this.#text='';this.#editor.value='';this.#review.textContent='';this.#review.hidden=true;}
   close():void{
-    this.#closed=true;if(this.#timer!==undefined)clearTimeout(this.#timer);this.#timer=undefined;
+    this.#closed=true;this.#saved=null;if(this.#timer!==undefined)clearTimeout(this.#timer);this.#timer=undefined;
     this.#pending=this.#client?.pending()??this.#pending;this.#controller.abort();this.#csrfValue=null;
     this.#decision?.reject(Error('Owner facts closed'));this.#decision=null;
     try{this.#client?.close();}finally{this.#ticket=null;this.#scrub();for(const cleanup of this.#cleanup.splice(0))try{cleanup();}catch{/* Other teardown always continues. */}this.#phase='closed';this.#render();}
@@ -146,11 +160,11 @@ class Authoring {
       this.#digest=hex(new Uint8Array(await this.#wait(crypto.subtle.digest('SHA-256',Uint8Array.from(this.#envelope).buffer))));this.#live();this.#request=crypto.randomUUID();
       this.#client=new OwnerWorkflowContextClient({enabled:true,origin:this.#o.origin,selection:{binding:b,contextId:this.#context,kind:1},readCurrent:()=>this.#current(),currentCsrf:()=>this.#csrf(),consumeWriteReview:review=>this.#reviewWrite(review),signal:this.#controller.signal,timeoutMs:Math.max(1,Math.floor(this.#deadline-performance.now())),...(this.#o.fetchImpl?{fetchImpl:this.#o.fetchImpl}:{})});
       this.#ticket=await this.#wait(this.#client.prepare({requestId:this.#request,expectedRevision:0,scope:this.#scope,envelope:this.#envelope}));this.#live();this.#envelope.fill(0);this.#envelope=null;
-      this.#posts++;await this.#wait(this.#client.commit(this.#ticket));this.#live();this.#pending=null;this.#ticket=null;this.#phase='saved';this.#scrub();if(this.#timer!==undefined)clearTimeout(this.#timer);this.#timer=undefined;this.#render();
+      this.#posts++;const result=await this.#wait(this.#client.commit(this.#ticket));this.#live();this.#retain(result);this.#pending=null;this.#ticket=null;this.#phase='saved';this.#scrub();if(this.#timer!==undefined)clearTimeout(this.#timer);this.#timer=undefined;this.#render();
     }catch(error){this.#outcome(error);}
   }
   #outcome(error:unknown):void{
-    this.#pending=this.#client?.pending()??this.#pending;this.#scrub();
+    this.#saved=null;this.#pending=this.#client?.pending()??this.#pending;this.#scrub();
     if(error instanceof OwnerContextError&&['expired','closed','owner_changed'].includes(error.code)||performance.now()>=this.#deadline)this.close();
     if(this.#closed){this.#phase='closed';this.#render();return;}
     if(this.#pending){this.#phase='unknown';this.#render();}else{this.close();this.#phase='refused';this.#render();}
@@ -161,11 +175,12 @@ class Authoring {
     this.#phase='saving';this.#render();
     try{this.#live();if(retry)this.#posts++;else this.#checks++;const result=await this.#wait(retry?this.#client.retryUnknown(this.#ticket):this.#client.verifyUnknown(this.#ticket));this.#live();
       if(!result.requestAcknowledged){this.#phase='unknown';this.#render();return;}
+      this.#retain(result);
       this.#pending=null;this.#ticket=null;this.#phase='saved';this.#scrub();if(this.#timer!==undefined)clearTimeout(this.#timer);this.#timer=undefined;this.#render();
     }catch(error){this.#outcome(error);}
   }
 }
 /** Caller must supply real post-enrollment owner/custody callbacks; this factory mounts nothing. */
 export function createOwnerContextAuthoring(input:OwnerContextAuthoringOptions):OwnerContextAuthoring{
-  const author=new Authoring(input);return Object.freeze({close:()=>author.close(),state:()=>author.state()});
+  const author=new Authoring(input);return Object.freeze({close:()=>author.close(),state:()=>author.state(),savedSource:()=>author.savedSource()});
 }
