@@ -153,6 +153,8 @@ jobs:
 
       - name: Selected collaboration draft contract
         run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_collaboration_drafts_schema.py'
+      - name: Proposed opaque encrypted contact takeout shape
+        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_contact_encrypted_storage_proposal.py'
       - name: Shared draft vector shape tests
         run: python3 -m unittest discover -s protocol/v1/tests -p 'test_ztse_draft_vectors.py'
       - name: Shared body-text vector tests
