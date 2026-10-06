@@ -50,7 +50,10 @@ RUN mkdir -p /tmp/zrotext-notices && \
     test -s /tmp/zrotext-notices/THIRD_PARTY_NOTICES
 
 FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates perl-base && rm -rf /var/lib/apt/lists/* && useradd --system --uid 10001 zrotext && \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates perl-base && \
+    dpkg --compare-versions "$(dpkg-query -W -f='${Version}' perl-base)" ge '5.36.0-7+deb12u4' && \
+    rm -rf /var/lib/apt/lists/* && \
+    useradd --system --uid 10001 zrotext && \
     install -d -o 10001 -g 10001 -m 0700 /var/lib/zrotext/failover-store
 COPY --from=build /src/target/release/zrotext-server /usr/local/bin/zrotext-server
 COPY --from=build /src/target/release/zrotext-admin /usr/local/bin/zrotext-admin
