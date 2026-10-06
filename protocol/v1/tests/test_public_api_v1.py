@@ -441,6 +441,46 @@ class PublicApiContractTests(unittest.TestCase):
             DOMAIN_MESSAGE_STATES,
         )
 
+    def test_alpha_submit_uncertainty_preserves_the_original_identity(self):
+        submit = DOCUMENT["paths"]["/v1/alpha/messages"]["post"]
+        description = submit["description"]
+        for contract in (
+            "202 only after the delivery transaction commits",
+            "a 408 deadline or a bare unexpected 5xx",
+            "does not establish whether acceptance committed",
+            "does not deliberately emit 500",
+            "the identical request with the same Idempotency-Key and client_message_id",
+            "within the retained replay boundary",
+            "Neither client automatically retries",
+            "distinct from a stored unknown or delivery_unknown delivery state",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, description)
+        self.assertNotIn("500", submit["responses"])
+        self.assertEqual(submit["responses"]["408"],
+                         {"$ref": "#/components/responses/RequestDeadlineExceeded"})
+
+    def test_alpha_json_unavailable_is_not_a_rollback_receipt(self):
+        unavailable = DOCUMENT["paths"]["/v1/alpha/messages"]["post"]["responses"]["503"]
+        description = unavailable["description"]
+        for contract in (
+            "billing_pending carries Retry-After: 10 and is a specific admission refusal",
+            "unavailable can report a database error while awaiting commit",
+            "not proof of rollback or non-acceptance",
+            "submit 408 responses as unknown outcomes",
+            "5xx responses without a parsed JSON error code as unknown outcomes",
+            "A 503 with a parsed JSON error code instead produces an AlphaApiError",
+            "AlphaApiError",
+            "does not establish the database commit outcome",
+            "do not automatically retry or invent a new submission identity",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, description)
+        self.assertEqual(unavailable["headers"]["Retry-After"]["$ref"],
+                         "#/components/headers/RetryAfter10")
+        self.assertEqual(unavailable["content"]["application/json"]["schema"],
+                         {"$ref": "#/components/schemas/Error"})
+
     def test_alpha_admission_failures_declare_retry_after(self):
         submit = DOCUMENT["paths"]["/v1/alpha/messages"]["post"]["responses"]
         self.assertIn("402", submit)

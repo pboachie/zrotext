@@ -82,9 +82,9 @@ struct Provider<'a> {
 fn valid_slug(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_PROFILE_BYTES
-        && value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'_' | b'-')
-        })
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'_' | b'-'))
         && value.split('/').all(|segment| !segment.is_empty())
 }
 

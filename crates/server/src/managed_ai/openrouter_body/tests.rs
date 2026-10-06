@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Pure synthetic controls. No provider, grant, region or task authority.
 use super::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use zeroize::Zeroize;
 
 fn profile() -> UnverifiedOpenRouterProfile<'static> {
@@ -239,8 +239,7 @@ fn completion_token_ceiling_is_explicit_and_finite() {
             ..profile()
         };
         assert_eq!(
-            value(&encode_unverified_body(supplied, b"I", b"S").unwrap())
-                ["max_completion_tokens"],
+            value(&encode_unverified_body(supplied, b"I", b"S").unwrap())["max_completion_tokens"],
             tokens
         );
     }
@@ -310,11 +309,17 @@ fn worst_escaping_and_max_profiles_stay_inside_body_ceiling() {
     assert!(body.as_bytes().len() <= MAX_BODY_BYTES);
     let parsed = value(&body);
     assert_eq!(
-        parsed["messages"][0]["content"].as_str().unwrap().as_bytes(),
+        parsed["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .as_bytes(),
         instructions
     );
     assert_eq!(
-        parsed["messages"][1]["content"].as_str().unwrap().as_bytes(),
+        parsed["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .as_bytes(),
         selection
     );
 }

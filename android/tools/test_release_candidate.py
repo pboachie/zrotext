@@ -1,4 +1,5 @@
 import json
+import hashlib
 from contextlib import redirect_stdout
 import io
 import os
@@ -12,15 +13,24 @@ from unittest.mock import patch
 import zipfile
 
 import release_candidate
+import native_inventory
+from test_native_inventory import fixture as native_fixture
 
 
 class ReleaseCandidateTest(unittest.TestCase):
-    BOM = {
+    COMMIT = "a" * 40
+    NATIVE_BYTES = b"disposable fake native library"
+    NATIVE_ENTRIES = {
+        f"lib/{abi}/{native_inventory.LIBRARY}": hashlib.sha256(b"disposable fake native library").hexdigest()
+        for abi in native_inventory.ABIS
+    }
+    MAVEN_BOM = {
         "bomFormat": "CycloneDX", "specVersion": "1.6",
         "metadata": {"component": {"type": "application"}},
         "components": [{"type": "library", "name": "okhttp",
                         "purl": "pkg:maven/com.squareup.okhttp3/okhttp@4.12.0"}],
     }
+    BOM = native_fixture(MAVEN_BOM, NATIVE_ENTRIES, COMMIT, Path.cwd())[0]
     IDENTITY = {
         "package": "org.zrotext.gateway",
         "version_code": 6,
@@ -274,6 +284,8 @@ class ReleaseCandidateTest(unittest.TestCase):
             with zipfile.ZipFile(path, "w") as archive:
                 archive.writestr(release_candidate.ASSET, self.COMMIT + "\n")
                 archive.writestr("classes.dex", "disposable fake bytecode")
+                for entry in self.NATIVE_ENTRIES:
+                    archive.writestr(entry, self.NATIVE_BYTES)
                 if path == signed:
                     archive.comment = b"disposable fake signing block"
         unsigned_hash = release_candidate.sha256(unsigned)
@@ -414,6 +426,8 @@ class ReleaseCandidateTest(unittest.TestCase):
             apk = build_dir / "unsigned.apk"
             with zipfile.ZipFile(apk, "w") as archive:
                 archive.writestr(release_candidate.ASSET, commit + "\n")
+                for entry in self.NATIVE_ENTRIES:
+                    archive.writestr(entry, self.NATIVE_BYTES)
             receipt = {
                 "source_commit": commit,
                 "unsigned_apk": apk.name,
@@ -466,6 +480,34 @@ class ReleaseCandidateTest(unittest.TestCase):
             signed_receipt.write_text(json.dumps(candidate), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "Signed APK receipt differs"):
                 self.verify_test_candidate(self.COMMIT, self.CERTIFICATE)
+
+    def test_unsigned_candidate_refuses_removed_native_libraries_after_receipt_rehash(self):
+        with tempfile.TemporaryDirectory(dir=release_candidate.CUSTODY_BASE) as directory, \
+             patch.object(release_candidate, "ARTIFACT_ROOT", Path(directory)):
+            build_dir, _, _ = self.make_candidate(directory)
+            apk = build_dir / "unsigned.apk"
+            with zipfile.ZipFile(apk, "w") as archive:
+                archive.writestr(release_candidate.ASSET, self.COMMIT + "\n")
+                archive.writestr("classes.dex", "disposable fake bytecode")
+            receipt_path = build_dir / "unsigned.json"
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            receipt["unsigned_apk_sha256"] = release_candidate.sha256(apk)
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "exactly four native owner libraries"):
+                release_candidate.checked_unsigned(self.COMMIT)
+
+    def test_unsigned_candidate_refuses_maven_only_inventory_after_receipt_rehash(self):
+        with tempfile.TemporaryDirectory(dir=release_candidate.CUSTODY_BASE) as directory, \
+             patch.object(release_candidate, "ARTIFACT_ROOT", Path(directory)):
+            build_dir, _, _ = self.make_candidate(directory)
+            sbom = build_dir / release_candidate.SBOM_NAME
+            sbom.write_text(json.dumps(self.MAVEN_BOM), encoding="utf-8")
+            receipt_path = build_dir / "unsigned.json"
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            receipt["sbom_sha256"] = release_candidate.sha256(sbom)
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "Native inventory is missing"):
+                release_candidate.checked_unsigned(self.COMMIT)
 
     def test_unsigned_sbom_attestation_binds_exact_apk_digest_and_inventory(self):
         digest = "a" * 64

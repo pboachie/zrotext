@@ -10,8 +10,8 @@ use tokio_postgres::{Row, Transaction};
 use uuid::Uuid;
 
 pub(super) const STATE_COLUMNS: &str = "account_id,root_pin,root_fingerprint,trust_generation,allocation_generation,mutation_revision,last_mutation_ms,receipt_next_slot,phase,current_authorization,current_generation,current_statement_digest,current_statement";
-pub(super) const PENDING_COLUMNS: &str = "account_id,slot,authorization,generation,create_request,created_by_user,created_session,origin,create_input_digest,creation_expected_revision,allocated_revision,prior_phase,prior_authorization,prior_generation,prior_digest,requested_until_ms,unsigned,unsigned_digest,manifest,manifest_version,manifest_digest,reader_id,root_writer_id,reader_point,root_point,reader_from,root_from,reader_until,root_until,manifest_issued,manifest_until,creation_observed_ms,issued,expires,until_ms";
-pub(super) const RECEIPT_COLUMNS: &str = "account_id,slot,authorization,generation,create_request,create_input_digest,creation_expected_revision,unsigned_digest,terminal_kind,terminal_ms,signed_statement,statement_digest";
+pub(super) const PENDING_COLUMNS: &str = "account_id,slot,\"authorization\",generation,create_request,created_by_user,created_session,origin,create_input_digest,creation_expected_revision,allocated_revision,prior_phase,prior_authorization,prior_generation,prior_digest,requested_until_ms,unsigned,unsigned_digest,manifest,manifest_version,manifest_digest,reader_id,root_writer_id,reader_point,root_point,reader_from,root_from,reader_until,root_until,manifest_issued,manifest_until,creation_observed_ms,issued,expires,until_ms";
+pub(super) const RECEIPT_COLUMNS: &str = "account_id,slot,\"authorization\",generation,create_request,create_input_digest,creation_expected_revision,unsigned_digest,terminal_kind,terminal_ms,signed_statement,statement_digest";
 pub(super) const VISIBILITY_MS: i64 = 7 * 86_400_000;
 
 pub(super) fn hash(bytes: &[u8]) -> [u8; 32] {
@@ -658,7 +658,7 @@ pub(super) async fn stage_pending(
     let (phase, id, g, d) = p.create.prior.tuple();
     let digest = d.map(|d| d.to_vec());
     let s = &p.source;
-    tx.execute("INSERT INTO contact_reader_pending(account_id,slot,authorization,generation,create_request,created_by_user,created_session,origin,create_input_digest,creation_expected_revision,allocated_revision,prior_phase,prior_authorization,prior_generation,prior_digest,requested_until_ms,unsigned,unsigned_digest,manifest,manifest_version,manifest_digest,reader_id,root_writer_id,reader_point,root_point,reader_from,root_from,reader_until,root_until,manifest_issued,manifest_until,creation_observed_ms,issued,expires,until_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)",&[&p.account,&p.slot,&p.authorization,&p.generation,&p.create.create_request.0,&p.actor,&p.session,&p.origin,&&p.input_digest[..],&p.create.expected_revision.0,&p.allocated_revision,&phase,&id,&g,&digest,&p.until,&p.unsigned,&&p.unsigned_digest[..],&s.manifest_b64.0,&s.manifest_version.0,&&s.manifest_digest_b64.0[..],&&s.reader.key_id_b64.0[..],&&s.root_writer.key_id_b64.0[..],&&s.reader.public_point_b64.0[..],&&s.root_writer.public_point_b64.0[..],&s.reader.from_ms.0,&s.root_writer.from_ms.0,&s.reader.until_ms.0,&s.root_writer.until_ms.0,&s.manifest_issued_ms.0,&s.manifest_expires_ms.0,&s.observed_ms.0,&p.issued,&p.expires,&p.until]).await?;
+    tx.execute("INSERT INTO contact_reader_pending(account_id,slot,\"authorization\",generation,create_request,created_by_user,created_session,origin,create_input_digest,creation_expected_revision,allocated_revision,prior_phase,prior_authorization,prior_generation,prior_digest,requested_until_ms,unsigned,unsigned_digest,manifest,manifest_version,manifest_digest,reader_id,root_writer_id,reader_point,root_point,reader_from,root_from,reader_until,root_until,manifest_issued,manifest_until,creation_observed_ms,issued,expires,until_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)",&[&p.account,&p.slot,&p.authorization,&p.generation,&p.create.create_request.0,&p.actor,&p.session,&p.origin,&&p.input_digest[..],&p.create.expected_revision.0,&p.allocated_revision,&phase,&id,&g,&digest,&p.until,&p.unsigned,&&p.unsigned_digest[..],&s.manifest_b64.0,&s.manifest_version.0,&&s.manifest_digest_b64.0[..],&&s.reader.key_id_b64.0[..],&&s.root_writer.key_id_b64.0[..],&&s.reader.public_point_b64.0[..],&&s.root_writer.public_point_b64.0[..],&s.reader.from_ms.0,&s.root_writer.from_ms.0,&s.reader.until_ms.0,&s.root_writer.until_ms.0,&s.manifest_issued_ms.0,&s.manifest_expires_ms.0,&s.observed_ms.0,&p.issued,&p.expires,&p.until]).await?;
     Ok(())
 }
 
@@ -683,7 +683,7 @@ pub(super) async fn terminal(
     } else {
         tx.execute("UPDATE contact_reader_state SET mutation_revision=$2,last_mutation_ms=$3,receipt_next_slot=$4 WHERE account_id=$1",&[&old.account,&revision,&now,&((old.next_slot+1)%32)]).await?;
     }
-    let deleted=tx.execute("DELETE FROM contact_reader_pending WHERE account_id=$1 AND slot=$2 AND authorization=$3 AND generation=$4",&[&old.account,&p.slot,&p.authorization,&p.generation]).await?;
+    let deleted=tx.execute("DELETE FROM contact_reader_pending WHERE account_id=$1 AND slot=$2 AND \"authorization\"=$3 AND generation=$4",&[&old.account,&p.slot,&p.authorization,&p.generation]).await?;
     if deleted != 1 {
         return Err(Error::Unavailable);
     }
@@ -692,6 +692,6 @@ pub(super) async fn terminal(
         &[&old.account, &old.next_slot],
     )
     .await?;
-    tx.execute("INSERT INTO contact_reader_receipts(account_id,slot,authorization,generation,create_request,create_input_digest,creation_expected_revision,unsigned_digest,terminal_kind,terminal_ms,signed_statement,statement_digest) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",&[&old.account,&old.next_slot,&p.authorization,&p.generation,&p.create.create_request.0,&&p.input_digest[..],&p.create.expected_revision.0,&&p.unsigned_digest[..],&kind,&now,&signed_bytes,&digest_bytes]).await?;
+    tx.execute("INSERT INTO contact_reader_receipts(account_id,slot,\"authorization\",generation,create_request,create_input_digest,creation_expected_revision,unsigned_digest,terminal_kind,terminal_ms,signed_statement,statement_digest) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",&[&old.account,&old.next_slot,&p.authorization,&p.generation,&p.create.create_request.0,&&p.input_digest[..],&p.create.expected_revision.0,&&p.unsigned_digest[..],&kind,&now,&signed_bytes,&digest_bytes]).await?;
     Ok(())
 }
