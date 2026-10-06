@@ -3,9 +3,11 @@
 This dormant library foundation defines one bounded opening with declared
 capacity from one through 100 units. Its SQL is an unnumbered candidate under
 `deploy/compose/migration-candidates/`, excluded from the production migrator.
-Tests install the candidate explicitly into disposable schemas. No mutation
-route, SDK caller, application journey, interval-overlap booking, external
-calendar, provider call or SMS dispatch is enabled by this foundation.
+Tests install the candidate explicitly into disposable schemas. Owner create
+and status routes are composed only behind the existing disabled-by-default
+customer-routines gate and require an explicitly installed valid candidate.
+This foundation does not enable an SDK/application journey, interval-overlap
+booking, external calendar, provider call or SMS dispatch.
 
 The optional schema gate checks the actual resolved relations in the current
 schema, their complete columns and defaults, validated checks, primary and
@@ -21,6 +23,66 @@ read-only and retains existing transaction lock order and time bounds. Privilege
 candidate installation and schema DDL require controlled coordination; this
 guard does not prove resistance to arbitrary concurrent operator DDL after its
 inspection and grants no application or owner DDL authority.
+
+## Owner create and status HTTP wire
+
+The gated router exposes `POST /v1/owner/workflow/openings` and
+`POST /v1/owner/workflow/openings/{id}/status`. Status expires pending holds;
+it therefore requires mutation authentication and is never an inert GET.
+Both routes require the actual owner session cookie, canonical Origin and
+CSRF cookie/header proof. The genuine account ingress slot remains held through
+the handler. The required `x-zrotext-opening-account` header asserts the
+independently intended account against that authenticated principal before
+body parsing or effects. It never supplies a principal or database selector.
+Missing, duplicate, malformed or mismatching assertions are refused. Bearer
+authorization is refused; routed responses include `no-store` and `nosniff`.
+
+Bodies are JSON objects bounded to 8192 bytes; arrays, duplicate fields,
+unknown fields and query arguments are refused. Create accepts exactly
+`request_id`, `opening_id`, integer `capacity` from 1 through 100,
+`description` containing `context_id`, integer `revision` from 1 through 128
+and nonzero lowercase 64-character hexadecimal `digest`, and `decision_deadline_ms`.
+UUIDs are canonical lowercase, hyphenated and nonnil. The deadline is a
+canonical positive decimal string through the signed 64-bit maximum, never a
+JSON number. The status path uses the same UUID form and its body is exactly
+the empty object. Existing library validation and authority checks still apply.
+
+A create 200 has exactly `account_id`, `request_id` and `outcome`; the latter
+contains `receipt`, boolean `applied` and `recorded: true`. These identities
+come from actual authentication and the dispatched original typed request.
+An exact retained committed replay reports `applied: false`; changed typed
+capacity, source or deadline conflicts. Root authority is locked before ledger
+replay: root loss cannot be bypassed by a retained request ID, and erased receipt
+payloads cannot acknowledge. Status 200 has only `account_id` and `receipt`;
+metadata never acknowledges an uncertain create.
+
+Both receipts contain `opening` with `opening_id`, `definition_version` and
+`state_version`, `offer`, `allocation_id`, `allocation_version`, `phase`,
+`pending` and `confirmed`. In this create/status slice the three nullable
+offer/allocation fields remain null. Phase is `open`, `closed` or `cancelled`.
+Positive versions and nonnegative counts use canonical decimal strings; combined
+pending and confirmed count is at most 100. Invalid internal projection returns
+unavailable rather than a misleading acknowledgment. Existing empty library
+error bodies and authentication/body errors retain their status meanings.
+
+The route slice alone does not complete a caller integration. Readiness requires
+genuine acknowledged context authoring over authenticated POST/GET, actual HPKE
+decryption of the returned ciphertext, and the maintained opening SDK consuming
+unchanged mounted response bytes. Structural ciphertext fixtures and mocked
+positive authority cannot substitute for this pairing. Local key unavailability
+with a still-live owner scope differs from scope closure, server authority loss
+and erased ledger retention; uncertain attempts keep their original identity.
+The optional SQL remains outside production migrations and the gate default
+remains disabled. No sending or application availability follows from this wire.
+
+The [wire schema](owner-opening-capacity.schema.json) and
+[synthetic vectors](vectors/owner-opening-capacity.json) describe these closed
+shapes. Schema validation of an already parsed value cannot detect duplicate
+JSON members, preserve integer-token spelling, bind an independently selected
+account or acknowledge a dispatched request. Combined-count bounds require a
+separate semantic check. Streamed parsing, actual owner/source/current-root
+authority and retained typed ledger identity remain server/client requirements;
+passing a shape vector does not prove admission, installation or availability.
 
 Current conversation storage admits at most one pending, install-pending or
 active interval per account. The maintained activation authorizer retains that
