@@ -159,9 +159,7 @@ and control aliases; cryptographic and transition validation occurs in the code.
 Current-head selection, trusted independent client high-water acceptance,
 current-only ciphertext storage, deletion tombstones, explicit legacy conversion,
 ciphertext takeout, owner-only custody, and purpose-specific runtime consent
-remain separate acceptance work. A storage, deletion, takeout and legacy
-conversion proposal is in
-[contact-encrypted-storage-proposal.md](contact-encrypted-storage-proposal.md). Historical validity does not identify the
+remain separate acceptance work. Historical validity does not identify the
 latest contact state, make retained ciphertext currently readable, authorize
 automation, or resolve an unknown financial submission. Existing consent
 withdrawal and unknown-liability protections remain necessary at their real
