@@ -167,7 +167,11 @@ fn sealed_bytes_never_become_provider_plaintext() {
 #[test]
 fn changed_recipient_is_an_exact_request_conflict() {
     assert!(matches!(
-        encode(&request(TEXT), "+15550000102", Content::ProviderPlaintext(TEXT)),
+        encode(
+            &request(TEXT),
+            "+15550000102",
+            Content::ProviderPlaintext(TEXT)
+        ),
         Err(CodecError::RequestConflict)
     ));
 }
@@ -175,7 +179,11 @@ fn changed_recipient_is_an_exact_request_conflict() {
 #[test]
 fn changed_text_is_an_exact_request_conflict() {
     assert!(matches!(
-        encode(&request(TEXT), RECIPIENT, Content::ProviderPlaintext("Synthetic other")),
+        encode(
+            &request(TEXT),
+            RECIPIENT,
+            Content::ProviderPlaintext("Synthetic other")
+        ),
         Err(CodecError::RequestConflict)
     ));
 }
@@ -267,8 +275,14 @@ fn invalid_sender_profile_and_revision_cannot_construct_a_route() {
         );
     }
     assert!(
-        Route::telnyx(Uuid::from_u128(1), Uuid::from_u128(2), Uuid::nil(), SENDER, 1)
-            .is_err()
+        Route::telnyx(
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            Uuid::nil(),
+            SENDER,
+            1
+        )
+        .is_err()
     );
     assert!(
         Route::telnyx(
@@ -291,8 +305,7 @@ fn invalid_sender_profile_and_revision_cannot_construct_a_route() {
             3 => stored.revision = 0,
             _ => stored.sender = "+012".into(),
         }
-        let retained =
-            Request::new(stored, RECIPIENT, Content::ProviderPlaintext(TEXT)).unwrap();
+        let retained = Request::new(stored, RECIPIENT, Content::ProviderPlaintext(TEXT)).unwrap();
         assert!(matches!(
             encode(&retained, RECIPIENT, Content::ProviderPlaintext(TEXT)),
             Err(CodecError::InvalidInput)
@@ -305,7 +318,14 @@ fn output_has_no_optional_authority_or_transport_fields() {
     let body: Value = serde_json::from_slice(bytes(TEXT).as_bytes()).unwrap();
     let object = body.as_object().unwrap();
     assert_eq!(object.len(), 6);
-    for key in ["from", "messaging_profile_id", "to", "text", "type", "encoding"] {
+    for key in [
+        "from",
+        "messaging_profile_id",
+        "to",
+        "text",
+        "type",
+        "encoding",
+    ] {
         assert!(object.contains_key(key));
     }
     assert_eq!(object["type"], "SMS");

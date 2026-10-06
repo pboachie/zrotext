@@ -88,15 +88,13 @@ pub fn encode(
         expected.route.revision,
     )
     .map_err(|_| CodecError::InvalidInput)?;
-    let reconstructed = Request::new(
-        route,
-        recipient,
-        Content::ProviderPlaintext(text),
-    )
-    .map_err(|error| match error {
-        Rejection::SealedContent => CodecError::SealedContent,
-        _ => CodecError::InvalidInput,
-    })?;
+    let reconstructed =
+        Request::new(route, recipient, Content::ProviderPlaintext(text)).map_err(|error| {
+            match error {
+                Rejection::SealedContent => CodecError::SealedContent,
+                _ => CodecError::InvalidInput,
+            }
+        })?;
     expected
         .check_replay(&reconstructed)
         .map_err(|_| CodecError::RequestConflict)?;
