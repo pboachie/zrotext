@@ -55,6 +55,8 @@ WEB_FILES = (
     "web/owner/conversation-line-setup.js",
     "web/owner/conversation-root-enrollment.js",
     "web/owner/conversation.css",
+    "web/owner/workflow-exceptions.html",
+    "web/owner/workflow-exceptions.js",
     "crates/server/static/billing-dashboard.html",
     "crates/server/static/billing-dashboard.js",
 )
