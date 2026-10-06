@@ -108,3 +108,15 @@ completion has not been acknowledged**. Future authenticated completion must
 retain the original operation and exact whole signed bytes, enforce genuine
 current owner/root/source/factor checks after its last write, and obtain commit
 acknowledgement. The offline command supplies none of that authority.
+
+## Shared closed-input key sets
+
+`contact-reader-signing-input-shape.json` lists the exact JSON key sets of
+`create`, `prior`, `pending`, `creation_source`, the two role records and
+`current` (per phase). The issuer's real `PendingView`/`Prior` serialization is
+tested against it in Rust, and `test_contact_reader_signing_input_shape.py`
+checks the command's serde struct and variant fields against it, so a key added
+or renamed on one side fails CI instead of surfacing as a `deny_unknown_fields`
+refusal at signing time. This checks key names and order only. It does not run
+the Windows parser on server-produced bytes, validate values, or establish
+signature, history or current-authority acceptance.
