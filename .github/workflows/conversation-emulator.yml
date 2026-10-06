@@ -1,7 +1,7 @@
 name: Isolated conversation emulator
 on:
   pull_request:
-    paths: ['android/**', 'crates/**', 'sdk/typescript/**', 'web/owner/**', 'deploy/compose/migrations/**', 'scripts/conversation_emulator.py', 'scripts/test_conversation_emulator.py', 'scripts/conversation_compiled_acceptance.py', 'scripts/test_conversation_compiled_acceptance.py', 'scripts/wait_android_boot.py', 'scripts/test_wait_android_boot.py', '.github/workflows/conversation-emulator.yml']
+    paths: ['android/**', 'crates/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'scripts/build_android_owner_custody.py', 'sdk/typescript/**', 'web/owner/**', 'deploy/compose/migrations/**', 'scripts/conversation_emulator.py', 'scripts/test_conversation_emulator.py', 'scripts/conversation_compiled_acceptance.py', 'scripts/test_conversation_compiled_acceptance.py', 'scripts/wait_android_boot.py', 'scripts/test_wait_android_boot.py', '.github/workflows/conversation-emulator.yml']
   push:
     branches: [main]
 permissions:
