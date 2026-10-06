@@ -582,33 +582,29 @@ pub extern "system" fn Java_org_zrotext_gateway_AndroidOwnerCustodyNativeBridge_
     let parsed = positive(handle)
         .ok()
         .and_then(|value| OperationHandle::from_u64(value).ok());
-    let result = prepared_boundary(
-        &mut env,
-        &[&root_token, &archive_recovery],
-        |env| {
-            let handle = parsed.ok_or(())?;
-            let authority = authority(env, &current_account, &current_user, &current_session)?;
-            fresh_elapsed(env, now_elapsed)?;
-            let token = Zeroizing::new(bytes(env, &root_token, 79)?);
-            let archive = bounded_bytes(env, &archive_backup, 845)?;
-            let recovery = Zeroizing::new(bounded_bytes(env, &archive_recovery, 32)?);
-            typed_service()
-                .execute_with_output(
-                    handle,
-                    &token,
-                    &archive,
-                    &recovery,
-                    &authority,
-                    env,
-                    elapsed,
-                    typed_arrays,
-                    |env, output| {
-                        let _ = discard_typed(env, output);
-                    },
-                )
-                .map_err(|_| ())
-        },
-    );
+    let result = prepared_boundary(&mut env, &[&root_token, &archive_recovery], |env| {
+        let handle = parsed.ok_or(())?;
+        let authority = authority(env, &current_account, &current_user, &current_session)?;
+        fresh_elapsed(env, now_elapsed)?;
+        let token = Zeroizing::new(bytes(env, &root_token, 79)?);
+        let archive = bounded_bytes(env, &archive_backup, 845)?;
+        let recovery = Zeroizing::new(bounded_bytes(env, &archive_recovery, 32)?);
+        typed_service()
+            .execute_with_output(
+                handle,
+                &token,
+                &archive,
+                &recovery,
+                &authority,
+                env,
+                elapsed,
+                typed_arrays,
+                |env, output| {
+                    let _ = discard_typed(env, output);
+                },
+            )
+            .map_err(|_| ())
+    });
     if let Some(handle) = parsed {
         typed_service().close(handle);
     }

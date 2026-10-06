@@ -24,11 +24,9 @@ fn output(secret: bool) -> Prepared {
 }
 
 fn clear_input(state: &mut Cleanup, index: usize) -> Result<(), ()> {
-    state.events.push(if index == 0 {
-        "root"
-    } else {
-        "archive"
-    });
+    state
+        .events
+        .push(if index == 0 { "root" } else { "archive" });
     if state.input_panic == Some(index) {
         panic!("synthetic cleanup unwind");
     }
@@ -125,13 +123,8 @@ fn public_output_failure_refuses_without_inventing_secret_cleanup() {
         recovery: [7; 32],
         ..Cleanup::default()
     };
-    let (result, panicked) = finish_prepared(
-        &mut state,
-        2,
-        |_| Ok(output(false)),
-        clear_input,
-        discard,
-    );
+    let (result, panicked) =
+        finish_prepared(&mut state, 2, |_| Ok(output(false)), clear_input, discard);
     assert!(result.is_err());
     assert!(!panicked);
     assert_eq!(state.events, ["root", "archive", "discard"]);
@@ -144,13 +137,8 @@ fn operation_rejection_attempts_inputs_without_double_output_discard() {
         failures: [true, false],
         ..Cleanup::default()
     };
-    let (result, panicked) = finish_prepared::<_, Prepared>(
-        &mut state,
-        2,
-        |_| Err(()),
-        clear_input,
-        discard,
-    );
+    let (result, panicked) =
+        finish_prepared::<_, Prepared>(&mut state, 2, |_| Err(()), clear_input, discard);
     assert!(result.is_err());
     assert!(!panicked);
     assert_eq!(state.events, ["root", "archive"]);
@@ -178,13 +166,8 @@ fn first_input_unwind_still_attempts_second_input_and_secret() {
         recovery: [7; 32],
         ..Cleanup::default()
     };
-    let (result, panicked) = finish_prepared(
-        &mut state,
-        2,
-        |_| Ok(output(true)),
-        clear_input,
-        discard,
-    );
+    let (result, panicked) =
+        finish_prepared(&mut state, 2, |_| Ok(output(true)), clear_input, discard);
     assert!(result.is_err());
     assert!(panicked);
     assert_eq!(state.events, ["root", "archive", "discard", "secret"]);
@@ -199,19 +182,13 @@ fn output_wipe_error_still_refuses_prepared_result() {
         recovery: [7; 32],
         ..Cleanup::default()
     };
-    let (result, panicked) = finish_prepared(
-        &mut state,
-        2,
-        |_| Ok(output(true)),
-        clear_input,
-        discard,
-    );
+    let (result, panicked) =
+        finish_prepared(&mut state, 2, |_| Ok(output(true)), clear_input, discard);
     assert!(result.is_err());
     assert!(!panicked);
     assert_eq!(state.events, ["root", "archive", "discard", "secret"]);
     assert_eq!(
-        state.recovery,
-        [7; 32],
+        state.recovery, [7; 32],
         "failed wipe is not an erasure claim"
     );
 }
@@ -224,13 +201,8 @@ fn output_wipe_unwind_is_contained_and_marks_service_closure() {
         recovery: [7; 32],
         ..Cleanup::default()
     };
-    let (result, panicked) = finish_prepared(
-        &mut state,
-        2,
-        |_| Ok(output(true)),
-        clear_input,
-        discard,
-    );
+    let (result, panicked) =
+        finish_prepared(&mut state, 2, |_| Ok(output(true)), clear_input, discard);
     assert!(result.is_err());
     assert!(panicked);
     assert_eq!(state.events, ["root", "archive", "discard", "secret"]);
