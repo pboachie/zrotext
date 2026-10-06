@@ -9,6 +9,7 @@
 //! bounded in-memory model deliberately cannot resume dispatch after a crash.
 
 pub mod action_descriptor;
+pub mod dispatch;
 pub mod submit_codec;
 mod telnyx;
 pub use telnyx::verify_receipt;
@@ -112,6 +113,10 @@ impl Request {
     /// Store with the existing account-scoped idempotency key; a mismatch is a conflict.
     pub fn digest(&self) -> &[u8; 32] {
         &self.digest
+    }
+    /// Hashed recipient linkage; the plaintext never leaves the request caller.
+    pub(crate) fn recipient_hash(&self) -> &[u8; 32] {
+        &self.recipient
     }
     pub fn check_replay(&self, existing: &Self) -> Result<(), Rejection> {
         if self == existing {
