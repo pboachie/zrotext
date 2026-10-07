@@ -172,7 +172,7 @@ fn secret_limits_count_decoded_utf8_bytes_and_uuid_paths_have_one_spelling() {
     }
     for (text, accepted) in [
         (String::new(), false),
-        ("x".repeat(1), true),
+        ("x".to_string(), true),
         ("x".repeat(256), true),
         ("x".repeat(257), false),
     ] {

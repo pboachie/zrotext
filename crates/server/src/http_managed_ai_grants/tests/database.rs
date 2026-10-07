@@ -44,7 +44,7 @@ async fn production_issuance_refuses_installed_synthetic_metadata_without_factor
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_private(&response);
     assert_eq!(f.counts().await, before);
-    assert_eq!(head(&f, id).await, (1, 0, None));
+    assert_eq!(head(f, id).await, (1, 0, None));
     let row =
         f.db.query_one(
             "SELECT mfa_enabled,(SELECT count(*) FROM auth_abuse_counters) FROM users WHERE id=$1",
@@ -90,7 +90,7 @@ async fn expired_reduction_accepts_empty_zero_scope_and_revoke_is_idempotent_at_
             json_response(response).await,
             json!({"grant_id":id,"current_version":128})
         );
-        assert_eq!(head(&f, id).await, (128, 0, None));
+        assert_eq!(head(f, id).await, (128, 0, None));
         for _ in 0..2 {
             let response = f.send(f.app(), &operation(id, "revoke"), json!({})).await;
             assert_eq!(response.status(), StatusCode::NO_CONTENT);
@@ -102,7 +102,7 @@ async fn expired_reduction_accepts_empty_zero_scope_and_revoke_is_idempotent_at_
                     .is_empty()
             );
         }
-        let (version, generation, revoked) = head(&f, id).await;
+        let (version, generation, revoked) = head(f, id).await;
         assert_eq!((version, generation), (128, 1));
         assert!(revoked.is_some());
         let row =
@@ -226,7 +226,7 @@ async fn real_owner_csrf_role_and_account_boundaries_precede_poisoned_body() {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_private(&response);
         assert_eq!(f.counts().await, before);
-        assert_eq!(head(&f, id).await, (1, 0, None));
+        assert_eq!(head(f, id).await, (1, 0, None));
     })
     .await;
 }
@@ -315,7 +315,7 @@ async fn stale_widened_changed_identity_and_concurrent_versions_do_not_partially
         assert_eq!(response.status().as_u16(), status);
         assert_private(&response);
         assert_eq!(f.counts().await, before);
-        assert_eq!(head(&f, id).await, (1, 0, None));
+        assert_eq!(head(f, id).await, (1, 0, None));
     }
     f.db.batch_execute("CREATE FUNCTION synthetic_reject_event() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic rollback control'; END $$; CREATE TRIGGER synthetic_reject_event BEFORE INSERT ON managed_reader_events FOR EACH ROW EXECUTE FUNCTION synthetic_reject_event()").await.unwrap();
     let body = json!({"expected_version":1,"request":old});
@@ -324,7 +324,7 @@ async fn stale_widened_changed_identity_and_concurrent_versions_do_not_partially
         .await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(f.counts().await, before);
-    assert_eq!(head(&f, id).await, (1, 0, None));
+    assert_eq!(head(f, id).await, (1, 0, None));
     f.db.batch_execute("DROP TRIGGER synthetic_reject_event ON managed_reader_events; DROP FUNCTION synthetic_reject_event()").await.unwrap();
     // Synthetic SQL scheduling hook: expire the authenticated session AFTER
     // the grant/version writes, so only the final fresh-owner fence rejects.
@@ -335,7 +335,7 @@ async fn stale_widened_changed_identity_and_concurrent_versions_do_not_partially
         .await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     assert_eq!(f.counts().await, before);
-    assert_eq!(head(&f, id).await, (1, 0, None));
+    assert_eq!(head(f, id).await, (1, 0, None));
     assert!(
         f.db.query_one(
             "SELECT expires_at>clock_timestamp() FROM sessions WHERE id=$1",
@@ -354,7 +354,7 @@ async fn stale_widened_changed_identity_and_concurrent_versions_do_not_partially
     let mut statuses = [a.status().as_u16(), b.status().as_u16()];
     statuses.sort();
     assert_eq!(statuses, [200, 409]);
-    assert_eq!(head(&f, id).await, (2, 0, None));
+    assert_eq!(head(f, id).await, (2, 0, None));
     let row=f.db.query_one("SELECT binding::text FROM managed_reader_grant_versions WHERE grant_id=$1 AND version=2", &[&id]).await.unwrap();
     assert_eq!(serde_json::from_str::<crate::managed_ai::GrantRequest>(&row.get::<_,String>(0)).unwrap(),old);
     assert!(f.db.execute("UPDATE managed_reader_grant_versions SET binding=binding WHERE grant_id=$1 AND version=1", &[&id]).await.is_err());
@@ -409,7 +409,7 @@ async fn owner_session_expiry_committed_while_account_lock_waits_refuses_mutatio
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         assert_private(&response);
         assert_eq!(f.counts().await, before);
-        assert_eq!(head(&f, id).await, (1, 0, None));
+        assert_eq!(head(f, id).await, (1, 0, None));
         wait_for_slots(account, 0).await;
 
         // Independently restore this synthetic clock edge, then exercise an actual
@@ -442,7 +442,7 @@ async fn owner_session_expiry_committed_while_account_lock_waits_refuses_mutatio
         assert_private(&response);
         tx.commit().await.unwrap();
         assert_eq!(f.counts().await, before);
-        assert_eq!(head(&f, id).await, (1, 0, None));
+        assert_eq!(head(f, id).await, (1, 0, None));
         wait_for_slots(account, 0).await;
     })
     .await;
@@ -478,8 +478,8 @@ async fn maintained_consent_withdrawal_does_not_revive_grants_after_renewal() {
         let response=f.send(app.clone(),&uri,json!({"purpose":"operational","action":action,"source":"manual_entry","effective_at_ms":f.now().await-offset,"expires_at_ms":null})).await;
         assert_eq!(response.status(), StatusCode::OK);
     }
-    assert_eq!(head(&f, id).await.1, 1);
-    assert!(head(&f, id).await.2.is_some());
+    assert_eq!(head(f, id).await.1, 1);
+    assert!(head(f, id).await.2.is_some());
     let row =
         f.db.query_one(
             "SELECT count(*) FROM managed_reader_events WHERE grant_id=$1 AND operation='withdraw'",
