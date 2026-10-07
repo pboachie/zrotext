@@ -21,7 +21,8 @@ class SealedPreparationJournalTest {
     private fun <T> SmsJournalDatabase.use(block: (SmsJournalDatabase) -> T): T = try { block(this) } finally { close() }
     private fun memory() = Room.inMemoryDatabaseBuilder(context, SmsJournalDatabase::class.java).allowMainThreadQueries().build()
     private fun file(name: String) = Room.databaseBuilder(context, SmsJournalDatabase::class.java, name)
-        .allowMainThreadQueries().addMigrations(SmsJournalDatabase.MIGRATION_11_12).build()
+        .allowMainThreadQueries().addMigrations(SmsJournalDatabase.MIGRATION_11_12,
+            SmsJournalDatabase.MIGRATION_12_13).build()
     private fun record(f: PreparationFixture) = f.grant().let {
         SealedPreparationRecord(it.accountId, it.messageId, it.attemptId, it.unsignedDigest, it.identity())
     }
@@ -147,17 +148,26 @@ class SealedPreparationJournalTest {
     @Test fun versionElevenUpgradePreservesAlphaAndIntroducesEmptyCandidateTable() {
         val name = "p-u-${UUID.randomUUID().toString().take(8)}.db"
         val f = PreparationFixture(); val r = record(f)
+        val legacy = LocalLineBinding(accountId = UUID(0, 1).toString(), deviceId = UUID(0, 2).toString(),
+            lineId = UUID(0, 3).toString(), generation = 7, subscriptionId = 7, installedAtMs = 1000, cardId = 42)
         try {
             file(name).use { db ->
                 db.attempts().reserve(r.attemptId, 3, 1, f.now)
-                // v12 differs from v11 only by this additive table/index. Reconstruct that old schema.
-                db.openHelper.writableDatabase.execSQL("DROP TABLE sealed_preparations")
-                db.openHelper.writableDatabase.version = 11
+                assertTrue(db.attempts().installVerifiedLineBinding(legacy, listOf(ActiveSimCard(7, 42))))
+                // Reconstruct the historical v11 binding table without current profile columns.
+                val old = db.openHelper.writableDatabase
+                old.execSQL("CREATE TABLE local_line_binding_v11 (slot INTEGER NOT NULL PRIMARY KEY, accountId TEXT NOT NULL, deviceId TEXT NOT NULL, lineId TEXT NOT NULL, generation INTEGER NOT NULL, subscriptionId INTEGER NOT NULL, installedAtMs INTEGER NOT NULL, cardId INTEGER DEFAULT NULL)")
+                old.execSQL("INSERT INTO local_line_binding_v11 SELECT slot,accountId,deviceId,lineId,generation,subscriptionId,installedAtMs,cardId FROM local_line_binding")
+                old.execSQL("DROP TABLE local_line_binding")
+                old.execSQL("ALTER TABLE local_line_binding_v11 RENAME TO local_line_binding")
+                old.execSQL("DROP TABLE sealed_preparations")
+                old.version = 11
             }
             file(name).use { db ->
                 assertNotNull(db.attempts().getAttempt(r.attemptId))
                 assertEquals(0, db.sealedPreparations().count())
-                assertEquals(12, db.openHelper.readableDatabase.version)
+                assertEquals(13, db.openHelper.readableDatabase.version)
+                assertEquals(legacy, db.attempts().currentLineBinding())
                 db.sealedPreparations().reserve(r) {}
                 assertEquals(AttemptState.SUBMITTING, db.attempts().getAttempt(r.attemptId)?.state)
             }

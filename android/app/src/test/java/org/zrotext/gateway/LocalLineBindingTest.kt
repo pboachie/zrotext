@@ -235,11 +235,18 @@ class LocalLineBindingTest {
         old.version = 10
         old.close()
         val upgraded = Room.databaseBuilder(context, SmsJournalDatabase::class.java, name)
-            .allowMainThreadQueries().addMigrations(SmsJournalDatabase.MIGRATION_10_11, SmsJournalDatabase.MIGRATION_11_12).build()
+            .allowMainThreadQueries().addMigrations(SmsJournalDatabase.MIGRATION_10_11, SmsJournalDatabase.MIGRATION_11_12,
+                SmsJournalDatabase.MIGRATION_12_13).build()
         try {
             val dao = upgraded.attempts()
-            assertEquals(12, upgraded.openHelper.readableDatabase.version)
+            assertEquals(13, upgraded.openHelper.readableDatabase.version)
             val legacy = dao.currentLineBinding()!!
+            assertEquals("physical", legacy.continuityKind)
+            assertNull(legacy.profilePortIndex)
+            assertNull(legacy.profileLogicalSlotIndex)
+            assertNull(legacy.profileIncarnation)
+            assertNull(legacy.profileObservationEpoch)
+            assertNull(legacy.profileLeaseId)
             assertNull(legacy.cardId)
             assertFalse(dao.installVerifiedLineBinding(legacy.copy(generation = 4,
                 installedAtMs = 3000), listOf(ActiveSimCard(7, 42))))
@@ -305,10 +312,12 @@ class LocalLineBindingTest {
         val upgraded = Room.databaseBuilder(context, SmsJournalDatabase::class.java, name)
             .allowMainThreadQueries().addMigrations(SmsJournalDatabase.MIGRATION_8_9,
                 SmsJournalDatabase.MIGRATION_9_10,
-                SmsJournalDatabase.MIGRATION_10_11, SmsJournalDatabase.MIGRATION_11_12).build()
+                SmsJournalDatabase.MIGRATION_10_11, SmsJournalDatabase.MIGRATION_11_12,
+                SmsJournalDatabase.MIGRATION_12_13).build()
         try {
             val dao = upgraded.attempts()
-            assertEquals(12, upgraded.openHelper.readableDatabase.version)
+            assertEquals(13, upgraded.openHelper.readableDatabase.version)
+            assertNull(dao.currentLineBinding())
             assertTrue(dao.isRecipientSuppressed(sender))
             val oldWithdrawal = dao.localWithdrawal(firstPdu)!!
             assertNull(oldWithdrawal.eventId)
