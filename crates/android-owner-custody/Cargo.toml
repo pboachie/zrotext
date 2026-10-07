@@ -19,7 +19,7 @@ thiserror = "2.0.16"
 serde.workspace = true
 serde_json.workspace = true
 # A narrow JNI ABI with bounded copies; no managed private-key callbacks.
-jni = { version = "0.21.1", default-features = false }
+jni = { version = "0.22.4", default-features = false }
 
 [dev-dependencies]
 serde_json.workspace = true
