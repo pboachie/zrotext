@@ -208,10 +208,7 @@ impl Fixture {
         self.db
             .execute(
                 "INSERT INTO memberships(account_id,user_id,role) VALUES($1,$2,'observer')",
-                &[
-                    &self.owner.principal.tenant.account_id(),
-                    &observer_id,
-                ],
+                &[&self.owner.principal.tenant.account_id(), &observer_id],
             )
             .await
             .unwrap();
