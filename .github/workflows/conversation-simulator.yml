@@ -14,6 +14,7 @@ on:
       - 'protocol/**'
       - 'sdk/typescript/**'
       - 'android/**'
+      - 'scripts/build_android_owner_custody.py'
       - 'scripts/conversation_simulator.py'
       - 'scripts/sealed_setup_ci.py'
       - 'scripts/sealed_setup_ci_driver.mjs'
@@ -33,10 +34,106 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  conversation-simulator:
+  conversation-workspace:
     runs-on: ubuntu-24.04
-    # Full workspace validation and both integration paths must finish; retain
-    # every test and its own timeout inside this bounded hosted job budget.
+    timeout-minutes: 45
+    outputs:
+      source-commit: ${{ steps.source.outputs.commit }}
+      source-tree: ${{ steps.source.outputs.tree }}
+    services:
+      postgres:
+        image: postgres:18.6-bookworm
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      ZT_AUTH_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
+      ZT_DELIVERY_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
+      ZT_INBOUND_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
+      ZT_FAILOVER_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
+      DATABASE_ALLOW_PLAINTEXT: 'true'
+      # Smaller, reusable build artifacts: no incremental churn, symbols only
+      # deep enough for line-numbered backtraces.
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Require exact current workflow source
+        id: source
+        run: |
+          source_commit="$(git rev-parse HEAD)"
+          source_tree="$(git rev-parse 'HEAD^{tree}')"
+          test "$source_commit" = "$GITHUB_SHA"
+          printf 'commit=%s\ntree=%s\n' "$source_commit" "$source_tree" >> "$GITHUB_OUTPUT"
+          printf 'Source commit: %s\nSource tree: %s\n' "$source_commit" "$source_tree"
+      - name: Install existing Rust toolchain version
+        run: rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
+      - name: Cache Rust build artifacts
+        # Dependency cache shared with the CI rust job; PR runs only read it.
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: linux-cargo-deps
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build the SDK and validate the simulator-enabled source
+        run: |
+          (cd sdk/typescript && npm ci --ignore-scripts && npm run build)
+          cargo fmt --all --check
+          cargo clippy --locked -p zrotext-server --all-targets --features conversation-simulator-tests -- -D warnings
+      - name: Require mapped default workspace test targets
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import tomllib
+          root = Path.cwd()
+          for member in tomllib.loads((root / "Cargo.toml").read_text())["workspace"]["members"]:
+              manifest = tomllib.loads((root / member / "Cargo.toml").read_text())
+              assert not manifest.get("example") and not manifest.get("bench"), "Unmapped test target requires coverage review"
+              assert not (root / member / "examples").exists() and not (root / member / "benches").exists(), "Unmapped test target requires coverage review"
+              for kind in ("lib", "bin", "test"):
+                  targets = manifest.get(kind, [])
+                  if isinstance(targets, dict):
+                      targets = [targets]
+                  assert all("test" not in target and "doctest" not in target and "harness" not in target for target in targets), "Custom test selection requires coverage review"
+              assert not any(key in manifest["package"] for key in ("autolib", "autobins", "autotests", "autoexamples", "autobenches")), "Custom target discovery requires coverage review"
+          PY
+      - name: Provision PostgreSQL lock capacity for parallel schema fixtures
+        env:
+          POSTGRES_SERVICE_ID: ${{ job.services.postgres.id }}
+        run: |
+          # Four full-schema fixtures can concurrently lock tables, indexes and
+          # foreign-key dependencies during DROP SCHEMA CASCADE. Keep all tests
+          # and their concurrency; size the disposable server's lock table.
+          docker exec "$POSTGRES_SERVICE_ID" psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET max_locks_per_transaction = '256'"
+          docker restart "$POSTGRES_SERVICE_ID"
+          for attempt in {1..30}; do
+            if docker exec "$POSTGRES_SERVICE_ID" pg_isready -U postgres; then
+              break
+            fi
+            sleep 1
+          done
+          docker exec "$POSTGRES_SERVICE_ID" pg_isready -U postgres
+          test "$(docker exec "$POSTGRES_SERVICE_ID" psql -U postgres -d postgres -Atc 'SHOW max_locks_per_transaction')" = '256'
+      - name: Validate the complete simulator-enabled nonignored workspace
+        run: cargo test --locked --workspace --features conversation-simulator-tests
+      - name: Validate ignored binary and integration targets
+        # --tests also selects library unit tests; retain a disjoint target set.
+        run: cargo test --locked --workspace --features conversation-simulator-tests --bins --test '*' -- --ignored --skip real_stripe_ --skip loopback_journal_bridge --skip ordinary_setup_server_browser_fixture --test-threads=4
+      - name: Validate ignored documentation targets
+        # --doc must be separate from other Cargo target selectors.
+        run: cargo test --locked --workspace --features conversation-simulator-tests --doc -- --ignored --skip real_stripe_ --skip loopback_journal_bridge --skip ordinary_setup_server_browser_fixture --test-threads=4
+
+  conversation-postgresql:
+    needs: [conversation-workspace]
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     services:
       postgres:
@@ -64,6 +161,93 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Require the successful prerequisite source
+        env:
+          EXPECTED_SOURCE_COMMIT: ${{ needs.conversation-workspace.outputs.source-commit }}
+          EXPECTED_SOURCE_TREE: ${{ needs.conversation-workspace.outputs.source-tree }}
+        run: |
+          source_commit="$(git rev-parse HEAD)"
+          source_tree="$(git rev-parse 'HEAD^{tree}')"
+          test "$source_commit" = "$GITHUB_SHA"
+          test "$source_commit" = "$EXPECTED_SOURCE_COMMIT"
+          test "$source_tree" = "$EXPECTED_SOURCE_TREE"
+          printf 'Source commit: %s\nSource tree: %s\n' "$source_commit" "$source_tree"
+      - name: Install existing Rust toolchain version
+        run: rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
+      - name: Cache Rust build artifacts
+        # Dependency cache shared with the CI rust job; PR runs only read it.
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: linux-cargo-deps
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build the current source SDK
+        run: (cd sdk/typescript && npm ci --ignore-scripts && npm run build)
+      - name: Provision PostgreSQL lock capacity for parallel schema fixtures
+        env:
+          POSTGRES_SERVICE_ID: ${{ job.services.postgres.id }}
+        run: |
+          # Four full-schema fixtures can concurrently lock tables, indexes and
+          # foreign-key dependencies during DROP SCHEMA CASCADE. Keep all tests
+          # and their concurrency; size the disposable server's lock table.
+          docker exec "$POSTGRES_SERVICE_ID" psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET max_locks_per_transaction = '256'"
+          docker restart "$POSTGRES_SERVICE_ID"
+          for attempt in {1..30}; do
+            if docker exec "$POSTGRES_SERVICE_ID" pg_isready -U postgres; then
+              break
+            fi
+            sleep 1
+          done
+          docker exec "$POSTGRES_SERVICE_ID" pg_isready -U postgres
+          test "$(docker exec "$POSTGRES_SERVICE_ID" psql -U postgres -d postgres -Atc 'SHOW max_locks_per_transaction')" = '256'
+      - name: Validate every simulator-enabled ignored library target
+        # Retain all workspace packages and features, including the complete
+        # server PostgreSQL suite. External fixtures retain their original routes.
+        run: cargo test --locked --workspace --features conversation-simulator-tests --lib -- --ignored --skip real_stripe_ --skip loopback_journal_bridge --skip ordinary_setup_server_browser_fixture --test-threads=4
+
+  conversation-simulator:
+    # Integration starts only after both complete workspace gates succeed.
+    needs: [conversation-workspace, conversation-postgresql]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:18.6-bookworm
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      ZT_AUTH_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
+      ZT_DELIVERY_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
+      ZT_INBOUND_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
+      ZT_FAILOVER_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
+      DATABASE_ALLOW_PLAINTEXT: 'true'
+      # Smaller, reusable build artifacts: no incremental churn, symbols only
+      # deep enough for line-numbered backtraces.
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Require the successful prerequisite source
+        env:
+          EXPECTED_SOURCE_COMMIT: ${{ needs.conversation-workspace.outputs.source-commit }}
+          EXPECTED_SOURCE_TREE: ${{ needs.conversation-workspace.outputs.source-tree }}
+        run: |
+          source_commit="$(git rev-parse HEAD)"
+          source_tree="$(git rev-parse 'HEAD^{tree}')"
+          test "$source_commit" = "$GITHUB_SHA"
+          test "$source_commit" = "$EXPECTED_SOURCE_COMMIT"
+          test "$source_tree" = "$EXPECTED_SOURCE_TREE"
+          printf 'Source commit: %s\nSource tree: %s\n' "$source_commit" "$source_tree"
       - name: Validate Gradle wrapper JAR
         uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
@@ -80,18 +264,17 @@ jobs:
       - name: Install existing toolchain versions
         run: |
           rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
-          sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0'
+          rustup target add --toolchain 1.97.1 aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
+          sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;28.2.13676358'
       - name: Cache Rust build artifacts
         # Dependency cache shared with the CI rust job; PR runs only read it.
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: linux-cargo-deps
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Build the existing SDK and simulator test binaries
+      - name: Build the current SDK and simulator test binaries
         run: |
           (cd sdk/typescript && npm ci --ignore-scripts && npm run build)
-          cargo fmt --all --check
-          cargo clippy --locked -p zrotext-server --all-targets --features conversation-simulator-tests -- -D warnings
           cargo test --locked -p zrotext-server --lib --features conversation-simulator-tests --no-run
       - name: Provision PostgreSQL lock capacity for parallel schema fixtures
         env:
@@ -110,13 +293,6 @@ jobs:
           done
           docker exec "$POSTGRES_SERVICE_ID" pg_isready -U postgres
           test "$(docker exec "$POSTGRES_SERVICE_ID" psql -U postgres -d postgres -Atc 'SHOW max_locks_per_transaction')" = '256'
-      - name: Validate the complete simulator-enabled workspace
-        # The journal bridge runs in the separate compiled-emulator workflow.
-        # External Stripe tests require credentials and stay off.
-        run: |
-          cargo test --locked --workspace --features conversation-simulator-tests
-          # This external fixture is driven explicitly by sealed-setup-consumer below.
-          cargo test --locked --workspace --features conversation-simulator-tests -- --ignored --skip real_stripe_ --skip loopback_journal_bridge --skip ordinary_setup_server_browser_fixture --test-threads=4
       - name: Build the Android simulator contract tests
         run: (cd android && ./gradlew :app:compileDebugUnitTestKotlin --no-daemon --max-workers=2)
       - name: Require synthetic capture, encrypted history, confirmed reply and closure
@@ -153,6 +329,10 @@ jobs:
         run: |
           rustup toolchain install 1.97.1 --profile minimal
           if ($LASTEXITCODE -ne 0) { throw 'Toolchain setup failed' }
+          rustup target add --toolchain 1.97.1 aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
+          if ($LASTEXITCODE -ne 0) { throw 'Android Rust targets setup failed' }
+          sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;28.2.13676358'
+          if ($LASTEXITCODE -ne 0) { throw 'Android SDK setup failed' }
           npm ci --prefix sdk/typescript --ignore-scripts
           if ($LASTEXITCODE -ne 0) { throw 'SDK install failed' }
           npm run build --prefix sdk/typescript

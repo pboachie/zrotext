@@ -3,6 +3,12 @@ on:
   pull_request:
     paths:
       - 'android/**'
+      - 'crates/android-owner-custody/**'
+      - 'crates/root-material/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'scripts/build_android_owner_custody.py'
       - 'protocol/v1/vectors/**'
       - 'sdk/typescript/test/vectors/**'
       - 'scripts/android_device_smoke.py'
@@ -14,6 +20,12 @@ on:
     branches: [main]
     paths:
       - 'android/**'
+      - 'crates/android-owner-custody/**'
+      - 'crates/root-material/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'scripts/build_android_owner_custody.py'
       - 'protocol/v1/vectors/**'
       - 'sdk/typescript/test/vectors/**'
       - 'scripts/android_device_smoke.py'
@@ -49,7 +61,10 @@ jobs:
           cache-read-only: ${{ github.ref != 'refs/heads/main' }}
       - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
       - name: Install existing target-level emulator and compile platform
-        run: sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'emulator' 'system-images;android-36;google_apis;x86_64'
+        run: |
+          sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;28.2.13676358' 'emulator' 'system-images;android-36;google_apis;x86_64'
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup target add --toolchain 1.97.1 aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
       - name: Build debug and test APKs
         working-directory: android
         run: ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --max-workers=2

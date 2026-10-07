@@ -4,6 +4,28 @@ This page shows the request and response shapes an AI agent or script uses to su
 
 **What exists today.** There is no general `POST /v1/messages` route yet; it is a design target (`x-implemented: false` in [`openapi/public-v1.json`](../protocol/v1/openapi/public-v1.json)). The only outbound route is the allowlisted **synthetic-alpha** plane at `/v1/alpha/messages`. It is mounted only while `SYNTHETIC_ALPHA_ENABLED` admits your account and recipient, an enrolled phone and a scoped API key are required, and **the caller never supplies message text**: the server builds a fixed test body from your `test_case_id`. Anything not on the allowlist gets a 404. Treat these examples as the shape of the contract, not as a way to send general SMS. For a run with no phone at all, use the [agent texting quickstart](AGENT-QUICKSTART.md).
 
+The whole exchange at a glance:
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant Agent as Your agent or script
+  participant API as ZROtext server
+  participant Phone as Enrolled phone
+  participant Hook as Your webhook receiver
+  Agent->>API: POST /v1/alpha/messages + Idempotency-Key
+  API-->>Agent: message_id, created
+  API->>Phone: work handed over the device socket
+  Phone-->>API: authenticated state evidence
+  loop until a terminal state
+    Agent->>API: GET /v1/alpha/messages/{id}
+    API-->>Agent: state, state_version
+  end
+  Phone-->>API: inbound reply event, encrypted
+  API->>Hook: signed POST with ciphertext
+  Hook-->>API: 2xx after storing event_id
+```
+
 Set these in your shell. The values below are placeholders:
 
 ```sh
@@ -78,7 +100,7 @@ Success is HTTP 202:
 {"message_id":"00000000-0000-4000-8000-0000000000b1","created":true}
 ```
 
-`created: false` means the same `Idempotency-Key` and content were already accepted, and you got the stored message back instead of a second send. Errors are `{"code":"..."}`: `invalid_request` (400), `unauthorized` (401), `payment_hold` (402), `not_found` (404, also for anything off the allowlist), `conflict` (409, the same key with different content), `rate_limited`, `queue_full` and `quota_exceeded` (429, with `Retry-After`), `billing_pending` and `unavailable` (503), and `recipient_suppressed` (403, after an opt-out). Do not retry a 4xx other than 429.
+`created: false` means the same `Idempotency-Key` and content were already accepted, and you got the stored message back instead of a second send. Errors are `{"code":"..."}`: `invalid_request` (400), `unauthorized` (401), `payment_hold` (402), `not_found` (404, also for anything off the allowlist), `conflict` (409, the same key with different content), `rate_limited`, `queue_full` and `quota_exceeded` (429, with `Retry-After`), `billing_pending` and `unavailable` (503), and `recipient_suppressed` (403, after an opt-out). Do not retry a 4xx other than 429. A 408, or a 5xx without the server's JSON `code` (for example from a proxy), is an **unknown outcome**: the message may have been accepted. You have no `message_id` to poll, so resubmit the identical request with the same `Idempotency-Key` and `client_message_id` (while `expires_at_ms` is still in the future); a `created: false` answer carries the `message_id`. Never mint a new key to resolve it.
 
 ## 2. Check the state
 
@@ -129,6 +151,16 @@ Poll sparingly and stop at a terminal state. Use `state_version`, which only inc
 | `failed` | The phone reported a failure. A new message is a new decision. |
 | `unknown` | The phone may have sent the SMS, but ZROtext cannot prove it (crash, timeout or a conflicting callback). |
 | `cancelled`, `expired` | Never dispatched. |
+
+```mermaid
+flowchart TD
+  READ["Read state"] --> T{"Which state?"}
+  T -->|"accepted, queued, claimed,<br/>submitting, submitted"| WAIT["Wait and read again"]
+  WAIT --> READ
+  T -->|"delivered, failed,<br/>cancelled, expired"| DONE["Terminal: stop polling"]
+  T -->|"delivery_unknown"| DU["Sent, receipt missing:<br/>not a failure"]
+  T -->|"unknown"| U["Do not resend.<br/>Keep reading; a person decides"]
+```
 
 `unknown` is never retried automatically, and your agent must not retry it either. If the radio was called and the result was lost, sending again can deliver the same text twice to a real person. A late callback can still move `unknown` to `submitted` or `failed`, so keep reading the state. Only a person who accepts the duplicate risk should create a new message, with a **new** `Idempotency-Key` and `client_message_id`. Retrying with the *same* key is always safe and returns `created: false`. Background: [message semantics](ARCHITECTURE.md#message-semantics-and-the-duplicate-send-problem).
 

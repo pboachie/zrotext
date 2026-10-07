@@ -3,6 +3,8 @@
 mod grants;
 pub(crate) mod lifecycle;
 mod model;
+// Data-only unverified body framing; no production caller or task authority.
+pub mod openrouter_body;
 pub use model::{GrantRequest, PolicyIdentity, Selection, SourceKind};
 pub struct OwnerCeremony<'a> {
     pub owner: &'a crate::auth::SessionPrincipal,

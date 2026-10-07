@@ -1,0 +1,17 @@
+{
+  "description": "Closed JSON key sets of the owner contact reader issuance Pending projection and original CREATE input that the offline contact-reader-sign command parses with deny_unknown_fields. Key sets only: no values, no authority, no signature or manifest material.",
+  "create": ["create_request", "expected_revision", "prior", "selected_reader_id", "compared_root_fingerprint", "requested_until_ms"],
+  "prior": {
+    "empty": ["phase"],
+    "active": ["phase", "authorization", "generation", "digest"],
+    "withdrawn": ["phase", "authorization", "generation", "digest"]
+  },
+  "pending": ["kind", "create_input_digest", "create_request", "authorization", "generation", "creation_expected_revision", "allocated_revision", "unsigned_digest", "unsigned", "issued_ms", "expires_ms", "until_ms", "created_by_user", "created_session", "creation_source", "current"],
+  "creation_source": ["kind", "account_id", "root_pin_b64", "root_fingerprint_b64", "trust_generation", "manifest_version", "manifest_digest_b64", "manifest_b64", "observed_ms", "manifest_issued_ms", "manifest_expires_ms", "signed_until_ms", "reader", "root_writer"],
+  "record": ["key_id_b64", "public_point_b64", "from_ms", "until_ms"],
+  "current": {
+    "empty": ["phase", "mutation_revision", "allocation_generation", "observed_ms"],
+    "active": ["phase", "mutation_revision", "allocation_generation", "observed_ms", "authorization", "generation", "statement_digest"],
+    "withdrawn": ["phase", "mutation_revision", "allocation_generation", "observed_ms", "authorization", "generation", "statement_digest"]
+  }
+}

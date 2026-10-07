@@ -78,6 +78,22 @@ The command prints a JSON matrix of scenarios. Find the one named `agent_journey
 
 The scenario follows one fictional agent serving one fictional owner line.
 
+```mermaid
+sequenceDiagram
+  participant Agent as Scripted agent
+  participant Hub as Modeled hub
+  participant Radio as Modeled radio
+  participant Owner as Fictional owner
+  Agent->>Hub: 1. queue task-completion notification
+  Agent->>Hub: lost ACK replay, same message
+  Hub->>Radio: 2. one radio call
+  Radio-->>Hub: submitted, not delivered
+  Owner->>Hub: 3. fixture reply, grants no authority
+  Hub-->>Agent: reply routed for review
+  Agent->>Hub: 4. propose next action
+  Note over Hub,Radio: held for authenticated owner approval,<br/>zero radio calls
+```
+
 1. **Job completion.** The agent finishes a scripted job and queues one notification. A lost acceptance ACK replays to the same message identity, so a retry cannot create a second send:
 
    ```json
