@@ -10,6 +10,7 @@
 
 pub mod action_descriptor;
 pub mod dispatch;
+pub mod sender;
 pub mod submit_codec;
 mod telnyx;
 pub use telnyx::verify_receipt;

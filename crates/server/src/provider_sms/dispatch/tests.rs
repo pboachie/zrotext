@@ -7,20 +7,20 @@ use crate::provider_sms::{Content, Route};
 const SITE: &str = "provider-dispatch-test";
 const RECIPIENT: &str = "+15551234567";
 
-struct Fixture {
-    case: Case,
-    action: ActionKey,
-    reservation: Uuid,
-    request: Request,
+pub(crate) struct Fixture {
+    pub(crate) case: Case,
+    pub(crate) action: ActionKey,
+    pub(crate) reservation: Uuid,
+    pub(crate) request: Request,
 }
 impl Fixture {
     /// Reserve and hold a live execution intent for an approved provider
     /// action: the minimum authority `commit_submit_intent` consumes.
-    async fn new() -> Self {
+    pub(crate) async fn new() -> Self {
         Self::configured(true).await
     }
     /// `intent=false` leaves the reservation merely reserved, never leased.
-    async fn configured(intent: bool) -> Self {
+    pub(crate) async fn configured(intent: bool) -> Self {
         let case = Case::new().await;
         let action = case.approved().await.key;
         let route = Uuid::new_v4();
@@ -160,10 +160,10 @@ impl Fixture {
             request,
         }
     }
-    fn permit(&self) -> ElectedWriterPermit {
+    pub(crate) fn permit(&self) -> ElectedWriterPermit {
         ElectedWriterPermit::synthetic(self.action.account_id, SITE, 1)
     }
-    async fn db(&self) -> tokio_postgres::Client {
+    pub(crate) async fn db(&self) -> tokio_postgres::Client {
         self.case.base.f.connect().await
     }
     async fn commit(
@@ -183,7 +183,7 @@ impl Fixture {
         )
         .await
     }
-    async fn state(&self, attempt: Uuid) -> String {
+    pub(crate) async fn state(&self, attempt: Uuid) -> String {
         self.case
             .base
             .f
@@ -196,7 +196,7 @@ impl Fixture {
             .unwrap()
             .get(0)
     }
-    async fn attempts(&self) -> i64 {
+    pub(crate) async fn attempts(&self) -> i64 {
         self.case
             .base
             .f
@@ -208,7 +208,7 @@ impl Fixture {
     }
     /// Seed one authentic STOP-shaped suppression through its real foreign
     /// keys: message, attempt and captured inbound event.
-    async fn stop(&self) {
+    pub(crate) async fn stop(&self) {
         let message = Uuid::new_v4();
         self.case
             .base
