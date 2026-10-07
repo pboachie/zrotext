@@ -275,7 +275,8 @@ const QUEUE_SCHEMA: [(&str, &str); 92] = queue_schema!(
     "089_original_routine_sources.sql",
     "090_invoice_usage_observations.sql",
     "091_original_reply_origin_binding.sql",
-    "092_provider_send_attempts.sql",);
+    "092_provider_send_attempts.sql",
+);
 #[test]
 fn queue_fixture_includes_every_checked_in_migration() {
     let directory =

@@ -126,7 +126,8 @@ const TEST_MIGRATIONS: [(&str, &str); 92] = [
     migration!("089_original_routine_sources.sql"),
     migration!("090_invoice_usage_observations.sql"),
     migration!("091_original_reply_origin_binding.sql"),
-    migration!("092_provider_send_attempts.sql"),];
+    migration!("092_provider_send_attempts.sql"),
+];
 #[test]
 fn exchange_fixture_tracks_numbered_migrations() {
     let directory =
