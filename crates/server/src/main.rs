@@ -96,6 +96,7 @@ struct Config {
     sealed_webhook_delivery_enabled: bool,
     workflow_tools_enabled: bool,
     customer_routines_enabled: bool,
+    managed_ai_grants_enabled: bool,
     exposure_test_enabled: bool,
     original_reply_enabled: bool,
     retention: RetentionPolicy,
@@ -371,6 +372,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sealed_dispatch_enabled = optional_bool("SEALED_DISPATCH_ENABLED")?;
     let original_reply_enabled = optional_bool("ORIGINAL_REPLY_READER_ENABLED")?;
     let customer_routines_enabled = optional_bool("CUSTOMER_ROUTINES_ENABLED")?;
+    let managed_ai_grants_enabled = optional_bool("MANAGED_AI_GRANTS_ENABLED")?;
     let exposure_test_enabled = optional_bool("EXPOSURE_TEST_ENABLED")?;
     customer_routines_config_check(customer_routines_enabled, workflow_tools_enabled)?;
     if original_reply_enabled
@@ -451,6 +453,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         sealed_webhook_delivery_enabled,
         workflow_tools_enabled,
         customer_routines_enabled,
+        managed_ai_grants_enabled,
         exposure_test_enabled,
         original_reply_enabled,
         retention: RetentionPolicy::from_env()?,
@@ -980,6 +983,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 auth_hasher: auth_state.hasher.clone(),
                 canonical_origin: auth_state.canonical_origin.clone(),
             };
+        let managed_grants = zrotext_server::http_managed_ai_grants::router(
+            routine_owner_state.clone(),
+            auth_state.mfa_cipher.clone(),
+            config.managed_ai_grants_enabled,
+        );
         app = app
             .nest("/v1/auth", http_auth::router(auth_state))
             .nest("/v1/enrollment", http_enrollment::router(enrollment_state))
@@ -996,6 +1004,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .merge(owner_ui::router_with_customer_routines(
                 config.customer_routines_enabled,
             ))
+            .merge(managed_grants)
             .merge(device_router);
         app = app.merge(zrotext_server::original_reply::http::router(
             zrotext_server::original_reply::http::StateData {
@@ -1281,6 +1290,9 @@ fn customer_routines_config_check(
 }
 
 fn validate_unconfigured_account_routes(config: &Config) -> Result<(), &'static str> {
+    if config.managed_ai_grants_enabled {
+        return Err("MANAGED_AI_GRANTS_ENABLED requires configured account routes");
+    }
     if config.mfa_recovery_only
         || config.mfa_enrollment_enabled
         || config.root_custody_enabled
@@ -1884,6 +1896,7 @@ mod tests {
             sealed_webhook_delivery_enabled: false,
             workflow_tools_enabled: false,
             customer_routines_enabled: false,
+            managed_ai_grants_enabled: false,
             exposure_test_enabled: false,
             original_reply_enabled: false,
             retention: RetentionPolicy::default(),
@@ -1893,6 +1906,18 @@ mod tests {
             failover_executor_healthy: None,
             readiness: Arc::new(ReadinessCache::new()),
         }
+    }
+
+    #[test]
+    fn managed_grant_mount_is_default_off_and_requires_configured_accounts() {
+        let mut config = unreachable_config();
+        assert!(!config.managed_ai_grants_enabled);
+        assert!(validate_unconfigured_account_routes(&config).is_ok());
+        config.managed_ai_grants_enabled = true;
+        assert_eq!(
+            validate_unconfigured_account_routes(&config),
+            Err("MANAGED_AI_GRANTS_ENABLED requires configured account routes")
+        );
     }
 
     #[test]
@@ -2087,6 +2112,7 @@ mod tests {
             sealed_webhook_delivery_enabled: false,
             workflow_tools_enabled: false,
             customer_routines_enabled: false,
+            managed_ai_grants_enabled: false,
             exposure_test_enabled: false,
             original_reply_enabled: false,
             retention: RetentionPolicy::default(),
