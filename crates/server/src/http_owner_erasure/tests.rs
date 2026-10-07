@@ -408,6 +408,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "091_original_reply_origin_binding.sql",
         include_str!("../../../../deploy/compose/migrations/091_original_reply_origin_binding.sql"),
     ),
+    (
+        "092_provider_send_attempts.sql",
+        include_str!("../../../../deploy/compose/migrations/092_provider_send_attempts.sql"),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in
