@@ -92,8 +92,8 @@ impl ProviderAction {
     }
 }
 pub(crate) enum StoredProfile {
-    Phone(Descriptor),
-    Provider(ProviderAction),
+    Phone(Box<Descriptor>),
+    Provider(Box<ProviderAction>),
 }
 impl StoredProfile {
     pub(crate) fn parse(raw: &[u8], key: ActionKey) -> Result<Self, ConversationError> {
@@ -102,18 +102,18 @@ impl StoredProfile {
             if provider.key()? != key {
                 return Err(ConversationError::Unavailable);
             }
-            return Ok(Self::Provider(provider));
+            return Ok(Self::Provider(Box::new(provider)));
         }
         let phone: Descriptor =
             serde_json::from_slice(raw).map_err(|_| ConversationError::Unavailable)?;
         if phone.key()? != key {
             return Err(ConversationError::Unavailable);
         }
-        Ok(Self::Phone(phone))
+        Ok(Self::Phone(Box::new(phone)))
     }
     pub(crate) fn phone(self) -> Result<Descriptor, ConversationError> {
         match self {
-            Self::Phone(d) => Ok(d),
+            Self::Phone(d) => Ok(*d),
             Self::Provider(_) => Err(ConversationError::Unavailable),
         }
     }

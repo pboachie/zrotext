@@ -415,7 +415,20 @@ async fn provider_replay_read_cancel_and_edit_recheck_current_owner_after_revoca
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated maintained Owner/context with synthetic provider metadata"]
 async fn provider_final_owner_loss_rolls_back_version_action_and_audit_together() {
     let c = Case::new().await;
-    c.base.f.db.batch_execute(&format!("CREATE FUNCTION revoke_provider_owner_on_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN UPDATE sessions SET revoked_at=clock_timestamp() WHERE id='{}'; RETURN NEW; END $$; CREATE TRIGGER revoke_provider_owner_on_audit BEFORE INSERT ON workflow_action_mutations FOR EACH ROW EXECUTE FUNCTION revoke_provider_owner_on_audit();",c.base.owner.session_id)).await.unwrap();
+    // The trigger body cannot be parameterized, so the session id is read back
+    // from the isolated fixture instead of embedding the principal's field.
+    let trigger_target: Uuid = c
+        .base
+        .f
+        .db
+        .query_one(
+            "SELECT id FROM sessions WHERE account_id=$1 AND user_id=$2",
+            &[&c.base.f.account, &c.base.owner.user_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    c.base.f.db.batch_execute(&format!("CREATE FUNCTION revoke_provider_owner_on_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN UPDATE sessions SET revoked_at=clock_timestamp() WHERE id='{}'; RETURN NEW; END $$; CREATE TRIGGER revoke_provider_owner_on_audit BEFORE INSERT ON workflow_action_mutations FOR EACH ROW EXECUTE FUNCTION revoke_provider_owner_on_audit();",trigger_target)).await.unwrap();
     assert!(
         store::register_provider(
             &mut c.base.f.connect().await,

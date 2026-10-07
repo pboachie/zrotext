@@ -347,14 +347,14 @@ pub async fn read(
     let tx = client.transaction().await?;
     let d = match profile(&tx, key).await? {
         super::action_profile::StoredProfile::Provider(d) => {
-            let mut permit = super::proposal::ProviderProposal::checked(&tx, owner, d).await?;
+            let mut permit = super::proposal::ProviderProposal::checked(&tx, owner, *d).await?;
             let result = head(&tx, key.account_id, key.action_id).await?;
             permit.recheck().await?;
             drop(permit);
             tx.commit().await?;
             return Ok(result);
         }
-        super::action_profile::StoredProfile::Phone(d) => d,
+        super::action_profile::StoredProfile::Phone(d) => *d,
     };
     let (mut authority, h) = checked_descriptor(&tx, owner, &d).await?;
     let result = head(&tx, key.account_id, key.action_id).await?;
@@ -379,15 +379,16 @@ pub async fn decide(
     let d = match profile(&tx, key).await? {
         super::action_profile::StoredProfile::Provider(d) => {
             if decision == Decision::Approve {
-                let mut permit = super::proposal::ProviderProposal::checked(&tx, owner, d).await?;
+                let mut permit =
+                    super::proposal::ProviderProposal::checked(&tx, owner, *d).await?;
                 permit.recheck().await?;
                 return Err(ConversationError::Unavailable);
             }
-            let result = cancel_provider(&tx, owner, request, expected, key, d).await?;
+            let result = cancel_provider(&tx, owner, request, expected, key, *d).await?;
             tx.commit().await?;
             return Ok(result);
         }
-        super::action_profile::StoredProfile::Phone(d) => d,
+        super::action_profile::StoredProfile::Phone(d) => *d,
     };
     let (mut authority, h) = checked_descriptor(&tx, owner, &d).await?;
     if let Some(result) = replay(&tx, key.account_id, request, &digest).await? {
@@ -697,7 +698,7 @@ pub async fn edit_provider(
     )?;
     let tx = client.transaction().await?;
     let old = match profile(&tx, previous).await? {
-        super::action_profile::StoredProfile::Provider(d) => d,
+        super::action_profile::StoredProfile::Provider(d) => *d,
         _ => return Err(ConversationError::Conflict),
     };
     let mut permit = super::proposal::ProviderProposal::checked(&tx, owner, next).await?;
