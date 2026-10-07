@@ -557,7 +557,7 @@ Build useful conversations for local service operators and individuals through t
 - [x] Isolated local owner provider disclosure review returning bounded metadata commitments with execution unavailable and plaintext scrubbed on completion ([#811](https://github.com/pboachie/zrotext/pull/811))
 - [x] Bounded owner-reviewed contact reader issuance intent persisted through the complete six-operation library caller, with the original reviewed request and frozen public source committed at create and whole-signature, source, owner-session and factor verification at first completion ([#855](https://github.com/pboachie/zrotext/pull/855))
 - [x] Owner root-review page paired with bounded contact-reader intent review, public proposal export for the offline signer, whole-signature import and explicit completion under one absolute approval budget; unknown recovery never renews approval ([#898](https://github.com/pboachie/zrotext/pull/898))
-- [ ] Client-sealed contact fields using an existing reviewed envelope and selected-reader contract (#634); the merged verifiers, producer and local-history adapter remain unmounted
+- [ ] Client-sealed contact fields using an existing reviewed envelope and selected-reader contract (#821); the merged verifiers, producer and local-history adapter remain unmounted
 - [ ] Complete owner-facing contacts/conversation/context and exception journeys with current downstream consent and line/reader checks
 
 </details>
