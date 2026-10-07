@@ -379,8 +379,7 @@ pub async fn decide(
     let d = match profile(&tx, key).await? {
         super::action_profile::StoredProfile::Provider(d) => {
             if decision == Decision::Approve {
-                let mut permit =
-                    super::proposal::ProviderProposal::checked(&tx, owner, *d).await?;
+                let mut permit = super::proposal::ProviderProposal::checked(&tx, owner, *d).await?;
                 permit.recheck().await?;
                 return Err(ConversationError::Unavailable);
             }
