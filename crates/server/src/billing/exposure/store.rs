@@ -224,7 +224,7 @@ pub(super) async fn check_deployment(
 ) -> Result<bool, Error> {
     b.require_period(now)?;
     let row=tx.query_one("SELECT COALESCE(sum(outstanding_units),0)::bigint,COALESCE(sum(finalized_units) FILTER(WHERE period_start_ms=$1 AND period_end_ms=$2),0)::bigint FROM exposure_deployment_budgets",&[&b.start,&b.end]).await?;
-    Ok(projected_liability(row.get(1), row.get(0), maximum, b.hard)? >= b.soft)
+    Ok(admit(row.get(1), row.get(0), maximum, b.soft, b.hard)?.soft_warning)
 }
 pub(super) async fn debit_scope(
     tx: &Transaction<'_>,

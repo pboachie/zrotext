@@ -87,6 +87,36 @@ pub fn projected_liability(
     Ok(projected)
 }
 
+/// Result of one scope's integer admission decision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Admission {
+    /// Finalized plus outstanding plus this request; never above the hard cap.
+    pub projected: i64,
+    /// True when `projected` reaches the soft threshold. A warning never
+    /// widens the hard cap and carries no authority to spend.
+    pub soft_warning: bool,
+}
+
+/// Single decision shared by every scope and the deployment aggregate. Policy
+/// rows must satisfy `0 <= soft <= hard`; a violated invariant fails closed
+/// instead of silently disabling the warning or the refusal.
+pub fn admit(
+    finalized: i64,
+    outstanding: i64,
+    requested: ExposureUnits,
+    soft: i64,
+    hard: i64,
+) -> Result<Admission, ExposureError> {
+    if soft < 0 || soft > hard {
+        return Err(ExposureError::Invalid);
+    }
+    let projected = projected_liability(finalized, outstanding, requested, hard)?;
+    Ok(Admission {
+        projected,
+        soft_warning: projected >= soft,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,6 +158,57 @@ mod tests {
         assert_eq!(
             projected_liability(i64::MAX, 0, one, i64::MAX),
             Err(ExposureError::Overflow)
+        );
+    }
+
+    fn units(value: i64) -> ExposureUnits {
+        ExposureUnits::new(value).unwrap()
+    }
+
+    #[test]
+    fn soft_threshold_warns_at_equality_and_hard_cap_admits_exact_fit() {
+        assert!(!admit(2, 2, units(1), 6, 10).unwrap().soft_warning);
+        assert!(admit(2, 3, units(1), 6, 10).unwrap().soft_warning);
+        let last = admit(4, 5, units(1), 6, 10).unwrap();
+        assert_eq!((last.projected, last.soft_warning), (10, true));
+        assert_eq!(admit(4, 5, units(2), 6, 10), Err(ExposureError::Limit));
+    }
+
+    #[test]
+    fn inverted_or_negative_thresholds_fail_closed() {
+        assert_eq!(admit(0, 0, units(1), 11, 10), Err(ExposureError::Invalid));
+        assert_eq!(admit(0, 0, units(1), -1, 10), Err(ExposureError::Invalid));
+        assert_eq!(admit(0, 0, units(1), 0, -1), Err(ExposureError::Invalid));
+    }
+
+    #[test]
+    fn rollover_drops_finalized_usage_but_keeps_older_outstanding_liability() {
+        // Previous period: 8 finalized + 1 unknown. New period sums only the
+        // finalized units of its own interval, plus all outstanding liability.
+        let next = admit(0, 1, units(9), 5, 10).unwrap();
+        assert_eq!(next.projected, 10);
+        assert_eq!(admit(0, 1, units(10), 5, 10), Err(ExposureError::Limit));
+    }
+
+    #[test]
+    fn model_maximum_edges_reject_negative_and_overflowing_fixed_components() {
+        assert_eq!(
+            ExposureUnits::model_maximum(-1, 1, 1, 1, 0),
+            Err(ExposureError::Invalid)
+        );
+        assert_eq!(
+            ExposureUnits::model_maximum(1, 1, 1, 1, -1),
+            Err(ExposureError::Invalid)
+        );
+        assert_eq!(
+            ExposureUnits::model_maximum(1, 1, 1, 1, i64::MAX),
+            Err(ExposureError::Overflow)
+        );
+        assert_eq!(
+            ExposureUnits::model_maximum(0, 1000, 0, 1, 0)
+                .unwrap()
+                .get(),
+            1
         );
     }
 }
