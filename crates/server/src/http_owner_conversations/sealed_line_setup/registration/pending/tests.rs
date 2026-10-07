@@ -12,7 +12,6 @@ use p256::{
 use std::sync::Arc;
 
 const ORIGIN: &str = "https://owner.example.test";
-const PASSWORD: &str = "synthetic pending owner password";
 
 struct Owner {
     f: Fixture,
@@ -24,6 +23,7 @@ struct Owner {
     token: String,
     csrf: String,
     email: String,
+    password: String,
     recovery: Vec<String>,
 }
 struct Case {
@@ -57,8 +57,9 @@ impl Case {
         let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(93)).unwrap());
         let cipher = Arc::new(mfa::MfaCipher::new(crate::test_keys::key(92)).unwrap());
         let email = format!("pending-owner-{}@example.test", Uuid::new_v4());
+        let password = Uuid::new_v4().to_string();
         let mut db = f.connect().await;
-        let signup = auth::register(&mut db, &hasher, &email, PASSWORD)
+        let signup = auth::register(&mut db, &hasher, &email, &password)
             .await
             .unwrap();
         assert!(
@@ -66,16 +67,18 @@ impl Case {
                 &mut db,
                 &hasher,
                 &signup.verification_token,
-                PASSWORD
+                &password
             )
             .await
             .unwrap()
         );
-        let credentials = auth::login(&db, &hasher, &email, PASSWORD).await.unwrap();
+        let credentials = auth::login(&db, &hasher, &email, &password)
+            .await
+            .unwrap();
         let principal = auth::authenticate_session(&db, &hasher, &credentials.token)
             .await
             .unwrap();
-        let enrollment = mfa::begin_enrollment(&mut db, &cipher, &principal, PASSWORD)
+        let enrollment = mfa::begin_enrollment(&mut db, &cipher, &principal, &password)
             .await
             .unwrap();
         let code = totp_rs::Builder::new()
@@ -139,6 +142,7 @@ impl Case {
                 token: credentials.token,
                 csrf: credentials.csrf_token,
                 email,
+                password,
                 recovery,
             },
             device,
@@ -184,7 +188,7 @@ impl Case {
     async fn successor(&self) -> (auth::SessionCredentials, SessionPrincipal) {
         let mut db = self.owner.f.connect().await;
         assert!(matches!(
-            auth::login(&db, &self.owner.hasher, &self.owner.email, PASSWORD).await,
+            auth::login(&db, &self.owner.hasher, &self.owner.email, &self.owner.password).await,
             Err(auth::AuthError::MfaRequired { .. })
         ));
         let p = &self.owner.principal;
@@ -193,7 +197,7 @@ impl Case {
             &self.owner.hasher,
             p.tenant.account_id(),
             p.user_id,
-            PASSWORD,
+            &self.owner.password,
         )
         .await
         .unwrap();
