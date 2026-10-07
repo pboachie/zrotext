@@ -134,6 +134,18 @@ def forbidden_path(relative: str) -> bool:
             or name.endswith((".dpapi", ".pfx", ".p12", ".jks", ".keystore", ".agekey", ".key")))
 
 
+# Vendored third-party source that is byte-identical to a pinned upstream
+# release (see the directory's PROVENANCE digests). Upstream identifiers such
+# as DYNAMIC_TYPE_SECRET or PEM-header size comments trip the credential
+# heuristics without carrying any ZROtext credential. Filename checks and
+# every first-party file remain fully scanned.
+VENDORED_UPSTREAM_PREFIXES = ("android/app/src/main/cpp/wolfssl/",)
+
+
+def vendored_upstream(relative: str) -> bool:
+    return relative.startswith(VENDORED_UPSTREAM_PREFIXES)
+
+
 def infrastructure_file(relative: str) -> bool:
     path = PurePosixPath(relative)
     # Source IP-validation tests legitimately contain RFC1918 addresses. Private
@@ -222,6 +234,8 @@ def scan_snapshot(root: Path, tree: str | None, cache: dict) -> list[str]:
             errors.append(f"{location}: private data in filename")
         if mode == "160000":
             errors.append(f"{location}: uninspected submodule")
+            continue
+        if vendored_upstream(relative):
             continue
         key = blob_key(relative, oid)
         if key not in cache:
