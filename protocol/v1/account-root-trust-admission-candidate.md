@@ -56,9 +56,11 @@ version/digest/interval and every public record identity/point/interval/state.
 The owner explicitly accepts or declines that displayed local history.
 
 The actual same-origin `/v1/auth/session` GET uses cookies, no-store and refuses
-redirects. Its bounded closed response has account_id, user_id, session_id and
-role; only owner for the independently expected account is accepted. It has no
-session expiry field. The selected account is privately copied before the first
+redirects. Its bounded closed response has account_id, user_id, session_id,
+role and server_now_ms; only owner for the independently expected account is
+accepted. The database time field must be a canonical positive signed 64-bit
+decimal string. It is response metadata here and does not change local trust,
+supply a lease or join the frozen identity tuple. It has no session expiry field. The selected account is privately copied before the first
 await; changing the visible account refuses rather than becoming a new authority
 expectation. Frozen account/session/user and copied CSRF-reference comparisons
 are application lifecycle checks. This Cookie-only GET provides no held lease
