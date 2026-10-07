@@ -72,9 +72,7 @@ impl Case {
             .await
             .unwrap()
         );
-        let credentials = auth::login(&db, &hasher, &email, &password)
-            .await
-            .unwrap();
+        let credentials = auth::login(&db, &hasher, &email, &password).await.unwrap();
         let principal = auth::authenticate_session(&db, &hasher, &credentials.token)
             .await
             .unwrap();
@@ -188,7 +186,13 @@ impl Case {
     async fn successor(&self) -> (auth::SessionCredentials, SessionPrincipal) {
         let mut db = self.owner.f.connect().await;
         assert!(matches!(
-            auth::login(&db, &self.owner.hasher, &self.owner.email, &self.owner.password).await,
+            auth::login(
+                &db,
+                &self.owner.hasher,
+                &self.owner.email,
+                &self.owner.password
+            )
+            .await,
             Err(auth::AuthError::MfaRequired { .. })
         ));
         let p = &self.owner.principal;
