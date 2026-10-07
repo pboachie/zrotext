@@ -92,6 +92,8 @@ class AuthenticatedGatewayService : Service() {
     @Volatile private var smsLineActivation: PreparedSmsLineActivation? = null
     /** The hub repeats sms_line_activated on later connections; this one is already installed. */
     @Volatile private var installedSmsLineChallenge: UUID? = null
+    /** Provenance of the accepted cached activation, never inferred from current SIM selection. */
+    @Volatile private var installedSmsLineIsEsim = false
     /** Optional, explicitly accepted SEALED line setup. No content worker or body consent. */
     @Volatile private var sealedLineActivation: SealedLineActivationProvider? = null
 
@@ -934,14 +936,15 @@ class AuthenticatedGatewayService : Service() {
             if (proof == null || !ack.matches(proof)) {
                 // After an app restart the proof is gone, but a resend of an
                 // activation installed before the restart is not an error.
-                val installedBefore = runCatching {
-                    val binding = dao.currentLineBinding()
-                    ack.isInstalledAs(binding) && binding?.liveContinuity() == true
-                }
-                    .getOrDefault(false)
+                val installedBinding = runCatching {
+                    dao.currentLineBinding()?.takeIf {
+                        ack.isInstalledAs(it) && it.liveContinuity()
+                    }
+                }.getOrNull()
+                val installedBefore = installedBinding != null
                 if (installedBefore) {
                     installedSmsLineChallenge = ack.challengeId
-                    installedSmsLineIsEsim = dao.currentLineBinding()?.continuityKind == "esim"
+                    installedSmsLineIsEsim = installedBinding?.continuityKind == "esim"
                 }
                 AuthenticatedGatewayStatus.value = if (installedBefore)
                     "SMS line activated on this phone"
