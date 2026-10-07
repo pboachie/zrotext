@@ -84,6 +84,34 @@ pub fn edit(
     Ok(())
 }
 
+/// Internal full-profile edit; no projection or cross-profile relabelling.
+pub(crate) fn edit_provider(
+    previous: &super::action_profile::ProviderAction,
+    next: &super::action_profile::ProviderAction,
+    phase: Phase,
+) -> Result<(), ConversationError> {
+    let old = previous.common();
+    let new = next.common();
+    if !phase.editable()
+        || old.account_id != new.account_id
+        || old.action_id != new.action_id
+        || old.content_ref != new.content_ref
+        || old.routine_id != new.routine_id
+        || old.revision.checked_add(1) != Some(new.revision)
+    {
+        return Err(ConversationError::Conflict);
+    }
+    let before: serde_json::Value =
+        serde_json::from_slice(&previous.canonical()).map_err(|_| ConversationError::Invalid)?;
+    let mut after: serde_json::Value =
+        serde_json::from_slice(&next.canonical()).map_err(|_| ConversationError::Invalid)?;
+    after["action"]["revision"] = before["action"]["revision"].clone();
+    if before == after {
+        return Err(ConversationError::Conflict);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

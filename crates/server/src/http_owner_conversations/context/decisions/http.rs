@@ -8,8 +8,11 @@ use crate::{
 };
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, State},
+    body::{Body, Bytes},
+    extract::{DefaultBodyLimit, FromRequest, Request, State},
+    http::header,
     middleware,
+    response::{IntoResponse, Response as HttpResponse},
     routing::post,
 };
 use serde::Deserialize;
@@ -87,12 +90,59 @@ struct Takeover {
 async fn propose(
     State(state): State<Arc<OwnerConversationsState>>,
     OwnerMutation(owner, _slot): OwnerMutation,
-    ApiJson(input): ApiJson<Proposal>,
-) -> Result<Json<ActionState>, ConversationError> {
+    request: Request,
+) -> Result<HttpResponse, ConversationError> {
+    // Only this explicit JSON media profile enters the new raw-wire path.
+    // Every other header goes through the original legacy extractor on the
+    // untouched Request, including its reject-before-body MIME handling.
+    let provider_media = request
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.eq_ignore_ascii_case("application/json"));
+    if !provider_media {
+        let ApiJson(input) = match ApiJson::<Proposal>::from_request(request, &state).await {
+            Ok(input) => input,
+            Err(error) => return Ok(error.into_response()),
+        };
+        let mut client = connection(&state).await?;
+        return Ok(Json(
+            super::register(&mut client, &owner, input.request_id, input.descriptor).await?,
+        )
+        .into_response());
+    }
+    let (mut parts, body) = request.into_parts();
+    let mut body_request = Request::new(body);
+    // Move the router body-limit extension into the one actual body read.
+    // ApiJson's later legacy decode sees only these already bounded bytes.
+    *body_request.extensions_mut() = std::mem::take(&mut parts.extensions);
+    let bytes = match Bytes::from_request(body_request, &state).await {
+        Ok(bytes) => bytes,
+        Err(error) => return Ok(error.into_response()),
+    };
+    // The exact raw provider parser is tried without normalizing or replacing
+    // original bytes. Legacy01 still uses the original ApiJson<Proposal> path.
+    if let Ok((request_id, descriptor)) = super::action_profile::ProviderAction::proposal(&bytes) {
+        let mut client = connection(&state).await?;
+        return Ok(Json(
+            super::store::register_provider(&mut client, &owner, request_id, descriptor).await?,
+        )
+        .into_response());
+    }
+    let ApiJson(input) = match ApiJson::<Proposal>::from_request(
+        Request::from_parts(parts, Body::from(bytes)),
+        &state,
+    )
+    .await
+    {
+        Ok(input) => input,
+        Err(error) => return Ok(error.into_response()),
+    };
     let mut client = connection(&state).await?;
-    Ok(Json(
-        super::register(&mut client, &owner, input.request_id, input.descriptor).await?,
-    ))
+    Ok(
+        Json(super::register(&mut client, &owner, input.request_id, input.descriptor).await?)
+            .into_response(),
+    )
 }
 async fn status(
     State(state): State<Arc<OwnerConversationsState>>,
