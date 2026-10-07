@@ -12,7 +12,7 @@ use crate::{
 };
 use tokio_postgres::{Client, Transaction};
 use uuid::Uuid;
-use zrotext_delivery_store::exposure::{ExposureError, ExposureUnits, projected_liability};
+use zrotext_delivery_store::exposure::{ExposureError, ExposureUnits, admit};
 
 mod cancellation;
 pub mod http;
@@ -219,8 +219,8 @@ impl TestExposure {
             let outstanding = store::scope_outstanding(tx, account, budget).await?;
             let finalized = store::scope_finalized(tx, account, budget).await?;
             budget.require_period(now)?;
-            let projected = projected_liability(finalized, outstanding, maximum, budget.hard)?;
-            warning |= projected >= budget.soft;
+            warning |=
+                admit(finalized, outstanding, maximum, budget.soft, budget.hard)?.soft_warning;
         }
         tx.execute(
             "INSERT INTO exposure_reservations(account_id,id,action_id,revision,binding_digest,route_policy_id,operation,policy_version,deployment_id,device_id,workflow_id,routine_id,routine_generation,owner_user_id,owner_session_id,maximum_units,original_period_start_ms,original_period_end_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)",

@@ -42,7 +42,7 @@ its boundary. The work that did land is real:
   AOSP's composer with a golden-vector test, and the attachment is a synthetic
   1x1 PNG built in code, so no pasted binaries
   ([`MmsSendComposer.kt`](../../android/app/src/main/java/org/zrotext/gateway/MmsSendComposer.kt)).
-- **Honest local states.** A returned platform call is `submitting`; a
+- **Honest local states.** A recorded platform-call return is `submitting`; a
   successful sent callback is `submitted`; an error callback is `failed`;
   a timeout, throw or conflicting terminal evidence is `unknown` and is never
   retried automatically
@@ -143,8 +143,15 @@ any promoted behavior:
 Any promoted MMS path must map onto the existing states in
 [DELIVERY-STATES.md](../DELIVERY-STATES.md) without inventing new ones:
 
-- Grant accepted and the gate spent, or the platform call returned:
-  `submitting` — the probe's journal already does this.
+The probe's `pending` journal value records incomplete local evidence; it is
+not a new product delivery state.
+
+- Grant accepted and the durable one-use gate spent: the journal remains
+  `pending` while its only recorded event is `composed`. Spending the gate
+  does not establish that the platform call returned.
+- A platform-call return recorded as `call_returned`, without terminal
+  evidence: `submitting`. Missing return evidence does not prove that no
+  radio action occurred and never authorizes an automatic retry.
 - Sent callback OK: `submitted`. For MMS this means at most that the MMSC
   transaction reported success, which is weaker evidence than the SMS sent
   callback; it must never be displayed as delivered.
