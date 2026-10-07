@@ -173,7 +173,8 @@ class InboundUploadTest {
                 SmsJournalDatabase.MIGRATION_5_6, SmsJournalDatabase.MIGRATION_6_7,
                 SmsJournalDatabase.MIGRATION_7_8,
                 SmsJournalDatabase.MIGRATION_8_9, SmsJournalDatabase.MIGRATION_9_10,
-                SmsJournalDatabase.MIGRATION_10_11, SmsJournalDatabase.MIGRATION_11_12).build()
+                SmsJournalDatabase.MIGRATION_10_11, SmsJournalDatabase.MIGRATION_11_12,
+                SmsJournalDatabase.MIGRATION_12_13).build()
         try {
             val legacyEvent = migrated.attempts().inboundByDedupe("e".repeat(64))!!
             val legacyUpload = migrated.attempts().inboundUpload(legacyEvent.eventId)!!
@@ -193,7 +194,8 @@ class InboundUploadTest {
                 migrated.attempts().getAlphaEvent(oldRadioId)?.quarantineReason)
             assertNull(migrated.attempts().inboundUpload(migrated.attempts()
                 .inboundByDedupe("f".repeat(64))!!.eventId))
-            assertEquals(12, migrated.openHelper.readableDatabase.version)
+            assertEquals(13, migrated.openHelper.readableDatabase.version)
+            assertNull(migrated.attempts().currentLineBinding())
         } finally {
             migrated.close()
             context.deleteDatabase(name)
