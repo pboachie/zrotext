@@ -123,7 +123,7 @@ internal class ConversationAndroidConnectionInputs(
                 return ConversationStopReason.LINE_CHANGED
             val card = line.cardId ?: return ConversationStopReason.SIM_CHANGED
             return if (selected != line.subscriptionId ||
-                !SimCardContinuity.matches(ActivatedSimCard(line.subscriptionId, card), cards))
+                !SimCardContinuity.matches(line.activatedSim(), cards))
                 ConversationStopReason.SIM_CHANGED else null
         }
     }

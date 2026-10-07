@@ -217,4 +217,83 @@ class SealedLineActivationTest {
         assertFalse(device.validate(proof, f.selection, true))
         assertEquals(2, observations)
     }
+    @Test @Config(sdk = [34]) fun esimProvisionalInstallCannotPublishBeforeFinalAcceptedAckAndExceptionsRevoke() {
+        for (failAfterPublish in listOf(false, true)) EsimProfileFixture().use { profile ->
+            val f = SealedLineActivationFixture()
+            f.api = 34; f.cards = profile.cards()
+            val candidate = profile.candidate
+            var provisional: PreparedSealedLineActivation? = null
+            var snapshot: SealedLineActivationSnapshot? = null
+            var capability: InstalledEsimProfile? = null
+            val persistence = object : SealedLineReceiptPersistence {
+                override fun read() = snapshot
+                override fun write(value: SealedLineActivationSnapshot): Boolean { snapshot = value; return true }
+            }
+            fun key(c: SealedLineChallenge) = ProfileChallengeKey(ProfileLineAuthority(c.accountId.toString(),
+                c.deviceId.toString(), c.lineId.toString(), c.generation), c.challengeId.toString())
+            val provider = SealedLineActivationProvider(f.selection, f.challenge.accountId, f.challenge.deviceId,
+                42, f.device, persistence, { provisional = it; true }, { provisional === it }, {
+                    if (failAfterPublish && capability != null) error("Synthetic final session read failure")
+                    true
+                }, candidate, { profile.fence.reserveBeforeSigning(key(it), candidate) }, { proof ->
+                    profile.fence.persistAcceptedAck(key(proof.challenge), candidate)?.let {
+                        profile.tracker.publishInstalled(it).also { value -> capability = value }
+                    }
+                }, profile.tracker::revoke)
+            try {
+                val frame = checkNotNull(provider.accept(SealedLineActivationFrames.Incoming.Challenge(f.challenge)))
+                val signature = SealedLineActivationFrames.variableBytes(org.json.JSONObject(frame), "signature_der", 8, 72)
+                val receipt = SealedLineActivationReceipt(42, f.challenge.challengeId, f.challenge.accountId,
+                    f.challenge.lineId, f.challenge.deviceId, f.challenge.generation,
+                    SealedLineActivationTranscript.digest(SealedLineActivationTranscript.deviceStatement(f.challenge, 34, 7)),
+                    SealedLineActivationTranscript.digest(signature))
+                provider.accept(SealedLineActivationFrames.Incoming.ProofAck(SealedLineActivationFrames.Ack(42, receipt.challengeId, true)))
+                assertNotNull(provider.accept(SealedLineActivationFrames.Incoming.Activated(receipt)))
+                assertNotNull(provisional); assertNotNull(snapshot); assertNull(capability)
+                provider.accept(SealedLineActivationFrames.Incoming.InstallAck(SealedLineActivationFrames.Ack(43, receipt.challengeId, true)))
+                assertNull(capability)
+                provider.accept(SealedLineActivationFrames.Incoming.InstallAck(SealedLineActivationFrames.Ack(42, receipt.challengeId, false)))
+                assertNull(capability)
+                val accepted = SealedLineActivationFrames.Incoming.InstallAck(SealedLineActivationFrames.Ack(42, receipt.challengeId, true))
+                if (failAfterPublish) assertThrows(Exception::class.java) { provider.accept(accepted) }
+                else provider.accept(accepted)
+                assertEquals(!failAfterPublish, capability?.isCurrent() == true)
+                profile.tracker.onSubscriptionsChanged()
+                assertFalse(capability?.isCurrent() == true)
+                assertNull(provider.accept(SealedLineActivationFrames.Incoming.Challenge(f.challenge)))
+            } finally { provider.close() }
+        }
+    }
+
+    @Test @Config(sdk = [34]) fun retiredAcceptanceDuringPublicPointWaitCannotSignReplacementProfile() {
+        EsimProfileFixture().use { profile ->
+            val f = SealedLineActivationFixture(); f.api = 34; f.cards = profile.cards()
+            val accepted = profile.candidate
+            var signatures = 0
+            val device = SealedLineActivationDevice({ 34 }, { 7 }, { profile.cards() }, {
+                profile.tracker.onSubscriptionsChanged()
+                val epoch = checkNotNull(profile.tracker.observationEpoch())
+                val records = listOf(ProfileSubscriptionObservation(7, 42, true, 0, 0),
+                    ProfileSubscriptionObservation(8, 42, true, 1, 0))
+                profile.tracker.acceptSnapshots(epoch, records, records, epoch)
+                f.point
+            }, acceptedProfileSigner(accepted, { accepted.isCurrent() }, profile::cards, { _, _ -> true },
+                { _, _, _, _ -> signatures++; error("Replacement profile must not sign") }, { f.now }), { f.now })
+            val persistence = object : SealedLineReceiptPersistence {
+                override fun read(): SealedLineActivationSnapshot? = null
+                override fun write(snapshot: SealedLineActivationSnapshot) = false
+            }
+            val provider = SealedLineActivationProvider(f.selection, f.challenge.accountId, f.challenge.deviceId,
+                42, device, persistence, { false }, { false }, { true }, accepted, { c ->
+                    profile.fence.reserveBeforeSigning(ProfileChallengeKey(ProfileLineAuthority(c.accountId.toString(),
+                        c.deviceId.toString(), c.lineId.toString(), c.generation), c.challengeId.toString()), accepted)
+                })
+            try {
+                assertNull(provider.accept(SealedLineActivationFrames.Incoming.Challenge(f.challenge)))
+                assertEquals(0, signatures)
+                assertFalse(accepted.isCurrent())
+            } finally { provider.close() }
+        }
+    }
+
 }

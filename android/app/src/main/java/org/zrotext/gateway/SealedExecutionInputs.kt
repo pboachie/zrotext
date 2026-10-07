@@ -31,7 +31,7 @@ internal class SealedExecutionInputs(context: Context, val db: SmsJournalDatabas
         val binding = checkNotNull(db.attempts().currentLineBinding())
         check(binding.accountId == session.accountId.toString() && binding.deviceId == session.deviceId.toString() &&
             binding.subscriptionId == selected())
-        check(SimCardContinuity.matches(binding.cardId?.let { ActivatedSimCard(binding.subscriptionId, it) }, cards()))
+        check(SimCardContinuity.matches(binding.activatedSim(), cards()))
         val key = keyStore.existingPublic()
         check(key.security == PayloadKeySecurity.STRONGBOX || key.security == PayloadKeySecurity.TRUSTED_ENVIRONMENT)
         suppression.requireAvailable(); check(current())

@@ -62,8 +62,7 @@ the sole observed active subscription at capture time. On Android API 29+, the
 app also requires the public card ID to match the approved local binding.
 API 30+ queries the complete active subscription list, including hidden
 opportunistic subscriptions. API 28 and devices with an unknown card ID keep
-the STOP local. Embedded eSIM subscriptions also stay local because the public
-card ID identifies the eUICC and cannot distinguish profiles. Existing
+the STOP local. For API 33+ eSIM subscriptions, attribution additionally requires an exact live installed profile-record lease; the public card ID alone identifies only the eUICC. Without that lease, STOP stays local. Existing
 subscription-only bindings migrate with no card ID;
 they require renewed owner approval before any line-bound attribution or upload.
 An explicit foreground Android
@@ -78,11 +77,11 @@ line opt-out transport gate defaults off, so ordinary deployments leave these
 rows local.
 The Android SMS-only proof helper can build the domain-bound device and owner
 statements and sign the device statement with the enrolled Keystore identity.
-It observes a single physical SIM before and after signing. A local binding
+It observes the explicitly selected SIM before and after signing, using the physical-card signal or an API 33+ live profile-record lease. A local binding
 installer also requires a matching authenticated server confirmation and a
-fresh third SIM observation. No runtime route constructs that confirmation, so
-the helper does not activate a line in ordinary deployments. API 28, eSIM,
-unknown-card, and ambiguous observations remain local-only.
+fresh third SIM observation. The ordinary authenticated device-stream handler accepts
+that exact `sms_line_activated` confirmation when the server enables the line flow;
+a synthetic frame or saved binding does not substitute for authenticated owner approval. API 28, eSIM without an installed live profile lease, unknown-card, and ambiguous observations remain local-only.
 An unattributed STOP still blocks local sends. START never clears that block;
 the existing reply-window START acknowledgement does not prove the source
 line or binding generation. Android subscription indexes may be reused after
@@ -140,3 +139,5 @@ retry schedule. The sender needs an independent network egress firewall in a
 deployment; application validation alone is not a complete SSRF boundary.
 
 Owner endpoint creation, listing, enable/disable and secret rotation are described in [webhook-endpoints.md](webhook-endpoints.md). Manual replay, Android upload and sealed content have separate contracts and implementation paths.
+
+The eSIM lease binds the selected subscription/card/port/slot record to one observer incarnation and epoch. A subscription callback, permission/read failure, selection change or restart invalidates line attribution and upload immediately. An unattributed STOP still persists its local suppression. Room profile fields and receipts are provenance only and cannot recreate live installed authority. Wire signatures and STOP frame fields are unchanged; no carrier-ownership or universal OEM continuity claim is made.

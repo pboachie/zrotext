@@ -26,13 +26,15 @@ internal class ConversationRadioPlatform internal constructor(
         ConversationExistingSuppressionTokens(),enabled)
     constructor(context:Context,binding:LocalLineBinding,suppression:ConversationExistingSuppressionTokens,
                 enabled:Boolean=false):this(binding,AndroidDriver(checkNotNull(context.applicationContext),binding),suppression,enabled)
-    private fun selected() {check(enabled);driver.requireSelected()}
+    private val installedProfile = binding.installedProfile()
+    private fun liveProfile() = binding.continuityKind == "physical" && binding.liveContinuity() ||
+        binding.continuityKind == "esim" && installedProfile?.isCurrent() == true &&
+            binding.installedProfile() === installedProfile
+    private fun selected() {check(enabled && liveProfile());driver.requireSelected()}
     private class AndroidDriver(private val application:Context,private val binding:LocalLineBinding):ConversationRadioDriver {
         override fun requireSelected() {
             check(SmsAttemptAdapter.hasSelectedSim(application,binding.subscriptionId))
-            check(SimCardContinuity.matches(binding.cardId?.let {
-                ActivatedSimCard(binding.subscriptionId,it)
-            },SimCardContinuity.observe(application)))
+            check(SimCardContinuity.matches(binding.activatedSim(),SimCardContinuity.observe(application)))
         }
         @Suppress("DEPRECATION") private fun manager():SmsManager {
             requireSelected()
@@ -59,6 +61,7 @@ internal class ConversationRadioPlatform internal constructor(
         }
         override fun close() {preparedAttempt=null;preparedParts=null;radio=null;sent=null;delivered=null}
         override fun send(peer:String,attempt:String,parts:ArrayList<String>) {
+            check(binding.liveContinuity()) // Memory-only after the consumer's final authority/time sample.
             check(preparedAttempt==attempt && preparedParts===parts)
             preparedAttempt=null;preparedParts=null
             val selectedRadio=checkNotNull(radio);val sentCallbacks=checkNotNull(sent);val deliveredCallbacks=checkNotNull(delivered)
@@ -94,6 +97,7 @@ internal class ConversationRadioPlatform internal constructor(
             val completed=requireCurrent()
             check(completed>=now && completed>=lastNow && completed<context.deadlineMs)
             lastNow=completed
+            check(liveProfile()) // No framework/disk wait after the final current-authority clock sample.
             return completed
         }
         return try {

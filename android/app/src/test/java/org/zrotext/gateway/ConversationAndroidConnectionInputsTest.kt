@@ -106,4 +106,20 @@ class ConversationAndroidConnectionInputsTest {
         f.refuse { owned.inputs }
         owned.close()
     }
+    @Test fun esimSavedTupleAndCandidateCannotSubstituteInstalledAuthority() {
+        EsimProfileFixture(3, 4).use { profile ->
+            val sim = checkNotNull(SimCardContinuity.activationCandidate(profile.cards(), 3))
+            val record = line().withContinuity(sim)
+            assertEquals(ConversationStopReason.SIM_CHANGED,
+                ConversationAndroidConnectionInputs.localLoss(f.scope, record, 3, profile.cards()))
+            profile.install(record)
+            assertNull(ConversationAndroidConnectionInputs.localLoss(f.scope, record, 3, profile.cards()))
+            assertEquals(ConversationStopReason.SIM_CHANGED,
+                ConversationAndroidConnectionInputs.localLoss(f.scope, record, 4, profile.cards()))
+            profile.tracker.onSubscriptionsChanged()
+            assertEquals(ConversationStopReason.SIM_CHANGED,
+                ConversationAndroidConnectionInputs.localLoss(f.scope, record, 3, profile.cards()))
+        }
+    }
+
 }

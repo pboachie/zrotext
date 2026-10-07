@@ -89,9 +89,7 @@ internal object LineOptOutUploadGate {
             entry.bindingGeneration != binding.generation ||
             entry.observedSubscriptionId != binding.subscriptionId ||
             selectedSubscriptionId != binding.subscriptionId ||
-            !SimCardContinuity.matches(binding.cardId?.let {
-                ActivatedSimCard(binding.subscriptionId, it)
-            }, activeSimCards) ||
+            !SimCardContinuity.matches(binding.activatedSim(), activeSimCards) ||
             entry.encryptedSender == null || entry.senderNonce == null ||
             entry.encryptedSender.size !in 17..128 || entry.senderNonce.size != 12 ||
             entry.eventId == null || entry.deviceSequence == null ||

@@ -140,7 +140,7 @@ session and CSRF header and is disabled along with the exchange.
 
 The current PostgreSQL tests use synthetic keys and declared subscription
 values. The Android gateway answers a pushed challenge only for API 29+ with
-exactly one selected, active physical SIM, keeps the prepared proof in memory,
+an explicitly selected active physical SIM or an API 33+ observer-leased eSIM profile, keeps the prepared proof in memory,
 and installs its local line binding only from an `sms_line_activated` frame
 whose digests match that proof and a fresh SIM observation, until 15 minutes
 after the challenge expiry to allow the hub's resends. A restarted app
@@ -151,3 +151,11 @@ the device statement, checks its account, line, device, generation and
 challenge against the activation it opened, and rebuilds `owner_statement`
 itself; it refuses when the server's copy differs. Physical SIM testing and a
 real carrier receive test are still required.
+
+## Local eSIM continuity
+
+The v1 signed statement is unchanged: selected subscription remains a device declaration and carries no local card/profile identifier. API 33+ Android can additionally require a live profile-record candidate under a successfully registered subscription listener, with explicit subscription, nonnegative card/port/slot observations, an initial callback barrier and matching complete snapshots. This is conservative local Android record continuity, not independent hardware or carrier ownership proof.
+
+Every later subscription callback invalidates that lease even if public fields are equal. Permission/read failure, selection change and observer/process restart also invalidate it. Persisted Room fields and receipt provenance cannot reconstruct authority. Fresh owner reauthorization and a new authenticated higher-generation challenge are required. Durable deny-only challenge reservation precedes signing; the shared normal/sealed per-authority generation fence precedes final installed publication. Final proof/selection/clock checks run after IO before publication, and postpublication failure revokes the exact capability. Physical declaration bytes and physical receipt behavior remain unchanged.
+
+Distinct active eSIM profiles may share the containing card and reported logical slot when their ports are uniquely mapped. Ambiguous or unreadable profile mappings refuse. API 32 and earlier have no supported eSIM continuity path in this implementation. Actual device and carrier qualification remain separate from this source contract.

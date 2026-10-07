@@ -75,4 +75,29 @@ class SelectedSimSigningTest {
         }
         assertEquals(0, operations)
     }
+    @Test fun selectedProfileSigningNeverFallsBackToPeerAndCallbackRetiresSignature() {
+        EsimProfileFixture().use { f ->
+            assertArrayEquals(byteArrayOf(1), SelectedSimSigning.sign(7, { 7 }, f::cards) { byteArrayOf(1) })
+            assertThrows(IllegalStateException::class.java) {
+                SelectedSimSigning.sign(7, { 7 }, f::cards) {
+                    f.tracker.onSubscriptionsChanged(); byteArrayOf(1)
+                }
+            }
+        }
+    }
+    @Test fun publicCopyOfObservedCardCannotCarryItsOpaqueCapability() {
+        EsimProfileFixture().use { f ->
+            val original = f.cards()
+            org.junit.Assert.assertNotNull(SimCardContinuity.activationCandidate(original, 7))
+            org.junit.Assert.assertNull(SimCardContinuity.activationCandidate(original.map { it.copy() }, 7))
+        }
+    }
+
+    @Test fun profileSelectionLabelsDistinguishSharedSlotAndNameWhilePhysicalLabelIsUnchanged() {
+        assertEquals("SIM 1: synthetic carrier", selectedSimLabel(7, 0, "synthetic carrier", false, null))
+        org.junit.Assert.assertNotEquals(selectedSimLabel(7, 0, "synthetic carrier", true, 0),
+            selectedSimLabel(8, 0, "synthetic carrier", true, 1))
+        org.junit.Assert.assertTrue(selectedSimLabel(7, 0, "synthetic carrier", true, null).contains("unavailable"))
+    }
+
 }

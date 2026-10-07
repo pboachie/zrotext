@@ -144,6 +144,8 @@ internal object SealedDispatchExecutor {
             subscriptionId = local.binding.subscriptionId,
             // A pre-v11 binding without a card ID stays local-only, as everywhere else.
             cardId = checkNotNull(local.binding.cardId) { "Line binding has no card continuity" },
+            installedProfile = if (local.binding.continuityKind == "esim")
+                checkNotNull(local.binding.installedProfile()) { "Line profile authority unavailable" } else null,
         )
 
     private fun claims(routing: Draft02OutboundEnvelope.Companion.RoutingClaims) =
