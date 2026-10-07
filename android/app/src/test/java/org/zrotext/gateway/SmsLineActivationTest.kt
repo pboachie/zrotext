@@ -273,4 +273,59 @@ class SmsLineActivationTest {
     private fun hex(bytes: ByteArray): String = bytes.joinToString("") {
         "%02x".format(it.toInt() and 0xff)
     }
+    @Test @Config(sdk = [34]) fun selectedEsimNeedsDurableProofAndExactAckThenRetiresOnAnyCallback() {
+        EsimProfileFixture().use { f ->
+            val producer = SmsLineActivationDevice({ 34 }, { 7 }, f::cards, ::signer, { 1000 })
+            val proof = checkNotNull(producer.prepare(challenge, account, device))
+            assertEquals(f.candidate, proof.sim.profile)
+            val db = Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(), SmsJournalDatabase::class.java)
+                .allowMainThreadQueries().build()
+            try {
+                assertFalse(producer.installAfterAuthenticatedAck(db.attempts(), proof, ack(proof, false), account, device))
+                assertNull(db.attempts().currentLineBinding())
+                assertTrue(producer.installAfterAuthenticatedAck(db.attempts(), proof, ack(proof), account, device))
+                val binding = checkNotNull(db.attempts().currentLineBinding())
+                assertEquals("esim", binding.continuityKind)
+                assertTrue(binding.liveContinuity())
+                f.tracker.onSubscriptionsChanged()
+                assertFalse(binding.liveContinuity())
+                assertNull(producer.prepare(challenge, account, device))
+            } finally { db.close() }
+        }
+    }
+    @Test @Config(sdk = [34]) fun expiryDuringReservationRefusesBeforeSignatureAndCrashCannotRenewChallenge() {
+        EsimProfileFixture().use { f ->
+            var now = 1000L; var signatures = 0
+            f.afterWrite = { now = challenge.expiresAtMs }
+            val producer = SmsLineActivationDevice({ 34 }, { 7 }, f::cards,
+                { c, api, sub -> signatures++; signer(c, api, sub) }, { now })
+            assertNull(producer.prepare(challenge, account, device))
+            assertEquals(0, signatures)
+            // Same disk denial, different facade: no live association can be reconstructed.
+            val store = object : ProfileChallengePersistence {
+                override fun read() = f.ledger
+                override fun write(value: ProfileChallengeLedger): Boolean { f.ledger = value; return true }
+            }
+            val key = ProfileChallengeKey(ProfileLineAuthority(account.toString(), device.toString(), line.toString(), 1),
+                challengeId.toString())
+            assertFalse(ProfileChallengeFence(store).reserveBeforeSigning(key, f.candidate))
+        }
+    }
+    @Test @Config(sdk = [34]) fun throwingPostpublicationObservationRevokesTheExactInstalledCapability() {
+        EsimProfileFixture().use { f ->
+            val db = Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(), SmsJournalDatabase::class.java)
+                .allowMainThreadQueries().build()
+            try {
+                val producer = SmsLineActivationDevice({ 34 }, { 7 }, {
+                    if (db.attempts().currentLineBinding()?.installedProfile() != null) error("Synthetic final read failure")
+                    f.cards()
+                }, ::signer, { 1000 })
+                val proof = checkNotNull(producer.prepare(challenge, account, device))
+                assertFalse(producer.installAfterAuthenticatedAck(db.attempts(), proof, ack(proof), account, device))
+                assertEquals("esim", db.attempts().currentLineBinding()?.continuityKind)
+                assertNull(db.attempts().currentLineBinding()?.installedProfile())
+            } finally { db.close() }
+        }
+    }
+
 }

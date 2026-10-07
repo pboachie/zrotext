@@ -160,8 +160,55 @@ data class LocalLineBinding(
     val subscriptionId: Int,
     val installedAtMs: Long,
     /** Null for pre-v11 bindings: those remain local-only until renewed owner approval. */
-    @ColumnInfo(defaultValue = "NULL") val cardId: Int? = null
+    @ColumnInfo(defaultValue = "NULL") val cardId: Int? = null,
+    @ColumnInfo(defaultValue = "'physical'") val continuityKind: String = "physical",
+    @ColumnInfo(defaultValue = "NULL") val profilePortIndex: Int? = null,
+    @ColumnInfo(defaultValue = "NULL") val profileLogicalSlotIndex: Int? = null,
+    @ColumnInfo(defaultValue = "NULL") val profileIncarnation: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val profileObservationEpoch: Long? = null,
+    @ColumnInfo(defaultValue = "NULL") val profileLeaseId: String? = null
 )
+
+/** Serialized provenance can resolve only an already-installed live object, never mint one. */
+internal fun LocalLineBinding.profileRecord(): EsimProfileRecord? = try {
+    if (continuityKind != "esim") null else EsimProfileRecord(subscriptionId,
+        checkNotNull(cardId), checkNotNull(profilePortIndex), checkNotNull(profileLogicalSlotIndex),
+        checkNotNull(profileIncarnation), checkNotNull(profileObservationEpoch), checkNotNull(profileLeaseId))
+} catch (_: Exception) { null }
+internal fun LocalLineBinding.profileAuthority(): ProfileLineAuthority? = runCatching {
+    ProfileLineAuthority(accountId, deviceId, lineId, generation)
+}.getOrNull()
+internal fun LocalLineBinding.installedProfile(): InstalledEsimProfile? {
+    val record = profileRecord() ?: return null
+    val authority = profileAuthority() ?: return null
+    return SimProfileContinuity.lookup(record, authority)
+}
+internal fun LocalLineBinding.liveContinuity(): Boolean = when (continuityKind) {
+    "physical" -> profilePortIndex == null && profileLogicalSlotIndex == null &&
+        profileIncarnation == null && profileObservationEpoch == null && profileLeaseId == null
+    "esim" -> installedProfile()?.isCurrent() == true
+    else -> false
+}
+internal fun LocalLineBinding.activatedSim(): ActivatedSimCard? = when {
+    continuityKind == "physical" && liveContinuity() -> cardId?.let { ActivatedSimCard(subscriptionId, it) }
+    continuityKind == "esim" -> installedProfile()?.takeIf { it.isCurrent() }?.candidate?.let {
+        ActivatedSimCard(subscriptionId, checkNotNull(cardId), it)
+    }
+    else -> null
+}
+internal fun LocalLineBinding.withContinuity(sim: ActivatedSimCard): LocalLineBinding {
+    val record = sim.profile?.record
+    return copy(cardId = sim.cardId, continuityKind = if (record == null) "physical" else "esim",
+        profilePortIndex = record?.portIndex, profileLogicalSlotIndex = record?.logicalSlotIndex,
+        profileIncarnation = record?.incarnation, profileObservationEpoch = record?.observationEpoch,
+        profileLeaseId = record?.leaseId)
+}
+/** Provisional installation equality is not execution authority. */
+internal fun LocalLineBinding.matchesPrepared(sim: ActivatedSimCard): Boolean =
+    subscriptionId == sim.subscriptionId && cardId == sim.cardId &&
+        if (sim.profile == null) continuityKind == "physical" && liveContinuity()
+        else continuityKind == "esim" && profileRecord() == sim.profile.record && sim.profile.isCurrent()
+
 
 /** A tombstone reserves an independent, never-reused sequence for later authenticated upload. */
 @Entity(tableName = "local_withdrawal_sequences", indices = [Index(value = ["eventId"], unique = true)])
@@ -296,13 +343,15 @@ abstract class SmsAttemptDao {
     /** Called only with the result of an authenticated activation, never a UI-selected SIM alone. */
     @Transaction
     open fun installVerifiedLineBinding(binding: LocalLineBinding,
-                                        activeSimCards: List<ActiveSimCard>?): Boolean {
+                                        activeSimCards: List<ActiveSimCard>?,
+                                        preparedProfile: ActiveSimCard? = null): Boolean {
         if (binding.slot != 1 || binding.generation <= 0 || binding.subscriptionId < 0 ||
             binding.installedAtMs <= 0 ||
             Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
-            !SimCardContinuity.matches(binding.cardId?.let {
-                ActivatedSimCard(binding.subscriptionId, it)
-            }, activeSimCards) ||
+            !SimCardContinuity.matches(if (binding.continuityKind == "esim")
+                preparedProfile?.profileCandidate?.let {
+                    ActivatedSimCard(binding.subscriptionId, binding.cardId ?: -1, it)
+                }?.takeIf { binding.matchesPrepared(it) } else binding.activatedSim(), activeSimCards) ||
             listOf(binding.accountId, binding.deviceId, binding.lineId).any {
                 runCatching { UUID.fromString(it).toString() != it }.getOrDefault(true)
             }) return false
@@ -310,6 +359,9 @@ abstract class SmsAttemptDao {
         if (prior != null && (prior.accountId != binding.accountId ||
             prior.deviceId != binding.deviceId || prior.lineId != binding.lineId ||
             binding.generation <= prior.generation)) return false
+        // A provisional replacement retires its predecessor before Room can block.
+        // Publication of the replacement still waits for its authenticated final ACK.
+        prior?.takeIf { it.continuityKind == "esim" }?.profileAuthority()?.let(SimProfileContinuity::retireAuthority)
         putLineBinding(binding)
         return true
     }
@@ -337,9 +389,7 @@ abstract class SmsAttemptDao {
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
                 now >= it.installedAtMs && observedSubscriptionId != null &&
                 it.subscriptionId == observedSubscriptionId &&
-                SimCardContinuity.matches(it.cardId?.let { id ->
-                    ActivatedSimCard(it.subscriptionId, id)
-                }, activeSimCards)
+                SimCardContinuity.matches(it.activatedSim(), activeSimCards)
         }
         val eventId = UUID.randomUUID().toString()
         val sequence = reserveLocalWithdrawalSequence(LocalWithdrawalSequence(eventId = eventId))
@@ -768,7 +818,7 @@ private const val PRUNE_BATCH = 500
 @Database(entities = [SmsAttempt::class, SmsSegment::class, AlphaRadioEvent::class,
     InboundWindow::class, InboundEvent::class, InboundUpload::class,
     LocalRecipientSuppression::class, LocalLineBinding::class,
-    LocalInboundWithdrawal::class, LocalWithdrawalSequence::class, SealedPreparationRecord::class], version = 12, exportSchema = false)
+    LocalInboundWithdrawal::class, LocalWithdrawalSequence::class, SealedPreparationRecord::class], version = 13, exportSchema = false)
 abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun attempts(): SmsAttemptDao
     abstract fun sealedPreparations(): SealedPreparationDao
@@ -781,7 +831,7 @@ abstract class SmsJournalDatabase : RoomDatabase() {
                 context.applicationContext, SmsJournalDatabase::class.java, "sms_attempts.db"
             ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
                 MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
-                MIGRATION_10_11, MIGRATION_11_12)
+                MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13)
                 .build().also { instance = it }
         }
 
@@ -871,6 +921,18 @@ abstract class SmsJournalDatabase : RoomDatabase() {
             }
         }
 
+        /** Existing physical rows retain their exact identity; no saved eSIM record is authority. */
+        internal val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE local_line_binding ADD COLUMN continuityKind TEXT NOT NULL DEFAULT 'physical'")
+                db.execSQL("ALTER TABLE local_line_binding ADD COLUMN profilePortIndex INTEGER DEFAULT NULL")
+                db.execSQL("ALTER TABLE local_line_binding ADD COLUMN profileLogicalSlotIndex INTEGER DEFAULT NULL")
+                db.execSQL("ALTER TABLE local_line_binding ADD COLUMN profileIncarnation TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE local_line_binding ADD COLUMN profileObservationEpoch INTEGER DEFAULT NULL")
+                db.execSQL("ALTER TABLE local_line_binding ADD COLUMN profileLeaseId TEXT DEFAULT NULL")
+            }
+        }
+
         /** Candidate preparation is isolated from existing alpha attempts and radio events. */
         internal val MIGRATION_11_12 = object : Migration(11, 12) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -898,6 +960,7 @@ class GatewayApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         val app = applicationContext
+        SimProfileContinuity.initialize(app)
         HeartbeatResumeStore.eligibleAfterUserStop(app)
         // Crash recovery runs once per process. It reclassifies live attempt
         // states, so repeating it on the daily timer would retire in-flight

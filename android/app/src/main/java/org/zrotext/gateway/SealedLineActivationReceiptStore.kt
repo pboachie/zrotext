@@ -19,17 +19,24 @@ internal interface SealedLineReceiptPersistence {
 internal object SealedLineActivationReceiptCodec {
     fun encode(snapshot: SealedLineActivationSnapshot): String {
         val proof = snapshot.proof
-        return SealedLineActivationFrames.bounded(JSONObject().put("version", 1)
+        val profile = proof.sim.profile?.record
+        val frame = JSONObject().put("version", if (profile == null) 1 else 2)
             .put("challenge", SealedLineActivationFrames.challengeFrame(proof.challenge))
             .put("api", proof.apiLevel).put("subscription", proof.sim.subscriptionId).put("card", proof.sim.cardId)
             .put("statement", SealedLineActivationFrames.encode(proof.statement()))
             .put("signature", SealedLineActivationFrames.encode(proof.signature()))
             .put("fingerprint", SealedLineActivationFrames.encode(proof.fingerprint()))
-            .put("receipt", SealedLineActivationFrames.receiptFrame(snapshot.receipt)))
+            .put("receipt", SealedLineActivationFrames.receiptFrame(snapshot.receipt))
+        if (profile != null) frame.put("profile", JSONObject().put("port", profile.portIndex)
+            .put("slot", profile.logicalSlotIndex).put("incarnation", profile.incarnation)
+            .put("epoch", profile.observationEpoch).put("lease", profile.leaseId))
+        return SealedLineActivationFrames.bounded(frame)
     }
     fun decode(text: String): SealedLineActivationSnapshot {
         require(text.length in 1..4096 && text.toByteArray(Charsets.UTF_8).size <= 4096)
         val frame = JSONObject(text)
+        // v2 is durable provenance only: a cold start cannot synthesize its opaque live lease.
+        require(SealedLineActivationFrames.integer(frame, "version") == 1L)
         SealedLineActivationFrames.fields(frame, setOf("version", "challenge", "api", "subscription", "card",
             "statement", "signature", "fingerprint", "receipt"))
         require(SealedLineActivationFrames.integer(frame, "version") == 1L)

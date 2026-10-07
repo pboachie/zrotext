@@ -26,7 +26,7 @@ internal object ConversationAndroidEnrollment {
             val selected = app.getSharedPreferences("gateway_selection", Context.MODE_PRIVATE)
                 .getInt("subscription_id", SubscriptionManager.INVALID_SUBSCRIPTION_ID)
             check(selected == binding.subscriptionId && SimCardContinuity.matches(
-                ActivatedSimCard(binding.subscriptionId, checkNotNull(binding.cardId)), SimCardContinuity.observe(app)))
+                binding.activatedSim(), SimCardContinuity.observe(app)))
             host.requireCurrent()
         }
         fun current() { check(foreground.get()); boundCurrent(); check(foreground.get()) }

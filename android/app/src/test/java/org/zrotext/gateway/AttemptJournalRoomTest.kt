@@ -254,4 +254,58 @@ class AttemptJournalRoomTest {
         assertEquals(newEvent, dao.nextAlphaEvent(next.accountId, next.deviceId,
             next.originHash)?.eventId)
     }
+    @Test @Config(sdk = [34]) fun migration12To13PreservesPhysicalRowsAndNullLegacyCard() {
+        val sql = db.openHelper.writableDatabase
+        sql.execSQL("DROP TABLE local_line_binding")
+        sql.execSQL("CREATE TABLE local_line_binding (slot INTEGER NOT NULL PRIMARY KEY, accountId TEXT NOT NULL, deviceId TEXT NOT NULL, lineId TEXT NOT NULL, generation INTEGER NOT NULL, subscriptionId INTEGER NOT NULL, installedAtMs INTEGER NOT NULL, cardId INTEGER DEFAULT NULL)")
+        sql.execSQL("INSERT INTO local_line_binding VALUES (1, ?, ?, ?, 1, 7, 1000, NULL)",
+            arrayOf(java.util.UUID(0, 1).toString(), java.util.UUID(0, 2).toString(), java.util.UUID(0, 3).toString()))
+        SmsJournalDatabase.MIGRATION_12_13.migrate(sql)
+        val row = dao.currentLineBinding()!!
+        assertEquals("physical", row.continuityKind); assertNull(row.cardId)
+        assertNull(row.profileRecord()); assertNull(row.activatedSim())
+        val info = androidx.room.util.TableInfo.read(sql, "local_line_binding")
+        assertEquals("'physical'", info.columns["continuityKind"]?.defaultValue)
+        assertTrue(info.columns["continuityKind"]?.notNull == true)
+        assertTrue(info.columns.keys.containsAll(listOf("profilePortIndex", "profileLogicalSlotIndex",
+            "profileIncarnation", "profileObservationEpoch", "profileLeaseId")))
+    }
+    @Test @Config(sdk = [34]) fun provisionalReplacementRetiresOldCapabilityWithoutPublishingNewAuthority() {
+        EsimProfileFixture().use { f ->
+            val sim = checkNotNull(SimCardContinuity.activationCandidate(f.cards(), 7))
+            val base = LocalLineBinding(accountId = java.util.UUID(0, 1).toString(),
+                deviceId = java.util.UUID(0, 2).toString(), lineId = java.util.UUID(0, 3).toString(),
+                generation = 1, subscriptionId = 7, installedAtMs = 1000, cardId = 42).withContinuity(sim)
+            assertTrue(dao.installVerifiedLineBinding(base, f.cards(), sim.observedCard()))
+            org.junit.Assert.assertFalse(base.liveContinuity())
+            val old = f.install(base)
+            assertTrue(base.liveContinuity())
+            val next = base.copy(generation = 2)
+            assertTrue(dao.installVerifiedLineBinding(next, f.cards(), sim.observedCard()))
+            org.junit.Assert.assertFalse(old.isCurrent())
+            org.junit.Assert.assertFalse(next.liveContinuity())
+            assertEquals(next, dao.currentLineBinding())
+            f.tracker.close()
+            org.junit.Assert.assertFalse(checkNotNull(dao.currentLineBinding()).liveContinuity())
+        }
+    }
+
+    @Test @Config(sdk = [34]) fun replacementDuringFinalReadinessFencesUnpublishedOldPermit() {
+        EsimProfileFixture().use { f ->
+            val sim = checkNotNull(SimCardContinuity.activationCandidate(f.cards(), 7))
+            val old = LocalLineBinding(accountId = java.util.UUID(0, 1).toString(),
+                deviceId = java.util.UUID(0, 2).toString(), lineId = java.util.UUID(0, 3).toString(),
+                generation = 1, subscriptionId = 7, installedAtMs = 1000, cardId = 42).withContinuity(sim)
+            assertTrue(dao.installVerifiedLineBinding(old, f.cards(), sim.observedCard()))
+            val key = ProfileChallengeKey(checkNotNull(old.profileAuthority()), java.util.UUID.randomUUID().toString())
+            assertTrue(f.fence.reserveBeforeSigning(key, f.candidate))
+            val permit = checkNotNull(f.fence.persistAcceptedAck(key, f.candidate))
+            assertNull(f.tracker.publishInstalled(permit) {
+                assertTrue(dao.installVerifiedLineBinding(old.copy(generation = 2), f.cards(), sim.observedCard()))
+                true
+            })
+            org.junit.Assert.assertFalse(checkNotNull(dao.currentLineBinding()).liveContinuity())
+        }
+    }
+
 }

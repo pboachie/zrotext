@@ -48,3 +48,13 @@ The draft schema uses provisional migrations `086_sealed_line_key_registration.s
 and `087_sealed_line_activation_exchanges.sql`, in that order. Final numbering
 belongs to the coordinator before merge. These files do not enable setup or
 carrier dispatch; request handlers never install a schema.
+
+## Android selected eSIM profile
+
+API 33+ eSIM selection captures an opaque observer-issued profile-record lease at the existing explicit local line-approval action. A callback, permission loss, changed selection or observer restart retires that acceptance; repeating an old remote challenge cannot renew it. A new applicable owner approval and higher-generation authenticated challenge are required.
+
+Before signing, Android durably reserves the exact challenge in a deny-only ledger. Normal SMS and sealed setup share a per-account/device/line generation fence, matching the server's common allocator while retaining their separate signature domains. Saved ledger entries never create a live lease.
+
+Room schema 13 stores typed profile provenance. The provisional Room binding and v2 public receipt written before `sealed_line_installed` do not grant execution authority. Only the existing accepted final `sealed_line_install_ack`, its exact provenance checks and the durable generation fence can publish the live installed object. A provisional replacement retires its predecessor first. Final selection, proof, session and clock checks run after blocking IO, before publication, and again afterwards; failures revoke the exact inserted object. v2 eSIM receipts cannot restore authority after restart; physical v1 receipt bytes and recovery are unchanged.
+
+Content consent, trusted session time, current root/reader authority, durable submit-intent ACK, multipart limits and one-use radio CAS remain independent requirements. This source change does not enable a server feature, carrier dispatch or a live deployment, and does not repair the separate local wall-clock assurance gap.

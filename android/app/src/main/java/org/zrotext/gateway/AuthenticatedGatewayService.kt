@@ -109,6 +109,7 @@ class AuthenticatedGatewayService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_PAUSE) {
             SealedLineActivationMount.disable()
+            SimProfileContinuity.stop()
             ConversationProcessMount.runtime.pause(ConversationStopReason.USER_STOP)
             val rebootResumeCleared = HeartbeatResumeStore.clear(this)
             halt()
@@ -851,7 +852,7 @@ class AuthenticatedGatewayService : Service() {
 
     /**
      * Answers an owner-opened challenge with a signed declaration of the selected
-     * physical SIM. An ineligible SIM or selection declines silently; the owner sees
+     * SIM with current physical-card or API33+ eSIM profile-record continuity. An ineligible SIM or selection declines silently; the owner sees
      * the challenge stay unanswered. A re-pushed challenge resends the same proof.
      */
     private fun handleSmsLineChallenge(webSocket: WebSocket, machine: DeviceStreamMachine,
@@ -862,12 +863,13 @@ class AuthenticatedGatewayService : Service() {
             try {
                 val epoch = machine.heartbeatEpoch()
                 val existing = smsLineActivation
-                val proof = if (existing != null && sameChallenge(existing.challenge, challenge)) existing
+                val proof = if (existing != null && sameChallenge(existing.challenge, challenge))
+                    existing.takeIf { it.sim.profile?.isCurrent() != false }
                 else SmsLineActivationDevice.forGateway(applicationContext, keys)
                     .prepare(challenge, machine.activeAccountId(), machine.activeDeviceId())
                 if (proof == null) {
                     AuthenticatedGatewayStatus.value =
-                        "SMS line activation declined: select one eligible physical SIM"
+                        "SMS line activation declined: select an eligible SIM and approve the current profile"
                     return@execute
                 }
                 if (generation != currentGeneration || machine.heartbeatEpoch() != epoch) return@execute
@@ -924,15 +926,23 @@ class AuthenticatedGatewayService : Service() {
     private fun handleSmsLineActivated(keys: DeviceSigningKeyStore, accountId: UUID,
                                        deviceId: UUID, ack: AuthenticatedSmsLineActivationAck) {
         JournalRuntime.io.execute {
-            if (ack.challengeId == installedSmsLineChallenge) return@execute
+            if (ack.challengeId == installedSmsLineChallenge && (!installedSmsLineIsEsim || runCatching {
+                SmsJournalDatabase.get(applicationContext).attempts().currentLineBinding()?.liveContinuity() == true
+            }.getOrDefault(false))) return@execute
             val dao = SmsJournalDatabase.get(applicationContext).attempts()
             val proof = smsLineActivation
             if (proof == null || !ack.matches(proof)) {
                 // After an app restart the proof is gone, but a resend of an
                 // activation installed before the restart is not an error.
-                val installedBefore = runCatching { ack.isInstalledAs(dao.currentLineBinding()) }
+                val installedBefore = runCatching {
+                    val binding = dao.currentLineBinding()
+                    ack.isInstalledAs(binding) && binding?.liveContinuity() == true
+                }
                     .getOrDefault(false)
-                if (installedBefore) installedSmsLineChallenge = ack.challengeId
+                if (installedBefore) {
+                    installedSmsLineChallenge = ack.challengeId
+                    installedSmsLineIsEsim = dao.currentLineBinding()?.continuityKind == "esim"
+                }
                 AuthenticatedGatewayStatus.value = if (installedBefore)
                     "SMS line activated on this phone"
                 else "SMS line approved for a proof this app no longer holds; start a new activation"
@@ -948,6 +958,7 @@ class AuthenticatedGatewayService : Service() {
             if (installed) {
                 smsLineActivation = null
                 installedSmsLineChallenge = ack.challengeId
+                installedSmsLineIsEsim = proof.sim.profile != null
             }
             val conflict = !installed &&
                 runCatching { ack.conflictsWith(dao.currentLineBinding()) }.getOrDefault(false)
@@ -1240,6 +1251,7 @@ class AuthenticatedGatewayService : Service() {
     @Synchronized
     override fun onDestroy() {
         SealedLineActivationMount.disable()
+        SimProfileContinuity.stop()
         ConversationProcessMount.runtime.pause(ConversationStopReason.WORKER_SHUTDOWN)
         processActive = false
         halt()
