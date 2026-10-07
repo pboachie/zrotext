@@ -191,6 +191,47 @@ impl Fixture {
     pub async fn another_owner(&mut self) -> Owner {
         Self::register(&mut self.db, &self.hasher).await
     }
+    /// An observer seat in the owner's account with real login credentials.
+    /// Membership identity and role are immutable (migration 048), so the
+    /// seat is inserted directly instead of demoting the owner in place.
+    pub async fn observer(&mut self) -> Owner {
+        let observer_id = Uuid::new_v4();
+        self.db
+            .execute(
+                "INSERT INTO users(id,email,password_hash,email_verified_at) \
+                 SELECT $1,'observer@example.test',password_hash,email_verified_at \
+                 FROM users WHERE id=$2",
+                &[&observer_id, &self.owner.principal.user_id],
+            )
+            .await
+            .unwrap();
+        self.db
+            .execute(
+                "INSERT INTO memberships(account_id,user_id,role) VALUES($1,$2,'observer')",
+                &[
+                    &self.owner.principal.tenant.account_id(),
+                    &observer_id,
+                ],
+            )
+            .await
+            .unwrap();
+        let credentials = auth::login(
+            &self.db,
+            &self.hasher,
+            "observer@example.test",
+            &self.owner.password,
+        )
+        .await
+        .unwrap();
+        let principal = auth::authenticate_session(&self.db, &self.hasher, &credentials.token)
+            .await
+            .unwrap();
+        Owner {
+            principal,
+            credentials,
+            password: self.owner.password.clone(),
+        }
+    }
     pub fn state(&self) -> OwnerConversationsState {
         OwnerConversationsState {
             database_url: self.url.clone(),

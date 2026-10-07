@@ -181,34 +181,17 @@ async fn real_owner_csrf_role_and_account_boundaries_precede_poisoned_body() {
             assert_eq!(response.status(), StatusCode::FORBIDDEN);
             assert_private(&response);
         }
-        f.db.execute(
-            "UPDATE memberships SET role='observer' WHERE account_id=$1 AND user_id=$2",
-            &[
-                &f.owner.principal.tenant.account_id(),
-                &f.owner.principal.user_id,
-            ],
-        )
-        .await
-        .unwrap();
+        let observer = f.observer().await;
         let response = tokio::time::timeout(
             Duration::from_secs(1),
             f.app()
-                .oneshot(f.request(&f.owner, "POST", &operation(id, "revoke"), stalled_body())),
+                .oneshot(f.request(&observer, "POST", &operation(id, "revoke"), stalled_body())),
         )
         .await
         .unwrap()
         .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_private(&response);
-        f.db.execute(
-            "UPDATE memberships SET role='owner' WHERE account_id=$1 AND user_id=$2",
-            &[
-                &f.owner.principal.tenant.account_id(),
-                &f.owner.principal.user_id,
-            ],
-        )
-        .await
-        .unwrap();
         f.db.execute(
             "UPDATE sessions SET revoked_at=clock_timestamp() WHERE id=$1",
             &[&f.owner.principal.session_id],
