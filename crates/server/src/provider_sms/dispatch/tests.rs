@@ -363,7 +363,7 @@ async fn provider_intent_refuses_suppression_and_dead_reservations() {
     // A reservation that never obtained an execution intent is not live
     // submit authority. (An expired lease cannot be simulated by update:
     // the exposure ledger forbids replacing a lease, and expiry sweeps are
-    // settlement-side, so the un-intented reservation is the honest check.)
+    // settlement-side, so the never-intended reservation is the honest check.)
     let reserved = Fixture::configured(false).await;
     assert_eq!(
         reserved
