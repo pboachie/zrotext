@@ -42,6 +42,33 @@ async fn anonymous_and_bearer_openings_refuse_before_body_or_database() {
     }
 }
 
+const MUTATION_PATHS: [&str; 6] = [
+    "/v1/owner/workflow/openings/offers",
+    "/v1/owner/workflow/openings/reservations",
+    "/v1/owner/workflow/openings/confirmations",
+    "/v1/owner/workflow/openings/releases",
+    "/v1/owner/workflow/openings/closures",
+    "/v1/owner/workflow/openings/cancellations",
+];
+
+#[tokio::test]
+async fn anonymous_and_bearer_mutations_refuse_before_body_or_database() {
+    for path in MUTATION_PATHS {
+        for bearer in [false, true] {
+            let mut request = Request::builder().method("POST").uri(path);
+            if bearer {
+                request = request.header(header::AUTHORIZATION, "Bearer synthetic");
+            }
+            let response = router(disconnected())
+                .oneshot(request.body(Body::from(vec![0; 8193])).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            protected(&response);
+        }
+    }
+}
+
 #[tokio::test]
 async fn status_is_post_only_and_disabled_composition_has_no_opening_routes() {
     let path = "/v1/owner/workflow/openings/00000000-0000-0000-0000-000000000001/status";
@@ -64,6 +91,7 @@ async fn status_is_post_only_and_disabled_composition_has_no_opening_routes() {
             enabled_original,
         );
         let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -74,5 +102,19 @@ async fn status_is_post_only_and_disabled_composition_has_no_opening_routes() {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        for path in MUTATION_PATHS {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        }
     }
 }

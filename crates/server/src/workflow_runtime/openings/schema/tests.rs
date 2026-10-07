@@ -1,14 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
 use crate::http_owner_conversations::context::decisions::tests::Case;
-const CANDIDATE: &str = include_str!(
-    "../../../../../../deploy/compose/migration-candidates/owner_opening_capacity.sql"
-);
+const MIGRATION: &str =
+    include_str!("../../../../../../deploy/compose/migrations/092_owner_opening_capacity.sql");
 
 #[tokio::test]
-#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; exact optional candidate catalog and rollback"]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; exact opening catalog and rollback"]
 async fn absent_pristine_and_partial_schema_have_distinct_outcomes() {
     let c = Case::new().await;
+    c.base
+        .f
+        .db
+        .batch_execute(
+            "DROP TABLE workflow_opening_requests, workflow_opening_allocations, \
+             workflow_opening_offers, workflow_openings CASCADE",
+        )
+        .await
+        .unwrap();
     let mut db = c.base.f.connect().await;
     let original_path: String = db
         .query_one("SELECT current_setting('search_path')", &[])
@@ -93,7 +101,7 @@ async fn absent_pristine_and_partial_schema_have_distinct_outcomes() {
         .await,
         Err(crate::http_owner_conversations::ConversationError::NotFound)
     ));
-    c.base.f.db.batch_execute(CANDIDATE).await.unwrap();
+    c.base.f.db.batch_execute(MIGRATION).await.unwrap();
     let tx = db.transaction().await.unwrap();
     let server_version: String = tx
         .query_one("SELECT current_setting('server_version_num')", &[])
@@ -118,7 +126,7 @@ async fn absent_pristine_and_partial_schema_have_distinct_outcomes() {
         .collect();
     assert!(
         matches!(installed(&tx).await, Ok(true)),
-        "pristine candidate must pass; server_version_num={server_version}; CHECK definitions={check_definitions:?}"
+        "pristine migration must pass; server_version_num={server_version}; CHECK definitions={check_definitions:?}"
     );
     tx.rollback().await.unwrap();
     let tx = db.transaction().await.unwrap();
@@ -134,7 +142,7 @@ async fn absent_pristine_and_partial_schema_have_distinct_outcomes() {
     let tx = db.transaction().await.unwrap();
     assert!(
         installed(&tx).await.unwrap(),
-        "DDL rollback must restore pristine candidate"
+        "DDL rollback must restore pristine migration"
     );
     tx.rollback().await.unwrap();
     drop(db);
@@ -152,12 +160,11 @@ async fn remove_constraint(tx: &Transaction<'_>, table: &str, kind: &str, fragme
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; actual constraint/default/table drift refusal"]
 async fn malformed_complete_candidate_refuses_and_rolls_back_each_drift() {
     let c = Case::new().await;
-    c.base.f.db.batch_execute(CANDIDATE).await.unwrap();
     let mut db = c.base.f.connect().await;
     let tx = db.transaction().await.unwrap();
     assert!(
         installed(&tx).await.unwrap(),
-        "pristine candidate before drift"
+        "pristine migration before drift"
     );
     tx.rollback().await.unwrap();
     for drift in [
@@ -266,7 +273,6 @@ async fn malformed_complete_candidate_refuses_and_rolls_back_each_drift() {
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; actual search path and namespace refusal"]
 async fn resolved_relations_must_belong_to_the_current_schema() {
     let c = Case::new().await;
-    c.base.f.db.batch_execute(CANDIDATE).await.unwrap();
     let mut db = c.base.f.connect().await;
     let tx = db.transaction().await.unwrap();
     let current: String = tx
@@ -291,7 +297,6 @@ async fn resolved_relations_must_belong_to_the_current_schema() {
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; malformed schema stops borrowed lifecycle and rolls back"]
 async fn malformed_schema_stops_borrowed_lifecycle_before_effects() {
     let c = Case::new().await;
-    c.base.f.db.batch_execute(CANDIDATE).await.unwrap();
     let mut db = c.base.f.connect().await;
     let id = uuid::Uuid::new_v4();
     let tx = db.transaction().await.unwrap();

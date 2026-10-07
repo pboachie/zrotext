@@ -19,11 +19,6 @@ async fn seed(db: &tokio_postgres::Client, account: Uuid) {
 async fn mounted_erasure_counts_tombstones_isolates_accounts_and_rolls_back_later_failure() {
     for failure in [false, true] {
         let (admin, mut db, url, schema) = migrated_schema("opening_capacity").await;
-        db.batch_execute(include_str!(
-            "../../../../../deploy/compose/migration-candidates/owner_opening_capacity.sql"
-        ))
-        .await
-        .unwrap();
         let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(12)).unwrap());
         let (a, session, other, _, app) = fixture(&mut db, &hasher, &url, None).await;
         seed(&db, a.account_id).await;
@@ -102,11 +97,6 @@ async fn mounted_erasure_counts_tombstones_isolates_accounts_and_rolls_back_late
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; actual mounted partial candidate failure"]
 async fn partial_opening_candidate_aborts_erasure_without_any_account_changes() {
     let (admin, mut db, url, schema) = migrated_schema("opening_partial").await;
-    db.batch_execute(include_str!(
-        "../../../../../deploy/compose/migration-candidates/owner_opening_capacity.sql"
-    ))
-    .await
-    .unwrap();
     let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(12)).unwrap());
     let (a, session, _, _, app) = fixture(&mut db, &hasher, &url, None).await;
     seed(&db, a.account_id).await;

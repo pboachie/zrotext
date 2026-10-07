@@ -755,12 +755,12 @@ unchanged by this data.
 
 ## Owner-confirmed capacity foundation
 
-The single-opening capacity library is dormant. Its unnumbered
-`deploy/compose/migration-candidates/owner_opening_capacity.sql` is excluded
-from normal installation and is applied explicitly by disposable tests. No
-mutation route, SDK caller, appointment, volunteer or acknowledgment journey
-is enabled by this library. Production migration promotion and application
-acceptance remain separately required.
+The single-opening capacity library installs through numbered migration
+`deploy/compose/migrations/092_owner_opening_capacity.sql`. Its owner
+create, status and mutation routes are mounted inside the customer-routines
+composition, which stays disabled unless `CUSTOMER_ROUTINES_ENABLED` is set.
+No SDK caller, appointment, volunteer or acknowledgment journey is enabled
+by this library; application acceptance remains separately required.
 
 Pending reservations and confirmed allocations consume capacity. The owner
 confirms business meaning after local decryption; delivery or ciphertext does

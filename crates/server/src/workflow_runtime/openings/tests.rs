@@ -6,16 +6,7 @@ use futures_util::FutureExt;
 use sha2::{Digest, Sha256};
 
 async fn fixture() -> Case {
-    let c = Case::new().await;
-    c.base
-        .f
-        .db
-        .batch_execute(include_str!(
-            "../../../../../deploy/compose/migration-candidates/owner_opening_capacity.sql"
-        ))
-        .await
-        .unwrap();
-    c
+    Case::new().await
 }
 fn source(c: &Case) -> Source {
     Source {

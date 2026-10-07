@@ -1,7 +1,8 @@
 -- SPDX-License-Identifier: AGPL-3.0-only
--- Unnumbered dormant candidate. Excluded from the production migrator.
--- Contact routing/content may be erased without freeing confirmed occupancy.
--- Only account/opening erasure cascades occupied allocation records.
+-- Owner-confirmed single-opening capacity tables, promoted from the
+-- migration-candidates draft (092 is the next free number after 091;
+-- renumber before merge if another migration lands first). Installed by
+-- the production migrator and disposable test fixtures alike.
 
 CREATE TABLE workflow_openings (
   account_id uuid NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
