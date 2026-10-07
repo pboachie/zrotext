@@ -359,6 +359,64 @@ pub async fn claim_intended(
     Ok(leases)
 }
 
+/// Trusted-sender pre-flight: while holding the leased attempt, re-verify
+/// that its committed digests match the caller's reconstruction, the
+/// recipient is not suppressed and the exposure reservation is still live.
+/// Called immediately before network I/O; a refusal releases the attempt.
+pub async fn preflight(
+    client: &mut Client,
+    permit: &ElectedWriterPermit,
+    account: Uuid,
+    attempt: Uuid,
+    material: &super::sender::Material<'_>,
+) -> Result<(), DispatchError> {
+    let recipient = material.recipient;
+    let tx = client
+        .transaction()
+        .await
+        .map_err(|_| DispatchError::Database)?;
+    authority(&tx, permit).await?;
+    lock_account(&tx, account).await?;
+    let row = tx
+        .query_opt(
+            "SELECT request_digest,recipient_hash,lease_until_ms,action_id,action_revision,\
+        action_binding_digest,reservation_id FROM provider_send_attempts \
+        WHERE account_id=$1 AND attempt_id=$2 AND state='dispatching' AND erased_at IS NULL \
+        FOR UPDATE",
+            &[&account, &attempt],
+        )
+        .await
+        .map_err(|_| DispatchError::Database)?
+        .ok_or(DispatchError::Unavailable)?;
+    let now = now_ms(&tx).await?;
+    let digest: Vec<u8> = row.try_get(0).map_err(|_| DispatchError::Inconsistent)?;
+    let recipient_hash: Vec<u8> = row.try_get(1).map_err(|_| DispatchError::Inconsistent)?;
+    let lease_until: Option<i64> = row.try_get(2).map_err(|_| DispatchError::Inconsistent)?;
+    if digest.as_slice() != material.request.digest()
+        || recipient_hash.as_slice() != Sha256::digest(recipient.as_bytes()).as_slice()
+        || lease_until.is_none_or(|until| until <= now)
+    {
+        return Err(DispatchError::Conflict);
+    }
+    if suppressed(&tx, account, recipient).await? {
+        return Err(DispatchError::Suppressed);
+    }
+    let action = ActionKey {
+        account_id: account,
+        action_id: row.try_get(3).map_err(|_| DispatchError::Inconsistent)?,
+        revision: row.try_get(4).map_err(|_| DispatchError::Inconsistent)?,
+        binding_digest: row
+            .try_get::<_, Vec<u8>>(5)
+            .map_err(|_| DispatchError::Inconsistent)?
+            .try_into()
+            .map_err(|_| DispatchError::Inconsistent)?,
+    };
+    let reservation: Uuid = row.try_get(6).map_err(|_| DispatchError::Inconsistent)?;
+    require_live_reservation(&tx, account, &action, reservation, now).await?;
+    tx.commit().await.map_err(|_| DispatchError::Database)?;
+    Ok(())
+}
+
 /// The outcome of one submission attempt from the trusted sender worker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResponseOutcome {
@@ -483,4 +541,4 @@ async fn set_state(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
