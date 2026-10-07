@@ -77,6 +77,15 @@ hard cap. A bounded outstanding-reservation count prevents unlimited dormant
 work. Policies are immutable versions; disabling them cannot reactivate the
 same row or silently change its rates, period or scope.
 
+Every scope and the deployment aggregate decide through the single pure
+`zrotext_delivery_store::exposure::admit` function. It requires
+`0 <= soft <= hard` (a violated policy row fails closed), refuses when finalized
+plus outstanding plus the request exceeds the hard cap, and warns when the
+projection reaches the soft threshold (equality warns; an exact fit to the hard
+cap is admitted). Its unit tests cover the boundary, inverted thresholds,
+period rollover that keeps older outstanding liability, and maximum-cost
+overflow without a database.
+
 Exposure uses integer policy units, not floating point or public prices. For
 model bounds, input and maximum output components are multiplied with checked
 wide integers, each divided by one thousand with upward rounding, then added
