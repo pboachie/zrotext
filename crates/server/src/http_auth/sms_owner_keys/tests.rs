@@ -18,7 +18,7 @@ macro_rules! migration {
 
 // The ceremony runs on the complete schema. SQL is embedded at build time so
 // the test never executes files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 91] = [
+const TEST_MIGRATIONS: [(&str, &str); 92] = [
     ("001_foundation.sql", migration!("001_foundation.sql")),
     ("002_auth.sql", migration!("002_auth.sql")),
     ("003_delivery.sql", migration!("003_delivery.sql")),
@@ -367,6 +367,10 @@ const TEST_MIGRATIONS: [(&str, &str); 91] = [
     (
         "091_original_reply_origin_binding.sql",
         migration!("091_original_reply_origin_binding.sql"),
+    ),
+    (
+        "092_provider_send_attempts.sql",
+        migration!("092_provider_send_attempts.sql"),
     ),
 ];
 
