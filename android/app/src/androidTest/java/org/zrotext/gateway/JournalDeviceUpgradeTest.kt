@@ -36,6 +36,7 @@ class JournalDeviceUpgradeTest {
             assertEquals(listOf(SmsSegment(ATTEMPT, 0)), dao.getSegments(ATTEMPT))
             assertEquals(0L, count(db, "alpha_radio_events"))
             assertEquals(0L, count(db, "sealed_preparations"))
+            assertNull(dao.currentLineBinding())
             assertThrows(SQLiteConstraintException::class.java) { dao.reserve(ATTEMPT, 3, 1, 300) }
             assertEquals(expected, dao.getAttempt(ATTEMPT))
             assertEquals(listOf(SmsSegment(ATTEMPT, 0)), dao.getSegments(ATTEMPT))
@@ -129,15 +130,34 @@ class JournalDeviceUpgradeTest {
             SmsJournalDatabase.MIGRATION_5_6, SmsJournalDatabase.MIGRATION_6_7,
             SmsJournalDatabase.MIGRATION_7_8, SmsJournalDatabase.MIGRATION_8_9,
             SmsJournalDatabase.MIGRATION_9_10, SmsJournalDatabase.MIGRATION_10_11,
-            SmsJournalDatabase.MIGRATION_11_12,
-        ) else arrayOf(SmsJournalDatabase.MIGRATION_11_12)
+            SmsJournalDatabase.MIGRATION_11_12, SmsJournalDatabase.MIGRATION_12_13,
+        ) else arrayOf(SmsJournalDatabase.MIGRATION_11_12, SmsJournalDatabase.MIGRATION_12_13)
         return Room.databaseBuilder(context, SmsJournalDatabase::class.java, name)
             .allowMainThreadQueries().addMigrations(*migrations).build()
     }
 
     private fun assertCurrentSchema(room: SmsJournalDatabase): String {
         val db = room.openHelper.writableDatabase
-        assertEquals(12, db.version)
+        assertEquals(13, db.version)
+        val expectedBindingColumns = legacyColumns(11).getValue("local_line_binding") + listOf(
+            Column("continuityKind", "TEXT", true, "'physical'"),
+            Column("profilePortIndex", "INTEGER", false, "NULL"),
+            Column("profileLogicalSlotIndex", "INTEGER", false, "NULL"),
+            Column("profileIncarnation", "TEXT", false, "NULL"),
+            Column("profileObservationEpoch", "INTEGER", false, "NULL"),
+            Column("profileLeaseId", "TEXT", false, "NULL"),
+        )
+        val bindingColumns = mutableListOf<Column>()
+        db.query("PRAGMA table_info(`local_line_binding`)").use { cursor ->
+            while (cursor.moveToNext()) bindingColumns.add(Column(
+                cursor.getString(cursor.getColumnIndexOrThrow("name")),
+                cursor.getString(cursor.getColumnIndexOrThrow("type")),
+                cursor.getInt(cursor.getColumnIndexOrThrow("notnull")) == 1,
+                cursor.getColumnIndexOrThrow("dflt_value").let { if (cursor.isNull(it)) null else cursor.getString(it) },
+                cursor.getInt(cursor.getColumnIndexOrThrow("pk")),
+            ))
+        }
+        assertEquals(expectedBindingColumns, bindingColumns)
         db.query("PRAGMA foreign_key_check").use { assertFalse(it.moveToFirst()) }
         val tables = mutableSetOf<String>()
         db.query("SELECT name FROM sqlite_master WHERE type = 'table'").use { cursor ->
@@ -206,6 +226,8 @@ class JournalDeviceUpgradeTest {
         }
         assertEquals(LocalLineBinding(accountId = ACCOUNT, deviceId = DEVICE, lineId = LINE,
             generation = 7, subscriptionId = 3, installedAtMs = 100, cardId = 42), dao.currentLineBinding())
+        assertEquals("physical", dao.currentLineBinding()?.continuityKind)
+        assertNull(dao.currentLineBinding()?.profileRecord())
         assertEquals(LocalInboundWithdrawal(DEDUPE, SENDER, "opt_out", 3, null, null, 150), dao.localWithdrawal(DEDUPE))
         assertNull(dao.nextLineOptOut(0))
         assertEquals(0L, count(db, "local_withdrawal_sequences"))

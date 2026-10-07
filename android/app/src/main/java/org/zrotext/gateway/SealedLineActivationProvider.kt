@@ -122,11 +122,11 @@ internal object SealedLineActivationMount {
     private var acceptedProfile: EsimProfileCandidate? = null
     fun enable(value: SealedLineAcceptance, explicitlyAccepted: Boolean = false,
                originCurrent: () -> Boolean = { false }): Boolean =
-        enableOwned(value, explicitlyAccepted, originCurrent) != null
+        enableOwned(value, explicitlyAccepted, originCurrent = originCurrent) != null
     /** Closing an obsolete phone review cannot withdraw a newer explicit acceptance. */
     fun enableOwned(value: SealedLineAcceptance, explicitlyAccepted: Boolean = false,
-                    originCurrent: () -> Boolean,
-                    profile: EsimProfileCandidate? = null): AutoCloseable? {
+                    profile: EsimProfileCandidate? = null,
+                    originCurrent: () -> Boolean): AutoCloseable? {
         if (!explicitlyAccepted || !runCatching(originCurrent).getOrDefault(false) ||
             profile?.isCurrent() == false) return null
         val owner = synchronized(this) {

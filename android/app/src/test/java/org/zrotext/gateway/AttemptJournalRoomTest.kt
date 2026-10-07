@@ -215,12 +215,29 @@ class AttemptJournalRoomTest {
                 SmsJournalDatabase.MIGRATION_5_6, SmsJournalDatabase.MIGRATION_6_7,
                 SmsJournalDatabase.MIGRATION_7_8,
                 SmsJournalDatabase.MIGRATION_8_9, SmsJournalDatabase.MIGRATION_9_10,
-                SmsJournalDatabase.MIGRATION_10_11, SmsJournalDatabase.MIGRATION_11_12).build()
+                SmsJournalDatabase.MIGRATION_10_11, SmsJournalDatabase.MIGRATION_11_12,
+                SmsJournalDatabase.MIGRATION_12_13).build()
         try {
             assertNotNull(migrated.attempts().getAttempt("legacy-attempt"))
             assertEquals(false, migrated.attempts().getAttempt("legacy-attempt")!!.evidenceConflict)
             assertEquals(null, migrated.attempts().getAttempt("legacy-attempt")!!.messageId)
-            assertEquals(12, migrated.openHelper.readableDatabase.version)
+            assertEquals(13, migrated.openHelper.readableDatabase.version)
+            val columns = androidx.room.util.TableInfo.read(
+                migrated.openHelper.readableDatabase, "local_line_binding").columns
+            val expectedProfileColumns = mapOf(
+                "continuityKind" to Triple("TEXT", true, "'physical'"),
+                "profilePortIndex" to Triple("INTEGER", false, "NULL"),
+                "profileLogicalSlotIndex" to Triple("INTEGER", false, "NULL"),
+                "profileIncarnation" to Triple("TEXT", false, "NULL"),
+                "profileObservationEpoch" to Triple("INTEGER", false, "NULL"),
+                "profileLeaseId" to Triple("TEXT", false, "NULL"),
+            )
+            for ((name, expected) in expectedProfileColumns) {
+                val column = columns.getValue(name)
+                assertEquals(name, expected, Triple(column.type, column.notNull, column.defaultValue))
+                assertEquals(name, 0, column.primaryKeyPosition)
+            }
+            assertNull(migrated.attempts().currentLineBinding())
             migrated.attempts().markInterrupted(20)
             assertEquals(AttemptState.UNKNOWN, migrated.attempts().getAttempt("legacy-attempt")?.state)
         } finally {
