@@ -19,6 +19,126 @@ def result(class_name, name="sample", code=0):
 
 
 class DeviceSmokeTests(unittest.TestCase):
+    def test_multiline_failure_maps_only_approved_source_positions_and_keeps_refusal(self):
+        output = "INSTRUMENTATION_STATUS: stack=java.lang.AssertionError: synthetic-private-detail\n"
+        output += "\tat org.zrotext.gateway.ConversationEntryOptInDeviceTest.checkHidden(ConversationEntryOptInDeviceTest.kt:72)\n"
+        output += "Caused by: synthetic-private-cause\n"
+        output += "\tat org.zrotext.gateway.MainActivity$createConversationHandle$1.run(MainActivity.kt:1013)\n"
+        output += result(smoke.ENTRY_OPT_IN, smoke.ENTRY_OPT_IN_METHOD, -2)
+        output += "INSTRUMENTATION_CODE: -1\n"
+        expected = {smoke.ENTRY_OPT_IN: 1}
+        with mock.patch.object(smoke, "public_test_methods", return_value={smoke.ENTRY_OPT_IN_METHOD}):
+            report = smoke.public_failure_diagnostic(output, expected)
+            with self.assertRaises(ValueError):
+                smoke.verify_results(output, expected)
+        self.assertEqual(report["failure_locations"], [{
+            "class": smoke.ENTRY_OPT_IN, "test": smoke.ENTRY_OPT_IN_METHOD,
+            "source_positions": [{"file": "ConversationEntryOptInDeviceTest.kt", "line": 72},
+                                 {"file": "MainActivity.kt", "line": 1013}],
+        }])
+        encoded = json.dumps(report)
+        for private in ("synthetic-private", "AssertionError", "checkHidden", "createConversationHandle", "Caused by"):
+            self.assertNotIn(private, encoded)
+
+    def test_source_positions_ignore_payload_paths_unknown_files_and_invalid_lines(self):
+        frames = [
+            "at private.Class.secret(MainActivity.kt:72)",
+            "at org.zrotext.gateway.OtherClass.secret(MainActivity.kt:72)",
+            "at org.zrotext.gateway.MainActivity.secret(private-directory/MainActivity.kt:72)",
+            "at org.zrotext.gateway.MainActivity.secret(UnknownSource.kt:72)",
+            "at org.zrotext.gateway.MainActivity.secret(MainActivity.kt:0)",
+            "at org.zrotext.gateway.MainActivity.secret(MainActivity.kt:-1)",
+            "at org.zrotext.gateway.MainActivity.secret(MainActivity.kt:4097)",
+            "at org.zrotext.gateway.MainActivity.secret(MainActivity.kt:012)",
+            "at org.zrotext.gateway.MainActivity.secret(MainActivity.kt:" + "9" * 10 + ")",
+            "at org.zrotext.gateway.MainActivity.secret(MainActivity.kt:72) synthetic-private-detail",
+        ]
+        output = "INSTRUMENTATION_STATUS: stack=synthetic-private-detail\n" + "\n".join(frames) + "\n"
+        output += result(smoke.ENTRY_OPT_IN, smoke.ENTRY_OPT_IN_METHOD, -2)
+        report = smoke.public_failure_diagnostic(output, {smoke.ENTRY_OPT_IN: 1})
+        self.assertEqual(report["failure_locations"][0]["source_positions"], "UNKNOWN")
+        for private in ("synthetic-private", "private-directory", "OtherClass", "UnknownSource", "secret", "9" * 10):
+            self.assertNotIn(private, json.dumps(report))
+
+    def test_unknown_fields_and_nonstack_output_cannot_supply_source_positions(self):
+        frame = "at org.zrotext.gateway.MainActivity.secret(MainActivity.kt:72)"
+        for prefix in (frame + "\n", "INSTRUMENTATION_STATUS: private=" + frame + "\n",
+                       "INSTRUMENTATION_STATUS: stack=private\nINSTRUMENTATION_RESULT: shortMsg=private\n" + frame + "\n"):
+            with self.subTest(prefix=prefix):
+                output = prefix + result(smoke.ENTRY_OPT_IN, smoke.ENTRY_OPT_IN_METHOD, -2)
+                report = smoke.public_failure_diagnostic(output, {smoke.ENTRY_OPT_IN: 1})
+                self.assertEqual(report["failure_locations"][0]["source_positions"], "UNKNOWN")
+
+    def test_failure_locations_require_exact_hardcoded_selected_identity(self):
+        stack = "INSTRUMENTATION_STATUS: stack=private\n\tat org.zrotext.gateway.MainActivity.secret(MainActivity.kt:72)\n"
+        cases = [(smoke.ENTRY_OPT_IN, "otherPublishedMethod", -2, {smoke.ENTRY_OPT_IN: 1}),
+                 (smoke.PRECONDITIONS, smoke.ENTRY_OPT_IN_METHOD, -2, {smoke.PRECONDITIONS: 1}),
+                 (smoke.ENTRY_OPT_IN, smoke.ENTRY_OPT_IN_METHOD, -2, {}),
+                 (smoke.ENTRY_OPT_IN, smoke.ENTRY_OPT_IN_METHOD, 0, {smoke.ENTRY_OPT_IN: 1}),
+                 (smoke.ENTRY_OPT_IN, smoke.ENTRY_OPT_IN_METHOD, 1, {smoke.ENTRY_OPT_IN: 1})]
+        for cls, method, code, expected in cases:
+            with self.subTest(case=(cls, method, code)), mock.patch.object(
+                    smoke, "public_test_methods", return_value={"otherPublishedMethod", smoke.ENTRY_OPT_IN_METHOD}):
+                report = smoke.public_failure_diagnostic(stack + result(cls, method, code), expected)
+                self.assertEqual(report["failure_locations"], [])
+
+    def test_source_positions_are_bounded_deduplicated_and_do_not_cross_status_records(self):
+        stack = "INSTRUMENTATION_STATUS: stack=private\n"
+        stack += "\tat org.zrotext.gateway.MainActivity.secret(MainActivity.kt:72)\n" * 3
+        stack += "".join(f"\tat org.zrotext.gateway.MainActivity.secret(MainActivity.kt:{line})\n" for line in range(73, 90))
+        failure = result(smoke.ENTRY_OPT_IN, smoke.ENTRY_OPT_IN_METHOD, -2)
+        report = smoke.public_failure_diagnostic(stack + failure, {smoke.ENTRY_OPT_IN: 1})
+        self.assertEqual(report["failure_locations"][0]["source_positions"], [
+            {"file": "MainActivity.kt", "line": line} for line in (72, 73, 74, 75)])
+        success = result(smoke.ENTRY_OPT_IN, smoke.ENTRY_OPT_IN_METHOD)
+        report = smoke.public_failure_diagnostic(stack + success + failure, {smoke.ENTRY_OPT_IN: 1})
+        self.assertEqual(report["failure_locations"][0]["source_positions"], "UNKNOWN")
+        report = smoke.public_failure_diagnostic((stack + failure) * 12, {smoke.ENTRY_OPT_IN: 1})
+        self.assertEqual(len(report["failure_locations"]), smoke.MAX_PUBLIC_FAILURE_LOCATIONS)
+
+    def test_failure_public_summary_keeps_raw_private_and_never_changes_acceptance(self):
+        output = "INSTRUMENTATION_STATUS: stack=synthetic-private-detail\n"
+        output += "\tat org.zrotext.gateway.ConversationUserSetupProvider.secret(ConversationUserSetupProvider.kt:30)\n"
+        output += result(smoke.ENTRY_OPT_IN, smoke.ENTRY_OPT_IN_METHOD, -2)
+        # Exercise private-retention calls without changing host filesystem permissions.
+        directory = mock.MagicMock(spec=Path)
+        private_path = mock.MagicMock(spec=Path)
+        directory.__truediv__.return_value = private_path
+        stream = mock.Mock()
+        private_path.open.return_value.__enter__.return_value = stream
+        with mock.patch.object(smoke.tempfile, "mkdtemp", return_value="synthetic-owned-private-directory") as created, \
+                mock.patch.object(smoke, "Path", return_value=directory) as path_factory, \
+                mock.patch.object(smoke.os, "chmod") as permissions, \
+                mock.patch.object(smoke, "public_test_methods", return_value={smoke.ENTRY_OPT_IN_METHOD}), \
+                contextlib.redirect_stdout(io.StringIO()) as printed:
+            with self.assertRaises(ValueError) as refused:
+                smoke.verify_with_private_evidence(output, {smoke.ENTRY_OPT_IN: 1})
+            self.assertIn("status=-2", str(refused.exception))
+            created.assert_called_once_with(prefix="zrotext-device-smoke-failure-")
+            path_factory.assert_called_once_with("synthetic-owned-private-directory")
+            directory.__truediv__.assert_called_once_with("instrumentation.txt")
+            self.assertEqual(permissions.call_args_list, [mock.call(directory, 0o700), mock.call(private_path, 0o600)])
+            private_path.open.assert_called_once_with("xb")
+            stream.write.assert_called_once_with(output.encode("utf-8"))
+            self.assertNotIn("synthetic-private-detail", printed.getvalue())
+            self.assertNotIn("secret", printed.getvalue())
+            self.assertIn('"source_positions": [{"file": "ConversationUserSetupProvider.kt", "line": 30}]', printed.getvalue())
+
+    def test_private_capture_permission_failure_never_writes_or_prints_raw_fallback(self):
+        output = "INSTRUMENTATION_STATUS: stack=synthetic-private-detail\n"
+        output += result(smoke.ENTRY_OPT_IN, smoke.ENTRY_OPT_IN_METHOD, -2)
+        directory = mock.MagicMock(spec=Path)
+        with mock.patch.object(smoke.tempfile, "mkdtemp", return_value="synthetic-owned-private-directory"), \
+                mock.patch.object(smoke, "Path", return_value=directory), \
+                mock.patch.object(smoke.os, "chmod", side_effect=PermissionError("synthetic private storage refusal")), \
+                mock.patch.object(smoke, "public_test_methods", return_value={smoke.ENTRY_OPT_IN_METHOD}), \
+                contextlib.redirect_stdout(io.StringIO()) as printed:
+            with self.assertRaises(PermissionError) as refused:
+                smoke.verify_with_private_evidence(output, {smoke.ENTRY_OPT_IN: 1})
+            self.assertIsInstance(refused.exception.__context__, ValueError)
+            directory.__truediv__.assert_not_called()
+            self.assertEqual("", printed.getvalue())
+
     def test_shared_compiled_accessibility_corpus_matches_explicit_device_inventory(self):
         source = smoke.ROOT / "android/app/src/sharedTest/java/org/zrotext/gateway/GatewayAccessibilityChecks.kt"
         methods = re.findall(r"@Test\s+fun\s+([A-Za-z_][A-Za-z0-9_]*)", source.read_text(encoding="utf-8"))
