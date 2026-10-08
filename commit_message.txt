@@ -1,0 +1,8 @@
+⚡ Bolt: Parallelize key deserialization in SDK loops
+
+💡 What: Replaced sequential `for...await` loops with `Promise.all` + `.map()` for key deserialization (`suite.kem.deserializePublicKey`) in `draft01.ts` and `original-reply-reader.ts`.
+🎯 Why: Iterating over an array of cryptographic operations sequentially blocks the main thread longer than necessary, acting as a performance bottleneck when processing envelopes with multiple wraps.
+📊 Impact: Expected to reduce total key deserialization time to roughly the duration of the slowest single operation instead of the sum of all operations, improving response/decryption speed.
+🔬 Measurement: Can be verified by running the SDK test suite before and after on envelopes with large numbers of wraps and measuring the time spent in `openDraftEnvelope` or `readCurrent`.
+
+Signed-off-by: Prince Boachie <princeboachie@gmail.com>
