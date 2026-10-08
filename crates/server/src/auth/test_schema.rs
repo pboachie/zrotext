@@ -395,8 +395,12 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../../../../deploy/compose/migrations/091_original_reply_origin_binding.sql"),
     ),
     (
-        "092_owner_opening_capacity.sql",
-        include_str!("../../../../deploy/compose/migrations/092_owner_opening_capacity.sql"),
+        "092_provider_send_attempts.sql",
+        include_str!("../../../../deploy/compose/migrations/092_provider_send_attempts.sql"),
+    ),
+    (
+        "093_owner_opening_capacity.sql",
+        include_str!("../../../../deploy/compose/migrations/093_owner_opening_capacity.sql"),
     ),
 ];
 

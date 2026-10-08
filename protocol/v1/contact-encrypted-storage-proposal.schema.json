@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Proposed opaque encrypted contact takeout records (synthetic vector shape)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "profile",
+    "synthetic",
+    "account_hex",
+    "contact_hex",
+    "records"
+  ],
+  "properties": {
+    "profile": {
+      "const": "ZTCS01-proposal"
+    },
+    "synthetic": {
+      "const": true
+    },
+    "account_hex": {
+      "$ref": "#/$defs/id16"
+    },
+    "contact_hex": {
+      "$ref": "#/$defs/id16"
+    },
+    "records": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/present"
+          },
+          {
+            "$ref": "#/$defs/deleted"
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "id16": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "not": {
+        "pattern": "[^0-9a-f]"
+      }
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "not": {
+        "pattern": "[^0-9a-f]"
+      }
+    },
+    "revision": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,18}$",
+      "not": {
+        "pattern": "[^0-9]"
+      }
+    },
+    "mutation": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{736}$",
+      "not": {
+        "pattern": "[^0-9a-f]"
+      }
+    },
+    "name_field": {
+      "type": "string",
+      "pattern": "^([0-9a-f]{2}){396,651}$",
+      "not": {
+        "pattern": "[^0-9a-f]"
+      }
+    },
+    "notes_field": {
+      "type": "string",
+      "pattern": "^([0-9a-f]{2}){396,2443}$",
+      "not": {
+        "pattern": "[^0-9a-f]"
+      }
+    },
+    "present": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "contact_hex",
+        "revision",
+        "mutation_hex",
+        "name_field_hex",
+        "notes_field_hex"
+      ],
+      "properties": {
+        "state": {
+          "const": "present"
+        },
+        "contact_hex": {
+          "$ref": "#/$defs/id16"
+        },
+        "revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "mutation_hex": {
+          "$ref": "#/$defs/mutation"
+        },
+        "name_field_hex": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/name_field"
+            }
+          ]
+        },
+        "notes_field_hex": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/notes_field"
+            }
+          ]
+        }
+      }
+    },
+    "deleted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "contact_hex",
+        "final_revision",
+        "last_mutation_digest_hex"
+      ],
+      "properties": {
+        "state": {
+          "const": "deleted"
+        },
+        "contact_hex": {
+          "$ref": "#/$defs/id16"
+        },
+        "final_revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "last_mutation_digest_hex": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    }
+  }
+}

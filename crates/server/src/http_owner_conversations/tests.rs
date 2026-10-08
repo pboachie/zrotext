@@ -575,7 +575,12 @@ pub(super) async fn prepared() -> (Fixture, SessionPrincipal) {
     .await
     .unwrap();
     f.db.batch_execute(include_str!(
-        "../../../../deploy/compose/migrations/092_owner_opening_capacity.sql"
+        "../../../../deploy/compose/migrations/092_provider_send_attempts.sql"
+    ))
+    .await
+    .unwrap();
+    f.db.batch_execute(include_str!(
+        "../../../../deploy/compose/migrations/093_owner_opening_capacity.sql"
     ))
     .await
     .unwrap();

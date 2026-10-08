@@ -245,4 +245,27 @@ class LineOptOutUploadTest {
             context.deleteDatabase(name)
         }
     }
+    @Test @Config(sdk = [34]) fun profileRetirementKeepsLocalStopButRefusesAttributionAndUpload() {
+        EsimProfileFixture().use { profile ->
+            val sim = checkNotNull(SimCardContinuity.activationCandidate(profile.cards(), 7))
+            val binding = LocalLineBinding(accountId = account.toString(), deviceId = device.toString(),
+                lineId = line, generation = 7, subscriptionId = 7, installedAtMs = 1699999999000L,
+                cardId = 42).withContinuity(sim)
+            val db = Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(), SmsJournalDatabase::class.java)
+                .allowMainThreadQueries().build()
+            try {
+                val dao = db.attempts()
+                assertTrue(dao.installVerifiedLineBinding(binding, profile.cards(), sim.observedCard()))
+                profile.install(binding)
+                assertTrue(LineOptOutUploadGate.allows(row(), binding, account, device, 7, profile.cards(), 1700000001000))
+                profile.tracker.onSubscriptionsChanged()
+                assertFalse(LineOptOutUploadGate.allows(row(), binding, account, device, 7, profile.cards(), 1700000001000))
+                assertTrue(dao.recordLocalWithdrawal(dedupe, senderToken, InboundClassification.OPT_OUT,
+                    7, profile.cards(), 1700000001000))
+                assertNull(dao.localWithdrawal(dedupe)?.lineId)
+                assertTrue(dao.isRecipientSuppressed(senderToken))
+            } finally { db.close() }
+        }
+    }
+
 }

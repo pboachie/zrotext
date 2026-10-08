@@ -7,6 +7,7 @@ use uuid::Uuid;
 mod dispatch;
 mod http;
 mod lifecycle;
+mod provider_profile;
 mod replies;
 mod safety;
 mod support;

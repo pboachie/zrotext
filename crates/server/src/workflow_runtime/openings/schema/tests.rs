@@ -2,7 +2,7 @@
 use super::*;
 use crate::http_owner_conversations::context::decisions::tests::Case;
 const MIGRATION: &str =
-    include_str!("../../../../../../deploy/compose/migrations/092_owner_opening_capacity.sql");
+    include_str!("../../../../../../deploy/compose/migrations/093_owner_opening_capacity.sql");
 
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; exact opening catalog and rollback"]

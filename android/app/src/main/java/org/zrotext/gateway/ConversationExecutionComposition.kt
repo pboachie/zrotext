@@ -162,7 +162,7 @@ internal class ConversationExecutionComposition(context: Context,
                 grant.deploymentEpoch == session.deploymentEpoch && grant.manifestGeneration == local.manifestGeneration &&
                 grant.manifestVersion == local.manifestVersion && grant.manifestDigest == local.manifestDigest &&
                 grant.recipientDigest == local.recipientDigest && grant.subscriptionId == binding.subscriptionId &&
-                grant.cardId == binding.cardId && grant.expiresAtMs > live.trustedNowMs &&
+                grant.cardId == binding.cardId && grant.matchesBinding(binding) && grant.expiresAtMs > live.trustedNowMs &&
                 grant.expiresAtMs <= live.authorizedUntilMs)
         }
         internal fun requireGrant(fields: SealedExecutionGrantValidator.Fields, scope: ConversationCaptureScope,

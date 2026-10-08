@@ -73,4 +73,31 @@ class SealedLineActivationReceiptStoreTest {
         f.stored = SealedLineActivationSnapshot(forged, fakeAck)
         assertNull(f.provider(43).accept(f.activated(f.reepoch(fakeAck, 43))))
     }
+    @Test @Config(sdk = [34]) fun esimV2IsProvenanceOnlyWhilePhysicalV1EncodingRemainsExact() {
+        EsimProfileFixture().use { profile ->
+            val f = SealedLineActivationFixture()
+            val physical = checkNotNull(f.device.prepare(f.challenge, f.selection))
+            val snapshot = SealedLineActivationSnapshot(physical, f.receipt(physical.signature()))
+            val baseline = SealedLineActivationFrames.bounded(JSONObject().put("version", 1)
+                .put("challenge", SealedLineActivationFrames.challengeFrame(physical.challenge))
+                .put("api", physical.apiLevel).put("subscription", physical.sim.subscriptionId).put("card", physical.sim.cardId)
+                .put("statement", SealedLineActivationFrames.encode(physical.statement()))
+                .put("signature", SealedLineActivationFrames.encode(physical.signature()))
+                .put("fingerprint", SealedLineActivationFrames.encode(physical.fingerprint()))
+                .put("receipt", SealedLineActivationFrames.receiptFrame(snapshot.receipt)))
+            assertEquals(baseline, SealedLineActivationReceiptCodec.encode(snapshot))
+            f.api = 34; f.cards = profile.cards()
+            val esim = checkNotNull(f.device.prepare(f.challenge, f.selection))
+            val receipt = SealedLineActivationReceipt(42, f.challenge.challengeId, f.challenge.accountId, f.challenge.lineId,
+                f.challenge.deviceId, f.challenge.generation, SealedLineActivationTranscript.digest(esim.statement()),
+                SealedLineActivationTranscript.digest(esim.signature()))
+            val encoded = SealedLineActivationReceiptCodec.encode(SealedLineActivationSnapshot(esim, receipt))
+            assertEquals(2, JSONObject(encoded).getInt("version"))
+            assertThrows(Exception::class.java) { SealedLineActivationReceiptCodec.decode(encoded) }
+            val store = SealedLineActivationReceiptStore(RuntimeEnvironment.getApplication())
+            assertTrue(store.write(SealedLineActivationSnapshot(esim, receipt)))
+            assertNull(store.read())
+        }
+    }
+
 }

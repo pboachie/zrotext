@@ -17,6 +17,13 @@ It is a library, not an owner CLI or a custody implementation.
   root after binding the challenge's account, origin and root fingerprint to an
   independently supplied identity and clock. It is possession signing only, and
   the server deliberately re-exports nothing from it.
+- `registered_root_packets` reviews closed public-only preparation, custody-proof
+  and first-manifest phase packets (#934): duplicate-aware strict grammar, exact
+  identity and artifact continuity against independently supplied expectations,
+  and ordered fresh signing times. It signs nothing and is not custody, manifest
+  authority, issuer initialization, restore protection or production readiness.
+  The producer, genuine transaction fixture and manifest verifier invocation
+  remain unimplemented.
 
 The server re-exports the enrollment and backup modules at their existing public
 paths; it deliberately re-exports neither `recovery_kit` nor `root_unlock`. Shared

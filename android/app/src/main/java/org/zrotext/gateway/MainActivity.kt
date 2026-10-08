@@ -311,6 +311,10 @@ class MainActivity : ComponentActivity() {
                                 Text("Selected SIM: ${selectedSim?.toString() ?: "none"}")
                                 sims.forEach { (id, label) ->
                                     GatewayButton(onClick = {
+                                        if (selectedSim != id) {
+                                            SimProfileContinuity.stop()
+                                            SealedLineActivationMount.disable()
+                                        }
                                         selectedSim = id
                                         getSharedPreferences("gateway_selection", MODE_PRIVATE).edit()
                                             .putInt("subscription_id", id).apply()
@@ -478,8 +482,13 @@ class MainActivity : ComponentActivity() {
                                 ConversationSocketComposition::currentAuthenticatedIdentity,
                                 { selectedSim },
                                 { DeviceSigningKeyStore(applicationContext).existingConversationPublicPoint() },
-                                { acceptance, originalHostCurrent -> SealedLineActivationMount.enableOwned(
-                                    acceptance, explicitlyAccepted = true, originCurrent = originalHostCurrent) })
+                                { acceptance, originalHostCurrent ->
+                                    val sim = SimCardContinuity.activationCandidate(
+                                        SimCardContinuity.observe(applicationContext), acceptance.subscriptionId)
+                                    if (sim == null) null else SealedLineActivationMount.enableOwned(
+                                        acceptance, explicitlyAccepted = true, originCurrent = originalHostCurrent,
+                                        profile = sim.profile)
+                                })
                             sealedLineReviewOpen = true
                         }) { Text("Review paired phone line") }
                         GatewayStatusText("Pilot status", AuthenticatedGatewayStatus.value)
@@ -1320,10 +1329,17 @@ class MainActivity : ComponentActivity() {
         }
         val manager = getSystemService(SubscriptionManager::class.java)
         sims = (manager.activeSubscriptionInfoList ?: emptyList()).map { info ->
-            info.subscriptionId to "SIM ${info.simSlotIndex + 1}: ${info.displayName}"
+            info.subscriptionId to selectedSimLabel(info.subscriptionId, info.simSlotIndex, info.displayName,
+                info.isEmbedded, if (Build.VERSION.SDK_INT >= 33) info.portIndex else null)
         }
         val saved = getSharedPreferences("gateway_selection", MODE_PRIVATE)
             .getInt("subscription_id", SubscriptionManager.INVALID_SUBSCRIPTION_ID)
         selectedSim = saved.takeIf { id -> sims.any { it.first == id } }
     }
 }
+
+/** Distinguishes profiles without exposing a phone number, ICCID or eUICC identifier. */
+internal fun selectedSimLabel(subscriptionId: Int, logicalSlot: Int, displayName: CharSequence?,
+                             embedded: Boolean, portIndex: Int?): String =
+    if (!embedded) "SIM ${logicalSlot + 1}: $displayName"
+    else "eSIM profile $subscriptionId, port ${portIndex?.takeIf { it >= 0 } ?: "unavailable"}: $displayName"

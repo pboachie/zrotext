@@ -997,3 +997,541 @@ async fn ceremony_idle_policy_uses_creation_fallback_and_recent_use_without_refr
     assert_eq!(before, after);
     o.f.cleanup().await;
 }
+
+// These controls use registration rather than the historical seeded Owner.
+// An unfinished operation retains its namespace; aborting a driver is not a
+// claim that its server-side work or a canceled authentication request settled.
+struct RegisteredConnection {
+    client: Option<Client>,
+    driver: Option<tokio::task::JoinHandle<Result<(), tokio_postgres::Error>>>,
+}
+
+impl RegisteredConnection {
+    async fn connect(
+        config: &tokio_postgres::Config,
+        deadline: tokio::time::Instant,
+    ) -> Result<Self, String> {
+        let (client, connection) =
+            registered_step(deadline, "connect", config.connect(tokio_postgres::NoTls)).await?;
+        Ok(Self {
+            client: Some(client),
+            driver: Some(tokio::spawn(connection)),
+        })
+    }
+
+    fn db(&self) -> Result<&Client, String> {
+        self.require_driver()?;
+        self.client
+            .as_ref()
+            .ok_or_else(|| "client already released".into())
+    }
+
+    fn db_mut(&mut self) -> Result<&mut Client, String> {
+        self.require_driver()?;
+        self.client
+            .as_mut()
+            .ok_or_else(|| "client already released".into())
+    }
+
+    fn require_driver(&self) -> Result<(), String> {
+        if self
+            .driver
+            .as_ref()
+            .is_none_or(|driver| driver.is_finished())
+        {
+            return Err("connection driver ended before known settlement".into());
+        }
+        Ok(())
+    }
+
+    async fn finish(mut self, deadline: tokio::time::Instant) -> Result<(), String> {
+        self.require_driver()?;
+        let limit = registered_limit(deadline)?;
+        drop(self.client.take());
+        let driver = self.driver.as_mut().ok_or("missing owned driver")?;
+        match tokio::time::timeout_at(limit, driver).await {
+            Ok(Ok(Ok(()))) => Ok(()),
+            Ok(_) => Err("owned driver did not settle successfully".into()),
+            Err(_) => {
+                // Drop still owns the handle if this future is canceled.
+                Err("owned driver settlement unknown; retain namespace".into())
+            }
+        }
+    }
+}
+
+impl Drop for RegisteredConnection {
+    fn drop(&mut self) {
+        // Failure/panic is deliberately not a schema-cleanup path.
+        drop(self.client.take());
+        if let Some(driver) = self.driver.take() {
+            driver.abort();
+        }
+    }
+}
+
+fn registered_limit(deadline: tokio::time::Instant) -> Result<tokio::time::Instant, String> {
+    let now = tokio::time::Instant::now();
+    if now >= deadline {
+        return Err("fixture lifetime exhausted; retain namespace".into());
+    }
+    Ok(deadline.min(now + Duration::from_secs(30)))
+}
+
+async fn registered_step<T, E>(
+    deadline: tokio::time::Instant,
+    stage: &'static str,
+    operation: impl std::future::Future<Output = Result<T, E>>,
+) -> Result<T, String> {
+    match tokio::time::timeout_at(registered_limit(deadline)?, operation).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(_)) => Err(format!("{stage} failed; retain namespace")),
+        Err(_) => Err(format!("{stage} completion unknown; retain namespace")),
+    }
+}
+
+struct RegisteredOwnerCase {
+    schema: String,
+    deadline: tokio::time::Instant,
+    setup: RegisteredConnection,
+    db: RegisteredConnection,
+    cleanup: RegisteredConnection,
+    hasher: TokenHasher,
+    pepper: zeroize::Zeroizing<Vec<u8>>,
+    cipher: mfa::MfaCipher,
+    account: Uuid,
+    user: Uuid,
+    confirming_id: Uuid,
+    other_id: Uuid,
+    confirming_token: zeroize::Zeroizing<String>,
+    other_token: zeroize::Zeroizing<String>,
+    email: String,
+    password: zeroize::Zeroizing<String>,
+    recovery: zeroize::Zeroizing<Vec<String>>,
+}
+
+impl RegisteredOwnerCase {
+    async fn assert_schema(
+        connection: &RegisteredConnection,
+        schema: &str,
+        deadline: tokio::time::Instant,
+    ) -> Result<(), String> {
+        let row = registered_step(deadline, "schema binding", connection.db()?.query_one(
+            "SELECT current_schema()=$1,current_setting('search_path')=$1,EXISTS(SELECT 1 FROM pg_namespace WHERE nspname=$1 AND nspowner=(SELECT oid FROM pg_roles WHERE rolname=current_user))",
+            &[&schema],
+        )).await?;
+        assert!(
+            row.get::<_, bool>(0) && row.get::<_, bool>(1) && row.get::<_, bool>(2),
+            "owned schema binding"
+        );
+        Ok(())
+    }
+
+    async fn assert_empty_table(
+        db: &Client,
+        table: &str,
+        deadline: tokio::time::Instant,
+    ) -> Result<(), String> {
+        // Every caller below supplies a fixed source literal, never an input.
+        let row = registered_step(
+            deadline,
+            "empty application state",
+            db.query_one(&format!("SELECT count(*) FROM {table}"), &[]),
+        )
+        .await?;
+        assert_eq!(row.get::<_, i64>(0), 0, "{table}");
+        Ok(())
+    }
+
+    async fn assert_no_authority(
+        db: &Client,
+        deadline: tokio::time::Instant,
+    ) -> Result<(), String> {
+        for table in [
+            "sealed_manifest_authorities",
+            "sealed_root_enrollments",
+            "sealed_root_challenges",
+            "sealed_root_receipts",
+            "sealed_root_custody",
+            "known_signing_point_reservations",
+            "known_signing_role_claims",
+        ] {
+            Self::assert_empty_table(db, table, deadline).await?;
+        }
+        // Numbered migrations do not install the candidate issuer schema.
+        // Resolve only this namespace, rather than falling back to public.
+        let row = registered_step(deadline, "optional issuer absence", db.query_one(
+            "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=current_schema() AND c.relname IN ('contact_reader_state','contact_reader_pending','contact_reader_receipts')", &[],
+        )).await?;
+        assert_eq!(
+            row.get::<_, i64>(0),
+            0,
+            "candidate issuer catalog must be absent"
+        );
+        Ok(())
+    }
+
+    fn assert_principal(principal: &SessionPrincipal, account: Uuid, user: Uuid, session: Uuid) {
+        assert_eq!(principal.tenant.account_id(), account);
+        assert_eq!(principal.user_id, user);
+        assert_eq!(principal.session_id, session);
+        assert_eq!(principal.role, auth::Role::Owner);
+    }
+
+    async fn new(schema: String, deadline: tokio::time::Instant) -> Result<Self, String> {
+        // Missing opt-in is refusal, including when this ignored test is selected.
+        let url = zeroize::Zeroizing::new(
+            std::env::var("ZT_INBOUND_TEST_DATABASE_URL")
+                .map_err(|_| "requires explicit ZT_INBOUND_TEST_DATABASE_URL")?,
+        );
+        let mut config: tokio_postgres::Config = url
+            .parse()
+            .map_err(|_| "invalid disposable database configuration")?;
+        let setup = RegisteredConnection::connect(&config, deadline).await?;
+        registered_step(
+            deadline,
+            "create owned schema",
+            setup.db()?.batch_execute(&format!(
+                "CREATE SCHEMA {schema}; SET search_path TO {schema}"
+            )),
+        )
+        .await?;
+        Self::assert_schema(&setup, &schema, deadline).await?;
+        config.options(format!("-csearch_path={schema}"));
+        let mut db = RegisteredConnection::connect(&config, deadline).await?;
+        let cleanup = RegisteredConnection::connect(&config, deadline).await?;
+        Self::assert_schema(&db, &schema, deadline).await?;
+        Self::assert_schema(&cleanup, &schema, deadline).await?;
+        // apply can panic. The entire fixture operation is an owned task below;
+        // a panic is observed there and does not call cleanup or pass this test.
+        registered_step(deadline, "all maintained migrations", async {
+            auth::test_schema::apply(db.db()?).await;
+            Ok::<(), String>(())
+        })
+        .await?;
+        for table in [
+            "accounts",
+            "users",
+            "memberships",
+            "sessions",
+            "owner_mfa",
+            "owner_mfa_login_challenges",
+            "owner_mfa_recovery_codes",
+        ] {
+            Self::assert_empty_table(db.db()?, table, deadline).await?;
+        }
+        Self::assert_no_authority(db.db()?, deadline).await?;
+        let pepper = zeroize::Zeroizing::new(rand::random::<[u8; 32]>().to_vec());
+        // The maintained hasher owns its own operational copy; this fixture
+        // makes no claim that API-internal allocations are zero-copy secrets.
+        let hasher = TokenHasher::new(pepper.to_vec()).map_err(|_| "token hasher construction")?;
+        let cipher = mfa::MfaCipher::new(rand::random::<[u8; 32]>().to_vec())
+            .map_err(|_| "MFA cipher construction")?;
+        let email = format!("{}@example.test", Uuid::new_v4().simple());
+        let password = zeroize::Zeroizing::new(Uuid::new_v4().to_string());
+        let signup = registered_step(
+            deadline,
+            "registration",
+            auth::register(db.db_mut()?, &hasher, &email, &password),
+        )
+        .await?;
+        let verification = zeroize::Zeroizing::new(signup.verification_token);
+        assert!(
+            registered_step(
+                deadline,
+                "password-backed verification",
+                auth::verify_email_with_password(db.db_mut()?, &hasher, &verification, &password)
+            )
+            .await?
+        );
+        let first = registered_step(
+            deadline,
+            "confirming login",
+            auth::login(db.db()?, &hasher, &email, &password),
+        )
+        .await?;
+        let confirming_id = first.id;
+        let confirming_token = zeroize::Zeroizing::new(first.token);
+        let _confirming_csrf = zeroize::Zeroizing::new(first.csrf_token);
+        let principal = registered_step(
+            deadline,
+            "confirming authentication",
+            auth::authenticate_session(db.db()?, &hasher, &confirming_token),
+        )
+        .await?;
+        Self::assert_principal(&principal, signup.account_id, signup.user_id, confirming_id);
+        let second = registered_step(
+            deadline,
+            "second login",
+            auth::login(db.db()?, &hasher, &email, &password),
+        )
+        .await?;
+        let other_id = second.id;
+        assert_ne!(confirming_id, other_id);
+        let other_token = zeroize::Zeroizing::new(second.token);
+        let _other_csrf = zeroize::Zeroizing::new(second.csrf_token);
+        let other = registered_step(
+            deadline,
+            "second authentication",
+            auth::authenticate_session(db.db()?, &hasher, &other_token),
+        )
+        .await?;
+        Self::assert_principal(&other, signup.account_id, signup.user_id, other_id);
+        let enrollment = registered_step(
+            deadline,
+            "begin MFA",
+            mfa::begin_enrollment(db.db_mut()?, &cipher, &principal, &password),
+        )
+        .await?;
+        let secret = zeroize::Zeroizing::new(enrollment.secret_base32);
+        let _provisioning = zeroize::Zeroizing::new(enrollment.provisioning_uri);
+        let generator = totp_rs::Builder::new()
+            .with_secret(
+                totp_rs::Secret::try_from_base32(&secret)
+                    .map_err(|_| "generated MFA secret decoding")?,
+            )
+            .build()
+            .map_err(|_| "generated MFA code construction")?;
+        let code = zeroize::Zeroizing::new(generator.generate_current().to_string());
+        let codes = registered_step(
+            deadline,
+            "confirm MFA",
+            mfa::confirm_enrollment(db.db_mut()?, &cipher, &hasher, &principal, &code),
+        )
+        .await?;
+        let recovery = zeroize::Zeroizing::new(codes.codes);
+        assert_eq!(recovery.len(), 10);
+        Ok(Self {
+            schema,
+            deadline,
+            setup,
+            db,
+            cleanup,
+            hasher,
+            pepper,
+            cipher,
+            account: signup.account_id,
+            user: signup.user_id,
+            confirming_id,
+            other_id,
+            confirming_token,
+            other_token,
+            email,
+            password,
+            recovery,
+        })
+    }
+
+    fn recovery_digest(&self, index: usize) -> [u8; 32] {
+        let subject = zeroize::Zeroizing::new(format!(
+            "{}:{}:{}",
+            self.account, self.user, self.recovery[index]
+        ));
+        token_digest(&self.pepper, b"mfa-recovery-v1", &subject)
+    }
+
+    async fn assert_recovery(&self, index: usize, used: bool) -> Result<(), String> {
+        let hash = self.recovery_digest(index);
+        let row = registered_step(self.deadline, "exact recovery ledger", self.db.db()?.query_one(
+            "SELECT used_at IS NOT NULL FROM owner_mfa_recovery_codes WHERE account_id=$1 AND user_id=$2 AND code_hash=$3",
+            &[&self.account, &self.user, &&hash[..]],
+        )).await?;
+        assert_eq!(row.get::<_, bool>(0), used, "recovery allocation {index}");
+        Ok(())
+    }
+
+    async fn assert_confirming_survives(&self) -> Result<(), String> {
+        let principal = registered_step(
+            self.deadline,
+            "preserved confirming session",
+            auth::authenticate_session(self.db.db()?, &self.hasher, &self.confirming_token),
+        )
+        .await?;
+        Self::assert_principal(&principal, self.account, self.user, self.confirming_id);
+        let refusal = registered_step(self.deadline, "revoked other session", async {
+            Ok::<_, String>(
+                auth::authenticate_session(self.db.db()?, &self.hasher, &self.other_token).await,
+            )
+        })
+        .await?;
+        assert!(matches!(refusal, Err(auth::AuthError::Unauthorized)));
+        let row = registered_step(self.deadline, "actual enrollment and revocation", self.db.db()?.query_one(
+            "SELECT u.mfa_enabled,m.enabled_at IS NOT NULL,s.revoked_at IS NOT NULL,(SELECT count(*) FROM owner_mfa_recovery_codes WHERE account_id=$1 AND user_id=$2) FROM users u JOIN owner_mfa m ON m.user_id=u.id AND m.account_id=$1 JOIN sessions s ON s.user_id=u.id AND s.account_id=$1 AND s.id=$3 WHERE u.id=$2",
+            &[&self.account, &self.user, &self.other_id],
+        )).await?;
+        assert!(row.get::<_, bool>(0) && row.get::<_, bool>(1) && row.get::<_, bool>(2));
+        assert_eq!(row.get::<_, i64>(3), 10);
+        self.assert_recovery(0, false).await?;
+        self.assert_recovery(1, false).await?;
+        Self::assert_no_authority(self.db.db()?, self.deadline).await
+    }
+
+    async fn recovery_login(&mut self) -> Result<(), String> {
+        let refusal = registered_step(self.deadline, "ordinary MFA-required login", async {
+            Ok::<_, String>(
+                auth::login(self.db.db()?, &self.hasher, &self.email, &self.password).await,
+            )
+        })
+        .await?;
+        assert!(
+            matches!(refusal, Err(auth::AuthError::MfaRequired {account_id, user_id}) if account_id == self.account && user_id == self.user)
+        );
+        let challenge = zeroize::Zeroizing::new(
+            registered_step(
+                self.deadline,
+                "real login challenge",
+                mfa::begin_login_challenge(
+                    self.db.db()?,
+                    &self.hasher,
+                    self.account,
+                    self.user,
+                    &self.password,
+                ),
+            )
+            .await?,
+        );
+        let session = registered_step(
+            self.deadline,
+            "consume recovery two",
+            mfa::complete_login(
+                self.db.db_mut()?,
+                Some(&self.cipher),
+                &self.hasher,
+                &challenge,
+                &self.recovery[2],
+            ),
+        )
+        .await?;
+        let token = zeroize::Zeroizing::new(session.token);
+        let _csrf = zeroize::Zeroizing::new(session.csrf_token);
+        let principal = registered_step(
+            self.deadline,
+            "new MFA session authentication",
+            auth::authenticate_session(self.db.db()?, &self.hasher, &token),
+        )
+        .await?;
+        Self::assert_principal(&principal, self.account, self.user, session.id);
+        assert_ne!(session.id, self.confirming_id);
+        assert_ne!(session.id, self.other_id);
+        self.assert_recovery(2, true).await?;
+        self.assert_recovery(0, false).await?;
+        self.assert_recovery(1, false).await?;
+        let completed_hash = token_digest(&self.pepper, b"mfa-login-challenge-v1", &challenge);
+        let completed = registered_step(self.deadline, "committed login challenge", self.db.db()?.query_one(
+            "SELECT c.consumed_at IS NOT NULL,c.attempts,m.failed_attempts FROM owner_mfa_login_challenges c JOIN owner_mfa m USING(account_id,user_id) WHERE c.account_id=$1 AND c.user_id=$2 AND c.token_hash=$3",
+            &[&self.account, &self.user, &&completed_hash[..]],
+        )).await?;
+        assert!(completed.get::<_, bool>(0));
+        assert_eq!(completed.get::<_, i32>(1), 0);
+        assert_eq!(completed.get::<_, i32>(2), 0);
+        let challenge = zeroize::Zeroizing::new(
+            registered_step(
+                self.deadline,
+                "separate reuse challenge",
+                mfa::begin_login_challenge(
+                    self.db.db()?,
+                    &self.hasher,
+                    self.account,
+                    self.user,
+                    &self.password,
+                ),
+            )
+            .await?,
+        );
+        let challenge_hash = token_digest(&self.pepper, b"mfa-login-challenge-v1", &challenge);
+        let before = registered_step(
+            self.deadline,
+            "pre-refusal session count",
+            self.db.db()?.query_one(
+                "SELECT count(*) FROM sessions WHERE account_id=$1 AND user_id=$2",
+                &[&self.account, &self.user],
+            ),
+        )
+        .await?
+        .get::<_, i64>(0);
+        let refusal = registered_step(self.deadline, "reused recovery refusal", async {
+            Ok::<_, String>(
+                mfa::complete_login(
+                    self.db.db_mut()?,
+                    Some(&self.cipher),
+                    &self.hasher,
+                    &challenge,
+                    &self.recovery[2],
+                )
+                .await,
+            )
+        })
+        .await?;
+        assert!(matches!(refusal, Err(auth::AuthError::InvalidCredentials)));
+        let row = registered_step(self.deadline, "actual failure budget", self.db.db()?.query_one(
+            "SELECT m.failed_attempts,c.attempts,c.consumed_at IS NULL,(SELECT count(*) FROM sessions WHERE account_id=$1 AND user_id=$2) FROM owner_mfa m JOIN owner_mfa_login_challenges c USING(account_id,user_id) WHERE m.account_id=$1 AND m.user_id=$2 AND c.token_hash=$3",
+            &[&self.account, &self.user, &&challenge_hash[..]],
+        )).await?;
+        assert_eq!(row.get::<_, i32>(0), 1);
+        assert_eq!(row.get::<_, i32>(1), 1);
+        assert!(row.get::<_, bool>(2));
+        assert_eq!(row.get::<_, i64>(3), before);
+        self.assert_recovery(2, true).await?;
+        self.assert_confirming_survives().await
+    }
+
+    async fn finish(self) -> Result<(), String> {
+        let Self {
+            schema,
+            deadline,
+            setup,
+            db,
+            cleanup,
+            ..
+        } = self;
+        // Known operation completion only. Drop each Client before joining its
+        // exact driver; the separate cleanup connection has remained idle.
+        db.finish(deadline).await?;
+        setup.finish(deadline).await?;
+        Self::assert_schema(&cleanup, &schema, deadline).await?;
+        registered_step(
+            deadline,
+            "guarded owned teardown",
+            crate::sealed_manifest_store::tests::cleanup::drop_fixture(cleanup.db()?, &schema),
+        )
+        .await?;
+        cleanup.finish(deadline).await
+    }
+}
+
+async fn registered_owner_control(recovery_login: bool) {
+    // Mint the fixed allowed identity before any CREATE. Only the owned task
+    // below may create it; no caller-supplied schema or password is accepted.
+    let schema = format!("manifest_authority_{}", Uuid::new_v4().simple());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(600);
+    let owned_schema = schema.clone();
+    let mut operation = tokio::spawn(async move {
+        let mut case = RegisteredOwnerCase::new(owned_schema, deadline).await?;
+        case.assert_confirming_survives().await?;
+        if recovery_login {
+            case.recovery_login().await?;
+        }
+        case.finish().await
+    });
+    match tokio::time::timeout_at(deadline, &mut operation).await {
+        Ok(Ok(Ok(()))) => {}
+        Ok(Ok(Err(stage))) => panic!("registered-owner refusal: {stage}; namespace={schema}"),
+        Ok(Err(_)) => panic!("registered-owner task panic; retain namespace={schema}"),
+        Err(_) => {
+            operation.abort();
+            panic!("registered-owner task completion unknown; retain namespace={schema}");
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires explicit ZT_INBOUND_TEST_DATABASE_URL; sequential owned-schema control"]
+async fn postgres_account_only_empty_registration_preserves_confirming_session() {
+    registered_owner_control(false).await;
+}
+
+#[tokio::test]
+#[ignore = "requires explicit ZT_INBOUND_TEST_DATABASE_URL; sequential owned-schema control"]
+async fn postgres_account_only_mfa_required_login_uses_distinct_recovery() {
+    registered_owner_control(true).await;
+}

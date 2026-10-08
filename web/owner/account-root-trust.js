@@ -133,7 +133,7 @@ class Review {
   const reader=response.body.getReader();let b=new Uint8Array(0);
   try{for(;;){const item=await this.#job(r,()=>reader.read(),undefined,deadline);if(item.done)break;if(b.length+item.value.length>1024)refuse();const next=new Uint8Array(b.length+item.value.length);next.set(b);next.set(item.value,b.length);b=next;}}finally{reader.cancel().catch(()=>{});reader.releaseLock();}
   const body=flatJson(new TextDecoder('utf-8',{fatal:true}).decode(b),1024);
-  const s=closed(body,['account_id','user_id','session_id','role']);for(const k of ['account_id','user_id','session_id'])uuid(s[k]);if(s.role!=='owner'||s.account_id!==r.expectedAccount||this.#nodes.account.value!==r.expectedAccount||csrf(this.#doc)!==r.csrf)refuse();
+  const s=closed(body,['account_id','user_id','session_id','role','server_now_ms']);integer(s.server_now_ms);if(/[^0-9]/.test(s.server_now_ms))refuse();for(const k of ['account_id','user_id','session_id'])uuid(s[k]);if(s.role!=='owner'||s.account_id!==r.expectedAccount||this.#nodes.account.value!==r.expectedAccount||csrf(this.#doc)!==r.csrf)refuse();
   if(r.session&&['account_id','user_id','session_id','role'].some(k=>r.session[k]!==s[k]))refuse();r.session=s;this.#live(r);return s;
  }
  #selection(node,min,maxSize){const list=node.files;if(!list||list.length!==1||!(list[0] instanceof this.#win.File)||list[0].size<min||list[0].size>maxSize)refuse();return list[0];}

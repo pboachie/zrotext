@@ -183,7 +183,7 @@ internal class SealedDispatchLane(
             if (!runCatching { isSessionCurrent() }.getOrDefault(false)) return refused(Fence.SESSION_CANCELLED)
             val cards = runCatching { activeCards() }.getOrNull()
             if (!SimCardContinuity.matches(
-                    local.binding.cardId?.let { ActivatedSimCard(local.binding.subscriptionId, it) },
+                    local.binding.activatedSim(),
                     cards,
                 )
             ) return refused(Fence.SIM_CARD_CONTINUITY)

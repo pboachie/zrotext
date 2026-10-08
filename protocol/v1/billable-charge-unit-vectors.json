@@ -1,0 +1,468 @@
+{
+  "contract_version": "billable-charge-unit-v1",
+  "status": "proposed_candidate_not_a_launch_decision",
+  "description": "Synthetic vectors for protocol/v1/billable-usage-candidate.md. Units are logical actions, never segments. Uncertainty stays explicit and never mints a unit.",
+  "categories": {
+    "android_execution": {
+      "charge_event": "sent_callback_ok",
+      "runtime": "candidate_test_only"
+    },
+    "provider_transport": {
+      "charge_event": "provider_acceptance_verified",
+      "runtime": "unavailable"
+    },
+    "ai_generated_reply": {
+      "charge_event": "generation_completed_verified",
+      "runtime": "unavailable"
+    }
+  },
+  "never_charge_event_types": [
+    "admission_rejected",
+    "submission_failed",
+    "outcome_unknown",
+    "cancelled",
+    "draft_unapproved",
+    "owner_approved",
+    "draft_edited",
+    "quote_changed",
+    "retry_same_action",
+    "delivery_receipt",
+    "durable_intent_created",
+    "dispatch_grant_issued",
+    "provider_acceptance_unverified",
+    "generation_completed_unverified",
+    "generation_requested"
+  ],
+  "scenarios": [
+    {
+      "name": "android_single_segment_success",
+      "category": "android_execution",
+      "events": [
+        {
+          "type": "admission_reserved"
+        },
+        {
+          "type": "sent_callback_ok",
+          "segments_ok": 1,
+          "segments_total": 1
+        }
+      ],
+      "expected": {
+        "units": 1,
+        "review": false,
+        "uncertain": false,
+        "credit_requested": false
+      }
+    },
+    {
+      "name": "android_three_segments_all_sent_is_one_message",
+      "category": "android_execution",
+      "events": [
+        {
+          "type": "sent_callback_ok",
+          "segments_ok": 3,
+          "segments_total": 3
+        }
+      ],
+      "expected": {
+        "units": 1,
+        "review": false,
+        "uncertain": false,
+        "credit_requested": false
+      }
+    },
+    {
+      "name": "android_partial_segments_not_yet_billable",
+      "category": "android_execution",
+      "events": [
+        {
+          "type": "sent_callback_ok",
+          "segments_ok": 2,
+          "segments_total": 3
+        }
+      ],
+      "expected": {
+        "units": 0,
+        "review": false,
+        "uncertain": false,
+        "credit_requested": false
+      }
+    },
+    {
+      "name": "android_rejected_admission",
+      "category": "android_execution",
+      "events": [
+        {
+          "type": "admission_rejected"
+        }
+      ],
+      "expected": {
+        "units": 0,
+        "review": false,
+        "uncertain": false,
+        "credit_requested": false
+      }
+    },
+    {
+      "name": "android_failed_submission",
+      "category": "android_execution",
+      "events": [
+        {
+          "type": "submission_failed"
+        }
+      ],
+      "expected": {
+        "units": 0,
+        "review": false,
+        "uncertain": false,
+        "credit_requested": false
+      }
+    },
+    {
+      "name": "android_unknown_outcome_stays_uncertain",
+      "category": "android_execution",
+      "events": [
+        {
+          "type": "outcome_unknown"
+        }
+      ],
+      "expected": {
+        "units": 0,
+        "review": false,
+        "uncertain": true,
+        "credit_requested": false
+      }
+    },
+    {
+      "name": "android_cancelled",
+      "category": "android_execution",
+      "events": [
+        {
+          "type": "cancelled"
+        }
+      ],
+      "expected": {
+        "units": 0,
+        "review": false,
+        "uncertain": false,
+        "credit_requested": false
+      }
+    },
+    {
+      "name": "android_duplicate_callback_and_retry_one_unit",
+      "category": "android_execution",
+      "events": [
+        {
+          "type": "sent_callback_ok",
+          "segments_ok": 1,
+          "segments_total": 1
+        },
+        {
+          "type": "sent_callback_ok",
+          "segments_ok": 1,
+          "segments_total": 1
+        },
+        {
+          "type": "retry_same_action"
+        },
+        {
+          "type": "sent_callback_ok",
+          "segments_ok": 1,
+          "segments_total": 1
+        }
+      ],
+      "expected": {
+        "units": 1,
+        "review": false,
+        "uncertain": false,
+        "credit_requested": false
+      }
+    },
+    {
+      "name": "android_delivery_receipt_adds_nothing",
+      "category": "android_execution",
+      "events": [
+        {
+          "type": "sent_callback_ok",
+          "segments_ok": 1,
+          "segments_total": 1
+        },
+        {
+          "type": "delivery_receipt"
+        }
+      ],
+      "expected": {
+        "units": 1,
+        "review": false,
+        "uncertain": false,
+        "credit_requested": false
+      }
+    },
+    {
+      "name": "android_refund_before_finalize_prevents_charge",
+      "category": "android_execution",
+      "events": [
+        {
+          "type": "refund_before_finalize"
+        },
+        {
+          "type": "sent_callback_ok",
+          "segments_ok": 1,
+          "segments_total": 1
+        }
+      ],
+      "expected": {
+        "units": 0,
+        "review": false,
+        "uncertain": false,
+        "credit_requested": false
+      }
+    },
+    {
+      "name": "android_conflict_after_charge_goes_to_review_not_refund",
+      "category": "android_execution",
+      "events": [
+        {
+          "type": "sent_callback_ok",
+          "segments_ok": 1,
+          "segments_total": 1
+        },
+        {
+          "type": "callback_conflict"
+        }
+      ],
+      "expected": {
+        "units": 1,
+        "review": true,
+        "uncertain": false,
+        "credit_requested": false
+      }
+    },
+    {
+      "name": "android_credit_request_is_a_request_not_a_negative_unit",
+      "category": "android_execution",
+      "events": [
+        {
+          "type": "sent_callback_ok",
+          "segments_ok": 1,
+          "segments_total": 1
+        },
+        {
+          "type": "request_credit"
+        }
+      ],
+      "expected": {
+        "units": 1,
+        "review": false,
+        "uncertain": false,
+        "credit_requested": true
+      }
+    },
+    {
+      "name": "provider_verified_acceptance_one_unit",
+      "category": "provider_transport",
+      "events": [
+        {
+          "type": "provider_acceptance_verified",
+          "action_id": "action-a"
+        }
+      ],
+      "expected": {
+        "units": 1,
+        "review": false,
+        "uncertain": false,
+        "credit_requested": false
+      }
+    },
+    {
+      "name": "provider_unverified_acceptance_no_unit",
+      "category": "provider_transport",
+      "events": [
+        {
+          "type": "provider_acceptance_unverified",
+          "action_id": "action-a"
+        },
+        {
+          "type": "outcome_unknown"
+        }
+      ],
+      "expected": {
+        "units": 0,
+        "review": false,
+        "uncertain": true,
+        "credit_requested": false
+      }
+    },
+    {
+      "name": "provider_replayed_acceptance_one_unit",
+      "category": "provider_transport",
+      "events": [
+        {
+          "type": "provider_acceptance_verified",
+          "action_id": "action-a"
+        },
+        {
+          "type": "provider_acceptance_verified",
+          "action_id": "action-a"
+        },
+        {
+          "type": "provider_acceptance_verified",
+          "action_id": "action-a"
+        }
+      ],
+      "expected": {
+        "units": 1,
+        "review": false,
+        "uncertain": false,
+        "credit_requested": false
+      }
+    },
+    {
+      "name": "provider_distinct_actions_distinct_units",
+      "category": "provider_transport",
+      "events": [
+        {
+          "type": "provider_acceptance_verified",
+          "action_id": "action-a"
+        },
+        {
+          "type": "provider_acceptance_verified",
+          "action_id": "action-b"
+        }
+      ],
+      "expected": {
+        "units": 2,
+        "review": false,
+        "uncertain": false,
+        "credit_requested": false
+      }
+    },
+    {
+      "name": "ai_unapproved_draft_with_verified_generation_is_charged_once",
+      "category": "ai_generated_reply",
+      "events": [
+        {
+          "type": "generation_completed_verified",
+          "generation_id": "gen-a"
+        },
+        {
+          "type": "draft_unapproved"
+        }
+      ],
+      "expected": {
+        "units": 1,
+        "review": false,
+        "uncertain": false,
+        "credit_requested": false
+      }
+    },
+    {
+      "name": "ai_approval_is_distinct_and_adds_nothing",
+      "category": "ai_generated_reply",
+      "events": [
+        {
+          "type": "generation_completed_verified",
+          "generation_id": "gen-a"
+        },
+        {
+          "type": "owner_approved"
+        }
+      ],
+      "expected": {
+        "units": 1,
+        "review": false,
+        "uncertain": false,
+        "credit_requested": false
+      }
+    },
+    {
+      "name": "ai_quote_edit_and_retry_do_not_recharge",
+      "category": "ai_generated_reply",
+      "events": [
+        {
+          "type": "generation_completed_verified",
+          "generation_id": "gen-a"
+        },
+        {
+          "type": "draft_edited"
+        },
+        {
+          "type": "quote_changed"
+        },
+        {
+          "type": "retry_same_action"
+        },
+        {
+          "type": "generation_completed_verified",
+          "generation_id": "gen-a"
+        }
+      ],
+      "expected": {
+        "units": 1,
+        "review": false,
+        "uncertain": false,
+        "credit_requested": false
+      }
+    },
+    {
+      "name": "ai_intentional_regeneration_is_a_new_identity",
+      "category": "ai_generated_reply",
+      "events": [
+        {
+          "type": "generation_completed_verified",
+          "generation_id": "gen-a"
+        },
+        {
+          "type": "generation_completed_verified",
+          "generation_id": "gen-b"
+        }
+      ],
+      "expected": {
+        "units": 2,
+        "review": false,
+        "uncertain": false,
+        "credit_requested": false
+      }
+    },
+    {
+      "name": "ai_unverified_completion_no_unit",
+      "category": "ai_generated_reply",
+      "events": [
+        {
+          "type": "generation_requested",
+          "generation_id": "gen-a"
+        },
+        {
+          "type": "generation_completed_unverified",
+          "generation_id": "gen-a"
+        }
+      ],
+      "expected": {
+        "units": 0,
+        "review": false,
+        "uncertain": false,
+        "credit_requested": false
+      }
+    }
+  ],
+  "identifier_vectors": [
+    {
+      "name": "android_execution_unit_one_a",
+      "account_id": "00000000-0000-0000-0000-000000000001",
+      "message_id": "00000000-0000-0000-0000-000000000003",
+      "identifier": "zt-usage-v1-992d6ce5366fcd5c0485140d611ef2948bcd622b351fb6be91a1b19b9e525f9b"
+    },
+    {
+      "name": "android_execution_unit_one_b",
+      "account_id": "00000000-0000-0000-0000-000000000002",
+      "message_id": "00000000-0000-0000-0000-000000000003",
+      "identifier": "zt-usage-v1-649e466d21653ac2ae1ebf3dfd9e66521f3cfa6388c36362c27363470899df56"
+    },
+    {
+      "name": "android_execution_unit_one_c",
+      "account_id": "00000000-0000-0000-0000-000000000001",
+      "message_id": "00000000-0000-0000-0000-000000000004",
+      "identifier": "zt-usage-v1-f0e2f3801418e1b73fcd798449f8c087ded406ed35497d97aa6faad613c7759f"
+    }
+  ]
+}

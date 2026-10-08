@@ -564,11 +564,58 @@ else:
 
 
 class OwnerHttp(unittest.TestCase):
+    def test_raw_session_clock_keeps_only_original_identity(self):
+        valid = {"account_id": ID, "user_id": ID, "session_id": ID,
+                 "role": "owner", "server_now_ms": "9223372036854775807"}
+        connection = Mock()
+        login = Mock(status=204)
+        login.read.return_value = b""
+        login.getheaders.return_value = []
+        current = Mock(status=200)
+        current.read.return_value = json.dumps(valid).encode("utf-8")
+        current.getheaders.return_value = []
+        connection.getresponse.side_effect = [login, current]
+        session = OwnerSession("https://gateway.example", connection=connection)
+        session.cookies = {"__Host-zrotext_session": "example", "__Host-zrotext_csrf": "example"}
+        self.assertEqual(session.login("owner@example.test", "example", lambda: "example"), ID)
+        self.assertEqual(session.session_identity, {"account_id": ID, "user_id": ID, "session_id": ID})
+        self.assertEqual(connection.request.call_count, 2)
+
+    def test_raw_duplicate_or_non_utf8_session_refuses_without_retry(self):
+        valid = json.dumps({"account_id": ID, "user_id": ID, "session_id": ID,
+                            "role": "owner", "server_now_ms": "1"}, separators=(",", ":"))
+        malformed = [
+            '{"server_now_ms":"0",' + valid[1:],
+            '{"\\u0073erver_now_ms":"0",' + valid[1:],
+            '{"account_id":"invalid",' + valid[1:],
+            '{"user_id":"invalid",' + valid[1:],
+            '{"session_id":"invalid",' + valid[1:],
+            '{"role":"observer",' + valid[1:],
+        ]
+        raw_values = [value.encode("utf-8") for value in malformed]
+        raw_values += [valid.encode("utf-16"), b"\xff" + valid.encode("utf-8")]
+        for raw in raw_values:
+            with self.subTest(raw=raw):
+                connection = Mock()
+                login = Mock(status=204)
+                login.read.return_value = b""
+                login.getheaders.return_value = []
+                current = Mock(status=200)
+                current.read.return_value = raw
+                current.getheaders.return_value = []
+                connection.getresponse.side_effect = [login, current]
+                session = OwnerSession("https://gateway.example", connection=connection)
+                session.cookies = {"__Host-zrotext_session": "example", "__Host-zrotext_csrf": "example"}
+                with self.assertRaisesRegex(OwnerSetupError, "^owner_response_unknown$"):
+                    session.login("owner@example.test", "example", lambda: "example")
+                self.assertIsNone(session.session_identity)
+                self.assertEqual(connection.request.call_count, 2)
+
     def test_login_requires_actual_owner_session_and_separate_fresh_grant_factor(self):
         session = OwnerSession("https://gateway.example", connection=Mock())
         session.cookies = {"__Host-zrotext_session": "example", "__Host-zrotext_csrf": "example"}
         with patch.object(session, "request", side_effect=[(202, {"challenge_token": "example"}), (204, None),
-              (200, {"role": "owner", "account_id": ID, "user_id": ID, "session_id": ID}), (201, {"grant_id": ID, "token": "ztw_" + "a" * 43})]) as request:
+              (200, {"role": "owner", "account_id": ID, "user_id": ID, "session_id": ID, "server_now_ms": "1"}), (201, {"grant_id": ID, "token": "ztw_" + "a" * 43})]) as request:
             self.assertEqual(session.login("owner@example.test", "example", lambda: "login-example"), ID)
             session.create(SELECTED, "example", "grant-example")
             self.assertEqual(request.call_args_list[1].args[2]["code"], "login-example")
@@ -618,3 +665,48 @@ class OwnerHttp(unittest.TestCase):
         with patch.object(session, "request", side_effect=[(200, {}), (200, {"role": "observer"})]):
             with self.assertRaises(OwnerSetupError):
                 session.login("owner@example.test", "example", lambda: "example")
+
+
+    def test_session_time_accepts_positive_i64_without_retaining_an_authority_field(self):
+        for clock in ("1", "9223372036854775807"):
+            with self.subTest(clock=clock):
+                session = OwnerSession("https://gateway.example", connection=Mock())
+                session.cookies = {"__Host-zrotext_session": "example", "__Host-zrotext_csrf": "example"}
+                value = {"account_id": ID, "user_id": ID, "session_id": ID,
+                         "role": "owner", "server_now_ms": clock}
+                with patch.object(session, "request", side_effect=[(204, None), (200, value)]) as request:
+                    self.assertEqual(session.login("owner@example.test", "example", lambda: "example"), ID)
+                    self.assertEqual(session.session_identity, {"account_id": ID, "user_id": ID, "session_id": ID})
+                    self.assertEqual(request.call_count, 2)
+
+    def test_session_time_and_exact_owner_scope_refuse_without_retry_or_identity(self):
+        valid = {"account_id": ID, "user_id": ID, "session_id": ID,
+                 "role": "owner", "server_now_ms": "1"}
+        values = [dict(valid, server_now_ms=clock) for clock in
+                  (None, True, 1, "0", "01", "-1", "1e3", "9223372036854775808", "9" * 20)]
+        values += [{key: value for key, value in valid.items() if key != "server_now_ms"},
+                   dict(valid, unexpected="field"), dict(valid, role="observer")]
+        values += [dict(valid, **{key: "invalid"}) for key in ("account_id", "user_id", "session_id")]
+        for value in values:
+            with self.subTest(value=value):
+                session = OwnerSession("https://gateway.example", connection=Mock())
+                session.cookies = {"__Host-zrotext_session": "example", "__Host-zrotext_csrf": "example"}
+                with patch.object(session, "request", side_effect=[(204, None), (200, value)]) as request:
+                    with self.assertRaises(OwnerSetupError):
+                        session.login("owner@example.test", "example", lambda: "example")
+                    self.assertIsNone(session.session_identity)
+                    self.assertEqual(request.call_count, 2)
+
+    def test_valid_clock_does_not_replace_both_required_current_cookies(self):
+        for missing in ("__Host-zrotext_session", "__Host-zrotext_csrf"):
+            with self.subTest(missing=missing):
+                session = OwnerSession("https://gateway.example", connection=Mock())
+                session.cookies = {"__Host-zrotext_session": "example", "__Host-zrotext_csrf": "example"}
+                del session.cookies[missing]
+                value = {"account_id": ID, "user_id": ID, "session_id": ID,
+                         "role": "owner", "server_now_ms": "1"}
+                with patch.object(session, "request", side_effect=[(204, None), (200, value)]) as request:
+                    with self.assertRaisesRegex(OwnerSetupError, "^invalid_session$"):
+                        session.login("owner@example.test", "example", lambda: "example")
+                    self.assertIsNone(session.session_identity)
+                    self.assertEqual(request.call_count, 2)

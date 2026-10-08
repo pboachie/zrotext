@@ -1,7 +1,7 @@
 -- SPDX-License-Identifier: AGPL-3.0-only
 -- Owner-confirmed single-opening capacity tables, promoted from the
--- migration-candidates draft (092 is the next free number after 091;
--- renumber before merge if another migration lands first). Installed by
+-- migration-candidates draft (renumbered 092 -> 093 before merge because
+-- 092 went to provider_send_attempts in the interim). Installed by
 -- the production migrator and disposable test fixtures alike.
 
 CREATE TABLE workflow_openings (

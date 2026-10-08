@@ -10,6 +10,100 @@ use tokio_postgres::Transaction;
 use uuid::Uuid;
 mod binding;
 
+/// Provider proposals share only actual Owner/ciphertext/context/consent fences.
+/// Route/reader/disclosure metadata is NOT accepted authority. Existing original
+/// phone/routine outputs cannot be relabelled into this owner-local profile.
+async fn provider_source(
+    tx: &Transaction<'_>,
+    d: &super::action_profile::ProviderAction,
+    h: &wire::Header,
+) -> Result<(), ConversationError> {
+    let key = d.key()?;
+    for (table, query) in [
+        (
+            "original_reply_sources",
+            "SELECT EXISTS(SELECT 1 FROM original_reply_sources WHERE account_id=$1 AND action_id=$2)",
+        ),
+        (
+            "workflow_routine_original_sources",
+            "SELECT EXISTS(SELECT 1 FROM workflow_routine_original_sources WHERE account_id=$1 AND call_id=$2)",
+        ),
+    ] {
+        if tx
+            .query_one("SELECT to_regclass($1) IS NOT NULL", &[&table])
+            .await?
+            .get::<_, bool>(0)
+            && tx
+                .query_one(query, &[&key.account_id, &key.action_id])
+                .await?
+                .get::<_, bool>(0)
+        {
+            return Err(ConversationError::Unavailable);
+        }
+    }
+    contact_scope(
+        tx,
+        super::descriptor::identifier(&d.common().recipient_id)?,
+        d.purpose()?,
+        h,
+    )
+    .await?;
+    Ok(())
+}
+pub(crate) async fn checked_provider<'tx, 'connection>(
+    tx: &'tx Transaction<'connection>,
+    owner: &SessionPrincipal,
+    d: &super::action_profile::ProviderAction,
+) -> Result<(CurrentAuthority<'tx, 'connection>, wire::Header), ConversationError> {
+    if d.key()?.account_id != owner.tenant.account_id() {
+        return Err(ConversationError::NotFound);
+    }
+    let c = d.common();
+    let mut authority = lock_current(tx, owner.tenant.account_id()).await?;
+    lock_owner(tx, owner).await?;
+    let bytes = load(
+        tx,
+        owner.tenant.account_id(),
+        super::descriptor::identifier(&c.content_ref)?,
+        Some(c.content_version),
+    )
+    .await?;
+    let h = wire::parse(&bytes)?;
+    if h.line != super::descriptor::identifier(&c.line_id)?
+        || Sha256::digest(&bytes).as_slice() != d.content_digest()?
+        || d.expires_ms()? > h.expires_ms
+    {
+        return Err(ConversationError::Forbidden);
+    }
+    recheck_provider(tx, owner, &mut authority, &h, d).await?;
+    Ok((authority, h))
+}
+pub(crate) async fn recheck_provider(
+    tx: &Transaction<'_>,
+    owner: &SessionPrincipal,
+    authority: &mut CurrentAuthority<'_, '_>,
+    h: &wire::Header,
+    d: &super::action_profile::ProviderAction,
+) -> Result<(), ConversationError> {
+    authorize(tx, owner, authority, h, true).await?;
+    provider_source(tx, d, h).await?;
+    if activation::now(tx).await? >= d.expires_ms()? {
+        return Err(ConversationError::Forbidden);
+    }
+    fresh_owner(tx, owner).await
+}
+pub(crate) async fn live_provider_routine(
+    tx: &Transaction<'_>,
+    d: &super::action_profile::ProviderAction,
+    h: &wire::Header,
+) -> Result<(), ConversationError> {
+    tx.query_opt("SELECT 1 FROM workflow_context_fences WHERE account_id=$1 AND context_id=$2 AND stopped_at IS NULL FOR UPDATE",
+        &[&h.account,&h.context]).await?.ok_or(ConversationError::Forbidden)?;
+    tx.query_opt("SELECT 1 FROM workflow_routines WHERE account_id=$1 AND id=$2 AND context_id=$3 AND generation=$4 AND stopped_at IS NULL FOR UPDATE",
+        &[&h.account,&super::descriptor::identifier(&d.common().routine_id)?,&h.context,&d.common().authority_generation]).await?.ok_or(ConversationError::Forbidden)?;
+    Ok(())
+}
+
 pub(crate) async fn recheck_descriptor(
     tx: &Transaction<'_>,
     owner: &SessionPrincipal,

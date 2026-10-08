@@ -15,6 +15,15 @@ class OwnerSetupError(Exception):
     pass
 
 
+def _unique_object(pairs):
+    value = {}
+    for key, member in pairs:
+        if key in value:
+            raise ValueError("duplicate_member")
+        value[key] = member
+    return value
+
+
 def identity(value):
     try:
         parsed = uuid.UUID(value)
@@ -85,7 +94,7 @@ class OwnerSession:
                             if not cookie[key]["secure"] or cookie[key]["path"] != "/" or cookie[key]["domain"]:
                                 raise OwnerSetupError("invalid_session")
                             self.cookies[key] = cookie[key].value
-            data = json.loads(raw) if raw else None
+            data = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object) if raw else None
             return response.status, data
         except (OSError, http.client.HTTPException, ValueError):
             # No automatic retry: an effectful response may have been lost.
@@ -100,8 +109,11 @@ class OwnerSession:
             raise OwnerSetupError("owner_authentication_refused")
         status, data = self.request("GET", "/v1/auth/session")
         if (status != 200 or not isinstance(data, dict)
-                or set(data) != {"account_id", "user_id", "session_id", "role"}
-                or data.get("role") != "owner"):
+                or set(data) != {"account_id", "user_id", "session_id", "role", "server_now_ms"}
+                or data.get("role") != "owner"
+                or not isinstance(data.get("server_now_ms"), str)
+                or not re.fullmatch(r"[1-9][0-9]{0,18}", data["server_now_ms"])
+                or int(data["server_now_ms"]) > (1 << 63) - 1):
             raise OwnerSetupError("owner_required")
         if not all(self.cookies.get(k) for k in ["__Host-zrotext_session", "__Host-zrotext_csrf"]):
             raise OwnerSetupError("invalid_session")

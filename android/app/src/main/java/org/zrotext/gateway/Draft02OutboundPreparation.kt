@@ -16,7 +16,8 @@ internal object Draft02OutboundPreparation {
         val attemptGeneration: Long, val connectionEpoch: Long, val deploymentEpoch: Long,
         val sessionId: String, val originHash: String, val unsignedDigest: String,
         val manifestGeneration: Long, val manifestVersion: Long, val manifestDigest: String,
-        val recipientDigest: String, val expiresAtMs: Long, val subscriptionId: Int, val cardId: Int
+        val recipientDigest: String, val expiresAtMs: Long, val subscriptionId: Int, val cardId: Int,
+        val installedProfile: InstalledEsimProfile? = null
     ) {
         init {
             require(listOf(accountId, messageId, attemptId, deviceId, lineId, sessionId).all {
@@ -27,10 +28,25 @@ internal object Draft02OutboundPreparation {
                 manifestGeneration, manifestVersion, expiresAtMs).all { it > 0 } &&
                 subscriptionId >= 0 && cardId >= 0) { "Candidate grant shape" }
         }
-        internal fun identity(): String = hash(listOf(accountId, messageId, attemptId, deviceId, lineId,
+        internal fun identity(): String {
+            val physical = hash(listOf(accountId, messageId, attemptId, deviceId, lineId,
             bindingGeneration, attemptGeneration, connectionEpoch, deploymentEpoch, sessionId, originHash,
             unsignedDigest, manifestGeneration, manifestVersion, manifestDigest, recipientDigest,
             expiresAtMs, subscriptionId, cardId).joinToString("|").toByteArray(Charsets.US_ASCII))
+            val record = installedProfile?.record ?: return physical
+            return hash(listOf("ZROtext/profile-record-grant/v1", physical, record.subscriptionId,
+                record.cardId, record.portIndex, record.logicalSlotIndex, record.incarnation,
+                record.observationEpoch, record.leaseId).joinToString("|").toByteArray(Charsets.US_ASCII))
+        }
+        internal fun selectedSim(): ActivatedSimCard? = if (installedProfile == null)
+            ActivatedSimCard(subscriptionId, cardId) else installedProfile.takeIf {
+                it.isCurrent() && it.record.subscriptionId == subscriptionId && it.record.cardId == cardId &&
+                    it.authority == ProfileLineAuthority(accountId, deviceId, lineId, bindingGeneration)
+            }?.let { ActivatedSimCard(subscriptionId, cardId, it.candidate) }
+        internal fun matchesBinding(binding: LocalLineBinding): Boolean =
+            if (installedProfile == null) binding.continuityKind == "physical" && binding.liveContinuity()
+            else installedProfile.isCurrent() && binding.installedProfile() === installedProfile &&
+                binding.profileRecord() == installedProfile.record && binding.profileAuthority() == installedProfile.authority
         override fun toString() = "CandidateGrant(redacted)"
     }
 
@@ -106,7 +122,7 @@ internal object Draft02OutboundPreparation {
                 context.generation == grant.manifestGeneration && context.version == grant.manifestVersion &&
                 hex(context.manifestDigest) == grant.manifestDigest && hash(context.peer) == grant.recipientDigest &&
                 live.selectedSubscriptionId == grant.subscriptionId &&
-                SimCardContinuity.matches(ActivatedSimCard(grant.subscriptionId, grant.cardId), live.cards())) {
+                SimCardContinuity.matches(grant.selectedSim(), live.cards())) {
                 "Candidate context changed"
             }
             verified?.checkContext(live.authority, live.request, live.trustedNowMs)
@@ -117,7 +133,8 @@ internal object Draft02OutboundPreparation {
             fresh()
             require(binding != null && binding.accountId == grant.accountId && binding.deviceId == grant.deviceId &&
                 binding.lineId == grant.lineId && binding.generation == grant.bindingGeneration &&
-                binding.subscriptionId == grant.subscriptionId && binding.cardId == grant.cardId) { "Candidate line changed" }
+                binding.subscriptionId == grant.subscriptionId && binding.cardId == grant.cardId &&
+                grant.matchesBinding(binding)) { "Candidate line changed" }
         }
         try {
             val initial = current() ?: return Unavailable

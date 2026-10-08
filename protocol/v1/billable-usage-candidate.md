@@ -40,6 +40,19 @@ lowercase SHA-256 of the ASCII account UUID, colon, message UUID, and
 in the original admission ledger prevents later finalization; an existing
 finalized row is never rewritten into a negative charge.
 
+## Machine-readable contract vectors
+
+Contract version `billable-charge-unit-v1` is pinned by
+[`billable-charge-unit-vectors.json`](billable-charge-unit-vectors.json):
+the three categories, event sequences with their expected unit counts, the set
+of event types that never mint a unit, and identifier derivation vectors. The
+executable model in `scripts/test_billable_charge_units.py` replays them and
+also fails if migration 078's identifier formula drifts. The model is a design
+check, not runtime code; provider transport and AI categories remain
+unavailable and the vectors for them describe the proposal only. Changing the
+unit definition or identifier requires a new contract version and vectors, not
+an edit to a version already used by an outbox row.
+
 ## TEST forwarding and review
 
 The library worker defaults off and accepts only an explicitly supplied

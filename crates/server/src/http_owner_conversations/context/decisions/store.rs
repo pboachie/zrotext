@@ -43,15 +43,16 @@ pub(crate) async fn descriptor(
     tx: &Transaction<'_>,
     key: ActionKey,
 ) -> Result<Descriptor, ConversationError> {
+    profile(tx, key).await?.phone()
+}
+pub(crate) async fn profile(
+    tx: &Transaction<'_>,
+    key: ActionKey,
+) -> Result<super::action_profile::StoredProfile, ConversationError> {
     key.validate()?;
     let row=tx.query_opt("SELECT descriptor FROM workflow_action_versions WHERE account_id=$1 AND action_id=$2 AND revision=$3 AND binding_digest=$4",
         &[&key.account_id,&key.action_id,&key.revision,&&key.binding_digest[..]]).await?.ok_or(ConversationError::NotFound)?;
-    let d: Descriptor = serde_json::from_slice(&row.get::<_, Vec<u8>>(0))
-        .map_err(|_| ConversationError::Unavailable)?;
-    if d.key()? != key {
-        return Err(ConversationError::Unavailable);
-    }
-    Ok(d)
+    super::action_profile::StoredProfile::parse(&row.get::<_, Vec<u8>>(0), key)
 }
 pub(crate) fn request_digest<T: Serialize>(
     operation: i16,
@@ -344,7 +345,17 @@ pub async fn read(
         return Err(ConversationError::NotFound);
     }
     let tx = client.transaction().await?;
-    let d = descriptor(&tx, key).await?;
+    let d = match profile(&tx, key).await? {
+        super::action_profile::StoredProfile::Provider(d) => {
+            let mut permit = super::proposal::ProviderProposal::checked(&tx, owner, *d).await?;
+            let result = head(&tx, key.account_id, key.action_id).await?;
+            permit.recheck().await?;
+            drop(permit);
+            tx.commit().await?;
+            return Ok(result);
+        }
+        super::action_profile::StoredProfile::Phone(d) => *d,
+    };
     let (mut authority, h) = checked_descriptor(&tx, owner, &d).await?;
     let result = head(&tx, key.account_id, key.action_id).await?;
     recheck_descriptor(&tx, owner, &mut authority, &h, &d).await?;
@@ -365,7 +376,19 @@ pub async fn decide(
     }
     let digest = request_digest(2, &(key, expected, decision))?;
     let tx = client.transaction().await?;
-    let d = descriptor(&tx, key).await?;
+    let d = match profile(&tx, key).await? {
+        super::action_profile::StoredProfile::Provider(d) => {
+            if decision == Decision::Approve {
+                let mut permit = super::proposal::ProviderProposal::checked(&tx, owner, *d).await?;
+                permit.recheck().await?;
+                return Err(ConversationError::Unavailable);
+            }
+            let result = cancel_provider(&tx, owner, request, expected, key, *d).await?;
+            tx.commit().await?;
+            return Ok(result);
+        }
+        super::action_profile::StoredProfile::Phone(d) => *d,
+    };
     let (mut authority, h) = checked_descriptor(&tx, owner, &d).await?;
     if let Some(result) = replay(&tx, key.account_id, request, &digest).await? {
         recheck_descriptor(&tx, owner, &mut authority, &h, &d).await?;
@@ -491,6 +514,224 @@ pub async fn bind_message(
     )
     .await?;
     record(&tx, owner, h.context, request, 4, &digest, &result).await?;
+    permit.recheck().await?;
+    drop(permit);
+    tx.commit().await?;
+    Ok(result)
+}
+
+/// Separate owner-specific replay namespace; never changes legacy request bytes.
+pub(crate) fn provider_request_digest<T: Serialize>(
+    operation: i16,
+    owner: Uuid,
+    request: Uuid,
+    input: &T,
+) -> Result<Vec<u8>, ConversationError> {
+    if owner.is_nil() || request.is_nil() {
+        return Err(ConversationError::Invalid);
+    }
+    let mut hash = Sha256::new();
+    hash.update(b"ZT/provider-proposal-history/v1\0");
+    hash.update(operation.to_be_bytes());
+    hash.update(
+        serde_json::to_vec(&(owner, request, input)).map_err(|_| ConversationError::Invalid)?,
+    );
+    Ok(hash.finalize().to_vec())
+}
+async fn provider_version(
+    tx: &Transaction<'_>,
+    d: &super::action_profile::ProviderAction,
+    h: &wire::Header,
+) -> Result<(), ConversationError> {
+    let key = d.key()?;
+    let c = d.common();
+    let routine = super::descriptor::identifier(&c.routine_id)?;
+    let bytes = d.canonical();
+    let not_before = c
+        .not_before
+        .checked_mul(1000)
+        .ok_or(ConversationError::Invalid)?;
+    let expires = d.expires_ms()?;
+    let interval = activation::load(tx, h.account, h.interval).await?;
+    let readers = activation::readers(&interval.statement);
+    let wanted = activation::wanted(&interval.statement, h.context, &readers);
+    let mut authority = super::super::lock_current(tx, h.account).await?;
+    let deadline = authority
+        .admission_deadline(&wanted)
+        .await?
+        .min(h.expires_ms);
+    drop(authority);
+    tx.execute("INSERT INTO workflow_action_versions(account_id,action_id,revision,binding_digest,descriptor,context_id,content_version,routine_id,authority_generation,not_before_ms,expires_at_ms,context_trust_generation,context_manifest_version,context_manifest_digest,context_authority_deadline_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
+        &[&key.account_id,&key.action_id,&key.revision,&&key.binding_digest[..],&bytes,&h.context,&c.content_version,&routine,&c.authority_generation,&not_before,&expires,&h.trust_generation,&h.manifest_version,&&h.manifest_digest[..],&deadline]).await?;
+    Ok(())
+}
+pub(crate) async fn register_provider(
+    client: &mut Client,
+    owner: &SessionPrincipal,
+    request: Uuid,
+    d: super::action_profile::ProviderAction,
+) -> Result<ActionState, ConversationError> {
+    if d.common().revision != 1 {
+        return Err(ConversationError::Invalid);
+    }
+    let key = d.key()?;
+    let routine = super::descriptor::identifier(&d.common().routine_id)?;
+    let digest = provider_request_digest(1, owner.user_id, request, &d.canonical())?;
+    let tx = client.transaction().await?;
+    let mut permit = super::proposal::ProviderProposal::checked(&tx, owner, d).await?;
+    permit.recheck().await?;
+    if let Some(result) = replay(&tx, key.account_id, request, &digest).await? {
+        super::fence::live_provider_routine(&tx, &permit.descriptor, &permit.header).await?;
+        permit.recheck().await?;
+        drop(permit);
+        tx.commit().await?;
+        return Ok(result);
+    }
+    let count: i64 = tx
+        .query_one(
+            "SELECT count(*) FROM workflow_actions WHERE account_id=$1",
+            &[&key.account_id],
+        )
+        .await?
+        .get(0);
+    let scoped: i64 = tx
+        .query_one(
+            "SELECT count(*) FROM workflow_actions WHERE account_id=$1 AND context_id=$2",
+            &[&key.account_id, &permit.header.context],
+        )
+        .await?
+        .get(0);
+    if count >= 1000 || scoped >= 256 {
+        return Err(ConversationError::Conflict);
+    }
+    tx.execute("INSERT INTO workflow_context_fences(account_id,context_id) VALUES($1,$2) ON CONFLICT DO NOTHING", &[&key.account_id,&permit.header.context]).await?;
+    tx.execute("INSERT INTO workflow_routines(account_id,id,context_id,generation) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING", &[&key.account_id,&routine,&permit.header.context,&permit.descriptor.common().authority_generation]).await?;
+    super::fence::live_provider_routine(&tx, &permit.descriptor, &permit.header).await?;
+    tx.execute("INSERT INTO workflow_actions(account_id,id,context_id,routine_id,revision,binding_digest,record_version,phase) VALUES($1,$2,$3,$4,1,$5,1,'proposed')", &[&key.account_id,&key.action_id,&permit.header.context,&routine,&&key.binding_digest[..]]).await?;
+    provider_version(&tx, &permit.descriptor, &permit.header).await?;
+    let result = ActionState {
+        key,
+        record_version: 1,
+        phase: Phase::Proposed,
+    };
+    record(
+        &tx,
+        owner,
+        permit.header.context,
+        request,
+        1,
+        &digest,
+        &result,
+    )
+    .await?;
+    permit.recheck().await?;
+    drop(permit);
+    tx.commit().await?;
+    Ok(result)
+}
+async fn cancel_provider(
+    tx: &Transaction<'_>,
+    owner: &SessionPrincipal,
+    request: Uuid,
+    expected: i64,
+    key: ActionKey,
+    d: super::action_profile::ProviderAction,
+) -> Result<ActionState, ConversationError> {
+    let digest = provider_request_digest(
+        2,
+        owner.user_id,
+        request,
+        &(key, expected, Decision::Cancel),
+    )?;
+    let mut permit = super::proposal::ProviderProposal::checked(tx, owner, d).await?;
+    if let Some(result) = replay(tx, key.account_id, request, &digest).await? {
+        permit.recheck().await?;
+        return Ok(result);
+    }
+    super::fence::live_provider_routine(tx, &permit.descriptor, &permit.header).await?;
+    let mut result = head(tx, key.account_id, key.action_id).await?;
+    cas(&result, key, expected)?;
+    result.phase = model::decide(result.phase, Decision::Cancel)?;
+    result.record_version = result
+        .record_version
+        .checked_add(1)
+        .ok_or(ConversationError::Conflict)?;
+    no_provider_link(tx, key).await?;
+    tx.execute("UPDATE workflow_actions SET phase='cancelled',record_version=$3,approved_by=NULL,approved_at=NULL WHERE account_id=$1 AND id=$2", &[&key.account_id,&key.action_id,&result.record_version]).await?;
+    record(
+        tx,
+        owner,
+        permit.header.context,
+        request,
+        2,
+        &digest,
+        &result,
+    )
+    .await?;
+    permit.recheck().await?;
+    Ok(result)
+}
+async fn no_provider_link(tx: &Transaction<'_>, key: ActionKey) -> Result<(), ConversationError> {
+    if tx.query_one("SELECT EXISTS(SELECT 1 FROM workflow_message_links WHERE account_id=$1 AND action_id=$2)", &[&key.account_id,&key.action_id]).await?.get::<_,bool>(0) { return Err(ConversationError::Unavailable); }
+    Ok(())
+}
+/// Rust service only: there is no HTTP02 edit request or route. The caller
+/// supplies the complete next canonical descriptor, never projected fields.
+pub async fn edit_provider(
+    client: &mut Client,
+    owner: &SessionPrincipal,
+    request: Uuid,
+    expected: i64,
+    previous: ActionKey,
+    next: &[u8],
+) -> Result<ActionState, ConversationError> {
+    if previous.account_id != owner.tenant.account_id() {
+        return Err(ConversationError::NotFound);
+    }
+    let next = super::action_profile::ProviderAction::parse(next)?;
+    let digest = provider_request_digest(
+        3,
+        owner.user_id,
+        request,
+        &(previous, expected, next.canonical()),
+    )?;
+    let tx = client.transaction().await?;
+    let old = match profile(&tx, previous).await? {
+        super::action_profile::StoredProfile::Provider(d) => *d,
+        _ => return Err(ConversationError::Conflict),
+    };
+    let mut permit = super::proposal::ProviderProposal::checked(&tx, owner, next).await?;
+    if let Some(result) = replay(&tx, previous.account_id, request, &digest).await? {
+        permit.recheck().await?;
+        drop(permit);
+        tx.commit().await?;
+        return Ok(result);
+    }
+    super::fence::live_provider_routine(&tx, &permit.descriptor, &permit.header).await?;
+    let current = head(&tx, previous.account_id, previous.action_id).await?;
+    cas(&current, previous, expected)?;
+    model::edit_provider(&old, &permit.descriptor, current.phase)?;
+    no_provider_link(&tx, previous).await?;
+    let result = ActionState {
+        key: permit.descriptor.key()?,
+        record_version: current
+            .record_version
+            .checked_add(1)
+            .ok_or(ConversationError::Conflict)?,
+        phase: Phase::Invalidated,
+    };
+    tx.execute("UPDATE workflow_actions SET revision=$3,binding_digest=$4,record_version=$5,phase='invalidated',approved_by=NULL,approved_at=NULL WHERE account_id=$1 AND id=$2", &[&previous.account_id,&previous.action_id,&result.key.revision,&&result.key.binding_digest[..],&result.record_version]).await?;
+    provider_version(&tx, &permit.descriptor, &permit.header).await?;
+    record(
+        &tx,
+        owner,
+        permit.header.context,
+        request,
+        3,
+        &digest,
+        &result,
+    )
+    .await?;
     permit.recheck().await?;
     drop(permit);
     tx.commit().await?;

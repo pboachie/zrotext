@@ -27,6 +27,8 @@ pub mod conversation_genesis;
 /// Cryptographic stage-root evidence only; signing is offline unlock-only.
 pub mod preaccount_root_evidence;
 pub mod recovery_kit;
+/// Closed public-only phase packets and continuity review; no signing or authority.
+pub mod registered_root_packets;
 pub mod root_backup;
 /// Offline unlock signing, compiled only when the `unlock` feature is
 /// enabled. The server never enables it; only the owner CLI's own

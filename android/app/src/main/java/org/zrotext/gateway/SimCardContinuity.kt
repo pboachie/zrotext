@@ -9,10 +9,19 @@ import android.telephony.SubscriptionManager
 
 /** Public, device-local identifiers only. A subscription ID alone cannot establish continuity. */
 data class ActiveSimCard(val subscriptionId: Int, val cardId: Int?,
-                         val isEmbedded: Boolean = false)
+                         val isEmbedded: Boolean = false,
+                         val portIndex: Int? = null, val logicalSlotIndex: Int? = null) {
+    private var observedProfile: EsimProfileCandidate? = null
+    internal val profileCandidate: EsimProfileCandidate? get() = observedProfile
+    /** Public constructor/copy/components cannot manufacture or copy this opaque capability. */
+    internal fun withProfile(candidate: EsimProfileCandidate?): ActiveSimCard = copy().also {
+        it.observedProfile = candidate
+    }
+}
 
 /** Snapshot taken at an owner-approved activation, never inferred from the saved SIM selection. */
-internal data class ActivatedSimCard(val subscriptionId: Int, val cardId: Int)
+internal data class ActivatedSimCard(val subscriptionId: Int, val cardId: Int,
+                                     val profile: EsimProfileCandidate? = null)
 
 internal object SimCardContinuity {
     /**
@@ -22,8 +31,18 @@ internal object SimCardContinuity {
     fun observe(context: Context): List<ActiveSimCard>? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
             context.checkSelfPermission(Manifest.permission.READ_PHONE_STATE) !=
-            PackageManager.PERMISSION_GRANTED) return null
+            PackageManager.PERMISSION_GRANTED) {
+            SimProfileContinuity.stop()
+            return null
+        }
         return try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                val records = SimProfileContinuity.observe(context)
+                if (records != null) return records.map { info ->
+                    ActiveSimCard(info.subscriptionId, info.cardId, info.embedded, info.portIndex,
+                        info.logicalSlotIndex).withProfile(SimProfileContinuity.candidate(info.subscriptionId))
+                }
+            }
             val manager = context.getSystemService(SubscriptionManager::class.java) ?: return null
             // API 30 can include hidden opportunistic subscriptions. On API 29 the platform
             // exposes only the active list visible to this app, which is a known limitation.
@@ -55,8 +74,17 @@ internal object SimCardContinuity {
             active.map { it.subscriptionId }.distinct().size != active.size) return null
         val selected = active.singleOrNull { it.subscriptionId == selectedSubscriptionId } ?: return null
         val card = selected.cardId ?: return null
-        // An eSIM card ID identifies the eUICC, not an individual profile. A profile swap may
-        // preserve the card ID and cannot pass until a separate profile identity is verified.
+        // The eUICC is not a profile identity. Only a live observer-issued record lease qualifies.
+        if (selected.isEmbedded) {
+            val profile = selected.profileCandidate ?: return null
+            val record = profile.record
+            return if (profile.isCurrent() && record.subscriptionId == selectedSubscriptionId &&
+                record.cardId == card && record.portIndex == selected.portIndex &&
+                record.logicalSlotIndex == selected.logicalSlotIndex &&
+                active.none { it.subscriptionId != selectedSubscriptionId && it.cardId == card &&
+                    (it.portIndex == null || it.portIndex < 0 || it.portIndex == record.portIndex || !it.isEmbedded) })
+                ActivatedSimCard(selectedSubscriptionId, card, profile) else null
+        }
         return if (card >= 0 && !selected.isEmbedded &&
             active.none { it.subscriptionId != selectedSubscriptionId && it.cardId == card }) {
             ActivatedSimCard(selectedSubscriptionId, card)
@@ -67,3 +95,7 @@ internal object SimCardContinuity {
         return activated != null && activationCandidate(active, activated.subscriptionId) == activated
     }
 }
+
+internal fun ActivatedSimCard.observedCard(): ActiveSimCard =
+    ActiveSimCard(subscriptionId, cardId, profile != null, profile?.record?.portIndex,
+        profile?.record?.logicalSlotIndex).withProfile(profile)

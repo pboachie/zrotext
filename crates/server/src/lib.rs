@@ -15,6 +15,7 @@ pub mod failover_executor;
 mod failover_external;
 pub mod http_auth;
 pub mod http_enrollment;
+pub mod http_managed_ai_grants;
 pub mod http_message_summary;
 pub mod http_messages;
 pub mod http_observer;

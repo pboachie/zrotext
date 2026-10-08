@@ -756,7 +756,7 @@ unchanged by this data.
 ## Owner-confirmed capacity foundation
 
 The single-opening capacity library installs through numbered migration
-`deploy/compose/migrations/092_owner_opening_capacity.sql`. Its owner
+`deploy/compose/migrations/093_owner_opening_capacity.sql`. Its owner
 create, status and mutation routes are mounted inside the customer-routines
 composition, which stays disabled unless `CUSTOMER_ROUTINES_ENABLED` is set.
 No SDK caller, appointment, volunteer or acknowledgment journey is enabled
