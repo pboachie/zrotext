@@ -152,14 +152,24 @@ def vendored_upstream(relative: str) -> bool:
     return relative.startswith(VENDORED_UPSTREAM_PREFIXES)
 
 
-def vendored_allowlist(files: list[tuple[str, str, str]], blobs: dict[str, bytes]) -> dict[str, str]:
-    """Map relative vendored paths to their recorded upstream SHA-256 digests."""
+def vendored_allowlist(root: Path, files: list[tuple[str, str, str]], blobs: dict[str, bytes]) -> dict[str, str]:
+    """Map relative vendored paths to their recorded upstream SHA-256 digests.
+
+    The shared scan cache filters blobs out of `pending` on every snapshot
+    after the first, so the manifest may be absent from `blobs` there; it is
+    read on demand so the exemption holds for every scanned commit tree.
+    """
     provenance = next((oid for relative, oid, mode in files
                        if relative == VENDORED_PROVENANCE_PATH and mode != "160000"), None)
-    if provenance is None or provenance not in blobs:
+    if provenance is None:
+        return {}
+    data = blobs.get(provenance)
+    if data is None:
+        data = read_blobs(root, [provenance]).get(provenance)
+    if data is None:
         return {}
     allow: dict[str, str] = {}
-    for line in blobs[provenance].decode("utf-8", "replace").splitlines():
+    for line in data.decode("utf-8", "replace").splitlines():
         parts = line.split()
         if len(parts) == 2 and len(parts[0]) == 64 and all(c in "0123456789abcdef" for c in parts[0]):
             allow[VENDORED_UPSTREAM_PREFIXES[0] + parts[1]] = parts[0]
@@ -244,7 +254,7 @@ def scan_snapshot(root: Path, tree: str | None, cache: dict) -> list[str]:
     files = entries(root, tree)
     pending = list(dict.fromkeys(oid for relative, oid, mode in files if mode != "160000" and blob_key(relative, oid) not in cache))
     blobs = read_blobs(root, pending)
-    allow = vendored_allowlist(files, blobs)
+    allow = vendored_allowlist(root, files, blobs)
     for number, (relative, oid, mode) in enumerate(files, 1):
         # Names may themselves be private. Ordinals identify entries without
         # exposing paths in public CI output (see the local lookup in the docs).
@@ -258,6 +268,8 @@ def scan_snapshot(root: Path, tree: str | None, cache: dict) -> list[str]:
             continue
         if vendored_upstream(relative):
             data = blobs.get(oid)
+            if data is None:
+                data = read_blobs(root, [oid]).get(oid)
             if data is not None and allow.get(relative) == hashlib.sha256(data).hexdigest():
                 continue
             # Unlisted or modified vendored content gets the full scan.

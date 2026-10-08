@@ -66,7 +66,7 @@ def expected_selection(upstream: Path) -> dict[str, Path]:
     expected: dict[str, Path] = {}
     for relative in ROOT_FILES:
         expected[relative] = upstream / relative
-    for path in sorted((upstream / "wolfssl").rglob("*")):  # codeql[py/path-injection] developer-supplied local checkout; contents are digested, never executed
+    for path in sorted((upstream / "wolfssl").rglob("*")):  # lgtm [py/path-injection] developer-supplied local checkout; contents are digested, never executed
         if not path.is_file():
             continue
         relative = path.relative_to(upstream).as_posix()

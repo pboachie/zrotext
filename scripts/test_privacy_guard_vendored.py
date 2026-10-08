@@ -54,6 +54,18 @@ class VendoredExemptionTest(unittest.TestCase):
         self._write_manifest()
         self.assertEqual(self._findings(), [])
 
+    def test_exemption_holds_on_a_second_shared_cache_snapshot(self):
+        # Range scans reuse one scan cache across commit trees; the manifest
+        # and vendored blobs drop out of the pending-blob read on the second
+        # tree and the exemption must survive that.
+        self._write_manifest()
+        cache: dict = {}
+        first = guard.scan_snapshot(self.root, self._commit(), cache)
+        self.assertEqual([error for error in first if "commit-message" not in error], [])
+        (self.root / "README.md").write_bytes(b"first-party notes\n")
+        second = guard.scan_snapshot(self.root, self._commit(), cache)
+        self.assertEqual([error for error in second if "commit-message" not in error], [])
+
     def test_unlisted_vendored_file_is_fully_scanned(self):
         self._write_manifest()
         planted = self.root / VENDORED / "wolfcrypt" / "src" / "planted.c"

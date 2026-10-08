@@ -77,7 +77,7 @@ def self_test(vendored: Path) -> int:
 
     def copied(name: str) -> Path:
         target = Path(tempfile.mkdtemp(prefix=f"wolfssl-provenance-{name}-")) / "tree"
-        shutil.copytree(vendored, target)  # codeql[py/path-injection] developer-supplied local checkout; contents are digested, never executed
+        shutil.copytree(vendored, target)
         cases.append((name, target))
         return target
 
@@ -105,7 +105,9 @@ def main() -> int:
     parser.add_argument("--self-test", action="store_true", help="plant bad copies and assert rejection")
     args = parser.parse_args()
     if args.self_test:
-        return self_test(args.tree)
+        # The self-test always exercises the real vendored tree; --tree exists
+        # for verify() only, so the self-test copies never carry a CLI flow.
+        return self_test(VENDORED)
     return verify(args.tree)
 
 
