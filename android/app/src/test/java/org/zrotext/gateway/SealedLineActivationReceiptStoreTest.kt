@@ -74,7 +74,7 @@ class SealedLineActivationReceiptStoreTest {
         assertNull(f.provider(43).accept(f.activated(f.reepoch(fakeAck, 43))))
     }
     @Test @Config(sdk = [34]) fun esimV2IsProvenanceOnlyWhilePhysicalV1EncodingRemainsExact() {
-        EsimProfileFixture().use { profile ->
+        EsimProfileFixture(singleActive = true).use { profile ->
             val f = SealedLineActivationFixture()
             val physical = checkNotNull(f.device.prepare(f.challenge, f.selection))
             val snapshot = SealedLineActivationSnapshot(physical, f.receipt(physical.signature()))
