@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import ipaddress
 import os
 import re
@@ -134,16 +135,35 @@ def forbidden_path(relative: str) -> bool:
             or name.endswith((".dpapi", ".pfx", ".p12", ".jks", ".keystore", ".agekey", ".key")))
 
 
-# Vendored third-party source that is byte-identical to a pinned upstream
-# release (see the directory's PROVENANCE digests). Upstream identifiers such
-# as DYNAMIC_TYPE_SECRET or PEM-header size comments trip the credential
-# heuristics without carrying any ZROtext credential. Filename checks and
-# every first-party file remain fully scanned.
+# Vendored third-party source pinned byte-identical to an upstream release.
+# Only files whose content digest matches the directory's committed PROVENANCE
+# manifest are exempt: upstream identifiers such as DYNAMIC_TYPE_SECRET or
+# PEM-header size comments trip the credential heuristics without carrying any
+# ZROtext credential, while any file the manifest does not list (or lists with
+# a different digest) is planted or modified and is therefore fully scanned.
+# Filename checks and every first-party file remain fully scanned. The
+# manifest itself and the vendored-tree membership/digest checks are enforced
+# in CI by tools/verify_wolfssl_provenance.py.
 VENDORED_UPSTREAM_PREFIXES = ("android/app/src/main/cpp/wolfssl/",)
+VENDORED_PROVENANCE_PATH = "android/app/src/main/cpp/wolfssl/PROVENANCE"
 
 
 def vendored_upstream(relative: str) -> bool:
     return relative.startswith(VENDORED_UPSTREAM_PREFIXES)
+
+
+def vendored_allowlist(files: list[tuple[str, str, str]], blobs: dict[str, bytes]) -> dict[str, str]:
+    """Map relative vendored paths to their recorded upstream SHA-256 digests."""
+    provenance = next((oid for relative, oid, mode in files
+                       if relative == VENDORED_PROVENANCE_PATH and mode != "160000"), None)
+    if provenance is None or provenance not in blobs:
+        return {}
+    allow: dict[str, str] = {}
+    for line in blobs[provenance].decode("utf-8", "replace").splitlines():
+        parts = line.split()
+        if len(parts) == 2 and len(parts[0]) == 64 and all(c in "0123456789abcdef" for c in parts[0]):
+            allow[VENDORED_UPSTREAM_PREFIXES[0] + parts[1]] = parts[0]
+    return allow
 
 
 def infrastructure_file(relative: str) -> bool:
@@ -224,6 +244,7 @@ def scan_snapshot(root: Path, tree: str | None, cache: dict) -> list[str]:
     files = entries(root, tree)
     pending = list(dict.fromkeys(oid for relative, oid, mode in files if mode != "160000" and blob_key(relative, oid) not in cache))
     blobs = read_blobs(root, pending)
+    allow = vendored_allowlist(files, blobs)
     for number, (relative, oid, mode) in enumerate(files, 1):
         # Names may themselves be private. Ordinals identify entries without
         # exposing paths in public CI output (see the local lookup in the docs).
@@ -236,7 +257,10 @@ def scan_snapshot(root: Path, tree: str | None, cache: dict) -> list[str]:
             errors.append(f"{location}: uninspected submodule")
             continue
         if vendored_upstream(relative):
-            continue
+            data = blobs.get(oid)
+            if data is not None and allow.get(relative) == hashlib.sha256(data).hexdigest():
+                continue
+            # Unlisted or modified vendored content gets the full scan.
         key = blob_key(relative, oid)
         if key not in cache:
             cache[key] = scan_blob(relative, blobs[oid])
