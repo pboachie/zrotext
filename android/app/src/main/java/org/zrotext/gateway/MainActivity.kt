@@ -1321,19 +1321,39 @@ class MainActivity : ComponentActivity() {
         if (requested.isNotEmpty()) permissions.launch(requested.toTypedArray())
     }
 
+    private fun withdrawUnavailableSimSelection(choices: List<Pair<Int, String>> = emptyList()) {
+        sims = choices
+        selectedSim = null
+        // apply updates the process-visible selection before asynchronous persistence.
+        // This preference records a choice; it never restores installed profile authority.
+        getSharedPreferences("gateway_selection", MODE_PRIVATE).edit()
+            .putInt("subscription_id", SubscriptionManager.INVALID_SUBSCRIPTION_ID).apply()
+        SimProfileContinuity.stop()
+        SealedLineActivationMount.disable()
+        closeSealedLineReview()
+        revokeConversationForeground()
+    }
+
     private fun refreshSims() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
-            sims = emptyList()
-            selectedSim = null
+        val choices = try {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) null
+            else getSystemService(SubscriptionManager::class.java)?.activeSubscriptionInfoList?.map { info ->
+                info.subscriptionId to selectedSimLabel(info.subscriptionId, info.simSlotIndex, info.displayName,
+                    info.isEmbedded, if (Build.VERSION.SDK_INT >= 33) info.portIndex else null)
+            }
+        } catch (_: RuntimeException) { null }
+        if (choices == null) {
+            // Permission/read failure withdraws authority; cleanup exceptions are not swallowed.
+            withdrawUnavailableSimSelection()
             return
-        }
-        val manager = getSystemService(SubscriptionManager::class.java)
-        sims = (manager.activeSubscriptionInfoList ?: emptyList()).map { info ->
-            info.subscriptionId to selectedSimLabel(info.subscriptionId, info.simSlotIndex, info.displayName,
-                info.isEmbedded, if (Build.VERSION.SDK_INT >= 33) info.portIndex else null)
         }
         val saved = getSharedPreferences("gateway_selection", MODE_PRIVATE)
             .getInt("subscription_id", SubscriptionManager.INVALID_SUBSCRIPTION_ID)
+        if (saved != SubscriptionManager.INVALID_SUBSCRIPTION_ID && choices.none { it.first == saved }) {
+            withdrawUnavailableSimSelection(choices)
+            return
+        }
+        sims = choices
         selectedSim = saved.takeIf { id -> sims.any { it.first == id } }
     }
 }
