@@ -65,6 +65,8 @@ tasks.named<CyclonedxDirectTask>("cyclonedxDirectBom") {
 android {
     namespace = "org.zrotext.gateway"
     compileSdk = 37
+    // Same NDK the owner-custody native build and the CI images pin.
+    ndkVersion = "28.2.13676358"
 
     defaultConfig {
         applicationId = "org.zrotext.gateway"
@@ -81,6 +83,15 @@ android {
             applicationId = "org.zrotext.gateway.preparationprobe"
             testApplicationId = "org.zrotext.gateway.preparationprobe.test"
             testInstrumentationRunner = "org.zrotext.gateway.PreparationProbeRunner"
+        }
+    }
+
+    // wolfSSL cryptocb-only HPKE receiver bridge (see src/main/cpp/CMakeLists.txt
+    // and user_settings.h). Pure C, no STL, all four ABIs like the custody lib.
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
         }
     }
     buildTypes {
