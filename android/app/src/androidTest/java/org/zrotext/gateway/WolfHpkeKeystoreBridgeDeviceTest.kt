@@ -2,7 +2,6 @@
 package org.zrotext.gateway
 
 import android.os.Build
-import android.os.Bundle
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertArrayEquals
@@ -96,10 +95,10 @@ class WolfHpkeKeystoreBridgeDeviceTest {
             assertEquals(65, public.point.size)
             assertArrayEquals(public.keyId, DevicePayloadKeyStore.keyId(public.point))
             // Metadata, not attestation: the value is read back verbatim.
+            // No sendStatus here: an identity-less status-code event would be
+            // rejected as an unexpected test class by the no-radio allowlist
+            // parser, which requires every completion to carry its class.
             assertTrue(PayloadKeySecurity.values().contains(public.security))
-            InstrumentationRegistry.getInstrumentation().sendStatus(0, Bundle().apply {
-                putString("hpke_bridge_recipient_security", public.security.name)
-            })
         } finally {
             if (store.containsAlias(alias)) store.deleteEntry(alias)
             assertFalse(store.containsAlias(alias))
