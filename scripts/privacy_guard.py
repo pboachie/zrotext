@@ -152,6 +152,22 @@ def vendored_upstream(relative: str) -> bool:
     return relative.startswith(VENDORED_UPSTREAM_PREFIXES)
 
 
+def vendored_digest_matches(data: bytes, recorded: str) -> bool:
+    """True when the stored blob is byte-identical to what PROVENANCE recorded.
+
+    Manifests regenerated before #1032 recorded OS-smudged (CRLF) digests;
+    the git blobs hold LF. A digest match on the raw bytes or on a single
+    line-ending-normalized form accepts those historical manifests without
+    loosening the current tree, which the provenance workflow pins exactly.
+    """
+    candidates = {hashlib.sha256(data).hexdigest()}
+    if b"\r\n" in data:
+        candidates.add(hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest())
+    else:
+        candidates.add(hashlib.sha256(data.replace(b"\n", b"\r\n")).hexdigest())
+    return recorded in candidates
+
+
 def vendored_allowlist(root: Path, files: list[tuple[str, str, str]], blobs: dict[str, bytes]) -> dict[str, str]:
     """Map relative vendored paths to their recorded upstream SHA-256 digests.
 
@@ -270,7 +286,8 @@ def scan_snapshot(root: Path, tree: str | None, cache: dict) -> list[str]:
             data = blobs.get(oid)
             if data is None:
                 data = read_blobs(root, [oid]).get(oid)
-            if data is not None and allow.get(relative) == hashlib.sha256(data).hexdigest():
+            recorded = allow.get(relative)
+            if data is not None and recorded is not None and vendored_digest_matches(data, recorded):
                 continue
             # Unlisted or modified vendored content gets the full scan.
         key = blob_key(relative, oid)
