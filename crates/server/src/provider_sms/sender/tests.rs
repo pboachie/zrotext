@@ -295,3 +295,146 @@ async fn wrong_material_fails_the_commitment_check_before_transmission() {
     assert_eq!(transport.calls(), 0);
     f.case.cleanup().await;
 }
+
+async fn intended_fixture() -> (Fixture, Uuid) {
+    let f = Fixture::new().await;
+    let attempt = Uuid::new_v4();
+    dispatch::commit_submit_intent(
+        &mut f.db().await,
+        &f.permit(),
+        &f.action,
+        f.reservation,
+        attempt,
+        &f.request,
+        "+15551234567",
+    )
+    .await
+    .unwrap();
+    (f, attempt)
+}
+
+async fn assert_preflight_blocks(
+    f: &Fixture,
+    attempt: Uuid,
+    m: &Material<'_>,
+    expected: DispatchError,
+) {
+    // These regressions must reach preflight, rather than fail in the codec.
+    assert!(
+        submit_codec::encode(
+            m.request,
+            m.recipient,
+            match &m.content {
+                Content::ProviderPlaintext(text) => Content::ProviderPlaintext(text),
+                Content::SealedPhoneEnvelope(bytes) => Content::SealedPhoneEnvelope(bytes),
+            },
+        )
+        .is_ok()
+    );
+    let transport = FakeTransport::new(vec![TransportOutcome::Accepted {
+        message_id: Uuid::new_v4(),
+    }]);
+    let result = send_one(
+        &mut f.db().await,
+        &f.permit(),
+        &key(),
+        &transport,
+        f.action.account_id,
+        m,
+    )
+    .await;
+    assert_eq!(transport.calls(), 0, "failed preflight must not transmit");
+    assert_eq!(result, Err(SenderError::Database(expected)));
+    assert_eq!(f.state(attempt).await, "dispatching");
+}
+
+/// Inject a fault only in this fixture's isolated schema, after claim's
+/// authority check and before preflight. No production hook or clock is added.
+async fn fault_during_claim(f: &Fixture, statement: &str) {
+    f.db()
+        .await
+        .batch_execute(&format!(
+            "CREATE FUNCTION sender_claim_fault() RETURNS trigger \
+             LANGUAGE plpgsql SET search_path FROM CURRENT AS $$ BEGIN \
+             {statement}; RETURN NEW; END $$; \
+             CREATE TRIGGER a_sender_claim_fault BEFORE UPDATE OF state ON provider_send_attempts \
+             FOR EACH ROW WHEN (OLD.state='intended' AND NEW.state='dispatching') \
+             EXECUTE FUNCTION sender_claim_fault()"
+        ))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn validly_encoded_wrong_request_is_refused_before_transmission() {
+    let (f, attempt) = intended_fixture().await;
+    let body = "different synthetic commitment";
+    let request = Request::new(
+        f.request.route.clone(),
+        "+15551234567",
+        Content::ProviderPlaintext(body),
+    )
+    .unwrap();
+    let m = material(&request, "+15551234567", body);
+    assert_preflight_blocks(&f, attempt, &m, DispatchError::Conflict).await;
+    f.case.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn validly_encoded_wrong_recipient_is_refused_before_transmission() {
+    let (f, attempt) = intended_fixture().await;
+    let recipient = "+15557654321";
+    let body = "synthetic dispatch fixture";
+    let request = Request::new(
+        f.request.route.clone(),
+        recipient,
+        Content::ProviderPlaintext(body),
+    )
+    .unwrap();
+    let m = material(&request, recipient, body);
+    assert_preflight_blocks(&f, attempt, &m, DispatchError::Conflict).await;
+    f.case.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn expired_dispatch_lease_is_refused_before_transmission() {
+    let (f, attempt) = intended_fixture().await;
+    // Expire the initial lease as it is acquired; never replace a durable lease
+    // or disable the ledger's immutability trigger to simulate elapsed time.
+    fault_during_claim(
+        &f,
+        "NEW.lease_until_ms := (extract(epoch FROM clock_timestamp())*1000)::bigint - 1",
+    )
+    .await;
+    let m = material(&f.request, "+15551234567", "synthetic dispatch fixture");
+    assert_preflight_blocks(&f, attempt, &m, DispatchError::Conflict).await;
+    f.case.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn changed_writer_authority_is_refused_before_transmission() {
+    let (f, attempt) = intended_fixture().await;
+    fault_during_claim(&f, "UPDATE deployment_authority SET epoch=epoch+1").await;
+    let m = material(&f.request, "+15551234567", "synthetic dispatch fixture");
+    assert_preflight_blocks(&f, attempt, &m, DispatchError::Authority).await;
+    f.case.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
+async fn preflight_storage_failure_is_refused_before_transmission() {
+    let (f, attempt) = intended_fixture().await;
+    // Claim does not read this relation, so the failure occurs in preflight.
+    fault_during_claim(
+        &f,
+        "ALTER TABLE recipient_suppressions RENAME TO sender_unavailable_suppressions",
+    )
+    .await;
+    let m = material(&f.request, "+15551234567", "synthetic dispatch fixture");
+    assert_preflight_blocks(&f, attempt, &m, DispatchError::Database).await;
+    f.case.cleanup().await;
+}
