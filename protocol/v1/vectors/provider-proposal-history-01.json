@@ -1,0 +1,1229 @@
+{
+  "document_kind": "provider-proposal-history-conformance-01",
+  "authority": "synthetic metadata only; no accepted route, reader, grant, review or send authority",
+  "limits": {
+    "descriptor_bytes": 4096,
+    "request_bytes": 8192,
+    "revision": 128
+  },
+  "specimens": [
+    {
+      "name": "owner-local",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "owner_local",
+          "role": 2,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202"
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "canonical_descriptor": "{\"action\":{\"account_id\":\"00000000-0000-0000-0000-000000000001\",\"action_id\":\"00000000-0000-0000-0000-00000000000a\",\"authority_generation\":1,\"commitment\":\"sensitive\",\"content_digest\":\"abababababababababababababababababababababababababababababababab\",\"content_ref\":\"00000000-0000-0000-0000-00000000000d\",\"content_version\":1,\"expires_at\":2000000300,\"line_id\":\"00000000-0000-0000-0000-00000000000b\",\"not_before\":2000000000,\"purpose_id\":\"00000000-0000-0000-0000-000000000001\",\"recipient_id\":\"00000000-0000-0000-0000-00000000000c\",\"revision\":1,\"routine_id\":\"00000000-0000-0000-0000-00000000000e\",\"timezone\":\"UTC\",\"window_id\":\"fixture-window\"},\"disclosure\":{\"mode\":\"provider_plaintext\",\"recipient_commitment\":\"5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7\",\"request_digest\":\"0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb\"},\"profile\":\"workflow-action-02\",\"reader\":{\"key_id\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"kind\":\"owner_local\",\"manifest_digest\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"manifest_version\":1,\"role\":2,\"trust_generation\":1},\"route\":{\"adapter\":\"telnyx-sms-v2\",\"eligibility_digest\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"eligibility_policy_id\":\"00000000-0000-0000-0000-000000000016\",\"eligibility_policy_version\":1,\"exposure_policy_version\":1,\"exposure_route_policy_id\":\"00000000-0000-0000-0000-000000000017\",\"kind\":\"provider\",\"messaging_profile_id\":\"00000000-0000-0000-0000-000000000003\",\"organization_id\":\"00000000-0000-0000-0000-000000000002\",\"route_fingerprint\":\"2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0\",\"route_id\":\"00000000-0000-0000-0000-000000000014\",\"route_version\":1,\"sender_config_id\":\"00000000-0000-0000-0000-000000000015\",\"sender_config_version\":1}}",
+      "descriptor_bytes": 1816,
+      "binding_digest": "0a5b3363d9d9ff8ea8dcb0a1b1eebe137a895abf0821e6b6e3635946136e4ade",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "0a5b3363d9d9ff8ea8dcb0a1b1eebe137a895abf0821e6b6e3635946136e4ade"
+      },
+      "request_id": "00000000-0000-0000-0000-000000000064",
+      "canonical_request": "{\"descriptor\":{\"action\":{\"account_id\":\"00000000-0000-0000-0000-000000000001\",\"action_id\":\"00000000-0000-0000-0000-00000000000a\",\"authority_generation\":1,\"commitment\":\"sensitive\",\"content_digest\":\"abababababababababababababababababababababababababababababababab\",\"content_ref\":\"00000000-0000-0000-0000-00000000000d\",\"content_version\":1,\"expires_at\":2000000300,\"line_id\":\"00000000-0000-0000-0000-00000000000b\",\"not_before\":2000000000,\"purpose_id\":\"00000000-0000-0000-0000-000000000001\",\"recipient_id\":\"00000000-0000-0000-0000-00000000000c\",\"revision\":1,\"routine_id\":\"00000000-0000-0000-0000-00000000000e\",\"timezone\":\"UTC\",\"window_id\":\"fixture-window\"},\"disclosure\":{\"mode\":\"provider_plaintext\",\"recipient_commitment\":\"5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7\",\"request_digest\":\"0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb\"},\"profile\":\"workflow-action-02\",\"reader\":{\"key_id\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"kind\":\"owner_local\",\"manifest_digest\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"manifest_version\":1,\"role\":2,\"trust_generation\":1},\"route\":{\"adapter\":\"telnyx-sms-v2\",\"eligibility_digest\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"eligibility_policy_id\":\"00000000-0000-0000-0000-000000000016\",\"eligibility_policy_version\":1,\"exposure_policy_version\":1,\"exposure_route_policy_id\":\"00000000-0000-0000-0000-000000000017\",\"kind\":\"provider\",\"messaging_profile_id\":\"00000000-0000-0000-0000-000000000003\",\"organization_id\":\"00000000-0000-0000-0000-000000000002\",\"route_fingerprint\":\"2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0\",\"route_id\":\"00000000-0000-0000-0000-000000000014\",\"route_version\":1,\"sender_config_id\":\"00000000-0000-0000-0000-000000000015\",\"sender_config_version\":1}},\"request_id\":\"00000000-0000-0000-0000-000000000064\"}",
+      "request_bytes": 1883,
+      "state": {
+        "key": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "binding_digest": "0a5b3363d9d9ff8ea8dcb0a1b1eebe137a895abf0821e6b6e3635946136e4ade"
+        },
+        "record_version": 1,
+        "phase": "proposed"
+      }
+    },
+    {
+      "name": "customer-selected",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "customer_selected",
+          "role": 3,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202",
+          "grant_id": "00000000-0000-0000-0000-00000000001e",
+          "grant_version": 1
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "canonical_descriptor": "{\"action\":{\"account_id\":\"00000000-0000-0000-0000-000000000001\",\"action_id\":\"00000000-0000-0000-0000-00000000000a\",\"authority_generation\":1,\"commitment\":\"sensitive\",\"content_digest\":\"abababababababababababababababababababababababababababababababab\",\"content_ref\":\"00000000-0000-0000-0000-00000000000d\",\"content_version\":1,\"expires_at\":2000000300,\"line_id\":\"00000000-0000-0000-0000-00000000000b\",\"not_before\":2000000000,\"purpose_id\":\"00000000-0000-0000-0000-000000000001\",\"recipient_id\":\"00000000-0000-0000-0000-00000000000c\",\"revision\":1,\"routine_id\":\"00000000-0000-0000-0000-00000000000e\",\"timezone\":\"UTC\",\"window_id\":\"fixture-window\"},\"disclosure\":{\"mode\":\"provider_plaintext\",\"recipient_commitment\":\"5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7\",\"request_digest\":\"0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb\"},\"profile\":\"workflow-action-02\",\"reader\":{\"grant_id\":\"00000000-0000-0000-0000-00000000001e\",\"grant_version\":1,\"key_id\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"kind\":\"customer_selected\",\"manifest_digest\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"manifest_version\":1,\"role\":3,\"trust_generation\":1},\"route\":{\"adapter\":\"telnyx-sms-v2\",\"eligibility_digest\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"eligibility_policy_id\":\"00000000-0000-0000-0000-000000000016\",\"eligibility_policy_version\":1,\"exposure_policy_version\":1,\"exposure_route_policy_id\":\"00000000-0000-0000-0000-000000000017\",\"kind\":\"provider\",\"messaging_profile_id\":\"00000000-0000-0000-0000-000000000003\",\"organization_id\":\"00000000-0000-0000-0000-000000000002\",\"route_fingerprint\":\"2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0\",\"route_id\":\"00000000-0000-0000-0000-000000000014\",\"route_version\":1,\"sender_config_id\":\"00000000-0000-0000-0000-000000000015\",\"sender_config_version\":1}}",
+      "descriptor_bytes": 1890,
+      "binding_digest": "ec1674beda783aad0b18c2449b8ef3a274a99f4bd0ef6b30d72f260f296fd183",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "ec1674beda783aad0b18c2449b8ef3a274a99f4bd0ef6b30d72f260f296fd183"
+      },
+      "request_id": "00000000-0000-0000-0000-000000000065",
+      "canonical_request": "{\"descriptor\":{\"action\":{\"account_id\":\"00000000-0000-0000-0000-000000000001\",\"action_id\":\"00000000-0000-0000-0000-00000000000a\",\"authority_generation\":1,\"commitment\":\"sensitive\",\"content_digest\":\"abababababababababababababababababababababababababababababababab\",\"content_ref\":\"00000000-0000-0000-0000-00000000000d\",\"content_version\":1,\"expires_at\":2000000300,\"line_id\":\"00000000-0000-0000-0000-00000000000b\",\"not_before\":2000000000,\"purpose_id\":\"00000000-0000-0000-0000-000000000001\",\"recipient_id\":\"00000000-0000-0000-0000-00000000000c\",\"revision\":1,\"routine_id\":\"00000000-0000-0000-0000-00000000000e\",\"timezone\":\"UTC\",\"window_id\":\"fixture-window\"},\"disclosure\":{\"mode\":\"provider_plaintext\",\"recipient_commitment\":\"5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7\",\"request_digest\":\"0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb\"},\"profile\":\"workflow-action-02\",\"reader\":{\"grant_id\":\"00000000-0000-0000-0000-00000000001e\",\"grant_version\":1,\"key_id\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"kind\":\"customer_selected\",\"manifest_digest\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"manifest_version\":1,\"role\":3,\"trust_generation\":1},\"route\":{\"adapter\":\"telnyx-sms-v2\",\"eligibility_digest\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"eligibility_policy_id\":\"00000000-0000-0000-0000-000000000016\",\"eligibility_policy_version\":1,\"exposure_policy_version\":1,\"exposure_route_policy_id\":\"00000000-0000-0000-0000-000000000017\",\"kind\":\"provider\",\"messaging_profile_id\":\"00000000-0000-0000-0000-000000000003\",\"organization_id\":\"00000000-0000-0000-0000-000000000002\",\"route_fingerprint\":\"2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0\",\"route_id\":\"00000000-0000-0000-0000-000000000014\",\"route_version\":1,\"sender_config_id\":\"00000000-0000-0000-0000-000000000015\",\"sender_config_version\":1}},\"request_id\":\"00000000-0000-0000-0000-000000000065\"}",
+      "request_bytes": 1957,
+      "state": {
+        "key": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 1,
+          "binding_digest": "ec1674beda783aad0b18c2449b8ef3a274a99f4bd0ef6b30d72f260f296fd183"
+        },
+        "record_version": 1,
+        "phase": "proposed"
+      }
+    },
+    {
+      "name": "route-next",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 2,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 2,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "owner_local",
+          "role": 2,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202"
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "canonical_descriptor": "{\"action\":{\"account_id\":\"00000000-0000-0000-0000-000000000001\",\"action_id\":\"00000000-0000-0000-0000-00000000000a\",\"authority_generation\":1,\"commitment\":\"sensitive\",\"content_digest\":\"abababababababababababababababababababababababababababababababab\",\"content_ref\":\"00000000-0000-0000-0000-00000000000d\",\"content_version\":1,\"expires_at\":2000000300,\"line_id\":\"00000000-0000-0000-0000-00000000000b\",\"not_before\":2000000000,\"purpose_id\":\"00000000-0000-0000-0000-000000000001\",\"recipient_id\":\"00000000-0000-0000-0000-00000000000c\",\"revision\":2,\"routine_id\":\"00000000-0000-0000-0000-00000000000e\",\"timezone\":\"UTC\",\"window_id\":\"fixture-window\"},\"disclosure\":{\"mode\":\"provider_plaintext\",\"recipient_commitment\":\"5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7\",\"request_digest\":\"0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb\"},\"profile\":\"workflow-action-02\",\"reader\":{\"key_id\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"kind\":\"owner_local\",\"manifest_digest\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"manifest_version\":1,\"role\":2,\"trust_generation\":1},\"route\":{\"adapter\":\"telnyx-sms-v2\",\"eligibility_digest\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"eligibility_policy_id\":\"00000000-0000-0000-0000-000000000016\",\"eligibility_policy_version\":1,\"exposure_policy_version\":1,\"exposure_route_policy_id\":\"00000000-0000-0000-0000-000000000017\",\"kind\":\"provider\",\"messaging_profile_id\":\"00000000-0000-0000-0000-000000000003\",\"organization_id\":\"00000000-0000-0000-0000-000000000002\",\"route_fingerprint\":\"2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0\",\"route_id\":\"00000000-0000-0000-0000-000000000014\",\"route_version\":2,\"sender_config_id\":\"00000000-0000-0000-0000-000000000015\",\"sender_config_version\":1}}",
+      "descriptor_bytes": 1816,
+      "binding_digest": "a5b9794b94213d471f00efeaf949c4fe6e1f4b898456f2e94a7159138eee73eb",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 2,
+        "binding_digest": "a5b9794b94213d471f00efeaf949c4fe6e1f4b898456f2e94a7159138eee73eb"
+      },
+      "request_id": "00000000-0000-0000-0000-000000000066",
+      "canonical_request": "{\"descriptor\":{\"action\":{\"account_id\":\"00000000-0000-0000-0000-000000000001\",\"action_id\":\"00000000-0000-0000-0000-00000000000a\",\"authority_generation\":1,\"commitment\":\"sensitive\",\"content_digest\":\"abababababababababababababababababababababababababababababababab\",\"content_ref\":\"00000000-0000-0000-0000-00000000000d\",\"content_version\":1,\"expires_at\":2000000300,\"line_id\":\"00000000-0000-0000-0000-00000000000b\",\"not_before\":2000000000,\"purpose_id\":\"00000000-0000-0000-0000-000000000001\",\"recipient_id\":\"00000000-0000-0000-0000-00000000000c\",\"revision\":2,\"routine_id\":\"00000000-0000-0000-0000-00000000000e\",\"timezone\":\"UTC\",\"window_id\":\"fixture-window\"},\"disclosure\":{\"mode\":\"provider_plaintext\",\"recipient_commitment\":\"5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7\",\"request_digest\":\"0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb\"},\"profile\":\"workflow-action-02\",\"reader\":{\"key_id\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"kind\":\"owner_local\",\"manifest_digest\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"manifest_version\":1,\"role\":2,\"trust_generation\":1},\"route\":{\"adapter\":\"telnyx-sms-v2\",\"eligibility_digest\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"eligibility_policy_id\":\"00000000-0000-0000-0000-000000000016\",\"eligibility_policy_version\":1,\"exposure_policy_version\":1,\"exposure_route_policy_id\":\"00000000-0000-0000-0000-000000000017\",\"kind\":\"provider\",\"messaging_profile_id\":\"00000000-0000-0000-0000-000000000003\",\"organization_id\":\"00000000-0000-0000-0000-000000000002\",\"route_fingerprint\":\"2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0\",\"route_id\":\"00000000-0000-0000-0000-000000000014\",\"route_version\":2,\"sender_config_id\":\"00000000-0000-0000-0000-000000000015\",\"sender_config_version\":1}},\"request_id\":\"00000000-0000-0000-0000-000000000066\"}",
+      "request_bytes": 1883,
+      "state": {
+        "key": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 2,
+          "binding_digest": "a5b9794b94213d471f00efeaf949c4fe6e1f4b898456f2e94a7159138eee73eb"
+        },
+        "record_version": 2,
+        "phase": "invalidated"
+      }
+    },
+    {
+      "name": "reader-next",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 2,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "owner_local",
+          "role": 2,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 2,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202"
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "canonical_descriptor": "{\"action\":{\"account_id\":\"00000000-0000-0000-0000-000000000001\",\"action_id\":\"00000000-0000-0000-0000-00000000000a\",\"authority_generation\":1,\"commitment\":\"sensitive\",\"content_digest\":\"abababababababababababababababababababababababababababababababab\",\"content_ref\":\"00000000-0000-0000-0000-00000000000d\",\"content_version\":1,\"expires_at\":2000000300,\"line_id\":\"00000000-0000-0000-0000-00000000000b\",\"not_before\":2000000000,\"purpose_id\":\"00000000-0000-0000-0000-000000000001\",\"recipient_id\":\"00000000-0000-0000-0000-00000000000c\",\"revision\":2,\"routine_id\":\"00000000-0000-0000-0000-00000000000e\",\"timezone\":\"UTC\",\"window_id\":\"fixture-window\"},\"disclosure\":{\"mode\":\"provider_plaintext\",\"recipient_commitment\":\"5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7\",\"request_digest\":\"0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb\"},\"profile\":\"workflow-action-02\",\"reader\":{\"key_id\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"kind\":\"owner_local\",\"manifest_digest\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"manifest_version\":2,\"role\":2,\"trust_generation\":1},\"route\":{\"adapter\":\"telnyx-sms-v2\",\"eligibility_digest\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"eligibility_policy_id\":\"00000000-0000-0000-0000-000000000016\",\"eligibility_policy_version\":1,\"exposure_policy_version\":1,\"exposure_route_policy_id\":\"00000000-0000-0000-0000-000000000017\",\"kind\":\"provider\",\"messaging_profile_id\":\"00000000-0000-0000-0000-000000000003\",\"organization_id\":\"00000000-0000-0000-0000-000000000002\",\"route_fingerprint\":\"2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0\",\"route_id\":\"00000000-0000-0000-0000-000000000014\",\"route_version\":1,\"sender_config_id\":\"00000000-0000-0000-0000-000000000015\",\"sender_config_version\":1}}",
+      "descriptor_bytes": 1816,
+      "binding_digest": "1fc4b32b86d836c143a865ee4668a5f0c076eefa73fd638d213c743b96772fc5",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 2,
+        "binding_digest": "1fc4b32b86d836c143a865ee4668a5f0c076eefa73fd638d213c743b96772fc5"
+      },
+      "request_id": "00000000-0000-0000-0000-000000000067",
+      "canonical_request": "{\"descriptor\":{\"action\":{\"account_id\":\"00000000-0000-0000-0000-000000000001\",\"action_id\":\"00000000-0000-0000-0000-00000000000a\",\"authority_generation\":1,\"commitment\":\"sensitive\",\"content_digest\":\"abababababababababababababababababababababababababababababababab\",\"content_ref\":\"00000000-0000-0000-0000-00000000000d\",\"content_version\":1,\"expires_at\":2000000300,\"line_id\":\"00000000-0000-0000-0000-00000000000b\",\"not_before\":2000000000,\"purpose_id\":\"00000000-0000-0000-0000-000000000001\",\"recipient_id\":\"00000000-0000-0000-0000-00000000000c\",\"revision\":2,\"routine_id\":\"00000000-0000-0000-0000-00000000000e\",\"timezone\":\"UTC\",\"window_id\":\"fixture-window\"},\"disclosure\":{\"mode\":\"provider_plaintext\",\"recipient_commitment\":\"5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7\",\"request_digest\":\"0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb\"},\"profile\":\"workflow-action-02\",\"reader\":{\"key_id\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"kind\":\"owner_local\",\"manifest_digest\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"manifest_version\":2,\"role\":2,\"trust_generation\":1},\"route\":{\"adapter\":\"telnyx-sms-v2\",\"eligibility_digest\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"eligibility_policy_id\":\"00000000-0000-0000-0000-000000000016\",\"eligibility_policy_version\":1,\"exposure_policy_version\":1,\"exposure_route_policy_id\":\"00000000-0000-0000-0000-000000000017\",\"kind\":\"provider\",\"messaging_profile_id\":\"00000000-0000-0000-0000-000000000003\",\"organization_id\":\"00000000-0000-0000-0000-000000000002\",\"route_fingerprint\":\"2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0\",\"route_id\":\"00000000-0000-0000-0000-000000000014\",\"route_version\":1,\"sender_config_id\":\"00000000-0000-0000-0000-000000000015\",\"sender_config_version\":1}},\"request_id\":\"00000000-0000-0000-0000-000000000067\"}",
+      "request_bytes": 1883,
+      "state": {
+        "key": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 2,
+          "binding_digest": "1fc4b32b86d836c143a865ee4668a5f0c076eefa73fd638d213c743b96772fc5"
+        },
+        "record_version": 2,
+        "phase": "invalidated"
+      }
+    },
+    {
+      "name": "disclosure-next",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 2,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 1,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "owner_local",
+          "role": 2,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202"
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef"
+        }
+      },
+      "canonical_descriptor": "{\"action\":{\"account_id\":\"00000000-0000-0000-0000-000000000001\",\"action_id\":\"00000000-0000-0000-0000-00000000000a\",\"authority_generation\":1,\"commitment\":\"sensitive\",\"content_digest\":\"abababababababababababababababababababababababababababababababab\",\"content_ref\":\"00000000-0000-0000-0000-00000000000d\",\"content_version\":1,\"expires_at\":2000000300,\"line_id\":\"00000000-0000-0000-0000-00000000000b\",\"not_before\":2000000000,\"purpose_id\":\"00000000-0000-0000-0000-000000000001\",\"recipient_id\":\"00000000-0000-0000-0000-00000000000c\",\"revision\":2,\"routine_id\":\"00000000-0000-0000-0000-00000000000e\",\"timezone\":\"UTC\",\"window_id\":\"fixture-window\"},\"disclosure\":{\"mode\":\"provider_plaintext\",\"recipient_commitment\":\"5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7\",\"request_digest\":\"efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef\"},\"profile\":\"workflow-action-02\",\"reader\":{\"key_id\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"kind\":\"owner_local\",\"manifest_digest\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"manifest_version\":1,\"role\":2,\"trust_generation\":1},\"route\":{\"adapter\":\"telnyx-sms-v2\",\"eligibility_digest\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"eligibility_policy_id\":\"00000000-0000-0000-0000-000000000016\",\"eligibility_policy_version\":1,\"exposure_policy_version\":1,\"exposure_route_policy_id\":\"00000000-0000-0000-0000-000000000017\",\"kind\":\"provider\",\"messaging_profile_id\":\"00000000-0000-0000-0000-000000000003\",\"organization_id\":\"00000000-0000-0000-0000-000000000002\",\"route_fingerprint\":\"2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0\",\"route_id\":\"00000000-0000-0000-0000-000000000014\",\"route_version\":1,\"sender_config_id\":\"00000000-0000-0000-0000-000000000015\",\"sender_config_version\":1}}",
+      "descriptor_bytes": 1816,
+      "binding_digest": "debd4e31f7509e9b74bfdfd975c6d6321f733c6cc0478ee8c235a2ef24a96128",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 2,
+        "binding_digest": "debd4e31f7509e9b74bfdfd975c6d6321f733c6cc0478ee8c235a2ef24a96128"
+      },
+      "request_id": "00000000-0000-0000-0000-000000000068",
+      "canonical_request": "{\"descriptor\":{\"action\":{\"account_id\":\"00000000-0000-0000-0000-000000000001\",\"action_id\":\"00000000-0000-0000-0000-00000000000a\",\"authority_generation\":1,\"commitment\":\"sensitive\",\"content_digest\":\"abababababababababababababababababababababababababababababababab\",\"content_ref\":\"00000000-0000-0000-0000-00000000000d\",\"content_version\":1,\"expires_at\":2000000300,\"line_id\":\"00000000-0000-0000-0000-00000000000b\",\"not_before\":2000000000,\"purpose_id\":\"00000000-0000-0000-0000-000000000001\",\"recipient_id\":\"00000000-0000-0000-0000-00000000000c\",\"revision\":2,\"routine_id\":\"00000000-0000-0000-0000-00000000000e\",\"timezone\":\"UTC\",\"window_id\":\"fixture-window\"},\"disclosure\":{\"mode\":\"provider_plaintext\",\"recipient_commitment\":\"5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7\",\"request_digest\":\"efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef\"},\"profile\":\"workflow-action-02\",\"reader\":{\"key_id\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"kind\":\"owner_local\",\"manifest_digest\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"manifest_version\":1,\"role\":2,\"trust_generation\":1},\"route\":{\"adapter\":\"telnyx-sms-v2\",\"eligibility_digest\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"eligibility_policy_id\":\"00000000-0000-0000-0000-000000000016\",\"eligibility_policy_version\":1,\"exposure_policy_version\":1,\"exposure_route_policy_id\":\"00000000-0000-0000-0000-000000000017\",\"kind\":\"provider\",\"messaging_profile_id\":\"00000000-0000-0000-0000-000000000003\",\"organization_id\":\"00000000-0000-0000-0000-000000000002\",\"route_fingerprint\":\"2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0\",\"route_id\":\"00000000-0000-0000-0000-000000000014\",\"route_version\":1,\"sender_config_id\":\"00000000-0000-0000-0000-000000000015\",\"sender_config_version\":1}},\"request_id\":\"00000000-0000-0000-0000-000000000068\"}",
+      "request_bytes": 1883,
+      "state": {
+        "key": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 2,
+          "binding_digest": "debd4e31f7509e9b74bfdfd975c6d6321f733c6cc0478ee8c235a2ef24a96128"
+        },
+        "record_version": 2,
+        "phase": "invalidated"
+      }
+    },
+    {
+      "name": "action-next",
+      "descriptor": {
+        "profile": "workflow-action-02",
+        "action": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 2,
+          "line_id": "00000000-0000-0000-0000-00000000000b",
+          "recipient_id": "00000000-0000-0000-0000-00000000000c",
+          "purpose_id": "00000000-0000-0000-0000-000000000001",
+          "content_ref": "00000000-0000-0000-0000-00000000000d",
+          "content_digest": "abababababababababababababababababababababababababababababababab",
+          "content_version": 2,
+          "not_before": 2000000000,
+          "expires_at": 2000000300,
+          "timezone": "UTC",
+          "window_id": "fixture-window",
+          "routine_id": "00000000-0000-0000-0000-00000000000e",
+          "authority_generation": 1,
+          "commitment": "sensitive"
+        },
+        "route": {
+          "kind": "provider",
+          "adapter": "telnyx-sms-v2",
+          "route_id": "00000000-0000-0000-0000-000000000014",
+          "route_version": 1,
+          "organization_id": "00000000-0000-0000-0000-000000000002",
+          "messaging_profile_id": "00000000-0000-0000-0000-000000000003",
+          "sender_config_id": "00000000-0000-0000-0000-000000000015",
+          "sender_config_version": 1,
+          "route_fingerprint": "2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0",
+          "eligibility_policy_id": "00000000-0000-0000-0000-000000000016",
+          "eligibility_policy_version": 1,
+          "eligibility_digest": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "exposure_route_policy_id": "00000000-0000-0000-0000-000000000017",
+          "exposure_policy_version": 1
+        },
+        "reader": {
+          "kind": "owner_local",
+          "role": 2,
+          "key_id": "0101010101010101010101010101010101010101010101010101010101010101",
+          "trust_generation": 1,
+          "manifest_version": 1,
+          "manifest_digest": "0202020202020202020202020202020202020202020202020202020202020202"
+        },
+        "disclosure": {
+          "mode": "provider_plaintext",
+          "recipient_commitment": "5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7",
+          "request_digest": "0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb"
+        }
+      },
+      "canonical_descriptor": "{\"action\":{\"account_id\":\"00000000-0000-0000-0000-000000000001\",\"action_id\":\"00000000-0000-0000-0000-00000000000a\",\"authority_generation\":1,\"commitment\":\"sensitive\",\"content_digest\":\"abababababababababababababababababababababababababababababababab\",\"content_ref\":\"00000000-0000-0000-0000-00000000000d\",\"content_version\":2,\"expires_at\":2000000300,\"line_id\":\"00000000-0000-0000-0000-00000000000b\",\"not_before\":2000000000,\"purpose_id\":\"00000000-0000-0000-0000-000000000001\",\"recipient_id\":\"00000000-0000-0000-0000-00000000000c\",\"revision\":2,\"routine_id\":\"00000000-0000-0000-0000-00000000000e\",\"timezone\":\"UTC\",\"window_id\":\"fixture-window\"},\"disclosure\":{\"mode\":\"provider_plaintext\",\"recipient_commitment\":\"5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7\",\"request_digest\":\"0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb\"},\"profile\":\"workflow-action-02\",\"reader\":{\"key_id\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"kind\":\"owner_local\",\"manifest_digest\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"manifest_version\":1,\"role\":2,\"trust_generation\":1},\"route\":{\"adapter\":\"telnyx-sms-v2\",\"eligibility_digest\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"eligibility_policy_id\":\"00000000-0000-0000-0000-000000000016\",\"eligibility_policy_version\":1,\"exposure_policy_version\":1,\"exposure_route_policy_id\":\"00000000-0000-0000-0000-000000000017\",\"kind\":\"provider\",\"messaging_profile_id\":\"00000000-0000-0000-0000-000000000003\",\"organization_id\":\"00000000-0000-0000-0000-000000000002\",\"route_fingerprint\":\"2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0\",\"route_id\":\"00000000-0000-0000-0000-000000000014\",\"route_version\":1,\"sender_config_id\":\"00000000-0000-0000-0000-000000000015\",\"sender_config_version\":1}}",
+      "descriptor_bytes": 1816,
+      "binding_digest": "4ae2a422c5ba9c9cc04c20f7d081cce40dd0545e2f2bd97a9d2265b642f3809e",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 2,
+        "binding_digest": "4ae2a422c5ba9c9cc04c20f7d081cce40dd0545e2f2bd97a9d2265b642f3809e"
+      },
+      "request_id": "00000000-0000-0000-0000-000000000069",
+      "canonical_request": "{\"descriptor\":{\"action\":{\"account_id\":\"00000000-0000-0000-0000-000000000001\",\"action_id\":\"00000000-0000-0000-0000-00000000000a\",\"authority_generation\":1,\"commitment\":\"sensitive\",\"content_digest\":\"abababababababababababababababababababababababababababababababab\",\"content_ref\":\"00000000-0000-0000-0000-00000000000d\",\"content_version\":2,\"expires_at\":2000000300,\"line_id\":\"00000000-0000-0000-0000-00000000000b\",\"not_before\":2000000000,\"purpose_id\":\"00000000-0000-0000-0000-000000000001\",\"recipient_id\":\"00000000-0000-0000-0000-00000000000c\",\"revision\":2,\"routine_id\":\"00000000-0000-0000-0000-00000000000e\",\"timezone\":\"UTC\",\"window_id\":\"fixture-window\"},\"disclosure\":{\"mode\":\"provider_plaintext\",\"recipient_commitment\":\"5afca772560f2d440678bd819ec6dc0c726714a19e96fc2cdb05c38d154cbaa7\",\"request_digest\":\"0075fec7caed9bb7f6ed3570f6c41bdf8007da81e7e8af7bd2cb6218363e8efb\"},\"profile\":\"workflow-action-02\",\"reader\":{\"key_id\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"kind\":\"owner_local\",\"manifest_digest\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"manifest_version\":1,\"role\":2,\"trust_generation\":1},\"route\":{\"adapter\":\"telnyx-sms-v2\",\"eligibility_digest\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"eligibility_policy_id\":\"00000000-0000-0000-0000-000000000016\",\"eligibility_policy_version\":1,\"exposure_policy_version\":1,\"exposure_route_policy_id\":\"00000000-0000-0000-0000-000000000017\",\"kind\":\"provider\",\"messaging_profile_id\":\"00000000-0000-0000-0000-000000000003\",\"organization_id\":\"00000000-0000-0000-0000-000000000002\",\"route_fingerprint\":\"2ce6fbb7810f27d51d5906c9a1b16833dd224c339c3b12099d8607447c98bfc0\",\"route_id\":\"00000000-0000-0000-0000-000000000014\",\"route_version\":1,\"sender_config_id\":\"00000000-0000-0000-0000-000000000015\",\"sender_config_version\":1}},\"request_id\":\"00000000-0000-0000-0000-000000000069\"}",
+      "request_bytes": 1883,
+      "state": {
+        "key": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 2,
+          "binding_digest": "4ae2a422c5ba9c9cc04c20f7d081cce40dd0545e2f2bd97a9d2265b642f3809e"
+        },
+        "record_version": 2,
+        "phase": "invalidated"
+      }
+    }
+  ],
+  "binding_mutations": [
+    {
+      "field": [
+        "action",
+        "account_id"
+      ],
+      "value": "00000000-0000-0000-0000-00000000012c",
+      "binding_digest": "cd717ed2045bb690b01e506f21400312339528a5a7435126f9f97c0c93531037",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-00000000012c",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "cd717ed2045bb690b01e506f21400312339528a5a7435126f9f97c0c93531037"
+      }
+    },
+    {
+      "field": [
+        "action",
+        "action_id"
+      ],
+      "value": "00000000-0000-0000-0000-00000000012c",
+      "binding_digest": "b0be8eda21c253f4d7c8d45094d4677580937a9daf4d04106e1f3ba29ec33f6b",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000012c",
+        "revision": 1,
+        "binding_digest": "b0be8eda21c253f4d7c8d45094d4677580937a9daf4d04106e1f3ba29ec33f6b"
+      }
+    },
+    {
+      "field": [
+        "action",
+        "revision"
+      ],
+      "value": 2,
+      "binding_digest": "e834257c70220717ca67728ac8dd7d0c714262587bc848bec0e92fc82a9eadd9",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 2,
+        "binding_digest": "e834257c70220717ca67728ac8dd7d0c714262587bc848bec0e92fc82a9eadd9"
+      }
+    },
+    {
+      "field": [
+        "action",
+        "line_id"
+      ],
+      "value": "00000000-0000-0000-0000-00000000012c",
+      "binding_digest": "8f4e26b63cc6edccb2151708607f83178eb18a1a4a3b33927683888b8f893472",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "8f4e26b63cc6edccb2151708607f83178eb18a1a4a3b33927683888b8f893472"
+      }
+    },
+    {
+      "field": [
+        "action",
+        "recipient_id"
+      ],
+      "value": "00000000-0000-0000-0000-00000000012c",
+      "binding_digest": "f32924f50fcb8232eb1b6baab2e3ccf06922fa8a43b0c98e99485f6abffd2e0d",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "f32924f50fcb8232eb1b6baab2e3ccf06922fa8a43b0c98e99485f6abffd2e0d"
+      }
+    },
+    {
+      "field": [
+        "action",
+        "purpose_id"
+      ],
+      "value": "00000000-0000-0000-0000-000000000002",
+      "binding_digest": "9e92e526bd9e0345c5fb98260fea8d383f5fba046f9c962db2e27ba09a473704",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "9e92e526bd9e0345c5fb98260fea8d383f5fba046f9c962db2e27ba09a473704"
+      }
+    },
+    {
+      "field": [
+        "action",
+        "content_ref"
+      ],
+      "value": "00000000-0000-0000-0000-00000000012c",
+      "binding_digest": "1bed49eca400d222d055323b24c4c22ce02528c8cab9c997b859545698053a66",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "1bed49eca400d222d055323b24c4c22ce02528c8cab9c997b859545698053a66"
+      }
+    },
+    {
+      "field": [
+        "action",
+        "content_digest"
+      ],
+      "value": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+      "binding_digest": "d4fa3c91c8ab45b96d5160a9e24596436b487811d46cf244c16ce5280acf4bf9",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "d4fa3c91c8ab45b96d5160a9e24596436b487811d46cf244c16ce5280acf4bf9"
+      }
+    },
+    {
+      "field": [
+        "action",
+        "content_version"
+      ],
+      "value": 2,
+      "binding_digest": "c5a1189388b644d73ca52006c5b6e3b5f859bf41f58175de6066fc5e60bf234f",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "c5a1189388b644d73ca52006c5b6e3b5f859bf41f58175de6066fc5e60bf234f"
+      }
+    },
+    {
+      "field": [
+        "action",
+        "not_before"
+      ],
+      "value": 2000000001,
+      "binding_digest": "04b01b633abb7dbfbb925a2c280d39e8a320eb0b5cbde45b0cb5c1f06ff6dfe7",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "04b01b633abb7dbfbb925a2c280d39e8a320eb0b5cbde45b0cb5c1f06ff6dfe7"
+      }
+    },
+    {
+      "field": [
+        "action",
+        "expires_at"
+      ],
+      "value": 2000000301,
+      "binding_digest": "a0263e1890ad6ba4edf82d0ecf63ca400c6fc949af2046986a9de2e848745d4a",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "a0263e1890ad6ba4edf82d0ecf63ca400c6fc949af2046986a9de2e848745d4a"
+      }
+    },
+    {
+      "field": [
+        "action",
+        "timezone"
+      ],
+      "value": "UTC-changed",
+      "binding_digest": "c349068b5b1c9e3f1853a7200c92345e05b805ca8e5edaf0139b866e83f411cf",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "c349068b5b1c9e3f1853a7200c92345e05b805ca8e5edaf0139b866e83f411cf"
+      }
+    },
+    {
+      "field": [
+        "action",
+        "window_id"
+      ],
+      "value": "fixture-window-changed",
+      "binding_digest": "0dda9dd228e0505c9e417da812756c83961fb125d3155c5e81eb9047525b17d3",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "0dda9dd228e0505c9e417da812756c83961fb125d3155c5e81eb9047525b17d3"
+      }
+    },
+    {
+      "field": [
+        "action",
+        "routine_id"
+      ],
+      "value": "00000000-0000-0000-0000-00000000012c",
+      "binding_digest": "ee82b1787c4e320c93db3498c05e3262e328c50435f86c43c1040b00553c8c49",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "ee82b1787c4e320c93db3498c05e3262e328c50435f86c43c1040b00553c8c49"
+      }
+    },
+    {
+      "field": [
+        "action",
+        "authority_generation"
+      ],
+      "value": 2,
+      "binding_digest": "47bc61c509a4e5d720f2402b0506ffabfd2a32b8729d69a232203ad7078e682c",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "47bc61c509a4e5d720f2402b0506ffabfd2a32b8729d69a232203ad7078e682c"
+      }
+    },
+    {
+      "field": [
+        "action",
+        "commitment"
+      ],
+      "value": "informational",
+      "binding_digest": "315a33c08c79b5585c4974ab009ec56728d9c66ca04d0e65ef20defbbc48557a",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "315a33c08c79b5585c4974ab009ec56728d9c66ca04d0e65ef20defbbc48557a"
+      }
+    },
+    {
+      "field": [
+        "route",
+        "route_id"
+      ],
+      "value": "00000000-0000-0000-0000-00000000012c",
+      "binding_digest": "4485debc2b4183bcc284502a9ca96f4c1022dc5f45af7052fefcc479f307b67d",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "4485debc2b4183bcc284502a9ca96f4c1022dc5f45af7052fefcc479f307b67d"
+      }
+    },
+    {
+      "field": [
+        "route",
+        "route_version"
+      ],
+      "value": 2,
+      "binding_digest": "debadc996ebb62d9d14669e9d4cf63ae02ab3dd7c023239f4b4ad4162c05a266",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "debadc996ebb62d9d14669e9d4cf63ae02ab3dd7c023239f4b4ad4162c05a266"
+      }
+    },
+    {
+      "field": [
+        "route",
+        "organization_id"
+      ],
+      "value": "00000000-0000-0000-0000-00000000012c",
+      "binding_digest": "2fb4d6c0dac82cbe15761e8854c75f383b3914e0b7893a52de177eca66710082",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "2fb4d6c0dac82cbe15761e8854c75f383b3914e0b7893a52de177eca66710082"
+      }
+    },
+    {
+      "field": [
+        "route",
+        "messaging_profile_id"
+      ],
+      "value": "00000000-0000-0000-0000-00000000012c",
+      "binding_digest": "8e5ad4b4ff31695c3328e0a4edc0bd7757a56a3a4ed2a13475beb7c7ad2820fb",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "8e5ad4b4ff31695c3328e0a4edc0bd7757a56a3a4ed2a13475beb7c7ad2820fb"
+      }
+    },
+    {
+      "field": [
+        "route",
+        "sender_config_id"
+      ],
+      "value": "00000000-0000-0000-0000-00000000012c",
+      "binding_digest": "1316327434a355b50c13eb09712ee488e07c7641bbe094af96338aee73cb0cff",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "1316327434a355b50c13eb09712ee488e07c7641bbe094af96338aee73cb0cff"
+      }
+    },
+    {
+      "field": [
+        "route",
+        "sender_config_version"
+      ],
+      "value": 2,
+      "binding_digest": "d8fc3569cbc7184ae02a455f0a7ea489ed5fdd93cae81fce0a620869dd8a4702",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "d8fc3569cbc7184ae02a455f0a7ea489ed5fdd93cae81fce0a620869dd8a4702"
+      }
+    },
+    {
+      "field": [
+        "route",
+        "route_fingerprint"
+      ],
+      "value": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+      "binding_digest": "0fab05758c925b30c31d779507a99bd2f85da54fc9b5889b1b525251ad379c9d",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "0fab05758c925b30c31d779507a99bd2f85da54fc9b5889b1b525251ad379c9d"
+      }
+    },
+    {
+      "field": [
+        "route",
+        "eligibility_policy_id"
+      ],
+      "value": "00000000-0000-0000-0000-00000000012c",
+      "binding_digest": "a572c6965f111cdaa010485e45dc72fd874a8752b210650398ff6825aa9ca86a",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "a572c6965f111cdaa010485e45dc72fd874a8752b210650398ff6825aa9ca86a"
+      }
+    },
+    {
+      "field": [
+        "route",
+        "eligibility_policy_version"
+      ],
+      "value": 2,
+      "binding_digest": "1dfc5b673a7826494b0b5d9c18b08a4f62225dadb5a37abbcdd4132d5be72f09",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "1dfc5b673a7826494b0b5d9c18b08a4f62225dadb5a37abbcdd4132d5be72f09"
+      }
+    },
+    {
+      "field": [
+        "route",
+        "eligibility_digest"
+      ],
+      "value": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+      "binding_digest": "cdbac0431a12953d8a42d8b9a63e7eadd32ccf5cd666ae83bc6358c1a9468078",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "cdbac0431a12953d8a42d8b9a63e7eadd32ccf5cd666ae83bc6358c1a9468078"
+      }
+    },
+    {
+      "field": [
+        "route",
+        "exposure_route_policy_id"
+      ],
+      "value": "00000000-0000-0000-0000-00000000012c",
+      "binding_digest": "458d3a24ea3a6f32e91dc429d139dd0fe0d69154f0da2ebaa9e60dada73b742f",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "458d3a24ea3a6f32e91dc429d139dd0fe0d69154f0da2ebaa9e60dada73b742f"
+      }
+    },
+    {
+      "field": [
+        "route",
+        "exposure_policy_version"
+      ],
+      "value": 2,
+      "binding_digest": "7fa1c03d152cb4695df539eaa9aee4183c5b3b97ddaec3d6a4053a1fd1c6c3fe",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "7fa1c03d152cb4695df539eaa9aee4183c5b3b97ddaec3d6a4053a1fd1c6c3fe"
+      }
+    },
+    {
+      "field": [
+        "reader",
+        "key_id"
+      ],
+      "value": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+      "binding_digest": "c0ee1738fb868e7a1b2150bef831f4bce56001cb7098de8415721d9c376b4d2f",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "c0ee1738fb868e7a1b2150bef831f4bce56001cb7098de8415721d9c376b4d2f"
+      }
+    },
+    {
+      "field": [
+        "reader",
+        "trust_generation"
+      ],
+      "value": 2,
+      "binding_digest": "24f82333ee3924c668f6a4e9a325701296cc0200a228f92df22059a20b09897d",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "24f82333ee3924c668f6a4e9a325701296cc0200a228f92df22059a20b09897d"
+      }
+    },
+    {
+      "field": [
+        "reader",
+        "manifest_version"
+      ],
+      "value": 2,
+      "binding_digest": "5c75be4a5ed68da5f79f5502a5f8259398e3bd57ba0323cc4489a8e08c5d20e6",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "5c75be4a5ed68da5f79f5502a5f8259398e3bd57ba0323cc4489a8e08c5d20e6"
+      }
+    },
+    {
+      "field": [
+        "reader",
+        "manifest_digest"
+      ],
+      "value": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+      "binding_digest": "f7f34d84b46ed120ca00888f3d415637044d702ea4bc48f9d4a78d216b178b2d",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "f7f34d84b46ed120ca00888f3d415637044d702ea4bc48f9d4a78d216b178b2d"
+      }
+    },
+    {
+      "field": [
+        "reader",
+        "grant_id"
+      ],
+      "value": "00000000-0000-0000-0000-00000000012c",
+      "binding_digest": "5940e3e0800782cf1eb85544dfdd5ef1590033041868153ae0256687670f0efe",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "5940e3e0800782cf1eb85544dfdd5ef1590033041868153ae0256687670f0efe"
+      }
+    },
+    {
+      "field": [
+        "reader",
+        "grant_version"
+      ],
+      "value": 2,
+      "binding_digest": "79f6162eba979025e9bba274a62b4083386e7b65947990985d48bd851ee6583d",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "79f6162eba979025e9bba274a62b4083386e7b65947990985d48bd851ee6583d"
+      }
+    },
+    {
+      "field": [
+        "disclosure",
+        "recipient_commitment"
+      ],
+      "value": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+      "binding_digest": "c335d50b9fc1d2f0a3560650d38f64f5964a2faa56fc07eaf202a6ea90f345d2",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "c335d50b9fc1d2f0a3560650d38f64f5964a2faa56fc07eaf202a6ea90f345d2"
+      }
+    },
+    {
+      "field": [
+        "disclosure",
+        "request_digest"
+      ],
+      "value": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+      "binding_digest": "bfb659fba9a6848320127230c8f4e603aa5fa47d05c3cfd4f478e9b2408768fa",
+      "key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "bfb659fba9a6848320127230c8f4e603aa5fa47d05c3cfd4f478e9b2408768fa"
+      }
+    }
+  ],
+  "internal_edits": [
+    {
+      "name": "route-edit",
+      "previous": "owner-local",
+      "next": "route-next",
+      "previous_key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "0a5b3363d9d9ff8ea8dcb0a1b1eebe137a895abf0821e6b6e3635946136e4ade"
+      },
+      "expected_record_version": 1,
+      "request_id": "00000000-0000-0000-0000-0000000000c8",
+      "changed_field": [
+        "route",
+        "route_version"
+      ],
+      "expected_state": {
+        "key": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 2,
+          "binding_digest": "a5b9794b94213d471f00efeaf949c4fe6e1f4b898456f2e94a7159138eee73eb"
+        },
+        "record_version": 2,
+        "phase": "invalidated"
+      }
+    },
+    {
+      "name": "reader-edit",
+      "previous": "owner-local",
+      "next": "reader-next",
+      "previous_key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "0a5b3363d9d9ff8ea8dcb0a1b1eebe137a895abf0821e6b6e3635946136e4ade"
+      },
+      "expected_record_version": 1,
+      "request_id": "00000000-0000-0000-0000-0000000000c9",
+      "changed_field": [
+        "reader",
+        "manifest_version"
+      ],
+      "expected_state": {
+        "key": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 2,
+          "binding_digest": "1fc4b32b86d836c143a865ee4668a5f0c076eefa73fd638d213c743b96772fc5"
+        },
+        "record_version": 2,
+        "phase": "invalidated"
+      }
+    },
+    {
+      "name": "disclosure-edit",
+      "previous": "owner-local",
+      "next": "disclosure-next",
+      "previous_key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "0a5b3363d9d9ff8ea8dcb0a1b1eebe137a895abf0821e6b6e3635946136e4ade"
+      },
+      "expected_record_version": 1,
+      "request_id": "00000000-0000-0000-0000-0000000000ca",
+      "changed_field": [
+        "disclosure",
+        "request_digest"
+      ],
+      "expected_state": {
+        "key": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 2,
+          "binding_digest": "debd4e31f7509e9b74bfdfd975c6d6321f733c6cc0478ee8c235a2ef24a96128"
+        },
+        "record_version": 2,
+        "phase": "invalidated"
+      }
+    },
+    {
+      "name": "action-edit",
+      "previous": "owner-local",
+      "next": "action-next",
+      "previous_key": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "action_id": "00000000-0000-0000-0000-00000000000a",
+        "revision": 1,
+        "binding_digest": "0a5b3363d9d9ff8ea8dcb0a1b1eebe137a895abf0821e6b6e3635946136e4ade"
+      },
+      "expected_record_version": 1,
+      "request_id": "00000000-0000-0000-0000-0000000000cb",
+      "changed_field": [
+        "action",
+        "content_version"
+      ],
+      "expected_state": {
+        "key": {
+          "account_id": "00000000-0000-0000-0000-000000000001",
+          "action_id": "00000000-0000-0000-0000-00000000000a",
+          "revision": 2,
+          "binding_digest": "4ae2a422c5ba9c9cc04c20f7d081cce40dd0545e2f2bd97a9d2265b642f3809e"
+        },
+        "record_version": 2,
+        "phase": "invalidated"
+      }
+    }
+  ],
+  "internal_edit_refusals": [
+    {
+      "target": "previous_key.binding_digest",
+      "value": "0000000000000000000000000000000000000000000000000000000000000000",
+      "expected": "previous_key"
+    },
+    {
+      "target": "previous_key.account_id",
+      "value": "00000000-0000-0000-0000-00000000012c",
+      "expected": "previous_key"
+    },
+    {
+      "target": "previous_key.action_id",
+      "value": "00000000-0000-0000-0000-00000000012c",
+      "expected": "previous_key"
+    },
+    {
+      "target": "previous_key.revision",
+      "value": 2,
+      "expected": "previous_key"
+    },
+    {
+      "target": "expected_record_version",
+      "value": 0,
+      "expected": "record_version"
+    },
+    {
+      "target": "expected_record_version",
+      "value": -1,
+      "expected": "record_version"
+    },
+    {
+      "target": "expected_record_version",
+      "value": true,
+      "expected": "record_version"
+    },
+    {
+      "target": "expected_record_version",
+      "value": 2,
+      "expected": "record_version"
+    },
+    {
+      "target": "expected_record_version",
+      "value": 9223372036854775808,
+      "expected": "record_version"
+    },
+    {
+      "target": "request_id",
+      "value": "00000000-0000-0000-0000-000000000000",
+      "expected": "request_id"
+    },
+    {
+      "target": "next_descriptor.profile",
+      "value": "workflow-action-01",
+      "expected": "profile"
+    },
+    {
+      "target": "next_descriptor.action.account_id",
+      "value": "00000000-0000-0000-0000-00000000012c",
+      "expected": "identity"
+    },
+    {
+      "target": "next_descriptor.action.action_id",
+      "value": "00000000-0000-0000-0000-00000000012c",
+      "expected": "identity"
+    },
+    {
+      "target": "next_descriptor.action.content_ref",
+      "value": "00000000-0000-0000-0000-00000000012c",
+      "expected": "lineage"
+    },
+    {
+      "target": "next_descriptor.action.routine_id",
+      "value": "00000000-0000-0000-0000-00000000012c",
+      "expected": "lineage"
+    },
+    {
+      "target": "next_descriptor.action.revision",
+      "value": 1,
+      "expected": "revision"
+    },
+    {
+      "target": "next_descriptor.action.revision",
+      "value": 3,
+      "expected": "revision"
+    },
+    {
+      "target": "next_descriptor.action.revision",
+      "value": 129,
+      "expected": "grammar"
+    },
+    {
+      "target": "next_descriptor.route.route_version",
+      "value": 1,
+      "expected": "unchanged"
+    },
+    {
+      "target": "current_phase",
+      "value": "cancelled",
+      "expected": "phase"
+    },
+    {
+      "target": "current_record_version",
+      "value": 9223372036854775807,
+      "expected": "record_version"
+    }
+  ],
+  "replay": [
+    {
+      "name": "register",
+      "operation": 1,
+      "actor_id": "00000000-0000-0000-0000-000000000190",
+      "request_id": "00000000-0000-0000-0000-000000000064",
+      "previous_specimen": "owner-local",
+      "next_specimen": "owner-local",
+      "expected_record_version": 1,
+      "request_digest": "bc0d84a489f7dc046a9aeef80d61594749203ee507531e1956978821c4d156e7"
+    },
+    {
+      "name": "cancel",
+      "operation": 2,
+      "actor_id": "00000000-0000-0000-0000-000000000190",
+      "request_id": "00000000-0000-0000-0000-0000000000c9",
+      "previous_specimen": "owner-local",
+      "next_specimen": "owner-local",
+      "expected_record_version": 1,
+      "request_digest": "9e8195a50037b0100cc3ecddc5c8d9c87f5b2a3a5103e744e987fabce7371a02",
+      "serialized_tuple": "[\"00000000-0000-0000-0000-000000000190\",\"00000000-0000-0000-0000-0000000000c9\",[{\"account_id\":\"00000000-0000-0000-0000-000000000001\",\"action_id\":\"00000000-0000-0000-0000-00000000000a\",\"revision\":1,\"binding_digest\":\"0a5b3363d9d9ff8ea8dcb0a1b1eebe137a895abf0821e6b6e3635946136e4ade\"},1,\"cancel\"]]"
+    },
+    {
+      "name": "edit",
+      "operation": 3,
+      "actor_id": "00000000-0000-0000-0000-000000000190",
+      "request_id": "00000000-0000-0000-0000-0000000000c8",
+      "previous_specimen": "owner-local",
+      "next_specimen": "route-next",
+      "expected_record_version": 1,
+      "request_digest": "8b3e2328d0f14c4265caeb50309f9f9459fedce57119ed9e64e74f29f2becc17"
+    }
+  ],
+  "unavailable_effects": [
+    "approve",
+    "locked_action",
+    "bind",
+    "dispatch",
+    "schedule",
+    "send",
+    "liability"
+  ],
+  "legacy01_digest_unchanged": "9272cf1119375b3b8431e4fc338bb8b3f1bcf674b67b83a0d15aec773ef4a222"
+}

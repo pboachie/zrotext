@@ -267,7 +267,17 @@ async fn status(
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     match registration::receipt(&mut db, &p, id).await {
-        Ok(receipt) => Json(serde_json::json!({"receipt":receipt})).into_response(),
+        Ok(Some(receipt)) => {
+            Json(serde_json::json!({"receipt":receipt,"pending":null})).into_response()
+        }
+        Ok(None) => {
+            match registration::pending_context(&mut db, &p, id, &s.owner.canonical_origin).await {
+                Ok(pending) => {
+                    Json(serde_json::json!({"receipt":null,"pending":pending})).into_response()
+                }
+                Err(e) => error(e),
+            }
+        }
         Err(e) => error(e),
     }
 }

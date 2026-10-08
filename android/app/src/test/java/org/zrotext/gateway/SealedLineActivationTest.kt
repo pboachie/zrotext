@@ -7,6 +7,9 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [31])
@@ -262,6 +265,36 @@ class SealedLineActivationTest {
                 assertFalse(capability?.isCurrent() == true)
                 assertNull(provider.accept(SealedLineActivationFrames.Incoming.Challenge(f.challenge)))
             } finally { provider.close() }
+        }
+    }
+
+    @Test @Config(sdk = [34]) fun profileRetiredDuringHeldSessionReadRefusesChallengeWithoutSigning() {
+        EsimProfileFixture().use { profile ->
+            val f = SealedLineActivationFixture(); f.api = 34; f.cards = profile.cards()
+            val candidate = profile.candidate
+            val entered = CountDownLatch(1); val release = CountDownLatch(1)
+            val worker = Executors.newSingleThreadExecutor()
+            var sessionReads = 0
+            val provider = SealedLineActivationProvider(f.selection, f.challenge.accountId, f.challenge.deviceId,
+                42, f.device, f.persistence, { false }, { false }, {
+                    sessionReads += 1; entered.countDown()
+                    check(release.await(10, TimeUnit.SECONDS)); true
+                }, candidate)
+            try {
+                val result = worker.submit<Boolean> { provider.sessionIsCurrent() }
+                assertTrue(entered.await(10, TimeUnit.SECONDS))
+                profile.tracker.onSubscriptionsChanged()
+                assertFalse(candidate.isCurrent())
+                release.countDown()
+                assertFalse(result.get(10, TimeUnit.SECONDS))
+                assertEquals(0, f.pointReads); assertEquals(0, f.signatures)
+                assertNull(provider.accept(SealedLineActivationFrames.Incoming.Challenge(f.challenge)))
+                assertEquals(1, sessionReads)
+            } finally {
+                release.countDown(); worker.shutdownNow()
+                try { assertTrue(worker.awaitTermination(10, TimeUnit.SECONDS)) }
+                finally { provider.close() }
+            }
         }
     }
 

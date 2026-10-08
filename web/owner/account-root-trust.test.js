@@ -15,7 +15,7 @@ async function fixture(change){
  const ids=['account','origin','fingerprint','card','manifest','inputs','review','decision','tuple','accept','decline','status','reconcile','expected','statement','verify-statement','bundle','reader-id','reader-point','requested-until','issuer-review','issuer-create','issuer-retry','issuer-export','issuer-recovery-export','issuer-import','issuer-signature','issuer-complete','issuer-factor','issuer-lookup','issuer-cancel','issuer-withdraw','issuer-decline','issuer-facts','issuer-status','issuer-recovery','issuer-recover'],nodes=Object.fromEntries(ids.map(n=>[n,new Node()]));
  nodes.account.value=account;nodes.origin.value=f.origin;nodes.fingerprint.value=Buffer.from(f.comparedRootFingerprint).toString('hex');nodes.card.files=[new File([card],'public-card.bin')];nodes.manifest.files=[new File([signed],'manifest.bin')];
  const doc=new Node();doc.hidden=false;doc.cookie='__Host-zrotext_csrf=synthetic-review';doc.getElementById=id=>nodes[id];const win=new Node();win.location={origin:f.origin};win.File=File;
- let calls=0,response={account_id:account,user_id:'22222222-2222-4222-8222-222222222222',session_id:'33333333-3333-4333-8333-333333333333',role:'owner'},hold=null;
+ let calls=0,response={account_id:account,user_id:'22222222-2222-4222-8222-222222222222',session_id:'33333333-3333-4333-8333-333333333333',role:'owner',server_now_ms:String(now)},hold=null;
  win.fetch=async()=>{calls++;if(hold)await hold();return new Response(JSON.stringify(response),{headers:{'Content-Type':'application/json'}});};
  const downloads=[];win.Blob=Blob;win.URL={createObjectURL:b=>{downloads.push(b);return 'blob:synthetic-public';},revokeObjectURL:()=>{}};doc.createElement=()=>({click(){}});const a=await api(change);global.document=doc;global.window=win;global.indexedDB=new IDBFactory();const review=a.startAccountRootReview();delete global.document;delete global.window;
  return {review,nodes,doc,win,a,card,pin,signed,f,downloads,get calls(){return calls;},setSession:fn=>fn(response),hold:fn=>hold=fn};
@@ -30,7 +30,7 @@ test('close after prepared review removes listeners and prevents late acceptance
 test('held real initial digest cannot postpone the ten second outward deadline',async()=>{const f=await fixture(),subtle=crypto.subtle,original=subtle.digest.bind(subtle);let release,held=false;subtle.digest=(algorithm,data)=>{if(new Uint8Array(data).length===111){held=true;return new Promise(r=>release=()=>original(algorithm,data).then(r));}return original(algorithm,data);};try{const p=f.review.prepare();await assert.rejects(p);assert.equal(held,true);assert.notEqual(f.review.status().phase,'REVIEWING');release();await new Promise(r=>setTimeout(r,20));}finally{subtle.digest=original;f.review.close();}});
 test('malformed and oversized File selections refuse before HTTP or file callback',async()=>{for(const mode of ['structural','oversized']){const f=await fixture();try{let calls=0;if(mode==='structural')f.nodes.card.files=[{size:f.card.length,arrayBuffer(){calls++;throw Error('must not read');}}];else{const {File}=require('node:buffer');f.nodes.card.files=[new File([new Uint8Array(646)],'oversized.bin')];Object.defineProperty(f.nodes.card.files[0],'arrayBuffer',{value:()=>{calls++;throw Error('must not read');}});}await assert.rejects(f.review.prepare());assert.equal(f.calls,0);assert.equal(calls,0);}finally{f.review.close();}}});
 test('selected genuine File objects are frozen before asynchronous reading',async()=>{const f=await fixture(),file=f.nodes.card.files[0],original=file.arrayBuffer.bind(file);let release,held=false;Object.defineProperty(file,'arrayBuffer',{value:()=>{held=true;return new Promise(r=>release=async()=>r(await original()));}});try{const p=f.review.prepare();while(!held)await new Promise(r=>setImmediate(r));f.nodes.card.files=[];f.nodes.manifest.files=[];await release();assert.equal((await p).phase,'REVIEWING');assert.equal((await f.review.accept()).phase,'LOCAL_ACCEPTED_HISTORY');}finally{f.review.close();}});
-test('duplicate session fields and invalid MIME refuse without local writes',async()=>{for(const mode of ['duplicate','mime']){const f=await fixture();try{f.win.fetch=async()=>new Response(mode==='duplicate'?`{"account_id":"${f.nodes.account.value}","account_id":"${f.nodes.account.value}","user_id":"22222222-2222-4222-8222-222222222222","session_id":"33333333-3333-4333-8333-333333333333","role":"owner"}`:'{}',{headers:{'Content-Type':mode==='mime'?'application/json-other':'application/json'}});await assert.rejects(f.review.prepare());assert.notEqual(f.review.status().phase,'LOCAL_ACCEPTED_HISTORY');}finally{f.review.close();}}});
+test('duplicate session fields and invalid MIME refuse without local writes',async()=>{for(const mode of ['duplicate','mime']){const f=await fixture();try{f.win.fetch=async()=>new Response(mode==='duplicate'?`{"account_id":"${f.nodes.account.value}","account_id":"${f.nodes.account.value}","user_id":"22222222-2222-4222-8222-222222222222","session_id":"33333333-3333-4333-8333-333333333333","role":"owner","server_now_ms":"${Date.now()}"}`:'{}',{headers:{'Content-Type':mode==='mime'?'application/json-other':'application/json'}});await assert.rejects(f.review.prepare());assert.notEqual(f.review.status().phase,'LOCAL_ACCEPTED_HISTORY');}finally{f.review.close();}}});
 test('lost receipt after genuine local commit preserves unknown and reconciles read-only',async()=>{const f=await fixture(),{Draft02TrustStore}=await import(sdk+'draft02-trust-store.js'),original=Draft02TrustStore.prototype.acceptManifest;try{await f.review.prepare();Draft02TrustStore.prototype.acceptManifest=async function(...args){await original.apply(this,args);throw Error('Synthetic local receipt lost');};await assert.rejects(f.review.accept());Draft02TrustStore.prototype.acceptManifest=original;const before=f.review.status();assert.equal(before.phase,'UNKNOWN');assert.equal(before.unknown.version,'1');await assert.rejects(f.review.prepare());assert.equal((await f.review.reconcile()).kind,'local_content_match');assert.deepEqual(f.review.status().unknown,before.unknown);assert.match(f.nodes.status.textContent,/does not prove which operation/);f.review.close();assert.deepEqual(f.review.status().unknown,before.unknown);}finally{Draft02TrustStore.prototype.acceptManifest=original;f.review.close();}});
 test('four unresolved real digests remain charged after close until actual settlement',async()=>{const fixtures=[];for(let i=0;i<5;i++)fixtures.push(await fixture());const subtle=crypto.subtle,original=subtle.digest.bind(subtle),releases=[];let held=0;subtle.digest=(algorithm,data)=>{if(new Uint8Array(data).length===111){held++;return new Promise((yes,no)=>releases.push(()=>original(algorithm,data).then(yes,no)));}return original(algorithm,data);};try{const pending=[];for(let i=0;i<4;i++){const p=fixtures[i].review.prepare();p.catch(()=>{});pending.push(p);while(held<i+1)await new Promise(r=>setImmediate(r));}const fifth=fixtures[4].review.prepare();fifth.catch(()=>{});assert.equal(await Promise.race([fifth.then(()=>false,()=>true),new Promise(r=>setTimeout(()=>r(false),100))]),true,'fifth unresolved operation must refuse promptly');for(let i=0;i<4;i++)fixtures[i].review.close();await Promise.all(pending.map(p=>assert.rejects(p)));await assert.rejects(fixtures[4].review.prepare());assert.equal(held,4);subtle.digest=original;releases.forEach(fn=>fn());await new Promise(r=>setTimeout(r,30));assert.equal((await fixtures[4].review.prepare()).phase,'REVIEWING');}finally{subtle.digest=original;releases.forEach(fn=>fn());for(const f of fixtures)f.review.close();}});
 test('late actual IndexedDB open is closed after outward abort without publication',async()=>{const f=await fixture(),{Draft02TrustStore}=await import(sdk+'draft02-trust-store.js'),original=Draft02TrustStore.open;let release,opened=false,closed=0;Draft02TrustStore.open=async function(...args){const store=await original.apply(this,args),close=store.close.bind(store);store.close=()=>{closed++;close();};opened=true;return new Promise(r=>release=()=>r(store));};try{const p=f.review.prepare();while(!opened)await new Promise(r=>setImmediate(r));f.review.close();await assert.rejects(p);assert.equal(closed,0);release();await new Promise(r=>setImmediate(r));assert.equal(closed,1);assert.equal(f.review.status().phase,'CLOSED');}finally{Draft02TrustStore.open=original;if(release)release();f.review.close();}});
@@ -114,3 +114,40 @@ test('read-only recovery preserves original commitment and cannot manufacture an
 test('CREATE retry and COMPLETE consume the same three positive attempts',async()=>{const f=await issuerFixture();try{await issuerReview(f);f.createMode('uncertain');await issuerCreate(f);f.createMode('valid');await issuerCreate(f,true);await f.sign();click(f,'issuer-import');await waitFor(()=>!f.nodes['issuer-complete'].disabled);f.nodes['issuer-factor'].value='123456';click(f,'issuer-complete');await waitFor(()=>/acknowledged this exact/.test(f.issuerStatus()));const sent=f.requests.filter(r=>r.options.method==='POST');assert.equal(sent.length,3);assert.equal(sent[0].options.body,sent[1].options.body);assert.equal(sent[2].url.endsWith('/complete'),true);click(f,'issuer-retry');f.nodes['issuer-factor'].value='123456';click(f,'issuer-complete');await new Promise(r=>setImmediate(r));assert.equal(f.requests.filter(r=>r.options.method==='POST').length,3);assert.equal(f.nodes['issuer-factor'].value,'');}finally{f.review.close();}});
 
 test('input drift after review closes positive actions without spending another attempt',async()=>{const f=await issuerFixture();try{await issuerReview(f);f.nodes.bundle.value='cd'.repeat(16);click(f,'issuer-create');await waitFor(()=>/unavailable|unknown/i.test(f.issuerStatus()));assert.equal(f.requests.filter(r=>r.options.method==='POST').length,0);assert.equal(f.nodes['issuer-create'].disabled,true);assert.equal(f.nodes['issuer-retry'].disabled,true);assert.equal(f.nodes['issuer-complete'].disabled,true);}finally{f.review.close();}});
+
+
+test('current session database time preserves identity checks while its sample changes',async()=>{
+ const f=await fixture();
+ try{
+  assert.equal((await f.review.prepare()).phase,'REVIEWING');
+  f.setSession(v=>v.server_now_ms=(BigInt(v.server_now_ms)+1n).toString());
+  assert.equal((await f.review.accept()).phase,'LOCAL_ACCEPTED_HISTORY');
+  assert.equal(f.review.status().current,undefined);
+ }finally{f.review.close();}
+});
+
+test('missing malformed and extra session clock fields refuse before local root writes',async()=>{
+ const changes=[
+  v=>delete v.server_now_ms,
+  v=>v.server_now_ms=Date.now(),
+  v=>v.server_now_ms='0',
+  v=>v.server_now_ms='01',
+  v=>v.server_now_ms='-1',
+  v=>v.server_now_ms='1e3',
+  v=>v.server_now_ms='1\u2028',
+  v=>v.server_now_ms='1\u2029',
+  v=>v.server_now_ms='9223372036854775808',
+  v=>v.server_now_ms='9'.repeat(20),
+  v=>v.unexpected='field',
+ ];
+ for(const change of changes){
+  const f=await fixture();
+  try{
+   f.setSession(change);
+   await assert.rejects(f.review.prepare());
+   assert.notEqual(f.review.status().phase,'LOCAL_ACCEPTED_HISTORY');
+   const {Draft02TrustStore}=await import(sdk+'draft02-trust-store.js'),store=await Draft02TrustStore.open();
+   try{assert.equal(await store.read(),null);}finally{store.close();}
+  }finally{f.review.close();}
+ }
+});

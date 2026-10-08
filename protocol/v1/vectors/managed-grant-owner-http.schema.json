@@ -1,0 +1,527 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Owner managed-grant HTTP typed wire shapes and named JSON responses",
+  "$comment": "Structural wire data only, never owner/session/CSRF/grant/issuer/provider authority. Request structs preserve maintained serde named-object and exact positional-array representations; nested unit enums additionally accept single-name null objects. GrantVersion/error output is named object only. Secret decoded-byte bounds, strict raw UTF-8, duplicate names, lexical integer tokens and 16384-byte raw cap require supplemental controls. Core validation separately requires positive versions/generation/expiry, nonnil identities/nonzero digests, nonnegative caps, <=32 strictly ordered distinct selection IDs and source versions1..128. These constraints are not parsing restrictions, and create/replace default issuance is unavailable before core validation. No schema proves status, headers, path extraction, current ownership, policy freshness, narrowing or commit. Axum unreadable/oversize body responses may be non-JSON. 204 revoke has no JSON body.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/create"
+    },
+    {
+      "$ref": "#/$defs/replace"
+    },
+    {
+      "$ref": "#/$defs/narrow"
+    },
+    {
+      "$ref": "#/$defs/revoke"
+    },
+    {
+      "$ref": "#/$defs/grantVersion"
+    },
+    {
+      "$ref": "#/$defs/error"
+    }
+  ],
+  "$defs": {
+    "i64": {
+      "type": "integer",
+      "minimum": -9223372036854775808,
+      "maximum": 9223372036854775807
+    },
+    "digest": {
+      "type": "array",
+      "minItems": 32,
+      "maxItems": 32,
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 255
+      }
+    },
+    "uuidWire": {
+      "type": "string",
+      "minLength": 32,
+      "maxLength": 45,
+      "pattern": "^(?:[A-Fa-f0-9]{32}|[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}|[{][A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}[}]|urn:uuid:[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12})$",
+      "not": {
+        "pattern": "[^A-Fa-f0-9{}:urnid-]"
+      },
+      "$comment": "Maintained UUID serde accepts simple, hyphenated, braced or lower-prefix URN strings, case-insensitive hex, including nil. JSON UUID arrays are not accepted by serde_json deserialize_str. Core validation separately rejects nil."
+    },
+    "pathGrantId": {
+      "type": "string",
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "$comment": "Decoded path spelling only; not route/authentication proof."
+    },
+    "password":
+    {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "$comment": "Necessary character bound only: the actual Secret requires 12..1024 decoded UTF-8 bytes, checked separately by raw-wire controls. Six two-byte characters can be a valid password."
+    },
+    "factor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "$comment": "Necessary character bound only; actual decoded UTF-8 byte limit is 1..256."
+    },
+    "expectedVersion": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 127,
+      "$comment": "Schema mathematical integer does not attest a lexical integer token. Raw 1.0/1e0 are refused by maintained i64 serde."
+    },
+    "purpose": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "transactional",
+            "operational",
+            "marketing"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "transactional"
+          ],
+          "properties": {
+            "transactional": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operational"
+          ],
+          "properties": {
+            "operational": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "marketing"
+          ],
+          "properties": {
+            "marketing": {
+              "type": "null"
+            }
+          }
+        }
+      ]
+    },
+    "kind": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "workflow_context_v1"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "workflow_context_v1"
+          ],
+          "properties": {
+            "workflow_context_v1": {
+              "type": "null"
+            }
+          }
+        }
+      ]
+    },
+    "policyWire": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "version",
+            "digest",
+            "reader",
+            "reader_generation"
+          ],
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/uuidWire"
+            },
+            "version": {
+              "$ref": "#/$defs/i64"
+            },
+            "digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "reader": {
+              "$ref": "#/$defs/uuidWire"
+            },
+            "reader_generation": {
+              "$ref": "#/$defs/i64"
+            }
+          }
+        },
+        {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/uuidWire"
+            },
+            {
+              "$ref": "#/$defs/i64"
+            },
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "$ref": "#/$defs/uuidWire"
+            },
+            {
+              "$ref": "#/$defs/i64"
+            }
+          ],
+          "items": false
+        }
+      ]
+    },
+    "selectionWire": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id",
+            "version",
+            "digest"
+          ],
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/kind"
+            },
+            "id": {
+              "$ref": "#/$defs/uuidWire"
+            },
+            "version": {
+              "$ref": "#/$defs/i64"
+            },
+            "digest": {
+              "$ref": "#/$defs/digest"
+            }
+          }
+        },
+        {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/kind"
+            },
+            {
+              "$ref": "#/$defs/uuidWire"
+            },
+            {
+              "$ref": "#/$defs/i64"
+            },
+            {
+              "$ref": "#/$defs/digest"
+            }
+          ],
+          "items": false
+        }
+      ]
+    },
+    "grantRequestWire": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "policy",
+            "contact",
+            "purpose",
+            "instruction_digest",
+            "expires_ms",
+            "max_calls",
+            "max_input_bytes",
+            "max_cost_microunits",
+            "selections"
+          ],
+          "properties": {
+            "policy": {
+              "$ref": "#/$defs/policyWire"
+            },
+            "contact": {
+              "$ref": "#/$defs/uuidWire"
+            },
+            "purpose": {
+              "$ref": "#/$defs/purpose"
+            },
+            "instruction_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "expires_ms": {
+              "$ref": "#/$defs/i64"
+            },
+            "max_calls": {
+              "$ref": "#/$defs/i64"
+            },
+            "max_input_bytes": {
+              "$ref": "#/$defs/i64"
+            },
+            "max_cost_microunits": {
+              "$ref": "#/$defs/i64"
+            },
+            "selections": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/selectionWire"
+              }
+            }
+          }
+        },
+        {
+          "type": "array",
+          "minItems": 9,
+          "maxItems": 9,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/policyWire"
+            },
+            {
+              "$ref": "#/$defs/uuidWire"
+            },
+            {
+              "$ref": "#/$defs/purpose"
+            },
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "$ref": "#/$defs/i64"
+            },
+            {
+              "$ref": "#/$defs/i64"
+            },
+            {
+              "$ref": "#/$defs/i64"
+            },
+            {
+              "$ref": "#/$defs/i64"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/selectionWire"
+              }
+            }
+          ],
+          "items": false
+        }
+      ]
+    },
+    "create": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "password",
+            "factor",
+            "request"
+          ],
+          "properties": {
+            "password":
+    {
+              "$ref": "#/$defs/password"
+            },
+            "factor": {
+              "$ref": "#/$defs/factor"
+            },
+            "request": {
+              "$ref": "#/$defs/grantRequestWire"
+            }
+          }
+        },
+        {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/password"
+            },
+            {
+              "$ref": "#/$defs/factor"
+            },
+            {
+              "$ref": "#/$defs/grantRequestWire"
+            }
+          ],
+          "items": false
+        }
+      ]
+    },
+    "replace": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "expected_version",
+            "password",
+            "factor",
+            "request"
+          ],
+          "properties": {
+            "expected_version": {
+              "$ref": "#/$defs/expectedVersion"
+            },
+            "password":
+    {
+              "$ref": "#/$defs/password"
+            },
+            "factor": {
+              "$ref": "#/$defs/factor"
+            },
+            "request": {
+              "$ref": "#/$defs/grantRequestWire"
+            }
+          }
+        },
+        {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/expectedVersion"
+            },
+            {
+              "$ref": "#/$defs/password"
+            },
+            {
+              "$ref": "#/$defs/factor"
+            },
+            {
+              "$ref": "#/$defs/grantRequestWire"
+            }
+          ],
+          "items": false
+        }
+      ]
+    },
+    "narrow": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "expected_version",
+            "request"
+          ],
+          "properties": {
+            "expected_version": {
+              "$ref": "#/$defs/expectedVersion"
+            },
+            "request": {
+              "$ref": "#/$defs/grantRequestWire"
+            }
+          }
+        },
+        {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/expectedVersion"
+            },
+            {
+              "$ref": "#/$defs/grantRequestWire"
+            }
+          ],
+          "items": false
+        }
+      ]
+    },
+    "revoke": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [],
+          "properties": {}
+        },
+        {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 0,
+          "items": false
+        }
+      ]
+    },
+    "grantVersion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "grant_id",
+        "current_version"
+      ],
+      "properties": {
+        "grant_id": {
+          "$ref": "#/$defs/pathGrantId"
+        },
+        "current_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 128
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "invalid_request",
+            "unauthorized",
+            "forbidden",
+            "refused",
+            "conflict",
+            "revoke_sms_owner_key_first",
+            "not_found",
+            "method_not_allowed",
+            "rate_limited",
+            "internal_error",
+            "unavailable"
+          ]
+        }
+      }
+    }
+  }
+}

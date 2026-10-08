@@ -74,3 +74,39 @@ impl<'connection> ProposalFence<'connection> for OwnerProposal<'_, 'connection> 
         })
     }
 }
+
+/// Current Owner/context proof for proposal-only metadata. This is deliberately
+/// separate from ProposalFence/ActionFence and cannot make a phone effect permit.
+pub(crate) struct ProviderProposal<'tx, 'connection> {
+    tx: &'tx Transaction<'connection>,
+    owner: &'tx SessionPrincipal,
+    authority: CurrentAuthority<'tx, 'connection>,
+    pub(crate) header: wire::Header,
+    pub(crate) descriptor: super::action_profile::ProviderAction,
+}
+impl<'tx, 'connection> ProviderProposal<'tx, 'connection> {
+    pub(crate) async fn checked(
+        tx: &'tx Transaction<'connection>,
+        owner: &'tx SessionPrincipal,
+        descriptor: super::action_profile::ProviderAction,
+    ) -> Result<Self, ConversationError> {
+        let (authority, header) = super::fence::checked_provider(tx, owner, &descriptor).await?;
+        Ok(Self {
+            tx,
+            owner,
+            authority,
+            header,
+            descriptor,
+        })
+    }
+    pub(crate) async fn recheck(&mut self) -> Result<(), ConversationError> {
+        super::fence::recheck_provider(
+            self.tx,
+            self.owner,
+            &mut self.authority,
+            &self.header,
+            &self.descriptor,
+        )
+        .await
+    }
+}

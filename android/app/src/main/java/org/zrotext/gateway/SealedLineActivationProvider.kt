@@ -24,7 +24,8 @@ internal class SealedLineActivationProvider(private val selection: SealedLineAcc
     private var receiptConfirmed = false
     private var profileInstallation: InstalledEsimProfile? = null
     init { require(epoch > 0 && selection.accountId == account && selection.deviceId == deviceId) }
-    private fun current() = !closed && sessionCurrent() && acceptedProfile?.isCurrent() != false
+    private fun current() = !closed && acceptedProfile?.isCurrent() != false &&
+        sessionCurrent() && acceptedProfile?.isCurrent() != false
     @Synchronized fun sessionIsCurrent() = current()
     @Synchronized fun accept(input: SealedLineActivationFrames.Incoming): String? {
         if (!current()) return null

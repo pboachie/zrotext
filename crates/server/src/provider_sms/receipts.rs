@@ -39,6 +39,17 @@ impl ElectedWriterPermit {
             epoch,
         }
     }
+    /// Read-only identity for the sibling durable-intent writer. Constructing
+    /// a permit remains impossible outside test builds.
+    pub(super) fn identity(&self) -> (Uuid, &str, i64) {
+        (self.account, &self.site, self.epoch)
+    }
+    pub(super) fn account(&self) -> Uuid {
+        self.account
+    }
+    pub(super) fn epoch(&self) -> i64 {
+        self.epoch
+    }
 }
 
 /// Closed diagnostics deliberately contain no provider identities or SQL detail.

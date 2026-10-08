@@ -9,6 +9,9 @@ use sha2::{Digest, Sha256};
 use tokio_postgres::{Client, GenericClient, Transaction};
 use uuid::Uuid;
 use zrotext_root_material::line_key_registration::{self as codec, Scope, Statement};
+mod pending;
+pub use pending::context as pending_context;
+
 type Result<T> = std::result::Result<T, CeremonyError>;
 fn reject() -> CeremonyError {
     CeremonyError::Rejected("sealed line registration unavailable")

@@ -592,7 +592,7 @@
             "Owner root-review page paired with bounded contact-reader intent review, public proposal export for the offline signer, whole-signature import and explicit completion under one absolute approval budget; unknown recovery never renews approval ([#898](https://github.com/pboachie/zrotext/pull/898))"
           ],
           "todo": [
-            "Client-sealed contact fields using an existing reviewed envelope and selected-reader contract (#634); the merged verifiers, producer and local-history adapter remain unmounted",
+            "Client-sealed contact fields using an existing reviewed envelope and selected-reader contract (#821); the merged verifiers, producer and local-history adapter remain unmounted",
             "Complete owner-facing contacts/conversation/context and exception journeys with current downstream consent and line/reader checks"
           ]
         },

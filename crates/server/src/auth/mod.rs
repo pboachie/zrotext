@@ -44,6 +44,7 @@ mod password_work;
 #[cfg(test)]
 mod roles_tests;
 pub mod seats;
+pub(crate) mod session_time;
 mod verification_outbox;
 pub use verification_outbox::{
     VerificationMail, ack_verification_mail, claim_verification_mail, request_verification_resend,

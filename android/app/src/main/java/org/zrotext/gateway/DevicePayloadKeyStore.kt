@@ -116,6 +116,29 @@ class DevicePayloadKeyStore(context: Context, private val alias: String) {
             }
         }
 
+    /** Trusted-adapter variant of [withExistingCustody] for the native HPKE
+     * receiver ([WolfHpkeKeystoreReceiver]): the validated AndroidKeyStore
+     * handle is supplied to [operation] next to its public facade under the
+     * same record lock and identity-revalidation scope. The handle never
+     * outlives this call and only ever reaches the in-process native bridge. */
+    internal fun <R> withRecipientKey(pinnedKeyId: ByteArray,
+                                      operation: (PrivateKey, DevicePayloadPublic) -> R): R =
+        PayloadKeyCustodyEntry.withDeviceMonitor(this) {
+            requireSupportedSdk(Build.VERSION.SDK_INT)
+            if (Build.VERSION.SDK_INT < 31) error("Sealed payload keys require Android API 31+")
+            val source = object : PayloadKeyCustodySource<Pair<PrivateKey, DevicePayloadPublic>> {
+                override fun load() = loadExisting()
+                override fun keyId(material: Pair<PrivateKey, DevicePayloadPublic>) = material.second.keyId
+                override fun requireSameIdentity(initial: Pair<PrivateKey, DevicePayloadPublic>,
+                                                 current: Pair<PrivateKey, DevicePayloadPublic>) {
+                    requireSamePublicIdentity(initial.second, current.second)
+                }
+            }
+            lifecycle.scopedExisting(pinnedKeyId, source) { material, _ ->
+                operation(material.first, material.second)
+            }
+        }
+
     @RequiresApi(31)
     private fun loadExisting(): Pair<PrivateKey, DevicePayloadPublic> {
         val store = openStore()
