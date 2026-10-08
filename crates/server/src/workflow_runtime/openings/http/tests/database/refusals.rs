@@ -179,3 +179,126 @@ async fn observer_session_cannot_create_or_expire_openings() {
     assert_eq!(c.counts().await, (0, 0));
     c.case.cleanup().await;
 }
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; mounted mutation wire, owner gate and runtime delegation"]
+async fn mounted_mutations_enforce_owner_wire_and_delegate_refusals_to_the_runtime() {
+    let c = HttpCase::new().await;
+    let paths = [
+        "/v1/owner/workflow/openings/offers",
+        "/v1/owner/workflow/openings/reservations",
+        "/v1/owner/workflow/openings/confirmations",
+        "/v1/owner/workflow/openings/releases",
+        "/v1/owner/workflow/openings/closures",
+        "/v1/owner/workflow/openings/cancellations",
+    ];
+    for path in paths {
+        for variant in ["missing", "duplicate", "other"] {
+            let mut request = c.request(path).body(Body::from("not json")).unwrap();
+            match variant {
+                "missing" => {
+                    request.headers_mut().remove(ACCOUNT_HEADER);
+                }
+                "duplicate" => {
+                    request.headers_mut().append(
+                        ACCOUNT_HEADER,
+                        c.case.base.f.account.to_string().parse().unwrap(),
+                    );
+                }
+                "other" => {
+                    request
+                        .headers_mut()
+                        .insert(ACCOUNT_HEADER, Uuid::new_v4().to_string().parse().unwrap());
+                }
+                _ => unreachable!(),
+            }
+            let response = router(c.state.clone()).oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path} {variant}");
+            protected(&response);
+        }
+        for body in ["not json", "[]", "{}", "null"] {
+            let response = router(c.state.clone())
+                .oneshot(c.request(path).body(Body::from(body)).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path} {body}");
+            protected(&response);
+        }
+        let response = router(c.state.clone())
+            .oneshot(c.request(path).body(Body::from(vec![b' '; 8193])).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE, "{path}");
+        protected(&response);
+    }
+    assert_eq!(c.counts().await, (0, 0));
+
+    // Closed-object wire: unknown fields never reach the runtime.
+    let response = c
+        .send(
+            "/v1/owner/workflow/openings/closures",
+            &json!({"unexpected":true}),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    protected(&response);
+
+    // Well-formed wire with an unknown opening delegates to the runtime,
+    // which owns the refusal; no opening or request row may appear.
+    let now: i64 = c
+        .case
+        .base
+        .f
+        .db
+        .query_one(
+            "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let digest: String = Sha256::digest(c.case.base.bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let opening = json!({"opening_id":Uuid::new_v4(),"definition_version":"1","state_version":"1"});
+    let source = json!({"context_id":c.case.base.h.context,"revision":c.case.base.h.revision,"digest":digest});
+    let bodies = [
+        json!({"request_id":Uuid::new_v4(),"opening":opening,"offer_id":Uuid::new_v4(),
+            "contact_id":Uuid::new_v4(),"purpose":"transactional","source":source,
+            "expires_ms":(now+30000).to_string()}),
+        json!({"request_id":Uuid::new_v4(),"opening":opening,"offer":{"offer_id":Uuid::new_v4(),"state_version":"1"},
+            "allocation_id":Uuid::new_v4(),"event_id":Uuid::new_v4(),"event_digest":"1".repeat(64)}),
+        json!({"request_id":Uuid::new_v4(),"opening":opening,"allocation_id":Uuid::new_v4(),"allocation_version":"1"}),
+        json!({"request_id":Uuid::new_v4(),"opening":opening,"allocation_id":Uuid::new_v4(),"allocation_version":"1"}),
+        json!({"request_id":Uuid::new_v4(),"opening":opening}),
+        json!({"request_id":Uuid::new_v4(),"opening":opening}),
+    ];
+    for (path, body) in paths.iter().zip(&bodies) {
+        let response = c.send(path, body).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        protected(&response);
+    }
+    assert_eq!(c.counts().await, (0, 0));
+    assert_eq!(
+        crate::http_auth::preauth::AccountSlot::in_flight(c.case.base.f.account),
+        0
+    );
+
+    c.case
+        .base
+        .f
+        .db
+        .execute(
+            "UPDATE sessions SET revoked_at=clock_timestamp() WHERE id=$1",
+            &[&c.session],
+        )
+        .await
+        .unwrap();
+    let response = c
+        .send("/v1/owner/workflow/openings/closures", &bodies[4])
+        .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    protected(&response);
+    c.case.cleanup().await;
+}

@@ -26,6 +26,12 @@ pub fn router(state: OwnerConversationsState) -> Router {
     Router::new()
         .route("/v1/owner/workflow/openings", post(create))
         .route("/v1/owner/workflow/openings/{id}/status", post(status))
+        .route("/v1/owner/workflow/openings/offers", post(offer))
+        .route("/v1/owner/workflow/openings/reservations", post(reserve))
+        .route("/v1/owner/workflow/openings/confirmations", post(confirm))
+        .route("/v1/owner/workflow/openings/releases", post(release))
+        .route("/v1/owner/workflow/openings/closures", post(close))
+        .route("/v1/owner/workflow/openings/cancellations", post(cancel))
         .layer(DefaultBodyLimit::max(8192))
         .layer(middleware::from_fn(owner_response))
         .with_state(Arc::new(state))
@@ -100,6 +106,102 @@ async fn status(
     let mut client = connection(&state).await?;
     let receipt = super::status(&mut client, &owner, opening).await?;
     Ok(Json(wire::status(account, opening, receipt)?))
+}
+
+async fn offer(
+    State(state): State<Arc<OwnerConversationsState>>,
+    OpeningOwner(OwnerMutation(owner, _slot)): OpeningOwner,
+    ApiJson(input): ApiJson<wire::OfferInput>,
+) -> Result<Json<wire::Mutated>, ConversationError> {
+    let request = input.into_request()?;
+    let request_id = request.request_id;
+    let opening_id = request.opening.opening_id;
+    let account = owner.tenant.account_id();
+    let mut client = connection(&state).await?;
+    let outcome = super::offer(&mut client, &owner, request).await?;
+    Ok(Json(wire::mutated(
+        account, request_id, opening_id, outcome,
+    )?))
+}
+
+async fn reserve(
+    State(state): State<Arc<OwnerConversationsState>>,
+    OpeningOwner(OwnerMutation(owner, _slot)): OpeningOwner,
+    ApiJson(input): ApiJson<wire::ReserveInput>,
+) -> Result<Json<wire::Mutated>, ConversationError> {
+    let request = input.into_request()?;
+    let request_id = request.request_id;
+    let opening_id = request.opening.opening_id;
+    let account = owner.tenant.account_id();
+    let mut client = connection(&state).await?;
+    let outcome = super::reserve(&mut client, &owner, request).await?;
+    Ok(Json(wire::mutated(
+        account, request_id, opening_id, outcome,
+    )?))
+}
+
+async fn confirm(
+    State(state): State<Arc<OwnerConversationsState>>,
+    OpeningOwner(OwnerMutation(owner, _slot)): OpeningOwner,
+    ApiJson(input): ApiJson<wire::AllocationMutationInput>,
+) -> Result<Json<wire::Mutated>, ConversationError> {
+    let request = input.into_request()?;
+    let request_id = request.request_id;
+    let opening_id = request.opening.opening_id;
+    let account = owner.tenant.account_id();
+    let mut client = connection(&state).await?;
+    let outcome = super::confirm(&mut client, &owner, request).await?;
+    Ok(Json(wire::mutated(
+        account, request_id, opening_id, outcome,
+    )?))
+}
+
+async fn release(
+    State(state): State<Arc<OwnerConversationsState>>,
+    OpeningOwner(OwnerMutation(owner, _slot)): OpeningOwner,
+    ApiJson(input): ApiJson<wire::AllocationMutationInput>,
+) -> Result<Json<wire::Mutated>, ConversationError> {
+    let request = input.into_request()?;
+    let request_id = request.request_id;
+    let opening_id = request.opening.opening_id;
+    let account = owner.tenant.account_id();
+    let mut client = connection(&state).await?;
+    let outcome = super::release(&mut client, &owner, request).await?;
+    Ok(Json(wire::mutated(
+        account, request_id, opening_id, outcome,
+    )?))
+}
+
+async fn close(
+    State(state): State<Arc<OwnerConversationsState>>,
+    OpeningOwner(OwnerMutation(owner, _slot)): OpeningOwner,
+    ApiJson(input): ApiJson<wire::OpeningMutationInput>,
+) -> Result<Json<wire::Mutated>, ConversationError> {
+    let request = input.into_request()?;
+    let request_id = request.request_id;
+    let opening_id = request.opening.opening_id;
+    let account = owner.tenant.account_id();
+    let mut client = connection(&state).await?;
+    let outcome = super::close(&mut client, &owner, request).await?;
+    Ok(Json(wire::mutated(
+        account, request_id, opening_id, outcome,
+    )?))
+}
+
+async fn cancel(
+    State(state): State<Arc<OwnerConversationsState>>,
+    OpeningOwner(OwnerMutation(owner, _slot)): OpeningOwner,
+    ApiJson(input): ApiJson<wire::OpeningMutationInput>,
+) -> Result<Json<wire::Mutated>, ConversationError> {
+    let request = input.into_request()?;
+    let request_id = request.request_id;
+    let opening_id = request.opening.opening_id;
+    let account = owner.tenant.account_id();
+    let mut client = connection(&state).await?;
+    let outcome = super::cancel(&mut client, &owner, request).await?;
+    Ok(Json(wire::mutated(
+        account, request_id, opening_id, outcome,
+    )?))
 }
 
 #[cfg(test)]

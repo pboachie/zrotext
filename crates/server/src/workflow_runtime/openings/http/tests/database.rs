@@ -30,15 +30,7 @@ fn auth_hash(domain: &[u8], token: &str) -> Vec<u8> {
 
 impl HttpCase {
     async fn new() -> Self {
-        Self::with_candidate(true).await
-    }
-
-    async fn with_candidate(install: bool) -> Self {
         let case = Case::new().await;
-        if install {
-            case.base.f.db.batch_execute(include_str!("../../../../../../../deploy/compose/migration-candidates/owner_opening_capacity.sql"))
-                .await.unwrap();
-        }
         let token = format!("zts_{}", URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>()));
         let csrf = format!("ztc_{}", URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>()));
         let hasher = crate::auth::TokenHasher::new(crate::test_keys::key(84)).unwrap();
@@ -302,16 +294,28 @@ async fn mounted_create_exact_replay_conflict_and_status_preserve_typed_identity
 }
 
 #[tokio::test]
-#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; actual absent and partial isolated candidate schemas"]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; actual absent and partial isolated opening schemas"]
 async fn mounted_openings_refuse_absent_and_partial_candidate_before_effects() {
     for partial in [false, true] {
-        let c = HttpCase::with_candidate(partial).await;
+        let c = HttpCase::new().await;
         if partial {
             c.case
                 .base
                 .f
                 .db
                 .batch_execute("DROP TABLE workflow_opening_requests")
+                .await
+                .unwrap();
+        } else {
+            c.case
+                .base
+                .f
+                .db
+                .batch_execute(
+                    "DROP TABLE workflow_opening_requests, workflow_opening_allocations, \
+             workflow_opening_offers, workflow_openings CASCADE
+",
+                )
                 .await
                 .unwrap();
         }
