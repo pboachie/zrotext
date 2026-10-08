@@ -34,7 +34,7 @@ def parse_manifest(text: str) -> dict[str, str]:
             continue
         parts = line.split()
         if len(parts) != 2 or len(parts[0]) != 64 or any(c not in "0123456789abcdef" for c in parts[0]):
-            print(f"unparseable PROVENANCE line {number}", file=sys.stderr)
+            print(f"unparsable PROVENANCE line {number}", file=sys.stderr)
             raise SystemExit(2)
         if parts[1] in expected:
             print(f"PROVENANCE line {number}: duplicate entry {parts[1]}", file=sys.stderr)
@@ -77,7 +77,7 @@ def self_test(vendored: Path) -> int:
 
     def copied(name: str) -> Path:
         target = Path(tempfile.mkdtemp(prefix=f"wolfssl-provenance-{name}-")) / "tree"
-        shutil.copytree(vendored, target)
+        shutil.copytree(vendored, target)  # codeql[py/path-injection] developer-supplied local checkout; contents are digested, never executed
         cases.append((name, target))
         return target
 
