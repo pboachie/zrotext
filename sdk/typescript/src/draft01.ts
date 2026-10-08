@@ -198,8 +198,7 @@ export async function openDraftEnvelope(input: Uint8Array, expected: DraftOpenCo
   if (!await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, signer, buffer(parsed.signature), buffer(signatureInput(parsed)))) {
     fail("origin signature");
   }
-  // ⚡ Bolt: Parallelize key deserialization for faster envelope opening
-  await Promise.all(parsed.wraps.map((candidate) => suite.kem.deserializePublicKey(buffer(candidate.enc))));
+  for (const candidate of parsed.wraps) await suite.kem.deserializePublicKey(buffer(candidate.enc));
   const wrap = parsed.wraps.find((item) => item.role === expected.recipientRole && equal(item.keyId, expected.recipientKeyId));
   if (!wrap) fail("authorized recipient wrap missing");
   const recipient = await suite.createRecipientContext({ recipientKey: expected.recipientPrivateKey, enc: buffer(wrap.enc), info: buffer(await wrapInfo(parsed, wrap)) });

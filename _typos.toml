@@ -1,3 +1,9 @@
+[files]
+# Vendored third-party source, byte-identical to the pinned upstream release
+# (see android/app/src/main/cpp/wolfssl/PROVENANCE). Upstream owns its
+# spellings; patching the copies would break the byte-identical guarantee.
+extend-exclude = ["android/app/src/main/cpp/wolfssl"]
+
 [default.extend-words]
 BA = "BA" # Backup Active in the two-location design.
 fo = "fo" # Windows whoami /fo output-format switch.

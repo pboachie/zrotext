@@ -87,8 +87,7 @@ export async function openOriginalReply02(input: Uint8Array, options: OriginalRe
   const signingKey = await crypto.subtle.importKey("raw", ab(signer.point), { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
   const length = new Uint8Array(4); new DataView(length.buffer).setUint32(0, parsed.unsigned.length);
   if (!await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, signingKey, ab(parsed.signature), ab(join(label("ZTSE/sign/v2"), length, parsed.unsigned)))) refuse();
-  // ⚡ Bolt: Parallelize key deserialization for faster reply opening
-  await Promise.all(parsed.wraps.map((wrap) => suite.kem.deserializePublicKey(ab(wrap.enc))));
+  for (const wrap of parsed.wraps) await suite.kem.deserializePublicKey(ab(wrap.enc));
   const wrap = parsed.wraps.find(w => w.role === 3 && same(w.keyId, scope.reader));
   if (!wrap) refuse();
   const publicKey = await crypto.subtle.importKey("raw", ab(reader.point), { name: "ECDH", namedCurve: "P-256" }, true, []);

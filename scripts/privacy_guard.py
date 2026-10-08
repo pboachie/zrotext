@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import ipaddress
 import os
 import re
@@ -134,6 +135,63 @@ def forbidden_path(relative: str) -> bool:
             or name.endswith((".dpapi", ".pfx", ".p12", ".jks", ".keystore", ".agekey", ".key")))
 
 
+# Vendored third-party source pinned byte-identical to an upstream release.
+# Only files whose content digest matches the directory's committed PROVENANCE
+# manifest are exempt: upstream identifiers such as DYNAMIC_TYPE_SECRET or
+# PEM-header size comments trip the credential heuristics without carrying any
+# ZROtext credential, while any file the manifest does not list (or lists with
+# a different digest) is planted or modified and is therefore fully scanned.
+# Filename checks and every first-party file remain fully scanned. The
+# manifest itself and the vendored-tree membership/digest checks are enforced
+# in CI by tools/verify_wolfssl_provenance.py.
+VENDORED_UPSTREAM_PREFIXES = ("android/app/src/main/cpp/wolfssl/",)
+VENDORED_PROVENANCE_PATH = "android/app/src/main/cpp/wolfssl/PROVENANCE"
+
+
+def vendored_upstream(relative: str) -> bool:
+    return relative.startswith(VENDORED_UPSTREAM_PREFIXES)
+
+
+def vendored_digest_matches(data: bytes, recorded: str) -> bool:
+    """True when the stored blob is byte-identical to what PROVENANCE recorded.
+
+    Manifests regenerated before #1032 recorded OS-smudged (CRLF) digests;
+    the git blobs hold LF. A digest match on the raw bytes or on a single
+    line-ending-normalized form accepts those historical manifests without
+    loosening the current tree, which the provenance workflow pins exactly.
+    """
+    candidates = {hashlib.sha256(data).hexdigest()}
+    if b"\r\n" in data:
+        candidates.add(hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest())
+    else:
+        candidates.add(hashlib.sha256(data.replace(b"\n", b"\r\n")).hexdigest())
+    return recorded in candidates
+
+
+def vendored_allowlist(root: Path, files: list[tuple[str, str, str]], blobs: dict[str, bytes]) -> dict[str, str]:
+    """Map relative vendored paths to their recorded upstream SHA-256 digests.
+
+    The shared scan cache filters blobs out of `pending` on every snapshot
+    after the first, so the manifest may be absent from `blobs` there; it is
+    read on demand so the exemption holds for every scanned commit tree.
+    """
+    provenance = next((oid for relative, oid, mode in files
+                       if relative == VENDORED_PROVENANCE_PATH and mode != "160000"), None)
+    if provenance is None:
+        return {}
+    data = blobs.get(provenance)
+    if data is None:
+        data = read_blobs(root, [provenance]).get(provenance)
+    if data is None:
+        return {}
+    allow: dict[str, str] = {}
+    for line in data.decode("utf-8", "replace").splitlines():
+        parts = line.split()
+        if len(parts) == 2 and len(parts[0]) == 64 and all(c in "0123456789abcdef" for c in parts[0]):
+            allow[VENDORED_UPSTREAM_PREFIXES[0] + parts[1]] = parts[0]
+    return allow
+
+
 def infrastructure_file(relative: str) -> bool:
     path = PurePosixPath(relative)
     # Source IP-validation tests legitimately contain RFC1918 addresses. Private
@@ -212,6 +270,7 @@ def scan_snapshot(root: Path, tree: str | None, cache: dict) -> list[str]:
     files = entries(root, tree)
     pending = list(dict.fromkeys(oid for relative, oid, mode in files if mode != "160000" and blob_key(relative, oid) not in cache))
     blobs = read_blobs(root, pending)
+    allow = vendored_allowlist(root, files, blobs)
     for number, (relative, oid, mode) in enumerate(files, 1):
         # Names may themselves be private. Ordinals identify entries without
         # exposing paths in public CI output (see the local lookup in the docs).
@@ -223,6 +282,14 @@ def scan_snapshot(root: Path, tree: str | None, cache: dict) -> list[str]:
         if mode == "160000":
             errors.append(f"{location}: uninspected submodule")
             continue
+        if vendored_upstream(relative):
+            data = blobs.get(oid)
+            if data is None:
+                data = read_blobs(root, [oid]).get(oid)
+            recorded = allow.get(relative)
+            if data is not None and recorded is not None and vendored_digest_matches(data, recorded):
+                continue
+            # Unlisted or modified vendored content gets the full scan.
         key = blob_key(relative, oid)
         if key not in cache:
             cache[key] = scan_blob(relative, blobs[oid])
