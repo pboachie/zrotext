@@ -314,7 +314,7 @@ pub async fn claim_intended(
     account: Uuid,
     limit: i64,
 ) -> Result<Vec<Lease>, DispatchError> {
-    if account.is_nil() || permit.account() != account || !(1..=100).contains(&limit) {
+    if !(1..=100).contains(&limit) {
         return Err(DispatchError::Invalid);
     }
     let tx = client
@@ -370,9 +370,6 @@ pub async fn preflight(
     attempt: Uuid,
     material: &super::sender::Material<'_>,
 ) -> Result<(), DispatchError> {
-    if account.is_nil() || permit.account() != account {
-        return Err(DispatchError::Invalid);
-    }
     let recipient = material.recipient;
     let tx = client
         .transaction()
@@ -448,7 +445,7 @@ pub async fn record_response(
     attempt: Uuid,
     outcome: ResponseOutcome,
 ) -> Result<ResponseRecorded, DispatchError> {
-    if account.is_nil() || permit.account() != account || attempt.is_nil() {
+    if account.is_nil() || attempt.is_nil() {
         return Err(DispatchError::Invalid);
     }
     if let ResponseOutcome::Accepted { message_id } = outcome

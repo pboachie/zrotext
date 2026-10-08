@@ -107,18 +107,14 @@ internal class SealedLineActivationDevice(private val apiLevel: () -> Int,
         val frozen = c.copy(nonce = c.nonce.copyOf())
         val now = nowMs()
         val api = apiLevel()
-        val sim = singleActiveLineCandidate(observe(), selection.subscriptionId)
-        val point = if (sim == null) null else existingSignerPoint().copyOf()
-        if (now <= 0 || !selection.matches(frozen) || api !in 31..65535 || sim == null || point == null ||
+        val sim = SimCardContinuity.activationCandidate(observe(), selection.subscriptionId)
+        val point = existingSignerPoint().copyOf()
+        if (now <= 0 || !selection.matches(frozen) || api !in 31..65535 || sim == null ||
             sim.subscriptionId != selection.subscriptionId || selectedSubscriptionId() != sim.subscriptionId ||
             frozen.expiresAtMs - now !in 1..SealedLineActivationTranscript.CHALLENGE_LIFETIME_MS ||
             !MessageDigest.isEqual(selection.fingerprint(), SealedLineActivationTranscript.digest(point))) null
         else {
             val statement = SealedLineActivationTranscript.deviceStatement(frozen, api, sim.subscriptionId)
-            // Public-point lookup can wait; do not sign a count1 assertion after a peer appears.
-            check(selectedSubscriptionId() == selection.subscriptionId &&
-                singleActiveLineCandidate(observe(), selection.subscriptionId) == sim &&
-                selectedSubscriptionId() == selection.subscriptionId)
             val signature = sign(frozen, api, sim.subscriptionId, selection.fingerprint())
             val proof = PreparedSealedLineActivation(frozen, api, sim, statement, signature, selection.fingerprint())
             proof.takeIf { validate(it, selection, false) && MessageDigest.isEqual(point, existingSignerPoint()) &&
@@ -130,29 +126,22 @@ internal class SealedLineActivationDevice(private val apiLevel: () -> Int,
                  acknowledgement: Boolean): Boolean = try {
         val c = proof.challenge
         val now = nowMs()
-        val active = observe()
-        val point = if (singleActiveLineCandidate(active, selection.subscriptionId) == null) null
-            else existingSignerPoint()
+        val point = existingSignerPoint()
         val end = c.expiresAtMs + if (acknowledgement) SealedLineActivationTranscript.ACK_GRACE_MS else 0
-        val valid = point != null && now > 0 && now < end && c.expiresAtMs - now <= SealedLineActivationTranscript.CHALLENGE_LIFETIME_MS &&
+        val valid = now > 0 && now < end && c.expiresAtMs - now <= SealedLineActivationTranscript.CHALLENGE_LIFETIME_MS &&
             selection.matches(c) && apiLevel() == proof.apiLevel && proof.apiLevel in 31..65535 &&
             selectedSubscriptionId() == selection.subscriptionId && proof.sim.subscriptionId == selection.subscriptionId &&
-            singleActiveLineMatches(proof.sim, active) &&
+            SimCardContinuity.matches(proof.sim, observe()) &&
             MessageDigest.isEqual(selection.fingerprint(), proof.fingerprint()) &&
             MessageDigest.isEqual(selection.fingerprint(), SealedLineActivationTranscript.digest(point)) &&
             SealedLineActivationTranscript.verify(point, proof.statement(), proof.signature())
         // Hardware/SIM/verification providers can block. Never use their pre-call clock at publication.
         val stillSelected = valid && selectedSubscriptionId() == selection.subscriptionId &&
-            singleActiveLineMatches(proof.sim, observe()) &&
+            SimCardContinuity.matches(proof.sim, observe()) &&
             selectedSubscriptionId() == selection.subscriptionId
         val after = nowMs()
         stillSelected && after >= now && after < end &&
             c.expiresAtMs - after <= SealedLineActivationTranscript.CHALLENGE_LIFETIME_MS
-    } catch (_: Exception) { false }
-    /** Before Provider reserves a legacy challenge, not just before hardware lookup/signing. */
-    fun hasSingleActiveSelection(subscription: Int): Boolean = try {
-        selectedSubscriptionId() == subscription && singleActiveLineCandidate(observe(), subscription) != null &&
-            selectedSubscriptionId() == subscription
     } catch (_: Exception) { false }
     fun now() = nowMs()
 }

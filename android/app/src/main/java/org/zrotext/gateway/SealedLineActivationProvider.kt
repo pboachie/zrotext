@@ -37,8 +37,7 @@ internal class SealedLineActivationProvider(private val selection: SealedLineAcc
         }
     }
     private fun challenge(c: SealedLineChallenge): String? {
-        if (c.connectionEpoch != epoch || !selection.matches(c) ||
-            !device.hasSingleActiveSelection(selection.subscriptionId)) return null
+        if (c.connectionEpoch != epoch || !selection.matches(c)) return null
         val old = pending
         if (old != null && old.challenge.challengeId == c.challengeId && !same(old.challenge, c)) {
             pending = null; proofAccepted = false; return null
@@ -194,7 +193,7 @@ internal object SealedLineActivationMount {
                 }
             }, ::matches, current, profile, { challenge ->
                 if (profile == null) true else {
-                    val observed = singleActiveLineCandidate(SimCardContinuity.observe(application),
+                    val observed = SimCardContinuity.activationCandidate(SimCardContinuity.observe(application),
                         accepted.subscriptionId)
                     current() && observed != null && observed.profile === profile &&
                         SimProfileContinuity.challengeFence()?.reserveBeforeSigning(
@@ -225,10 +224,10 @@ internal fun acceptedProfileSigner(profile: EsimProfileCandidate?, current: () -
     sign: (SealedLineChallenge, Int, Int, ByteArray) -> ByteArray,
     now: () -> Long): (SealedLineChallenge, Int, Int, ByteArray) -> ByteArray = { challenge, api, selected, fingerprint ->
     if (profile == null) sign(challenge, api, selected, fingerprint) else {
-        val sim = checkNotNull(singleActiveLineCandidate(observe(), selected))
+        val sim = checkNotNull(SimCardContinuity.activationCandidate(observe(), selected))
         check(current() && sim.profile === profile)
         check(reserve(challenge, sim))
-        check(current() && singleActiveLineCandidate(observe(), selected) == sim)
+        check(current() && SimCardContinuity.activationCandidate(observe(), selected) == sim)
         val completed = now()
         check(completed > 0 && challenge.expiresAtMs - completed in 1..SealedLineActivationTranscript.CHALLENGE_LIFETIME_MS &&
             profile.isCurrent())

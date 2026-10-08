@@ -166,41 +166,40 @@ class SealedLineActivationTest {
         assertFalse(f.device.validate(proof, f.selection, true))
     }
 
-    @Test fun multipleActivePhysicalOrEmbeddedPeerRefusesBeforeReservationAndPublicPointRead() {
-        for (cards in listOf(listOf(ActiveSimCard(8, 43, true), ActiveSimCard(7, 42)),
-            listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43)))) {
-            val f = SealedLineActivationFixture(); f.cards = cards
-            assertEquals(ActivatedSimCard(7, 42), SimCardContinuity.activationCandidate(cards, 7))
-            var reservations = 0
-            val provider = SealedLineActivationProvider(f.selection, f.challenge.accountId, f.challenge.deviceId,
-                42, f.device, f.persistence, { error("No install") }, { false }, { true },
-                reserveProfile = { reservations++; true })
-            try {
-                assertNull(provider.accept(SealedLineActivationFrames.Incoming.Challenge(f.challenge)))
-                assertNull(f.device.prepare(f.challenge, f.selection))
-                assertEquals(0, reservations); assertEquals(0, f.pointReads); assertEquals(0, f.signatures)
-                assertTrue(f.events.isEmpty()); assertNull(f.stored); assertNull(f.installedProof)
-            } finally { provider.close() }
-        }
+    @Test fun exactSelectedPhysicalSimWithEmbeddedPeerCompletesDurableAckPath() {
+        val f = SealedLineActivationFixture()
+        f.cards = listOf(ActiveSimCard(8, 43, true), ActiveSimCard(7, 42))
+        val provider = f.provider()
+        val (_, ack) = f.start(provider)
+        assertNotNull(provider.accept(f.activated(ack)))
+        assertEquals(ActivatedSimCard(7, 42), f.installedProof?.sim)
+        assertEquals(listOf("install", "commit"), f.events)
+        assertFalse(provider.installationReceiptConfirmed())
+        provider.accept(SealedLineActivationFrames.Incoming.InstallAck(
+            SealedLineActivationFrames.Ack(42, ack.challengeId, true)))
+        assertTrue(provider.installationReceiptConfirmed())
+        f.cards = listOf(ActiveSimCard(7, 42), ActiveSimCard(9, null, true))
+        assertTrue(provider.installationReceiptConfirmed())
     }
 
-    @Test fun peerAppearingDuringSigningRefusesSelectedPhysicalProof() {
+    @Test fun unrelatedPeerChangeDuringSigningPreservesSelectedPhysicalProof() {
         val f = SealedLineActivationFixture()
+        f.cards = listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43))
         f.afterSign = { f.cards = listOf(ActiveSimCard(7, 42), ActiveSimCard(9, -1)) }
-        assertNull(f.device.prepare(f.challenge, f.selection))
+        val proof = checkNotNull(f.device.prepare(f.challenge, f.selection))
+        assertEquals(ActivatedSimCard(7, 42), proof.sim)
         assertEquals(1, f.signatures)
     }
 
     @Test fun selectedLossDuringStorageCannotCommitReceiptOrClaimReadyWithPeerPresent() {
-        for (mutation in 0..3) {
+        for (mutation in 0..2) {
             val f = SealedLineActivationFixture()
-            f.cards = listOf(ActiveSimCard(7, 42))
+            f.cards = listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43))
             val provider = f.provider(); val (_, ack) = f.start(provider)
             f.afterInstall = { when (mutation) {
                 0 -> f.selected = 8
                 1 -> f.cards = listOf(ActiveSimCard(8, 43))
-                2 -> f.cards = listOf(ActiveSimCard(7, 44), ActiveSimCard(8, 43))
-                else -> f.cards = listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43))
+                else -> f.cards = listOf(ActiveSimCard(7, 44), ActiveSimCard(8, 43))
             } }
             assertNull(provider.accept(f.activated(ack)))
             assertEquals(listOf("install"), f.events)
@@ -216,13 +215,13 @@ class SealedLineActivationTest {
         val device = SealedLineActivationDevice({ 31 }, { f.selected }, {
             observations++
             if (observations == 2) f.selected = 8
-            listOf(ActiveSimCard(7, 42))
+            listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43))
         }, { f.point }, { _, _, _, _ -> error("Validation must not sign") }, { f.now })
         assertFalse(device.validate(proof, f.selection, true))
         assertEquals(2, observations)
     }
     @Test @Config(sdk = [34]) fun esimProvisionalInstallCannotPublishBeforeFinalAcceptedAckAndExceptionsRevoke() {
-        for (failAfterPublish in listOf(false, true)) EsimProfileFixture(singleActive = true).use { profile ->
+        for (failAfterPublish in listOf(false, true)) EsimProfileFixture().use { profile ->
             val f = SealedLineActivationFixture()
             f.api = 34; f.cards = profile.cards()
             val candidate = profile.candidate
@@ -270,7 +269,7 @@ class SealedLineActivationTest {
     }
 
     @Test @Config(sdk = [34]) fun profileRetiredDuringHeldSessionReadRefusesChallengeWithoutSigning() {
-        EsimProfileFixture(singleActive = true).use { profile ->
+        EsimProfileFixture().use { profile ->
             val f = SealedLineActivationFixture(); f.api = 34; f.cards = profile.cards()
             val candidate = profile.candidate
             val entered = CountDownLatch(1); val release = CountDownLatch(1)
@@ -300,14 +299,15 @@ class SealedLineActivationTest {
     }
 
     @Test @Config(sdk = [34]) fun retiredAcceptanceDuringPublicPointWaitCannotSignReplacementProfile() {
-        EsimProfileFixture(singleActive = true).use { profile ->
+        EsimProfileFixture().use { profile ->
             val f = SealedLineActivationFixture(); f.api = 34; f.cards = profile.cards()
             val accepted = profile.candidate
             var signatures = 0
             val device = SealedLineActivationDevice({ 34 }, { 7 }, { profile.cards() }, {
                 profile.tracker.onSubscriptionsChanged()
                 val epoch = checkNotNull(profile.tracker.observationEpoch())
-                val records = listOf(ProfileSubscriptionObservation(7, 42, true, 0, 0))
+                val records = listOf(ProfileSubscriptionObservation(7, 42, true, 0, 0),
+                    ProfileSubscriptionObservation(8, 42, true, 1, 0))
                 profile.tracker.acceptSnapshots(epoch, records, records, epoch)
                 f.point
             }, acceptedProfileSigner(accepted, { accepted.isCurrent() }, profile::cards, { _, _ -> true },
@@ -329,131 +329,4 @@ class SealedLineActivationTest {
         }
     }
 
-
-    @Test fun peerAppearingDuringPublicPointReadNeverSignsLegacyProof() {
-        val f = SealedLineActivationFixture()
-        f.duringPointRead = { f.cards = listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43)) }
-        assertNull(f.device.prepare(f.challenge, f.selection))
-        assertEquals(1, f.pointReads); assertEquals(0, f.signatures)
-        assertTrue(f.events.isEmpty())
-    }
-
-    @Test fun peerAppearingDuringReceiptCommitCannotSendInstalledFrameOrConfirmReceipt() {
-        val f = SealedLineActivationFixture()
-        val persistence = object : SealedLineReceiptPersistence {
-            override fun read() = f.stored
-            override fun write(snapshot: SealedLineActivationSnapshot): Boolean {
-                val written = f.persistence.write(snapshot)
-                f.cards = listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43))
-                return written
-            }
-        }
-        val provider = SealedLineActivationProvider(f.selection, f.challenge.accountId, f.challenge.deviceId,
-            42, f.device, persistence, { f.events += "install"; f.installedProof = it; true },
-            { f.installedProof === it }, { true })
-        try {
-            val (_, receipt) = f.start(provider)
-            assertNull(provider.accept(f.activated(receipt)))
-            assertEquals(listOf("install", "commit"), f.events)
-            assertNotNull(f.installedProof); assertNotNull(f.stored)
-            assertFalse(provider.installationReceiptConfirmed())
-        } finally { provider.close() }
-    }
-
-    @Test @Config(sdk = [34]) fun twoEligibleEsimProfilesRefuseBeforeProviderReservationAndKeyLookup() {
-        EsimProfileFixture().use { profile ->
-            val f = SealedLineActivationFixture(); f.api = 34; f.cards = profile.cards()
-            assertEquals(2, f.cards?.size)
-            assertTrue(profile.candidate.isCurrent())
-            assertTrue(checkNotNull(profile.tracker.candidate(8)).isCurrent())
-            var reservations = 0; var writes = 0
-            profile.afterWrite = { writes++ }
-            val provider = SealedLineActivationProvider(f.selection, f.challenge.accountId, f.challenge.deviceId,
-                42, f.device, f.persistence, { error("No install") }, { false }, { true }, profile.candidate,
-                { c ->
-                    reservations++
-                    profile.fence.reserveBeforeSigning(ProfileChallengeKey(ProfileLineAuthority(c.accountId.toString(),
-                        c.deviceId.toString(), c.lineId.toString(), c.generation), c.challengeId.toString()), profile.candidate)
-                })
-            try {
-                assertNull(provider.accept(SealedLineActivationFrames.Incoming.Challenge(f.challenge)))
-                assertNull(f.device.prepare(f.challenge, f.selection))
-                assertEquals(0, reservations); assertEquals(0, writes)
-                assertEquals(0, f.pointReads); assertEquals(0, f.signatures)
-                assertTrue(profile.ledger.reservations.isEmpty())
-                assertTrue(f.events.isEmpty()); assertNull(f.stored); assertNull(f.installedProof)
-            } finally { provider.close() }
-        }
-    }
-
-    @Test @Config(sdk = [34]) fun peerAppearingDuringProviderReservationCannotReachPublicPointOrSigner() {
-        EsimProfileFixture(singleActive = true).use { profile ->
-            val f = SealedLineActivationFixture(); f.api = 34; f.cards = profile.cards()
-            var reservations = 0; var writes = 0
-            profile.afterWrite = { writes++; f.cards = profile.cards() + ActiveSimCard(8, 99) }
-            val provider = SealedLineActivationProvider(f.selection, f.challenge.accountId, f.challenge.deviceId,
-                42, f.device, f.persistence, { false }, { false }, { true }, profile.candidate,
-                { c ->
-                    reservations++
-                    profile.fence.reserveBeforeSigning(ProfileChallengeKey(ProfileLineAuthority(c.accountId.toString(),
-                        c.deviceId.toString(), c.lineId.toString(), c.generation), c.challengeId.toString()), profile.candidate)
-                })
-            try {
-                assertNull(provider.accept(SealedLineActivationFrames.Incoming.Challenge(f.challenge)))
-                assertEquals(1, reservations); assertEquals(1, writes)
-                assertEquals(0, f.pointReads); assertEquals(0, f.signatures)
-                assertEquals(1, profile.ledger.reservations.size)
-                assertTrue(profile.candidate.isCurrent())
-                assertNull(provider.accept(SealedLineActivationFrames.Incoming.Challenge(f.challenge)))
-                assertEquals(1, reservations); assertEquals(1, writes)
-            } finally { provider.close() }
-        }
-    }
-
-    @Test @Config(sdk = [34]) fun peerAppearingDuringFinalAckDurabilityOrPublicationCannotConfirmAuthority() {
-        for (stage in 0..2) EsimProfileFixture(singleActive = true).use { profile ->
-            val f = SealedLineActivationFixture(); f.api = 34; f.cards = profile.cards()
-            var provisional: PreparedSealedLineActivation? = null
-            var snapshot: SealedLineActivationSnapshot? = null
-            var published: InstalledEsimProfile? = null
-            var registryCalls = 0
-            fun key(c: SealedLineChallenge) = ProfileChallengeKey(ProfileLineAuthority(c.accountId.toString(),
-                c.deviceId.toString(), c.lineId.toString(), c.generation), c.challengeId.toString())
-            val persistence = object : SealedLineReceiptPersistence {
-                override fun read() = snapshot
-                override fun write(value: SealedLineActivationSnapshot): Boolean { snapshot = value; return true }
-            }
-            val provider = SealedLineActivationProvider(f.selection, f.challenge.accountId, f.challenge.deviceId,
-                42, f.device, persistence, { provisional = it; true }, { provisional === it }, { true },
-                profile.candidate, { profile.fence.reserveBeforeSigning(key(it), profile.candidate) }, { proof ->
-                    val permit = profile.fence.persistAcceptedAck(key(proof.challenge), profile.candidate)
-                    if (permit == null || !f.device.validate(proof, f.selection, true)) null else {
-                        registryCalls++
-                        if (stage == 1) f.cards = profile.cards() + ActiveSimCard(8, 99)
-                        profile.tracker.publishInstalled(permit) { f.device.validate(proof, f.selection, true) }.also {
-                            published = it
-                            if (stage == 2) f.cards = profile.cards() + ActiveSimCard(8, 99)
-                        }
-                    }
-                }, profile.tracker::revoke)
-            try {
-                val frame = checkNotNull(provider.accept(SealedLineActivationFrames.Incoming.Challenge(f.challenge)))
-                val signature = SealedLineActivationFrames.variableBytes(org.json.JSONObject(frame), "signature_der", 8, 72)
-                val receipt = SealedLineActivationReceipt(42, f.challenge.challengeId, f.challenge.accountId,
-                    f.challenge.lineId, f.challenge.deviceId, f.challenge.generation,
-                    SealedLineActivationTranscript.digest(SealedLineActivationTranscript.deviceStatement(f.challenge, 34, 7)),
-                    SealedLineActivationTranscript.digest(signature))
-                provider.accept(SealedLineActivationFrames.Incoming.ProofAck(SealedLineActivationFrames.Ack(42, receipt.challengeId, true)))
-                assertNotNull(provider.accept(SealedLineActivationFrames.Incoming.Activated(receipt)))
-                assertNotNull(provisional); assertNotNull(snapshot); assertNull(published)
-                if (stage == 0) profile.afterWrite = { f.cards = profile.cards() + ActiveSimCard(8, 99) }
-                provider.accept(SealedLineActivationFrames.Incoming.InstallAck(SealedLineActivationFrames.Ack(42, receipt.challengeId, true)))
-                assertEquals(if (stage == 0) 0 else 1, registryCalls)
-                assertTrue(profile.ledger.installedGenerations.isNotEmpty())
-                assertFalse(provider.installationReceiptConfirmed())
-                if (stage == 2) assertFalse(checkNotNull(published).isCurrent()) else assertNull(published)
-                assertTrue(profile.candidate.isCurrent())
-            } finally { provider.close() }
-        }
-    }
 }
