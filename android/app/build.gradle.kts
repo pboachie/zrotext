@@ -233,7 +233,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.19.1")
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
     constraints {
-        implementation("androidx.fragment:fragment:1.8.9") {
+        implementation("androidx.fragment:fragment:1.9.1") {
             because("Scanner transitive Fragment must support the existing ActivityResult APIs")
         }
     }
@@ -255,7 +255,7 @@ dependencies {
         add("androidLintTool", "org.bouncycastle:bcprov-jdk18on:1.86")
         add("androidLintTool", "org.bouncycastle:bcpkix-jdk18on:1.86")
         add("androidLintTool", "org.bouncycastle:bcutil-jdk18on:1.86")
-        add("androidLintTool", "org.apache.commons:commons-lang3:3.20.0")
+        add("androidLintTool", "org.apache.commons:commons-lang3:3.21.0")
         add("androidLintTool", "org.apache.httpcomponents:httpclient:4.5.14")
     }
 }
