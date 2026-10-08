@@ -13,6 +13,12 @@
     if(/^0+$/.test(hex))throw Error("Confirmation identity unavailable");
     return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
   }
+  // The server acknowledges admission of this exact signed message, not delivery.
+  function queuedAcknowledgement(value,messageId) {
+    return value!==null && typeof value==="object" && !Array.isArray(value) &&
+      Object.keys(value).length===3 && value.message_id===messageId &&
+      value.state==="queued" && typeof value.created==="boolean";
+  }
   /** Explicit owner-session transport. Custody verifies/decrypts/signs locally; no key or bearer is accepted here.
    * Endpoint paths are supplied by the dormant integration owner. No endpoint/default adapter is mounted.
    */
@@ -65,9 +71,9 @@
         try {
           const response=await request(url,{method:"POST",credentials:"same-origin",mode:"same-origin",redirect:"error",cache:"no-store",
             headers:{"Content-Type":"application/json","x-zrotext-csrf":protection},body:encoded});
-          if(!response.ok)throw Error("Confirmed submission unavailable");
+          if(!response.ok || response.status!==202)throw Error("Confirmed submission unavailable");
           const result=await response.json();await live(selected);sameCsrf(protection);guard();
-          if(result?.status!=="queued")throw Error("Submission result unavailable");
+          if(!queuedAcknowledgement(result,messageId))throw Error("Submission result unavailable");
         } catch {
           // Teardown listeners may clear presentation while confirmation is still pending.
           try{close();}catch{ /* UNKNOWN must survive cleanup failure. */ }
