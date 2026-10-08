@@ -339,24 +339,12 @@ jobs:
         if: env.RUN_ANDROID == 'true'
       - name: Install Android SDK platform
         if: env.RUN_ANDROID == 'true'
-        run: sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;28.2.13676358' 'cmake;3.22.1'
+        run: sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;28.2.13676358'
       - name: Install pinned owner-custody Android Rust targets
         if: env.RUN_ANDROID == 'true'
         run: |
           rustup show active-toolchain
           rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
-      - name: Run wolfSSL cryptocb bridge known-answer tests on the host
-        if: env.RUN_ANDROID == 'true'
-        # The SOFTWARE-KEY variant of the #1003 bridge KAT (RFC 9180 vector
-        # plus cryptocb-only fail-closed proofs) against the exact vendored
-        # wolfSSL subset and wrapper the Android app ships. This is an
-        # additional lane; the AndroidKeyStore KATs run on the emulator in
-        # android-device-smoke.yml.
-        run: |
-          cmake -S android/app/src/main/cpp -B "$RUNNER_TEMP/zt-hpke-kat" \
-            -DZT_HOST_KAT=ON -DCMAKE_BUILD_TYPE=Release
-          cmake --build "$RUNNER_TEMP/zt-hpke-kat"
-          ctest --test-dir "$RUNNER_TEMP/zt-hpke-kat" --output-on-failure
       - name: Lint, test and build debug APK
         if: env.RUN_ANDROID == 'true'
         working-directory: android

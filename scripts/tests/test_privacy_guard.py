@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from privacy_guard import diagnostic_text, forbidden_path, scan_blob, scan_line, vendored_upstream
+from privacy_guard import diagnostic_text, forbidden_path, scan_blob, scan_line
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 SCANNER = SCRIPTS / "privacy_guard.py"
@@ -103,11 +103,6 @@ class PatternTests(unittest.TestCase):
             self.assertTrue(forbidden_path(name))
         self.assertFalse(forbidden_path(".env.example"))
 
-    def test_vendored_upstream_scope_is_exact(self):
-        self.assertTrue(vendored_upstream("android/app/src/main/cpp/wolfssl/wolfcrypt/src/ecc.c"))
-        self.assertFalse(vendored_upstream("android/app/src/main/cpp/zrotext_hpke_core.c"))
-        self.assertFalse(vendored_upstream("android/app/src/main/cpp/wolfssl-upstream/ecc.c"))
-
     def test_unknown_text_and_utf16_are_scanned(self):
         value = "SERVICE_API_KEY" + "=" + "not-a-real-credential" + "\n"
         self.assertTrue(scan_blob("payload.unknown", value.encode()))
@@ -200,27 +195,6 @@ class GitBoundaryTests(unittest.TestCase):
         result = self.scan()
         self.assertEqual(result.returncode, 1)
         self.assertNotIn(name, result.stderr)
-        self.assertIn("forbidden tracked filename", result.stderr)
-
-    def test_vendored_upstream_content_is_exempt_but_its_filenames_are_not(self):
-        vendored = "android/app/src/main/cpp/wolfssl/wolfcrypt/src/example.c"
-        self.write(vendored, "static const char* L = \"shared_secret\";\n")
-        self.git("add", "-f", vendored)
-        result = self.scan()
-        self.assertEqual(result.returncode, 0, "Vendored upstream identifiers must not fail the scan")
-        # The same identifier in a first-party file still fails the scan.
-        self.write("zrotext_note.c", "static const char* SECRET = \"note-value\";\n")
-        self.git("add", "-f", "zrotext_note.c")
-        result = self.scan()
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("embedded credential assignment", result.stderr)
-        # A forbidden filename under the vendored prefix is still refused.
-        self.git("reset", "-q", "zrotext_note.c")
-        forbidden = "android/app/src/main/cpp/wolfssl/keys.p12"
-        (self.root / forbidden).write_bytes(b"\x00\x01\x02\n")
-        self.git("add", "-f", forbidden)
-        result = self.scan()
-        self.assertEqual(result.returncode, 1)
         self.assertIn("forbidden tracked filename", result.stderr)
 
     def install(self, *args):

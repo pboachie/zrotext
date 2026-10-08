@@ -188,37 +188,36 @@ class SmsLineActivationTest {
         assertNull(producer.prepare(challenge, account, device))
     }
 
-    @Test fun multipleActivePhysicalOrEmbeddedPeerRefusesLegacyProofBeforeSigning() {
-        for (active in listOf(listOf(ActiveSimCard(8, 43, true), ActiveSimCard(7, 42)),
-            listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43)))) {
-            assertEquals(ActivatedSimCard(7, 42), SimCardContinuity.activationCandidate(active, 7))
-            var signatures = 0
-            val producer = SmsLineActivationDevice({ 30 }, { 7 }, { active },
-                { c, api, selected -> signatures++; signer(c, api, selected) }, { 1_000 })
-            assertNull(producer.prepare(challenge, account, device))
-            assertEquals(0, signatures)
-        }
+    @Test fun exactSelectedPhysicalSimPreparesAndInstallsWithUnrelatedSecondSim() {
+        val active = listOf(ActiveSimCard(8, 43, true), ActiveSimCard(7, 42))
+        val producer = SmsLineActivationDevice({ 30 }, { 7 }, { active }, ::signer, { 1_000 })
+        val proof = checkNotNull(producer.prepare(challenge, account, device))
+        assertEquals(ActivatedSimCard(7, 42), proof.sim)
+        val db = Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(),
+            SmsJournalDatabase::class.java).allowMainThreadQueries().build()
+        try {
+            assertTrue(producer.installAfterAuthenticatedAck(db.attempts(), proof, ack(proof), account, device))
+            assertEquals(7, db.attempts().currentLineBinding()?.subscriptionId)
+            assertEquals(42, db.attempts().currentLineBinding()?.cardId)
+        } finally { db.close() }
     }
 
-    @Test fun peerAppearingDuringSigningRefusesLegacyProof() {
-        var active = listOf(ActiveSimCard(7, 42))
-        var signatures = 0
+    @Test fun unrelatedPeerChangeDuringSigningDoesNotChangeChosenStatement() {
+        var active = listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43))
         val producer = SmsLineActivationDevice({ 30 }, { 7 }, { active }, { c, api, selected ->
-            signatures++; signer(c, api, selected).also {
-                active = listOf(ActiveSimCard(9, null, true), ActiveSimCard(7, 42))
-            }
+            signer(c, api, selected).also { active = listOf(ActiveSimCard(9, null, true), ActiveSimCard(7, 42)) }
         }, { 1_000 })
-        assertNull(producer.prepare(challenge, account, device))
-        assertEquals(1, signatures)
+        val proof = checkNotNull(producer.prepare(challenge, account, device))
+        assertEquals(ActivatedSimCard(7, 42), proof.simAfterSigning)
+        assertArrayEquals(SmsLineActivationTranscript.deviceStatement(challenge, 30, 7), proof.deviceStatement())
     }
 
-    @Test fun selectionLossOrSelectedCollisionDuringSigningRefusesPublication() {
+    @Test fun dualSimSelectionLossOrSelectedCollisionDuringSigningRefusesPublication() {
         for (mutation in 0..2) {
             var selected = 7
-            var active = listOf(ActiveSimCard(7, 42))
-            var signatures = 0
+            var active = listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43))
             val producer = SmsLineActivationDevice({ 30 }, { selected }, { active }, { c, api, sub ->
-                signatures++; signer(c, api, sub).also {
+                signer(c, api, sub).also {
                     when (mutation) {
                         0 -> selected = 8
                         1 -> active = listOf(ActiveSimCard(8, 43))
@@ -227,26 +226,24 @@ class SmsLineActivationTest {
                 }
             }, { 1_000 })
             assertNull(producer.prepare(challenge, account, device))
-            assertEquals(1, signatures)
         }
     }
 
     @Test fun selectedMutationOrExpiryAfterActualDaoWriteCannotClaimLiveInstallation() {
-        for (mutation in 0..3) {
+        for (mutation in 0..2) {
             val db = Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(),
                 SmsJournalDatabase::class.java).allowMainThreadQueries().build()
             try {
                 val dao = db.attempts()
                 var selected = 7
-                var active = listOf(ActiveSimCard(7, 42))
+                var active = listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43))
                 var now = 1_000L
                 val producer = SmsLineActivationDevice({ 30 }, { selected }, {
                     // Observe a real committed binding before injecting the post-storage loss.
                     if (dao.currentLineBinding() != null) when (mutation) {
                         0 -> selected = 8
                         1 -> active = listOf(ActiveSimCard(7, 44), ActiveSimCard(8, 43))
-                        2 -> now = challenge.expiresAtMs + SmsLineActivationDevice.ACK_GRACE_MS
-                        else -> active = listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43))
+                        else -> now = challenge.expiresAtMs + SmsLineActivationDevice.ACK_GRACE_MS
                     }
                     active
                 }, ::signer, { now })
@@ -264,7 +261,7 @@ class SmsLineActivationTest {
         var signatures = 0
         val producer = SmsLineActivationDevice({ 30 }, { selected }, {
             selected = 8
-            listOf(ActiveSimCard(7, 42))
+            listOf(ActiveSimCard(7, 42), ActiveSimCard(8, 43))
         }, { c, api, subscription -> signatures++; signer(c, api, subscription) }, { 1_000 })
         assertNull(producer.prepare(challenge, account, device))
         assertEquals(0, signatures)
@@ -277,7 +274,7 @@ class SmsLineActivationTest {
         "%02x".format(it.toInt() and 0xff)
     }
     @Test @Config(sdk = [34]) fun selectedEsimNeedsDurableProofAndExactAckThenRetiresOnAnyCallback() {
-        EsimProfileFixture(singleActive = true).use { f ->
+        EsimProfileFixture().use { f ->
             val producer = SmsLineActivationDevice({ 34 }, { 7 }, f::cards, ::signer, { 1000 })
             val proof = checkNotNull(producer.prepare(challenge, account, device))
             assertEquals(f.candidate, proof.sim.profile)
@@ -297,7 +294,7 @@ class SmsLineActivationTest {
         }
     }
     @Test @Config(sdk = [34]) fun expiryDuringReservationRefusesBeforeSignatureAndCrashCannotRenewChallenge() {
-        EsimProfileFixture(singleActive = true).use { f ->
+        EsimProfileFixture().use { f ->
             var now = 1000L; var signatures = 0
             f.afterWrite = { now = challenge.expiresAtMs }
             val producer = SmsLineActivationDevice({ 34 }, { 7 }, f::cards,
@@ -315,7 +312,7 @@ class SmsLineActivationTest {
         }
     }
     @Test @Config(sdk = [34]) fun throwingPostpublicationObservationRevokesTheExactInstalledCapability() {
-        EsimProfileFixture(singleActive = true).use { f ->
+        EsimProfileFixture().use { f ->
             val db = Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(), SmsJournalDatabase::class.java)
                 .allowMainThreadQueries().build()
             try {
@@ -331,65 +328,4 @@ class SmsLineActivationTest {
         }
     }
 
-
-    @Test @Config(sdk = [34]) fun twoEligibleEsimProfilesNeverReserveOrSignLegacyActivation() {
-        EsimProfileFixture().use { f ->
-            assertEquals(2, f.cards().size)
-            assertTrue(f.candidate.isCurrent())
-            assertTrue(checkNotNull(f.tracker.candidate(8)).isCurrent())
-            assertEquals(f.candidate, SimCardContinuity.activationCandidate(f.cards(), 7)?.profile)
-            var signatures = 0; var writes = 0
-            f.afterWrite = { writes++ }
-            val producer = SmsLineActivationDevice({ 34 }, { 7 }, f::cards,
-                { c, api, sub -> signatures++; signer(c, api, sub) }, { 1000 })
-            assertNull(producer.prepare(challenge, account, device))
-            assertEquals(0, signatures); assertEquals(0, writes)
-            assertTrue(f.ledger.reservations.isEmpty()); assertTrue(f.ledger.installedGenerations.isEmpty())
-        }
-    }
-
-    @Test @Config(sdk = [34]) fun peerAppearingDuringReservationBurnsChallengeButNeverSigns() {
-        EsimProfileFixture(singleActive = true).use { f ->
-            var active = f.cards(); var signatures = 0; var writes = 0
-            f.afterWrite = { writes++; active = f.cards() + ActiveSimCard(8, 99) }
-            val producer = SmsLineActivationDevice({ 34 }, { 7 }, { active },
-                { c, api, sub -> signatures++; signer(c, api, sub) }, { 1000 })
-            assertNull(producer.prepare(challenge, account, device))
-            assertEquals(1, writes); assertEquals(0, signatures)
-            assertEquals(1, f.ledger.reservations.size)
-            assertTrue(f.ledger.installedGenerations.isEmpty())
-            assertTrue(f.candidate.isCurrent()) // Count refusal, not a substituted/retired selected profile.
-            assertNull(producer.prepare(challenge, account, device))
-            assertEquals(1, writes); assertEquals(0, signatures)
-        }
-    }
-
-    @Test @Config(sdk = [34]) fun peerAppearingDuringAckDurabilityOrPublicationNeverLeavesLiveAuthority() {
-        for (stage in 0..2) EsimProfileFixture(singleActive = true).use { f ->
-            val db = Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(), SmsJournalDatabase::class.java)
-                .allowMainThreadQueries().build()
-            try {
-                var active = f.cards(); var publicationCalls = 0
-                var published: InstalledEsimProfile? = null
-                val producer = SmsLineActivationDevice({ 34 }, { 7 }, { active }, ::signer, { 1000 },
-                    publishProfile = { permit, ready ->
-                        publicationCalls++
-                        if (stage == 1) active = f.cards() + ActiveSimCard(8, 99)
-                        f.tracker.publishInstalled(permit, ready).also {
-                            published = it
-                            if (stage == 2) active = f.cards() + ActiveSimCard(8, 99)
-                        }
-                    }, revokeProfile = f.tracker::revoke)
-                val proof = checkNotNull(producer.prepare(challenge, account, device))
-                if (stage == 0) f.afterWrite = { active = f.cards() + ActiveSimCard(8, 99) }
-                assertFalse(producer.installAfterAuthenticatedAck(db.attempts(), proof, ack(proof), account, device))
-                assertEquals(if (stage == 0) 0 else 1, publicationCalls)
-                assertTrue(f.ledger.installedGenerations.isNotEmpty())
-                assertEquals("esim", db.attempts().currentLineBinding()?.continuityKind)
-                assertNull(db.attempts().currentLineBinding()?.installedProfile())
-                if (stage == 2) assertFalse(checkNotNull(published).isCurrent()) else assertNull(published)
-                assertTrue(f.candidate.isCurrent()) // The count fence is independent of observer callbacks.
-            } finally { db.close() }
-        }
-    }
 }

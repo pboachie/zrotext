@@ -39,7 +39,6 @@ JOURNAL_UPGRADE_METHODS = frozenset({
     "versionOnePlatformMigrationRetainsUnknownAttemptAcrossReopen",
     "versionElevenPlatformMigrationRetainsBoundEvidenceAndStopAcrossReopen",
 })
-HPKE_BRIDGE = PACKAGE + "WolfHpkeKeystoreBridgeDeviceTest"
 SERIAL = "emulator-5562"
 
 
@@ -72,8 +71,6 @@ def selected_tests(root=ROOT):
         expected[ENROLLMENT_CONSENT] = 1
     if (root / "android/app/src/androidTest/java/org/zrotext/gateway/JournalDeviceUpgradeTest.kt").is_file():
         expected[JOURNAL_UPGRADE] = 2
-    if (root / "android/app/src/androidTest/java/org/zrotext/gateway/WolfHpkeKeystoreBridgeDeviceTest.kt").is_file():
-        expected[HPKE_BRIDGE] = 4
     return expected
 
 

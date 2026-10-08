@@ -65,8 +65,6 @@ tasks.named<CyclonedxDirectTask>("cyclonedxDirectBom") {
 android {
     namespace = "org.zrotext.gateway"
     compileSdk = 37
-    // Same NDK the owner-custody native build and the CI images pin.
-    ndkVersion = "28.2.13676358"
 
     defaultConfig {
         applicationId = "org.zrotext.gateway"
@@ -83,15 +81,6 @@ android {
             applicationId = "org.zrotext.gateway.preparationprobe"
             testApplicationId = "org.zrotext.gateway.preparationprobe.test"
             testInstrumentationRunner = "org.zrotext.gateway.PreparationProbeRunner"
-        }
-    }
-
-    // wolfSSL cryptocb-only HPKE receiver bridge (see src/main/cpp/CMakeLists.txt
-    // and user_settings.h). Pure C, no STL, all four ABIs like the custody lib.
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
         }
     }
     buildTypes {
@@ -233,7 +222,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.19.1")
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
     constraints {
-        implementation("androidx.fragment:fragment:1.9.1") {
+        implementation("androidx.fragment:fragment:1.8.9") {
             because("Scanner transitive Fragment must support the existing ActivityResult APIs")
         }
     }
@@ -255,7 +244,7 @@ dependencies {
         add("androidLintTool", "org.bouncycastle:bcprov-jdk18on:1.86")
         add("androidLintTool", "org.bouncycastle:bcpkix-jdk18on:1.86")
         add("androidLintTool", "org.bouncycastle:bcutil-jdk18on:1.86")
-        add("androidLintTool", "org.apache.commons:commons-lang3:3.21.0")
+        add("androidLintTool", "org.apache.commons:commons-lang3:3.20.0")
         add("androidLintTool", "org.apache.httpcomponents:httpclient:4.5.14")
     }
 }

@@ -120,13 +120,6 @@ internal class AuthenticatedSmsLineActivationAck private constructor(
     }
 }
 
-/** Legacy v1 signs one actual active subscription, from the complete observed list. */
-internal fun singleActiveLineCandidate(active: List<ActiveSimCard>?, selected: Int): ActivatedSimCard? =
-    if (active?.size == 1) SimCardContinuity.activationCandidate(active, selected) else null
-
-internal fun singleActiveLineMatches(expected: ActivatedSimCard, active: List<ActiveSimCard>?): Boolean =
-    active?.size == 1 && SimCardContinuity.matches(expected, active)
-
 /** Driven by the authenticated gateway stream when the hub enables SMS line activation. */
 internal class SmsLineActivationDevice(
     private val apiLevel: () -> Int,
@@ -145,7 +138,7 @@ internal class SmsLineActivationDevice(
         val api = apiLevel()
         val selected = selectedSubscriptionId()
         val initial = observe()
-        val sim = singleActiveLineCandidate(initial, selected)
+        val sim = SimCardContinuity.activationCandidate(initial, selected)
         if (api < 29 || sim == null || sim.subscriptionId != selected || selectedSubscriptionId() != selected ||
             frozen.accountId != authenticatedAccountId ||
             frozen.deviceId != authenticatedDeviceId ||
@@ -155,17 +148,14 @@ internal class SmsLineActivationDevice(
             val statement = SmsLineActivationTranscript.deviceStatement(frozen, api, selected)
             if (sim.profile != null) {
                 check(sim.profile.isCurrent() && selectedSubscriptionId() == selected &&
-                    singleActiveLineCandidate(observe(), selected) == sim &&
+                    SimCardContinuity.activationCandidate(observe(), selected) == sim &&
                     selectedSubscriptionId() == selected)
                 val afterReservation = nowMs()
                 check(afterReservation >= now && frozen.expiresAtMs - afterReservation in 1..CHALLENGE_LIFETIME_MS &&
                     sim.profile.isCurrent())
             }
-            // Reservation and other providers can wait: re-read the complete count before signing.
-            check(selectedSubscriptionId() == selected &&
-                singleActiveLineCandidate(observe(), selected) == sim && selectedSubscriptionId() == selected)
             val signature = sign(frozen, api, selected)
-            val afterSigning = singleActiveLineCandidate(observe(), selected)
+            val afterSigning = SimCardContinuity.activationCandidate(observe(), selected)
             if (signature.size !in 8..80 || nowMs() >= frozen.expiresAtMs ||
                 selectedSubscriptionId() != selected || afterSigning != sim) null
             else PreparedSmsLineActivation(frozen, api, selected, sim,
@@ -190,7 +180,7 @@ internal class SmsLineActivationDevice(
             authenticatedAccountId != challenge.accountId ||
             authenticatedDeviceId != challenge.deviceId ||
             proof.simAfterSigning != proof.sim ||
-            !singleActiveLineMatches(proof.sim, active)) false
+            !SimCardContinuity.matches(proof.sim, active)) false
         else {
             val installed = dao.installVerifiedLineBinding(LocalLineBinding(accountId =
                 challenge.accountId.toString(), deviceId = challenge.deviceId.toString(),
@@ -200,7 +190,7 @@ internal class SmsLineActivationDevice(
             // Storage can block. A successful write is not a live continuity assertion.
             val stillSelected = installed && apiLevel() == proof.apiLevel &&
                 selectedSubscriptionId() == proof.selectedSubscriptionId &&
-                singleActiveLineMatches(proof.sim, observe()) &&
+                SimCardContinuity.matches(proof.sim, observe()) &&
                 selectedSubscriptionId() == proof.selectedSubscriptionId
             val after = nowMs()
             if (!stillSelected || after < now || after >= challenge.expiresAtMs + ACK_GRACE_MS) false
@@ -208,14 +198,14 @@ internal class SmsLineActivationDevice(
             else {
                 val permit = profileFence()?.persistAcceptedAck(key(challenge, proof.sim), proof.sim.profile)
                 val beforePublicationSelected = selectedSubscriptionId() == proof.selectedSubscriptionId &&
-                    singleActiveLineMatches(proof.sim, observe()) &&
+                    SimCardContinuity.matches(proof.sim, observe()) &&
                     selectedSubscriptionId() == proof.selectedSubscriptionId
                 val beforePublicationTime = nowMs()
                 val capability = if (permit != null && beforePublicationSelected &&
                     beforePublicationTime >= after && beforePublicationTime < challenge.expiresAtMs + ACK_GRACE_MS &&
                     proof.sim.profile.isCurrent()) publishProfile(permit) {
                         val selected = selectedSubscriptionId() == proof.selectedSubscriptionId &&
-                            singleActiveLineMatches(proof.sim, observe()) &&
+                            SimCardContinuity.matches(proof.sim, observe()) &&
                             selectedSubscriptionId() == proof.selectedSubscriptionId
                         val completed = nowMs()
                         selected && completed >= beforePublicationTime &&
@@ -225,7 +215,7 @@ internal class SmsLineActivationDevice(
                 try {
                 // Durability/publication can wait: selection, profile and time must still hold afterwards.
                 val finalSelected = selectedSubscriptionId() == proof.selectedSubscriptionId &&
-                    singleActiveLineMatches(proof.sim, observe()) &&
+                    SimCardContinuity.matches(proof.sim, observe()) &&
                     selectedSubscriptionId() == proof.selectedSubscriptionId
                 val finalTime = nowMs()
                 accepted = capability?.isCurrent() == true && finalSelected &&
