@@ -234,20 +234,17 @@ class AuthenticatedGatewayService : Service() {
                 armRecipient, armSubscriptionId, armStartedAtNanos,
                 action.pilotMode == DeviceReconnectPolicy.PilotMode.INBOUND_UPLOAD,
                 action.pilotMode == DeviceReconnectPolicy.PilotMode.LINE_OPT_OUT_UPLOAD)
-            DeviceReconnectPolicy.Action.WaitForNetwork ->
+            DeviceReconnectPolicy.Action.WaitForNetwork -> {
+                retireConnection()
                 AuthenticatedGatewayStatus.value = "Waiting for network"
+            }
             else -> error("Unexpected reconnect start")
         }
         return START_NOT_STICKY
     }
 
-    @Synchronized
-    private fun openConnection(
-        url: String, deviceId: UUID, armRequested: Boolean = false,
-        armRecipient: String = "", armSubscriptionId: Int = SubscriptionManager.INVALID_SUBSCRIPTION_ID,
-        armStartedAtNanos: Long = 0L, inboundUploadRequested: Boolean = false,
-        lineOptOutUploadRequested: Boolean = false
-    ) {
+    /** Fence the previous session before any connection closure can wait. */
+    private fun retireConnection(): Int {
         generation += 1
         val currentGeneration = generation
         traceEpoch.set(-1L)
@@ -266,6 +263,17 @@ class AuthenticatedGatewayService : Service() {
         lineOptOutSentAtNanos = 0L
         lineOptOutPaused = false
         activeGrant = null
+        return currentGeneration
+    }
+
+    @Synchronized
+    private fun openConnection(
+        url: String, deviceId: UUID, armRequested: Boolean = false,
+        armRecipient: String = "", armSubscriptionId: Int = SubscriptionManager.INVALID_SUBSCRIPTION_ID,
+        armStartedAtNanos: Long = 0L, inboundUploadRequested: Boolean = false,
+        lineOptOutUploadRequested: Boolean = false
+    ) {
+        val currentGeneration = retireConnection()
         val keys = DeviceSigningKeyStore(applicationContext)
         val machine = DeviceStreamMachine(deviceId) { account, device, challenge, nonce ->
             keys.signDeviceChallenge(account, device, challenge, nonce)
