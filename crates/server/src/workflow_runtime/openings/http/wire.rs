@@ -133,6 +133,170 @@ impl CreateInput {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct OpeningKeyBody {
+    opening_id: CanonicalUuid,
+    definition_version: PositiveDecimal,
+    state_version: PositiveDecimal,
+}
+
+impl OpeningKeyBody {
+    fn into_contract(self) -> contracts::OpeningKey {
+        contracts::OpeningKey {
+            opening_id: self.opening_id.0,
+            definition_version: self.definition_version.0,
+            state_version: self.state_version.0,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OfferKeyBody {
+    offer_id: CanonicalUuid,
+    state_version: PositiveDecimal,
+}
+
+impl OfferKeyBody {
+    fn into_contract(self) -> contracts::OfferKey {
+        contracts::OfferKey {
+            offer_id: self.offer_id.0,
+            state_version: self.state_version.0,
+        }
+    }
+}
+
+fn source_contract(input: SourceInput) -> contracts::Source {
+    contracts::Source {
+        context_id: input.context_id.0,
+        revision: input.revision,
+        digest: input.digest,
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OfferBody {
+    request_id: CanonicalUuid,
+    opening: MapOnly<OpeningKeyBody>,
+    offer_id: CanonicalUuid,
+    contact_id: CanonicalUuid,
+    purpose: contracts::Purpose,
+    source: MapOnly<SourceInput>,
+    expires_ms: PositiveDecimal,
+}
+
+#[derive(Deserialize)]
+#[serde(transparent)]
+pub(super) struct OfferInput(MapOnly<OfferBody>);
+
+impl OfferInput {
+    pub(super) fn into_request(self) -> Result<contracts::Offer, ConversationError> {
+        let MapOnly(body) = self.0;
+        let request = contracts::Offer {
+            request_id: body.request_id.0,
+            opening: body.opening.0.into_contract(),
+            offer_id: body.offer_id.0,
+            contact_id: body.contact_id.0,
+            purpose: body.purpose,
+            source: source_contract(body.source.0),
+            expires_ms: body.expires_ms.0,
+        };
+        if !request.validate() {
+            return Err(ConversationError::Invalid);
+        }
+        Ok(request)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReserveBody {
+    request_id: CanonicalUuid,
+    opening: MapOnly<OpeningKeyBody>,
+    offer: MapOnly<OfferKeyBody>,
+    allocation_id: CanonicalUuid,
+    event_id: CanonicalUuid,
+    event_digest: String,
+}
+
+#[derive(Deserialize)]
+#[serde(transparent)]
+pub(super) struct ReserveInput(MapOnly<ReserveBody>);
+
+impl ReserveInput {
+    pub(super) fn into_request(self) -> Result<contracts::Reserve, ConversationError> {
+        let MapOnly(body) = self.0;
+        let request = contracts::Reserve {
+            request_id: body.request_id.0,
+            opening: body.opening.0.into_contract(),
+            offer: body.offer.0.into_contract(),
+            allocation_id: body.allocation_id.0,
+            event_id: body.event_id.0,
+            event_digest: body.event_digest,
+        };
+        if !request.validate() {
+            return Err(ConversationError::Invalid);
+        }
+        Ok(request)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AllocationMutationBody {
+    request_id: CanonicalUuid,
+    opening: MapOnly<OpeningKeyBody>,
+    allocation_id: CanonicalUuid,
+    allocation_version: PositiveDecimal,
+}
+
+#[derive(Deserialize)]
+#[serde(transparent)]
+pub(super) struct AllocationMutationInput(MapOnly<AllocationMutationBody>);
+
+impl AllocationMutationInput {
+    pub(super) fn into_request(self) -> Result<contracts::AllocationMutation, ConversationError> {
+        let MapOnly(body) = self.0;
+        let request = contracts::AllocationMutation {
+            request_id: body.request_id.0,
+            opening: body.opening.0.into_contract(),
+            allocation_id: body.allocation_id.0,
+            allocation_version: body.allocation_version.0,
+        };
+        if !request.validate() {
+            return Err(ConversationError::Invalid);
+        }
+        Ok(request)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpeningMutationBody {
+    request_id: CanonicalUuid,
+    opening: MapOnly<OpeningKeyBody>,
+}
+
+#[derive(Deserialize)]
+#[serde(transparent)]
+pub(super) struct OpeningMutationInput(MapOnly<OpeningMutationBody>);
+
+impl OpeningMutationInput {
+    pub(super) fn into_request(self) -> Result<contracts::OpeningMutation, ConversationError> {
+        let MapOnly(body) = self.0;
+        let request = contracts::OpeningMutation {
+            request_id: body.request_id.0,
+            opening: body.opening.0.into_contract(),
+        };
+        if !request.validate() {
+            return Err(ConversationError::Invalid);
+        }
+        Ok(request)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EmptyStatus {}
 
 pub(super) struct StatusInput;
@@ -255,6 +419,101 @@ pub(super) fn status(
     Ok(Status {
         account_id: account,
         receipt: project(opening, receipt)?,
+    })
+}
+
+#[derive(Serialize)]
+pub(super) struct Mutated {
+    account_id: Uuid,
+    request_id: Uuid,
+    outcome: MutationOutcome,
+}
+
+#[derive(Serialize)]
+struct MutationOutcome {
+    receipt: MutationReceipt,
+    applied: bool,
+    recorded: bool,
+}
+
+#[derive(Serialize)]
+struct MutationReceipt {
+    opening: Opening,
+    offer_id: Option<String>,
+    offer_version: Option<String>,
+    allocation_id: Option<String>,
+    allocation_version: Option<String>,
+    phase: Phase,
+    pending: String,
+    confirmed: String,
+}
+
+/// Mutations legitimately carry offer and allocation identities, unlike the
+/// create/status projection; every other closed-metadata invariant is shared.
+fn mutation_receipt(
+    opening: Uuid,
+    receipt: model::Receipt,
+) -> Result<MutationReceipt, ConversationError> {
+    if opening.is_nil()
+        || receipt.opening.opening_id != opening
+        || receipt.opening.definition_version <= 0
+        || receipt.opening.state_version <= 0
+        || !(0..=i64::from(contracts::MAX_CAPACITY)).contains(&receipt.pending)
+        || !(0..=i64::from(contracts::MAX_CAPACITY)).contains(&receipt.confirmed)
+        || receipt.pending + receipt.confirmed > i64::from(contracts::MAX_CAPACITY)
+    {
+        return Err(ConversationError::Unavailable);
+    }
+    let phase = match receipt.phase.as_str() {
+        "open" => Phase::Open,
+        "closed" => Phase::Closed,
+        "cancelled" => Phase::Cancelled,
+        _ => return Err(ConversationError::Unavailable),
+    };
+    let offer = receipt.offer;
+    if offer.is_some_and(|key| key.offer_id.is_nil() || key.state_version <= 0)
+        || receipt.allocation_id.is_some_and(|id| id.is_nil())
+        || receipt
+            .allocation_version
+            .is_some_and(|version| version <= 0)
+    {
+        return Err(ConversationError::Unavailable);
+    }
+    Ok(MutationReceipt {
+        opening: Opening {
+            opening_id: opening,
+            definition_version: receipt.opening.definition_version.to_string(),
+            state_version: receipt.opening.state_version.to_string(),
+        },
+        offer_id: offer.map(|key| key.offer_id.to_string()),
+        offer_version: offer.map(|key| key.state_version.to_string()),
+        allocation_id: receipt.allocation_id.map(|id| id.to_string()),
+        allocation_version: receipt
+            .allocation_version
+            .map(|version| version.to_string()),
+        phase,
+        pending: receipt.pending.to_string(),
+        confirmed: receipt.confirmed.to_string(),
+    })
+}
+
+pub(super) fn mutated(
+    account: Uuid,
+    request: Uuid,
+    opening: Uuid,
+    outcome: model::Outcome,
+) -> Result<Mutated, ConversationError> {
+    if account.is_nil() || request.is_nil() || !outcome.recorded {
+        return Err(ConversationError::Unavailable);
+    }
+    Ok(Mutated {
+        account_id: account,
+        request_id: request,
+        outcome: MutationOutcome {
+            receipt: mutation_receipt(opening, outcome.receipt)?,
+            applied: outcome.applied,
+            recorded: true,
+        },
     })
 }
 

@@ -398,6 +398,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "092_provider_send_attempts.sql",
         include_str!("../../../../deploy/compose/migrations/092_provider_send_attempts.sql"),
     ),
+    (
+        "093_owner_opening_capacity.sql",
+        include_str!("../../../../deploy/compose/migrations/093_owner_opening_capacity.sql"),
+    ),
 ];
 
 async fn apply_selected(db: &Client, skip_summary: bool) {
