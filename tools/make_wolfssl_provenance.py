@@ -2,13 +2,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Regenerate the vendored wolfSSL PROVENANCE digests.
 
-Run against a checkout of the pinned upstream tag to verify the vendored
-subset is byte-identical to unmodified upstream sources:
+Clones the pinned upstream commit itself (never an operator-supplied
+directory, so the comparison cannot be aimed at a prepared tree) and
+verifies the vendored subset is byte-identical to unmodified upstream
+sources:
 
-    git clone --filter=blob:none --no-checkout --depth 1 \
-        --branch v5.9.4-stable https://github.com/wolfSSL/wolfssl.git /tmp/wolfssl
-    git -C /tmp/wolfssl checkout 3c5eead44904df64e6a5a1f4ebdce377d35a849a
-    python3 tools/make_wolfssl_provenance.py /tmp/wolfssl
+    python3 tools/make_wolfssl_provenance.py
 
 The vendored subset lives in android/app/src/main/cpp/wolfssl. The wolfssl/
 directory is vendored as the complete wolfssl/ include tree minus the
@@ -22,11 +21,14 @@ exist in the vendored tree with an identical digest (otherwise MODIFIED or
 MISSING), and every file present under the vendored prefix must belong to
 the expected selection (otherwise EXTRA).
 """
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 UPSTREAM_COMMIT = "3c5eead44904df64e6a5a1f4ebdce377d35a849a"
 UPSTREAM_TAG = "v5.9.4-stable"
+UPSTREAM_URL = "https://github.com/wolfSSL/wolfssl.git"
 
 INCLUDE_EXCLUDE = ("wolfssl/openssl/",)
 SOURCE_FILES = (
@@ -66,7 +68,7 @@ def expected_selection(upstream: Path) -> dict[str, Path]:
     expected: dict[str, Path] = {}
     for relative in ROOT_FILES:
         expected[relative] = upstream / relative
-    for path in sorted((upstream / "wolfssl").rglob("*")):  # lgtm [py/path-injection] developer-supplied local checkout; contents are digested, never executed
+    for path in sorted((upstream / "wolfssl").rglob("*")):
         if not path.is_file():
             continue
         relative = path.relative_to(upstream).as_posix()
@@ -78,11 +80,37 @@ def expected_selection(upstream: Path) -> dict[str, Path]:
     return expected
 
 
+def pinned_checkout() -> Path:
+    upstream = Path(tempfile.mkdtemp(prefix="wolfssl-upstream-"))
+    # autocrlf stays off so the digests are the true upstream bytes on any host.
+    run = subprocess.run(
+        ["git", "-c", "core.autocrlf=false", "clone", "--filter=blob:none", "--no-checkout",
+         "--single-branch", "--branch", UPSTREAM_TAG, UPSTREAM_URL, str(upstream)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if run.returncode:
+        print(f"cannot clone {UPSTREAM_URL} at {UPSTREAM_TAG}", file=sys.stderr)
+        raise SystemExit(2)
+    # The -c above covers only the clone command; pin the checkout behavior for
+    # the clone's own repo config so later git steps cannot smudge digests.
+    subprocess.run(["git", "-C", str(upstream), "config", "core.autocrlf", "false"],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+    run = subprocess.run(["git", "-C", str(upstream), "checkout", UPSTREAM_COMMIT],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if run.returncode:
+        print(f"pinned commit {UPSTREAM_COMMIT} is not reachable from tag {UPSTREAM_TAG}", file=sys.stderr)
+        raise SystemExit(2)
+    run = subprocess.run(["git", "-C", str(upstream), "rev-parse", "HEAD"], stdout=subprocess.PIPE)
+    if run.stdout.decode().strip() != UPSTREAM_COMMIT:
+        print(f"tag {UPSTREAM_TAG} no longer resolves to {UPSTREAM_COMMIT}", file=sys.stderr)
+        raise SystemExit(2)
+    return upstream
+
+
 def main() -> int:
-    if len(sys.argv) != 2:
+    if len(sys.argv) != 1:
         print(__doc__)
         return 2
-    upstream = Path(sys.argv[1])
+    upstream = pinned_checkout()
     expected = expected_selection(upstream)
     vendored_files = {
         path.relative_to(VENDORED).as_posix()

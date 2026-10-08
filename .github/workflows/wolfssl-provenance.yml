@@ -23,15 +23,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Clone pinned upstream
+      - name: Regenerate provenance from the pinned upstream and fail on drift
         run: |
-          git clone --filter=blob:none --no-checkout --single-branch \
-            --branch v5.9.4-stable https://github.com/wolfSSL/wolfssl.git /tmp/wolfssl-upstream
-          git -C /tmp/wolfssl-upstream checkout 3c5eead44904df64e6a5a1f4ebdce377d35a849a
-          test "$(git -C /tmp/wolfssl-upstream rev-parse HEAD)" = 3c5eead44904df64e6a5a1f4ebdce377d35a849a
-      - name: Regenerate provenance from upstream and fail on drift
-        run: |
-          python3 tools/make_wolfssl_provenance.py /tmp/wolfssl-upstream > /tmp/regen-PROVENANCE
+          python3 tools/make_wolfssl_provenance.py > /tmp/regen-PROVENANCE
           diff -u android/app/src/main/cpp/wolfssl/PROVENANCE /tmp/regen-PROVENANCE
       - name: Verify vendored tree against the committed manifest
         run: python3 tools/verify_wolfssl_provenance.py
