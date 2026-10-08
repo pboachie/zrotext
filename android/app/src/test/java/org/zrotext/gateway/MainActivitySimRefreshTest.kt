@@ -36,8 +36,8 @@ class MainActivitySimRefreshTest {
         val manager = checkNotNull(app.getSystemService(SubscriptionManager::class.java))
         shadowOf(manager).setReadPhoneStatePermission(true)
         shadowOf(manager).setActiveSubscriptionInfos(
-            SubscriptionInfoBuilder.newBuilder().setId(7).setSimSlotIndex(0).setDisplayName("Synthetic profile").build(),
-            SubscriptionInfoBuilder.newBuilder().setId(8).setSimSlotIndex(1).setDisplayName("Synthetic peer").build())
+            SubscriptionInfoBuilder.newBuilder().setId(7).setSimSlotIndex(0).setDisplayName("Synthetic profile").buildSubscriptionInfo(),
+            SubscriptionInfoBuilder.newBuilder().setId(8).setSimSlotIndex(1).setDisplayName("Synthetic peer").buildSubscriptionInfo())
         assertTrue(app.getSharedPreferences("gateway_selection", Context.MODE_PRIVATE).edit()
             .putInt("subscription_id", 7).commit())
         val host = Robolectric.buildActivity(MainActivity::class.java).setup()
@@ -140,7 +140,7 @@ class MainActivitySimRefreshTest {
                 state<Boolean>(activity, "conversationRepliesEnabled").value = true
                 // A successful platform read now exposes only the known peer profile.
                 shadowOf(manager).setActiveSubscriptionInfos(SubscriptionInfoBuilder.newBuilder()
-                    .setId(8).setSimSlotIndex(1).setDisplayName("Synthetic peer").build())
+                    .setId(8).setSimSlotIndex(1).setDisplayName("Synthetic peer").buildSubscriptionInfo())
                 refresh(activity)
                 assertEquals(listOf(8), state<List<Pair<Int, String>>>(activity, "sims").value.map { it.first })
                 assertNull(state<Int?>(activity, "selectedSim").value)
