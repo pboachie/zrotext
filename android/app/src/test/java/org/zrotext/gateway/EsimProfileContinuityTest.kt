@@ -378,10 +378,10 @@ class EsimProfileContinuityTest {
 }
 
 /** Pure logical records and in-memory storage: no telephony, Keystore, network or radio. */
-internal class EsimProfileFixture(subscription: Int = 7, card: Int = 42) : AutoCloseable {
+internal class EsimProfileFixture(subscription: Int = 7, card: Int = 42, singleActive: Boolean = false) : AutoCloseable {
     val tracker = EsimProfileContinuityTracker()
-    private val records = listOf(ProfileSubscriptionObservation(subscription, card, true, 0, 0),
-        ProfileSubscriptionObservation(subscription + 1, card, true, 1, 0))
+    private val records = listOf(ProfileSubscriptionObservation(subscription, card, true, 0, 0)) +
+        if (singleActive) emptyList() else listOf(ProfileSubscriptionObservation(subscription + 1, card, true, 1, 0))
     var ledger = ProfileChallengeLedger()
     var writeResult = true
     var afterWrite: (() -> Unit)? = null
