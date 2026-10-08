@@ -79,6 +79,16 @@ class VendoredExemptionTest(unittest.TestCase):
         header.write_bytes(HEADER_BYTES + f"static const char *seed = \"{AMAZON_ID_PARTS}\";\n".encode("utf-8"))
         self.assertTrue(any("credential-shaped token" in error for error in self._findings()))
 
+    def test_historical_smudged_manifest_digest_is_tolerated(self):
+        # Pre-#1032 manifests recorded CRLF-smudged digests while the stored
+        # blobs hold LF; those historical trees must stay exempt.
+        self._write_manifest()
+        header = self.root / VENDORED / "wolfssl" / "pem_example.h"
+        crlf_digest = hashlib.sha256(HEADER_BYTES.replace(b"\n", b"\r\n")).hexdigest()
+        path = self.root / VENDORED / "PROVENANCE"
+        path.write_bytes(f"Header.\n\n{crlf_digest}  wolfssl/pem_example.h\n".encode("utf-8"))
+        self.assertEqual(self._findings(), [])
+
     def test_absent_manifest_disables_the_exemption(self):
         self.assertTrue(any("private key" in error for error in self._findings()))
 
