@@ -364,3 +364,29 @@ class DeviceSmokeTests(unittest.TestCase):
         for entry in ("", result(name, method, -3), result(name, "unrelatedPassingTest")):
             with self.subTest(entry=entry), self.assertRaises(ValueError):
                 smoke.verify_results(prefix + entry + suffix, expected)
+
+    def test_hpke_bridge_is_selected_only_when_source_exists(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.assertEqual(smoke.selected_tests(root), {smoke.PRECONDITIONS: 1})
+            source = root / "android/app/src/androidTest/java/org/zrotext/gateway/WolfHpkeKeystoreBridgeDeviceTest.kt"
+            source.parent.mkdir(parents=True)
+            source.touch()
+            expected = {smoke.PRECONDITIONS: 1, smoke.HPKE_BRIDGE: 4}
+            self.assertEqual(smoke.selected_tests(root), expected)
+            self.assertIn(smoke.HPKE_BRIDGE,
+                          smoke.instrumentation_arguments(expected)[
+                              smoke.instrumentation_arguments(expected).index("class") + 1].split(","))
+
+    def test_hpke_bridge_requires_all_four_completed_cases(self):
+        expected = {smoke.PRECONDITIONS: 1, smoke.HPKE_BRIDGE: 4}
+        output = result(smoke.PRECONDITIONS)
+        for index in range(4):
+            output += result(smoke.HPKE_BRIDGE, f"bridgeCase{index}")
+        smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n", expected)
+        for bad in [output.replace(result(smoke.HPKE_BRIDGE, "bridgeCase3"), ""),
+                    output.replace(result(smoke.HPKE_BRIDGE, "bridgeCase3"),
+                                   result(smoke.HPKE_BRIDGE, "bridgeCase3", -2)),
+                    output + result(smoke.HPKE_BRIDGE, "bridgeCase3")]:
+            with self.subTest(output=bad), self.assertRaises(ValueError):
+                smoke.verify_results(bad + "INSTRUMENTATION_CODE: -1\n", expected)

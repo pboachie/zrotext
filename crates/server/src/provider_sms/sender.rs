@@ -231,12 +231,14 @@ pub async fn send_one<T: SubmitTransport>(
         },
     )
     .map_err(|_| SenderError::Material)?;
-    if let Err(DispatchError::Suppressed | DispatchError::Expired | DispatchError::Unavailable) =
-        dispatch::preflight(client, permit, account, attempt, material).await
-    {
-        dispatch::record_response(client, permit, account, attempt, ResponseOutcome::Released)
-            .await?;
-        return Ok(Tick::Released { attempt });
+    match dispatch::preflight(client, permit, account, attempt, material).await {
+        Ok(()) => {}
+        Err(DispatchError::Suppressed | DispatchError::Expired | DispatchError::Unavailable) => {
+            dispatch::record_response(client, permit, account, attempt, ResponseOutcome::Released)
+                .await?;
+            return Ok(Tick::Released { attempt });
+        }
+        Err(error) => return Err(error.into()),
     }
     let outcome = transport.submit(key, encoded.as_bytes()).await;
     let recorded = match outcome {
