@@ -90,6 +90,19 @@ def instrumentation_arguments(expected):
 
 MAX_PRIVATE_EVIDENCE_BYTES = 256 * 1024
 MAX_PUBLIC_STATUS_EVENTS = 128
+MAX_PUBLIC_FAILURE_LOCATIONS = 8
+MAX_PUBLIC_SOURCE_POSITIONS = 4
+MAX_PUBLIC_SOURCE_LINE = 4096
+PUBLIC_FAILURE_SOURCE_FILES = frozenset({
+    "ConversationEntryOptInDeviceTest.kt",
+    "MainActivity.kt",
+    "ConversationUserSetupProvider.kt",
+    "ConversationSetupEntrySession.kt",
+})
+PUBLIC_SOURCE_FRAME = re.compile(
+    r"[ \t]*at org\.zrotext\.gateway\.([A-Za-z0-9_$]+)\."
+    r"[A-Za-z0-9_$<>]+\(([A-Za-z0-9]+\.kt):([1-9][0-9]{0,3})\)"
+)
 
 
 def public_test_methods(root=ROOT):
@@ -126,9 +139,13 @@ def public_failure_diagnostic(output, expected):
     final_codes = []
     event_count = 0
     final_count = 0
+    stack_open = False
+    source_positions = []
+    failure_locations = []
     for line in output.splitlines():
         if line.startswith("INSTRUMENTATION_STATUS: "):
             key, separator, value = line.removeprefix("INSTRUMENTATION_STATUS: ").partition("=")
+            stack_open = bool(separator and key == "stack")
             if separator and key in {"class", "test"}:
                 status[key] = value
         elif line.startswith("INSTRUMENTATION_STATUS_CODE: "):
@@ -142,19 +159,42 @@ def public_failure_diagnostic(output, expected):
             public_method = method if public_class != "unselected" and method in methods else "unavailable"
             events.append({"class": public_class, "test": public_method, "status": code})
             events = events[-MAX_PUBLIC_STATUS_EVENTS:]
+            # Only this hardcoded test is approved for source-location diagnosis.
+            # Runtime messages, exception types and class/method strings stay private.
+            if code in (-4, -3, -2, -1) and class_name == ENTRY_OPT_IN and \
+                    ENTRY_OPT_IN in expected and method == ENTRY_OPT_IN_METHOD:
+                failure_locations.append({"class": ENTRY_OPT_IN, "test": ENTRY_OPT_IN_METHOD,
+                                          "source_positions": source_positions or "UNKNOWN"})
+                failure_locations = failure_locations[-MAX_PUBLIC_FAILURE_LOCATIONS:]
             event_count += 1
             status = {}
+            stack_open = False
+            source_positions = []
         elif line.startswith("INSTRUMENTATION_CODE: "):
+            stack_open = False
             raw_code = line.removeprefix("INSTRUMENTATION_CODE: ").strip()
             final_codes.append(int(raw_code) if raw_code in {"-1", "0", "1"} else "unsupported")
             final_codes = final_codes[-4:]
             final_count += 1
+        elif line.startswith("INSTRUMENTATION_"):
+            stack_open = False
+        elif stack_open and len(source_positions) < MAX_PUBLIC_SOURCE_POSITIONS:
+            frame = PUBLIC_SOURCE_FRAME.fullmatch(line)
+            if frame:
+                class_name, filename, raw_line = frame.groups()
+                if filename in PUBLIC_FAILURE_SOURCE_FILES and \
+                        class_name.split("$", 1)[0] == filename.removesuffix(".kt") and \
+                        int(raw_line) <= MAX_PUBLIC_SOURCE_LINE:
+                    position = {"file": filename, "line": int(raw_line)}
+                    if position not in source_positions:
+                        source_positions.append(position)
     counts = Counter(cls for cls, _ in completed)
     return {
         "version": 1,
         "classes": [{"class": cls, "expected": count, "completed": counts[cls]}
                     for cls, count in sorted(expected.items())],
         "status_events": events,
+        "failure_locations": failure_locations,
         "omitted_status_events": event_count - len(events),
         "final_codes": final_codes,
         "final_code_count": final_count,
