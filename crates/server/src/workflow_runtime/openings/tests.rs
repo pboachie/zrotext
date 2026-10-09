@@ -857,6 +857,106 @@ async fn competing_responses_have_one_capacity_winner_and_owner_confirmation_is_
 
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; actual isolated candidate schema"]
+async fn concurrent_cancellation_and_confirmation_of_one_pending_allocation_have_one_winner() {
+    let c = fixture().await;
+    let created = opening(&c, 1).await;
+    let offered = offered(&c, created.receipt.opening).await;
+    let reserved = reserve(
+        &mut c.base.f.connect().await,
+        &c.base.owner,
+        reservation(
+            &c,
+            offered.receipt.opening,
+            offered.receipt.offer.unwrap(),
+            1,
+        )
+        .await,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        (reserved.receipt.pending, reserved.receipt.confirmed),
+        (1, 0)
+    );
+    let confirmation = allocation(&reserved);
+    let cancellation = OpeningMutation {
+        request_id: Uuid::new_v4(),
+        opening: reserved.receipt.opening,
+    };
+    let mut a = c.base.f.connect().await;
+    let mut b = c.base.f.connect().await;
+    let (confirmed, cancelled) = tokio::join!(
+        confirm(&mut a, &c.base.owner, confirmation),
+        cancel(&mut b, &c.base.owner, cancellation)
+    );
+    assert_eq!(
+        usize::from(confirmed.is_ok()) + usize::from(cancelled.is_ok()),
+        1,
+        "exactly one of confirmation and cancellation may consume the pending unit"
+    );
+    assert!(matches!(
+        &confirmed,
+        Ok(_) | Err(ConversationError::Conflict)
+    ));
+    assert!(matches!(
+        &cancelled,
+        Ok(_) | Err(ConversationError::Conflict)
+    ));
+    let (winner, phase) = match (&confirmed, &cancelled) {
+        (Ok(confirmed), Err(_)) => {
+            assert_eq!(
+                (confirmed.receipt.pending, confirmed.receipt.confirmed),
+                (0, 1)
+            );
+            (confirmed, "confirmed")
+        }
+        (Err(_), Ok(cancelled)) => {
+            assert_eq!(
+                (cancelled.receipt.pending, cancelled.receipt.confirmed),
+                (0, 0)
+            );
+            (cancelled, "cancelled")
+        }
+        _ => unreachable!("exactly one winner asserted above"),
+    };
+    assert!(winner.applied && winner.recorded);
+    assert_eq!(winner.receipt.phase, phase);
+    let state = status(
+        &mut c.base.f.connect().await,
+        &c.base.owner,
+        created.receipt.opening.opening_id,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        (state.pending, state.confirmed),
+        (0, winner.receipt.confirmed)
+    );
+    let row = c
+        .base
+        .f
+        .db
+        .query_one(
+            "SELECT (SELECT count(*) FROM workflow_opening_allocations WHERE account_id=$1 AND opening_id=$2 AND phase=$3),(SELECT count(*) FROM workflow_opening_requests WHERE account_id=$1 AND opening_id=$2 AND operation IN (4,8))",
+            &[&c.base.f.account, &created.receipt.opening.opening_id, &phase],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        row.get::<_, i64>(0),
+        1,
+        "the single allocation ends in the winning phase"
+    );
+    assert_eq!(
+        row.get::<_, i64>(1),
+        1,
+        "exactly one operation is recorded; the loser records nothing"
+    );
+    c.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; actual isolated candidate schema"]
 async fn contact_erasure_scrubs_authority_and_receipts_without_freeing_confirmed_units() {
     let c = fixture().await;
     let created = opening(&c, 2).await;
