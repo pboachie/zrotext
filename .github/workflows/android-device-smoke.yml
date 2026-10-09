@@ -100,3 +100,21 @@ jobs:
           python3 scripts/android_device_smoke.py
           (cd android && ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest -PisolatedPreparationProbe=true --no-daemon --max-workers=2)
           python3 scripts/android_preparation_probe.py --serial emulator-5562
+      - name: Record verified isolated preparation candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/isolated-preparation"
+          cp android/app/build/outputs/apk/debug/app-debug.apk "$RUNNER_TEMP/isolated-preparation/isolated-preparation-app.apk"
+          cp android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk "$RUNNER_TEMP/isolated-preparation/isolated-preparation-tests.apk"
+          git rev-parse HEAD > "$RUNNER_TEMP/isolated-preparation/candidate-source-commit.txt"
+          git rev-parse 'HEAD^{tree}' > "$RUNNER_TEMP/isolated-preparation/candidate-source-tree.txt"
+          cd "$RUNNER_TEMP/isolated-preparation"
+          sha256sum isolated-preparation-app.apk isolated-preparation-tests.apk > candidate-apk-SHA256SUMS
+      - name: Preserve isolated candidate for separately authorized physical acceptance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: isolated-preparation-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/isolated-preparation/
+          if-no-files-found: error
+          retention-days: 3

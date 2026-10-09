@@ -16,11 +16,15 @@ class PreparationProbeRunner : AndroidJUnitRunner() {
             else setOf("class", "isolatedPreparationProbe")
         rejectSelector = arguments.keySet().any { it !in allowed } ||
             arguments.getString("isolatedPreparationProbe") != "true" ||
-            arguments.getString("class") !in setOf(null, TEST, CUSTODY_TEST) ||
+            arguments.getString("class") !in setOf(null, TEST, HPKE_TEST, CUSTODY_TEST) ||
             custody && (arguments.getString("custodyStage") !in setOf("enroll", "reload", "lose", "revoke", "cleanup") ||
                 !Regex("[0-9a-f]{32}").matches(arguments.getString("custodySession").orEmpty()))
         super.onCreate(Bundle(arguments).apply {
-            putString("class", if (custody) CUSTODY_TEST else TEST)
+            putString("class", when {
+                custody -> CUSTODY_TEST
+                arguments.getString("class") == HPKE_TEST -> HPKE_TEST
+                else -> TEST
+            })
             putString("isolatedPreparationProbe", "true")
         })
     }
@@ -41,6 +45,7 @@ class PreparationProbeRunner : AndroidJUnitRunner() {
     companion object {
         const val APP = "org.zrotext.gateway.preparationprobe"
         const val TEST = "org.zrotext.gateway.PreparationProbeDeviceTest"
+        const val HPKE_TEST = "org.zrotext.gateway.WolfHpkeKeystoreBridgeDeviceTest"
         const val CUSTODY_TEST = TEST + "#payloadCustodyReloadNeverRecreatesLostOrRevokedIdentity"
     }
 }

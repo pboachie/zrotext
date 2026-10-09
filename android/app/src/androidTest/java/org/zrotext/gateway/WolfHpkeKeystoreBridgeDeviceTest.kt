@@ -183,7 +183,7 @@ class WolfHpkeKeystoreBridgeDeviceTest {
 
 /** Minimal software RFC 9180 sender for the cross-client KATs. Independent
  * of the receiver path under test: JCA only, no native calls. */
-private object SoftwareHpkeSeal {
+internal object SoftwareHpkeSeal {
     private val params: ECParameterSpec by lazy {
         AlgorithmParameters.getInstance("EC").run {
             init(ECGenParameterSpec("secp256r1"))

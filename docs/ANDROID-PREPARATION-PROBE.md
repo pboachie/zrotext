@@ -16,7 +16,7 @@ The probe replaces both application manifests with a plain `Application`, withou
 gateway startup, dependency components, permissions, package queries or a shared
 UID. A fixed runner admits only three synthetic tests or the exact staged custody
 method; the source set contains only
-that runner, those tests and the two required fixture helpers. Each test creates
+that runner, those tests, two fixture helpers and the maintained wolfSSL bridge tests. Each test creates
 an unpredictable owned key alias. Ordinary test runs remove that alias in
 `finally`; staged custody runs retain their one synthetic alias between explicit
 invocations. Preparation uses an in-memory journal. It never enumerates aliases, samples a SIM, opens the
@@ -55,18 +55,31 @@ method in five separate instrumentation invocations: `enroll`, `reload`, `lose`,
 reported level and observed `BOOT_COUNT` from enrollment. Cleanup refuses a
 different pinned ID and deletes only the owned synthetic fixture.
 
-This sequence proves only the behavior observed across separate instrumentation
-runs. It never invokes reboot, force-stop, data clearing or a device-setting
-change. A separately controlled reboot drill may select the exact custody method
-with `custodyRequireReboot=true` at reload; the test requires an increased
-`BOOT_COUNT`. The ordinary host sequence requires the unchanged count. That
-counter is an observation, not trusted UTC, rollback protection or independent
-hardware attestation. Neither sequence selects a maintained HPKE receiver,
-changes the distinct nonempty production `info`/AAD requirement, or accepts the
-candidate's empty HPKE AAD.
+The host also selects exactly four maintained wolfSSL bridge tests through the
+same permissionless isolated runner. These exercise enrollment-only key creation,
+cross-client seal/open with distinct nonempty info/AAD, framing and binding
+rejections, and key-loss/revocation refusal. The staged custody reload additionally
+opens a synthetic wrap through the maintained receiver using the same pinned
+existing key. Loss and revocation also check receiver refusal without regeneration.
+The earlier custom candidate tests remain separate and do not establish maintained
+provider acceptance. The ordinary gateway remains dormant.
 
-CI runs all three tests on a disposable emulator and requires exactly three successful
-completions, zero skips and an explicit custody result. Physical execution is a
+By default the host never reboots, force-stops or clears data. A separately
+authorized physical drill can add `--require-hardware` and
+`--reboot-between-custody-stages` to the reviewed physical invocation, which
+also requires `--serial`, `--allow-physical`, both `--expected-sha256` values
+and the reviewed artifact directory. Reboot is refused without explicit physical
+and hardware options. The host requires a reported TEE or StrongBox level before
+reboot, waits on the same selected transport with bounded timeouts, verifies
+installed bytes again, and requires increased `BOOT_COUNT` at reload. The default
+sequence requires unchanged `BOOT_COUNT`. The counter and security level are
+platform observations, not trusted UTC, rollback protection or independent
+hardware attestation. No sequence relaxes the maintained provider's distinct
+nonempty info/AAD profile.
+
+CI runs the three preparation tests and four maintained-provider tests in separate
+allowlisted invocations, requiring zero failures/skips and an explicit custody
+result. Physical execution is a
 separate controlled operation, not an automatic consequence of building the probe.
 Each of the five staged invocations must separately report one successful
 completion of the exact custody method and zero skips. Missing, duplicate,

@@ -22,6 +22,13 @@ APP = "org.zrotext.gateway.preparationprobe"
 TEST_APP = APP + ".test"
 RUNNER = "org.zrotext.gateway.PreparationProbeRunner"
 TEST = "org.zrotext.gateway.PreparationProbeDeviceTest"
+HPKE_TEST = "org.zrotext.gateway.WolfHpkeKeystoreBridgeDeviceTest"
+HPKE_METHODS = frozenset({
+    "enrolledRecipientExposesNonExportableAgreeKeyClaims",
+    "crossClientSealOpensThroughNativeBridgeAndRejectsTampering",
+    "lostRecipientKeyRefusesWithoutRegeneration",
+    "revokedRecipientKeyRefusesLaterOpens",
+})
 CUSTODY_METHOD = "payloadCustodyReloadNeverRecreatesLostOrRevokedIdentity"
 CUSTODY_TEST = TEST + "#" + CUSTODY_METHOD
 ANDROID = "{http://schemas.android.com/apk/res/android}"
@@ -218,20 +225,45 @@ def validate_custody_stage(output, baseline=False):
     return fields
 
 
-def run_custody_lifecycle(device):
-    """Separate instrumentation invocations only: never reboot, clear data or alter device settings."""
+def validate_maintained_provider(output):
+    """Accept only the four selected provider completions, with no failures/skips."""
+    verify_results(output, {HPKE_TEST: 4})
+    methods = set(re.findall(r"^INSTRUMENTATION_STATUS: test=(.+)$", output, re.MULTILINE))
+    if methods != HPKE_METHODS:
+        raise ValueError("Wrong maintained provider methods")
+
+
+def run_custody_lifecycle(device, *, require_hardware=False, reboot=None):
+    """Pin one synthetic identity; reboot only through a separately selected callback."""
     session = uuid.uuid4().hex
     pinned = {}
     for stage in ("enroll", "reload", "lose", "revoke", "cleanup"):
+        if stage == "reload" and reboot is not None:
+            reboot()
         arguments = ["shell", "am", "instrument", "-w", "-r", "-e", "isolatedPreparationProbe", "true",
                      "-e", "class", CUSTODY_TEST, "-e", "custodySession", session, "-e", "custodyStage", stage]
         for name, value in pinned.items():
             arguments.extend(["-e", name, value])
+        if stage == "reload" and reboot is not None:
+            arguments.extend(["-e", "custodyRequireReboot", "true"])
         output = device(*arguments, TEST_APP + "/" + RUNNER, timeout=120)
         observed = validate_custody_stage(output, baseline=stage == "enroll")
         if observed is not None:
             pinned = observed
+            if require_hardware and pinned["custodySecurity"] not in {"STRONGBOX", "TRUSTED_ENVIRONMENT"}:
+                raise ValueError("Physical hardware-backed custody was not reported")
     return pinned["custodySecurity"]
+
+
+def controlled_reboot(device):
+    """Bounded opt-in reboot of the already selected transport; never select another device."""
+    device("reboot")
+    device("wait-for-device", timeout=180)
+    for _ in range(90):
+        if device("shell", "getprop", "sys.boot_completed").strip() == "1":
+            return
+        time.sleep(2)
+    raise ValueError("Controlled reboot did not complete within the bounded wait")
 
 
 def digest(path):
@@ -249,11 +281,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--serial", help="Explicit target; omit for build-only APK validation")
     parser.add_argument("--allow-physical", action="store_true", help="Requires separately reviewed device authorization")
+    parser.add_argument("--require-hardware", action="store_true", help="Refuse custody levels other than TEE or StrongBox")
+    parser.add_argument("--reboot-between-custody-stages", action="store_true", help="Explicitly authorize one reboot of the reviewed physical fixture")
     parser.add_argument("--apk-dir", type=Path, help="Directory containing reviewed isolated-preparation-app.apk and isolated-preparation-tests.apk")
     parser.add_argument("--expected-sha256", nargs=2, metavar=("APP", "TEST"), help="Reviewed artifact hashes; required for physical installation")
     args = parser.parse_args()
     if args.allow_physical and (not args.serial or not args.expected_sha256):
         parser.error("Physical execution requires a target and both reviewed artifact hashes")
+    if args.reboot_between_custody_stages and (not args.allow_physical or not args.require_hardware):
+        parser.error("Reboot requires explicit physical and hardware-backed acceptance options")
     if args.expected_sha256 and any(not re.fullmatch(r"[0-9a-f]{64}", h) for h in args.expected_sha256):
         parser.error("Expected hashes must be lowercase SHA-256 hex")
     try:
@@ -303,14 +339,14 @@ def main():
         if int(device("shell", "getprop", "ro.build.version.sdk").strip()) < 31:
             raise ValueError("API 31 required")
         for package in artifacts:
-            if device("shell", "pm", "list", "packages", package).strip():
+            if device("shell", "pm", "list", "packages", "--user", "0", package).strip():
                 raise ValueError("Probe package already exists; refusing replacement or clearing")
         installed = []
 
         def verify_installed(package):
             copy = directory / "installed.apk"
             copy.unlink(missing_ok=True)
-            used, seen = pull_installed(lambda: device("shell", "pm", "path", package),
+            used, seen = pull_installed(lambda: device("shell", "pm", "path", "--user", "0", package),
                                         lambda path: device("pull", path, str(copy)), time.sleep)
             if used > 1:
                 # Fixed counts and classes only, to track the post-install race.
@@ -328,6 +364,10 @@ def main():
             for selector in [("-e", "isolatedPreparationProbe", "true", "-e", "class",
                               "org.zrotext.gateway.JournalDeviceUpgradeTest"),
                              ("-e", "class", TEST),
+                             ("-e", "class", HPKE_TEST),
+                             ("-e", "isolatedPreparationProbe", "true", "-e", "class", HPKE_TEST + "#lostRecipientKeyRefusesWithoutRegeneration"),
+                             ("-e", "isolatedPreparationProbe", "true", "-e", "class", HPKE_TEST,
+                              "-e", "custodyStage", "enroll"),
                              ("-e", "isolatedPreparationProbe", "true", "-e", "package", "org.zrotext.gateway"),
                              ("-e", "isolatedPreparationProbe", "true", "-e", "class", CUSTODY_TEST),
                              ("-e", "isolatedPreparationProbe", "true", "-e", "class", CUSTODY_TEST,
@@ -339,8 +379,21 @@ def main():
             (directory / "instrumentation.txt").write_text(output, encoding="utf-8")
             custody = validate_results(output)
             print(f"Isolated probe: 3 tests; zero failures/skips; custody={custody}")
-            level = run_custody_lifecycle(device)
-            print(f"Custody lifecycle: 5 separate instrumentation runs; zero failures/skips; reported-level={level}; no reboot")
+            output = device("shell", "am", "instrument", "-w", "-r", "-e", "isolatedPreparationProbe", "true",
+                            "-e", "class", HPKE_TEST, TEST_APP + "/" + RUNNER, timeout=420)
+            validate_maintained_provider(output)
+            print("Maintained HPKE receiver: 4 tests; zero failures/skips; no radio")
+            def checked_stage(*arguments, **options):
+                # Re-check package custody after an optional reboot before
+                # invoking any retained synthetic-key stage.
+                for package in artifacts:
+                    verify_installed(package)
+                return device(*arguments, **options)
+
+            level = run_custody_lifecycle(checked_stage, require_hardware=args.require_hardware,
+                                         reboot=(lambda: controlled_reboot(device)) if args.reboot_between_custody_stages else None)
+            reboot_report = "controlled reboot checked" if args.reboot_between_custody_stages else "no reboot"
+            print(f"Custody lifecycle: 5 separate instrumentation runs; zero failures/skips; reported-level={level}; {reboot_report}")
         finally:
             for package in reversed(installed):
                 verify_installed(package)
