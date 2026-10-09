@@ -99,3 +99,14 @@ internal object SimCardContinuity {
 internal fun ActivatedSimCard.observedCard(): ActiveSimCard =
     ActiveSimCard(subscriptionId, cardId, profile != null, profile?.record?.portIndex,
         profile?.record?.logicalSlotIndex).withProfile(profile)
+
+/**
+ * Unused complete-set preparation entry, separate from legacy card continuity.
+ * A public card record, saved selection or remaining peer cannot replace the held observation.
+ * Physical and embedded choices use the same issuer gate; this creates no activated SIM card.
+ */
+internal fun SimCardContinuity.prepareCompleteSelection(
+    bridge: CompleteSelectionPreparationBridge,
+    selectedSubscriptionId: Int,
+    observation: CompleteSelectionSnapshot
+): CompleteSelectionPreparation? = bridge.prepareHeld(selectedSubscriptionId, observation)
