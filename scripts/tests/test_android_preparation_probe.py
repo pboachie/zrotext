@@ -210,6 +210,80 @@ class PreparationProbeTest(unittest.TestCase):
         with self.assertRaises(ValueError): probe.run_custody_lifecycle(device)
         self.assertEqual(2, device.call_count)
 
+    def test_selected_provider_requires_exact_four_methods_and_zero_skips(self):
+        output = ''.join(f'INSTRUMENTATION_STATUS: class={probe.HPKE_TEST}\n'
+                         f'INSTRUMENTATION_STATUS: test={method}\nINSTRUMENTATION_STATUS_CODE: 0\n'
+                         for method in sorted(probe.HPKE_METHODS)) + 'INSTRUMENTATION_CODE: -1\n'
+        probe.validate_maintained_provider(output)
+        for bad in [output.replace('CODE: 0', 'CODE: -3', 1),
+                    output.replace(sorted(probe.HPKE_METHODS)[0], 'unexpectedMethod'),
+                    output.replace(probe.HPKE_TEST, probe.TEST), output + output,
+                    output.replace('INSTRUMENTATION_CODE: -1', '')]:
+            with self.subTest(output=bad), self.assertRaises(ValueError):
+                probe.validate_maintained_provider(bad)
+
+    def test_physical_hardware_requirement_refuses_software_before_reboot(self):
+        for level in ['SOFTWARE', 'UNKNOWN_SECURE', 'UNKNOWN']:
+            device = mock.Mock(return_value=self.custody_result(
+                custodyKeyId='ab' * 32, custodySecurity=level, custodyBootCount='2'))
+            reboot = mock.Mock()
+            with self.subTest(level=level), self.assertRaises(ValueError):
+                probe.run_custody_lifecycle(device, require_hardware=True, reboot=reboot)
+            self.assertEqual(1, device.call_count)
+            reboot.assert_not_called()
+
+    def test_controlled_reboot_occurs_once_after_pin_before_reload(self):
+        fields = {'custodyKeyId': 'ab' * 32, 'custodySecurity': 'TRUSTED_ENVIRONMENT', 'custodyBootCount': '2'}
+        sequence = []
+        responses = iter([self.custody_result(**fields)] + [self.custody_result()] * 4)
+        def device(*arguments, **options):
+            stage = arguments[arguments.index('custodyStage') + 1]
+            sequence.append(stage)
+            if stage == 'reload':
+                self.assertEqual('true', arguments[arguments.index('custodyRequireReboot') + 1])
+                for name, value in fields.items():
+                    self.assertEqual(value, arguments[arguments.index(name) + 1])
+            return next(responses)
+        self.assertEqual('TRUSTED_ENVIRONMENT', probe.run_custody_lifecycle(
+            device, require_hardware=True, reboot=lambda: sequence.append('reboot')))
+        self.assertEqual(['enroll', 'reboot', 'reload', 'lose', 'revoke', 'cleanup'], sequence)
+
+    def test_reboot_transport_failure_stops_before_reload(self):
+        device = mock.Mock(return_value=self.custody_result(
+            custodyKeyId='ab' * 32, custodySecurity='STRONGBOX', custodyBootCount='2'))
+        with self.assertRaises(RuntimeError):
+            probe.run_custody_lifecycle(device, require_hardware=True,
+                                       reboot=mock.Mock(side_effect=RuntimeError('fixture unavailable')))
+        self.assertEqual(1, device.call_count)
+
+    def test_reboot_requires_explicit_physical_hardware_and_artifact_options(self):
+        for flags in [[], ['--allow-physical'], ['--require-hardware']]:
+            with self.subTest(flags=flags), mock.patch.object(sys, 'argv',
+                    ['probe', '--reboot-between-custody-stages', *flags]), \
+                    mock.patch.object(probe.subprocess, 'run') as command, mock.patch('sys.stderr'):
+                with self.assertRaises(SystemExit): probe.main()
+                command.assert_not_called()
+
+    def test_controlled_reboot_waits_only_for_selected_transport_and_has_deadline(self):
+        device = mock.Mock(side_effect=['', '', '0', '1', 'true'])
+        with mock.patch.object(probe.time, 'sleep') as sleep:
+            probe.controlled_reboot(device)
+        self.assertEqual([mock.call('reboot'), mock.call('wait-for-device', timeout=180),
+                          mock.call('shell', 'getprop', 'sys.boot_completed'),
+                          mock.call('shell', 'getprop', 'sys.boot_completed'),
+                          mock.call('shell', 'getprop', 'sys.user.0.ce_available')], device.call_args_list)
+        sleep.assert_called_once_with(2)
+        device = mock.Mock(return_value='0')
+        with mock.patch.object(probe.time, 'sleep') as sleep, self.assertRaises(ValueError):
+            probe.controlled_reboot(device)
+        self.assertEqual(90, sleep.call_count)
+
+    def test_boot_completion_without_operator_unlock_is_not_ready(self):
+        device = mock.Mock(side_effect=['', '', '1', 'false', '1', 'true'])
+        with mock.patch.object(probe.time, 'sleep') as sleep:
+            probe.controlled_reboot(device)
+        sleep.assert_called_once_with(2)
+
 
 INSTALLED = '/data/app/~~AbC-_12==/org.zrotext.gateway.preparationprobe-Xy_9-==/base.apk'
 

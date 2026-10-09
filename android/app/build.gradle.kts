@@ -45,6 +45,7 @@ val conversationProbeFixtures = if (isolatedConversationProbe) tasks.register<Sy
 } else null
 val preparationProbeFixtures = if (isolatedPreparationProbe) tasks.register<Sync>("preparationProbeFixtures") {
     from("src/androidTest/java") { include("**/SealedPreparationDeviceSample.kt") }
+    from("src/androidTest/java") { include("**/WolfHpkeKeystoreBridgeDeviceTest.kt") }
     from("src/sharedTest/java") { include("**/PreparationFixture.kt") }
     into(layout.buildDirectory.dir("generated/preparationProbeFixtures"))
 } else null

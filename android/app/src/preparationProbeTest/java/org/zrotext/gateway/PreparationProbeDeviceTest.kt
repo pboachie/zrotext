@@ -86,6 +86,17 @@ class PreparationProbeDeviceTest {
             }
             val actual = key().agreeExisting(DevicePayloadKeyStore.encodePoint(sender.public as ECPublicKey), id)
             try { assertArrayEquals(expected, actual) } finally { expected.fill(0); actual.fill(0) }
+            // Exercise the selected maintained receiver through this exact
+            // existing identity on every reload, including a controlled reboot.
+            val cek = ByteArray(32) { (it xor 0x5a).toByte() }
+            val info = "ZTSE/probe/maintained/info".toByteArray() + id
+            val aad = "ZTSE/probe/maintained/aad".toByteArray() + id
+            val (enc, sealed) = SoftwareHpkeSeal.seal(public.point, cek, info, aad)
+            try {
+                val opened = WolfHpkeKeystoreReceiver(key()).open(id, enc, sealed, info, aad)
+                try { assertArrayEquals(cek, opened) } finally { opened.fill(0) }
+            } finally { cek.fill(0) }
+            assertArrayEquals(id, key().existingPublic().keyId)
             return public
         }
         fun ownedRecord(id: ByteArray) {
@@ -98,8 +109,11 @@ class PreparationProbeDeviceTest {
             assertArrayEquals(id, stored)
         }
         fun lose(id: ByteArray, security: String) {
-            reload(id, security)
+            val public = reload(id, security)
             store.deleteEntry(alias)
+            assertThrows(IllegalStateException::class.java) {
+                WolfHpkeKeystoreReceiver(key()).open(id, public.point, ByteArray(48), byteArrayOf(1), byteArrayOf(2))
+            }
             assertThrows(IllegalStateException::class.java) { key().getOrCreateForEnrollment() }
             assertThrows(IllegalStateException::class.java) { key().existingPublic() }
             assertFalse(store.containsAlias(alias))
@@ -108,6 +122,10 @@ class PreparationProbeDeviceTest {
         fun revoke(id: ByteArray) {
             ownedRecord(id)
             key().revokeExisting(id)
+            assertThrows(IllegalStateException::class.java) {
+                WolfHpkeKeystoreReceiver(key()).open(id, byteArrayOf(4) + ByteArray(64),
+                    ByteArray(48), byteArrayOf(1), byteArrayOf(2))
+            }
             assertThrows(IllegalStateException::class.java) { key().existingPublic() }
             store.deleteEntry(alias)
             assertThrows(IllegalStateException::class.java) { key().getOrCreateForEnrollment() }
