@@ -219,3 +219,55 @@ async fn foreign_customer_https_ack_parks_review_without_validated_or_duplicate_
     assert!(row.get::<_, bool>(2));
     db.close().await;
 }
+
+#[tokio::test]
+#[ignore = "requires ZT_DELIVERY_TEST_DATABASE_URL; isolated finalized usage and synthetic HTTPS"]
+async fn repeated_https_ack_fields_retain_one_charge_and_park_review_without_resend() {
+    for nested_customer in [false, true] {
+        let mut db = Db::new().await;
+        let (id, _) = db.submit(1).await;
+        let row = db.client.query_one(
+            "SELECT o.identifier,floor(extract(epoch FROM b.report_at))::bigint FROM billing_usage_outbox o JOIN billing_usage_bindings b USING(account_id,message_id) WHERE o.message_id=$1",
+            &[&id],
+        ).await.unwrap();
+        let response = serde_json::json!({
+            "object":"billing.meter_event",
+            "identifier":row.get::<_,String>(0),
+            "event_name":"synthetic_execution",
+            "timestamp":row.get::<_,i64>(1),
+            "livemode":false,
+            "payload":{"stripe_customer_id":db.customer,"value":"1"}
+        });
+        let original = serde_json::to_string(&response).unwrap();
+        let repeated = if nested_customer {
+            original.replace(
+                "\"payload\":{",
+                "\"payload\":{\"stripe_customer_id\":\"cus_foreign_synthetic\",",
+            )
+        } else {
+            format!("{{\"livemode\":true,{}", &original[1..])
+        };
+        let (transport, listener) = fixture(repeated.into_bytes(), "200 OK", "", Duration::ZERO);
+        let worker = TestUsageWorker::test_candidate();
+        assert_eq!(
+            worker.run_one(&mut db.client, &transport).await.unwrap(),
+            WorkResult::Review
+        );
+        assert!(!listener.join().unwrap().is_empty());
+        assert_eq!(
+            worker.run_one(&mut db.client, &transport).await.unwrap(),
+            WorkResult::Idle
+        );
+        let row = db.client.query_one(
+            "SELECT state,error_class,attempts,acknowledged_at IS NULL,(SELECT count(*) FROM billing_usage_finalized),(SELECT count(*) FROM billing_usage_outbox) FROM billing_usage_outbox",
+            &[],
+        ).await.unwrap();
+        assert_eq!(row.get::<_, String>(0), "review");
+        assert_eq!(row.get::<_, String>(1), "response");
+        assert_eq!(row.get::<_, i32>(2), 1);
+        assert!(row.get::<_, bool>(3));
+        assert_eq!(row.get::<_, i64>(4), 1);
+        assert_eq!(row.get::<_, i64>(5), 1);
+        db.close().await;
+    }
+}
