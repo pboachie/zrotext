@@ -1,8 +1,9 @@
 # Isolated candidate preparation probe
 
 The optional debug probe compiles the existing candidate preparation, envelope,
-body, Keystore, HPKE and Room code. It does not enable gateway operation. Its
-independent test sender uses the existing test-only Tink dependency. Trust,
+body, Keystore and Room code, plus the selected maintained HPKE receiver. It does
+not enable gateway operation. The earlier candidate sender uses test-only Tink;
+the maintained-provider tests use an independent JCA sender. Trust,
 session, line and time inputs are synthetic: passing this probe does not prove
 their independent provenance, reboot freshness, SIM continuity or carrier delivery.
 
@@ -14,7 +15,8 @@ Without the property, ordinary debug and release packaging remain unchanged.
 
 The probe replaces both application manifests with a plain `Application`, without
 gateway startup, dependency components, permissions, package queries or a shared
-UID. A fixed runner admits only three synthetic tests or the exact staged custody
+UID. A fixed runner admits only the three preparation tests, four maintained
+provider tests, or the exact staged custody
 method; the source set contains only
 that runner, those tests, two fixture helpers and the maintained wolfSSL bridge tests. Each test creates
 an unpredictable owned key alias. Ordinary test runs remove that alias in
