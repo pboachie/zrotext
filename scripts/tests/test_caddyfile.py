@@ -69,11 +69,52 @@ RUNTIME_CASES = [
 ]
 
 
-def pinned_caddy_image() -> str:
-    match = re.search(r"image:\s*(caddy:\S+)", COMPOSE.read_text(encoding="utf-8"))
-    if match is None:
-        raise AssertionError("compose.yaml no longer pins a caddy image")
-    return match.group(1)
+def pinned_caddy_image(compose_text: str | None = None) -> str:
+    if compose_text is None:
+        compose_text = COMPOSE.read_text(encoding="utf-8")
+    # Accept the upstream name and Docker's official ECR mirror, retaining the
+    # complete digest for the runtime checks. Other registries are not aliases.
+    matches = re.findall(
+        r"^[ \t]+image:[ \t]*("
+        r"(?:public\.ecr\.aws/docker/library/)?caddy:"
+        r"[0-9]+\.[0-9]+\.[0-9]+-alpine(?:@sha256:[0-9a-f]{64})?"
+        r")[ \t]*$",
+        compose_text,
+        re.MULTILINE,
+    )
+    if len(matches) != 1:
+        raise AssertionError("compose.yaml must pin exactly one official caddy image")
+    if matches[0].startswith("public.ecr.aws/") and "@sha256:" not in matches[0]:
+        raise AssertionError("the official caddy mirror must retain its manifest digest")
+    return matches[0]
+
+
+class CaddyImageReferenceTest(unittest.TestCase):
+    def test_preserves_the_complete_official_mirror_digest(self):
+        image = "public.ecr.aws/docker/library/caddy:2.11.4-alpine@sha256:" + "a" * 64
+        self.assertEqual(pinned_caddy_image(f"  edge:\n    image: {image}\n"), image)
+
+    def test_accepts_the_upstream_image_name(self):
+        image = "caddy:2.11.4-alpine"
+        self.assertEqual(pinned_caddy_image(f"  edge:\n    image: {image}\n"), image)
+
+    def test_rejects_another_registry_or_repository_and_incomplete_pins(self):
+        for image in (
+            "mirror.example.test/caddy:2.11.4-alpine",
+            "public.ecr.aws/other/library/caddy:2.11.4-alpine",
+            "public.ecr.aws/docker/library/not-caddy:2.11.4-alpine",
+            "public.ecr.aws/docker/library/caddy:latest",
+            "public.ecr.aws/docker/library/caddy:2.11.4-alpine",
+            "public.ecr.aws/docker/library/caddy:2.11.4-alpine@sha256:abc",
+        ):
+            with self.subTest(image=image), self.assertRaises(AssertionError):
+                pinned_caddy_image(f"  edge:\n    image: {image}\n")
+
+    def test_rejects_missing_or_duplicate_official_caddy_references(self):
+        with self.assertRaises(AssertionError):
+            pinned_caddy_image("services:\n  app:\n    image: zrotext:local\n")
+        with self.assertRaises(AssertionError):
+            pinned_caddy_image("    image: caddy:2.11.4-alpine\n" * 2)
 
 
 def docker_usable() -> bool:

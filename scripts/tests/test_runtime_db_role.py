@@ -58,7 +58,8 @@ class RuntimeRoleTest(unittest.TestCase):
         subprocess.run(["docker", "run", "--detach", "--name", cls.container,
                         "--label", OWNER_LABEL + "=" + owner,
                         "-e", "POSTGRES_PASSWORD", "-e", "POSTGRES_USER=zrotext",
-                        "-e", "POSTGRES_DB=zrotext", "postgres:18.6-bookworm"],
+                        "-e", "POSTGRES_DB=zrotext",
+                        "public.ecr.aws/docker/library/postgres:18.6-bookworm@sha256:afc7e2d441324c0388fa80c3d24f733b4194a4eb7f47dd8ee2b08eb1a24a647c"],
                        env=cls.env, check=True, capture_output=True, timeout=60)
         for _ in range(60):
             ready = subprocess.run(["docker", "exec", cls.container, "pg_isready",
