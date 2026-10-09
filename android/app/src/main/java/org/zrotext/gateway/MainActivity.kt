@@ -79,6 +79,10 @@ class MainActivity : ComponentActivity() {
     }
     private var sims by mutableStateOf<List<Pair<Int, String>>>(emptyList())
     private var selectedSim by mutableStateOf<Int?>(null)
+    private var completeSelectionForeground = false
+    private var completeSelectionCoordinator: CompleteSelectionPreparationCoordinator? = null
+    // Local preparation test seam; no intent, saved state, signer or installed authority accepts it.
+    internal var completeSelectionCoordinatorFactory: (() -> CompleteSelectionPreparationCoordinator?)? = null
     private var endpoint by mutableStateOf("")
     private var testToken by mutableStateOf("")
     private var deviceStreamEndpoint by mutableStateOf("")
@@ -311,13 +315,7 @@ class MainActivity : ComponentActivity() {
                                 Text("Selected SIM: ${selectedSim?.toString() ?: "none"}")
                                 sims.forEach { (id, label) ->
                                     GatewayButton(onClick = {
-                                        if (selectedSim != id) {
-                                            SimProfileContinuity.stop()
-                                            SealedLineActivationMount.disable()
-                                        }
-                                        selectedSim = id
-                                        getSharedPreferences("gateway_selection", MODE_PRIVATE).edit()
-                                            .putInt("subscription_id", id).apply()
+                                        selectSimForPreparation(id)
                                     }, modifier = Modifier.semantics {
                                         selected = selectedSim == id
                                         stateDescription = if (selectedSim == id) "Selected SIM" else "Not selected"
@@ -574,6 +572,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        completeSelectionForeground = true
         summaryResumed = true
         if (summaryHome) summaryState.resume()
         updateSummaryView()
@@ -582,6 +581,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
+        completeSelectionForeground = false
+        completeSelectionCoordinator?.stop()
         if (pairingScanner?.snapshot()?.phase in setOf(AndroidPairingQrScanner.Phase.CLAIMING, AndroidPairingQrScanner.Phase.UNKNOWN)) pairingUnknown = true
         pairingId = ""; pairingToken = ""; comparisonCode = ""; signingFingerprint = ""; signingSecurity = ""
         closeSealedLineReview()
@@ -592,6 +593,9 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        completeSelectionForeground = false
+        completeSelectionCoordinator?.close()
+        completeSelectionCoordinator = null
         closeSealedLineReview()
         pendingConversationPhoneExport = null
         pendingConversationExportUri = null
@@ -603,6 +607,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        completeSelectionForeground = false
+        completeSelectionCoordinator?.stop()
         closeSealedLineReview()
         revokeConversationForeground()
         super.onStop()
@@ -1324,6 +1330,7 @@ class MainActivity : ComponentActivity() {
     private fun withdrawUnavailableSimSelection(choices: List<Pair<Int, String>> = emptyList()) {
         sims = choices
         selectedSim = null
+        completeSelectionCoordinator?.permissionLost()
         // apply updates the process-visible selection before asynchronous persistence.
         // This preference records a choice; it never restores installed profile authority.
         getSharedPreferences("gateway_selection", MODE_PRIVATE).edit()
@@ -1337,7 +1344,10 @@ class MainActivity : ComponentActivity() {
     private fun refreshSims() {
         val choices = try {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) null
-            else getSystemService(SubscriptionManager::class.java)?.activeSubscriptionInfoList?.map { info ->
+            else getSystemService(SubscriptionManager::class.java)?.let { manager ->
+                if (Build.VERSION.SDK_INT >= 33) manager.completeActiveSubscriptionInfoList
+                else manager.activeSubscriptionInfoList
+            }?.map { info ->
                 info.subscriptionId to selectedSimLabel(info.subscriptionId, info.simSlotIndex, info.displayName,
                     info.isEmbedded, if (Build.VERSION.SDK_INT >= 33) info.portIndex else null)
             }
@@ -1355,7 +1365,39 @@ class MainActivity : ComponentActivity() {
         }
         sims = choices
         selectedSim = saved.takeIf { id -> sims.any { it.first == id } }
+        prepareCurrentCompleteSelection()
     }
+
+    /** Keeps the existing explicit v1 choice while preparing a separate, non-authorizing v2 view. */
+    private fun selectSimForPreparation(id: Int) {
+        if (sims.none { it.first == id }) return
+        if (selectedSim != id) {
+            completeSelectionCoordinator?.stop()
+            SimProfileContinuity.stop()
+            SealedLineActivationMount.disable()
+        }
+        selectedSim = id
+        getSharedPreferences("gateway_selection", MODE_PRIVATE).edit()
+            .putInt("subscription_id", id).apply()
+        prepareCurrentCompleteSelection()
+    }
+
+    private fun prepareCurrentCompleteSelection() {
+        if (!completeSelectionForeground || Build.VERSION.SDK_INT < 33) return
+        val choice = selectedSim
+        if (choice == null) { completeSelectionCoordinator?.stop(); return }
+        val coordinator = completeSelectionCoordinator ?: try {
+            val factory = completeSelectionCoordinatorFactory
+            (if (factory != null) factory()
+             else CompleteSelectionPreparationCoordinator.forAndroid(applicationContext, JournalRuntime.io))
+                ?.also { completeSelectionCoordinator = it }
+        } catch (_: RuntimeException) { null } ?: return
+        coordinator.select(choice)
+    }
+
+    /** A held local preparation is never an activation, installation, readiness or send permission. */
+    internal fun currentCompleteSelectionPreparation(): CompleteSelectionPreparation? =
+        if (completeSelectionForeground) completeSelectionCoordinator?.currentPreparation() else null
 }
 
 /** Distinguishes profiles without exposing a phone number, ICCID or eUICC identifier. */
