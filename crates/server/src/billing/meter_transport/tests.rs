@@ -4,6 +4,7 @@ use p256::{
     ecdsa::{Signature, SigningKey, signature::Signer},
     pkcs8::EncodePrivateKey,
 };
+use serde_json::Value;
 use std::{
     io::{Read, Write},
     net::{Ipv4Addr, TcpListener},
@@ -77,6 +78,86 @@ fn request() -> MeterRequest {
 }
 fn ack() -> Value {
     serde_json::json!({"object":"billing.meter_event","identifier":"zt_usage_fixture_one","event_name":"gateway_submit","timestamp":1700000000,"livemode":false,"payload":{"stripe_customer_id":"cus_fixture","value":"1"}})
+}
+
+#[test]
+fn ambiguous_acknowledgement_fields_cannot_hide_an_earlier_conflict() {
+    let original = serde_json::to_string(&ack()).unwrap();
+    for (field, conflict) in [
+        ("object", "\"other\""),
+        ("identifier", "\"foreign\""),
+        ("event_name", "\"foreign\""),
+        ("livemode", "true"),
+        ("timestamp", "1"),
+        ("payload", "{}"),
+    ] {
+        let repeated = format!("{{\"{field}\":{conflict},{}", &original[1..]);
+        assert_eq!(
+            acknowledgement(repeated.as_bytes(), &request()),
+            MeterResponse::InvalidResponse,
+            "repeated {field} must not become an acknowledgement"
+        );
+    }
+    for (field, conflict) in [("stripe_customer_id", "foreign"), ("value", "2")] {
+        let repeated = original.replace(
+            "\"payload\":{",
+            &format!("\"payload\":{{\"{field}\":\"{conflict}\","),
+        );
+        assert_eq!(
+            acknowledgement(repeated.as_bytes(), &request()),
+            MeterResponse::InvalidResponse,
+            "repeated payload {field} must not become an acknowledgement"
+        );
+    }
+}
+
+#[test]
+fn acknowledgement_allows_provider_metadata_but_not_truncated_or_wrong_types() {
+    let mut valid = ack();
+    valid["created"] = serde_json::json!(1700000001);
+    valid["payload"]["additional_metadata"] = serde_json::json!("synthetic");
+    assert!(matches!(
+        acknowledgement(&serde_json::to_vec(&valid).unwrap(), &request()),
+        MeterResponse::Acknowledged { .. }
+    ));
+    assert_eq!(acknowledgement(b"{", &request()), MeterResponse::Unknown);
+    assert_eq!(
+        acknowledgement(br#"["billing.meter_event","zt_usage_fixture_one","gateway_submit",false,1700000000,{"stripe_customer_id":"cus_fixture","value":"1"}]"#, &request()),
+        MeterResponse::InvalidResponse
+    );
+    let mut array_payload = ack();
+    array_payload["payload"] = serde_json::json!(["cus_fixture", "1"]);
+    assert_eq!(
+        acknowledgement(&serde_json::to_vec(&array_payload).unwrap(), &request()),
+        MeterResponse::InvalidResponse
+    );
+    for field in [
+        "object",
+        "identifier",
+        "event_name",
+        "livemode",
+        "timestamp",
+        "payload",
+    ] {
+        let mut invalid = ack();
+        invalid[field] = Value::Null;
+        assert_eq!(
+            acknowledgement(&serde_json::to_vec(&invalid).unwrap(), &request()),
+            MeterResponse::InvalidResponse
+        );
+    }
+}
+
+#[tokio::test]
+async fn repeated_live_mode_over_actual_tls_is_not_acknowledged() {
+    let valid = serde_json::to_string(&ack()).unwrap();
+    let repeated = format!("{{\"livemode\":true,{}", &valid[1..]);
+    let (transport, listener) = fixture(repeated.into_bytes(), "200 OK", "", Duration::ZERO);
+    assert_eq!(
+        transport.submit(request()).await,
+        MeterResponse::InvalidResponse
+    );
+    assert!(!listener.join().unwrap().is_empty());
 }
 fn fixture(
     body: Vec<u8>,
