@@ -4,12 +4,73 @@ use tokio_postgres::Client;
 /// Apply actual migrations and their required autocommit index preparation.
 /// The caller must provide a connection to a unique disposable schema.
 pub(crate) async fn apply(db: &Client) {
-    apply_selected(db, false).await;
+    apply_selected(db, false, None).await;
 }
 
 /// Preserve the summary tests' explicit index and migration validation gates.
 pub(crate) async fn apply_without_summary(db: &Client) {
-    apply_selected(db, true).await;
+    apply_selected(db, true, None).await;
+}
+
+/// Observe trusted phase metadata without changing migration SQL or deadlines.
+pub(crate) async fn apply_with_progress(
+    db: &Client,
+    observer: &mut (dyn FnMut(MigrationProgress) + Send),
+) {
+    apply_selected(db, false, Some(observer)).await;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct MigrationPhase {
+    file: &'static str,
+    operation: MigrationOperation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MigrationOperation {
+    AutocommitPreparation(usize),
+    NumberedMigration,
+    SummaryBegin,
+    SummaryCommit,
+    SummaryRollback,
+}
+
+impl std::fmt::Display for MigrationPhase {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.operation {
+            MigrationOperation::AutocommitPreparation(ordinal) => {
+                write!(formatter, "{}:autocommit_preparation:{ordinal}", self.file)
+            }
+            MigrationOperation::NumberedMigration => write!(formatter, "{}:numbered", self.file),
+            MigrationOperation::SummaryBegin => write!(formatter, "{}:begin", self.file),
+            MigrationOperation::SummaryCommit => write!(formatter, "{}:commit", self.file),
+            MigrationOperation::SummaryRollback => write!(formatter, "{}:rollback", self.file),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MigrationProgress {
+    Started(MigrationPhase),
+    // Completion means the await returned, including a database error. The
+    // original unwrap/rollback gates still decide whether the helper succeeds.
+    Completed(MigrationPhase),
+}
+
+async fn run_phase(
+    db: &Client,
+    sql: &str,
+    phase: MigrationPhase,
+    observer: &mut Option<&mut (dyn FnMut(MigrationProgress) + Send)>,
+) -> Result<(), tokio_postgres::Error> {
+    if let Some(observer) = observer.as_mut() {
+        observer(MigrationProgress::Started(phase));
+    }
+    let result = db.batch_execute(sql).await;
+    if let Some(observer) = observer.as_mut() {
+        observer(MigrationProgress::Completed(phase));
+    }
+    result
 }
 
 // Compile trusted SQL into the test executable; directory names are inventory only.
@@ -404,21 +465,56 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ),
 ];
 
-async fn apply_selected(db: &Client, skip_summary: bool) {
+async fn apply_selected(
+    db: &Client,
+    skip_summary: bool,
+    mut observer: Option<&mut (dyn FnMut(MigrationProgress) + Send)>,
+) {
     for &(file, sql) in MIGRATIONS {
         if skip_summary && file.starts_with("070_") {
             continue;
         }
-        prepare_indexes(db, file).await;
+        prepare_indexes(db, file, &mut observer).await;
         let transaction = file.starts_with("070_");
         if transaction {
-            db.batch_execute("BEGIN").await.unwrap();
+            run_phase(
+                db,
+                "BEGIN",
+                MigrationPhase {
+                    file,
+                    operation: MigrationOperation::SummaryBegin,
+                },
+                &mut observer,
+            )
+            .await
+            .unwrap();
         }
-        let result = db.batch_execute(sql).await;
+        let result = run_phase(
+            db,
+            sql,
+            MigrationPhase {
+                file,
+                operation: MigrationOperation::NumberedMigration,
+            },
+            &mut observer,
+        )
+        .await;
         if transaction {
-            db.batch_execute(if result.is_ok() { "COMMIT" } else { "ROLLBACK" })
-                .await
-                .unwrap();
+            run_phase(
+                db,
+                if result.is_ok() { "COMMIT" } else { "ROLLBACK" },
+                MigrationPhase {
+                    file,
+                    operation: if result.is_ok() {
+                        MigrationOperation::SummaryCommit
+                    } else {
+                        MigrationOperation::SummaryRollback
+                    },
+                },
+                &mut observer,
+            )
+            .await
+            .unwrap();
         }
         result.unwrap();
     }
@@ -446,7 +542,11 @@ fn agent_auth_schema_includes_every_checked_in_migration() {
 
 /// Mirror the migrator's autocommit preparation on this unique test schema.
 /// The exact numbered validation files still run unchanged afterwards.
-async fn prepare_indexes(db: &Client, file: &str) {
+async fn prepare_indexes(
+    db: &Client,
+    file: &'static str,
+    observer: &mut Option<&mut (dyn FnMut(MigrationProgress) + Send)>,
+) {
     let statements: &[&str] = match &file[..3] {
         "034" => &[
             "CREATE INDEX CONCURRENTLY messages_in_flight_updated ON messages(updated_at,id) WHERE state IN ('claimed','submitting','submitted')",
@@ -494,7 +594,17 @@ async fn prepare_indexes(db: &Client, file: &str) {
         ],
         _ => &[],
     };
-    for statement in statements {
-        db.batch_execute(statement).await.unwrap();
+    for (ordinal, statement) in statements.iter().enumerate() {
+        run_phase(
+            db,
+            statement,
+            MigrationPhase {
+                file,
+                operation: MigrationOperation::AutocommitPreparation(ordinal + 1),
+            },
+            observer,
+        )
+        .await
+        .unwrap();
     }
 }
