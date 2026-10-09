@@ -1,5 +1,12 @@
 # Internal line-activation contract
 
+Each issued challenge has an immutable stored `protocol_version`. Migration 094
+labels existing challenges as version 1; current issuers explicitly issue version
+1 and all current activation exchanges require it. The compiled v2 encoding
+foundation does not enable v2 challenge issuance, activation, transport negotiation
+or client installation. The v1 transcript and single-subscription refusal remain
+unchanged.
+
 **Prerequisite, not a sealed-content protocol or live enrollment API.** This
 contract is implemented by migration 019 and
 `sealed_inbound::line_activation`. No HTTP/WebSocket route calls it, no owner
