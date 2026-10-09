@@ -78,7 +78,7 @@ def main():
             "docker", "run", "--detach", "--rm", "--name", container,
             "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-p", "127.0.0.1::5432",
             "-v", f"{directory}:/certs:ro", "--entrypoint", "bash",
-            "postgres:18.6-bookworm", "-ec",
+            "public.ecr.aws/docker/library/postgres:18.6-bookworm@sha256:afc7e2d441324c0388fa80c3d24f733b4194a4eb7f47dd8ee2b08eb1a24a647c", "-ec",
             "cp /certs/server.pem /tmp/zrotext-server.pem; "
             "cp /certs/server.key /tmp/zrotext-server.key; "
             "chown postgres:postgres /tmp/zrotext-server.*; "
