@@ -60,15 +60,33 @@ tree. It does not change ancestor permissions or existing databases and services
 `cargo test --locked --workspace` reports PostgreSQL-backed tests as **ignored**. They are separate from the unit tests so a missing database cannot look like a passing SQL test. Start a disposable PostgreSQL instance bound to your machine only:
 
 ```sh
-docker run --rm --name zrotext-test-postgres -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1:5432:5432 postgres:18.6-bookworm
+docker run --rm --name zrotext-test-postgres -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1:5432:5432 postgres:18.6-bookworm -c max_locks_per_transaction=256
 ```
 
-In another shell, set all three URLs and run the ignored database tests. Use a database you may create and drop test schemas in; do not point these at a production database.
+The lock setting matches CI: four concurrent full-schema fixtures need enough
+lock entries for tables, indexes and foreign-key dependencies during cleanup.
+It applies only to this disposable server, not an existing database or service.
+In another shell, wait for `docker exec zrotext-test-postgres pg_isready -U postgres`
+to succeed and verify the setting with:
+
+```sh
+docker exec zrotext-test-postgres psql -U postgres -d postgres -Atc 'SHOW max_locks_per_transaction'
+```
+
+The result must be `256`. Before running the database suite, build the TypeScript
+SDK used by the authenticated workflow HTTP fixtures, as CI does. From
+`sdk/typescript`, run `npm ci --ignore-scripts` and `npm run build`, then return
+to the repository root.
+
+Set all four URLs, including the failover fixture URL, and run the ignored database
+tests. Use a database you may create and drop test schemas in; do not point these
+at a production database.
 
 ```sh
 export ZT_AUTH_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:5432/postgres
 export ZT_DELIVERY_TEST_DATABASE_URL="$ZT_AUTH_TEST_DATABASE_URL"
 export ZT_INBOUND_TEST_DATABASE_URL="$ZT_AUTH_TEST_DATABASE_URL"
+export ZT_FAILOVER_TEST_DATABASE_URL="$ZT_AUTH_TEST_DATABASE_URL"
 cargo test --locked --workspace -- --ignored --skip real_stripe_ --test-threads=4
 ```
 
@@ -78,6 +96,7 @@ PowerShell equivalent:
 $env:ZT_AUTH_TEST_DATABASE_URL = 'postgresql://postgres@127.0.0.1:5432/postgres'
 $env:ZT_DELIVERY_TEST_DATABASE_URL = $env:ZT_AUTH_TEST_DATABASE_URL
 $env:ZT_INBOUND_TEST_DATABASE_URL = $env:ZT_AUTH_TEST_DATABASE_URL
+$env:ZT_FAILOVER_TEST_DATABASE_URL = $env:ZT_AUTH_TEST_DATABASE_URL
 cargo test --locked --workspace -- --ignored --skip real_stripe_ --test-threads=4
 ```
 
