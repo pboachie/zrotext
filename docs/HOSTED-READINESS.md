@@ -67,6 +67,13 @@ submission into a second send.
 | #675 lifecycle | Duplicate/unordered webhook events; stale invoice success; unrelated subscription/customer; unresolved invoice; grace/restriction/recovery; TEST/live mismatch; revoked/erased account | Signed synthetic webhook fixtures and disposable-database transitions. A successful event recovers only the matching local obligation; policy decisions are explicit. No payment or account creation |
 | #676 portal/UI | Foreign customer/session; missing CSRF/origin; disabled provider; TEST-only mode; pending/held entitlement; portal return without authoritative change; stale/offline/partial usage | Existing owner/API authorization tests plus browser rendering and local ledger projections. Portal link status and local entitlement status are separate. No live portal session or deployment |
 
+The TEST meter transport refuses repeated acknowledgement identity, mode,
+timestamp and payload fields, including repeated customer or quantity fields
+inside the payload. A response with conflicting repeated fields cannot become
+an acknowledgement through last-value JSON parsing. Additional provider metadata
+is allowed; malformed or truncated responses retain an unknown outcome. This
+response check does not establish asynchronous meter validation or settlement.
+
 All new behavior needs a regression that fails without it. Use bounded workers,
 payloads, pagination and retry policies, and state their limits. Database tests
 must use isolated disposable schemas or unique identities and clean up. Run

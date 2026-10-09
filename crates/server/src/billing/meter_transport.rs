@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Explicit TEST-only HTTPS forwarding of already finalized local usage.
 use reqwest::{Client, Url};
-use serde_json::Value;
+use serde::Deserialize;
 use std::{
     sync::{
         Arc,
@@ -16,6 +16,69 @@ use zrotext_delivery_store::billable::{
 
 const ENDPOINT: &str = "https://api.stripe.com/v1/billing/meter_events";
 const MAX_BODY: usize = 16384;
+
+// Decode authority-bearing fields directly: a generic JSON map would silently
+// replace a repeated identity or mode field with its last occurrence. Additional
+// provider metadata is allowed, but every field used for acknowledgement is unique.
+#[derive(Deserialize)]
+struct MeterAcknowledgement {
+    object: String,
+    identifier: String,
+    event_name: String,
+    livemode: bool,
+    timestamp: i64,
+    #[serde(deserialize_with = "object_only")]
+    payload: MeterPayload,
+}
+
+#[derive(Deserialize)]
+struct MeterPayload {
+    stripe_customer_id: String,
+    value: String,
+}
+
+fn object_only<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    struct Object<T>(std::marker::PhantomData<T>);
+    impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for Object<T> {
+        type Value = T;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a JSON object")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<T, A::Error> {
+            T::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+        }
+    }
+    deserializer.deserialize_map(Object(std::marker::PhantomData))
+}
+
+fn acknowledgement(bytes: &[u8], request: &MeterRequest) -> MeterResponse {
+    let mut parser = serde_json::Deserializer::from_slice(bytes);
+    let parsed = object_only::<_, MeterAcknowledgement>(&mut parser)
+        .and_then(|value| parser.end().map(|()| value));
+    let value = match parsed {
+        Ok(value) => value,
+        Err(error) if error.is_data() => return MeterResponse::InvalidResponse,
+        Err(_) => return MeterResponse::Unknown,
+    };
+    if value.object != "billing.meter_event"
+        || value.identifier != request.identifier
+        || value.event_name != request.event_name
+        || value.livemode
+        || value.timestamp != request.timestamp
+        || value.payload.stripe_customer_id != request.customer_id
+        || value.payload.value != "1"
+    {
+        return MeterResponse::InvalidResponse;
+    }
+    MeterResponse::Acknowledged {
+        identifier: request.identifier.clone(),
+        livemode: false,
+    }
+}
 
 pub struct StripeTestMeterTransport {
     http: Client,
@@ -134,26 +197,7 @@ impl StripeTestMeterTransport {
                 _ => return MeterResponse::Unknown,
             }
         }
-        let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
-            return MeterResponse::Unknown;
-        };
-        if value.get("object").and_then(Value::as_str) != Some("billing.meter_event")
-            || value.get("identifier").and_then(Value::as_str) != Some(request.identifier.as_str())
-            || value.get("event_name").and_then(Value::as_str) != Some(request.event_name.as_str())
-            || value.get("livemode").and_then(Value::as_bool) != Some(false)
-            || value.get("timestamp").and_then(Value::as_i64) != Some(request.timestamp)
-            || value
-                .pointer("/payload/stripe_customer_id")
-                .and_then(Value::as_str)
-                != Some(request.customer_id.as_str())
-            || value.pointer("/payload/value").and_then(Value::as_str) != Some("1")
-        {
-            return MeterResponse::InvalidResponse;
-        }
-        MeterResponse::Acknowledged {
-            identifier: request.identifier,
-            livemode: false,
-        }
+        acknowledgement(&bytes, &request)
     }
 }
 impl TestMeterTransport for StripeTestMeterTransport {
