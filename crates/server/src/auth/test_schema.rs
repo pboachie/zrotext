@@ -402,6 +402,12 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "093_owner_opening_capacity.sql",
         include_str!("../../../../deploy/compose/migrations/093_owner_opening_capacity.sql"),
     ),
+    (
+        "094_line_activation_protocol_version.sql",
+        include_str!(
+            "../../../../deploy/compose/migrations/094_line_activation_protocol_version.sql"
+        ),
+    ),
 ];
 
 async fn apply_selected(db: &Client, skip_summary: bool) {

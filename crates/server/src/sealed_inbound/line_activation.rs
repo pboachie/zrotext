@@ -451,8 +451,8 @@ async fn issue_challenge_for_purpose(
     let nonce_digest = digest(&nonce);
     tx.execute(
         "INSERT INTO line_activation_challenges \
-         (id,account_id,line_id,device_id,generation,nonce_digest,expires_at) \
-         VALUES($1,$2,$3,$4,$5,$6,LEAST(clock_timestamp()+($7::integer * interval '1 second'),to_timestamp($8::bigint::double precision/1000)))",
+         (id,account_id,line_id,device_id,generation,nonce_digest,expires_at,protocol_version) \
+         VALUES($1,$2,$3,$4,$5,$6,LEAST(clock_timestamp()+($7::integer * interval '1 second'),to_timestamp($8::bigint::double precision/1000)),1)",
         &[
             &id,
             &account_id,
@@ -661,7 +661,7 @@ async fn activate_for_purpose(
                 "SELECT 1 FROM line_activation_challenges \
                  WHERE id=$1 AND account_id=$2 AND line_id=$3 AND device_id=$4 \
                    AND generation=$5 AND nonce_digest=$6 \
-                   AND consumed_at IS NULL AND expires_at>clock_timestamp() FOR UPDATE",
+                   AND protocol_version=1 AND consumed_at IS NULL AND expires_at>clock_timestamp() FOR UPDATE",
                 &[
                     &proof.challenge_id,
                     &account_id,
@@ -785,7 +785,7 @@ async fn activate_for_purpose(
     )
     .await?;
     tx.execute(
-        "UPDATE line_activation_challenges SET consumed_at=clock_timestamp() WHERE id=$1",
+        "UPDATE line_activation_challenges SET consumed_at=clock_timestamp() WHERE id=$1 AND protocol_version=1",
         &[&proof.challenge_id],
     )
     .await?;
@@ -800,7 +800,7 @@ async fn activate_for_purpose(
              WHERE o.id=$1 AND s.device_id=$2 AND c.id=$3 \
                AND o.revoked_at IS NULL AND o.expires_at>clock_timestamp() \
                AND s.lease_until>clock_timestamp() \
-               AND c.expires_at>clock_timestamp()",
+               AND c.protocol_version=1 AND c.expires_at>clock_timestamp()",
             &[
                 &principal.session_id,
                 &session.device_id,
@@ -877,6 +877,20 @@ pub async fn activate_registered_line_binding(
 }
 pub mod exchange;
 pub mod sealed_exchange;
+
+// Compile the frozen encoding foundation without enabling a v2 runtime. The
+// expectation is limited to the unused codec in production, not its controls.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "v2 admission and client negotiation remain unavailable"
+    )
+)]
+mod v2;
+
+#[cfg(test)]
+mod protocol_version_tests;
 
 #[cfg(test)]
 mod tests;

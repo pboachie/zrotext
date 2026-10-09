@@ -277,6 +277,7 @@ const QUEUE_SCHEMA: [(&str, &str); 93] = queue_schema!(
     "091_original_reply_origin_binding.sql",
     "092_provider_send_attempts.sql",
     "093_owner_opening_capacity.sql",
+    "094_line_activation_protocol_version.sql",
 );
 #[test]
 fn queue_fixture_includes_every_checked_in_migration() {
