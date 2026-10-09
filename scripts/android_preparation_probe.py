@@ -259,11 +259,13 @@ def controlled_reboot(device):
     """Bounded opt-in reboot of the already selected transport; never select another device."""
     device("reboot")
     device("wait-for-device", timeout=180)
+    print("Waiting for the reviewed fixture to finish boot and be unlocked by its operator")
     for _ in range(90):
-        if device("shell", "getprop", "sys.boot_completed").strip() == "1":
+        if (device("shell", "getprop", "sys.boot_completed").strip() == "1" and
+                device("shell", "getprop", "sys.user.0.ce_available").strip() == "true"):
             return
         time.sleep(2)
-    raise ValueError("Controlled reboot did not complete within the bounded wait")
+    raise ValueError("Controlled reboot or operator unlock did not complete within the bounded wait")
 
 
 def digest(path):

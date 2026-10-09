@@ -265,17 +265,24 @@ class PreparationProbeTest(unittest.TestCase):
                 command.assert_not_called()
 
     def test_controlled_reboot_waits_only_for_selected_transport_and_has_deadline(self):
-        device = mock.Mock(side_effect=['', '', '0', '1'])
+        device = mock.Mock(side_effect=['', '', '0', '1', 'true'])
         with mock.patch.object(probe.time, 'sleep') as sleep:
             probe.controlled_reboot(device)
         self.assertEqual([mock.call('reboot'), mock.call('wait-for-device', timeout=180),
                           mock.call('shell', 'getprop', 'sys.boot_completed'),
-                          mock.call('shell', 'getprop', 'sys.boot_completed')], device.call_args_list)
+                          mock.call('shell', 'getprop', 'sys.boot_completed'),
+                          mock.call('shell', 'getprop', 'sys.user.0.ce_available')], device.call_args_list)
         sleep.assert_called_once_with(2)
         device = mock.Mock(return_value='0')
         with mock.patch.object(probe.time, 'sleep') as sleep, self.assertRaises(ValueError):
             probe.controlled_reboot(device)
         self.assertEqual(90, sleep.call_count)
+
+    def test_boot_completion_without_operator_unlock_is_not_ready(self):
+        device = mock.Mock(side_effect=['', '', '1', 'false', '1', 'true'])
+        with mock.patch.object(probe.time, 'sleep') as sleep:
+            probe.controlled_reboot(device)
+        sleep.assert_called_once_with(2)
 
 
 INSTALLED = '/data/app/~~AbC-_12==/org.zrotext.gateway.preparationprobe-Xy_9-==/base.apk'

@@ -72,7 +72,8 @@ authorized physical drill can add `--require-hardware` and
 also requires `--serial`, `--allow-physical`, both `--expected-sha256` values
 and the reviewed artifact directory. Reboot is refused without explicit physical
 and hardware options. The host requires a reported TEE or StrongBox level before
-reboot, waits on the same selected transport with bounded timeouts, verifies
+reboot, waits on the same selected transport for boot and operator unlock with
+bounded timeouts, verifies
 installed bytes again, and requires increased `BOOT_COUNT` at reload. The default
 sequence requires unchanged `BOOT_COUNT`. The counter and security level are
 platform observations, not trusted UTC, rollback protection or independent
