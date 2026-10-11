@@ -21,8 +21,8 @@ class ReleaseCandidateTest(unittest.TestCase):
     COMMIT = "a" * 40
     NATIVE_BYTES = b"disposable fake native library"
     NATIVE_ENTRIES = {
-        f"lib/{abi}/{native_inventory.LIBRARY}": hashlib.sha256(b"disposable fake native library").hexdigest()
-        for abi in native_inventory.ABIS
+        f"lib/{abi}/{library}": hashlib.sha256(b"disposable fake native library").hexdigest()
+        for abi in native_inventory.ABIS for library in native_inventory.LIBRARIES
     }
     MAVEN_BOM = {
         "bomFormat": "CycloneDX", "specVersion": "1.6",
@@ -480,6 +480,43 @@ class ReleaseCandidateTest(unittest.TestCase):
             signed_receipt.write_text(json.dumps(candidate), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "Signed APK receipt differs"):
                 self.verify_test_candidate(self.COMMIT, self.CERTIFICATE)
+
+    def test_sbom_generic_exception_is_limited_to_reviewed_native_identity_families(self):
+        with tempfile.TemporaryDirectory(dir=release_candidate.CUSTODY_BASE) as directory:
+            path = Path(directory) / "synthetic-bom.json"
+            path.write_text(json.dumps(self.BOM), encoding="utf-8")
+            self.private_directory(Path(directory))
+            if os.name == "nt":
+                release_candidate.windows_acl(path, restrict=True)
+            else:
+                path.chmod(0o600)
+            self.assertEqual(release_candidate.checked_sbom(path)[1], self.BOM)
+            for identity in ("pkg:generic/unreviewed@1", "pkg:generic/wolfssl@0.0.0",
+                             f"pkg:generic/zrotext-hpke-keystore@{self.COMMIT}?arch=unsupported",
+                             "pkg:generic/androidx-graphics-path@1.0.1?arch=x86&unreviewed=true"):
+                bom = json.loads(json.dumps(self.BOM))
+                bom["components"].append({"type": "library", "purl": identity, "bom-ref": identity})
+                path.write_text(json.dumps(bom), encoding="utf-8")
+                with self.subTest(identity=identity), self.assertRaisesRegex(ValueError, "no usable dependency inventory"):
+                    release_candidate.checked_sbom(path)
+
+    def test_removed_vendor_refuses_even_after_sbom_receipt_rehash(self):
+        with tempfile.TemporaryDirectory(dir=release_candidate.CUSTODY_BASE) as directory, \
+             patch.object(release_candidate, "ARTIFACT_ROOT", Path(directory)):
+            build_dir, _, _ = self.make_candidate(directory)
+            path = build_dir / release_candidate.SBOM_NAME
+            bom = json.loads(path.read_text(encoding="utf-8"))
+            bom["components"] = [c for c in bom["components"] if c["purl"] != native_inventory.WOLF_REF]
+            bom["dependencies"] = [d for d in bom["dependencies"] if d["ref"] != native_inventory.WOLF_REF]
+            for d in bom["dependencies"]:
+                d["dependsOn"] = [r for r in d["dependsOn"] if r != native_inventory.WOLF_REF]
+            path.write_text(json.dumps(bom), encoding="utf-8")
+            receipt_path = build_dir / "unsigned.json"
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            receipt["sbom_sha256"] = release_candidate.sha256(path)
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "identities are missing"):
+                release_candidate.checked_unsigned(self.COMMIT)
 
     def test_unsigned_candidate_refuses_removed_native_libraries_after_receipt_rehash(self):
         with tempfile.TemporaryDirectory(dir=release_candidate.CUSTODY_BASE) as directory, \

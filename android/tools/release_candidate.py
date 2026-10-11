@@ -417,7 +417,8 @@ def checked_sbom(path: Path) -> tuple[str, dict[str, object]]:
             or not all(isinstance(component, dict)
                        and component.get("type") == "library"
                        and isinstance(component.get("purl"), str)
-                       and component["purl"].startswith(("pkg:maven/", "pkg:cargo/"))
+                       and (component["purl"].startswith(("pkg:maven/", "pkg:cargo/"))
+                            or native_inventory.is_packaged_component(component))
                        for component in bom["components"])):
         raise ValueError("Release runtime SBOM has no usable dependency inventory")
     return hashlib.sha256(raw).hexdigest(), bom
