@@ -46,10 +46,11 @@ class PackageBoundaryTests(unittest.TestCase):
                 archive.addfile(extra, io.BytesIO(b""))
         return path
 
-    def test_exact_artifact_returns_digest_and_private_metadata(self):
+    def test_exact_artifact_returns_digest_and_scoped_preview_metadata(self):
         result = package.verify_tarball(self.tarball(), self.root)
         self.assertEqual(result["files"], sorted(package.FILES))
-        self.assertTrue(result["metadata"]["private"])
+        self.assertFalse(result["metadata"]["private"])
+        self.assertEqual(result["name"], "@elysra/zrotext")
         self.assertEqual(len(result["sha256"]), 64)
         self.assertTrue(result["integrity"].startswith("sha512-"))
 
@@ -70,6 +71,14 @@ class PackageBoundaryTests(unittest.TestCase):
         metadata["scripts"] = {"postinstall": "unexpected"}
         self.contents["package.json"] = json.dumps(metadata).encode()
         with self.assertRaisesRegex(ValueError, "metadata"):
+            package.verify_tarball(self.tarball(), self.root)
+
+    def test_unscoped_package_is_rejected_even_with_matching_reviewed_metadata(self):
+        for name in ("package.json", "package-lock.json"):
+            path = self.root / "sdk/npm" / name
+            path.write_text(path.read_text().replace('"@elysra/zrotext"', '"zrotext"'))
+        self.contents["package.json"] = (self.root / "sdk/npm/package.json").read_bytes()
+        with self.assertRaisesRegex(ValueError, "identity"):
             package.verify_tarball(self.tarball(), self.root)
 
     def test_paths_links_extra_and_duplicate_entries_are_rejected(self):
@@ -114,6 +123,7 @@ class PackageBoundaryTests(unittest.TestCase):
     def test_development_manifest_cannot_be_publishable(self):
         path = self.root / "sdk/npm/package.json"
         manifest = json.loads(path.read_text())
+        manifest["version"] = "0.0.0-development"
         manifest["private"] = False
         path.write_text(json.dumps(manifest))
         self.contents["package.json"] = path.read_bytes()

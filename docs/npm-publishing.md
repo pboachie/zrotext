@@ -1,27 +1,29 @@
 # Public alpha npm publication
 
-The public package contract is `zrotext`, AGPL-3.0-only, ESM, Node.js 24 or
+The public package contract is `@elysra/zrotext`, AGPL-3.0-only, ESM, Node.js 24 or
 newer, with no runtime dependencies or lifecycle scripts. Its root exports the
 synthetic-alpha client and webhook verifier already implemented in
 `sdk/typescript`. It does not expose the sealed-content draft or a general
 message-send API. See [the package README](../sdk/npm/README.md).
 
-The checked-in `0.0.0-development` version is a private development sentinel,
-not a release candidate. No stable version is selected here. The publishing
-workflow is disabled unless the repository variable `NPM_PUBLICATION_ENABLED`
-equals `true`. Merging this preparation does not grant npm access or publish.
+The checked-in `0.1.7-rc.1` version is the first preview candidate, prepared for
+maintainer review and bootstrap publication. No stable version is selected here.
+The publishing workflow is disabled unless the repository variable
+`NPM_PUBLICATION_ENABLED` equals `true`. Merging this preparation does not grant
+npm access or publish.
 
 ## Owner setup, performed separately
 
-1. Select an approved, unused `X.Y.Z-rc.N` version consistent with the repository
-   release plan. Prepare a reviewed PR updating `sdk/npm/package.json`, both
+1. Review the initial `0.1.7-rc.1` candidate, or select a subsequent approved,
+   unused `X.Y.Z-rc.N` version consistent with the repository release plan.
+   Prepare a reviewed PR updating `sdk/npm/package.json`, both
    public lockfile version fields, `private: false`, a matching changelog heading
    and the README's installation/status wording. Keep the existing draft SDK's
    version and dependencies separate. Tags must be annotated `vX.Y.Z-rc.N` and
    point to the reviewed merge commit on main. Wait for its checks to finish.
 2. The npm account `elysra` must verify its email, enable 2FA, and establish
-   ownership of `zrotext`. A registry 404 establishes neither ownership nor name
-   reservation. Trusted publishing requires an existing package: it cannot
+   ownership of `@elysra/zrotext`. A registry 404 establishes neither ownership
+   nor name reservation. Trusted publishing requires an existing package: it cannot
    create a brand-new name. Bootstrap therefore needs a separately approved
    owner-authenticated release of the real reviewed artifact, followed by
    trusted-publisher configuration. This workflow intentionally refuses a

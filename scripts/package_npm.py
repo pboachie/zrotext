@@ -45,7 +45,7 @@ def check_manifest(manifest, root=ROOT):
     expected = json.loads(read_regular(package / "package.json"))
     if manifest != expected:
         raise ValueError("tarball metadata differs from reviewed package manifest")
-    if manifest.get("name") != "zrotext" or manifest.get("license") != "AGPL-3.0-only":
+    if manifest.get("name") != "@elysra/zrotext" or manifest.get("license") != "AGPL-3.0-only":
         raise ValueError("package identity/license mismatch")
     if manifest.get("type") != "module" or manifest.get("engines") != {"node": ">=24"}:
         raise ValueError("package must be ESM with Node >=24")
@@ -144,7 +144,7 @@ def verify_tarball(path, root=ROOT):
             contents[relative] = archive.extractfile(member).read(MAX_FILE_BYTES + 1)
     verify_contents(contents, root)
     raw = path.read_bytes()
-    return {"name": "zrotext", "version": json.loads(contents["package.json"])["version"],
+    return {"name": "@elysra/zrotext", "version": json.loads(contents["package.json"])["version"],
             "filename": path.name, "metadata": json.loads(contents["package.json"]),
             "sha256": hashlib.sha256(raw).hexdigest(),
             "integrity": "sha512-" + base64.b64encode(hashlib.sha512(raw).digest()).decode("ascii"),

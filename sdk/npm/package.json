@@ -1,7 +1,7 @@
 {
-  "name": "zrotext",
-  "version": "0.0.0-development",
-  "private": true,
+  "name": "@elysra/zrotext",
+  "version": "0.1.7-rc.1",
+  "private": false,
   "description": "Dependency-free client and webhook verifier for the ZROtext synthetic-alpha test plane",
   "license": "AGPL-3.0-only",
   "type": "module",
