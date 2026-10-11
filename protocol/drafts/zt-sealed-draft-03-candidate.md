@@ -121,3 +121,15 @@ software fixtures exercise the explicit boundary and do not establish integrated
 
 See [manifest](zt-sealed-draft-03-manifest-candidate.md),
 [election](payload-profile-election-03.md) and [dispatch](sealed-dispatch-03-candidate.md).
+
+## Pure server ciphertext verifier
+
+`crates/server/src/sealed_envelope03` verifies exact bounded outbound/inbound03
+grammar, routing, strict origin signature and current Manifest03 signer/reader
+roles. It returns owned ciphertext evidence and digests, with the exact distinct
+body-AAD and wrap-info/AAD bytes. It does not decrypt or substitute a receiver.
+Incoming age policy, current durable binding/election/session permission, grant,
+fetch, replay, journal and radio checks remain independent production-adapter
+requirements. Ordinary Rust cryptographic tests do not establish that integration
+or device, carrier or release acceptance. Existing02 parsing and admission remain
+unchanged; no production03 capability is advertised by this component.
