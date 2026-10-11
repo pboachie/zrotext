@@ -150,7 +150,7 @@ fn unhex(text: &str) -> Vec<u8> {
 }
 
 fn challenge(generation: i64) -> LineChallenge {
-    let id = |suffix| Uuid::from_u128(0x40008000000000000000 | suffix);
+    let id = |suffix: u128| Uuid::from_u128(0x40008000000000000000 | suffix);
     LineChallenge {
         account_id: id(1),
         line_id: id(2),
@@ -192,12 +192,12 @@ fn signed(purpose: PurposeV2) -> SignedDeclarations {
         owner,
         device_key: device_key
             .verifying_key()
-            .to_encoded_point(false)
+            .to_sec1_point(false)
             .as_bytes()
             .to_vec(),
         owner_key: owner_key
             .verifying_key()
-            .to_encoded_point(false)
+            .to_sec1_point(false)
             .as_bytes()
             .to_vec(),
         device_der,
