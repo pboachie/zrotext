@@ -82,3 +82,19 @@ currentness adapter. Opaque synthetic session digests in the public vector prove
 are signed; they cannot authenticate sessions. No current line activation transcript or owner
 boolean produces03. Full multi-line/outstanding-effect migration, historical02 read/export and
 true03 new-account setup remain tracked dependencies; unsupported cases refuse before mutation.
+
+## Pure server proof component
+
+`crates/server/src/sealed_payload_election03` checks exact E500/bundle628 framing,
+original signed-evidence hashes, genuine02-to03 cryptography and both canonical
+signatures, including the owner's digest of the exact received device proof.
+It compares a historical accepted record and a separately authenticated present
+selection without turning historical acceptance into new permission.
+
+Its accepted/current records and expected core are explicit trusted adapter
+inputs. They do not prove a commit, registry or session/MFA provenance, canonical
+origin/session serialization, old/new binding allocation, historical selected
+reader role, durable ancestry, all-writer exclusion or challenge consumption.
+Current manifest signer/reader roles are separately checked by the envelope
+component. No database reader, transaction, HTTP route or execution capability
+is installed; those integration requirements above remain open.
