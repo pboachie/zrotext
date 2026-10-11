@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { canonicalSignature02, enrollRootPin02, verifyManifest02 } from "../dist/draft02-manifest.js";
 import {
   verifyManifest03From02, verifyManifest03Successor, verifyManifest03Current,
-  verifiedManifestIdentity03,
+  verifiedManifestIdentity03, authorizeOutbound03,
 } from "../dist/draft03-manifest.js";
 
 const vector = JSON.parse(readFileSync(new URL("../../../protocol/v1/vectors/sealed-profile03-contract-01.json", import.meta.url)));
@@ -342,4 +342,49 @@ test("expired03 is chain history only and concurrent forks require external atom
   assert.equal(verifiedManifestIdentity03(left, later + 1n).comparisonMs, later);
   await assert.rejects(verifyManifest03Current(b.bytes, left, later), /fork/);
   await assert.rejects(verifyManifest03Current(a.bytes, right, later), /fork/);
+});
+
+test("outbound authorization uses private current roles and returns owned public points", async () => {
+  const { f, old, prior, handle } = await setup();
+  const claims = { accountId: account, deviceId: device, lineId: line, generation: 1n,
+    version: 2n, digest: identity(handle).digest, signerKeyId: f.records[4].keyId,
+    wraps: f.records.slice(0, 3).map(r => ({ role: r.role, keyId: r.keyId })) };
+  const authorized = authorizeOutbound03(handle, claims, now);
+  assert.deepEqual(authorized.signerPoint, f.records[4].point);
+  assert.equal(authorized.expiresMs, now + 60_000n);
+  assert.equal(authorized.recipients.length, 3);
+  const hooked = claims.wraps.slice();
+  for (const name of ["map", Symbol.iterator, "constructor"]) {
+    Object.defineProperty(hooked, name, { get() { throw Error("caller array hook invoked"); } });
+  }
+  assert.deepEqual(authorizeOutbound03(handle, { ...claims, wraps: hooked }, now).recipients,
+    authorizeOutbound03(handle, claims, now).recipients);
+  class SpeciesArray extends Array { static get [Symbol.species]() { throw Error("caller species invoked"); } }
+  const species = new SpeciesArray(...claims.wraps);
+  assert.deepEqual(authorizeOutbound03(handle, { ...claims, wraps: species }, now).recipients,
+    authorizeOutbound03(handle, claims, now).recipients);
+  authorized.signerPoint.fill(0); authorized.recipients[0].point.fill(0);
+  authorized.recipients[0].keyId.fill(0);
+  assert.deepEqual(authorizeOutbound03(handle, claims, now).signerPoint, f.records[4].point);
+  for (const change of [{ deviceId: account }, { lineId: account }, { accountId: device },
+    { generation: 2n }, { version: 3n }, { digest: z32 }, { signerKeyId: f.records[3].keyId },
+    { wraps: [claims.wraps[0], claims.wraps[0]] }, { wraps: claims.wraps.slice(1) },
+    { wraps: [...claims.wraps, { role: 4, keyId: f.records[3].keyId }] }]) {
+    assert.throws(() => authorizeOutbound03(handle, { ...claims, ...change }, now));
+  }
+  assert.throws(() => authorizeOutbound03({}, claims, now));
+  assert.throws(() => authorizeOutbound03(handle, claims, now + 60_000n));
+  // Each variant is genuinely root-signed and accepted by the manifest parser.
+  // Dispatch authority must still refuse revoked, wrong-direction and inactive keys.
+  for (const [at, change] of [[0, { state: 2 }], [2, { scope: 8 }], [2, { state: 2 }],
+    [4, { state: 2 }], [4, { from: now + 1n }], [0, { until: now }]]) {
+    const records = f.records.map((r, i) => i === at ? { ...r, ...change } : r);
+    const signed = await manifest(f, { previous: old.digest, records });
+    const accepted = await verifyManifest03From02(signed.bytes, prior, old.bytes, now);
+    assert.throws(() => authorizeOutbound03(accepted, { ...claims, digest: signed.digest }, now));
+  }
+  const records = f.records.map(r => r.role === 3 ? { ...r, until: now + 5n } : r);
+  const signed = await manifest(f, { previous: old.digest, records });
+  const accepted = await verifyManifest03From02(signed.bytes, prior, old.bytes, now);
+  assert.equal(authorizeOutbound03(accepted, { ...claims, digest: signed.digest }, now).expiresMs, now + 5n);
 });
