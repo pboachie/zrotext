@@ -98,15 +98,27 @@ function presentation(adapter){
  const node=id=>{if(!nodes.has(id))nodes.set(id,element());return nodes.get(id);};
  const document={hidden:false,getElementById:node,createElement:element,addEventListener(name,listener){events.set(name,listener);}},window={addEventListener(name,listener){events.set(name,listener);}};
  const storage=new Proxy({}, {get(){throw Error("Conversation content must not use browser storage");}});
- require("node:vm").runInNewContext(require("node:fs").readFileSync(require("node:path").join(__dirname,"conversation.js"),"utf8"),{document,window,ZtConversationSimulatorAdapter:adapter,ZtConversation:require("./conversation-core.js"),localStorage:storage,sessionStorage:storage,setInterval(){return 1;}},{filename:"conversation.js"});
- return {node,click:id=>node(id).listeners.get("click")(),edit:text=>{node("body").value=text;node("body").listeners.get("input")();},hide:()=>{document.hidden=true;events.get("visibilitychange")();}};
+ const previous=new Map(),pagePath=require.resolve("./conversation.js"),previousPage=require.cache[pagePath];
+ const values={document,window,ZtConversationSimulatorAdapter:adapter,ZtConversation:require("./conversation-core.js"),
+  ZtConversationOwnerSetup:undefined,ZtConversationOwnerSetupFactory:undefined,ZtConversationRootEnrollment:undefined,ZtConversationLineSetup:undefined,
+  localStorage:storage,sessionStorage:storage,setInterval(){return 1;}};
+ let cleaned=false;
+ const cleanup=()=>{if(cleaned)return;cleaned=true;for(const [name,descriptor] of previous){if(descriptor)Object.defineProperty(globalThis,name,descriptor);else delete globalThis[name];}if(previousPage)require.cache[pagePath]=previousPage;else delete require.cache[pagePath];};
+ try {
+  for(const [name,value] of Object.entries(values)){previous.set(name,Object.getOwnPropertyDescriptor(globalThis,name));Object.defineProperty(globalThis,name,{value,writable:true,configurable:true});}
+  delete require.cache[pagePath];require("./conversation.js");
+ } catch(error){cleanup();throw error;}
+ return {cleanup,node,click:id=>node(id).listeners.get("click")(),edit:text=>{node("body").value=text;node("body").listeners.get("input")();},hide:()=>{document.hidden=true;events.get("visibilitychange")();}};
 }
 test("rendered canonical acknowledgement shows queued admission and consumes confirmation",async()=>{
- const f=fixture(),ui=presentation(f.adapter);await ui.click("connect");ui.edit("Synthetic <script>literal</script> reply");await ui.click("review");assert.equal(f.calls.length,0);assert.equal(ui.node("review-body").textContent,"Synthetic <script>literal</script> reply");await ui.click("confirm");assert.equal(ui.node("status").textContent,"Confirmed message queued. Delivery is pending.");assert.equal(ui.node("messages").children[0].textContent,"Queued for delivery: Synthetic <script>literal</script> reply");assert.equal(ui.node("body").value,"");assert.equal(ui.node("confirm").disabled,true);await ui.click("confirm");assert.equal(f.calls.length,1);
+ const f=fixture(),ui=presentation(f.adapter);try {await ui.click("connect");ui.edit("Synthetic <script>literal</script> reply");await ui.click("review");assert.equal(f.calls.length,0);assert.equal(ui.node("review-body").textContent,"Synthetic <script>literal</script> reply");await ui.click("confirm");assert.equal(ui.node("status").textContent,"Confirmed message queued. Delivery is pending.");assert.equal(ui.node("messages").children[0].textContent,"Queued for delivery: Synthetic <script>literal</script> reply");assert.equal(ui.node("body").value,"");assert.equal(ui.node("confirm").disabled,true);await ui.click("confirm");assert.equal(f.calls.length,1);
+ } finally {ui.cleanup();}
 });
 test("rendered lost acknowledgement survives clear and reconnect without another POST",async()=>{
- const f=fixture();f.duringPost(()=>{throw Error("Synthetic accepted response lost");});const ui=presentation(f.adapter);await ui.click("connect");ui.edit("Synthetic private reply");await ui.click("review");await ui.click("confirm");assert.ok(ui.node("status").textContent.includes(messageId));assert.equal(ui.node("messages").children.length,0);assert.equal(ui.node("body").value,"");assert.equal(ui.node("review-body").textContent,"");assert.equal(ui.node("composer").disabled,true);await ui.click("clear");await ui.click("connect");await ui.click("confirm");assert.ok(ui.node("status").textContent.includes(messageId));assert.equal(f.calls.length,1);
+ const f=fixture();f.duringPost(()=>{throw Error("Synthetic accepted response lost");});const ui=presentation(f.adapter);try {await ui.click("connect");ui.edit("Synthetic private reply");await ui.click("review");await ui.click("confirm");assert.ok(ui.node("status").textContent.includes(messageId));assert.equal(ui.node("messages").children.length,0);assert.equal(ui.node("body").value,"");assert.equal(ui.node("review-body").textContent,"");assert.equal(ui.node("composer").disabled,true);await ui.click("clear");await ui.click("connect");await ui.click("confirm");assert.ok(ui.node("status").textContent.includes(messageId));assert.equal(f.calls.length,1);
+ } finally {ui.cleanup();}
 });
 test("page hiding during an attempted POST renders UNKNOWN and prevents a repeat",async()=>{
- const f=fixture(),ui=presentation(f.adapter);f.duringPost(()=>ui.hide());await ui.click("connect");ui.edit("Synthetic private reply");await ui.click("review");await ui.click("confirm");assert.ok(ui.node("status").textContent.includes(messageId));assert.equal(ui.node("composer").disabled,true);assert.equal(ui.node("messages").children.length,0);await ui.click("connect");await ui.click("confirm");assert.equal(f.calls.length,1);
+ const f=fixture(),ui=presentation(f.adapter);try {f.duringPost(()=>ui.hide());await ui.click("connect");ui.edit("Synthetic private reply");await ui.click("review");await ui.click("confirm");assert.ok(ui.node("status").textContent.includes(messageId));assert.equal(ui.node("composer").disabled,true);assert.equal(ui.node("messages").children.length,0);await ui.click("connect");await ui.click("confirm");assert.equal(f.calls.length,1);
+ } finally {ui.cleanup();}
 });
