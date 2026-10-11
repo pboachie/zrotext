@@ -1,10 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.1.7-rc.1
 
 - Prepare the root-only synthetic-alpha client and webhook verifier from the
-  existing TypeScript SDK as the dependency-free `zrotext` package.
+  existing TypeScript SDK as the dependency-free `@elysra/zrotext` package.
 - Include runtime JavaScript, TypeScript declarations, usage limits and the full
   AGPL-3.0-only license. Exclude sealed modules, source tests and internal helpers.
-- Keep `0.0.0-development` private until a maintainer approves the first preview
-  version and records it here. No package has been published by this preparation.
+- Prepare the first versioned preview for reviewed publication to `next`, with
+  scoped imports and matching registry, receipt and artifact checks. Source
+  preparation alone does not publish a package.

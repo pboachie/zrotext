@@ -20,7 +20,7 @@ from check_release_tag import VERSION
 
 ROOT = Path(__file__).resolve().parent.parent
 REPO = "pboachie/zrotext"
-PACKAGE = "zrotext"
+PACKAGE = "@elysra/zrotext"
 OWNER = "pboachie"
 OWNER_ID = 9089767
 ENVIRONMENT = "npm-publication"
@@ -69,7 +69,7 @@ def gh(path: str, *, pages: bool = False):
 
 def registry(opener=urllib.request.urlopen):
     request = urllib.request.Request(
-        "https://registry.npmjs.org/zrotext", headers={"Accept": "application/json"}
+        "https://registry.npmjs.org/@elysra%2fzrotext", headers={"Accept": "application/json"}
     )
     try:
         with opener(request, timeout=30) as response:

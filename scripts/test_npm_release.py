@@ -17,15 +17,15 @@ ENV = {"GITHUB_REPOSITORY": "pboachie/zrotext", "GITHUB_REF_TYPE": "tag",
 
 class NpmReleaseTests(unittest.TestCase):
     def metadata(self):
-        return ({"name": "zrotext", "version": "1.2.3-rc.1", "private": False, "license": "AGPL-3.0-only",
+        return ({"name": "@elysra/zrotext", "version": "1.2.3-rc.1", "private": False, "license": "AGPL-3.0-only",
                  "publishConfig": {"access": "public", "registry": "https://registry.npmjs.org/", "provenance": True}},
-                {"name": "zrotext", "version": "1.2.3-rc.1", "packages": {
-                    "": {"name": "zrotext", "version": "1.2.3-rc.1"}}})
+                {"name": "@elysra/zrotext", "version": "1.2.3-rc.1", "packages": {
+                    "": {"name": "@elysra/zrotext", "version": "1.2.3-rc.1"}}})
 
     def test_exact_preview_manifest_lock_and_changelog_required(self):
         p, lock = self.metadata()
         self.assertEqual(validate_metadata(p, lock, "## 1.2.3-rc.1\n", "v1.2.3-rc.1"), p["version"])
-        for field, value in (("name", "@zrotext/sdk"), ("version", "0.0.0-development"), ("private", True),
+        for field, value in (("name", "zrotext"), ("name", "@zrotext/sdk"), ("version", "0.0.0-development"), ("private", True),
                              ("license", "MIT"), ("dependencies", {"some-module": "1"})):
             with self.subTest(field=field), self.assertRaises(ReleaseError):
                 validate_metadata({**p, field: value}, lock, "## 1.2.3-rc.1\n", "v1.2.3-rc.1")
@@ -44,6 +44,19 @@ class NpmReleaseTests(unittest.TestCase):
         self.assertIsNone(registry(mock.Mock(side_effect=urllib.error.HTTPError("registry", 404, "absent", {}, None))))
         with self.assertRaises(ReleaseError):
             registry(mock.Mock(side_effect=urllib.error.URLError("offline")))
+
+    def test_registry_reads_the_exact_scoped_identity(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        response.read.return_value = b'{"name":"@elysra/zrotext"}'
+        opener = mock.Mock(return_value=response)
+        self.assertEqual(registry(opener)["name"], "@elysra/zrotext")
+        self.assertEqual(opener.call_args.args[0].full_url,
+                         "https://registry.npmjs.org/@elysra%2fzrotext")
+        response.read.return_value = b'{"name":"zrotext"}'
+        with self.assertRaises(ReleaseError):
+            registry(opener)
 
     def test_registry_requires_owner_bootstrap_new_version_and_monotonic_channel(self):
         with self.assertRaises(ReleaseError):
@@ -128,9 +141,9 @@ class NpmReleaseTests(unittest.TestCase):
                 dependency_review("a" * 40, api)
 
     def test_receipt_rejects_changed_bytes_source_run_or_environment(self):
-        info = {"filename": "zrotext-1.2.3-rc.1.tgz", "sha256": "c" * 64,
+        info = {"filename": "elysra-zrotext-1.2.3-rc.1.tgz", "sha256": "c" * 64,
                 "integrity": "sha512-synthetic", "files": ["package.json"]}
-        receipt = {"schema_version": 1, "name": "zrotext", "version": "1.2.3-rc.1",
+        receipt = {"schema_version": 1, "name": "@elysra/zrotext", "version": "1.2.3-rc.1",
                    "tag": ENV["GITHUB_REF_NAME"], "source_commit": ENV["GITHUB_SHA"],
                    "run_id": 100, "run_attempt": 1, "environment_id": 8, **info,
                    "build_lock_sha256": "d" * 64, "public_manifest_sha256": "e" * 64,
@@ -145,7 +158,7 @@ class NpmReleaseTests(unittest.TestCase):
 
 class NpmHandoffTests(unittest.TestCase):
     def receipt(self):
-        return {"name": "zrotext", "tag": ENV["GITHUB_REF_NAME"], "version": "1.2.3-rc.1",
+        return {"name": "@elysra/zrotext", "tag": ENV["GITHUB_REF_NAME"], "version": "1.2.3-rc.1",
                 "source_commit": ENV["GITHUB_SHA"], "run_id": 100, "run_attempt": 1, "sha256": "b" * 64}
 
     def test_delivery_reuses_checklist_and_deduplicates_exact_artifact(self):

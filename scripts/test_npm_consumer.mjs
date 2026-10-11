@@ -25,7 +25,7 @@ try {
   writeFileSync(join(directory, "consumer.mjs"), `
 import assert from 'node:assert/strict';
 import { AlphaClient, AlphaApiError, AlphaOutcomeUnknownError, requiresReconciliation,
-  signWebhook, verifyWebhook, secretFromBase64Url, WebhookVerificationError } from 'zrotext';
+  signWebhook, verifyWebhook, secretFromBase64Url, WebhookVerificationError } from '@elysra/zrotext';
 assert.equal(typeof AlphaApiError, 'function');
 assert.equal(typeof AlphaOutcomeUnknownError, 'function');
 assert.equal(requiresReconciliation('unknown'), true);
@@ -40,18 +40,18 @@ const body = new TextEncoder().encode('{"id":"synthetic-event"}');
 const signature = await signWebhook(key,1000,body);
 await verifyWebhook({signingKey:key,timestamp:'1000',signature,body,nowSeconds:1000});
 await assert.rejects(verifyWebhook({signingKey:key,timestamp:'1000',signature,body:'changed',nowSeconds:1000}), WebhookVerificationError);
-await assert.rejects(import('zrotext/dist/index.js'), {code:'ERR_PACKAGE_PATH_NOT_EXPORTED'});
-await assert.rejects(import('zrotext/dist/sealed.js'), {code:'ERR_PACKAGE_PATH_NOT_EXPORTED'});
+await assert.rejects(import('@elysra/zrotext/dist/index.js'), {code:'ERR_PACKAGE_PATH_NOT_EXPORTED'});
+await assert.rejects(import('@elysra/zrotext/dist/sealed.js'), {code:'ERR_PACKAGE_PATH_NOT_EXPORTED'});
 `);
   execFileSync(process.execPath, [join(directory, "consumer.mjs")], { cwd: directory, stdio: "inherit" });
   writeFileSync(join(directory, "consumer.ts"), `
-import { AlphaClient, type AlphaSubmitRequest, type AlphaStatus, type VerifyWebhookInput, requiresReconciliation, verifyWebhook } from 'zrotext';
+import { AlphaClient, type AlphaSubmitRequest, type AlphaStatus, type VerifyWebhookInput, requiresReconciliation, verifyWebhook } from '@elysra/zrotext';
 const client: AlphaClient = new AlphaClient({baseUrl:'https://example.invalid',apiKey:'synthetic-test'});
 const status: Promise<AlphaStatus> = client.getStatus('00000000-0000-0000-0000-000000000001');
 const submit = (request: AlphaSubmitRequest) => client.submit(request,'same-key');
 const verify = (input: VerifyWebhookInput): Promise<void> => verifyWebhook(input);
 // @ts-expect-error sealed internals are excluded from the public exports map
-import type { SealedClient } from 'zrotext/dist/sealed.js';
+import type { SealedClient } from '@elysra/zrotext/dist/sealed.js';
 requiresReconciliation('unknown');
 void status; void submit; void verify;
 `);

@@ -15,7 +15,7 @@ def handoff(receipt: dict, api=gh, env=None) -> dict:
     tag, commit, run_id, attempt = context() if env is None else context(env)
     if (receipt.get("name"), receipt.get("tag"), receipt.get("version"), receipt.get("source_commit"),
         receipt.get("run_id"), receipt.get("run_attempt")) != (
-        "zrotext", tag, tag[1:], commit, run_id, attempt
+        "@elysra/zrotext", tag, tag[1:], commit, run_id, attempt
     ):
         raise ReleaseError("Notification receipt identity differs.")
     if not re.fullmatch(r"[0-9a-f]{64}", receipt.get("sha256", "")):
@@ -36,7 +36,7 @@ def handoff(receipt: dict, api=gh, env=None) -> dict:
             and c.get("user", {}).get("login") in (OWNER, "github-actions[bot]") for page in comments for c in page):
             return {"issue": issue["number"], "notified": False}
     run_url = f"https://github.com/{REPO}/actions/runs/{run_id}"
-    body = (f"@{OWNER}: review the public zrotext {tag[1:]} npm preview for the next channel.\n\n"
+    body = (f"@{OWNER}: review the public @elysra/zrotext {tag[1:]} npm preview for the next channel.\n\n"
             f"Source commit: {commit}.\nTarball SHA256: {receipt['sha256']}.\n"
             f"Review the exact package, content manifest and test/audit results in [the workflow run]({run_url}). "
             "Then approve or reject its npm-publication environment job. "

@@ -1,13 +1,41 @@
-# zrotext
+# @elysra/zrotext
 
-Preparation for an unpublished, dependency-free ESM preview package. The current
-`0.0.0-development` manifest is private and cannot be published. A maintainer must
-approve a versioned release before public installation instructions are added.
+Dependency-free ESM client and webhook verifier for ZROtext's synthetic-alpha
+test plane. Version `0.1.7-rc.1` is the first preview candidate; registry
+availability requires the maintainer's reviewed bootstrap publication.
+
+## Install
+
+After publication, install the preview explicitly:
+
+```sh
+npm install @elysra/zrotext@0.1.7-rc.1
+```
+
+Subsequent approved previews are available through `@elysra/zrotext@next`.
 
 This package exposes `AlphaClient`, its types and errors, `requiresReconciliation`,
 and webhook signing/verification helpers through the package root. It requires
 Node.js 24 or newer. It has no runtime dependencies or lifecycle scripts. Sealed
 content modules and internal entry points are outside this package's public API.
+
+## Read a test message's status
+
+```js
+import { AlphaClient, requiresReconciliation } from '@elysra/zrotext';
+
+const client = new AlphaClient({
+  baseUrl: process.env.ZROTEXT_BASE_URL,
+  apiKey: process.env.ZROTEXT_API_KEY,
+});
+const status = await client.getStatus(process.env.ZROTEXT_MESSAGE_ID);
+if (requiresReconciliation(status.state)) {
+  console.log('Reconcile device or provider evidence before another submission.');
+}
+```
+
+Run this on your server with an existing test message ID and a scoped API key.
+The example reads status and never submits or retries a message.
 
 ## Synthetic-alpha limits
 
@@ -39,7 +67,7 @@ three source modules using the locked compiler:
 node sdk/typescript/node_modules/typescript/bin/tsc -p sdk/npm/tsconfig.json --outDir "$TEMP_BUILD"
 python scripts/package_npm.py stage --compiled "$TEMP_BUILD" --out "$TEMP_PACKAGE"
 npm pack "$TEMP_PACKAGE" --ignore-scripts --pack-destination "$TEMP_PACK"
-python scripts/package_npm.py verify-tarball "$TEMP_PACK/zrotext-0.0.0-development.tgz"
+python scripts/package_npm.py verify-tarball "$TEMP_PACK/elysra-zrotext-0.1.7-rc.1.tgz"
 ```
 
 All three destinations must be temporary directories outside the checkout; the
