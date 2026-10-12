@@ -132,6 +132,14 @@ input. The SEALED registration supplies its opening identity. These are closed
 objects with canonical UUID/DER strings. No caller-selected account, protocol,
 nonce, generation or lease can replace authenticated stored values.
 
+For each new activation challenge, the server MUST generate a fresh 32-byte
+nonce using a cryptographically secure random number generator. This nonce MUST
+be independent of setup or registration nonces and of opening, registration,
+challenge or other correlation identifiers. An exact retry may reuse only the
+nonce stored for the same original, still-live pending exchange. Retired nonces
+MUST NOT be reconstructed from immutable phone statements, installed receipts
+or journals.
+
 Authenticate owner role, session, Origin and CSRF before reading mutation bodies.
 Retain the existing MFA and registration gates. Bind the initiating owner session,
 purpose, opening/registration, challenge, nonce, exact binding generation, actual
