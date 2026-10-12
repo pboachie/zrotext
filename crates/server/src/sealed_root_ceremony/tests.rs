@@ -1090,6 +1090,52 @@ async fn registered_step<T, E>(
     }
 }
 
+#[derive(Clone, Copy)]
+struct RegisteredMigrationBackend {
+    pid: i32,
+    born_us: i64,
+}
+
+#[derive(Default)]
+struct RegisteredMigrationProgress {
+    last_started: Option<auth::test_schema::MigrationPhase>,
+    last_completed: Option<auth::test_schema::MigrationPhase>,
+}
+
+impl RegisteredMigrationProgress {
+    fn observe(&mut self, event: auth::test_schema::MigrationProgress) {
+        match event {
+            auth::test_schema::MigrationProgress::Started(phase) => {
+                self.last_started = Some(phase);
+            }
+            auth::test_schema::MigrationProgress::Completed(phase) => {
+                self.last_completed = Some(phase);
+            }
+        }
+    }
+
+    fn diagnostic(&self, backend: RegisteredMigrationBackend) -> String {
+        let label = |phase: Option<auth::test_schema::MigrationPhase>| {
+            phase.map_or_else(|| "none".to_owned(), |phase| phase.to_string())
+        };
+        let pending = self.last_started.is_some() && self.last_started != self.last_completed;
+        let detail = format!(
+            "migration_backend_pid={}; migration_backend_born_us={}; last_started={}; last_completed={}; phase_pending={pending}",
+            backend.pid,
+            backend.born_us,
+            label(self.last_started),
+            label(self.last_completed),
+        );
+        // Only trusted phase labels and numeric backend identity enter this
+        // diagnostic. Retain a fixed bound even if the inventory grows later.
+        if detail.len() > 512 {
+            "migration_diagnostics=bounded_metadata_unavailable".into()
+        } else {
+            detail
+        }
+    }
+}
+
 struct RegisteredOwnerCase {
     schema: String,
     deadline: tokio::time::Instant,
@@ -1202,13 +1248,36 @@ impl RegisteredOwnerCase {
         let cleanup = RegisteredConnection::connect(&config, deadline).await?;
         Self::assert_schema(&db, &schema, deadline).await?;
         Self::assert_schema(&cleanup, &schema, deadline).await?;
+        let backend_row = registered_step(
+            deadline,
+            "migration backend identity",
+            db.db()?.query_one(
+                "SELECT pg_catalog.pg_backend_pid(), (extract(epoch FROM backend_start)*1000000)::bigint FROM pg_catalog.pg_stat_activity WHERE pid=pg_catalog.pg_backend_pid()",
+                &[],
+            ),
+        )
+        .await?;
+        let backend = RegisteredMigrationBackend {
+            pid: backend_row.get(0),
+            born_us: backend_row.get(1),
+        };
+        if backend.pid <= 0 || backend.born_us <= 0 {
+            return Err("invalid migration backend identity; retain namespace".into());
+        }
+        let mut progress = RegisteredMigrationProgress::default();
         // apply can panic. The entire fixture operation is an owned task below;
         // a panic is observed there and does not call cleanup or pass this test.
-        registered_step(deadline, "all maintained migrations", async {
-            auth::test_schema::apply(db.db()?).await;
-            Ok::<(), String>(())
-        })
-        .await?;
+        // The observer records two metadata values; it does not grant a new
+        // migration budget or claim that cancellation settled server-side work.
+        let migration_result = {
+            let mut observer = |event| progress.observe(event);
+            registered_step(deadline, "all maintained migrations", async {
+                auth::test_schema::apply_with_progress(db.db()?, &mut observer).await;
+                Ok::<(), String>(())
+            })
+            .await
+        };
+        migration_result.map_err(|stage| format!("{stage}; {}", progress.diagnostic(backend)))?;
         for table in [
             "accounts",
             "users",
