@@ -4,8 +4,8 @@ package org.zrotext.gateway
 import java.util.concurrent.Executor
 
 /**
- * Unused API33+ complete-list observation adapter. Construction is inert; no Android factory,
- * singleton, lifecycle hook, signer, storage or radio consumer is installed here.
+ * API33+ complete-list observation adapter. Construction is inert. The service's v2 owner
+ * supplies the platform factory and forwards withdrawal before signing or installation.
  *
  * The supplied main dispatcher must run registration on main and report dispatch acceptance.
  * The read executor remains caller-owned. Explicit permission/selection/lifecycle withdrawal

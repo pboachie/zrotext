@@ -21,7 +21,8 @@ data class ActiveSimCard(val subscriptionId: Int, val cardId: Int?,
 
 /** Snapshot taken at an owner-approved activation, never inferred from the saved SIM selection. */
 internal data class ActivatedSimCard(val subscriptionId: Int, val cardId: Int,
-                                     val profile: EsimProfileCandidate? = null)
+                                     val profile: EsimProfileCandidate? = null,
+                                     val completeSelection: InstalledSelectedLineV2? = null)
 
 internal object SimCardContinuity {
     /**
@@ -92,12 +93,18 @@ internal object SimCardContinuity {
     }
 
     fun matches(activated: ActivatedSimCard?, active: List<ActiveSimCard>?): Boolean {
+        activated?.completeSelection?.let { installed ->
+            return activated.profile == null && installed.isCurrent() && installed.activated() == activated &&
+                installed.lease.matches(active) && installed.isCurrent()
+        }
         return activated != null && activationCandidate(active, activated.subscriptionId) == activated
     }
 }
 
 internal fun ActivatedSimCard.observedCard(): ActiveSimCard =
-    ActiveSimCard(subscriptionId, cardId, profile != null, profile?.record?.portIndex,
+    completeSelection?.selected?.let {
+        ActiveSimCard(subscriptionId, cardId, it.kind == ObservedSubscriptionKind.EMBEDDED, it.portIndex, it.slotIndex)
+    } ?: ActiveSimCard(subscriptionId, cardId, profile != null, profile?.record?.portIndex,
         profile?.record?.logicalSlotIndex).withProfile(profile)
 
 /**

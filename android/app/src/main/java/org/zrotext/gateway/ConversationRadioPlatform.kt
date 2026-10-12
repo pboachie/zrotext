@@ -27,11 +27,19 @@ internal class ConversationRadioPlatform internal constructor(
     constructor(context:Context,binding:LocalLineBinding,suppression:ConversationExistingSuppressionTokens,
                 enabled:Boolean=false):this(binding,AndroidDriver(checkNotNull(context.applicationContext),binding),suppression,enabled)
     private val installedProfile = binding.installedProfile()
-    private fun liveProfile() = binding.continuityKind == "physical" && binding.liveContinuity() ||
-        binding.continuityKind == "esim" && installedProfile?.isCurrent() == true &&
-            binding.installedProfile() === installedProfile
+    private val installedSelectionV2 = binding.installedSelectionV2()
+    private fun liveProfile() = when {
+        binding.protocolVersion == 2 -> installedSelectionV2?.isCurrent() == true &&
+            installedSelectionV2.record.purpose == "sealed" && binding.installedSelectionV2() === installedSelectionV2
+        binding.protocolVersion != 1 -> false
+        else -> binding.continuityKind == "physical" && binding.liveContinuity() ||
+            binding.continuityKind == "esim" && installedProfile?.isCurrent() == true &&
+                binding.installedProfile() === installedProfile
+    }
     private fun selected() {check(enabled && liveProfile());driver.requireSelected()}
     private class AndroidDriver(private val application:Context,private val binding:LocalLineBinding):ConversationRadioDriver {
+        private val installedSelectionV2 = binding.installedSelectionV2()
+        private val installedProfile = binding.installedProfile()
         override fun requireSelected() {
             check(SmsAttemptAdapter.hasSelectedSim(application,binding.subscriptionId))
             check(SimCardContinuity.matches(binding.activatedSim(),SimCardContinuity.observe(application)))
@@ -62,6 +70,10 @@ internal class ConversationRadioPlatform internal constructor(
         override fun close() {preparedAttempt=null;preparedParts=null;radio=null;sent=null;delivered=null}
         override fun send(peer:String,attempt:String,parts:ArrayList<String>) {
             check(binding.liveContinuity()) // Memory-only after the consumer's final authority/time sample.
+            check(if (binding.protocolVersion == 2) installedSelectionV2?.isCurrent() == true &&
+                binding.installedSelectionV2() === installedSelectionV2
+                else binding.continuityKind != "esim" || installedProfile?.isCurrent() == true &&
+                    binding.installedProfile() === installedProfile)
             check(preparedAttempt==attempt && preparedParts===parts)
             preparedAttempt=null;preparedParts=null
             val selectedRadio=checkNotNull(radio);val sentCallbacks=checkNotNull(sent);val deliveredCallbacks=checkNotNull(delivered)

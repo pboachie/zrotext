@@ -96,6 +96,19 @@ class AuthenticatedGatewayService : Service() {
     @Volatile private var installedSmsLineIsEsim = false
     /** Optional, explicitly accepted SEALED line setup. No content worker or body consent. */
     @Volatile private var sealedLineActivation: SealedLineActivationProvider? = null
+    @Volatile private var lineActivationV2: LineActivationV2Runtime? = null
+    @Volatile private var selectedLineV2Owner: LineActivationV2SelectedLineOwner? = null
+
+    private fun ensureSelectedLineV2Owner(): LineActivationV2SelectedLineOwner? {
+        selectedLineV2Owner?.let { it.selectCurrent(); return it }
+        return runCatching { LineActivationV2SelectedLineOwner.forAndroid(applicationContext, JournalRuntime.io) }
+            .getOrNull()?.also { selectedLineV2Owner = it; LineActivationV2SelectedLineMount.attach(it) }
+    }
+    private fun closeSelectedLineV2Owner() {
+        val old = selectedLineV2Owner; selectedLineV2Owner = null
+        old?.retireAtEntry()
+        if (old != null) { LineActivationV2SelectedLineMount.detach(old); old.close() }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -245,6 +258,7 @@ class AuthenticatedGatewayService : Service() {
 
     /** Fence the previous session before any connection closure can wait. */
     private fun retireConnection(): Int {
+        selectedLineV2Owner?.retireAtEntry()
         generation += 1
         val currentGeneration = generation
         traceEpoch.set(-1L)
@@ -281,16 +295,20 @@ class AuthenticatedGatewayService : Service() {
         var grantSeen = false
         val statusPublisher = DeviceStatusPublisher()
         val sealedLease = SealedExecutionMount.capture()
+        val lineOwner = ensureSelectedLineV2Owner()
         var sealedSelected = false
-        val offered = if (sealedLease != null) SealedSocketTime.PROTOCOL + ", " + DeviceStatusPublisher.OFFER
-            else DeviceStatusPublisher.OFFER
+        var selectedTuple = LineActivationV2Negotiation.Selection(null, false, 1)
+        val offeredProtocols = LineActivationV2Negotiation.offer(lineOwner != null, sealedLease != null)
+        val offered = offeredProtocols.joinToString(", ")
         socket = client.newWebSocket(Request.Builder().url(url)
             .header("Sec-WebSocket-Protocol", offered).build(), object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 if (generation != currentGeneration) return
                 val selected = response.header("Sec-WebSocket-Protocol")
-                sealedSelected = sealedLease != null && selected == SealedSocketTime.PROTOCOL
-                statusPublisher.selectProtocol(if (sealedSelected) "zrotext-device-status-v2" else selected)
+                selectedTuple = try { LineActivationV2Negotiation.select(selected, offeredProtocols) }
+                    catch (_: IllegalArgumentException) { return disconnect(currentGeneration, DeviceReconnectPolicy.Loss.PROTOCOL_REJECTED) }
+                sealedSelected = sealedLease != null && selectedTuple.sealed
+                statusPublisher.selectProtocol(selectedTuple.status)
                 val hello = JSONObject().put("v", 1).put("type", "hello")
                     .put("device_id", machine.helloDeviceId().toString())
                 if (!webSocket.send(hello.toString()))
@@ -304,6 +322,25 @@ class AuthenticatedGatewayService : Service() {
                 try {
                     check(text.toByteArray(Charsets.UTF_8).size <= MAX_FRAME_BYTES)
                     val frame = JSONObject(text)
+                    val type = frame.opt("type")
+                    if (type is String && type in setOf("sms_line_challenge_v2", "sms_line_proof_ack_v2",
+                            "sms_line_activated_v2", "sealed_line_challenge_v2", "sealed_line_proof_ack_v2",
+                            "sealed_line_activated_v2", "sealed_line_install_ack_v2")) {
+                        check(selectedTuple.lineVersion == 2 && machine.phase == DeviceStreamMachine.Phase.ACTIVE)
+                        val purpose = if (type.startsWith("sms_")) LineActivationV2Purpose.SMS else LineActivationV2Purpose.SEALED
+                        val input = LineActivationV2IncomingFrames.parse(text.toByteArray(Charsets.UTF_8), purpose)
+                        val consumer = checkNotNull(lineActivationV2)
+                        JournalRuntime.io.execute {
+                            if (generation != currentGeneration || socket !== webSocket || lineActivationV2 !== consumer || !consumer.isCurrent()) return@execute
+                            val sent = consumer.acceptAndSend(input, {
+                                generation == currentGeneration && socket === webSocket &&
+                                    lineActivationV2 === consumer && consumer.isCurrent()
+                            }, { output -> webSocket.send(output) })
+                            if (sent == false)
+                                disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
+                        }
+                        return
+                    }
                     check(frame.opt("v") is Number && frame.getInt("v") == 1)
                     check(frame.opt("type") is String)
                     when (frame.getString("type")) {
@@ -424,13 +461,21 @@ class AuthenticatedGatewayService : Service() {
                                 if (generation != currentGeneration || socket !== webSocket) return
                                 val identity = EvidenceIdentity.fromStream(machine.activeAccountId(), machine.activeDeviceId(), url)
                                 sessionIdentity = identity
+                                if (selectedTuple.lineVersion == 2) {
+                                    lineActivationV2 = LineActivationV2Runtime(machine.activeAccountId(), machine.activeDeviceId(),
+                                        epoch, identity.originHash, checkNotNull(lineOwner), keys, SmsJournalDatabase.get(applicationContext), {
+                                            generation == currentGeneration && socket === webSocket && sessionIdentity == identity &&
+                                                machine.phase == DeviceStreamMachine.Phase.ACTIVE &&
+                                                runCatching { machine.heartbeatEpoch() == epoch }.getOrDefault(false)
+                                        }).also(LineActivationV2SelectedLineMount::attachConsumer)
+                                }
                                 sealedLineActivation?.close()
-                                sealedLineActivation = SealedLineActivationMount.open(applicationContext, keys,
+                                sealedLineActivation = if (selectedTuple.lineVersion == 1) SealedLineActivationMount.open(applicationContext, keys,
                                     machine.activeAccountId(), machine.activeDeviceId(), epoch, {
                                         generation == currentGeneration && socket === webSocket && sessionIdentity == identity &&
                                             machine.phase == DeviceStreamMachine.Phase.ACTIVE &&
                                             runCatching { machine.heartbeatEpoch() == epoch }.getOrDefault(false)
-                                    })
+                                    }) else null
                                 conversationHost = ConversationSocketComposition.registerAuthenticatedHost(webSocket, identity, epoch,
                                     scheduler, {
                                         check(generation == currentGeneration && socket === webSocket && sessionIdentity == identity &&
@@ -565,16 +610,19 @@ class AuthenticatedGatewayService : Service() {
                                 uuid(frame, "event_id").toString(), frame.optBoolean("suppression_cleared", false))
                         }
                         "sms_line_challenge" -> {
+                            check(selectedTuple.lineVersion == 1)
                             check(machine.phase == DeviceStreamMachine.Phase.ACTIVE)
                             handleSmsLineChallenge(webSocket, machine, keys, currentGeneration,
                                 SmsLineActivationFrames.challenge(frame))
                         }
                         "sealed_line_challenge", "sealed_line_proof_ack", "sealed_line_activated", "sealed_line_install_ack" -> {
+                            check(selectedTuple.lineVersion == 1)
                             check(machine.phase == DeviceStreamMachine.Phase.ACTIVE)
                             handleSealedLineFrame(webSocket, machine, keys, currentGeneration,
                                 SealedLineActivationFrames.incoming(frame))
                         }
                         "sms_line_proof_ack" -> {
+                            check(selectedTuple.lineVersion == 1)
                             check(machine.phase == DeviceStreamMachine.Phase.ACTIVE)
                             val ack = SmsLineActivationFrames.proofAck(frame)
                             val pending = smsLineActivation
@@ -584,6 +632,7 @@ class AuthenticatedGatewayService : Service() {
                             }
                         }
                         "sms_line_activated" -> {
+                            check(selectedTuple.lineVersion == 1)
                             check(machine.phase == DeviceStreamMachine.Phase.ACTIVE)
                             // Capture the authenticated identity now: a reconnect before the
                             // io thread runs must not discard an approved activation.
@@ -823,6 +872,17 @@ class AuthenticatedGatewayService : Service() {
                     pauseLineOptOutUpload()
                     return@execute
                 }
+                val signingFence = LineOptOutSigningFence(checkNotNull(binding), pending, accountId, deviceId,
+                    dao::currentLineBinding, {
+                        getSharedPreferences("gateway_selection", MODE_PRIVATE)
+                            .getInt("subscription_id", SubscriptionManager.INVALID_SUBSCRIPTION_ID)
+                    }, { SimCardContinuity.observe(applicationContext) }, System::currentTimeMillis, {
+                        generation == currentGeneration && socket === webSocket && !lineOptOutPaused &&
+                            machine.phase == DeviceStreamMachine.Phase.ACTIVE &&
+                            runCatching { machine.heartbeatEpoch() == epoch && machine.activeAccountId() == accountId &&
+                                machine.activeDeviceId() == deviceId }.getOrDefault(false)
+                    })
+                signingFence.requireCurrent()
                 // Open the E.164 sender only at the signing boundary. It never enters Room/logs.
                 val recipient = LineOptOutSender.recover(pending, InboundVault::openSender) {
                     InboundVault.token("sender-v1", it.toByteArray(Charsets.US_ASCII))
@@ -832,7 +892,7 @@ class AuthenticatedGatewayService : Service() {
                     return@execute
                 }
                 val signed = if (pending.signatureDer == null) {
-                    val signature = keys.signLineOptOut(accountId, deviceId, pending, recipient)
+                    val signature = signingFence.sign { keys.signLineOptOut(accountId, deviceId, pending, recipient) }
                     check(signature.size in 8..80)
                     check(dao.signLineOptOut(eventId, checkNotNull(pending.lineId),
                         checkNotNull(pending.bindingGeneration), signature) == 1)
@@ -849,9 +909,11 @@ class AuthenticatedGatewayService : Service() {
                     pauseLineOptOutUpload()
                     return@execute
                 }
+                val output = LineOptOutUploadFrame.encode(epoch, signed, recipient)
+                signingFence.requireCurrent() // Sender recovery, signer, Room and encoder precede the final fence.
                 awaitingLineOptOutId = eventId
                 lineOptOutSentAtNanos = System.nanoTime()
-                if (!webSocket.send(LineOptOutUploadFrame.encode(epoch, signed, recipient)))
+                if (!webSocket.send(output))
                     disconnect(currentGeneration, DeviceReconnectPolicy.Loss.TRANSPORT)
             } catch (_: Exception) {
                 // Never discard a STOP when a local key, journal or writer check fails.
@@ -1116,6 +1178,7 @@ class AuthenticatedGatewayService : Service() {
     @Synchronized
     private fun disconnect(currentGeneration: Int, reason: DeviceReconnectPolicy.Loss) {
         if (generation != currentGeneration) return
+        selectedLineV2Owner?.retireAtEntry()
         generation += 1 // Fence callbacks before potentially blocking conversation closure.
         closeConversationConnection()
         Log.i("ZTReconnect", "disconnect reason=$reason")
@@ -1187,6 +1250,7 @@ class AuthenticatedGatewayService : Service() {
             val available = hasNetwork(network)
             when (val action = reconnect.networkChanged(available)) {
                 DeviceReconnectPolicy.Action.WaitForNetwork -> {
+                    selectedLineV2Owner?.retireAtEntry()
                     generation += 1
                     cancelTimers()
                     retry?.cancel(false)
@@ -1218,6 +1282,10 @@ class AuthenticatedGatewayService : Service() {
     }
 
     private fun closeConversationConnection() {
+        selectedLineV2Owner?.retireAtEntry()
+        val lineV2 = lineActivationV2; lineActivationV2 = null
+        if (lineV2 != null) LineActivationV2SelectedLineMount.detachConsumer(lineV2)
+        lineV2?.close()
         val execution = sealedConnection; sealedConnection = null
         val activation = sealedLineActivation; sealedLineActivation = null
         val host=conversationHost;conversationHost=null
@@ -1229,9 +1297,11 @@ class AuthenticatedGatewayService : Service() {
         }
     }
     private fun halt() {
+        selectedLineV2Owner?.retireAtEntry()
         SealedExecutionMount.pause()
         generation += 1 // Fence listener callbacks before admission/storage closure can wait.
         closeConversationConnection()
+        closeSelectedLineV2Owner()
         ConversationProcessMount.runtime.pause(ConversationStopReason.PHONE_SESSION_LOST)
         reconnect.pause()
         JournalWriteSignal.replace(null)
@@ -1343,5 +1413,38 @@ class AuthenticatedGatewayService : Service() {
         private const val NOTIFICATION_ID = 1002
         private const val EVIDENCE_REJECTED_CLOSE = 4409
         private const val MAX_FRAME_BYTES = 4096
+    }
+}
+
+/** Captures the actual installed object before sender recovery; provider reads never renew it. */
+internal class LineOptOutSigningFence(private val binding: LocalLineBinding,
+    private val entry: LocalInboundWithdrawal, private val account: UUID, private val device: UUID,
+    private val readBinding: () -> LocalLineBinding?, private val selected: () -> Int,
+    private val observe: () -> List<ActiveSimCard>?, private val nowMs: () -> Long,
+    private val sessionCurrent: () -> Boolean) {
+    private val complete = binding.installedSelectionV2()
+    private val profile = binding.installedProfile()
+    private var lastNow = 0L
+    private fun memoryCurrent(): Boolean = sessionCurrent() && when (binding.protocolVersion) {
+        2 -> complete?.isCurrent() == true && binding.installedSelectionV2() === complete
+        1 -> binding.continuityKind != "esim" || profile?.isCurrent() == true && binding.installedProfile() === profile
+        else -> false
+    }
+    fun requireCurrent() {
+        check(memoryCurrent())
+        val currentBinding = readBinding()
+        val currentSelected = selected()
+        val cards = observe()
+        val completed = nowMs()
+        check(completed > 0 && completed >= lastNow)
+        lastNow = completed
+        check(currentBinding == binding && LineOptOutUploadGate.allows(entry, currentBinding,
+            account, device, currentSelected, cards, completed) && memoryCurrent())
+    }
+    fun sign(operation: () -> ByteArray): ByteArray {
+        requireCurrent() // Exact tuple, selected live object and time after sender recovery.
+        val signature = operation()
+        requireCurrent() // A blocking signer cannot publish bytes after retirement.
+        return signature
     }
 }

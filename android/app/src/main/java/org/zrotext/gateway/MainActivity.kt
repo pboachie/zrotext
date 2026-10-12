@@ -481,11 +481,16 @@ class MainActivity : ComponentActivity() {
                                 { selectedSim },
                                 { DeviceSigningKeyStore(applicationContext).existingConversationPublicPoint() },
                                 { acceptance, originalHostCurrent ->
-                                    val sim = SimCardContinuity.activationCandidate(
-                                        SimCardContinuity.observe(applicationContext), acceptance.subscriptionId)
-                                    if (sim == null) null else SealedLineActivationMount.enableOwned(
-                                        acceptance, explicitlyAccepted = true, originCurrent = originalHostCurrent,
-                                        profile = sim.profile)
+                                    val v2Lease = LineActivationV2SelectedLineMount.captureForAcceptance()
+                                    if (v2Lease != null && v2Lease.selected.subscriptionId == acceptance.subscriptionId)
+                                        SealedLineActivationMount.enableV2Owned(acceptance, v2Lease, originalHostCurrent)
+                                    else {
+                                        val sim = SimCardContinuity.activationCandidate(
+                                            SimCardContinuity.observe(applicationContext), acceptance.subscriptionId)
+                                        if (sim == null) null else SealedLineActivationMount.enableOwned(
+                                            acceptance, explicitlyAccepted = true, originCurrent = originalHostCurrent,
+                                            profile = sim.profile)
+                                    }
                                 })
                             sealedLineReviewOpen = true
                         }) { Text("Review paired phone line") }
@@ -1331,6 +1336,7 @@ class MainActivity : ComponentActivity() {
         sims = choices
         selectedSim = null
         completeSelectionCoordinator?.permissionLost()
+        LineActivationV2SelectedLineMount.permissionLost()
         // apply updates the process-visible selection before asynchronous persistence.
         // This preference records a choice; it never restores installed profile authority.
         getSharedPreferences("gateway_selection", MODE_PRIVATE).edit()
@@ -1372,6 +1378,7 @@ class MainActivity : ComponentActivity() {
     private fun selectSimForPreparation(id: Int) {
         if (sims.none { it.first == id }) return
         if (selectedSim != id) {
+            LineActivationV2SelectedLineMount.retireAtEntry()
             completeSelectionCoordinator?.stop()
             SimProfileContinuity.stop()
             SealedLineActivationMount.disable()
@@ -1379,6 +1386,7 @@ class MainActivity : ComponentActivity() {
         selectedSim = id
         getSharedPreferences("gateway_selection", MODE_PRIVATE).edit()
             .putInt("subscription_id", id).apply()
+        LineActivationV2SelectedLineMount.selectCurrent()
         prepareCurrentCompleteSelection()
     }
 

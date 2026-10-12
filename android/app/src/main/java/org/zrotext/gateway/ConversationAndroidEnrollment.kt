@@ -19,7 +19,7 @@ internal object ConversationAndroidEnrollment {
             check(Build.VERSION.SDK_INT >= 31)
             host.requireCurrent()
             check(binding.accountId == host.identity.accountId && binding.deviceId == host.identity.deviceId &&
-                binding.generation > 0 && binding.cardId != null && database.attempts().currentLineBinding() == binding)
+                binding.generation > 0 && binding.activatedSim() != null && database.attempts().currentLineBinding() == binding)
             check(listOf(Manifest.permission.SEND_SMS, Manifest.permission.RECEIVE_SMS, Manifest.permission.READ_PHONE_STATE).all {
                 app.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED
             })

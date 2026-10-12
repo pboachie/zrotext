@@ -131,14 +131,16 @@ class JournalDeviceUpgradeTest {
             SmsJournalDatabase.MIGRATION_7_8, SmsJournalDatabase.MIGRATION_8_9,
             SmsJournalDatabase.MIGRATION_9_10, SmsJournalDatabase.MIGRATION_10_11,
             SmsJournalDatabase.MIGRATION_11_12, SmsJournalDatabase.MIGRATION_12_13,
-        ) else arrayOf(SmsJournalDatabase.MIGRATION_11_12, SmsJournalDatabase.MIGRATION_12_13)
+            SmsJournalDatabase.MIGRATION_13_14,
+        ) else arrayOf(SmsJournalDatabase.MIGRATION_11_12, SmsJournalDatabase.MIGRATION_12_13,
+            SmsJournalDatabase.MIGRATION_13_14)
         return Room.databaseBuilder(context, SmsJournalDatabase::class.java, name)
             .allowMainThreadQueries().addMigrations(*migrations).build()
     }
 
     private fun assertCurrentSchema(room: SmsJournalDatabase): String {
         val db = room.openHelper.writableDatabase
-        assertEquals(13, db.version)
+        assertEquals(14, db.version)
         val expectedBindingColumns = legacyColumns(11).getValue("local_line_binding") + listOf(
             Column("continuityKind", "TEXT", true, "'physical'"),
             Column("profilePortIndex", "INTEGER", false, "NULL"),
@@ -146,6 +148,12 @@ class JournalDeviceUpgradeTest {
             Column("profileIncarnation", "TEXT", false, "NULL"),
             Column("profileObservationEpoch", "INTEGER", false, "NULL"),
             Column("profileLeaseId", "TEXT", false, "NULL"),
+            Column("protocolVersion", "INTEGER", true, "1"),
+            Column("v2Purpose", "TEXT", false, "NULL"),
+            Column("v2ChallengeId", "TEXT", false, "NULL"),
+            Column("v2ObservationB64url", "TEXT", false, "NULL"),
+            Column("v2StatementSha256", "TEXT", false, "NULL"),
+            Column("v2SignatureSha256", "TEXT", false, "NULL"),
         )
         val bindingColumns = mutableListOf<Column>()
         db.query("PRAGMA table_info(`local_line_binding`)").use { cursor ->
@@ -166,7 +174,7 @@ class JournalDeviceUpgradeTest {
                 if (isApplicationTable(table)) tables.add(table)
             }
         }
-        assertEquals(legacyColumns(11).keys + "sealed_preparations", tables)
+        assertEquals(legacyColumns(11).keys + setOf("sealed_preparations", "line_activation_v2"), tables)
         val indexes = mutableSetOf<String>()
         db.query("SELECT name FROM sqlite_master WHERE type = 'index'").use { cursor ->
             while (cursor.moveToNext()) {

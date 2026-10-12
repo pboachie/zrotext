@@ -197,4 +197,79 @@ class ConversationRadioSubmissionTest {
             assertEquals("unknown",h.sends.sends().receipt(h.message)?.state);h.assertNoReplay()
         } finally {release.countDown();pool.shutdown();assertTrue(pool.awaitTermination(5,TimeUnit.SECONDS))}
     }
+
+    @Test fun completePhysicalAndEsimLineCommitOneUseBeforeOneFakeCall() {
+        listOf(false, true).forEach { embedded -> LineActivationV2RuntimeFixture(embedded).use { f ->
+            val binding = f.installSealed()
+            val context = f.radioContext(binding)
+            val dao = f.db.attempts(); val event = java.util.UUID(0, 10).toString()
+            dao.reserveAlpha(context.attempt, context.message, binding.subscriptionId, 1, event, f.now,
+                identity = testEvidenceIdentity)
+            assertTrue(dao.acknowledgeAlphaIntent(event, true, f.now))
+            var sends = 0
+            val driver = object : ConversationRadioDriver {
+                override fun requireSelected() { check(SimCardContinuity.matches(binding.activatedSim(), f.cards())) }
+                override fun divide(body: String) = arrayListOf(body)
+                override fun prepare(attempt: String, parts: ArrayList<String>) = Unit
+                override fun close() = Unit
+                override fun send(peer: String, attempt: String, parts: ArrayList<String>) {
+                    assertEquals(AttemptState.RADIO_STARTED, dao.getAttempt(attempt)?.state); sends++
+                }
+            }
+            val platform = ConversationRadioPlatform(binding, driver, ConversationExistingSuppressionTokens {
+                SecretKeySpec(ByteArray(32) { 9 }, "HmacSHA256")
+            }, true)
+            val chars = "Synthetic reply".toCharArray()
+            val prepared = Draft02OutboundPreparation.relayPrepared(1) { consume ->
+                try { consume(chars) } finally { chars.fill('\u0000') }
+            }
+            assertEquals(ConversationSubmission.SUBMITTED,
+                platform.submitJournaled(context, prepared, event, dao) { f.now })
+            assertEquals(1, sends); assertTrue(chars.all { it == '\u0000' })
+            assertEquals(0, dao.consumeRadioStart(context.attempt, context.message, binding.subscriptionId, 1, f.now))
+            assertEquals(ConversationSubmission.UNKNOWN,
+                platform.submitJournaled(context, prepared, event, dao) { f.now })
+            assertEquals(1, sends)
+        } }
+    }
+
+    @Test fun completeLeaseRetirementAfterDivisionPreparationOrCasNeverCallsFakeRadio() {
+        listOf("division", "preparation", "after_cas", "after_suppression", "final_time").forEach { boundary -> LineActivationV2RuntimeFixture(true).use { f ->
+            val binding = f.installSealed(); val context = f.radioContext(binding)
+            val dao = f.db.attempts(); val event = java.util.UUID(0, 10).toString()
+            dao.reserveAlpha(context.attempt, context.message, binding.subscriptionId, 1, event, f.now,
+                identity = testEvidenceIdentity)
+            assertTrue(dao.acknowledgeAlphaIntent(event, true, f.now))
+            var sends = 0
+            val driver = object : ConversationRadioDriver {
+                override fun requireSelected() { check(SimCardContinuity.matches(binding.activatedSim(), f.cards())) }
+                override fun divide(body: String): ArrayList<String> {
+                    if (boundary == "division") f.callback()
+                    return arrayListOf(body)
+                }
+                override fun prepare(attempt: String, parts: ArrayList<String>) { if (boundary == "preparation") f.callback() }
+                override fun close() = Unit
+                override fun send(peer: String, attempt: String, parts: ArrayList<String>) { sends++ }
+            }
+            val platform = ConversationRadioPlatform(binding, driver, ConversationExistingSuppressionTokens {
+                if (boundary == "after_suppression" && dao.getAttempt(context.attempt)?.state == AttemptState.RADIO_STARTED)
+                    f.callback()
+                SecretKeySpec(ByteArray(32) { 9 }, "HmacSHA256")
+            }, true)
+            val chars = "Synthetic reply".toCharArray()
+            val prepared = Draft02OutboundPreparation.relayPrepared(1) { consume ->
+                try { consume(chars) } finally { chars.fill('\u0000') }
+            }
+            var clockReads = 0
+            assertEquals(ConversationSubmission.UNKNOWN, platform.submitJournaled(context, prepared, event, dao) {
+                clockReads++
+                if (dao.getAttempt(context.attempt)?.state == AttemptState.RADIO_STARTED &&
+                    (boundary == "after_cas" || boundary == "final_time" && clockReads % 2 == 0)) f.callback()
+                f.now
+            })
+            assertEquals(0, sends); assertFalse(binding.liveContinuity()); assertTrue(chars.all { it == '\u0000' })
+            if (boundary in setOf("after_cas", "after_suppression", "final_time"))
+                assertEquals(AttemptState.NOT_SUBMITTED, dao.getAttempt(context.attempt)?.state)
+        } }
+    }
 }

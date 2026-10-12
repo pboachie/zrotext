@@ -118,6 +118,11 @@ internal class SealedLineActivationProvider(private val selection: SealedLineAcc
 
 /** Optional non-UI factory. Only an explicit local phone-line acceptance enables it. */
 internal object SealedLineActivationMount {
+    internal class V2Acceptance internal constructor(val value: SealedLineAcceptance,
+        val lease: SelectedLineLeaseV2, private val current: () -> Boolean) {
+        fun isCurrent() = lease.isCurrent() && runCatching(current).getOrDefault(false) && lease.isCurrent()
+    }
+    private var v2Lease: SelectedLineLeaseV2? = null
     private var selection: SealedLineAcceptance? = null
     private var revision = 0L
     private var originalHostCurrent: () -> Boolean = { false }
@@ -132,13 +137,35 @@ internal object SealedLineActivationMount {
         if (!explicitlyAccepted || !runCatching(originCurrent).getOrDefault(false) ||
             profile?.isCurrent() == false) return null
         val owner = synchronized(this) {
-            selection = value; originalHostCurrent = originCurrent; acceptedProfile = profile; revision += 1; revision
+            selection = value; originalHostCurrent = originCurrent; acceptedProfile = profile
+            v2Lease = null; revision += 1; revision
         }
         return AutoCloseable {
             synchronized(this) { if (revision == owner) disable() }
         }
     }
-    @Synchronized fun disable() { selection = null; originalHostCurrent = { false }; acceptedProfile = null; revision += 1 }
+    fun enableV2Owned(value: SealedLineAcceptance, lease: SelectedLineLeaseV2,
+        originCurrent: () -> Boolean): AutoCloseable? {
+        if (!lease.isCurrent() || lease.selected.subscriptionId != value.subscriptionId ||
+            !runCatching(originCurrent).getOrDefault(false)) return null
+        val owner = synchronized(this) {
+            selection = value; originalHostCurrent = originCurrent; acceptedProfile = null
+            v2Lease = lease; revision += 1; revision
+        }
+        return AutoCloseable {
+            synchronized(this) { if (revision == owner) disable() }
+        }
+    }
+    internal fun captureV2(): V2Acceptance? {
+        val captured = synchronized(this) {
+            val accepted = selection ?: return null
+            val lease = v2Lease ?: return null
+            Triple(accepted, revision, lease)
+        }
+        return V2Acceptance(captured.first, captured.third) { stillSelected(captured.second) }
+            .takeIf { it.isCurrent() }
+    }
+    @Synchronized fun disable() { selection = null; originalHostCurrent = { false }; acceptedProfile = null; v2Lease = null; revision += 1 }
     private fun configured(): Triple<SealedLineAcceptance, Long, EsimProfileCandidate?>? = synchronized(this) {
         selection?.let { Triple(it, revision, acceptedProfile) }
     }

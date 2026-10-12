@@ -216,15 +216,21 @@ class AttemptJournalRoomTest {
                 SmsJournalDatabase.MIGRATION_7_8,
                 SmsJournalDatabase.MIGRATION_8_9, SmsJournalDatabase.MIGRATION_9_10,
                 SmsJournalDatabase.MIGRATION_10_11, SmsJournalDatabase.MIGRATION_11_12,
-                SmsJournalDatabase.MIGRATION_12_13).build()
+                SmsJournalDatabase.MIGRATION_12_13, SmsJournalDatabase.MIGRATION_13_14).build()
         try {
             assertNotNull(migrated.attempts().getAttempt("legacy-attempt"))
             assertEquals(false, migrated.attempts().getAttempt("legacy-attempt")!!.evidenceConflict)
             assertEquals(null, migrated.attempts().getAttempt("legacy-attempt")!!.messageId)
-            assertEquals(13, migrated.openHelper.readableDatabase.version)
+            assertEquals(14, migrated.openHelper.readableDatabase.version)
             val columns = androidx.room.util.TableInfo.read(
                 migrated.openHelper.readableDatabase, "local_line_binding").columns
             val expectedProfileColumns = mapOf(
+                "protocolVersion" to Triple("INTEGER", true, "1"),
+                "v2Purpose" to Triple("TEXT", false, "NULL"),
+                "v2ChallengeId" to Triple("TEXT", false, "NULL"),
+                "v2ObservationB64url" to Triple("TEXT", false, "NULL"),
+                "v2StatementSha256" to Triple("TEXT", false, "NULL"),
+                "v2SignatureSha256" to Triple("TEXT", false, "NULL"),
                 "continuityKind" to Triple("TEXT", true, "'physical'"),
                 "profilePortIndex" to Triple("INTEGER", false, "NULL"),
                 "profileLogicalSlotIndex" to Triple("INTEGER", false, "NULL"),
@@ -278,10 +284,18 @@ class AttemptJournalRoomTest {
         sql.execSQL("INSERT INTO local_line_binding VALUES (1, ?, ?, ?, 1, 7, 1000, NULL)",
             arrayOf(java.util.UUID(0, 1).toString(), java.util.UUID(0, 2).toString(), java.util.UUID(0, 3).toString()))
         SmsJournalDatabase.MIGRATION_12_13.migrate(sql)
+        val info = androidx.room.util.TableInfo.read(sql, "local_line_binding")
+        sql.query("SELECT continuityKind, cardId FROM local_line_binding WHERE slot = 1").use { row ->
+            assertTrue(row.moveToFirst())
+            assertEquals("physical", row.getString(0))
+            assertTrue(row.isNull(1))
+        }
+        // Inspect schema 13 above before upgrading it for the current schema-14 DAO.
+        SmsJournalDatabase.MIGRATION_13_14.migrate(sql)
         val row = dao.currentLineBinding()!!
+        assertEquals(1, row.protocolVersion)
         assertEquals("physical", row.continuityKind); assertNull(row.cardId)
         assertNull(row.profileRecord()); assertNull(row.activatedSim())
-        val info = androidx.room.util.TableInfo.read(sql, "local_line_binding")
         assertEquals("'physical'", info.columns["continuityKind"]?.defaultValue)
         assertTrue(info.columns["continuityKind"]?.notNull == true)
         assertTrue(info.columns.keys.containsAll(listOf("profilePortIndex", "profileLogicalSlotIndex",
