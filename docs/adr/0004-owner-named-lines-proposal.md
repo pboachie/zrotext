@@ -1,18 +1,33 @@
-# ADR 0004: Proposed owner-named lines and not-ready policy
+# ADR 0004: Owner-named lines and not-ready policy
 
-Status: Proposed. The owner-named line and configurable not-ready policy
-implementation is unavailable. This proposal requires review before code,
-schema promotion, API exposure or operational use.
+Status: Accepted (2026-10-12). The direction and guardrails below are
+approved for implementation. Implementation, schema promotion and API
+exposure still land through the normal one-behavior-per-PR review path;
+acceptance of this ADR is not acceptance of any unreviewed code.
+
+Decision record (2026-10-12): the default not-ready mode is `ignore`
+(an explicit refusal that creates no message record and no unknown
+outcome); queue and fallback are opt-in per line. A refusal carries a
+stable error code and the line label and persists no message body or
+recipient identity. A line is not-ready when its phone has been
+disconnected for a configurable per-owner period with an approved
+default of five minutes. A fallback send is recorded and surfaced as
+sent by the line that actually sent it, and an optional per-request
+flag forbids fallback for that message (a refusal instead). Suppression
+on either the target or the fallback line blocks a fallback send, and
+the fallback line must itself be sealed and approved like any active
+line.
 
 ## Context and selected direction
 
 The product direction is to let an owner activate each eligible SIM as its own
 owner-named line and choose queue, ignore or fallback when the selected line
 cannot send. Callers address a line label rather than a SIM slot, subscription
-identifier or card identifier. This direction does not settle the default mode,
-readiness thresholds, fallback authorization or the wire/storage design; the
-sections below nominate a safe default, per-case readiness results and API-shape
-commitments while leaving each approval open.
+identifier or card identifier. The decision record above settles the default
+mode, the offline threshold default and fallback authorization; the wire and
+storage design remains subject to per-PR implementation review, and the
+sections below record the guardrails and API-shape commitments that
+implementation must uphold.
 
 Current [sealed line setup](../conversation-sealed-line-setup.md) binds its proof
 to one explicitly selected active subscription, a current connection epoch,
@@ -30,7 +45,7 @@ excludes SIM identifiers from owner device fields. Existing
 prerequisites. The [device pacing proposal](0003-device-pacing-proposal.md) is
 separate and unapproved; this document selects no pacing values.
 
-## Proposed identity and admission boundary
+## Identity and admission boundary
 
 An owner-visible label is mutable presentation. It must resolve to an exact,
 account-scoped line identity and its current approved binding before admission.
@@ -50,7 +65,7 @@ fences. It must not create a second queue, reset an attempt or turn an owner mod
 selection into execution permission. All applicable checks still need to hold
 at the existing transaction and phone boundaries after waits.
 
-## Proposed mode semantics requiring approval
+## Mode semantics
 
 Proposed default requiring approval: **a line with no explicit mode selection
 refuses when it is not ready** (ignore semantics). Queue and fallback are
@@ -107,7 +122,7 @@ plaintext fallback. Any future alternate-line sealed request needs separately
 reviewed client-local preparation and exact authority for that sender; whether
 such a flow is supported is an open decision.
 
-## Proposed readiness taxonomy
+## Readiness taxonomy
 
 Each case below is proposed to classify a line as not ready. The observation
 that establishes it must be authenticated and freshness-bound; a missing, stale
@@ -130,7 +145,7 @@ classified not ready — is deliberately not selected here and requires an
 explicit decision. A line that becomes ready again does not resurrect authority
 that expired, was revoked or was withdrawn while it was not ready.
 
-## Proposed public API shape commitments
+## Public API shape commitments
 
 Submit requests carry an optional line label; when it is absent, the
 owner-configured default line is targeted. Labels resolve to immutable line
@@ -143,7 +158,14 @@ in the public OpenAPI document and keeps the existing route-drift and
 identifier-exclusion regressions green. This proposal adds no route, field or
 schema.
 
-## Decisions required before implementation
+## Implementation questions and per-PR decisions
+
+The headline decisions (default mode, refusal semantics, the offline
+threshold default, per-request fallback opt-out, both-line suppression
+and fallback-line eligibility) are recorded in the decision record at
+the top of this ADR. The questions below are settled in the
+implementation PRs that answer them, each with its own review; none of
+them reopens the accepted direction.
 
 1. What is the default mode? What exact refusal response and retained-request
    semantics does ignore have? Which mode changes affect only future requests?
