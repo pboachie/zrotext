@@ -16,7 +16,8 @@ x-app: &app
   networks: [private, frontend]
 services:
   db:
-    image: postgres:18.6-bookworm
+    # Docker Official Images on ECR Public, pinned to the same upstream manifest.
+    image: public.ecr.aws/docker/library/postgres:18.6-bookworm@sha256:afc7e2d441324c0388fa80c3d24f733b4194a4eb7f47dd8ee2b08eb1a24a647c
     environment:
       POSTGRES_DB: zrotext
       POSTGRES_USER: zrotext
@@ -52,7 +53,7 @@ services:
     networks: [private]
   # Provision after migrations; explicitly rerun on upgrades as documented.
   db-runtime:
-    image: postgres:18.6-bookworm
+    image: public.ecr.aws/docker/library/postgres:18.6-bookworm@sha256:afc7e2d441324c0388fa80c3d24f733b4194a4eb7f47dd8ee2b08eb1a24a647c
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -308,7 +309,7 @@ services:
       - "127.0.0.1:8081:8080"
     networks: [private]
   edge:
-    image: caddy:2.11.4-alpine
+    image: public.ecr.aws/docker/library/caddy:2.11.4-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b
     profiles: [edge]
     depends_on:
       app:

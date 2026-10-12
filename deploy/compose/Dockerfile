@@ -2,7 +2,10 @@
 # The Rust image tag must equal the channel in rust-toolchain.toml. The build
 # stage checks this, and rustup auto-install is off, so a mismatch fails the
 # build instead of downloading a second toolchain. Move both together.
-FROM rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 AS rust-base
+# Docker publishes the same Official Images to ECR Public:
+# https://www.docker.com/blog/news-from-aws-reinvent-docker-official-images-on-amazon-ecr-public/
+# Keep the manifest digests when changing the registry.
+FROM public.ecr.aws/docker/library/rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 AS rust-base
 ENV RUSTUP_AUTO_INSTALL=0
 
 # cargo-about is built from its pinned crates.io release with its own lockfile.
@@ -49,7 +52,7 @@ RUN mkdir -p /tmp/zrotext-notices && \
     } > /tmp/zrotext-notices/THIRD_PARTY_NOTICES && \
     test -s /tmp/zrotext-notices/THIRD_PARTY_NOTICES
 
-FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
+FROM public.ecr.aws/docker/library/debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates perl-base && \
     dpkg --compare-versions "$(dpkg-query -W -f='${Version}' perl-base)" ge '5.36.0-7+deb12u4' && \
     rm -rf /var/lib/apt/lists/* && \
