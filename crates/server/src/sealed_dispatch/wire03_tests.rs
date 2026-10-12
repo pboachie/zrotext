@@ -290,7 +290,7 @@ fn every_required_member_refuses_missing_null_wrong_type_and_literal_duplicates(
     }
     let text = serde_json::to_string(&frame()).unwrap();
     assert!(text.contains("\"v\":1"));
-    let escaped_name = [b'\\', b'u', b'0', b'0', b'7', b'6'];
+    let escaped_name = *b"\\u0076";
     let escaped_duplicate = format!(
         "{{\"{}\":1,{}",
         std::str::from_utf8(&escaped_name).unwrap(),
