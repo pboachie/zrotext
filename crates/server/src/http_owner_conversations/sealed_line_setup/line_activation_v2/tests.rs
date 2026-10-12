@@ -374,8 +374,11 @@ async fn sealed_proof_rechecks_mfa_and_registration_after_observed_lock_wait() {
         };
         tokio::select! {result=&mut proof=>panic!("{case}: proof completed before barrier: {}",matches!(result,Ok(true))),result=tokio::time::timeout(std::time::Duration::from_secs(2),wait)=>result.expect("actual sealed proof lock wait")}
         if case == "mfa" {
+            // The owner_mfa checks pair a NULL enabled_at with a pending
+            // re-enrollment, so removing the row is the schema-legal way to
+            // represent MFA no longer being enabled for this account.
             tx.execute(
-                "UPDATE owner_mfa SET enabled_at=NULL WHERE account_id=$1 AND user_id=$2",
+                "DELETE FROM owner_mfa WHERE account_id=$1 AND user_id=$2",
                 &[&account, &c.owner.principal.user_id],
             )
             .await
