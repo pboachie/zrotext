@@ -131,6 +131,7 @@ const EXPORT_SCHEMA: [(&str, &str); 93] = export_schema!(
     "091_original_reply_origin_binding.sql",
     "092_provider_send_attempts.sql",
     "093_owner_opening_capacity.sql",
+    "094_line_activation_protocol_version.sql",
 );
 #[test]
 fn export_schema_includes_every_checked_in_migration() {

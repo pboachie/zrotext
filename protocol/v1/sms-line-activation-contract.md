@@ -1,5 +1,12 @@
 # Internal SMS line activation contract
 
+Each issued challenge has an immutable stored `protocol_version`. Migration 094
+labels existing challenges as version 1; current issuers explicitly issue version
+1 and all current activation exchanges require it. The compiled v2 encoding
+foundation does not enable v2 challenge issuance, activation, transport negotiation
+or client installation. The v1 transcript and single-subscription refusal remain
+unchanged.
+
 **Dormant.** Migrations 033–035 and 037 and the `issue_sms_line_challenge`,
 `activate_sms_line_binding`, and `sms_line_binding_ready` functions define a
 separate SMS-only line scope for Android API 28+. The owner can provision an SMS

@@ -37,7 +37,7 @@ macro_rules! migration {
     };
 }
 
-const TEST_MIGRATIONS: [(&str, &str); 38] = [
+const TEST_MIGRATIONS: [(&str, &str); 39] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -76,6 +76,7 @@ const TEST_MIGRATIONS: [(&str, &str); 38] = [
     migration!("036_owner_opt_out_holds.sql"),
     migration!("037_sms_line_activation_exchange.sql"),
     migration!("048_observer_memberships.sql"),
+    migration!("094_line_activation_protocol_version.sql"),
 ];
 
 async fn send_json(socket: &mut TestSocket, value: Value) {

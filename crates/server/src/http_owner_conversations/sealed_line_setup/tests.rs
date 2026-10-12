@@ -50,6 +50,9 @@ impl Case {
             include_str!(
                 "../../../../../deploy/compose/migrations/087_sealed_line_activation_exchanges.sql"
             ),
+            include_str!(
+                "../../../../../deploy/compose/migrations/094_line_activation_protocol_version.sql"
+            ),
         ] {
             owner.f.db.batch_execute(sql).await.unwrap();
         }

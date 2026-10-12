@@ -23,7 +23,7 @@ macro_rules! migration {
 
 // Keep this fixture at 033 to exercise activation's defense against legacy
 // cross-role alias rows. Migration 035 rejects those adversarial inserts.
-const TEST_MIGRATIONS: [&str; 34] = [
+const TEST_MIGRATIONS: [&str; 35] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -58,6 +58,7 @@ const TEST_MIGRATIONS: [&str; 34] = [
     migration!("031_recipient_suppression.sql"),
     migration!("032_line_opt_out_events.sql"),
     migration!("033_sms_line_binding_scope.sql"),
+    migration!("094_line_activation_protocol_version.sql"),
 ];
 
 fn signatures(

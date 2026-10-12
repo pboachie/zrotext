@@ -106,7 +106,7 @@ pub(crate) async fn persist(
     registration: Uuid,
     c: &LineChallenge,
 ) -> Result<(), LineActivationError> {
-    let r=tx.query_one("SELECT approval_fingerprint,paired_fingerprint FROM sealed_line_key_receipts WHERE account_id=$1 AND registration_id=$2",&[&c.account_id,&registration]).await?;
+    let r=tx.query_one("SELECT approval_fingerprint,paired_fingerprint FROM sealed_line_key_receipts WHERE account_id=$1 AND registration_id=$2 AND EXISTS(SELECT 1 FROM line_activation_challenges WHERE id=$3 AND protocol_version=1)",&[&c.account_id,&registration,&c.id]).await?;
     tx.execute("INSERT INTO sealed_line_activation_exchanges(registration_id,challenge_id,account_id,line_id,device_id,generation,nonce,initiating_user_id,initiating_session_id,owner_fingerprint,device_fingerprint) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",&[&registration,&c.id,&c.account_id,&c.line_id,&c.device_id,&c.generation,&c.nonce.as_slice(),&p.user_id,&p.session_id,&r.get::<_,Vec<u8>>(0),&r.get::<_,Vec<u8>>(1)]).await?;
     Ok(())
 }
@@ -119,14 +119,14 @@ pub async fn open(
     id: Uuid,
 ) -> Result<(LineChallenge, i64), ExchangeError> {
     // A lost opening response is reconciled from the atomically persisted nonce.
-    if let Some(r)=client.query_opt("SELECT e.challenge_id,e.generation,e.nonce,(extract(epoch FROM c.expires_at)*1000)::bigint FROM sealed_line_activation_exchanges e JOIN line_activation_challenges c ON c.id=e.challenge_id WHERE e.account_id=$1 AND e.registration_id=$2 AND e.line_id=$3 AND e.device_id=$4 AND e.initiating_user_id=$5 AND e.initiating_session_id=$6",&[&p.tenant.account_id(),&id,&line,&device,&p.user_id,&p.session_id]).await? {
+    if let Some(r)=client.query_opt("SELECT e.challenge_id,e.generation,e.nonce,(extract(epoch FROM c.expires_at)*1000)::bigint FROM sealed_line_activation_exchanges e JOIN line_activation_challenges c ON c.id=e.challenge_id AND c.protocol_version=1 WHERE e.account_id=$1 AND e.registration_id=$2 AND e.line_id=$3 AND e.device_id=$4 AND e.initiating_user_id=$5 AND e.initiating_session_id=$6",&[&p.tenant.account_id(),&id,&line,&device,&p.user_id,&p.session_id]).await? {
   let tx=client.transaction().await?;
   registration::lock_scope(&tx,p,id,line,device,Some(r.get(0)),None).await.map_err(|_|ExchangeError::Refused)?;
   let c=LineChallenge{id:r.get(0),account_id:p.tenant.account_id(),line_id:line,device_id:device,generation:r.get(1),nonce:nonce(&r,2).ok_or(ExchangeError::Refused)?};
   tx.commit().await?;return Ok((c,r.get(3)));
  }
     let c = issue_registered_line_challenge(client, p, line, device, id).await?;
-    let expiry=client.query_one("SELECT (extract(epoch FROM expires_at)*1000)::bigint FROM line_activation_challenges WHERE id=$1",&[&c.id]).await?.get(0);
+    let expiry=client.query_one("SELECT (extract(epoch FROM expires_at)*1000)::bigint FROM line_activation_challenges WHERE id=$1 AND protocol_version=1",&[&c.id]).await?.get(0);
     Ok((c, expiry))
 }
 
@@ -135,7 +135,7 @@ pub async fn next_challenge(
     client: &mut Client,
     session: InboundSession<'_>,
 ) -> Result<Option<PendingChallenge>, ExchangeError> {
-    let rows=client.query("SELECT e.registration_id,e.challenge_id,e.line_id,e.generation,e.nonce,(extract(epoch FROM c.expires_at)*1000)::bigint,e.initiating_user_id,e.initiating_session_id FROM sealed_line_activation_exchanges e JOIN line_activation_challenges c ON c.id=e.challenge_id JOIN device_line_bindings b ON (b.account_id,b.line_id,b.device_id,b.generation)=(e.account_id,e.line_id,e.device_id,e.generation) WHERE e.account_id=$1 AND e.device_id=$2 AND e.device_signature_der IS NULL AND c.consumed_at IS NULL AND c.expires_at>clock_timestamp() AND b.state='pending' AND b.purpose='sealed' ORDER BY e.created_at LIMIT 4",&[&session.account_id,&session.device_id]).await?;
+    let rows=client.query("SELECT e.registration_id,e.challenge_id,e.line_id,e.generation,e.nonce,(extract(epoch FROM c.expires_at)*1000)::bigint,e.initiating_user_id,e.initiating_session_id FROM sealed_line_activation_exchanges e JOIN line_activation_challenges c ON c.id=e.challenge_id AND c.protocol_version=1 JOIN device_line_bindings b ON (b.account_id,b.line_id,b.device_id,b.generation)=(e.account_id,e.line_id,e.device_id,e.generation) WHERE e.account_id=$1 AND e.device_id=$2 AND e.device_signature_der IS NULL AND c.consumed_at IS NULL AND c.expires_at>clock_timestamp() AND b.state='pending' AND b.purpose='sealed' ORDER BY e.created_at LIMIT 4",&[&session.account_id,&session.device_id]).await?;
     for r in rows {
         let tx = client.transaction().await?;
         if registration::lock_phone_scope(
@@ -175,7 +175,7 @@ pub async fn record_device_proof(
     session: InboundSession<'_>,
     proof: DeviceProof<'_>,
 ) -> Result<bool, ExchangeError> {
-    let Some(r)=client.query_opt("SELECT registration_id,line_id,generation,nonce,initiating_user_id,initiating_session_id,device_signature_der,android_api_level,active_subscription_count,selected_subscription_id FROM sealed_line_activation_exchanges WHERE account_id=$1 AND device_id=$2 AND challenge_id=$3",&[&session.account_id,&session.device_id,&proof.challenge_id]).await? else {return Ok(false);};
+    let Some(r)=client.query_opt("SELECT e.registration_id,e.line_id,e.generation,e.nonce,e.initiating_user_id,e.initiating_session_id,e.device_signature_der,e.android_api_level,e.active_subscription_count,e.selected_subscription_id FROM sealed_line_activation_exchanges e JOIN line_activation_challenges c ON c.id=e.challenge_id AND c.protocol_version=1 WHERE e.account_id=$1 AND e.device_id=$2 AND e.challenge_id=$3",&[&session.account_id,&session.device_id,&proof.challenge_id]).await? else {return Ok(false);};
     let tx = client.transaction().await?;
     let statement = match registration::lock_phone_scope(
         &tx,
@@ -247,7 +247,7 @@ pub async fn view(
     line: Uuid,
     id: Uuid,
 ) -> Result<ExchangeView, ExchangeError> {
-    let r=client.query_opt(&format!("SELECT {PROOF_COLUMNS},b.activated_at IS NOT NULL AND b.state='active',b.device_confirmation_digest FROM sealed_line_activation_exchanges e JOIN device_line_bindings b ON (b.account_id,b.line_id,b.device_id,b.generation)=(e.account_id,e.line_id,e.device_id,e.generation) WHERE e.account_id=$1 AND e.line_id=$2 AND e.challenge_id=$3 AND e.initiating_user_id=$4 AND e.initiating_session_id=$5 AND b.purpose='sealed'"),&[&p.tenant.account_id(),&line,&id,&p.user_id,&p.session_id]).await?.ok_or(ExchangeError::NotFound)?;
+    let r=client.query_opt(&format!("SELECT {PROOF_COLUMNS},b.activated_at IS NOT NULL AND b.state='active',b.device_confirmation_digest FROM sealed_line_activation_exchanges e JOIN line_activation_challenges c ON c.id=e.challenge_id AND c.protocol_version=1 JOIN device_line_bindings b ON (b.account_id,b.line_id,b.device_id,b.generation)=(e.account_id,e.line_id,e.device_id,e.generation) WHERE e.account_id=$1 AND e.line_id=$2 AND e.challenge_id=$3 AND e.initiating_user_id=$4 AND e.initiating_session_id=$5 AND b.purpose='sealed'"),&[&p.tenant.account_id(),&line,&id,&p.user_id,&p.session_id]).await?.ok_or(ExchangeError::NotFound)?;
     let tx = client.transaction().await?;
 
     let historical = r.get::<_, bool>(18);
@@ -299,7 +299,7 @@ pub async fn view(
     })
 }
 async fn client_expiry(tx: &Transaction<'_>, id: Uuid) -> Result<i64, tokio_postgres::Error> {
-    Ok(tx.query_one("SELECT (extract(epoch FROM expires_at)*1000)::bigint FROM line_activation_challenges WHERE id=$1",&[&id]).await?.get(0))
+    Ok(tx.query_one("SELECT (extract(epoch FROM expires_at)*1000)::bigint FROM line_activation_challenges WHERE id=$1 AND protocol_version=1",&[&id]).await?.get(0))
 }
 
 pub async fn approve(
@@ -309,7 +309,7 @@ pub async fn approve(
     id: Uuid,
     owner_signature: &[u8],
 ) -> Result<(), ExchangeError> {
-    let r=client.query_opt(&format!("SELECT {PROOF_COLUMNS} FROM sealed_line_activation_exchanges e WHERE e.account_id=$1 AND e.line_id=$2 AND e.challenge_id=$3 AND e.initiating_user_id=$4 AND e.initiating_session_id=$5"),&[&p.tenant.account_id(),&line,&id,&p.user_id,&p.session_id]).await?.ok_or(ExchangeError::NotFound)?;
+    let r=client.query_opt(&format!("SELECT {PROOF_COLUMNS} FROM sealed_line_activation_exchanges e JOIN line_activation_challenges c ON c.id=e.challenge_id AND c.protocol_version=1 WHERE e.account_id=$1 AND e.line_id=$2 AND e.challenge_id=$3 AND e.initiating_user_id=$4 AND e.initiating_session_id=$5"),&[&p.tenant.account_id(),&line,&id,&p.user_id,&p.session_id]).await?.ok_or(ExchangeError::NotFound)?;
     let (mut c, obs, sig) = proof(&r).ok_or(ExchangeError::Refused)?;
     c.id = id;
     c.account_id = p.tenant.account_id();
@@ -357,7 +357,7 @@ pub async fn next_ack(
     let Some((_, fp)) = phone_live(&tx, session).await? else {
         return Ok(None);
     };
-    let rows=tx.query("SELECT e.challenge_id,e.line_id,e.generation,e.device_statement_digest,e.device_signature_der,b.device_confirmation_digest,e.nonce,e.android_api_level,e.active_subscription_count,e.selected_subscription_id FROM sealed_line_activation_exchanges e JOIN device_line_bindings b ON (b.account_id,b.line_id,b.device_id,b.generation)=(e.account_id,e.line_id,e.device_id,e.generation) JOIN phone_lines l ON (l.account_id,l.id)=(b.account_id,b.line_id) WHERE l.state='active' AND l.current_binding_generation=b.generation AND e.account_id=$1 AND e.device_id=$2 AND e.device_fingerprint=$3 AND e.ack_sent_at IS NULL AND b.activated_at IS NOT NULL AND b.state='active' AND b.purpose='sealed' AND NOT(e.challenge_id=ANY($4)) ORDER BY e.created_at LIMIT 4 FOR SHARE OF b,l",&[&session.account_id,&session.device_id,&fp,&sent]).await?;
+    let rows=tx.query("SELECT e.challenge_id,e.line_id,e.generation,e.device_statement_digest,e.device_signature_der,b.device_confirmation_digest,e.nonce,e.android_api_level,e.active_subscription_count,e.selected_subscription_id FROM sealed_line_activation_exchanges e JOIN line_activation_challenges c ON c.id=e.challenge_id AND c.protocol_version=1 JOIN device_line_bindings b ON (b.account_id,b.line_id,b.device_id,b.generation)=(e.account_id,e.line_id,e.device_id,e.generation) JOIN phone_lines l ON (l.account_id,l.id)=(b.account_id,b.line_id) WHERE l.state='active' AND l.current_binding_generation=b.generation AND e.account_id=$1 AND e.device_id=$2 AND e.device_fingerprint=$3 AND e.ack_sent_at IS NULL AND b.activated_at IS NOT NULL AND b.state='active' AND b.purpose='sealed' AND NOT(e.challenge_id=ANY($4)) ORDER BY e.created_at LIMIT 4 FOR SHARE OF b,l",&[&session.account_id,&session.device_id,&fp,&sent]).await?;
     for r in rows {
         let Some(nonce) = nonce(&r, 6) else {
             continue;
@@ -413,7 +413,7 @@ pub async fn confirm_ack(
     let Some((_, fp)) = phone_live(&tx, session).await? else {
         return Ok(false);
     };
-    let Some(r)=tx.query_opt("SELECT e.device_statement_digest,e.device_signature_der,e.ack_sent_at IS NOT NULL FROM sealed_line_activation_exchanges e JOIN device_line_bindings b ON (b.account_id,b.line_id,b.device_id,b.generation)=(e.account_id,e.line_id,e.device_id,e.generation) JOIN phone_lines l ON (l.account_id,l.id)=(b.account_id,b.line_id) WHERE l.state='active' AND l.current_binding_generation=b.generation AND e.account_id=$1 AND e.device_id=$2 AND e.challenge_id=$3 AND e.line_id=$4 AND e.generation=$5 AND e.device_fingerprint=$6 AND b.activated_at IS NOT NULL AND b.state='active' AND b.purpose='sealed' FOR UPDATE OF e FOR SHARE OF b,l",&[&session.account_id,&session.device_id,&ack.challenge_id,&ack.line_id,&ack.generation,&fp]).await? else{return Ok(false);};
+    let Some(r)=tx.query_opt("SELECT e.device_statement_digest,e.device_signature_der,e.ack_sent_at IS NOT NULL FROM sealed_line_activation_exchanges e JOIN line_activation_challenges c ON c.id=e.challenge_id AND c.protocol_version=1 JOIN device_line_bindings b ON (b.account_id,b.line_id,b.device_id,b.generation)=(e.account_id,e.line_id,e.device_id,e.generation) JOIN phone_lines l ON (l.account_id,l.id)=(b.account_id,b.line_id) WHERE l.state='active' AND l.current_binding_generation=b.generation AND e.account_id=$1 AND e.device_id=$2 AND e.challenge_id=$3 AND e.line_id=$4 AND e.generation=$5 AND e.device_fingerprint=$6 AND b.activated_at IS NOT NULL AND b.state='active' AND b.purpose='sealed' FOR UPDATE OF e FOR SHARE OF b,l",&[&session.account_id,&session.device_id,&ack.challenge_id,&ack.line_id,&ack.generation,&fp]).await? else{return Ok(false);};
     let Some(sig) = r.get::<_, Option<Vec<u8>>>(1) else {
         return Ok(false);
     };
@@ -438,7 +438,7 @@ pub async fn cleanup<C: tokio_postgres::GenericClient + Sync>(
     client: &C,
     limit: i64,
 ) -> Result<u64, tokio_postgres::Error> {
-    client.execute("WITH pending AS MATERIALIZED (SELECT r.account_id,r.registration_id,r.retired_ms FROM sealed_line_key_receipts r WHERE r.activated_ms IS NULL AND EXISTS(SELECT 1 FROM sealed_line_activation_exchanges e JOIN line_activation_challenges c ON c.id=e.challenge_id WHERE (e.account_id,e.registration_id)=(r.account_id,r.registration_id) AND e.nonce IS NOT NULL AND (c.expires_at<=clock_timestamp() OR r.retired_ms IS NOT NULL)) ORDER BY r.completed_ms LIMIT $1 FOR UPDATE OF r SKIP LOCKED), expired AS MATERIALIZED (SELECT e.challenge_id FROM sealed_line_activation_exchanges e JOIN pending r ON (r.account_id,r.registration_id)=(e.account_id,e.registration_id) JOIN line_activation_challenges c ON c.id=e.challenge_id WHERE e.nonce IS NOT NULL AND (c.expires_at<=clock_timestamp() OR r.retired_ms IS NOT NULL) ORDER BY e.created_at LIMIT $1 FOR UPDATE OF e SKIP LOCKED) UPDATE sealed_line_activation_exchanges e SET nonce=NULL FROM expired x WHERE e.challenge_id=x.challenge_id AND e.nonce IS NOT NULL AND EXISTS(SELECT 1 FROM sealed_line_key_receipts r JOIN line_activation_challenges c ON c.id=e.challenge_id WHERE (r.account_id,r.registration_id)=(e.account_id,e.registration_id) AND r.activated_ms IS NULL AND (c.expires_at<=clock_timestamp() OR r.retired_ms IS NOT NULL))",&[&limit.clamp(1,100)]).await
+    client.execute("WITH pending AS MATERIALIZED (SELECT r.account_id,r.registration_id,r.retired_ms FROM sealed_line_key_receipts r WHERE r.activated_ms IS NULL AND EXISTS(SELECT 1 FROM sealed_line_activation_exchanges e JOIN line_activation_challenges c ON c.id=e.challenge_id AND c.protocol_version=1 WHERE (e.account_id,e.registration_id)=(r.account_id,r.registration_id) AND e.nonce IS NOT NULL AND (c.expires_at<=clock_timestamp() OR r.retired_ms IS NOT NULL)) ORDER BY r.completed_ms LIMIT $1 FOR UPDATE OF r SKIP LOCKED), expired AS MATERIALIZED (SELECT e.challenge_id FROM sealed_line_activation_exchanges e JOIN pending r ON (r.account_id,r.registration_id)=(e.account_id,e.registration_id) JOIN line_activation_challenges c ON c.id=e.challenge_id AND c.protocol_version=1 WHERE e.nonce IS NOT NULL AND (c.expires_at<=clock_timestamp() OR r.retired_ms IS NOT NULL) ORDER BY e.created_at LIMIT $1 FOR UPDATE OF e SKIP LOCKED) UPDATE sealed_line_activation_exchanges e SET nonce=NULL FROM expired x WHERE e.challenge_id=x.challenge_id AND e.nonce IS NOT NULL AND EXISTS(SELECT 1 FROM sealed_line_key_receipts r JOIN line_activation_challenges c ON c.id=e.challenge_id AND c.protocol_version=1 WHERE (r.account_id,r.registration_id)=(e.account_id,e.registration_id) AND r.activated_ms IS NULL AND (c.expires_at<=clock_timestamp() OR r.retired_ms IS NOT NULL))",&[&limit.clamp(1,100)]).await
 }
 #[cfg(test)]
 mod tests;

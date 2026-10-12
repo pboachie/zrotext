@@ -149,7 +149,7 @@ pub async fn open(
                (challenge_id,account_id,line_id,device_id,generation,nonce) \
                VALUES($1,$2,$3,$4,$5,$6) RETURNING challenge_id) \
              SELECT (extract(epoch FROM c.expires_at)*1000)::bigint \
-             FROM line_activation_challenges c JOIN opened o ON o.challenge_id=c.id",
+             FROM line_activation_challenges c JOIN opened o ON o.challenge_id=c.id WHERE c.protocol_version=1",
             &[
                 &challenge.id,
                 &challenge.account_id,
@@ -175,7 +175,7 @@ pub async fn next_challenge(
             "SELECT e.challenge_id,e.line_id,e.generation,e.nonce, \
                     (extract(epoch FROM c.expires_at)*1000)::bigint \
              FROM sms_line_activation_exchanges e \
-             JOIN line_activation_challenges c ON c.id=e.challenge_id \
+             JOIN line_activation_challenges c ON c.id=e.challenge_id AND c.protocol_version=1 \
              JOIN device_line_bindings b ON (b.account_id,b.line_id,b.device_id,b.generation) \
                =(e.account_id,e.line_id,e.device_id,e.generation) \
              WHERE e.account_id=$1 AND e.device_id=$2 AND e.ack_sent_at IS NULL \
@@ -219,7 +219,9 @@ pub async fn mark_challenge_pushed(
         .execute(
             "UPDATE sms_line_activation_exchanges SET pushed_connection_epoch=$4 \
              WHERE challenge_id=$1 AND account_id=$2 AND device_id=$3 \
-               AND proof_received_at IS NULL",
+               AND proof_received_at IS NULL \
+                AND EXISTS (SELECT 1 FROM line_activation_challenges c \
+                            WHERE c.id=$1 AND c.protocol_version=1)",
             &[
                 &challenge_id,
                 &session.account_id,
@@ -276,7 +278,7 @@ pub async fn record_device_proof(
                     (c.consumed_at IS NULL AND c.expires_at>clock_timestamp() \
                      AND b.state='pending' AND b.purpose='sms') \
              FROM sms_line_activation_exchanges e \
-             JOIN line_activation_challenges c ON c.id=e.challenge_id \
+             JOIN line_activation_challenges c ON c.id=e.challenge_id AND c.protocol_version=1 \
              JOIN device_line_bindings b ON (b.account_id,b.line_id,b.device_id,b.generation) \
                =(e.account_id,e.line_id,e.device_id,e.generation) \
              WHERE e.challenge_id=$1 AND e.account_id=$2 AND e.device_id=$3 \
@@ -395,7 +397,7 @@ pub async fn view(
                    b.state='active' AND b.activated_at IS NOT NULL, \
                    b.device_confirmation_digest, e.ack_sent_at IS NOT NULL \
                  FROM sms_line_activation_exchanges e \
-                 JOIN line_activation_challenges c ON c.id=e.challenge_id \
+                 JOIN line_activation_challenges c ON c.id=e.challenge_id AND c.protocol_version=1 \
                  JOIN device_line_bindings b ON (b.account_id,b.line_id,b.device_id,b.generation) \
                    =(e.account_id,e.line_id,e.device_id,e.generation) \
                  WHERE e.challenge_id=$1 AND e.account_id=$2 AND e.line_id=$3"
@@ -496,6 +498,7 @@ pub async fn approve(
         .query_opt(
             &format!(
                 "SELECT {STORED_PROOF_COLUMNS} FROM sms_line_activation_exchanges e \
+                 JOIN line_activation_challenges c ON c.id=e.challenge_id AND c.protocol_version=1 \
                  WHERE e.challenge_id=$1 AND e.account_id=$2 AND e.line_id=$3"
             ),
             &[&challenge_id, &account_id, &line_id],
@@ -567,6 +570,7 @@ pub async fn next_ack(
             &format!(
                 "SELECT {STORED_PROOF_COLUMNS},e.challenge_id,b.device_confirmation_digest \
                  FROM sms_line_activation_exchanges e \
+                 JOIN line_activation_challenges c ON c.id=e.challenge_id AND c.protocol_version=1 \
                  JOIN device_line_bindings b ON (b.account_id,b.line_id,b.device_id,b.generation) \
                    =(e.account_id,e.line_id,e.device_id,e.generation) \
                  WHERE e.account_id=$1 AND e.device_id=$2 AND e.ack_sent_at IS NULL \
@@ -599,7 +603,7 @@ pub async fn retire(
                    (b.state='active' AND b.activated_at IS NOT NULL \
                     AND b.activated_at>=clock_timestamp()-make_interval(secs=>$3)) \
                  FROM sms_line_activation_exchanges e \
-                 JOIN line_activation_challenges c ON c.id=e.challenge_id \
+                 JOIN line_activation_challenges c ON c.id=e.challenge_id AND c.protocol_version=1 \
                  JOIN device_line_bindings b ON (b.account_id,b.line_id,b.device_id,b.generation) \
                    =(e.account_id,e.line_id,e.device_id,e.generation) \
                  WHERE e.account_id=$1 AND e.device_id=$2 AND e.ack_sent_at IS NULL \
