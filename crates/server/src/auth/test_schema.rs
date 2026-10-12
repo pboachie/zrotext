@@ -408,6 +408,16 @@ const MIGRATIONS: &[(&str, &str)] = &[
             "../../../../deploy/compose/migrations/094_line_activation_protocol_version.sql"
         ),
     ),
+    (
+        "095_device_session_line_activation_version.sql",
+        include_str!(
+            "../../../../deploy/compose/migrations/095_device_session_line_activation_version.sql"
+        ),
+    ),
+    (
+        "096_line_activation_v2_exchanges.sql",
+        include_str!("../../../../deploy/compose/migrations/096_line_activation_v2_exchanges.sql"),
+    ),
 ];
 
 async fn apply_selected(db: &Client, skip_summary: bool) {
