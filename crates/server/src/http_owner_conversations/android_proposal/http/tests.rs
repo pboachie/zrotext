@@ -81,7 +81,9 @@ fn streamed_http_dtos_require_objects_and_preserve_escaped_duplicate_refusal() {
         assert_eq!(duplicate.pop(), Some('}'));
         duplicate.push_str(",\"k");
         duplicate.push('\\');
-        duplicate.push_str("u0069nd\":3}");
+        duplicate.push_str("u0069n");
+        duplicate.push('d');
+        duplicate.push_str("\":3}");
         if is_register {
             assert!(serde_json::from_str::<MapOnly<Register>>(&duplicate).is_err());
         } else {
