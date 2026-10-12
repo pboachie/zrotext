@@ -30,7 +30,7 @@ import org.robolectric.shadows.ShadowSubscriptionManager.SubscriptionInfoBuilder
 import java.time.Duration
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34], qualifiers = "w360dp-h640dp")
+@Config(sdk = [34], qualifiers = "w360dp-h640dp", shadows = [VisibleSubscriptionFixtureShadow::class])
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @OptIn(ExperimentalComposeUiApi::class)
 open class GatewayAccessibilityTest : GatewayAccessibilityChecks() {

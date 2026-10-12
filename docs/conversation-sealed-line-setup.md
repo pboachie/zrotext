@@ -58,3 +58,26 @@ Before signing, Android durably reserves the exact challenge in a deny-only ledg
 Room schema 13 stores typed profile provenance. The provisional Room binding and v2 public receipt written before `sealed_line_installed` do not grant execution authority. Only the existing accepted final `sealed_line_install_ack`, its exact provenance checks and the durable generation fence can publish the live installed object. A provisional replacement retires its predecessor first. Final selection, proof, session and clock checks run after blocking IO, before publication, and again afterwards; failures revoke the exact inserted object. v2 eSIM receipts cannot restore authority after restart; physical v1 receipt bytes and recovery are unchanged.
 
 Content consent, trusted session time, current root/reader authority, durable submit-intent ACK, multipart limits and one-use radio CAS remain independent requirements. This source change does not enable a server feature, carrier dispatch or a live deployment, and does not repair the separate local wall-clock assurance gap.
+
+## Complete-set physical and eSIM preparation
+
+On API 33+, the Android UI enumerates the complete active subscription list,
+including hidden peers. The user explicitly selects one physical SIM or eSIM
+profile among those entries; other profiles remain active. Local preparation
+uses a fresh observer registration, its initial callback and coherent complete
+reads. A saved preference records the choice but cannot restore a preparation or
+establish activation, installation or send readiness.
+
+Preparation belongs to the current foreground selection. Replacement,
+subscription callbacks, permission or read failure, disappearance of the chosen
+profile, pause, stop and destruction retire it. Ambiguous, missing or unreadable
+mappings refuse preparation without selecting a peer or physical fallback. The
+existing v1 selected-profile and count-one proof gates remain unchanged.
+
+Complete-set privacy projection, v2 statement builders and incoming-frame
+decoders are foundations for local preparation. Active multi-subscription
+messaging still requires authenticated v2 server verification and correlation
+with the outstanding exchange, its exact final acknowledgement, and separately
+accepted service, signer, storage and installed-authority consumers. A selection,
+observation or decoded statement cannot replace these requirements or the
+independent content-consent and confirmed-send gates.

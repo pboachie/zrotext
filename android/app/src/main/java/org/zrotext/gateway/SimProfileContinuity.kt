@@ -590,3 +590,227 @@ internal object SimProfileContinuity {
 internal fun ActivatedSimCard.profileChallengeKey(account: String, device: String, line: String,
                                                  generation: Long, challenge: String) =
     ProfileChallengeKey(ProfileLineAuthority(account, device, line, generation), challenge)
+
+/**
+ * Unused local preparation metadata, not a signature, installation or radio permission.
+ * Neither this interface nor copies of its rows can manufacture a current preparation.
+ */
+internal sealed interface CompleteSelectionPreparation {
+    val selected: SubscriptionObservationRow
+    val activeRows: List<SubscriptionObservationRow>
+}
+
+/**
+ * Disabled bridge over an already held, genuinely issued complete-list observation.
+ * Construction, preparation and currentness checks perform no framework reads or registration.
+ * The caller owns the adapter and must forward permission/selection/lifecycle withdrawal to it.
+ * This does not supply a v2 statement, challenge, key, installed capability or carrier proof.
+ */
+internal class CompleteSelectionPreparationBridge(
+    private val observations: CompleteSubscriptionObservationAdapter
+) : AutoCloseable {
+    private val lock = Any()
+    private var generation = 0L
+    private var exhausted = false
+    private var closed = false
+    private var issued: IssuedPreparation? = null
+
+    private inner class IssuedPreparation(
+        val observation: CompleteSelectionSnapshot,
+        val preparationGeneration: Long
+    ) : CompleteSelectionPreparation {
+        override val selected: SubscriptionObservationRow get() = observation.selected
+        override val activeRows: List<SubscriptionObservationRow> get() = observation.activeRows
+        override fun toString() = "CompleteSelectionPreparation(local observation)"
+    }
+
+    /** Explicit selected ID plus exact live issuer object; no peer/default/physical fallback. */
+    fun prepareHeld(
+        selectedSubscriptionId: Int,
+        observation: CompleteSelectionSnapshot
+    ): CompleteSelectionPreparation? = synchronized(lock) {
+        retireLocked()
+        if (closed || exhausted || selectedSubscriptionId < 0 ||
+            !observations.isCurrent(observation) ||
+            observation.selected.subscriptionId != selectedSubscriptionId) return@synchronized null
+        val preparation = IssuedPreparation(observation, generation)
+        issued = preparation
+        // The underlying observer may retire concurrently. Keep the final memory-only check.
+        if (!observations.isCurrent(observation)) {
+            issued = null
+            return@synchronized null
+        }
+        preparation
+    }
+
+    /** Local observation currentness only. No installed/signing/send consumer accepts this type. */
+    fun isCurrent(preparation: CompleteSelectionPreparation): Boolean = synchronized(lock) {
+        val current = issued ?: return@synchronized false
+        !closed && !exhausted && current === preparation &&
+            current.preparationGeneration == generation &&
+            observations.isCurrent(current.observation)
+    }
+
+    /** Retire this bridge's preparations, leaving the caller-owned observer untouched. */
+    fun withdraw() = synchronized(lock) { retireLocked() }
+
+    override fun close() = synchronized(lock) {
+        closed = true
+        retireLocked()
+    }
+
+    private fun retireLocked() {
+        issued = null
+        if (generation == Long.MAX_VALUE) exhausted = true else generation++
+    }
+}
+
+/**
+ * Caller-owned preparation for one explicitly selected physical or embedded line among peers.
+ * Every selection owns a separate adapter: late reads/cleanup cannot affect its replacement.
+ * No singleton, signature, installation, saved authority or send consumer accepts this type.
+ */
+internal class CompleteSelectionPreparationCoordinator(
+    private val newObservations: (() -> Unit) -> CompleteSubscriptionObservationAdapter,
+    private val reads: Executor
+) : AutoCloseable {
+    private class Owned(val observations: CompleteSubscriptionObservationAdapter) {
+        val bridge = CompleteSelectionPreparationBridge(observations)
+        var readTicket: Any? = null
+        var preparation: CompleteSelectionPreparation? = null
+    }
+    private class Selection(val subscriptionId: Int) { var owned: Owned? = null }
+    private val lock = Any()
+    private var selected: Selection? = null
+    private var closed = false
+
+    fun select(subscriptionId: Int?) {
+        val next: Selection?
+        val old: Owned?
+        synchronized(lock) {
+            if (closed) return
+            val id = subscriptionId?.takeIf { it >= 0 }
+            // An explicit refresh/reselection starts a fresh registration, including after a
+            // refused whole read. Callback refresh alone keeps this same held registration.
+            old = detachLocked()
+            next = id?.let(::Selection)
+            selected = next
+        }
+        // The old preparation is already retired, including while platform cleanup blocks.
+        old?.observations?.close()
+        val intent = next ?: return
+        if (!synchronized(lock) { selected === intent && !closed }) return
+        val adapter = try { newObservations { refresh(intent) } }
+        catch (failure: Exception) { preserveInterrupt(failure); retire(intent); return }
+        val owned = Owned(adapter)
+        val retained = synchronized(lock) {
+            if (selected !== intent || closed || intent.owned != null) false
+            else { intent.owned = owned; true }
+        }
+        if (!retained) { adapter.close(); return }
+        // Registration and all platform reads/cleanup occur outside this coordinator's lock.
+        adapter.select(intent.subscriptionId)
+        refresh(intent) // Also covers an initial callback before register returned its handle.
+    }
+
+    /** Actual issuer/bridge currentness in memory; this never reads telephony or signs anything. */
+    fun currentPreparation(): CompleteSelectionPreparation? = synchronized(lock) {
+        val owned = selected?.owned ?: return@synchronized null
+        owned.preparation?.takeIf { !closed && owned.bridge.isCurrent(it) }
+    }
+
+    fun isCurrent(preparation: CompleteSelectionPreparation): Boolean = synchronized(lock) {
+        val owned = selected?.owned ?: return@synchronized false
+        !closed && owned.preparation === preparation && owned.bridge.isCurrent(preparation)
+    }
+
+    fun refresh() { synchronized(lock) { selected }?.let(::refresh) }
+    fun permissionLost() = withdraw(permanently = false)
+    fun stop() = withdraw(permanently = false)
+    override fun close() = withdraw(permanently = true)
+
+    private fun refresh(intent: Selection) {
+        val owned: Owned
+        val ticket = Any()
+        synchronized(lock) {
+            if (selected !== intent || closed) return
+            owned = intent.owned ?: return
+            owned.bridge.withdraw()
+            owned.preparation = null
+            owned.readTicket = ticket
+        }
+        try {
+            reads.execute {
+                if (!owns(intent, owned, ticket)) return@execute
+                val snapshot = owned.observations.observe()
+                synchronized(lock) {
+                    if (!ownsLocked(intent, owned, ticket)) return@synchronized
+                    owned.preparation = snapshot?.let {
+                        owned.bridge.prepareHeld(intent.subscriptionId, it)
+                    }
+                }
+            }
+        } catch (failure: Exception) {
+            preserveInterrupt(failure)
+            // An old rejected submission cannot retire a newer callback/read ticket.
+            retire(intent, owned, ticket)
+        }
+    }
+
+    private fun owns(intent: Selection, owned: Owned, ticket: Any) =
+        synchronized(lock) { ownsLocked(intent, owned, ticket) }
+    private fun ownsLocked(intent: Selection, owned: Owned, ticket: Any) =
+        !closed && selected === intent && intent.owned === owned && owned.readTicket === ticket
+
+    private fun retire(intent: Selection, expected: Owned? = null, ticket: Any? = null) {
+        val old = synchronized(lock) {
+            if (selected !== intent || (expected != null && intent.owned !== expected) ||
+                (ticket != null && intent.owned?.readTicket !== ticket)) null else detachLocked()
+        }
+        old?.observations?.close()
+    }
+    private fun withdraw(permanently: Boolean) {
+        val old = synchronized(lock) {
+            if (permanently) closed = true
+            detachLocked()
+        }
+        old?.observations?.close()
+    }
+    private fun detachLocked(): Owned? {
+        val old = selected?.owned
+        selected = null
+        old?.let {
+            it.readTicket = null
+            it.preparation = null
+            it.bridge.withdraw()
+        }
+        return old
+    }
+    private fun preserveInterrupt(failure: Exception) {
+        if (failure is InterruptedException) Thread.currentThread().interrupt()
+    }
+
+    companion object {
+        /** Inert factory; ordinary permission, registration and coherent reads remain mandatory. */
+        fun forAndroid(context: Context, reads: Executor): CompleteSelectionPreparationCoordinator? {
+            if (Build.VERSION.SDK_INT < 33) return null
+            val app = checkNotNull(context.applicationContext)
+            val main = Handler(Looper.getMainLooper())
+            return CompleteSelectionPreparationCoordinator({ changed ->
+                val ordinary = AndroidProfileObservationSource(app)
+                val source = object : ProfileObservationSource {
+                    override fun permissionGranted() = ordinary.permissionGranted()
+                    override fun readComplete() = ordinary.readComplete()
+                    override fun register(callback: () -> Unit) = ordinary.register {
+                        callback() // Retirement in the actual adapter precedes refresh scheduling.
+                        changed()
+                    }
+                }
+                CompleteSubscriptionObservationAdapter({ Build.VERSION.SDK_INT }, source, { action ->
+                    if (Looper.myLooper() == Looper.getMainLooper()) { action(); true }
+                    else main.post { action() }
+                }, reads)
+            }, reads)
+        }
+    }
+}

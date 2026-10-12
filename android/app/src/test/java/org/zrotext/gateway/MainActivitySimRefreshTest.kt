@@ -19,7 +19,7 @@ import java.util.concurrent.Executor
 
 /** Proposed source only. No device, SMS, HTTP or Keystore operation. */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34])
+@Config(sdk = [34], shadows = [VisibleSubscriptionFixtureShadow::class])
 class MainActivitySimRefreshTest {
     private fun id(value: Long) = UUID(0, value).toString()
     private fun refresh(activity: MainActivity) {

@@ -300,3 +300,38 @@ The ordinary line path now has a separate API 33+ local profile-record lease. It
 `EsimProfileContinuityTest` and `EsimProfileMonitorTest` cover the initial callback/registration barrier, equal-tuple callbacks, two profiles, stop/restart, permission recovery, ambiguity, durable deny-only challenge reservations and shared generation fences. Activation, Room, grant, connection and STOP tests cover final ACK publication, exception cleanup, migration 12 to 13, saved-record refusal and retirement after the durable radio CAS. These tests do not prove OEM callback delivery, carrier ownership or carrier delivery. The new implementation's execution results must be recorded separately; none is claimed here.
 
 Every subscription callback, permission/read failure, selected-SIM change or observer/process restart retires the prior eSIM authority. A saved binding or receipt cannot restore it. Recovery requires fresh applicable owner acceptance, a new authenticated higher-generation challenge and its exact final ACK. Android 12L/API 32 and older remain outside this eSIM continuity path. Alpha diagnostics and message-body restrictions are unchanged.
+
+## Complete-set selection preparation
+
+The API 33+ complete-set foundation observes the whole active physical SIM and
+eSIM list, including hidden peers, and locally prepares one explicitly selected
+profile. Other profiles remain active. Successful listener registration, its
+initial callback and coherent whole-list reads are required; a missing,
+ambiguous or unreadable selected mapping cannot fall back to another profile.
+
+Selection replacement, callbacks, permission or read failure, selected-profile
+disappearance, pause, stop and destruction retire the held preparation. Saved
+preferences record a choice and cannot restore preparation or establish
+activation, installed authority or send readiness. The existing v1 selected-line
+and count-one proof gates remain in place.
+
+The following ordinary `src/test` classes contain 116 inventoried methods:
+
+| Test class | Methods |
+|---|---:|
+| `CompleteSubscriptionObservationTest` | 15 |
+| `CompleteSubscriptionObservationAdapterTest` | 16 |
+| `CompleteSelectionPreparationBridgeTest` | 8 |
+| `SimCardCompleteSelectionPreparationTest` | 4 |
+| `LineActivationV2Test` | 16 |
+| `CompleteSetPrivacyProjectionV2Test` | 19 |
+| `LineActivationV2IncomingFramesTest` | 19 |
+| `CompleteSelectionPreparationCoordinatorTest` | 13 |
+| `MainActivityCompleteSelectionPreparationTest` | 6 |
+
+These are source inventories, not executed acceptance. The complete-set
+candidate's 116 controls and four-ABI native/Android graph remain uncompiled and
+unrun; lint and APK acceptance remain pending. The Activity controls use
+Robolectric API 34 and the v2 incoming-frame controls use API 33. This coverage
+does not prove OEM callback behavior, enabled multi-profile messaging or carrier
+delivery.
