@@ -68,6 +68,11 @@ pub(super) async fn sweep(
     lifecycle::require_installed(&tx).await?;
     let challenges = registration::cleanup(&tx, 100).await?;
     let nonces = sealed_exchange::cleanup(&tx, 100).await?;
+    super::super::android_proposal::lifecycle::prune(&tx, 100)
+        .await
+        .map_err(|_| {
+            sealed_root_ceremony::CeremonyError::Rejected("typed proposal retention unavailable")
+        })?;
     tx.commit().await?;
     Ok((challenges, nonces))
 }

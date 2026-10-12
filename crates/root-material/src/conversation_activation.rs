@@ -30,6 +30,15 @@ pub struct Proposal {
     predecessor: Vec<u8>,
     unsigned: Vec<u8>,
 }
+impl Proposal {
+    pub fn predecessor(&self) -> &[u8] {
+        &self.predecessor
+    }
+    pub fn unsigned(&self) -> &[u8] {
+        &self.unsigned
+    }
+}
+
 /// ZTCA01: account/session/device/line16, generation8, peer(u8+bytes), origin(u16+bytes),
 /// fingerprint32, predecessor version8/digest32, phone-reader/archive-reader/phone-signer32,
 /// issued8, signed predecessor(u16+bytes), unsigned successor(u16+bytes). Strict EOF, <=20480.
@@ -170,6 +179,7 @@ pub fn inspect<'a>(p: &'a Proposal, e: &Expected, now: u64) -> Result<&'a Scope>
     }
     Ok(s)
 }
+#[cfg(feature = "unlock")]
 pub fn sign(root: &RootSecret, p: &Proposal, e: &Expected, now: u64) -> Result<Vec<u8>> {
     inspect(p, e, now)?;
     let key = SigningKey::from_slice(root.as_bytes()).map_err(|_| Error)?;
@@ -181,7 +191,7 @@ pub fn sign(root: &RootSecret, p: &Proposal, e: &Expected, now: u64) -> Result<V
     out.extend_from_slice(&signature.normalize_s().to_bytes());
     Ok(out)
 }
-#[cfg(test)]
+#[cfg(all(test, feature = "unlock"))]
 mod tests {
     use super::*;
     fn fixture() -> (RootSecret, Proposal, Expected) {

@@ -107,6 +107,10 @@ const OPTIONAL_BLOCKED_TABLES: &[&str] = &["sealed_line_activation_exchanges"];
 /// counts stay honest.
 pub(crate) const DELETE_PLAN: &[(&str, &str)] = &[
     (
+        "owner_android_proposals",
+        "DELETE FROM owner_android_proposals WHERE account_id=$1",
+    ),
+    (
         "managed_reader_events",
         "DELETE FROM managed_reader_events WHERE account_id=$1",
     ),
@@ -801,6 +805,13 @@ async fn erase_account(
     {
         return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
     }
+    // Retain the optional proposal table's schema fence in this transaction.
+    let android_proposals_installed =
+        match crate::http_owner_conversations::android_proposal::lifecycle::prepare_erase(&tx).await
+        {
+            Ok(value) => value,
+            Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+        };
     // Inspect optional proposal storage before the final owner/MFA fence.
     let managed_installed = match crate::managed_ai::lifecycle::installed(&tx).await {
         Ok(value) => value,
@@ -831,6 +842,8 @@ async fn erase_account(
         {
             return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
         }
+    }
+    if execution_installed || android_proposals_installed {
         // Serialize manifest-first producers before taking the canonical owner
         // locks. Missing authority is not approval and does not prevent erasure.
         if tx
@@ -859,11 +872,24 @@ async fn erase_account(
             }
             Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
         }
+    }
+    if execution_installed {
         // Manifest -> user/member -> billing/account -> execution record. All
         // waits precede the single complete password/MFA/current-session fence.
         if tx.query("SELECT message_id FROM conversation_execution_records WHERE account_id=$1 ORDER BY message_id FOR UPDATE",&[&account_id]).await.is_err() {
             return error_response(StatusCode::SERVICE_UNAVAILABLE,"unavailable");
         }
+    }
+    if android_proposals_installed
+        && tx
+            .query(
+                "SELECT kind FROM owner_android_proposals WHERE account_id=$1 ORDER BY kind FOR UPDATE",
+                &[&account_id],
+            )
+            .await
+            .is_err()
+    {
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
     }
     // Proposal presence is inspected before the final proof: ordinary installs
     // have neither table, while partial installation must fail closed.
@@ -997,6 +1023,9 @@ async fn erase_account(
         Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
     }
     for &(table, sql) in DELETE_PLAN {
+        if table == "owner_android_proposals" && !android_proposals_installed {
+            continue;
+        }
         if crate::managed_ai::lifecycle::TABLES.contains(&table) && !managed_installed {
             continue;
         }
