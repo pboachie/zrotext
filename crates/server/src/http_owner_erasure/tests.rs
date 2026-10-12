@@ -584,7 +584,7 @@ async fn migrated_schema_with_execution(
     migrated_schema_with_optional_setup(label, execution, true).await
 }
 
-// Upgrade compatibility controls deliberately exercise a through-085 schema.
+// Upgrade compatibility controls omit sealed setup and its dependent exchanges.
 // Ordinary fixtures always replay the complete migration inventory.
 async fn migrated_schema_with_optional_setup(
     label: &str,
@@ -613,7 +613,10 @@ async fn migrated_schema_with_optional_setup(
         if !setup
             && matches!(
                 *file,
-                "086_sealed_line_key_registration.sql" | "087_sealed_line_activation_exchanges.sql"
+                "086_sealed_line_key_registration.sql"
+                    | "087_sealed_line_activation_exchanges.sql"
+                    // The v2 exchange schema also references the omitted receipts.
+                    | "096_line_activation_v2_exchanges.sql"
             )
         {
             continue;
