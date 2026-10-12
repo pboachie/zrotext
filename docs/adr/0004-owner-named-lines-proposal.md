@@ -10,7 +10,9 @@ The product direction is to let an owner activate each eligible SIM as its own
 owner-named line and choose queue, ignore or fallback when the selected line
 cannot send. Callers address a line label rather than a SIM slot, subscription
 identifier or card identifier. This direction does not settle the default mode,
-readiness thresholds, fallback authorization or the wire/storage design.
+readiness thresholds, fallback authorization or the wire/storage design; the
+sections below nominate a safe default, per-case readiness results and API-shape
+commitments while leaving each approval open.
 
 Current [sealed line setup](../conversation-sealed-line-setup.md) binds its proof
 to one explicitly selected active subscription, a current connection epoch,
@@ -50,15 +52,27 @@ at the existing transaction and phone boundaries after waits.
 
 ## Proposed mode semantics requiring approval
 
+Proposed default requiring approval: **a line with no explicit mode selection
+refuses when it is not ready** (ignore semantics). Queue and fallback are
+per-line opt-ins by the owner; neither is implied by account settings, another
+line's selection or inactivity. Until a selection is approved and implemented,
+no mode exists and a not-ready line can only refuse.
+
 **Ignore:** propose an explicit not-ready refusal before acceptance, rather than
-a silent drop. Define its response and whether a request identity is retained;
+a silent drop. A refusal happens before acceptance: it creates no message
+record, attempt or unknown outcome, and its response names the targeted line
+and the readiness reason without telephony identifiers. Define its exact
+response and whether a request identity is retained for idempotent re-submission;
 do not claim that this mode or its default is implemented or approved.
 
 **Queue:** propose retaining otherwise eligible unsent work on its exact selected
 line in the existing queue until readiness or its original expiry. Waiting must
 not allocate another attempt, extend expiry or transfer approval. Expiry and
 loss of consent, activation, owner/action or line authority must prevent new
-execution under the maintained fences. The final design must distinguish
+execution under the maintained fences. A queued item never converts to another
+line on its own; any alternative sender requires the explicit fallback selection
+below. Work that reaches its original expiry unsent ends expired without
+allocating a new attempt. The final design must distinguish
 cancelled/expired unsent work from an attempt that may already have started;
 queue expiry cannot erase uncertainty or free liability while execution remains
 possible.
@@ -93,6 +107,42 @@ plaintext fallback. Any future alternate-line sealed request needs separately
 reviewed client-local preparation and exact authority for that sender; whether
 such a flow is supported is an open decision.
 
+## Proposed readiness taxonomy
+
+Each case below is proposed to classify a line as not ready. The observation
+that establishes it must be authenticated and freshness-bound; a missing, stale
+or contradictory observation must not be read as readiness, and none of these
+observations grants or transfers authority. In every case the selected mode
+decides the result: ignore refuses before acceptance, queue holds on the exact
+selected line until readiness or original expiry, and fallback still requires
+the explicit owner-named alternative under its own guardrails.
+
+| Case | Establishing observation | Proposed result | Clears when |
+|---|---|---|---|
+| Inactive | line activation record shows the line is not active | not ready | owner activates the line |
+| Revoked | activation or owner revocation record | not ready | fresh owner activation |
+| Continuity check pending | card-continuity proof not currently satisfied for the approved binding | not ready | continuity check passes again |
+| Changed card | approved device-local card binding no longer matches the observed card | not ready | owner re-approves activation |
+| Phone offline | no current authenticated device-connection observation, stale beyond a threshold | not ready | fresh connection observation |
+
+The offline threshold — how long a missing connection observation keeps a line
+classified not ready — is deliberately not selected here and requires an
+explicit decision. A line that becomes ready again does not resurrect authority
+that expired, was revoked or was withdrawn while it was not ready.
+
+## Proposed public API shape commitments
+
+Submit requests carry an optional line label; when it is absent, the
+owner-configured default line is targeted. Labels resolve to immutable line
+identity at admission under the identity rules above, so a rename or reuse
+cannot redirect retained work. Responses, status and webhook bodies identify
+the line by its resolved label only; slot numbers, subscription identifiers and
+card identifiers never appear in them. The concrete field names, refusal bodies
+and schema changes belong to a future reviewed API change that documents them
+in the public OpenAPI document and keeps the existing route-drift and
+identifier-exclusion regressions green. This proposal adds no route, field or
+schema.
+
 ## Decisions required before implementation
 
 1. What is the default mode? What exact refusal response and retained-request
@@ -116,7 +166,8 @@ such a flow is supported is an open decision.
 ## Required future regression and rollout evidence
 
 Before implementation acceptance, test each reviewed readiness/mode combination:
-pre-acceptance ignore, original-line queue and expiry, loss of authority, rename
+pre-acceptance ignore including the refusal for a line with no mode selection,
+original-line queue and expiry, loss of authority, rename
 and label reuse, explicit alternative eligibility, suppression on either line,
 actual-sender reply/STOP routing, cross-account mismatch and unknown refusal.
 Include races and response loss around the existing admission/dispatch boundary,
