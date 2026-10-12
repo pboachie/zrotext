@@ -1108,3 +1108,49 @@ fn trusted_browser_cookie_is_bound_to_the_owners_trust_epoch() {
         now
     ));
 }
+
+#[test]
+fn login_client_subject_rejects_wrong_length_tags_without_panicking() {
+    let hasher = TokenHasher::new(crate::test_keys::key(217)).unwrap();
+    let set_cookie = login_client_cookie(&hasher, "owner@example.test").unwrap();
+    let value = set_cookie
+        .split_once('=')
+        .unwrap()
+        .1
+        .split(';')
+        .next()
+        .unwrap();
+    let (id, issued_tag) = value.split_once('.').unwrap();
+    // The issued cookie round-trips to its budget subject.
+    assert_eq!(
+        login_client_subject(&hasher, value, "owner@example.test"),
+        Some(format!("owner@example.test\0{id}"))
+    );
+    // Tags whose decoded length differs from the 32-byte digest must be
+    // rejected without panicking, however the base64 decoder accepts them.
+    for tag in [
+        String::new(),
+        "AAAA".to_string(),
+        format!("{issued_tag}AAAA"),
+    ] {
+        let forged = format!("{id}.{tag}");
+        assert_eq!(
+            login_client_subject(&hasher, &forged, "owner@example.test"),
+            None
+        );
+    }
+    // A same-length but wrong tag, and any other address, stay rejected.
+    let wrong_value_tag = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([0u8; 32]);
+    assert_eq!(
+        login_client_subject(
+            &hasher,
+            &format!("{id}.{wrong_value_tag}"),
+            "owner@example.test"
+        ),
+        None
+    );
+    assert_eq!(
+        login_client_subject(&hasher, value, "other@example.test"),
+        None
+    );
+}
