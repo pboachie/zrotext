@@ -1,5 +1,9 @@
 # Device stream v1: authenticated session
 
+The additive [complete selected-line v2 exchange proposal](../v2/line-activation.md)
+uses separate negotiated tokens and signed transcripts. Its draft contract does
+not promote this v1 exchange or establish runtime/device acceptance.
+
 This is the authenticated phone-to-hub handshake. A public endpoint must use
 WSS. The Android client requires an approved device UUID and a `wss://` URL
 ending in `/v1/device-stream`. A dedicated Android phone completed an
