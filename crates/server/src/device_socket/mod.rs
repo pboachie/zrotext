@@ -47,6 +47,7 @@ use zrotext_domain::{Evidence, MessageState};
 mod mms_spike_policy;
 pub use mms_spike_policy::MmsSpikePolicy;
 mod conversation;
+mod line_activation_v2;
 mod preconditions;
 mod sealed_line_setup;
 mod sealed_session;
@@ -279,6 +280,8 @@ pub struct DeviceSession {
 #[derive(Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 enum ClientFrame {
+    #[serde(skip)]
+    LineActivationV2(line_activation_v2::Incoming),
     #[serde(rename = "sealed_line_proof")]
     SealedLineProof {
         v: u8,
@@ -716,6 +719,15 @@ async fn upgrade(
         protocols.insert(0, crate::sealed_dispatch::wire::PROTOCOL);
         protocols.insert(0, crate::sealed_dispatch::wire::PROTOCOL_V2);
     }
+    let sealed_setup = conversation
+        .as_ref()
+        .is_some_and(|policy| policy.sealed_line_setup);
+    if state.sms_line_activation_enabled || sealed_setup {
+        protocols.insert(0, line_activation_v2::PROTOCOL);
+        if state.sealed_dispatch_enabled && state.dispatch_runtime_enabled {
+            protocols.insert(0, line_activation_v2::SEALED_PROTOCOL);
+        }
+    }
     let frame_limit = socket_frame_limit(conversation.is_some());
     websocket
         .protocols(protocols)
@@ -848,7 +860,11 @@ async fn receive_frame(socket: &mut WebSocket, budget: &mut FrameBudget) -> Opti
                 if text.len() > MAX_FRAME_BYTES {
                     return None;
                 }
-                return serde_json::from_str(text.as_str()).ok();
+                return match line_activation_v2::parse(text.as_str()) {
+                    Ok(Some(frame)) => Some(ClientFrame::LineActivationV2(frame)),
+                    Ok(None) => serde_json::from_str(text.as_str()).ok(),
+                    Err(()) => None,
+                };
             }
             Message::Binary(bytes) => return Some(ClientFrame::ConversationBinary(bytes.to_vec())),
             Message::Ping(_) | Message::Pong(_) => continue,
@@ -1093,17 +1109,14 @@ async fn run_socket(
     let sealed_setup_enabled = conversation_policy
         .as_ref()
         .is_some_and(|policy| policy.sealed_line_setup);
-    let mut status_protocol = socket
-        .protocol()
-        .map(|value| value.to_str().unwrap_or_default().to_owned());
-    let sealed_v2 = status_protocol.as_deref() == Some(crate::sealed_dispatch::wire::PROTOCOL_V2);
+    let negotiated =
+        line_activation_v2::Negotiated::selected(socket.protocol().and_then(|v| v.to_str().ok()));
+    let line_protocol = negotiated.line;
+    let status_protocol = negotiated.status.map(str::to_owned);
+    let sealed_v2 = negotiated.sealed_version == Some(2);
     let sealed_negotiated = state.sealed_dispatch_enabled
         && state.dispatch_runtime_enabled
-        && (sealed_v2
-            || status_protocol.as_deref() == Some(crate::sealed_dispatch::wire::PROTOCOL));
-    if sealed_negotiated {
-        status_protocol = Some(preconditions::PROTOCOL_V2.to_owned());
-    }
+        && negotiated.sealed_version.is_some();
     let mut status_budget = preconditions::ReportBudget::default();
     let mut frame_budget = FrameBudget::new(Instant::now());
     let authenticated = timeout_at(
@@ -1144,7 +1157,15 @@ async fn run_socket(
         close_handshake(&mut socket, RETRY_LATER).await;
         return;
     };
-    let session = match claim_session(&mut client, identity, &state).await {
+    let claimed = match line_protocol {
+        line_activation_v2::LineProtocol::Legacy => {
+            claim_session(&mut client, identity, &state).await
+        }
+        line_activation_v2::LineProtocol::Complete => {
+            claim_session_for_protocol(&mut client, identity, &state, line_protocol).await
+        }
+    };
+    let session = match claimed {
         Ok(Some(session)) => session,
         Ok(None) => {
             let code = match enrollment::device_still_active(&client, identity).await {
@@ -1185,6 +1206,7 @@ async fn run_socket(
     let mut sealed_line_next_poll = tokio::time::Instant::now();
     let mut sms_line_last_retire: Option<Instant> = None;
     let mut sms_line_acks_sent: Vec<Uuid> = Vec::new();
+    let mut sealed_line_v2_acks_sent: Vec<Uuid> = Vec::new();
     let mut last_grant_at: Option<Instant> = None;
     let mut alpha_ready: Option<([u8; 32], Instant)> = None;
     let mut alpha_ready_used = false;
@@ -1547,6 +1569,17 @@ async fn run_socket(
                             v: 1, event_id, created,
                         }).await { break; }
                     }
+                    Some(ClientFrame::LineActivationV2(frame)) => {
+                        if line_protocol!=line_activation_v2::LineProtocol::Complete {
+                            close_with_code=Some(close_code::POLICY);break;
+                        }
+                        let inbound_session=InboundSession {account_id:session.account_id,device_id:session.device_id,
+                            site_id:&state.site_id,instance_id:&state.instance_id,
+                            connection_epoch:session.connection_epoch,deployment_epoch:state.deployment_epoch};
+                        if line_activation_v2::dispatch(&mut socket,&state,inbound_session,sealed_setup_enabled,frame).await.is_none() {
+                            close_with_code=Some(RETRY_LATER);break;
+                        }
+                    }
                     Some(ClientFrame::SealedLineProof {
                         v: 1, connection_epoch, challenge_id, android_api_level,
                         active_subscription_count, selected_subscription_id, signature_der,
@@ -1735,7 +1768,12 @@ async fn run_socket(
                     site_id: &state.site_id, instance_id: &state.instance_id,
                     connection_epoch: session.connection_epoch, deployment_epoch: state.deployment_epoch,
                 };
-                match sealed_line_setup::push(&mut socket,&state.database_url,inbound_session).await {
+                let pushed=match line_protocol {
+                    line_activation_v2::LineProtocol::Legacy=>sealed_line_setup::push(&mut socket,&state.database_url,inbound_session).await,
+                    line_activation_v2::LineProtocol::Complete=>line_activation_v2::push(&mut socket,&state.database_url,inbound_session,
+                        crate::sealed_inbound::line_activation::v2_runtime::Purpose::Sealed,&mut sealed_line_v2_acks_sent,false).await,
+                };
+                match pushed {
                     Some(pushed) => sealed_line_next_poll = tokio::time::Instant::now() + sms_line_poll_delay(pushed),
                     None => { close_reason = "sealed_line_push_failed"; close_with_code = Some(RETRY_LATER); break; }
                 }
@@ -1754,8 +1792,13 @@ async fn run_socket(
                 if retire {
                     sms_line_last_retire = Some(Instant::now());
                 }
-                match push_sms_line_frames(&mut socket, &state.database_url, inbound_session,
-                    &mut sms_line_acks_sent, retire).await {
+                let pushed=match line_protocol {
+                    line_activation_v2::LineProtocol::Legacy=>push_sms_line_frames(&mut socket,&state.database_url,inbound_session,
+                        &mut sms_line_acks_sent,retire).await,
+                    line_activation_v2::LineProtocol::Complete=>line_activation_v2::push(&mut socket,&state.database_url,inbound_session,
+                        crate::sealed_inbound::line_activation::v2_runtime::Purpose::Sms,&mut sms_line_acks_sent,retire).await,
+                };
+                match pushed {
                     None => {
                         close_reason = "sms_line_push_failed";
                         close_with_code = Some(RETRY_LATER);
@@ -1771,8 +1814,9 @@ async fn run_socket(
             },
             // The owner just opened a challenge: poll now instead of waiting
             // for the idle cadence.
-            _ = SMS_LINE_CHALLENGE_WAKE.notified(), if state.sms_line_activation_enabled => {
+            _ = SMS_LINE_CHALLENGE_WAKE.notified(), if state.sms_line_activation_enabled || sealed_setup_enabled => {
                 sms_line_next_poll = tokio::time::Instant::now();
+                sealed_line_next_poll = tokio::time::Instant::now();
             },
             _ = state.drain_notify.notified() => {
                 close_reason = "site_drain";
@@ -2190,6 +2234,20 @@ async fn claim_session(
     identity: AuthenticatedDevice,
     state: &DeviceSocketState,
 ) -> Result<Option<DeviceSession>, tokio_postgres::Error> {
+    claim_session_for_protocol(
+        client,
+        identity,
+        state,
+        line_activation_v2::LineProtocol::Legacy,
+    )
+    .await
+}
+async fn claim_session_for_protocol(
+    client: &mut Client,
+    identity: AuthenticatedDevice,
+    state: &DeviceSocketState,
+    line_protocol: line_activation_v2::LineProtocol,
+) -> Result<Option<DeviceSession>, tokio_postgres::Error> {
     if state.draining.load(Ordering::Acquire) {
         return Ok(None);
     }
@@ -2218,9 +2276,28 @@ async fn claim_session(
         return Ok(None);
     }
     let row = tx.query_one(
-        "INSERT INTO device_sessions(device_id,account_id,site_id,instance_id,connection_epoch,lease_until,deployment_epoch) VALUES($1,$2,$3,$4,1,now()+($5::integer * interval '1 second'),$6) ON CONFLICT(device_id) DO UPDATE SET account_id=EXCLUDED.account_id,site_id=EXCLUDED.site_id,instance_id=EXCLUDED.instance_id,connection_epoch=device_sessions.connection_epoch+1,lease_until=EXCLUDED.lease_until,deployment_epoch=EXCLUDED.deployment_epoch RETURNING connection_epoch",
-        &[&identity.device_id, &identity.account_id, &state.site_id, &state.instance_id, &SESSION_LEASE_SECONDS, &state.deployment_epoch],
+        "INSERT INTO device_sessions(device_id,account_id,site_id,instance_id,connection_epoch,lease_until,deployment_epoch,line_activation_version) VALUES($1,$2,$3,$4,1,(CASE WHEN $7::smallint=2 THEN clock_timestamp() ELSE now() END)+($5::integer * interval '1 second'),$6,$7) ON CONFLICT(device_id) DO UPDATE SET account_id=EXCLUDED.account_id,site_id=EXCLUDED.site_id,instance_id=EXCLUDED.instance_id,connection_epoch=device_sessions.connection_epoch+1,lease_until=EXCLUDED.lease_until,deployment_epoch=EXCLUDED.deployment_epoch,line_activation_version=EXCLUDED.line_activation_version RETURNING connection_epoch",
+        &[&identity.device_id, &identity.account_id, &state.site_id, &state.instance_id, &SESSION_LEASE_SECONDS, &state.deployment_epoch,&line_protocol.version()],
     ).await?;
+    if line_protocol == line_activation_v2::LineProtocol::Complete {
+        let s = InboundSession {
+            account_id: identity.account_id,
+            device_id: identity.device_id,
+            site_id: &state.site_id,
+            instance_id: &state.instance_id,
+            connection_epoch: row.get(0),
+            deployment_epoch: state.deployment_epoch,
+        };
+        match crate::sealed_inbound::line_activation::v2_runtime::current_in_transaction(&tx, s)
+            .await
+        {
+            Ok(()) => {}
+            Err(crate::sealed_inbound::line_activation::LineActivationError::Database(error)) => {
+                return Err(error);
+            }
+            Err(_) => return Ok(None),
+        }
+    }
     tx.commit().await?;
     Ok(Some(DeviceSession {
         account_id: identity.account_id,

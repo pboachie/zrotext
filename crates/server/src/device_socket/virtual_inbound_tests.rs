@@ -73,6 +73,9 @@ async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
         include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
         include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
         include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
+        include_str!(
+            "../../../../deploy/compose/migrations/095_device_session_line_activation_version.sql"
+        ),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -418,6 +421,9 @@ impl HandshakeFixture {
             include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
             include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
             include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/095_device_session_line_activation_version.sql"
+            ),
         ] {
             db.batch_execute(migration).await.unwrap();
         }
@@ -878,6 +884,9 @@ async fn mms_spike_grant_is_solicited_one_use_and_stop_gated() {
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
         include_str!("../../../../deploy/compose/migrations/031_recipient_suppression.sql"),
         include_str!("../../../../deploy/compose/migrations/036_owner_opt_out_holds.sql"),
+        include_str!(
+            "../../../../deploy/compose/migrations/095_device_session_line_activation_version.sql"
+        ),
     ] {
         db.batch_execute(migration).await.unwrap();
     }
@@ -1178,6 +1187,9 @@ async fn mms_spike_grant_fails_closed_when_the_stop_tables_are_unreadable() {
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
         // 007 and 036 stay out: recipient_suppressions and
         // owner_recipient_holds do not exist, so the STOP lookup fails.
+        include_str!(
+            "../../../../deploy/compose/migrations/095_device_session_line_activation_version.sql"
+        ),
     ] {
         db.batch_execute(migration).await.unwrap();
     }

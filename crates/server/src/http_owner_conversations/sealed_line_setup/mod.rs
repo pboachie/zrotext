@@ -3,6 +3,7 @@
 //! opt-in composition validates the installed schema and returns an unspawned
 //! retention lane. Numbered draft migrations require final coordinator assignment.
 pub mod lifecycle;
+mod line_activation_v2;
 pub mod registration;
 mod retention;
 use super::OwnerConversationsState;
@@ -70,6 +71,18 @@ pub fn router(state: SetupState) -> Router {
         .route(
             "/v1/owner/conversation/sealed-line/{line_id}/challenges/{challenge_id}/approve",
             post(approve),
+        )
+        .route(
+            "/v1/owner/conversation/sealed-line/{line_id}/challenges-v2",
+            post(line_activation_v2::open),
+        )
+        .route(
+            "/v1/owner/conversation/sealed-line/{line_id}/challenges-v2/{challenge_id}/view",
+            post(line_activation_v2::view),
+        )
+        .route(
+            "/v1/owner/conversation/sealed-line/{line_id}/challenges-v2/{challenge_id}/approve",
+            post(line_activation_v2::approve),
         )
         .layer(DefaultBodyLimit::max(8192))
         .layer(middleware::from_fn(super::no_store))

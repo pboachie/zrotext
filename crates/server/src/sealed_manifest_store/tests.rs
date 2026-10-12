@@ -117,6 +117,9 @@ impl Fixture {
             include_str!("../../../../deploy/compose/migrations/063_retention_blocked_stamp.sql"),
             include_str!("../../../../deploy/compose/migrations/071_sealed_grant_authority.sql"),
             include_str!("../../../../deploy/compose/migrations/078_test_billable_usage.sql"),
+            include_str!(
+                "../../../../deploy/compose/migrations/095_device_session_line_activation_version.sql"
+            ),
         ] {
             if !role_reservations
                 && (sql

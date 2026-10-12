@@ -67,7 +67,24 @@ pub(super) async fn sweep(
     let tx = sealed_root_ceremony::begin(client).await?;
     lifecycle::require_installed(&tx).await?;
     let challenges = registration::cleanup(&tx, 100).await?;
+    crate::sealed_inbound::line_activation::v2_runtime::schema::require_installed(&tx)
+        .await
+        .map_err(|e| match e {
+            crate::sealed_inbound::line_activation::LineActivationError::Database(e) => {
+                sealed_root_ceremony::CeremonyError::Database(e)
+            }
+            _ => sealed_root_ceremony::CeremonyError::Rejected("sealed v2 schema unavailable"),
+        })?;
     let nonces = sealed_exchange::cleanup(&tx, 100).await?;
+    let v2_nonces = crate::sealed_inbound::line_activation::v2_runtime::cleanup_sealed(&tx, 100)
+        .await
+        .map_err(|e| match e {
+            crate::sealed_inbound::line_activation::LineActivationError::Database(e) => {
+                sealed_root_ceremony::CeremonyError::Database(e)
+            }
+            _ => sealed_root_ceremony::CeremonyError::Rejected("sealed v2 cleanup unavailable"),
+        })?;
+    let nonces = nonces + v2_nonces;
     super::super::android_proposal::lifecycle::prune(&tx, 100)
         .await
         .map_err(|_| {

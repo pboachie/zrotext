@@ -798,6 +798,18 @@ pub fn router(state: AuthHttpState) -> Router {
             "/sms-line-owner-keys/{fingerprint}",
             delete(sms_owner_keys::revoke),
         )
+        .route(
+            "/sms-lines/{line_id}/activations-v2",
+            post(sms_lines::v2::open),
+        )
+        .route(
+            "/sms-lines/{line_id}/activations-v2/{challenge_id}",
+            get(sms_lines::v2::view),
+        )
+        .route(
+            "/sms-lines/{line_id}/activations-v2/{challenge_id}/approve",
+            post(sms_lines::v2::approve),
+        )
         .route("/sms-lines", get(sms_lines::list))
         .route("/sms-lines/{line_id}/activations", post(sms_lines::open))
         .route(

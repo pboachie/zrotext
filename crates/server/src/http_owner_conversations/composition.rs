@@ -35,6 +35,9 @@ impl Startup {
         super::android_proposal::lifecycle::require_installed(&tx)
             .await
             .map_err(|_| "Typed proposal schema unavailable")?;
+        crate::sealed_inbound::line_activation::v2_runtime::schema::require_installed(&tx)
+            .await
+            .map_err(|_| "Sealed setup v2 schema unavailable")?;
         tx.commit()
             .await
             .map_err(|_| "Sealed setup schema unavailable")?;
