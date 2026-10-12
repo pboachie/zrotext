@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import test from 'node:test';
-import {CleanupFailure,runOwnedProcess,ownedProcessFailureObservation} from './owned-process-fixture.mjs';
+import {CleanupFailure,runOwnedProcess,ownedProcessFailureObservation,assertOwnedPidTerminated} from './owned-process-fixture.mjs';
 import childProcess from 'node:child_process';
 import {syncBuiltinESMExports} from 'node:module';
 import {EventEmitter} from 'node:events';
@@ -120,7 +120,7 @@ test('capture timeout terminates the owned grandchild before rejection',async()=
     grandchild=Number(await readFile(pidFile,'utf8'));assert.ok(Number.isSafeInteger(grandchild)&&grandchild>0);
     const before=await readFile(heartbeat,'utf8');assert.ok(before.length>0,'Grandchild ran before cancellation');
     await new Promise(resolve=>setTimeout(resolve,200));assert.equal(await readFile(heartbeat,'utf8'),before,'Heartbeat must stop before timeout rejection');
-    assert.throws(()=>process.kill(grandchild,0),error=>error.code==='ESRCH','Owned grandchild no longer exists');
+    await assertOwnedPidTerminated(grandchild);
   }finally{if(grandchild)try{process.kill(grandchild);}catch{}await rm(directory,{recursive:true,force:true});}
 });
 
