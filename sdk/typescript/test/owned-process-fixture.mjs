@@ -2,6 +2,7 @@
 // Test-only PID-owned process lifetime; no product execution or credentials.
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
+import {readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {performance} from 'node:perf_hooks';
 const failureObservations=new WeakMap();
@@ -28,8 +29,26 @@ export async function terminateOwnedTree(child,closed){
   if(process.platform==='win32'){
     const cleanup=fileURLToPath(new URL('../../../scripts/owned_process_cleanup.py',import.meta.url));
     await new Promise((resolve,reject)=>{const killer=spawn('python',[cleanup,String(child.pid)],{windowsHide:true,shell:false,stdio:'ignore'});const timer=setTimeout(()=>{killer.kill();reject(new CleanupFailure('Owned process tree termination failed'));},10000);killer.once('error',()=>{clearTimeout(timer);reject(new CleanupFailure('Owned process tree termination failed'));});killer.once('close',code=>{clearTimeout(timer);if(code===0)resolve();else reject(new CleanupFailure('Owned process tree termination failed'));});});
-  }else{try{process.kill(-child.pid,'SIGKILL');}catch{throw new CleanupFailure('Owned process group termination failed');}}
+  }else{try{process.kill(-child.pid,'SIGKILL');}catch(error){if(error?.code!=='ESRCH')throw new CleanupFailure('Owned process group termination failed');}}
   try{await deadline(closed,10000);}catch{throw new CleanupFailure('Owned process termination receipt missing');}
+}
+function ownedPidRunning(pid){
+  try{process.kill(pid,0);}catch(error){if(error?.code==='ESRCH')return false;throw error;}
+  if(process.platform!=='linux')return true;
+  // A SIGKILLed descendant stays as an unreaped /proc entry until the sandbox
+  // init collects it; a zombie ('Z') is dead and cannot execute, so reaping is
+  // not part of owned termination. Without /proc only the signal probe counts.
+  try{readFileSync('/proc/self/stat');}catch{return true;}
+  let stat;try{stat=readFileSync(`/proc/${pid}/stat`,'utf8');}catch{return false;}
+  return stat.slice(stat.lastIndexOf(')')+2).split(' ')[0]!=='Z';
+}
+export async function assertOwnedPidTerminated(pid,timeoutMs=5000){
+  assert.ok(Number.isSafeInteger(pid)&&pid>0,'Owned descendant PID required');
+  const started=performance.now();
+  while(ownedPidRunning(pid)){
+    if(performance.now()-started>timeoutMs)assert.fail(`Owned descendant ${pid} still runs after owned termination`);
+    await new Promise(resolve=>setTimeout(resolve,25));
+  }
 }
 export async function runOwnedProcess(command,args,{cwd=process.cwd(),env=process.env,timeoutMs=1200000,maximum=16*1024*1024}={}){
   return new Promise((resolve,reject)=>{
