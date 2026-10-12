@@ -1265,7 +1265,8 @@ pub fn login_client_subject(hasher: &TokenHasher, value: &str, email: &str) -> O
     }
     let tag = URL_SAFE_NO_PAD.decode(tag).ok()?;
     let expected = hasher.digest(b"login-client-v1", &format!("{id}\0{email}"));
-    bool::from(expected.as_slice().ct_eq(&tag)).then(|| format!("{email}\0{id}"))
+    (tag.len() == expected.len() && bool::from(expected.as_slice().ct_eq(&tag)))
+        .then(|| format!("{email}\0{id}"))
 }
 
 /// Marks a browser that completed a sign-in for one owner, so password-reset
