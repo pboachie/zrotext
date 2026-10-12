@@ -2,12 +2,14 @@
 //! Typed first manifest signing after independent phone/archive point comparison.
 //! Session, peer and paired signing fingerprint are review context, not manifest-signed
 //! consent. Server authorization and separate phone approval remain required.
-use crate::{
-    root_backup::{ExpectedIdentity, RootSecret},
-    sealed_root_enrollment,
-};
-use p256::ecdsa::{Signature, SigningKey, VerifyingKey, signature::Signer};
+use crate::{root_backup::ExpectedIdentity, sealed_root_enrollment};
+use p256::ecdsa::VerifyingKey;
 use sha2::{Digest, Sha256};
+#[cfg(feature = "unlock")]
+use {
+    crate::root_backup::RootSecret,
+    p256::ecdsa::{Signature, SigningKey, signature::Signer},
+};
 
 pub const MAX_PROPOSAL: usize = 2_048;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -47,10 +49,19 @@ pub struct Proposal {
 }
 /// Immutable public review. Consumed by signing, and contains no secrets.
 pub struct ReviewedGenesis {
+    #[cfg(feature = "unlock")]
     scope: Scope,
+    #[cfg(feature = "unlock")]
     root_point: [u8; 65],
+    #[cfg(feature = "unlock")]
     unsigned: Vec<u8>,
 }
+impl Proposal {
+    pub fn scope(&self) -> &Scope {
+        &self.scope
+    }
+}
+
 struct Cursor<'a> {
     bytes: &'a [u8],
     at: usize,
@@ -215,14 +226,18 @@ pub fn inspect(p: &Proposal, e: &Expected, now: u64) -> Result<ReviewedGenesis> 
         return Err(Error);
     }
     Ok(ReviewedGenesis {
+        #[cfg(feature = "unlock")]
         scope: s.clone(),
+        #[cfg(feature = "unlock")]
         root_point,
+        #[cfg(feature = "unlock")]
         unsigned,
     })
 }
 impl ReviewedGenesis {
     /// Fresh clock after secret entry; root key must equal the independently
     /// compared pin. No arbitrary bytes, replacement keys or generation occur.
+    #[cfg(feature = "unlock")]
     pub fn sign(self, root: &RootSecret, now: u64) -> Result<Vec<u8>> {
         current(&self.scope, now)?;
         let key = SigningKey::from_slice(root.as_bytes()).map_err(|_| Error)?;
@@ -239,5 +254,5 @@ impl ReviewedGenesis {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "unlock"))]
 mod tests;
