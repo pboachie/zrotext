@@ -835,13 +835,12 @@ async fn erase_account(
             Ok(value) => value,
             Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
         };
-    if execution_installed {
-        if !crate::http_owner_conversations::channel::execution::lifecycle::validate(&tx)
+    if execution_installed
+        && !crate::http_owner_conversations::channel::execution::lifecycle::validate(&tx)
             .await
             .unwrap_or(false)
-        {
-            return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
-        }
+    {
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
     }
     if execution_installed || android_proposals_installed {
         // Serialize manifest-first producers before taking the canonical owner
