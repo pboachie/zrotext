@@ -207,6 +207,7 @@ fn stream_schema_examples_match_serde_frames() {
             ClientFrame::SmsLineProof { .. } => "sms_line_proof",
             ClientFrame::SealedLineProof { .. } => "sealed_line_proof",
             ClientFrame::SealedLineInstalled { .. } => "sealed_line_installed",
+            ClientFrame::LineActivationV2(_) => "line_activation_v2",
         };
         assert_eq!(frame["type"], variant);
     }

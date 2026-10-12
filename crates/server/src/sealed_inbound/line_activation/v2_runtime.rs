@@ -539,8 +539,16 @@ async fn active<C: GenericClient + Sync>(
     tx.query_opt(ACTIVE, parameters)
         .await?
         .ok_or(LineActivationError::Unavailable)?;
-    if let Some(reg) = p.registration {
-        if tx.query_opt("SELECT 1 FROM sealed_line_key_receipts WHERE account_id=$1 AND registration_id=$2 AND assigned_challenge_id=$3 AND activated_ms IS NOT NULL AND retired_ms IS NULL AND paired_fingerprint=$4 FOR SHARE",&[&p.account,&reg,&p.id,&&fp[..]]).await?.is_none() {return Err(LineActivationError::Unavailable);}
+    if let Some(reg) = p.registration
+        && tx
+            .query_opt(
+                "SELECT 1 FROM sealed_line_key_receipts WHERE account_id=$1 AND registration_id=$2 AND assigned_challenge_id=$3 AND activated_ms IS NOT NULL AND retired_ms IS NULL AND paired_fingerprint=$4 FOR SHARE",
+                &[&p.account, &reg, &p.id, &&fp[..]],
+            )
+            .await?
+            .is_none()
+    {
+        return Err(LineActivationError::Unavailable);
     }
     phone_live(tx, s).await?;
     // Re-evaluate the SMS receipt lifetime after all binding/receipt waits.
@@ -645,8 +653,16 @@ async fn confirm(client: &mut Client, s: InboundSession<'_>, ack: Ack) -> Result
     if !same_ack(actual, ack) {
         return Ok(false);
     }
-    if !p.installed {
-        if tx.execute("UPDATE line_activation_v2_pending SET installed_at=clock_timestamp(),nonce=NULL WHERE challenge_id=$1 AND purpose='sealed' AND protocol_version=2 AND installed_at IS NULL AND approved_at IS NOT NULL AND retired_at IS NULL",&[&p.id]).await?!=1 {return Err(LineActivationError::Unavailable);}
+    if !p.installed
+        && tx
+            .execute(
+                "UPDATE line_activation_v2_pending SET installed_at=clock_timestamp(),nonce=NULL WHERE challenge_id=$1 AND purpose='sealed' AND protocol_version=2 AND installed_at IS NULL AND approved_at IS NOT NULL AND retired_at IS NULL",
+                &[&p.id],
+            )
+            .await?
+            != 1
+    {
+        return Err(LineActivationError::Unavailable);
     }
     let readback = observation_store::load(&tx, s.account_id, p.id).await?;
     if !readback.installed

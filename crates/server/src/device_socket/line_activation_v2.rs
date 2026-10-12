@@ -295,10 +295,8 @@ pub(super) async fn dispatch(
         }
     };
     runtime::current(&mut db, s).await.ok()?;
-    if accepted {
-        if let Some(ack) = installed_ack {
-            runtime::current_ack(&mut db, s, ack).await.ok()?;
-        }
+    if accepted && let Some(ack) = installed_ack {
+        runtime::current_ack(&mut db, s, ack).await.ok()?;
     }
     let value = scoped(
         serde_json::json!({"type":kind,"v":2,"challenge_id":id,"accepted":accepted}),
@@ -330,15 +328,15 @@ pub(super) async fn push(
         }
         pushed = true;
     }
-    if sent.len() < MAX_SMS_LINE_ACKS_PER_CONNECTION {
-        if let Some(a) = runtime::next_ack(&mut db, s, purpose, sent).await.ok()? {
-            runtime::current_ack(&mut db, s, a).await.ok()?;
-            if !send(socket, ack_frame(a, purpose, s.connection_epoch)).await {
-                return None;
-            }
-            sent.push(a.challenge_id);
-            pushed = true;
+    if sent.len() < MAX_SMS_LINE_ACKS_PER_CONNECTION
+        && let Some(a) = runtime::next_ack(&mut db, s, purpose, sent).await.ok()?
+    {
+        runtime::current_ack(&mut db, s, a).await.ok()?;
+        if !send(socket, ack_frame(a, purpose, s.connection_epoch)).await {
+            return None;
         }
+        sent.push(a.challenge_id);
+        pushed = true;
     }
     Some(pushed)
 }

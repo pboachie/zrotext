@@ -322,6 +322,9 @@ async fn issue_challenge_for_purpose(
     .await
 }
 
+// Eight parameters mirror the v1 issuer call path plus the v2 opening tuple;
+// bundling them would fork the reviewed v1/v2 issuer entry points.
+#[allow(clippy::too_many_arguments)]
 async fn issue_challenge_selected(
     client: &mut Client,
     principal: &SessionPrincipal,
@@ -1073,7 +1076,7 @@ pub mod sealed_exchange;
         reason = "the frozen codec retains inspection entrypoints beyond the mounted runtime consumer"
     )
 )]
-mod v2;
+pub(crate) mod v2;
 pub mod v2_runtime;
 
 #[cfg(test)]

@@ -12,10 +12,7 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use base64::{
-    Engine,
-    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
-};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use p256::{
     ecdsa::{Signature, SigningKey, signature::Signer},
     elliptic_curve::Generate,
