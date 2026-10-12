@@ -92,7 +92,7 @@ class LineActivationV2Test(unittest.TestCase):
             for value in (0, 1, True, "0", "01", "+1", "-1", "1.0", "1e0", " 1",
                           "1\n", "9223372036854775808", "9999999999999999999", "1" * 20):
                 self.assertFalse(self.validator.is_valid({**frame, key: value}), value)
-        # Exercise every equal-length prefix boundary rather than only the maximum.
+        # Check selected offsets near the maximum permitted width.
         maximum = 9223372036854775807
         for offset in (-1000000000000000000, -1, 0, 1, 1000000000000000000):
             value = maximum + offset
