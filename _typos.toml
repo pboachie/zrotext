@@ -7,3 +7,4 @@ extend-exclude = ["android/app/src/main/cpp/wolfssl"]
 [default.extend-words]
 BA = "BA" # Backup Active in the two-location design.
 fo = "fo" # Windows whoami /fo output-format switch.
+delet = "delet" # PostgreSQL 63-byte truncation of the migration-096 trigger name.
