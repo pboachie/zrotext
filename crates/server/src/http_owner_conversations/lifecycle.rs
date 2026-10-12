@@ -57,6 +57,7 @@ pub(crate) struct ConversationInventory {
     pub sealed_events: Vec<SealedEventInventory>,
     pub sealed_events_truncated: bool,
     pub sealed_events_next_cursor: Option<Uuid>,
+    pub android_proposals: serde_json::Value,
 }
 
 /// This inventories all account-owned sealed inbound identities, including
@@ -167,6 +168,7 @@ pub(crate) async fn inventory(
     } else {
         None
     };
+    let android_proposals = super::android_proposal::lifecycle::inventory(&tx, account).await?;
     fresh_owner(&tx, owner).await?;
     tx.commit().await?;
     Ok(ConversationInventory {
@@ -177,6 +179,7 @@ pub(crate) async fn inventory(
         sealed_events,
         sealed_events_truncated,
         sealed_events_next_cursor,
+        android_proposals,
     })
 }
 

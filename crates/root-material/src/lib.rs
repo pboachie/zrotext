@@ -13,16 +13,13 @@ pub mod archive_backup;
 /// Explicit archive creation snapshot; the caller supplies separate material.
 #[cfg(feature = "unlock")]
 pub use archive_backup::creation as archive_init;
-/// Typed offline conversation refresh; compiled only in the explicit unlock build.
-#[cfg(feature = "unlock")]
+/// Public typed refresh verification; secret signing remains unlock-only.
 pub mod conversation_refresh;
-#[cfg(feature = "unlock")]
 pub use conversation_refresh::activation as conversation_activation;
 /// One historical contact statement signature with a genuinely recovered root.
 #[cfg(feature = "unlock")]
 pub mod contact_reader_signing;
-/// Typed first manifest signing with independently compared public points.
-#[cfg(feature = "unlock")]
+/// Public first-manifest verification; secret signing remains unlock-only.
 pub mod conversation_genesis;
 /// Cryptographic stage-root evidence only; signing is offline unlock-only.
 pub mod preaccount_root_evidence;

@@ -28,6 +28,7 @@ use tokio_postgres::{Client, Transaction};
 use uuid::Uuid;
 
 pub mod activation;
+pub mod android_proposal;
 pub mod browser_assets;
 pub mod channel;
 pub mod composition;

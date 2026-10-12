@@ -32,6 +32,9 @@ impl Startup {
         super::sealed_line_setup::lifecycle::require_installed(&tx)
             .await
             .map_err(|_| "Sealed setup schema unavailable")?;
+        super::android_proposal::lifecycle::require_installed(&tx)
+            .await
+            .map_err(|_| "Typed proposal schema unavailable")?;
         tx.commit()
             .await
             .map_err(|_| "Sealed setup schema unavailable")?;
@@ -41,9 +44,11 @@ impl Startup {
             owner: owner.clone(),
             mfa_cipher,
         });
+        let proposals = super::android_proposal::router(owner.clone());
         Ok((
             self.router_with_setup(owner, socket, sockets_per_account, billing_enabled, true)?
-                .merge(setup),
+                .merge(setup)
+                .merge(proposals),
             retention,
         ))
     }
@@ -245,18 +250,24 @@ mod tests {
             drain_notify: Arc::new(tokio::sync::Notify::new()),
         };
         let router = startup.router(owner, socket, 1, false).unwrap();
-        let disabled_setup = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/owner/conversation/sealed-line/bootstrap")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(disabled_setup.status(), StatusCode::NOT_FOUND);
+        for path in [
+            "/v1/owner/conversation/sealed-line/bootstrap",
+            "/v1/owner/conversation/android-proposal",
+            "/v1/owner/conversation/android-proposal/context",
+        ] {
+            let disabled_setup = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(disabled_setup.status(), StatusCode::NOT_FOUND, "{path}");
+        }
         for path in [
             "/owner/conversation",
             "/owner/conversation-owner-setup.js",

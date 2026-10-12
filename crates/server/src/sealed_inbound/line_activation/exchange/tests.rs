@@ -34,7 +34,7 @@ macro_rules! migration {
 }
 
 // Complete reviewed schema, embedded at build time.
-const TEST_MIGRATIONS: [(&str, &str); 94] = [
+const TEST_MIGRATIONS: [(&str, &str); 97] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -129,6 +129,9 @@ const TEST_MIGRATIONS: [(&str, &str); 94] = [
     migration!("092_provider_send_attempts.sql"),
     migration!("093_owner_opening_capacity.sql"),
     migration!("094_line_activation_protocol_version.sql"),
+    migration!("095_device_session_line_activation_version.sql"),
+    migration!("096_line_activation_v2_exchanges.sql"),
+    migration!("097_owner_android_proposals.sql"),
 ];
 #[test]
 fn exchange_fixture_tracks_numbered_migrations() {
@@ -202,6 +205,13 @@ fn der(key: &SigningKey, message: &[u8]) -> Vec<u8> {
 /// A fresh schema holding the complete migrated tree. Returns the setup
 /// connection, the schema name, a URL pinned to it and a client on that URL.
 async fn migrated_schema(prefix: &str) -> (Client, String, String, Client) {
+    migrated_schema_through(prefix, None).await
+}
+
+async fn migrated_schema_through(
+    prefix: &str,
+    last: Option<&str>,
+) -> (Client, String, String, Client) {
     let base_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL").expect("set test database URL");
     let (setup, connection) = tokio_postgres::connect(&base_url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
@@ -214,7 +224,10 @@ async fn migrated_schema(prefix: &str) -> (Client, String, String, Client) {
     let url = format!("{base_url}{sep}options=-csearch_path%3D{schema}");
     let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
-    for (name, migration) in TEST_MIGRATIONS {
+    for (name, migration) in TEST_MIGRATIONS
+        .into_iter()
+        .filter(|(name, _)| last.is_none_or(|last| *name <= last))
+    {
         if name == "070_message_summary_metadata.sql" {
             db.batch_execute("CREATE INDEX CONCURRENTLY messages_summary_queue ON messages(account_id,state,created_at) WHERE state IN ('accepted','queued','claimed','submitting','submitted')").await.unwrap();
             db.batch_execute("BEGIN").await.unwrap();
@@ -1031,3 +1044,6 @@ async fn postgres_sms_line_ids_are_account_private_and_bounded() {
         .await
         .unwrap();
 }
+
+#[path = "schema_tests.rs"]
+mod versioned_schema;
