@@ -73,3 +73,25 @@ The original02 snapshot is independently verified as historical public authority
 installed through03 context, selected using03 readers, or used with a caller-chosen old clock to
 authorize current effects. Persist exact evidence under existing immutability/replay policies.
 Actual authority publication/enrollment/storage adapters are deferred under #1054.
+
+## Pure server cryptographic component
+
+`crates/server/src/sealed_manifest03` verifies bounded generation-one CrossFrom02,
+Successor03 and Current03 evidence in the ordinary server library. It does not
+install an authority row, route, capability or envelope admission path. The
+original profile02 verifier and its callers remain unchanged.
+
+Its explicit authenticated02 checkpoint includes the actual retained anchor and
+original acceptance/current comparison checkpoints. The legacy Rust02 result
+does not retain that anchor or original comparison time. The new component
+independently reverifies exact signed02 against the supplied stored identity,
+captures the supplied anchor unchanged and refuses nonzero anchors; it never
+manufactures a zero anchor or infers genesis from a later predecessor digest.
+The checkpoint input is trusted adapter context, not a self-authenticating wire
+object. The real H2 reader/archive/currentness adapter remains unimplemented.
+
+Only fresh supplied02 is supported for the first upgrade. An expired03 result
+can be chain history for a fresh successor but cannot supply current permission.
+Alternate valid signatures can establish semantic current identity without
+replacing original stored evidence. No global clock, durable ancestry, atomic
+fork selection, enrollment, rotation or true genesis03 acceptance is supplied.
