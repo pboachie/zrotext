@@ -207,6 +207,9 @@ async fn saturated_handshake_budget_does_not_lock_out_enrolled_device() {
         include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
         include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
         include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
+        include_str!(
+            "../../../../deploy/compose/migrations/095_device_session_line_activation_version.sql"
+        ),
     ] {
         db.batch_execute(migration).await.unwrap();
     }

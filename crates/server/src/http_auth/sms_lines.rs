@@ -3,6 +3,7 @@
 //! `SMS_LINE_ACTIVATION_ENABLED=true`. The owner's SMS approval private key
 //! never reaches the server; the browser signs `owner_statement_b64`.
 
+pub(super) mod v2;
 use super::preauth::OwnerMutation;
 use super::{
     AuthHttpError, AuthHttpState, CSRF_COOKIE, CSRF_HEADER, connect, cookie, map_auth,

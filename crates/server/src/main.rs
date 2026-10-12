@@ -583,6 +583,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             webhook_worker::validate_runtime_keys(&mut key_db, vault).await?;
         }
         ensure_local_site(&config).await?;
+        {
+            let mut db = zrotext_server::runtime_db::connect_worker(&config.database_url).await?;
+            let tx = db.transaction().await?;
+            zrotext_server::sealed_inbound::line_activation::v2_runtime::schema::require_lease(&tx)
+                .await?;
+            if config.sms_line_activation_enabled {
+                zrotext_server::sealed_inbound::line_activation::v2_runtime::schema::require_installed(&tx).await?;
+            }
+            tx.commit().await?;
+        }
         reset_test_quotas_on_start(
             &config.database_url,
             billing_test.is_some(),

@@ -309,11 +309,55 @@ async fn issue_challenge_for_purpose(
     purpose: LinePurpose,
     registration: Option<Uuid>,
 ) -> Result<LineChallenge, LineActivationError> {
+    issue_challenge_selected(
+        client,
+        principal,
+        line_id,
+        device_id,
+        lifetime_secs,
+        purpose,
+        registration,
+        None,
+    )
+    .await
+}
+
+async fn issue_challenge_selected(
+    client: &mut Client,
+    principal: &SessionPrincipal,
+    line_id: Uuid,
+    device_id: Uuid,
+    lifetime_secs: i32,
+    purpose: LinePurpose,
+    registration: Option<Uuid>,
+    opening: Option<(v2_runtime::Purpose, Uuid)>,
+) -> Result<LineChallenge, LineActivationError> {
     if line_id.is_nil() || device_id.is_nil() || lifetime_secs <= 0 {
         return Err(LineActivationError::InvalidInput);
     }
     let account_id = principal.tenant.account_id();
     let tx = client.transaction().await?;
+    if let Some((v2_purpose, opening_id)) = opening {
+        if opening_id.is_nil() || v2_purpose.label() != purpose.label() {
+            return Err(LineActivationError::InvalidInput);
+        }
+        tx.execute("SELECT pg_advisory_xact_lock(hashtextextended('zt:line-v2-opening:' || $1::uuid::text || $2::text || $3::uuid::text, 0))",
+            &[&account_id, &purpose.label(), &opening_id]).await?;
+        if let Some(previous) = v2_runtime::retry_opening(
+            &tx,
+            principal,
+            line_id,
+            device_id,
+            v2_purpose,
+            opening_id,
+            registration,
+        )
+        .await?
+        {
+            tx.commit().await?;
+            return Ok(previous);
+        }
+    }
     if registration.is_some() {
         tx.batch_execute("SET LOCAL lock_timeout='3s'; SET LOCAL statement_timeout='5s'")
             .await?;
@@ -364,6 +408,22 @@ async fn issue_challenge_for_purpose(
     {
         return Err(LineActivationError::Unavailable);
     }
+    let admission = if let Some((v2_purpose, opening_id)) = opening {
+        Some(
+            v2_runtime::prepare_opening(
+                &tx,
+                principal,
+                line_id,
+                device_id,
+                v2_purpose,
+                opening_id,
+                registration,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
     // `phone_lines.id` is a global key and rows can never be deleted. An ID
     // held by another account gets the same refusal as a revoked line or a
     // missing key or device. Every refusal below rolls this transaction back,
@@ -449,10 +509,11 @@ async fn issue_challenge_for_purpose(
     let id = Uuid::new_v4();
     let nonce: [u8; 32] = rand::random();
     let nonce_digest = digest(&nonce);
+    let protocol_version: i16 = if admission.is_some() { 2 } else { 1 };
     tx.execute(
         "INSERT INTO line_activation_challenges \
          (id,account_id,line_id,device_id,generation,nonce_digest,expires_at,protocol_version) \
-         VALUES($1,$2,$3,$4,$5,$6,LEAST(clock_timestamp()+($7::integer * interval '1 second'),to_timestamp($8::bigint::double precision/1000)),1)",
+         VALUES($1,$2,$3,$4,$5,$6,LEAST(clock_timestamp()+($7::integer * interval '1 second'),to_timestamp($8::bigint::double precision/1000)),$9)",
         &[
             &id,
             &account_id,
@@ -462,6 +523,7 @@ async fn issue_challenge_for_purpose(
             &&nonce_digest[..],
             &lifetime_secs,
             &absolute_expiry,
+            &protocol_version,
         ],
     )
     .await?;
@@ -472,10 +534,30 @@ async fn issue_challenge_for_purpose(
         setup_registration::assign(&tx, principal, registration_id, id)
             .await
             .map_err(scope_error)?;
-        sealed_exchange::persist(
+        if admission.is_none() {
+            sealed_exchange::persist(
+                &tx,
+                principal,
+                registration_id,
+                &LineChallenge {
+                    id,
+                    account_id,
+                    line_id,
+                    device_id,
+                    generation,
+                    nonce,
+                },
+            )
+            .await?;
+        }
+        setup_registration::fresh(&tx, principal, statement, None)
+            .await
+            .map_err(scope_error)?;
+    }
+    if let Some(admission) = admission {
+        v2_runtime::observation_store::persist(
             &tx,
             principal,
-            registration_id,
             &LineChallenge {
                 id,
                 account_id,
@@ -484,11 +566,9 @@ async fn issue_challenge_for_purpose(
                 generation,
                 nonce,
             },
+            admission,
         )
         .await?;
-        setup_registration::fresh(&tx, principal, statement, None)
-            .await
-            .map_err(scope_error)?;
     }
     tx.commit().await?;
     Ok(LineChallenge {
@@ -553,6 +633,68 @@ struct ActivationScope {
     purpose: LinePurpose,
     registration: Option<Uuid>,
 }
+#[derive(Clone, Copy)]
+enum SelectedObservation {
+    Legacy(SimObservation),
+    Complete(v2::ObservationV2),
+}
+struct SelectedActivationProof<'a> {
+    challenge_id: Uuid,
+    nonce: [u8; 32],
+    observation: SelectedObservation,
+    device_signature_der: &'a [u8],
+    owner_signature_der: &'a [u8],
+}
+impl<'a> SelectedActivationProof<'a> {
+    fn legacy(p: LineActivationProof<'a>) -> Self {
+        Self {
+            challenge_id: p.challenge_id,
+            nonce: p.nonce,
+            observation: SelectedObservation::Legacy(p.observation),
+            device_signature_der: p.device_signature_der,
+            owner_signature_der: p.owner_signature_der,
+        }
+    }
+    fn complete(p: v2_runtime::CompleteProof<'a>) -> Self {
+        Self {
+            challenge_id: p.challenge_id,
+            nonce: p.nonce,
+            observation: SelectedObservation::Complete(p.observation),
+            device_signature_der: p.device_signature_der,
+            owner_signature_der: p.owner_signature_der,
+        }
+    }
+    fn version(&self) -> i16 {
+        match self.observation {
+            SelectedObservation::Legacy(_) => 1,
+            SelectedObservation::Complete(_) => 2,
+        }
+    }
+    fn statements(
+        &self,
+        c: &LineChallenge,
+        purpose: LinePurpose,
+    ) -> Result<(Vec<u8>, Vec<u8>), LineActivationError> {
+        match self.observation {
+            SelectedObservation::Legacy(o) => {
+                let device = line_statement(c, o, purpose)?;
+                let owner = owner_statement(&device, self.device_signature_der, purpose);
+                Ok((device, owner))
+            }
+            SelectedObservation::Complete(o) => {
+                let purpose = match purpose {
+                    LinePurpose::Sms => v2::PurposeV2::Sms,
+                    LinePurpose::Sealed => v2::PurposeV2::Sealed,
+                };
+                let device = v2::device_statement(purpose, c, &o)
+                    .map_err(|_| LineActivationError::InvalidInput)?;
+                let owner = v2::owner_statement(&device, self.device_signature_der)
+                    .map_err(|_| LineActivationError::InvalidInput)?;
+                Ok((device.bytes(), owner.bytes()))
+            }
+        }
+    }
+}
 async fn activate_for_purpose(
     client: &mut Client,
     principal: &SessionPrincipal,
@@ -560,6 +702,26 @@ async fn activate_for_purpose(
     line_id: Uuid,
     generation: i64,
     proof: LineActivationProof<'_>,
+    scope: ActivationScope,
+) -> Result<(), LineActivationError> {
+    activate_selected(
+        client,
+        principal,
+        session,
+        line_id,
+        generation,
+        SelectedActivationProof::legacy(proof),
+        scope,
+    )
+    .await
+}
+async fn activate_selected(
+    client: &mut Client,
+    principal: &SessionPrincipal,
+    session: InboundSession<'_>,
+    line_id: Uuid,
+    generation: i64,
+    proof: SelectedActivationProof<'_>,
     scope: ActivationScope,
 ) -> Result<(), LineActivationError> {
     let ActivationScope {
@@ -578,8 +740,8 @@ async fn activate_for_purpose(
         generation,
         nonce: proof.nonce,
     };
-    let device_statement = line_statement(&challenge, proof.observation, purpose)?;
-    let owner_statement = owner_statement(&device_statement, proof.device_signature_der, purpose);
+    let protocol_version = proof.version();
+    let (device_statement, owner_statement) = proof.statements(&challenge, purpose)?;
     let nonce_digest = digest(&proof.nonce);
     let tx = client.transaction().await?;
     if registration.is_some() {
@@ -661,7 +823,7 @@ async fn activate_for_purpose(
                 "SELECT 1 FROM line_activation_challenges \
                  WHERE id=$1 AND account_id=$2 AND line_id=$3 AND device_id=$4 \
                    AND generation=$5 AND nonce_digest=$6 \
-                   AND protocol_version=1 AND consumed_at IS NULL AND expires_at>clock_timestamp() FOR UPDATE",
+                   AND protocol_version=$7 AND consumed_at IS NULL AND expires_at>clock_timestamp() FOR UPDATE",
                 &[
                     &proof.challenge_id,
                     &account_id,
@@ -669,6 +831,7 @@ async fn activate_for_purpose(
                     &session.device_id,
                     &generation,
                     &&nonce_digest[..],
+                    &protocol_version,
                 ],
             )
             .await?
@@ -754,6 +917,22 @@ async fn activate_for_purpose(
     {
         return Err(LineActivationError::Unavailable);
     }
+    if let SelectedObservation::Complete(observation) = proof.observation {
+        let v2_purpose = match purpose {
+            LinePurpose::Sms => v2_runtime::Purpose::Sms,
+            LinePurpose::Sealed => v2_runtime::Purpose::Sealed,
+        };
+        v2_runtime::observation_store::require_proof(
+            &tx,
+            principal,
+            session,
+            &challenge,
+            observation,
+            proof.device_signature_der,
+            v2_purpose,
+        )
+        .await?;
+    }
     let device_digest = proof_digest(&device_statement, proof.device_signature_der);
     let owner_digest = proof_digest(&owner_statement, proof.owner_signature_der);
     tx.execute(
@@ -785,8 +964,8 @@ async fn activate_for_purpose(
     )
     .await?;
     tx.execute(
-        "UPDATE line_activation_challenges SET consumed_at=clock_timestamp() WHERE id=$1 AND protocol_version=1",
-        &[&proof.challenge_id],
+        "UPDATE line_activation_challenges SET consumed_at=clock_timestamp() WHERE id=$1 AND protocol_version=$2",
+        &[&proof.challenge_id,&protocol_version],
     )
     .await?;
     // PostgreSQL now() is fixed at transaction start. Recheck *after* any
@@ -800,11 +979,12 @@ async fn activate_for_purpose(
              WHERE o.id=$1 AND s.device_id=$2 AND c.id=$3 \
                AND o.revoked_at IS NULL AND o.expires_at>clock_timestamp() \
                AND s.lease_until>clock_timestamp() \
-               AND c.protocol_version=1 AND c.expires_at>clock_timestamp()",
+               AND c.protocol_version=$4 AND c.expires_at>clock_timestamp()",
             &[
                 &principal.session_id,
                 &session.device_id,
                 &proof.challenge_id,
+                &protocol_version,
             ],
         )
         .await?
@@ -814,6 +994,12 @@ async fn activate_for_purpose(
     }
     if !owner_session_active(&tx, principal).await? {
         return Err(LineActivationError::Unavailable);
+    }
+    if protocol_version == 2 {
+        v2_runtime::observation_store::mark_approved(&tx, &challenge, proof.owner_signature_der)
+            .await?;
+        let pending = v2_runtime::observation_store::load(&tx, account_id, challenge.id).await?;
+        v2_runtime::original_live(&tx, &pending).await?;
     }
     if let (Some(id), Some(statement)) = (registration, &scoped) {
         setup_registration::activated(&tx, principal, id)
@@ -878,16 +1064,17 @@ pub async fn activate_registered_line_binding(
 pub mod exchange;
 pub mod sealed_exchange;
 
-// Compile the frozen encoding foundation without enabling a v2 runtime. The
-// expectation is limited to the unused codec in production, not its controls.
+// Preserve the frozen encoding leaf. Its inspection helpers exceed the mounted
+// runtime needs; this expectation applies only to that leaf, never its controls.
 #[cfg_attr(
     not(test),
     expect(
         dead_code,
-        reason = "v2 admission and client negotiation remain unavailable"
+        reason = "the frozen codec retains inspection entrypoints beyond the mounted runtime consumer"
     )
 )]
 mod v2;
+pub mod v2_runtime;
 
 #[cfg(test)]
 mod protocol_version_tests;

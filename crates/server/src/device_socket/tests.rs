@@ -585,6 +585,9 @@ async fn lost_intent_ack_across_hubs_needs_no_radio_proof_before_regrant() {
         include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
         include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
         include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
+        include_str!(
+            "../../../../deploy/compose/migrations/095_device_session_line_activation_version.sql"
+        ),
     ] {
         client.batch_execute(sql).await.unwrap();
     }
@@ -830,6 +833,9 @@ async fn writer_claim_replay_epoch_and_revocation() {
         include_str!("../../../../deploy/compose/migrations/038_owner_opt_out_hold_guards.sql"),
         include_str!("../../../../deploy/compose/migrations/039_inbound_device_clock_offset.sql"),
         include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
+        include_str!(
+            "../../../../deploy/compose/migrations/095_device_session_line_activation_version.sql"
+        ),
     ] {
         client.batch_execute(sql).await.unwrap();
     }

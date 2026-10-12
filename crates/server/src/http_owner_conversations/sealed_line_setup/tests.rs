@@ -53,6 +53,9 @@ impl Case {
             include_str!(
                 "../../../../../deploy/compose/migrations/094_line_activation_protocol_version.sql"
             ),
+            include_str!(
+                "../../../../../deploy/compose/migrations/096_line_activation_v2_exchanges.sql"
+            ),
         ] {
             owner.f.db.batch_execute(sql).await.unwrap();
         }
