@@ -1,7 +1,8 @@
 # Proposed sealed envelope profile 03
 
-**Proposed contract; no production profile 03 implementation or capability is available.**
+**Proposed wire contract; an exported outbound SDK component exists, but integrated profile03 capability is unavailable.**
 This contract/vector slice is tracked in [#1055](https://github.com/pboachie/zrotext/issues/1055).
+The bounded outbound SDK component is tracked in [#1061](https://github.com/pboachie/zrotext/issues/1061).
 The actual SDK → server → current grant/signed fetch → durable Android journal → maintained
 receiver integration remains open in [#1054](https://github.com/pboachie/zrotext/issues/1054).
 Synthetic signatures, software HPKE component checks and byte vectors do not establish
@@ -82,13 +83,53 @@ binding/session/grant/replay and journal before any maintained receiver or radio
 
 ## Integration dependencies
 
-The existing SDK composer/server admission remain profile02. The selected strict Wolf receiver
-is unchanged. No production03 composer, route, authority, storage guard, grant, Android parser,
-journal adapter or receiver consumer is installed by these documents/tests. Actual pairing must
+The existing profile02 SDK composer and server admission remain unchanged. The selected strict
+Wolf receiver is unchanged. No production03 route, durable authority adapter, storage guard,
+grant, Android parser, journal adapter or receiver consumer is installed by this SDK slice. Actual pairing must
 use the same freshly enrolled non-exportable Android recipient and exact persisted SDK bytes,
 current negotiated one-use grant and signed fetch, and real durable journal before Wolf open.
 No recipient scalar export, JCA substitute, software fallback, physical/carrier acceptance or
-runtime enablement follows from these test-only contracts.
+runtime enablement follows from the SDK component or its software tests.
+
+## Exported outbound SDK component
+
+`composeSealedOutboundEnvelope03` in `sdk/typescript/src/sealed-envelope03.ts` produces the
+exact outbound bytes above with fresh WebCrypto randomness, the locked HPKE implementation,
+and a current Manifest03 role authorizer. It returns owned envelope bytes and unsigned/full
+SHA256 digests. It has no deterministic-material option, persistence, transport, retry queue,
+radio effect or fallback. A retry must reuse the complete previously persisted envelope.
+
+`verifyAcceptedPayloadProfileElection03` verifies the original exact election bundle, core,
+signed02 and signed03 evidence at an independently authenticated durable `acceptedAtMs`,
+including both signatures and the owner's commitment to the exact device signature. This
+historical proof remains usable after the short ceremony challenge expires. Composition
+separately checks a genuine current Manifest03 handle (including supported verified successors),
+the exact selected binding/reader and current permission comparison/deadline. All mutable
+byte inputs are captured before awaiting cryptography; shared storage and unsupported byte
+view kinds are refused. The authorized signer and all readers must be active for the message
+lifetime. Caller-owned signing keys remain caller-owned; transient secret copies are cleared
+on completion as a best effort, without a JavaScript memory-erasure guarantee.
+
+The exported `DurableAcceptedElection03` and `CurrentElectionAuthority03` records are trusted
+adapter inputs, not self-authenticating objects. They require independent authenticated durable
+acceptance and current-selection sources, exact signed-evidence hashes, root/generation,
+new binding UUID/generation, selected reader and election commitment/bundle binding. The SDK
+does not mint those facts or prove a server commit, session authorization, monotonic durable
+clock, global rollback protection, ancestry between independently selected handles or atomic
+fork selection. The actual H2 storage/adapter supplying these records remains unimplemented;
+software fixtures exercise the explicit boundary and do not establish integrated pairing.
 
 See [manifest](zt-sealed-draft-03-manifest-candidate.md),
 [election](payload-profile-election-03.md) and [dispatch](sealed-dispatch-03-candidate.md).
+
+## Pure server ciphertext verifier
+
+`crates/server/src/sealed_envelope03` verifies exact bounded outbound/inbound03
+grammar, routing, strict origin signature and current Manifest03 signer/reader
+roles. It returns owned ciphertext evidence and digests, with the exact distinct
+body-AAD and wrap-info/AAD bytes. It does not decrypt or substitute a receiver.
+Incoming age policy, current durable binding/election/session permission, grant,
+fetch, replay, journal and radio checks remain independent production-adapter
+requirements. Ordinary Rust cryptographic tests do not establish that integration
+or device, carrier or release acceptance. Existing02 parsing and admission remain
+unchanged; no production03 capability is advertised by this component.

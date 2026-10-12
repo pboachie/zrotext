@@ -255,3 +255,52 @@ export function verifiedManifestIdentity03(accepted: VerifiedManifest03, laterCo
     rootPoint: copy(value.rootPoint), issuedMs: value.issuedMs, expiresMs: value.expiresMs,
     comparisonMs: value.comparisonMs };
 }
+
+/** Public-key authorization only. Durable current selection and permission are
+ * independent inputs to the composer, never inferred from this private token. */
+export function authorizeOutbound03(accepted: VerifiedManifest03, claims: Readonly<{
+  accountId: Uint8Array; deviceId: Uint8Array; lineId: Uint8Array;
+  generation: bigint; version: bigint; digest: Uint8Array; signerKeyId: Uint8Array;
+  wraps: readonly Readonly<{ role: number; keyId: Uint8Array }>[];
+}>, nowMs: bigint): Readonly<{
+  signerPoint: Uint8Array; expiresMs: bigint;
+  recipients: readonly Readonly<{ role: 1 | 2 | 3; keyId: Uint8Array; point: Uint8Array }>[];
+}> {
+  comparison(nowMs);
+  const value = bound(accepted, nowMs);
+  window(value.issuedMs, value.expiresMs, nowMs);
+  const account = capture(claims.accountId, 16, 16), device = capture(claims.deviceId, 16, 16);
+  const line = capture(claims.lineId, 16, 16), digest = capture(claims.digest, 32, 32);
+  const signerId = capture(claims.signerKeyId, 32, 32);
+  if (same(account, zero16) || same(device, zero16) || same(line, zero16)
+      || !same(account, value.accountId) || claims.generation !== value.generation
+      || claims.version !== value.version || !same(digest, value.digest)) fail("outbound manifest binding");
+  const active = (key: Key03) => key.state === 1 && key.fromMs <= nowMs && nowMs < key.untilMs;
+  const signer = value.keys.find(k => k.role === 5 && same(k.keyId, signerId));
+  if (!signer || !active(signer) || signer.scope !== 1 || !same(signer.lineId, line)) fail("outbound signer authority");
+  const requested = claims.wraps, count = requested?.length;
+  if (!Array.isArray(requested) || typeof count !== "number" || !Number.isInteger(count) || count < 2 || count > 8) fail("outbound reader count");
+  let devices = 0, archives = 0, integrations = 0;
+  let expiresMs = value.expiresMs < signer.untilMs ? value.expiresMs : signer.untilMs;
+  const seen = new Set<string>();
+  const recipients: { role: 1 | 2 | 3; keyId: Uint8Array; point: Uint8Array }[] = [];
+  for (let i = 0; i < count; i++) {
+    const w = requested[i];
+    const id = capture(w.keyId, 32, 32), role = w.role;
+    if (role !== 1 && role !== 2 && role !== 3) fail("outbound reader role");
+    const identity = `${role}:${Array.from(id).join(",")}`;
+    if (seen.has(identity)) fail("outbound duplicate reader");
+    seen.add(identity);
+    const key = value.keys.find(k => k.role === role && same(k.keyId, id));
+    if (!key || !active(key) || !(key.scope & 4)) fail("outbound reader authority");
+    if (role === 1) {
+      if (!same(key.deviceId, device) || !same(key.lineId, line)) fail("outbound selected device/line");
+      devices++;
+    } else if (role === 2) archives++;
+    else integrations++;
+    if (key.untilMs < expiresMs) expiresMs = key.untilMs;
+    recipients.push({ role, keyId: copy(id), point: copy(key.point) });
+  }
+  if (devices !== 1 || archives !== 1 || integrations > 6) fail("outbound reader set");
+  return { signerPoint: copy(signer.point), expiresMs, recipients };
+}

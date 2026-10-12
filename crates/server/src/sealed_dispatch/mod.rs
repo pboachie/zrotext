@@ -5,6 +5,7 @@ pub mod http;
 #[cfg(test)]
 mod tests;
 pub mod wire;
+pub mod wire03;
 
 /// Optional metadata marker leaves ordinary queue behavior unchanged. A workflow
 /// marker always requires the independently guarded exact action before disclosure.
