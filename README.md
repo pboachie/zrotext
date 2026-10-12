@@ -1,7 +1,5 @@
+[![Woodpecker CI](https://badges.boachiefamily.net/api/badges/2/status.svg)](https://ci.boachiefamily.net/repos/2)
 
-[![CI](https://badges.boachiefamily.net/api/badges/2/status.svg?branch=main)](https://ci.boachiefamily.net/repos/2)
-[![Release CI](https://badges.boachiefamily.net/api/badges/2/status.svg)](https://ci.boachiefamily.net/repos/2)
-[![Ops CI](https://badges.boachiefamily.net/api/badges/2/status.svg?branch=main)](https://ci.boachiefamily.net/repos/2)
 <p align="center"><img src="docs/assets/zrotext-banner.svg" alt="ZROtext: Open-source Android SMS gateway" width="900"></p>
 <h1 align="center">ZROtext</h1>
 <p align="center"><strong>Your phone. Your number. Your SMS API.</strong></p>
