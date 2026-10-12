@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Text
@@ -25,6 +26,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -152,8 +154,11 @@ internal class AndroidPairingQrGoogleScanner(private val context: Context) : And
         if (state.phase == AndroidPairingQrScanner.Phase.REVIEW) {
             Text("Selected HTTPS server: ${state.expectedOrigin}")
             Text("Scanned HTTPS server: ${state.scannedOrigin}")
-            Row {
-                Checkbox(checked = confirmed, onCheckedChange = { confirmed = it }, enabled = state.canConfirm)
+            Row(Modifier.sizeIn(minHeight = 48.dp).toggleable(
+                value = confirmed, enabled = state.canConfirm, role = Role.Checkbox,
+                onValueChange = { confirmed = it }
+            )) {
+                Checkbox(checked = confirmed, onCheckedChange = null, enabled = state.canConfirm)
                 Text("I recognize this server and approve sending this pairing claim.")
             }
             Button(onClick = { scanner.confirmOrigin(confirmed); confirmed = false }, enabled = state.canConfirm && confirmed,
