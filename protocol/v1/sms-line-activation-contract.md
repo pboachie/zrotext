@@ -1,5 +1,9 @@
 # Internal SMS line activation contract
 
+The additive [complete selected-line v2 exchange proposal](../v2/line-activation.md)
+uses separate negotiated tokens and signed transcripts. Its draft contract does
+not promote this v1 exchange or establish runtime/device acceptance.
+
 Each issued challenge has an immutable stored `protocol_version`. Migration 094
 labels existing challenges as version 1; current issuers explicitly issue version
 1 and all current activation exchanges require it. The compiled v2 encoding
