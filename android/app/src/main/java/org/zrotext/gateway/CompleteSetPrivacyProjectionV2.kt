@@ -13,7 +13,7 @@ internal sealed interface CompletePrivacyProjectionFence {
 }
 
 /**
- * Unused, RAM-only privacy projection from an exact held local observation. The canonical bytes
+ * RAM-only privacy projection from an exact held local observation. The canonical bytes
  * are declarations, not a signature, OS attestation, installation permit or send capability.
  * Callback/selection/permission/registration withdrawal invalidates memory currentness at entry.
  * Raw logical identifiers stay in private RAM maps; neither map is serialized or persisted.
@@ -37,6 +37,8 @@ internal class CompleteSetPrivacyProjectionV2 private constructor(
     fun observation() = LineActivationV2Observation.decode(declaration.bytes())
     fun completeSetPreimage() = frozenPreimage.copyOf()
     fun isCurrent() = issuer.isPrivacyProjectionCurrent(this)
+    internal fun matchesCompleteRows(rows: List<SubscriptionObservationRow>): Boolean =
+        isCurrent() && rows.sortedBy { it.subscriptionId } == fence.activeRows && isCurrent()
     internal fun usesFence(expected: CompleteSubscriptionObserver, actual: CompletePrivacyProjectionFence) =
         issuer === expected && fence === actual
     override fun toString() = "CompleteSetPrivacyProjectionV2(local declaration, redacted)"

@@ -166,7 +166,13 @@ data class LocalLineBinding(
     @ColumnInfo(defaultValue = "NULL") val profileLogicalSlotIndex: Int? = null,
     @ColumnInfo(defaultValue = "NULL") val profileIncarnation: String? = null,
     @ColumnInfo(defaultValue = "NULL") val profileObservationEpoch: Long? = null,
-    @ColumnInfo(defaultValue = "NULL") val profileLeaseId: String? = null
+    @ColumnInfo(defaultValue = "NULL") val profileLeaseId: String? = null,
+    @ColumnInfo(defaultValue = "1") val protocolVersion: Int = 1,
+    @ColumnInfo(defaultValue = "NULL") val v2Purpose: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val v2ChallengeId: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val v2ObservationB64url: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val v2StatementSha256: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val v2SignatureSha256: String? = null
 )
 
 /** Serialized provenance can resolve only an already-installed live object, never mint one. */
@@ -179,17 +185,26 @@ internal fun LocalLineBinding.profileAuthority(): ProfileLineAuthority? = runCat
     ProfileLineAuthority(accountId, deviceId, lineId, generation)
 }.getOrNull()
 internal fun LocalLineBinding.installedProfile(): InstalledEsimProfile? {
+    if (protocolVersion != 1) return null
     val record = profileRecord() ?: return null
     val authority = profileAuthority() ?: return null
     return SimProfileContinuity.lookup(record, authority)
 }
-internal fun LocalLineBinding.liveContinuity(): Boolean = when (continuityKind) {
+internal fun LocalLineBinding.installedSelectionV2(): InstalledSelectedLineV2? =
+    if (protocolVersion == 2) LineActivationV2SelectedLineMount.lookup(this) else null
+internal fun LocalLineBinding.liveContinuity(): Boolean = when {
+    protocolVersion == 2 -> installedSelectionV2()?.isCurrent() == true
+    protocolVersion != 1 -> false
+    else -> when (continuityKind) {
     "physical" -> profilePortIndex == null && profileLogicalSlotIndex == null &&
         profileIncarnation == null && profileObservationEpoch == null && profileLeaseId == null
     "esim" -> installedProfile()?.isCurrent() == true
     else -> false
+    }
 }
 internal fun LocalLineBinding.activatedSim(): ActivatedSimCard? = when {
+    protocolVersion == 2 -> installedSelectionV2()?.takeIf { it.isCurrent() }?.activated()
+    protocolVersion != 1 -> null
     continuityKind == "physical" && liveContinuity() -> cardId?.let { ActivatedSimCard(subscriptionId, it) }
     continuityKind == "esim" -> installedProfile()?.takeIf { it.isCurrent() }?.candidate?.let {
         ActivatedSimCard(subscriptionId, checkNotNull(cardId), it)
@@ -321,7 +336,7 @@ abstract class SmsAttemptDao {
     abstract fun localWithdrawal(dedupeToken: String): LocalInboundWithdrawal?
 
     /** Local-only and stale-generation STOPs remain blocks, never queue head blockers. */
-    @Query("SELECT w.* FROM local_inbound_withdrawals AS w INNER JOIN local_line_binding AS b ON b.slot = 1 AND b.cardId >= 0 AND b.lineId = w.lineId AND b.generation = w.bindingGeneration AND b.subscriptionId = w.observedSubscriptionId AND b.installedAtMs <= w.receivedAtMs WHERE w.eventId IS NOT NULL AND w.deviceSequence IS NOT NULL AND w.encryptedSender IS NOT NULL AND w.senderNonce IS NOT NULL AND w.classification IN ('opt_out','opt_out_review') AND w.acknowledgedAtMs IS NULL AND w.receivedAtMs >= :minimumObservedAtMs ORDER BY w.deviceSequence LIMIT 1")
+    @Query("SELECT w.* FROM local_inbound_withdrawals AS w INNER JOIN local_line_binding AS b ON b.slot = 1 AND ((b.protocolVersion = 1 AND b.cardId >= 0) OR (b.protocolVersion = 2 AND b.continuityKind = 'complete_v2')) AND b.lineId = w.lineId AND b.generation = w.bindingGeneration AND b.subscriptionId = w.observedSubscriptionId AND b.installedAtMs <= w.receivedAtMs WHERE w.eventId IS NOT NULL AND w.deviceSequence IS NOT NULL AND w.encryptedSender IS NOT NULL AND w.senderNonce IS NOT NULL AND w.classification IN ('opt_out','opt_out_review') AND w.acknowledgedAtMs IS NULL AND w.receivedAtMs >= :minimumObservedAtMs ORDER BY w.deviceSequence LIMIT 1")
     abstract fun nextLineOptOut(minimumObservedAtMs: Long): LocalInboundWithdrawal?
 
     @Query("SELECT * FROM local_inbound_withdrawals WHERE eventId = :eventId LIMIT 1")
@@ -345,7 +360,7 @@ abstract class SmsAttemptDao {
     open fun installVerifiedLineBinding(binding: LocalLineBinding,
                                         activeSimCards: List<ActiveSimCard>?,
                                         preparedProfile: ActiveSimCard? = null): Boolean {
-        if (binding.slot != 1 || binding.generation <= 0 || binding.subscriptionId < 0 ||
+        if (binding.protocolVersion != 1 || binding.slot != 1 || binding.generation <= 0 || binding.subscriptionId < 0 ||
             binding.installedAtMs <= 0 ||
             Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
             !SimCardContinuity.matches(if (binding.continuityKind == "esim")
@@ -362,6 +377,7 @@ abstract class SmsAttemptDao {
         // A provisional replacement retires its predecessor before Room can block.
         // Publication of the replacement still waits for its authenticated final ACK.
         prior?.takeIf { it.continuityKind == "esim" }?.profileAuthority()?.let(SimProfileContinuity::retireAuthority)
+        if (prior?.protocolVersion == 2) LineActivationV2SelectedLineMount.retireInstalled()
         putLineBinding(binding)
         return true
     }
@@ -818,10 +834,12 @@ private const val PRUNE_BATCH = 500
 @Database(entities = [SmsAttempt::class, SmsSegment::class, AlphaRadioEvent::class,
     InboundWindow::class, InboundEvent::class, InboundUpload::class,
     LocalRecipientSuppression::class, LocalLineBinding::class,
-    LocalInboundWithdrawal::class, LocalWithdrawalSequence::class, SealedPreparationRecord::class], version = 13, exportSchema = false)
+    LocalInboundWithdrawal::class, LocalWithdrawalSequence::class, SealedPreparationRecord::class,
+    LineActivationV2Record::class], version = 14, exportSchema = false)
 abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun attempts(): SmsAttemptDao
     abstract fun sealedPreparations(): SealedPreparationDao
+    abstract fun lineActivationsV2(): LineActivationV2Dao
 
     companion object {
         @Volatile private var instance: SmsJournalDatabase? = null
@@ -831,13 +849,22 @@ abstract class SmsJournalDatabase : RoomDatabase() {
                 context.applicationContext, SmsJournalDatabase::class.java, "sms_attempts.db"
             ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
                 MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
-                MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13)
+                MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14)
                 .build().also { instance = it }
         }
 
         internal val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE sms_attempts ADD COLUMN evidenceConflict INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        internal val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE local_line_binding ADD COLUMN protocolVersion INTEGER NOT NULL DEFAULT 1")
+                for (column in listOf("v2Purpose", "v2ChallengeId", "v2ObservationB64url", "v2StatementSha256", "v2SignatureSha256"))
+                    db.execSQL("ALTER TABLE local_line_binding ADD COLUMN $column TEXT DEFAULT NULL")
+                db.execSQL("CREATE TABLE IF NOT EXISTS line_activation_v2 (purpose TEXT NOT NULL, challengeId TEXT NOT NULL, accountId TEXT NOT NULL, deviceId TEXT NOT NULL, lineId TEXT NOT NULL, generation INTEGER NOT NULL, expiresAtMs INTEGER NOT NULL, proofConnectionEpoch INTEGER NOT NULL, originHash TEXT NOT NULL, signerFingerprint TEXT NOT NULL, observationB64url TEXT NOT NULL, state TEXT NOT NULL, signatureDerB64url TEXT, statementSha256 TEXT, signatureSha256 TEXT, confirmationSha256 TEXT, PRIMARY KEY(purpose,challengeId))")
             }
         }
 

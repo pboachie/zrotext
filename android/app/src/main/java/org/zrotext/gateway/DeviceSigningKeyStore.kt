@@ -189,6 +189,46 @@ class DeviceSigningKeyStore(
     private fun selectedSubscription(): Int = context.getSharedPreferences("gateway_selection", Context.MODE_PRIVATE)
         .getInt("subscription_id", android.telephony.SubscriptionManager.INVALID_SUBSCRIPTION_ID)
 
+    /** Existing enrolled identity only. A received line challenge cannot create a replacement key. */
+    internal fun existingLineActivationV2Point(purpose: LineActivationV2Purpose): ByteArray {
+        if (purpose == LineActivationV2Purpose.SEALED) return existingConversationPublicPoint()
+        val key = privateKey()
+        check(key.encoded == null)
+        val public = openStore().getCertificate(alias)?.publicKey as? ECPublicKey
+            ?: error("Existing line signer unavailable")
+        return DevicePayloadKeyStore.encodePoint(public)
+    }
+
+    /** Genuine held complete observation on both sides of the existing-key operation. */
+    internal fun signLineActivationV2(purpose: LineActivationV2Purpose,
+        fields: LineActivationV2StatementFields, lease: SelectedLineLeaseV2,
+        expectedFingerprint: ByteArray, expiresAtMs: Long, nowMs: () -> Long,
+        sessionCurrent: () -> Boolean): SignedLineActivationV2 {
+        val fingerprint = expectedFingerprint.copyOf()
+        var lastNow = 0L
+        fun fresh() {
+            check(sessionCurrent() && Build.VERSION.SDK_INT >= 33 && Build.VERSION.SDK_INT == lease.projection.apiLevel &&
+                selectedSubscription() == lease.selected.subscriptionId && lease.recheck() &&
+                selectedSubscription() == lease.selected.subscriptionId)
+            val completed = nowMs()
+            check(completed > 0 && completed >= lastNow && expiresAtMs - completed in 1..300_000L &&
+                sessionCurrent() && lease.isCurrent())
+            lastNow = completed
+        }
+        fresh()
+        val point = existingLineActivationV2Point(purpose)
+        check(fingerprint.size == 32 && java.security.MessageDigest.isEqual(fingerprint,
+            SealedLineActivationTranscript.digest(point)))
+        fresh()
+        val statement = LineActivationV2Statements.device(purpose, fields, lease.observation())
+        val signature = sign(statement)
+        SealedLineActivationTranscript.requireCanonicalDer(signature)
+        check(SealedLineActivationTranscript.verify(point, statement, signature) &&
+            java.security.MessageDigest.isEqual(point, existingLineActivationV2Point(purpose)))
+        fresh()
+        return SignedLineActivationV2(statement, signature, point)
+    }
+
     private fun sign(payload: ByteArray): ByteArray = Signature.getInstance("SHA256withECDSA").run {
         initSign(privateKey())
         update(payload)

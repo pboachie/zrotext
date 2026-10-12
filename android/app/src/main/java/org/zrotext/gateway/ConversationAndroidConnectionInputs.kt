@@ -121,7 +121,7 @@ internal class ConversationAndroidConnectionInputs(
             if (line == null || line.accountId != scope.accountId || line.deviceId != scope.deviceId ||
                 line.lineId != scope.lineId || line.generation != scope.bindingGeneration)
                 return ConversationStopReason.LINE_CHANGED
-            val card = line.cardId ?: return ConversationStopReason.SIM_CHANGED
+            if (line.activatedSim() == null) return ConversationStopReason.SIM_CHANGED
             return if (selected != line.subscriptionId ||
                 !SimCardContinuity.matches(line.activatedSim(), cards))
                 ConversationStopReason.SIM_CHANGED else null

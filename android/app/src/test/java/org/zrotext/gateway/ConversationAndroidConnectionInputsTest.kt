@@ -122,4 +122,18 @@ class ConversationAndroidConnectionInputsTest {
         }
     }
 
+    @Test @Config(sdk = [34]) fun completeSelectedLineRequiresSameInstalledLeaseAndWholeObservedSet() =
+        LineActivationV2RuntimeFixture(true).use { complete ->
+            val binding = complete.installSealed()
+            val scope = f.scope.copy(accountId = binding.accountId, deviceId = binding.deviceId,
+                lineId = binding.lineId, bindingGeneration = binding.generation)
+            assertNull(binding.cardId)
+            assertNull(ConversationAndroidConnectionInputs.localLoss(scope, binding, complete.selected, complete.cards()))
+            assertEquals(ConversationStopReason.SIM_CHANGED, ConversationAndroidConnectionInputs.localLoss(scope, binding,
+                complete.selected, complete.cards().drop(1)))
+            complete.callback()
+            assertEquals(ConversationStopReason.SIM_CHANGED,
+                ConversationAndroidConnectionInputs.localLoss(scope, binding, complete.selected, complete.cards()))
+        }
+
 }

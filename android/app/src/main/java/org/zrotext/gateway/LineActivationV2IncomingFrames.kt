@@ -10,7 +10,7 @@ import java.nio.charset.CodingErrorAction
 import java.util.Base64
 import java.util.UUID
 
-/** Unused raw decoder. These eight declarations never authenticate a stream or issue a capability. */
+/** Strict raw decoder. These declarations never authenticate a stream or issue a capability. */
 internal object LineActivationV2IncomingFrames {
     sealed class Frame {
         abstract val purpose: LineActivationV2Purpose

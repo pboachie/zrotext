@@ -5,6 +5,9 @@ import androidx.room.Room
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -179,6 +182,25 @@ class SealedDispatchExecutorTest {
         assertEquals(f.grant().identity(), candidate.identity())
         assertEquals("CandidateGrant(redacted)", candidate.toString())
     }
+
+    @Test fun completeCandidateUsesLiveRamCardAndExactInstalledCapabilityWithoutLegacyProfile() =
+        LineActivationV2RuntimeFixture(true).use { complete ->
+            val binding = complete.installSealed(); val context = complete.radioContext(binding)
+            val capability = checkNotNull(binding.installedSelectionV2())
+            val candidate = SealedDispatchExecutor.candidate(context.grant, context.session, context.local)
+            assertNull(binding.cardId); assertNull(candidate.installedProfile)
+            assertSame(capability, candidate.installedSelectionV2)
+            assertEquals(complete.rows.last().cardId, candidate.cardId)
+            assertTrue(candidate.matchesBinding(binding))
+            assertTrue(SimCardContinuity.matches(candidate.selectedSim(), complete.cards()))
+            complete.owner.retireAtEntry()
+            assertNull(candidate.selectedSim()); assertFalse(candidate.matchesBinding(binding))
+            val refusal = assertThrows(IllegalStateException::class.java) {
+                SealedDispatchExecutor.candidate(context.grant, context.session, context.local)
+            }
+            assertEquals("Line binding has no live card continuity", refusal.message)
+            Unit
+        }
 
     @Test fun thisClientIgnoresTheUnnegotiatedFrameAndNeverOffersTheNegotiation() {
         // The live handler's only branch for the frame: no parse, no journal, no Keystore, no teardown.

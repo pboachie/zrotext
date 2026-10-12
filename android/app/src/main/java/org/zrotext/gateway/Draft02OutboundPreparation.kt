@@ -17,7 +17,8 @@ internal object Draft02OutboundPreparation {
         val sessionId: String, val originHash: String, val unsignedDigest: String,
         val manifestGeneration: Long, val manifestVersion: Long, val manifestDigest: String,
         val recipientDigest: String, val expiresAtMs: Long, val subscriptionId: Int, val cardId: Int,
-        val installedProfile: InstalledEsimProfile? = null
+        val installedProfile: InstalledEsimProfile? = null,
+        val installedSelectionV2: InstalledSelectedLineV2? = null
     ) {
         init {
             require(listOf(accountId, messageId, attemptId, deviceId, lineId, sessionId).all {
@@ -26,25 +27,39 @@ internal object Draft02OutboundPreparation {
                 it.matches(Regex("[0-9a-f]{64}"))
             } && listOf(bindingGeneration, attemptGeneration, connectionEpoch, deploymentEpoch,
                 manifestGeneration, manifestVersion, expiresAtMs).all { it > 0 } &&
-                subscriptionId >= 0 && cardId >= 0) { "Candidate grant shape" }
+                subscriptionId >= 0 && cardId >= 0 &&
+                (installedProfile == null || installedSelectionV2 == null)) { "Candidate grant shape" }
         }
         internal fun identity(): String {
             val physical = hash(listOf(accountId, messageId, attemptId, deviceId, lineId,
             bindingGeneration, attemptGeneration, connectionEpoch, deploymentEpoch, sessionId, originHash,
             unsignedDigest, manifestGeneration, manifestVersion, manifestDigest, recipientDigest,
             expiresAtMs, subscriptionId, cardId).joinToString("|").toByteArray(Charsets.US_ASCII))
+            installedSelectionV2?.let {
+                return hash(listOf("ZROtext/complete-line-grant/v2", physical, it.record.purpose,
+                    it.record.challengeId, it.record.observationB64url, it.record.statementSha256,
+                    it.record.signatureSha256).joinToString("|").toByteArray(Charsets.US_ASCII))
+            }
             val record = installedProfile?.record ?: return physical
             return hash(listOf("ZROtext/profile-record-grant/v1", physical, record.subscriptionId,
                 record.cardId, record.portIndex, record.logicalSlotIndex, record.incarnation,
                 record.observationEpoch, record.leaseId).joinToString("|").toByteArray(Charsets.US_ASCII))
         }
-        internal fun selectedSim(): ActivatedSimCard? = if (installedProfile == null)
+        internal fun selectedSim(): ActivatedSimCard? = if (installedSelectionV2 != null)
+            installedSelectionV2.takeIf { it.isCurrent() && it.record.purpose == "sealed" &&
+                it.record.accountId == accountId && it.record.deviceId == deviceId && it.record.lineId == lineId &&
+                it.record.generation == bindingGeneration && it.selected.subscriptionId == subscriptionId &&
+                it.selected.cardId == cardId }?.activated()
+            else if (installedProfile == null)
             ActivatedSimCard(subscriptionId, cardId) else installedProfile.takeIf {
                 it.isCurrent() && it.record.subscriptionId == subscriptionId && it.record.cardId == cardId &&
                     it.authority == ProfileLineAuthority(accountId, deviceId, lineId, bindingGeneration)
             }?.let { ActivatedSimCard(subscriptionId, cardId, it.candidate) }
         internal fun matchesBinding(binding: LocalLineBinding): Boolean =
-            if (installedProfile == null) binding.continuityKind == "physical" && binding.liveContinuity()
+            if (installedSelectionV2 != null) installedSelectionV2.isCurrent() &&
+                installedSelectionV2.record.purpose == "sealed" && binding.installedSelectionV2() === installedSelectionV2 &&
+                installedSelectionV2.matches(binding)
+            else if (installedProfile == null) binding.protocolVersion == 1 && binding.continuityKind == "physical" && binding.liveContinuity()
             else installedProfile.isCurrent() && binding.installedProfile() === installedProfile &&
                 binding.profileRecord() == installedProfile.record && binding.profileAuthority() == installedProfile.authority
         override fun toString() = "CandidateGrant(redacted)"
@@ -133,7 +148,7 @@ internal object Draft02OutboundPreparation {
             fresh()
             require(binding != null && binding.accountId == grant.accountId && binding.deviceId == grant.deviceId &&
                 binding.lineId == grant.lineId && binding.generation == grant.bindingGeneration &&
-                binding.subscriptionId == grant.subscriptionId && binding.cardId == grant.cardId &&
+                binding.subscriptionId == grant.subscriptionId && binding.activatedSim()?.cardId == grant.cardId &&
                 grant.matchesBinding(binding)) { "Candidate line changed" }
         }
         try {

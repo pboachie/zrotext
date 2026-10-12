@@ -5,7 +5,7 @@ import org.json.JSONObject
 import java.util.Base64
 import java.util.UUID
 
-/** Only the two unused, closed PROOF shapes. All other v2 frame types are refused. */
+/** Closed device-to-server proof and SEALED installation-receipt encoders. */
 internal object LineActivationV2Frames {
     private val encoder = Base64.getUrlEncoder().withoutPadding()
     private val keys = setOf("type", "v", "connection_epoch", "challenge_id",
@@ -49,6 +49,19 @@ internal object LineActivationV2Frames {
         require(value.length in 1..19 && value.matches(Regex("[1-9][0-9]*")))
         return value.toLongOrNull()?.also { require(it > 0) }
             ?: throw IllegalArgumentException("Invalid positive decimal")
+    }
+    /** SEALED receipt only; ordinary SMS has no installed frame. */
+    fun installed(receipt: LineActivationV2IncomingFrames.SealedActivated, epoch: Long): String {
+        require(epoch > 0 && receipt.connectionEpoch == epoch && receipt.generation > 0 &&
+            listOf(receipt.challengeId, receipt.accountId, receipt.lineId, receipt.deviceId).none { it == UUID(0, 0) } &&
+            receipt.deviceStatementSha256().size == 32 && receipt.deviceSignatureSha256().size == 32)
+        return JSONObject().put("type", "sealed_line_installed_v2").put("v", 2)
+            .put("connection_epoch", epoch.toString()).put("challenge_id", receipt.challengeId.toString())
+            .put("account_id", receipt.accountId.toString()).put("line_id", receipt.lineId.toString())
+            .put("device_id", receipt.deviceId.toString()).put("generation", receipt.generation.toString())
+            .put("device_statement_sha256", encoder.encodeToString(receipt.deviceStatementSha256()))
+            .put("device_signature_sha256", encoder.encodeToString(receipt.deviceSignatureSha256()))
+            .toString().also { require(it.toByteArray(Charsets.UTF_8).size <= 4096) }
     }
     private fun string(frame: JSONObject, key: String): String {
         val value = frame.opt(key)

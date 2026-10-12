@@ -22,7 +22,7 @@ class SealedPreparationJournalTest {
     private fun memory() = Room.inMemoryDatabaseBuilder(context, SmsJournalDatabase::class.java).allowMainThreadQueries().build()
     private fun file(name: String) = Room.databaseBuilder(context, SmsJournalDatabase::class.java, name)
         .allowMainThreadQueries().addMigrations(SmsJournalDatabase.MIGRATION_11_12,
-            SmsJournalDatabase.MIGRATION_12_13).build()
+            SmsJournalDatabase.MIGRATION_12_13, SmsJournalDatabase.MIGRATION_13_14).build()
     private fun record(f: PreparationFixture) = f.grant().let {
         SealedPreparationRecord(it.accountId, it.messageId, it.attemptId, it.unsignedDigest, it.identity())
     }
@@ -161,12 +161,13 @@ class SealedPreparationJournalTest {
                 old.execSQL("DROP TABLE local_line_binding")
                 old.execSQL("ALTER TABLE local_line_binding_v11 RENAME TO local_line_binding")
                 old.execSQL("DROP TABLE sealed_preparations")
+                old.execSQL("DROP TABLE line_activation_v2")
                 old.version = 11
             }
             file(name).use { db ->
                 assertNotNull(db.attempts().getAttempt(r.attemptId))
                 assertEquals(0, db.sealedPreparations().count())
-                assertEquals(13, db.openHelper.readableDatabase.version)
+                assertEquals(14, db.openHelper.readableDatabase.version)
                 assertEquals(legacy, db.attempts().currentLineBinding())
                 db.sealedPreparations().reserve(r) {}
                 assertEquals(AttemptState.SUBMITTING, db.attempts().getAttempt(r.attemptId)?.state)
