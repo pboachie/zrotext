@@ -1,0 +1,111 @@
+name: Physical-SIM field report
+description: Record a real-use physical-SIM activation and card-continuity observation
+labels: [field-report]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include real phone numbers, message bodies, IMEIs, ICCIDs, SIM serials,
+        account IDs, or logs containing any of them. Describe behavior with synthetic
+        examples only.
+  - type: input
+    id: device_model
+    attributes:
+      label: Device model
+      description: Marketing name only (for example "Pixel 8a"). No serial or IMEI.
+    validations:
+      required: true
+  - type: dropdown
+    id: api_level
+    attributes:
+      label: Android version / API level
+      options:
+        - "API 28 (Android 9)"
+        - "API 29 (Android 10)"
+        - "API 30 (Android 11)"
+        - "API 31 (Android 12)"
+        - "API 32 (Android 12L)"
+        - "API 33 (Android 13)"
+        - "API 34 (Android 14)"
+        - "API 35 (Android 15)"
+        - "API 36 (Android 16)"
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: sim_form_factor
+    attributes:
+      label: SIM form factor
+      description: This form collects physical-SIM reports only.
+      options:
+        - Physical SIM
+        - Physical SIM alongside an eSIM line (physical SIM used for this report)
+    validations:
+      required: true
+  - type: input
+    id: carrier
+    attributes:
+      label: Carrier (optional)
+      description: Voluntary. Leave blank if you prefer not to share it.
+  - type: dropdown
+    id: activation_outcome
+    attributes:
+      label: Activation outcome through the owner-approval/signed-declaration flow
+      options:
+        - Success
+        - Refused (a reason was shown)
+        - Skipped (activation not attempted)
+    validations:
+      required: true
+  - type: textarea
+    id: activation_reason
+    attributes:
+      label: Shown reason for refusal or skip
+      description: Synthetic paraphrase of the on-screen reason. Fill in only for Refused or Skipped.
+  - type: checkboxes
+    id: continuity_events
+    attributes:
+      label: Continuity events exercised
+      options:
+        - label: Reboot
+        - label: Airplane-mode cycle
+        - label: SIM remove/reinsert
+        - label: SIM swap (if attempted)
+  - type: textarea
+    id: continuity_reboot
+    attributes:
+      label: Continuity after reboot
+      description: What happened to the SIM-bound key and messaging after a reboot.
+  - type: textarea
+    id: continuity_airplane
+    attributes:
+      label: Continuity after airplane-mode cycle
+  - type: textarea
+    id: continuity_reinsert
+    attributes:
+      label: Continuity after SIM remove/reinsert
+  - type: textarea
+    id: continuity_swap
+    attributes:
+      label: Continuity after SIM swap (if attempted)
+  - type: textarea
+    id: key_revocation
+    attributes:
+      label: Key-loss or revocation behavior observed
+      description: What the app did when a SIM-bound key was lost or revoked, if observed.
+  - type: dropdown
+    id: software_key_fallback
+    attributes:
+      label: Did the app ever fall back to a software key? It should refuse.
+      options:
+        - "No"
+        - "Yes"
+    validations:
+      required: true
+  - type: textarea
+    id: software_key_fallback_detail
+    attributes:
+      label: Software-key fallback — describe what you saw
+      description: What the app did or refused to do when a software key would have been the fallback. Synthetic examples only.
+    validations:
+      required: true
