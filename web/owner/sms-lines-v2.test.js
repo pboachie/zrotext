@@ -2,8 +2,6 @@
 "use strict";
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const vm = require("node:vm");
-const fs = require("node:fs");
 const { webcrypto, createPublicKey, verify } = require("node:crypto");
 const signing = require("./sms-line-signing.js");
 const ACCOUNT="00000000-0000-4000-8000-000000000001",LINE="00000000-0000-4000-8000-000000000002";
@@ -14,6 +12,18 @@ function raw(value){return "{"+Object.entries(value).map(([k,v])=>JSON.stringify
 function response(value,status=200){return new Response(status===204?null:raw(value),{status,headers:{"content-type":"application/json"}});}
 function concat(...parts){return Uint8Array.from(Buffer.concat(parts.map(p=>Buffer.from(p))));}
 function deferred(){let resolve;const promise=new Promise(r=>{resolve=r;});return {promise,resolve};}
+const originalGlobals = new Map();
+function installGlobal(name,value){
+  if(!originalGlobals.has(name))originalGlobals.set(name,Object.getOwnPropertyDescriptor(globalThis,name));
+  Object.defineProperty(globalThis,name,{value,writable:true,configurable:true});
+}
+test.afterEach(()=>{
+  for(const [name,descriptor] of originalGlobals){
+    if(descriptor)Object.defineProperty(globalThis,name,descriptor);else delete globalThis[name];
+  }
+  originalGlobals.clear();
+  delete require.cache[require.resolve("./sms-lines.js")];
+});
 
 async function page() {
   const owner=await webcrypto.subtle.generateKey({name:"ECDSA",namedCurve:"P-256"},false,["sign"]);
@@ -28,7 +38,7 @@ async function page() {
     createElement:()=>element("created"+elements.size),addEventListener:(name,fn)=>{listeners[name]=fn;}};
   const state={generation:"9223372036854775807",expires:BigInt(Date.now()+300000),opens:[],approvals:[],views:0,
     session:{account_id:ACCOUNT,user_id:USER,session_id:SESSION,role:"owner"},activeFingerprint:fingerprint,
-    phase:"awaiting_owner",loseOpen:false,loseApproval:false,onSession:null,onView:null,onSign:null,mutateView:null,legacyOpening:null};
+    phase:"awaiting_owner",loseOpen:false,loseApproval:false,onSession:null,onView:null,onSign:null,mutateView:null,legacyOpening:null,activationRoutes:[]};
   const generationBytes=Buffer.alloc(8);generationBytes.writeBigInt64BE(BigInt(state.generation));
   const statement=concat(Buffer.from("ZTSMS/line/device-confirm/v2\0"),[2,1],signing.uuidBytes(ACCOUNT),
     signing.uuidBytes(LINE),signing.uuidBytes(DEVICE),generationBytes,signing.uuidBytes(CHALLENGE),new Uint8Array(32).fill(9),Buffer.from(OBS,"hex"));
@@ -36,6 +46,7 @@ async function page() {
   const der=signing.p1363ToDer(new Uint8Array(await webcrypto.subtle.sign({name:"ECDSA",hash:"SHA-256"},phone.privateKey,statement)));
   const ownerStatement=concat(Buffer.from("ZTSMS/line/owner-approve/v2\0"),statement,await signing.sha256(der));
   const crypto={randomUUID:()=>webcrypto.randomUUID(),subtle:{
+    digest:(...args)=>webcrypto.subtle.digest(...args),
     sign:async(...args)=>{await state.onSign?.();return webcrypto.subtle.sign(...args);}
   }};
   const fetch=async(path,options={})=>{
@@ -45,6 +56,7 @@ async function page() {
     if(path==="/v1/auth/sms-line-owner-keys")return Response.json([{active:true,fingerprint:state.activeFingerprint}]);
     if(path==="/v1/enrollment/devices")return Response.json({devices:[{device_id:DEVICE,display_name:"Synthetic phone",revoked:false,active_socket_lease:true}]});
     if(path==="/v1/auth/sms-lines")return Response.json({lines:[],next_cursor:null});
+    state.activationRoutes.push({path,method});
     if(state.legacyOpening && method==="POST" && path.endsWith("/activations"))return state.legacyOpening.promise;
     assert.ok(path.includes("/activations-v2"),"v2 must never fall back to legacy routes");
     if(method==="POST"&&!path.endsWith("/approve")){
@@ -67,11 +79,14 @@ async function page() {
     view=state.mutateView?.(view)??view;
     return typeof view==="string"?new Response(view,{headers:{"content-type":"application/json"}}):response(view);
   };
-  const context={document,fetch,crypto,Uint8Array,DataView,TextEncoder,AbortSignal,URL,Response,console,
+  const context={document,fetch,crypto,
     ZtSmsLineSigning:signing,ZtSmsKeyStore:{get:async()=>held},
     ZtSmsLinesSchedule:(fn,ms)=>{timers.push({fn,ms});return timers.length;}};
-  vm.createContext(context);vm.runInContext(fs.readFileSync(__dirname+"/sms-lines.js","utf8"),context);
-  await context.ZtSmsLinesReady;
+  for(const [name,value] of Object.entries(context))installGlobal(name,value);
+  installGlobal("ZtSmsLinesReady",undefined);
+  delete require.cache[require.resolve("./sms-lines.js")];
+  require("./sms-lines.js");
+  await globalThis.ZtSmsLinesReady;
   element("activation-mode").value="v2";element("activation-device").value=DEVICE;element("activation-line").value=LINE;
   const click=id=>element(id).listeners.click({preventDefault(){}});
   const start=()=>element("activation-form").listeners.submit({preventDefault(){}});
@@ -145,12 +160,13 @@ for(const lost of [false,true])test(`late legacy opening ${lost?"failure":"succe
   const old=f.start();
   await Promise.resolve();
   f.element("activation-mode").value="v2";await f.start();
-  assert.equal(vm.runInContext("activation.v2",f.context),true);
+  assert.equal(f.element("activation-approve").disabled,false);
+  const routes=f.state.activationRoutes.slice();
   const status=f.element("activation-status").textContent;
   if(lost)pending.resolve(Promise.reject(new TypeError("old opening response lost")));
   else pending.resolve(response({challenge_id:CHALLENGE,generation:1},201));
   await old;
-  assert.equal(vm.runInContext("activation.v2",f.context),true);
+  assert.deepEqual(f.state.activationRoutes,routes);
   assert.equal(f.element("activation-status").textContent,status);
   assert.equal(f.element("activation-review").hidden,false);
   await f.click("activation-approve");
