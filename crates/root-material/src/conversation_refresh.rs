@@ -3,16 +3,15 @@
 //! No generic signing, network, root generation, archive replacement or persistence.
 //! Scope is independently reviewed metadata: the manifest signature itself does not
 //! encode peer/session. Live owner-session/interval CAS remains an installation obligation.
-use crate::{
-    root_backup::{ExpectedIdentity, RootSecret},
-    sealed_root_enrollment,
-};
-use p256::ecdsa::{
-    Signature, SigningKey, VerifyingKey,
-    signature::{Signer, Verifier},
-};
+use crate::{root_backup::ExpectedIdentity, sealed_root_enrollment};
+use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
+#[cfg(feature = "unlock")]
+use {
+    crate::root_backup::RootSecret,
+    p256::ecdsa::{SigningKey, signature::Signer},
+};
 
 #[path = "conversation_activation.rs"]
 pub mod activation;
@@ -85,6 +84,15 @@ fn transcript(unsigned: &[u8]) -> Vec<u8> {
     ]
     .concat()
 }
+impl Proposal {
+    pub fn predecessor(&self) -> &[u8] {
+        &self.predecessor
+    }
+    pub fn unsigned(&self) -> &[u8] {
+        &self.unsigned
+    }
+}
+
 struct Cursor<'a> {
     bytes: &'a [u8],
     at: usize,
@@ -385,6 +393,7 @@ pub fn inspect<'a>(proposal: &'a Proposal, expected: &Expected, now: u64) -> Res
 }
 /// Re-inspect at fresh time after console approval/recovery. Root remains caller-owned.
 /// The returned public manifest requires owner/session/consent/predecessor CAS before use.
+#[cfg(feature = "unlock")]
 pub fn sign(
     root: &RootSecret,
     proposal: &Proposal,
@@ -402,5 +411,5 @@ pub fn sign(
     signed.extend_from_slice(&signature.to_bytes());
     Ok(signed)
 }
-#[cfg(test)]
+#[cfg(all(test, feature = "unlock"))]
 mod tests;

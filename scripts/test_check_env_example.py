@@ -141,6 +141,21 @@ class RuntimeReadsTest(unittest.TestCase):
         self.assertEqual(env.runtime_reads(marker + ';\n' + tests, path), {"ZT_ACTIVATION_INTEROP"})
         self.assertEqual(env.runtime_reads(tests + '\n' + marker + ';', path), {"ZT_ACTIVATION_INTEROP"})
 
+    def test_inline_unlock_test_marker_is_excluded_only_with_both_test_and_unlock(self):
+        marker = 'std::env::var_os("ZT_ACTIVATION_INTEROP")'
+        function = ('mod tests {\n    #[test]\n'
+                    '    fn existing_root_signs_only_preserved_activation_and_public_interop() {\n'
+                    '        ' + marker + ';\n    }\n}')
+        path = "crates/root-material/src/conversation_activation.rs"
+        tests = '#[cfg(all(test, feature = "unlock"))]\n' + function
+        self.assertEqual(env.runtime_reads(tests, path), set())
+        self.assertEqual(env.runtime_reads(marker + ';\n' + tests, path), {"ZT_ACTIVATION_INTEROP"})
+        self.assertEqual(env.runtime_reads(tests + '\n' + marker + ';', path), {"ZT_ACTIVATION_INTEROP"})
+        self.assertEqual(env.runtime_reads(tests, "crates/server/src/main.rs"), {"ZT_ACTIVATION_INTEROP"})
+        for cfg in ['#[cfg(feature = "unlock")]', '#[cfg(any(test, feature = "unlock"))]',
+                    '#[cfg(not(test))]']:
+            self.assertEqual(env.runtime_reads(cfg + '\n' + function, path), {"ZT_ACTIVATION_INTEROP"})
+
     def test_archive_fixture_is_only_compiled_for_tests(self):
         module = Path(env.ROOT, "crates/root-material/src/archive_backup.rs").read_text(encoding="utf-8")
         self.assertRegex(module, r'#\[cfg\(test\)\]\s*#\[path = "archive_backup/tests.rs"\]\s*mod tests;')

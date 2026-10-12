@@ -432,6 +432,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "096_line_activation_v2_exchanges.sql",
         include_str!("../../../../deploy/compose/migrations/096_line_activation_v2_exchanges.sql"),
     ),
+    (
+        "097_owner_android_proposals.sql",
+        include_str!("../../../../deploy/compose/migrations/097_owner_android_proposals.sql"),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in
@@ -4029,4 +4033,159 @@ async fn optional_sealed_setup_malformed_relation_fails_erasure_closed() {
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await
         .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; real owner erasure and isolated synthetic schema"]
+async fn optional_android_proposals_absence_empty_install_and_schema_drift_keep_erasure_atomic() {
+    for shape in ["absent", "complete", "partial", "drift"] {
+        let (admin, mut db, url, schema) = migrated_schema("android_proposal_erase").await;
+        let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
+        let (a, session, _, _, app) = fixture(&mut db, &hasher, &url, None).await;
+        if matches!(shape, "absent" | "partial") {
+            db.batch_execute("DROP TABLE owner_android_proposals; DROP FUNCTION reject_owner_android_proposal_update()")
+                .await.unwrap();
+        }
+        if shape == "partial" {
+            db.batch_execute("CREATE TABLE owner_android_proposals(account_id uuid)")
+                .await
+                .unwrap();
+        } else if shape == "drift" {
+            db.batch_execute("ALTER TABLE owner_android_proposals DISABLE TRIGGER owner_android_proposals_immutable")
+                .await.unwrap();
+        }
+        let response = app
+            .oneshot(erasure_post(
+                Some(&session.token),
+                Some(&session.csrf_token),
+                Some(ORIGIN),
+                &crate::test_keys::password(1),
+                None,
+            ))
+            .await
+            .unwrap();
+        if matches!(shape, "partial" | "drift") {
+            assert_eq!(
+                response.status(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "{shape}"
+            );
+            for (table, column) in [("accounts", "id"), ("messages", "account_id")] {
+                assert!(
+                    db.query_one(
+                        &format!("SELECT count(*) FROM {table} WHERE {column}=$1"),
+                        &[&a.account_id]
+                    )
+                    .await
+                    .unwrap()
+                    .get::<_, i64>(0)
+                        > 0,
+                    "{shape}: {table}"
+                );
+            }
+            assert!(
+                !db.query_one(
+                    "SELECT disabled_at IS NOT NULL FROM accounts WHERE id=$1",
+                    &[&a.account_id]
+                )
+                .await
+                .unwrap()
+                .get::<_, bool>(0)
+            );
+        } else {
+            assert_eq!(response.status(), StatusCode::OK, "{shape}");
+            let report = body(response).await;
+            let listed = report["deleted"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r["table"] == "owner_android_proposals");
+            assert_eq!(listed, shape == "complete");
+            if listed {
+                assert_eq!(deleted_count(&report, "owner_android_proposals"), 0);
+            }
+            assert_eq!(
+                db.query_one(
+                    "SELECT count(*) FROM accounts WHERE id=$1",
+                    &[&a.account_id]
+                )
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+                0
+            );
+        }
+        admin
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; immutable line history remains an erasure blocker"]
+async fn pending_android_proposal_does_not_bypass_immutable_line_erasure_blockers() {
+    // Use the allowlisted erasure fixture family; each schema remains UUID-unique.
+    let (admin, mut db, url, schema) = migrated_schema("execution_erase").await;
+    let hasher = Arc::new(TokenHasher::new(crate::test_keys::key(26)).unwrap());
+    let (a, session, _, _, app) = fixture(&mut db, &hasher, &url, None).await;
+    let device: Uuid = db
+        .query_one(
+            "SELECT id FROM devices WHERE account_id=$1 LIMIT 1",
+            &[&a.account_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let line = Uuid::new_v4();
+    // This is an SQL storage fixture, not valid proposal issuance, device proof,
+    // root enrollment or production consent. Its required binding is immutable.
+    db.execute("INSERT INTO phone_lines(id,account_id,state,approved_at,current_binding_generation,last_issued_generation) VALUES($1,$2,'active',now(),1,1)", &[&line,&a.account_id]).await.unwrap();
+    db.execute("INSERT INTO device_line_bindings(account_id,line_id,device_id,generation,state,owner_approval_digest,device_confirmation_digest,activated_at,purpose) VALUES($1,$2,$3,1,'active',$4,$5,now(),'sealed')", &[&a.account_id,&line,&device,&vec![2u8;32],&vec![3u8;32]]).await.unwrap();
+    db.execute("INSERT INTO owner_android_proposals(account_id,kind,user_id,session_id,proposal_sha256,proposal,expected_context,origin,root_fingerprint,checkpoint_version,device_id,line_id,binding_generation,peer,paired_fingerprint,connection_epoch,deployment_epoch,site_id,instance_id,issued_ms,expires_ms) VALUES($1,3,$2,$3,$4,$5,'{}'::jsonb,$6,$4,0,$7,$8,1,'+12',$4,1,1,'fixture','fixture',1,2)", &[&a.account_id,&a.user_id,&session.id,&vec![2u8;32],&vec![1u8],&ORIGIN,&device,&line]).await.unwrap();
+    let before: String = db
+        .query_one(
+            "SELECT row_to_json(p)::text FROM owner_android_proposals p WHERE account_id=$1",
+            &[&a.account_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let response = app
+        .oneshot(erasure_post(
+            Some(&session.token),
+            Some(&session.csrf_token),
+            Some(ORIGIN),
+            &crate::test_keys::password(1),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let report = body(response).await;
+    assert_eq!(blocked_count(&report, "device_line_bindings"), 1);
+    assert_eq!(
+        db.query_one(
+            "SELECT row_to_json(p)::text FROM owner_android_proposals p WHERE account_id=$1",
+            &[&a.account_id]
+        )
+        .await
+        .unwrap()
+        .get::<_, String>(0),
+        before
+    );
+    assert_eq!(
+        db.query_one(
+            "SELECT count(*) FROM accounts WHERE id=$1",
+            &[&a.account_id]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        1
+    );
+    crate::sealed_manifest_store::tests::cleanup::drop_fixture(&db, &schema)
+        .await
+        .unwrap();
+    drop(admin);
 }

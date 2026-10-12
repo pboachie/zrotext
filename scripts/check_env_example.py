@@ -77,7 +77,7 @@ def runtime_reads(source: str, relative_path: str) -> set[str]:
     }
     reads.difference_update(fixture_reads.get(relative_path, set()))
     if relative_path == "crates/root-material/src/conversation_activation.rs":
-        tests = re.search(r'(?m)^#\[cfg\(test\)\]\r?\nmod tests \{', source)
+        tests = re.search(r'(?m)^#\[cfg\((?:test|all\(test, feature = "unlock"\))\)\]\r?\nmod tests \{', source)
         if tests:
             fixture = re.search(
                 r'(?ms)^    #\[test\]\r?\n    fn existing_root_signs_only_preserved_activation_and_public_interop\(\) \{\r?\n.*?^    \}',
