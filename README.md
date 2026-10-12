@@ -4,7 +4,7 @@
 <p align="center"><strong>Your phone. Your number. Your SMS API.</strong></p>
 <p align="center">
   <a href="https://github.com/pboachie/zrotext/actions/workflows/ci.yml"><img src="https://github.com/pboachie/zrotext/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
-  <a href="https://ci.boachiefamily.net/repos/2"><img src="https://badges.boachiefamily.net/api/badges/2/status.svg" alt="Woodpecker CI status"></a>
+  <a href="https://ci.boachiefamily.net/repos/2"><img src="https://badges.boachiefamily.net/api/badges/2/labeled.svg?label=Woodpecker%20CI" alt="Woodpecker CI status"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0--only-blue" alt="AGPL-3.0-only license"></a>
   <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/contributions-welcome-6f9b4b" alt="Contributions welcome"></a>
 </p>
