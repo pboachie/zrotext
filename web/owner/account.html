@@ -31,6 +31,7 @@
       <a class="action-link" href="/owner/devices#sign-in">Sign in</a>
     </header>
     <p id="account-status" role="status" aria-live="polite"></p>
+    <p id="data-link" hidden><a href="#data-section">Export or erase your signed-in account data</a></p>
     <nav class="setup-nav" aria-label="Setup steps">
       <ol>
         <li><a href="/owner/account" aria-current="step"><span class="step-number" aria-hidden="true">1</span><span>Account <small>Create, verify or sign in</small></span></a></li>
@@ -136,6 +137,36 @@
         <button type="submit">Disable authenticator</button>
       </form>
       <p class="section-next">Review where you are signed in under <a href="/owner/devices#account-security">Security &amp; sessions</a>. Your SMS line approval key is managed separately on <a href="/owner/sms-lines">SMS lines</a>.</p>
+    </section>
+    <section id="data-section" aria-labelledby="data-title" hidden>
+      <p class="eyebrow">Account &middot; your data</p>
+      <h2 id="data-title">Export or erase account data</h2>
+      <p id="data-account"></p>
+      <h3>Download the server takeout</h3>
+      <p>Download private JSON parts to your own device. Each part contains the server's original responses, including message content and contacts where available. Keep every part somewhere safe.</p>
+      <p>Sealed content stays encrypted. This is not a key backup or a database backup. Retention may already have removed content; some sections contain only metadata. Line setup includes at most 16 registrations and 16 exchanges without further pages. Data can change between requests.</p>
+      <p>Each step reads at most eight pages, with an 8 MiB page limit and a 32 MiB part limit. Continue until all exposed pages have been retrieved. Responses may repeat completed families; parts are raw pages, not a deduplicated record list. Export stops at 4,096 distinct continuation cursors; contact the operator if that safety limit prevents completion. Leaving this page clears continuation and download links.</p>
+      <button id="export-start" type="button">Start account export</button>
+      <button id="export-continue" type="button" hidden>Continue export</button>
+      <button id="export-clear" type="button">Clear export from this page</button>
+      <p id="export-status" role="status" aria-live="polite"></p>
+      <a id="export-download" hidden>Download this JSON part</a>
+      <h3>Erase this account on this server</h3>
+      <p>This permanently deletes the account and its invited observer users in one transaction if the server permits it. Line identities, immutable trust or audit history and other retained references can block the whole request. Nothing is deleted when the server reports blockers.</p>
+      <p>Erasure does not cancel external subscriptions, release carrier identities, delete external copies, or rewrite backups, replicas or WAL archives. Export first if you need a copy.</p>
+      <button id="erasure-review" type="button">Review account erasure</button>
+      <form id="erasure-form" hidden>
+        <p id="erasure-account"></p>
+        <label class="check" for="erasure-confirm"><input id="erasure-confirm" type="checkbox" required> I understand this permanently erases the reviewed account when permitted.</label>
+        <label for="erasure-password">Current password</label>
+        <input id="erasure-password" type="password" autocomplete="current-password" required>
+        <label for="erasure-code">Authenticator or unused recovery code (required if MFA is enabled)</label>
+        <input id="erasure-code" type="text" autocomplete="one-time-code">
+        <button id="erasure-submit" type="submit">Permanently erase reviewed account</button>
+        <button id="erasure-cancel" type="button">Cancel review</button>
+      </form>
+      <p id="erasure-status" role="status" aria-live="polite"></p>
+      <p id="erasure-result" hidden></p>
     </section>
     <p class="utility-note"><a href="/owner/template-preview">Local template preview</a> &middot; Preview personalized text without sending or saving it.</p>
   </main>
