@@ -23,7 +23,7 @@ module ZrotextCandidate
       bound=Election03.require_current(r[:proof],r[:manifest],record,now)
       observed,expires=r.values_at(:observed_ms,:expires_ms)
       need([observed,expires].all? { |n| n.instance_of?(Integer) && n.between?(1,2**63-1) })
-      need(r[:message].bytes.any? { |b| b!=0 } && observed>=r[:manifest].issued_ms && observed<=now && now<expires && expires-observed<=900000)
+      need(r[:message].bytes.any? { |b| b!=0 } && observed<=now && now<expires && expires-observed<=900000)
       need(/\A\+[1-9][0-9]{1,14}\z/.match?(r[:peer]) && r[:content].length.between?(1,32768))
       text=r[:content].encode('UTF-8').b
       transferred=false

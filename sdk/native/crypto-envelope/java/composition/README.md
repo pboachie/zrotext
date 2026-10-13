@@ -18,11 +18,11 @@ uncertain outcomes; never reset it to force retries. Recovery requires independe
 application reconciliation. It is not antirollback storage, a defense against
 hostile filesystem administrators or a carrier-effect ledger.
 
-The managed candidate preserves the stricter reader requirement that observed
-time is at or after manifest/key issuance. Existing TypeScript/Python outbound
-authorization uses trusted current time without that same lower bound. This is
-an explicit unresolved parity question, not a settled universal protocol rule.
-The shared policy and signed-vector decision is tracked in [#1226](https://github.com/pboachie/zrotext/issues/1226).
+Outbound profile03 requires every selected signer/recipient key to cover the
+signed interval `[observed_ms, expires_ms)`, plus fresh current authorization.
+Manifest issuance is not an additional observation lower bound; bounded future
+issuance still follows manifest freshness. The shared signed policy cases and
+cross-language alignment are tracked in [#1226](https://github.com/pboachie/zrotext/issues/1226).
 
 ```text
 python sdk/native/crypto-envelope/java/composition/run.py --producer PRODUCER_CHECKOUT

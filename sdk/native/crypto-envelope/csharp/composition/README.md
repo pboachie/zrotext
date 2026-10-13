@@ -14,12 +14,11 @@ native signature, and rechecks authority before returning. Shared secrets and
 owned text buffers are cleared where possible; immutable application strings and
 runtime/provider copies do not have guaranteed erasure.
 
-This managed candidate currently requires observed time to be at or after the
-manifest and every selected key's start time. Existing TypeScript/Python outbound
-authorization is based on trusted current time and does not enforce that same
-lower bound. This stricter managed behavior remains a documented parity question,
-not a claim that the other implementations violate a settled protocol rule.
-The shared policy and signed-vector decision is tracked in [#1226](https://github.com/pboachie/zrotext/issues/1226).
+Outbound profile03 requires every selected signer/recipient key to cover the
+signed interval `[observed_ms, expires_ms)`, plus fresh current authorization.
+Manifest issuance is not an additional observation lower bound; bounded future
+issuance still follows manifest freshness. The shared signed policy cases and
+cross-language alignment are tracked in [#1226](https://github.com/pboachie/zrotext/issues/1226).
 
 `ComposeOrReplay` requires an application-owned private directory and a retained
 journal path. It binds the independently enrolled root and complete canonical

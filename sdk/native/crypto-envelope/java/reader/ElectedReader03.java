@@ -29,7 +29,7 @@ public final class ElectedReader03 {
         need(same(part(signer,114,16),authority.field("lineId")));
         SignedEnvelope envelope=SignedEnvelope.verify(b,3,part(signer,33,65));int prefix=10+Short.toUnsignedInt(ByteBuffer.wrap(b,8,2).getShort());
         need(new String(part(b,164,prefix-164),StandardCharsets.US_ASCII).equals(peer));
-        long observed=number(b,146),expires=number(b,154);need(observed>0 && observed<=now && observed>=manifest.issuedMs() && now<expires && expires<=manifest.expiresMs() && expires<=authority.number("permissionExpiresAtMs"));active(signer,observed);need(expires<=number(signer,140));
+        long observed=number(b,146),expires=number(b,154);need(observed>0 && observed<=now && now<expires && expires<=manifest.expiresMs() && expires<=authority.number("permissionExpiresAtMs"));active(signer,observed);need(expires<=number(signer,140));
         int end=prefix+16+ByteBuffer.wrap(b,prefix+12,4).getInt();byte[] elected=authority.field("selectedReaderKeyId"),selected=null;
         for(int i=0;i<(b[end]&255);i++){
             int at=end+1+146*i,role=b[at]&255;byte[] id=part(b,at+1,32),record=find(records,role,id);active(record,now);active(record,observed);
