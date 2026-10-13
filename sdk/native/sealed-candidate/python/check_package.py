@@ -13,7 +13,7 @@ import venv
 import zipfile
 
 ROOT=Path(__file__).resolve().parent
-MODULES={'__init__','sealed_candidate','checkpoint_store','cng_custody','cng_signing','election03','election_journal','compose03','compose02','outbound_journal','root_checkpoint','reply_selection','outbound02_journal','sealed_http','original_reply_reader','original_reply_client','original_reply_checkpoint','encrypted_template','contact_integrity','contact_history','contact_producer','workflow_context','sealed_lifecycle','template_store','owner_template','owner_template_save','owner_context','template_authoring','template_opening'}
+MODULES={'__init__','sealed_candidate','checkpoint_store','cng_custody','cng_signing','election03','election_journal','compose03','compose02','outbound_journal','root_checkpoint','reply_selection','outbound02_journal','sealed_http','original_reply_reader','original_reply_client','original_reply_checkpoint','encrypted_template','contact_integrity','contact_history','contact_producer','workflow_context','sealed_lifecycle','template_store','owner_template','owner_template_save','owner_context','template_authoring','template_opening','conversation_proposals'}
 PACKAGE='zrotext_native_candidate'
 DIST=PACKAGE+'-0.1.0a1'
 
@@ -82,6 +82,8 @@ def main():
         lifecycle_consumer=temporary/'installed_lifecycle_consumer.py';shutil.copyfile(ROOT/'installed_lifecycle_consumer.py',lifecycle_consumer)
         owner_consumer=temporary/'installed_owner_template_consumer.py';shutil.copyfile(ROOT/'installed_owner_template_consumer.py',owner_consumer)
         owner_save_consumer=temporary/'owner_save_consumer.py';shutil.copyfile(ROOT/'installed_owner_template_save_consumer.py',owner_save_consumer)
+        proposal_consumer=temporary/'proposal_consumer.py';shutil.copyfile(ROOT/'installed_conversation_proposals_consumer.py',proposal_consumer)
+        proposal_fixture=json.loads(run(['node',ROOT/'conversation-proposals-interop.mjs'],cwd=temporary))
         opening_consumer=temporary/'opening_consumer.py';shutil.copyfile(ROOT/'installed_template_opening_consumer.py',opening_consumer)
         authoring_consumer=temporary/'authoring_consumer.py';shutil.copyfile(ROOT/'installed_template_authoring_consumer.py',authoring_consumer)
         owner_context_consumer=temporary/'owner_context_consumer.py';shutil.copyfile(ROOT/'installed_owner_context_consumer.py',owner_context_consumer)
@@ -114,6 +116,8 @@ def main():
                 context_result=json.loads(run([python,'-I',context_consumer],cwd=temporary,input=json.dumps(context_fixture)))
                 context_open=json.loads(run(['node',ROOT/'workflow-context-interop.mjs','--consume'],cwd=temporary,input=json.dumps(dict(fixture=context_fixture,envelope=context_result['envelope'],plaintext=context_fixture['plaintext']))))
                 assert context_result['installed'] and context_open['verified'] and context_open['role']==context_fixture['role']
+            proposal_result=json.loads(run([python,'-I',proposal_consumer],cwd=temporary,input=json.dumps(proposal_fixture)))
+            assert proposal_result==dict(installed=True,typed_proposals=3,public_comparisons=2)
             opening_result=json.loads(run([python,'-I',opening_consumer,ROOT/'owner-template-interop.mjs'],cwd=temporary,input=json.dumps(owner_fixture)))
             assert opening_result['installed'] and opening_result['template_opening_tls']==7
             opening_qualifications.append(dict(protected_opening=opening_result['protected_opening'],skipped=opening_result['skipped']))

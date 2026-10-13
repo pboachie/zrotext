@@ -972,3 +972,43 @@ The same group runs from both isolated installed archives and reports hardware
 qualification or a skip explicitly; a skipped provider check is not acceptance.
 Mutable envelope copies are cleared; Python strings/provider copies have no
 complete erasure guarantee. No durable restart history is added by this bridge.
+
+## Typed public conversation proposals
+
+`conversation_proposals` implements the maintained public `ZTCG01` genesis,
+`ZTCA01` activation and `ZTCF01` role-5 refresh exports. The corresponding
+`encode_conversation_*_proposal02` functions return exact public review bytes;
+genesis and activation also return immutable unsigned manifest/CAS metadata.
+Inputs retain independently compared root evidence, genuine verified predecessor
+handles, exact phone/archive roles, canonical origin and bounded lifetime.
+Activation preserves every existing key record. Refresh proves the reviewed
+unsigned successor adds only the intended role-5 record with unchanged existing
+authority. None of these functions signs, installs, unlocks a root, creates an
+interval, or grants session/peer consent.
+
+`verify_phone_key_export02` compares the exact public export to independently
+compared phone fingerprint and account/device/line/signing fingerprint/generation.
+Like the maintained helper, it does not treat session, peer or extra selection
+fields as phone evidence. `verify_archive_public_header02` compares public archive
+identity, root fingerprint, point/key ID and framing; it does not authenticate
+the encrypted backup or establish custody. Actual maintained differential tests
+include an altered ciphertext accepted by this public-header-only helper.
+
+Fifty-seven proposal cases and nineteen public-comparison cases compare actual
+maintained bytes/refusals, with oracle cardinality checked before pairing rows.
+Clean wheel/sdist consumers reproduce all three public proposals and both
+comparison helpers through normal isolated package imports. The implemented
+server `http_owner_conversations/android_proposal/packet.rs` consumes the matching
+root-material decoder families as kinds 3/4/5; this package qualification does
+not exercise a live proposal transaction or imply its independent authority.
+
+### Remaining native replacement boundaries
+
+| Maintained surface | Native candidate state and remaining boundary |
+|---|---|
+| Sealed composition, metadata, original replies, contact/template/context content and owner template/context persistence | Native primitives and bounded installed clients exist; reviewed integration, broader platform/provider matrix and live service/device gates remain separate. |
+| DOM-free template authoring/opening | Native host callbacks and protected opening exist; browser visibility, user activation and DOM adapters remain retained. |
+| Conversation genesis/activation/refresh public files | Exact portable export/comparison companion exists; existing-root signing, one-shot installation/CAS and owner enrollment ceremony integration remain separate. |
+| Owner context authoring, disclosure/review and acknowledged-opening UI | Maintained DOM/session/custody lifecycle is retained; no Python DOM equivalence is claimed. Portable opening-capacity transports and host ceremony integrations still require their own review and ownership checks. |
+| Root/archive recovery and protected custody | Existing native Windows PCP is separately qualified; browser backup unlock/recovery lifecycle and other native protected providers remain distinct gaps. |
+| Generated clients and legacy entrypoints | Generated schema/runtime/redirect/deadline and registry gates still prevent replacement; legacy entrypoints remain present. |
