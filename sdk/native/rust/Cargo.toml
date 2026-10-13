@@ -7,7 +7,7 @@ license = "AGPL-3.0-only"
 description = "Raw-body webhook verification for ZROtext SDK consumers"
 repository = "https://github.com/pboachie/zrotext"
 readme = "README.md"
-include = ["src/**", "tests/**", "Cargo.toml", "Cargo.lock", "README.md"]
+include = ["src/**", "tests/**", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE"]
 
 [workspace]
 
