@@ -1,0 +1,59 @@
+name: Native candidate installed archives
+on:
+  pull_request:
+    paths: ['sdk/native/hpke-candidate/**', '.github/workflows/native-candidate-packages.yml']
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  installed:
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [rust, go]
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.13.0'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.26.9'
+          cache: false
+      - run: rustup toolchain install 1.97.1 --profile minimal
+      - name: Prepare independently pinned maintained producers
+        shell: pwsh
+        run: |
+          $producers = @{
+            archive = 'a13ea1e3d6f6db594485c19b36c43fe642e67c7a'
+            election = '304d512b7a420a3102278f32baed095f3e778989'
+          }
+          foreach ($name in $producers.Keys) {
+            git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/$name"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            git -C "$env:RUNNER_TEMP/$name" checkout --detach $producers[$name]
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            npm ci --prefix "$env:RUNNER_TEMP/$name/sdk/typescript" --ignore-scripts --no-audit --no-fund
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            npm run build --prefix "$env:RUNNER_TEMP/$name/sdk/typescript"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Build licensed archive and exercise installed consumer
+        shell: pwsh
+        env:
+          RUSTUP_TOOLCHAIN: '1.97.1'
+        run: |
+          python sdk/native/hpke-candidate/package-test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python sdk/native/hpke-candidate/package-native.py --language '${{ matrix.language }}' --archive "$env:RUNNER_TEMP/archive" --election "$env:RUNNER_TEMP/election" --output "$env:RUNNER_TEMP/native-package"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # A hosted runner without qualified PCP can prove archive/software checks,
+      # but its qualification.json explicitly leaves protected acceptance false.
