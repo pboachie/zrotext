@@ -48,8 +48,8 @@ tampering and content-size limits must fail closed.
 Separate installed owner-template consumers exercise authenticated cold HTTPS
 reads and reviewed save, explicit retry and GET reconciliation against the
 maintained state machine. The fixture verifies Cookie/CSRF authority, exact
-ciphertext and idempotency identity, refusal and uncertainty, bounded admission,
-deadline/close fencing and contradictory heads. A matching reconciliation read
+ciphertext and idempotency identity, refusal and uncertainty, busy/close
+fencing, deadlines and contradictory heads. A matching reconciliation read
 does not acknowledge or silently clear an uncertain write. No automatic retry
 or live owner-service acceptance is implied.
 
