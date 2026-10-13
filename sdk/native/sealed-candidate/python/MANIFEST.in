@@ -14,3 +14,4 @@ exclude installed_contact_producer_consumer.py
 exclude installed_context_consumer.py
 exclude installed_lifecycle_consumer.py
 exclude installed_template_store_consumer.py
+exclude installed_owner_template_consumer.py

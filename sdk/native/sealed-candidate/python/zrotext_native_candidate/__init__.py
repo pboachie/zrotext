@@ -62,3 +62,4 @@ __all__ += ['SealedLifecycleClient','SealedLifecycleError','SEALED_MESSAGE_STATE
 
 from .template_store import TemplateStoreError,TemplateSaveRequest,template_save_request,template_save_receipt
 __all__ += ['TemplateStoreError','TemplateSaveRequest','template_save_request','template_save_receipt']
+from .owner_template import OwnerTemplateReader, OwnerTemplateError
