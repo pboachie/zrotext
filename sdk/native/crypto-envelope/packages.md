@@ -26,7 +26,7 @@ Outbound profile03 follows the signed key-lifetime policy; cross-language
 alignment remains tracked in issue #1226.
 
 `package-managed.py --target java --out <new-external-directory>` also requires
-thirteen exact producer/control checkout arguments listed by `--help`. Run `npm ci
+fifteen exact producer/control checkout arguments listed by `--help`. Run `npm ci
 --ignore-scripts` and `npm run build` in each producer's `sdk/typescript` first.
 Use target `csharp` or `ruby` for the corresponding archive. Build tools must be
 on PATH. The helper requires clean tracked fixture sources at the exact pins.
@@ -61,6 +61,20 @@ independently verifies and decrypts native composed ciphertext. Runtime library
 sources are never compiled into consumers. The fixture orchestration remains
 external to the packages; private generated values and cleanup receipts are not
 published artifacts.
+
+Installed template consumers also compare canonical content and SMS segment
+previews with the maintained TypeScript oracle. Authenticated ZTWT01 controls
+exercise software sealing/opening, current-authority fences, malformed scopes,
+clock regression, tampering and size limits. TypeScript independently opens two
+fresh native seals. On a qualified PCP host, the same installed library opens
+ciphertext addressed to a fresh nonexportable recipient; both normal completion
+and interrupted fixture setup require exact owned-key deletion. No private
+recipient scalar is supplied. Template content and crypto are included in the
+closed runtime inventory; owner template storage/HTTP remains a separate surface.
+C# internal primitive-width unit checks remain in the ordinary source harness.
+The external installed assembly tests public template APIs; its dedicated
+`ZROTEXT_INSTALLED_CONSUMER` symbol excludes only that internal-access prelude,
+without exposing additional runtime methods or changing shared fixture controls.
 
 On a host without the required native provider, only read-only precreation
 capability refusal may be unqualified. Once key creation starts, every failure is
