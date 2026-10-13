@@ -13,8 +13,8 @@ python3 sdk/tungsten/cli-acceptance/run.py --foundation /path/to/foundation --so
 
 The foundation must already have generated outputs. Its `scripts/tungsten_sdk.py
 --source /path/to/lf-tungsten --check` command prepares them. The checkout must
-use canonical LF templates. For an already built binary, set `ZROTEXT_TEST_CLI`
-and run `test_cli.py` directly; that shortcut does not verify build provenance.
+use canonical LF templates. The verified runner supplies the freshly built binary directly to the test
+module. Environment variables cannot select an executable.
 
 All requests stay on a synthetic loopback HTTP server. Tests exercise previews,
 partial confirmation, missing credentials and idempotency, redacted diagnostics,

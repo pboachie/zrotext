@@ -15,10 +15,6 @@ KEY = "synthetic-cli-idempotency"
 
 
 class Acceptance(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.binary = Path(os.environ["ZROTEXT_TEST_CLI"]).resolve()
-
     def setUp(self):
         self.scratch = tempfile.TemporaryDirectory()
         self.calls = []
@@ -117,6 +113,3 @@ class Acceptance(unittest.TestCase):
         self.invoke(["auth", "status"], 0)
         self.assertEqual(self.calls, [])
 
-
-if __name__ == "__main__":
-    unittest.main()

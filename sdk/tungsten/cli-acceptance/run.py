@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unittest
 
 HERE = Path(__file__).resolve().parent
 
@@ -40,8 +41,13 @@ def main():
         env = dict(os.environ, CARGO_TARGET_DIR=str(stage / "target"))
         subprocess.run(["cargo", "+1.88.0", "build", "-p", "zrotext-api-cli"], cwd=sdk, env=env, check=True)
         suffix = ".exe" if os.name == "nt" else ""
-        env["ZROTEXT_TEST_CLI"] = str(stage / "target/debug" / ("zrotext-api" + suffix))
-        subprocess.run([sys.executable, HERE / "test_cli.py"], env=env, check=True)
+        spec = importlib.util.spec_from_file_location("cli_acceptance_tests", HERE / "test_cli.py")
+        tests = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tests)
+        tests.Acceptance.binary = stage / "target/debug" / ("zrotext-api" + suffix)
+        result = unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromModule(tests))
+        if not result.wasSuccessful():
+            raise ValueError("CLI acceptance failed")
     print("CLI source build and synthetic acceptance passed; no registry or deployed acceptance implied")
 
 if __name__ == "__main__":
