@@ -161,6 +161,7 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--target", choices=["python", "ruby", "typescript", "java", "csharp", "go", "rust"], required=True)
     parser.add_argument("--ruby", default="ruby")
+    parser.add_argument("--cargo", type=Path, help="Optional direct Rust 1.88.0 toolchain cargo executable")
     args = parser.parse_args()
     destination = args.out.resolve()
     if destination.is_relative_to(ROOT.resolve()) or destination.exists():
@@ -185,7 +186,10 @@ def main():
             ruby_package(stage, feed, args.ruby)
         elif args.target in ("go", "rust"):
             native = load("native_packages", CONFIG / "package-native.py")
-            getattr(native, args.target + "_package")(stage, feed)
+            if args.target == "rust":
+                native.rust_package(stage, feed, args.cargo)
+            else:
+                native.go_package(stage, feed)
         else:
             managed = load("managed_packages", CONFIG / "package-managed.py")
             getattr(managed, args.target + "_package")(stage, feed)

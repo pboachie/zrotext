@@ -101,7 +101,10 @@ resolve the missing public runtime module tag tracked by
 [Tungsten #60](https://github.com/pboachie/tungsten/issues/60).
 
 Rust requires toolchain 1.88.0 and uses Cargo itself to package the runtime,
-CLI kit, SDK and CLI. Staging resolves workspace metadata and local dependencies
+CLI kit, SDK and CLI. A direct installation without a rustup proxy can use
+`--cargo /path/to/toolchain/bin/cargo`; the command verifies that Cargo and its
+sibling rustc both report 1.88.0 and selects that compiler explicitly.
+Staging resolves workspace metadata and local dependencies
 into explicit candidate-registry versions. A temporary localhost sparse registry
 serves those archives while ordinary transitive dependencies resolve from
 crates.io. After removing all source staging, a fresh Cargo home compiles/runs an
@@ -116,7 +119,7 @@ CLI also needs the versioned-dependency/MSRV repair in
 [Tungsten #70](https://github.com/pboachie/tungsten/issues/70). The staging adaptation
 proves crate compilation/installability without treating it as an emitter fix.
 
-The installed Go consumer also runs twelve synthetic HTTP checks adapted from
+The installed Go and Rust consumers each run twelve synthetic HTTP checks adapted from
 the native wire suite: bearer authentication and scope refusal, argument validation,
 planned-operation exclusion, disabled sealed gates, pagination, malformed JSON and
 response shapes, bounded body-read timeout, mutation/cross-origin redirects, and

@@ -1,4 +1,4 @@
-"""Installed Go archive contracts, adapted from the reviewed native wire suite."""
+"""Installed native archive contracts, adapted from the reviewed native wire suite."""
 import json
 import os
 from pathlib import Path

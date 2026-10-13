@@ -90,7 +90,22 @@ class QuietRegistry(http.server.SimpleHTTPRequestHandler):
         pass
 
 
-def rust_package(stage, feed):
+def cargo_command(executable, env):
+    if executable is None:
+        return ["cargo", "+1.88.0"]
+    executable = Path(executable).resolve()
+    suffix = ".exe" if os.name == "nt" else ""
+    compiler = executable.parent / ("rustc" + suffix)
+    for command, prefix in ((executable, "cargo 1.88.0 "), (compiler, "rustc 1.88.0 ")):
+        version = run(command, "--version", env=env, capture_output=True, text=True).stdout
+        if not version.startswith(prefix):
+            raise ValueError("Direct Cargo and rustc must both be Rust 1.88.0")
+    env["RUSTC"] = str(compiler)
+    env["RUSTDOC"] = str(executable.parent / ("rustdoc" + suffix))
+    return [str(executable)]
+
+
+def rust_package(stage, feed, cargo_executable=None):
     projects = stage / "projects"
     projects.mkdir()
     manifests = []
@@ -124,8 +139,8 @@ def rust_package(stage, feed):
         '[resolver]\nincompatible-rust-versions = "fallback"\n')
     env = dict(os.environ, CARGO_HOME=str(cargo_home), CARGO_TARGET_DIR=str(stage / "target"),
                CARGO_BUILD_JOBS="2")
-    cargo = ["cargo", "+1.88.0"]
     try:
+        cargo = cargo_command(cargo_executable, env)
         for project, manifest in manifests:
             run(*cargo, "package", "--no-verify", "--allow-dirty",
                 "--manifest-path", project / "Cargo.toml", env=env, cwd=stage)
@@ -154,6 +169,9 @@ edition = "2024"
 rust-version = "1.88"
 [dependencies]
 zrotext-sdk = { version = "=0.1.0", registry = "candidate" }
+tungsten-runtime = { version = "=0.1.0", registry = "candidate" }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ''')
         (consumer / "src/main.rs").write_text('''fn main() {
 let options = zrotext_sdk::ClientOptions { base_url: Some("https://sdk.example.invalid".into()), ..Default::default() };
@@ -170,6 +188,12 @@ println!("Installed Rust client loaded");
         env["CARGO_HOME"] = str(fresh_home)
         run(*cargo, "generate-lockfile", env=env, cwd=consumer)
         run(*cargo, "run", "--locked", env=env, cwd=consumer)
+        wire = Path(__file__).resolve().parent / "package-wire"
+        (consumer / "src/bin").mkdir()
+        shutil.copy2(wire / "rust-main.rs", consumer / "src/bin/archive-wire.rs")
+        run(*cargo, "build", "--locked", "--bin", "archive-wire", env=env, cwd=consumer)
+        suffix = ".exe" if os.name == "nt" else ""
+        wire_checks(stage / "target/debug" / ("archive-wire" + suffix), "rust")
         run(*cargo, "install", "--locked", "--registry", "candidate", "--version", "0.1.0",
             "--root", stage / "installed", "zrotext-api-cli", env=env, cwd=consumer)
         binary = stage / "installed/bin" / ("zrotext-api.exe" if os.name == "nt" else "zrotext-api")
@@ -182,6 +206,17 @@ println!("Installed Rust client loaded");
 
 def run(*args, **kwargs):
     return subprocess.run(list(map(str, args)), check=True, **kwargs)
+
+
+def wire_checks(binary, language):
+    wire = Path(__file__).resolve().parent / "package-wire/test_wire.py"
+    spec = importlib.util.spec_from_file_location("installed_" + language + "_wire", wire)
+    checks = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(checks)
+    checks.Wire.binary, checks.Wire.language = str(binary), language
+    result = unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromModule(checks))
+    if not result.wasSuccessful():
+        raise ValueError("Installed " + language + " archive wire contracts failed")
 
 
 def go_archive(project, feed):
@@ -247,13 +282,7 @@ func main() {
     shutil.copy2(wire / "go-main.go", consumer / "main.go")
     binary = consumer / ("archive-wire.exe" if os.name == "nt" else "archive-wire")
     run("go", "build", "-o", binary, ".", cwd=consumer, env=env)
-    spec = importlib.util.spec_from_file_location("installed_go_wire", wire / "test_wire.py")
-    checks = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(checks)
-    checks.Wire.binary, checks.Wire.language = str(binary), "go"
-    result = unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromModule(checks))
-    if not result.wasSuccessful():
-        raise ValueError("Installed Go archive wire contracts failed")
+    wire_checks(binary, "go")
     run("go", "mod", "verify", cwd=consumer, env=env)
     # Retain ordinary module checksums, not temporary checkout/cache paths.
     shutil.copy2(consumer / "go.sum", feed / "consumer.go.sum")

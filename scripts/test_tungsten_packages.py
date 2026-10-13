@@ -5,6 +5,8 @@ from pathlib import Path
 import tempfile
 import tarfile
 import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
 import zipfile
 
 spec = importlib.util.spec_from_file_location("artifacts", Path(__file__).resolve().parents[1]
@@ -16,6 +18,22 @@ native = artifacts.load("native_packages", artifacts.CONFIG / "package-native.py
 
 
 class PackageTests(unittest.TestCase):
+    def test_direct_cargo_refuses_mixed_or_wrong_toolchain(self):
+        for versions in (("cargo 1.97.1 (test)",), ("cargo 1.88.0 (test)", "rustc 1.97.1 (test)")):
+            with patch.object(native, "run", side_effect=[SimpleNamespace(stdout=v) for v in versions]):
+                with self.assertRaisesRegex(ValueError, "both be Rust 1.88.0"):
+                    native.cargo_command(Path("toolchain/cargo"), {})
+
+    def test_direct_cargo_binds_verified_sibling_compiler(self):
+        env = {"RUSTC": "other-compiler", "RUSTDOC": "other-doc"}
+        with patch.object(native, "run", side_effect=[SimpleNamespace(stdout=v) for v in
+                          ("cargo 1.88.0 (test)", "rustc 1.88.0 (test)")]):
+            command = native.cargo_command(Path("toolchain/cargo"), env)
+        self.assertEqual(command, [str(Path("toolchain/cargo").resolve())])
+        suffix = ".exe" if native.os.name == "nt" else ""
+        self.assertEqual(env["RUSTC"], str(Path("toolchain/rustc" + suffix).resolve()))
+        self.assertEqual(env["RUSTDOC"], str(Path("toolchain/rustdoc" + suffix).resolve()))
+
     def test_missing_or_wrong_license_fails(self):
         with tempfile.TemporaryDirectory() as temp:
             wheel = Path(temp) / "candidate.whl"
