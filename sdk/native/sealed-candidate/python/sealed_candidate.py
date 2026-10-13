@@ -374,8 +374,8 @@ class SoftwareRecipient:
 
 
 def require_protected_custody(provider):
-    # No independently qualified TPM/Keystore/OS provider exists in this module.
-    raise SealedError('protected nonexportable custody and atomic persistence unsupported')
+    from cng_custody import require_hardware
+    return require_hardware(provider)
 
 
 def _extract(suite, salt, name, ikm):
@@ -388,7 +388,8 @@ def _expand(suite, prk, name, info, length):
 
 
 def _unwrap(provider, expected_point, ephemeral, ciphertext, info, aad):
-    require(type(provider) is SoftwareRecipient, 'unqualified custody provider')
+    if type(provider) is not SoftwareRecipient:
+        require_protected_custody(provider)
     require(provider.public_point() == expected_point, 'custody public binding')
     kem = b'KEM\x00\x10'
     suite = b'HPKE\x00\x10\x00\x01\x00\x01'
@@ -416,7 +417,7 @@ def _unwrap(provider, expected_point, ephemeral, ciphertext, info, aad):
 
 
 def open_archive_candidate02(raw, historical, current, custody, *, account, device, line, peer, reader_id, now_ms):
-    """Explicit software-only archive read. No integration-wrap selection supported.
+    """Candidate archive read. No integration-wrap selection supported.
 
     Caller must independently supply trusted current manifest, time and routing.
     This returns text, never a grant, durable replay receipt or dispatch authority.
@@ -464,3 +465,13 @@ def open_archive_candidate02(raw, historical, current, custody, *, account, devi
         for value in (cek, plaintext):
             if value is not None:
                 value[:] = bytes(len(value))
+
+
+def open_archive_protected02(raw, historical, current, custody, **context):
+    """Require qualified hardware custody, then use the same closed reader path.
+
+    A current verifier token is not durable authority; use a verified checkpoint
+    and independent live authorization before applying any application effect.
+    """
+    require_protected_custody(custody)
+    return open_archive_candidate02(raw, historical, current, custody, **context)

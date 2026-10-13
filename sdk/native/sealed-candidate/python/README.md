@@ -33,16 +33,47 @@ scalar and therefore establish public verification, not profile-03 decryption.
 ## Custody and authority boundary
 
 `RecipientCustody` documents the public-point/ECDH provider contract.
-`SoftwareRecipient` is the only implemented provider and holds an exportable
-PyCA software key. `open_archive_candidate02` names this experimental path
-explicitly. It cannot qualify protected storage. `require_protected_custody`
-always refuses, including objects that claim a protected capability flag.
+`SoftwareRecipient` holds an exportable PyCA software key and cannot qualify
+protected storage. The optional Windows `HardwareRecipient` uses only Microsoft
+Platform Crypto Provider. Qualification cumulatively checks its hardware
+implementation flag, export-policy zero readback, exact ECDH P-256 public-blob
+magic/width and curve membership, rejected private-blob export, and actual ECDH
+agreement against an independently generated PyCA peer. A software KSP is never
+a fallback. Local provider observations are not remote TPM attestation.
+The native calls follow Microsoft's
+[key storage provider](https://learn.microsoft.com/en-us/windows/win32/seccertenroll/cng-key-storage-providers),
+[property](https://learn.microsoft.com/en-us/windows/win32/seccng/key-storage-property-identifiers)
+and [NCrypt derivation](https://learn.microsoft.com/en-us/windows/win32/api/ncrypt/nf-ncrypt-ncryptderivekey)
+contracts; the raw ECDH output is converted from little endian for RFC 9180.
+`open_archive_protected02` requires this qualified provider; a caller's boolean
+capability flag cannot admit a different provider.
 
-No TPM, OS vault, Android Keystore, secure enclave, atomic persistent adapter,
-rollback-resistant high-water, receipt store or sender replay journal is supplied.
-`advance_trust02` only proposes a new process-local immutable high-water token;
-an integration must atomically compare and persist the original predecessor
-before accepting effects. Python process-local tokens are not a sandbox against
+PCP versions may return `Length=0` for ECC while exporting the exact P-256 public
+blob, and may reject private export with `NTE_BAD_TYPE` rather than `NTE_PERM`.
+These statuses are recorded as part of the cumulative check, not treated alone
+as proof. Unsupported platforms, algorithms, exports or ECDH operations refuse.
+Creation uses fresh UUID aliases, no overwrite/provisioning or UI policy, and
+requires a trusted callback to fsync a pending-alias receipt before creation.
+Reopening requires the independently expected public point. Cleanup addresses
+only the exact created/opened handle; it never enumerates aliases. The PCP can
+reject `SILENT` on deletion, so deletion of these keys uses zero flags. Other key
+operations use silent flags where supported. Keep recovery receipts if cleanup
+fails; closing a handle does not delete a persisted key.
+
+`CheckpointStore` provides SQLite WAL/FULL-sync atomic compare-and-swap for up
+to 1,024 signed manifest records. It reconstructs verifier evidence from the
+independently supplied root pin on reopen, preserves the original signed02
+predecessor for03 upgrades, and refuses corruption, stale revisions, clock
+regression and unsupported profile downgrades. It stores public signed evidence
+only. Use an access-controlled local directory. Root transitions are currently
+outside this checkpoint adapter's generation-one chain surface.
+
+SQLite transactions provide local crash/concurrency durability, **not hardware
+antirollback**: restoring an old complete valid database cannot be detected
+without an independent high-water source. No live grant, audience permission,
+receipt store or sender replay journal is supplied. `advance_trust02` alone only
+proposes an immutable high-water token; the checkpoint transaction must commit
+before an integration accepts effects. Python process-local tokens are not a sandbox against
 code already executing in the same interpreter. The trusted caller supplies the
 independently compared root, routing scope, current manifest and trusted time.
 
@@ -57,7 +88,7 @@ and text refusal does not retain a plaintext-carrying decode exception.
 |---|---|
 | Native outbound composition | Not implemented; needs fresh CSPRNG material, authorized signer custody, exact replay persistence and independent TS consumption |
 | Profile-03 body opening | Public origin/manifest verification only; needs accepted election, independently authenticated current account/device/line/audience permission and exact nonempty wrap AAD |
-| Protected custody | Unsupported; concrete native provider plus nonexportability, atomic persistence, concurrent CAS, restart and rollback tests required |
+| Protected custody | Windows TPM provider with actual key/ECDH/opening/reopen tests; remote attestation, independent antirollback and other OS providers remain unsupported |
 | Integration reader selection | Unsupported; needs exact phone-approved selection and interval binding, never an archive alias |
 | Live authority and delivery | SDK/server/grant/journal/receiver integration and controlled device acceptance remain under #1054/#1004 |
 | Publication / replacement | Neither stable package removal nor registry publication is authorized by these tests |
@@ -75,3 +106,8 @@ python -m unittest discover -s sdk/native/sealed-candidate/python -p 'test_*.py'
 
 Use an isolated Python environment. Tests invoke the synthetic TypeScript producer
 with Node, without an HTTP server, provider account, device, or SMS action.
+Windows tests use fresh hardware keys with private pending-alias receipts and
+targeted deletion; an unavailable TPM is reported as a skip, not protected
+acceptance. Once creation is attempted, later qualification failures fail the
+test. Linux and hosted Windows CI results must be read separately from executed
+hardware-provider evidence.

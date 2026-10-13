@@ -27,7 +27,18 @@ async function kem(n) {
   return { pair, point, id: await keyId(16,point) };
 }
 const root = await signing(7), origin = await signing(6), outbound = await signing(5);
-const device = await kem(17), archive = await kem(34);
+const device = await kem(17);
+let archive;
+if (process.argv[2] === '--recipient-point') {
+  const hex = process.argv[3];
+  if (!/^04[0-9a-f]{128}$/.test(hex ?? '') || process.argv.length !== 4) throw Error('public recipient point');
+  const point = new Uint8Array(Buffer.from(hex, 'hex'));
+  await suite.kem.deserializePublicKey(point);
+  archive = {point, id:await keyId(16,point)};
+} else {
+  if (process.argv.length !== 2) throw Error('unsupported fixture arguments');
+  archive = await kem(34);
+}
 const accountId=bytes(161,16), deviceId=bytes(209,16), lineId=bytes(177,16), messageId=bytes(49,16);
 const now=10000n, start=9000n, end=100000n;
 const rootPin=join(text('ZTRP'),[2],accountId,integer(1,8),root.point);
@@ -56,5 +67,6 @@ const outgoing=await prepareOutboundEnvelope02({...shared,kind:1,expiresMs:20000
   recipients:[{role:1,keyId:device.id,point:device.point,ekm:bytes(81,32)},
     {role:2,keyId:archive.id,point:archive.point,ekm:bytes(82,32)}]});
 process.stdout.write(JSON.stringify({rootPin:b64(rootPin),fingerprint:b64(fingerprint),manifest:b64(manifestBytes),
-  inbound:b64(inbound.envelope),outbound:b64(outgoing.envelope),archiveScalar:b64(new Uint8Array(await suite.kem.serializePrivateKey(archive.pair.privateKey))),
+  inbound:b64(inbound.envelope),outbound:b64(outgoing.envelope),
+  ...(archive.pair ? {archiveScalar:b64(new Uint8Array(await suite.kem.serializePrivateKey(archive.pair.privateKey)))} : {}),
   reader:b64(archive.id),account:b64(accountId),device:b64(deviceId),line:b64(lineId),now:Number(now),text:shared.content}));

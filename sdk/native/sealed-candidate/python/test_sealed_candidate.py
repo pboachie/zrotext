@@ -151,11 +151,11 @@ class NativeSealed(unittest.TestCase):
         for forged in (sealed.Evidence(), copy.copy(self.manifest), sealed.manifest_identity(self.manifest)):
             with self.assertRaises(sealed.SealedError):
                 sealed.manifest_identity(forged)
-        with self.assertRaisesRegex(sealed.SealedError, 'unsupported'):
+        with self.assertRaisesRegex(sealed.SealedError, 'qualified hardware'):
             sealed.require_protected_custody(self.custody)
         class ForgedProvider:
             protected = True
-        with self.assertRaisesRegex(sealed.SealedError, 'unsupported'):
+        with self.assertRaisesRegex(sealed.SealedError, 'qualified hardware'):
             sealed.require_protected_custody(ForgedProvider())
 
     def test_original_buffer_mutation_cannot_change_accepted_manifest(self):
