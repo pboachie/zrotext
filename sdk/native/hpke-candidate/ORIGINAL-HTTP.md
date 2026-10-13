@@ -52,3 +52,6 @@ attempts, unknown consumption outcomes, redirects, invalid/truncated responses,
 slow streaming body deadlines, and zero requests for invalid inputs/untrusted
 TLS. These are synthetic transport tests, not deployed grant/provenance evidence,
 and not installed-package acceptance of this new capability.
+Managed native runtimes may use `--command-file <trusted-local-json-argv>` instead
+of `--binary`; this executes an explicit argument array without a shell. The
+command file must be trusted test configuration, never HTTP response data.

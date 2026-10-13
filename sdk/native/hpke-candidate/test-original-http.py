@@ -89,9 +89,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--binary', required=True)
+    command = parser.add_mutually_exclusive_group(required=True)
+    command.add_argument('--binary')
+    command.add_argument('--command-file', help='Trusted local JSON argv for a native runtime probe; never server data')
     args = parser.parse_args()
-    binary = str(Path(args.binary).resolve(strict=True))
+    if args.binary:
+        argv = [str(Path(args.binary).resolve(strict=True))]
+    else:
+        argv = json.loads(Path(args.command_file).read_text(encoding='utf-8'))
+        if not isinstance(argv, list) or not argv or any(not isinstance(v, str) or not v or '\0' in v for v in argv):
+            parser.error('command file must contain nonempty string arguments without NUL')
     count = 0
     with tempfile.TemporaryDirectory(prefix='zrotext-reply-tls-') as directory:
         folder = Path(directory)
@@ -111,7 +118,7 @@ def main():
                 env = {k:v for k,v in os.environ.items() if not k.upper().endswith('_PROXY') and k.upper() != 'NO_PROXY'}
                 # A broken proxy must have no influence on this explicit direct transport.
                 env['HTTPS_PROXY'] = 'http://invalid.invalid:1'
-                result = subprocess.run([binary], input=json.dumps(payload), text=True, encoding='utf-8',
+                result = subprocess.run(argv, input=json.dumps(payload), text=True, encoding='utf-8',
                     capture_output=True, check=True, timeout=10, env=env)
                 actual = json.loads(result.stdout)
                 assert actual['state'] == expected, (mode,method,actual,len(server.calls))
