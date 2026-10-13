@@ -1,0 +1,30 @@
+name: Python candidate body conformance
+on:
+  pull_request:
+    paths:
+      - 'sdk/native/crypto-candidate/python/**'
+      - 'protocol/v1/vectors/ztse-body-text-01.json'
+      - '.github/workflows/sdk-python-candidate-body.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'sdk/native/crypto-candidate/python/**'
+      - 'protocol/v1/vectors/ztse-body-text-01.json'
+      - '.github/workflows/sdk-python-candidate-body.yml'
+permissions:
+  contents: read
+jobs:
+  python-candidate-body:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Install pinned native crypto provider
+        run: python -m pip install --only-binary=:all: -r sdk/native/crypto-candidate/python/requirements.txt
+      - name: Verify shared authentication and text corpus
+        run: python -m unittest discover -s sdk/native/crypto-candidate/python -p 'test_*.py'
