@@ -1,0 +1,20 @@
+[package]
+name = "zrotext-hpke-candidate"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+license = "AGPL-3.0-only"
+description = "Candidate base-mode HPKE recipient primitive"
+[workspace]
+[dependencies]
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
+same-file = "=1.0.6"
+getrandom = "0.4"
+aes-gcm = { version = "0.11.1", features = ["zeroize"] }
+p256 = { version = "0.14.0", features = ["ecdh", "ecdsa"] }
+hkdf = "0.13.0"
+sha2 = "0.11.0"
+zeroize = "1.9.0"
+[dev-dependencies]
+base64 = "0.22"
+serde_json = "1"
