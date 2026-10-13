@@ -59,3 +59,6 @@ __all__ += ['WorkflowContextError','WorkflowContextCancellation','workflow_conte
 
 from .sealed_lifecycle import SealedLifecycleClient,SealedLifecycleError,SEALED_MESSAGE_STATES
 __all__ += ['SealedLifecycleClient','SealedLifecycleError','SEALED_MESSAGE_STATES']
+
+from .template_store import TemplateStoreError,TemplateSaveRequest,template_save_request,template_save_receipt
+__all__ += ['TemplateStoreError','TemplateSaveRequest','template_save_request','template_save_receipt']
