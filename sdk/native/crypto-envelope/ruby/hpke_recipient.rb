@@ -35,8 +35,18 @@ module ZrotextCandidate
       expected_public = point(pk)
       raise ArgumentError, 'Recipient key binding' unless recipient.public_to_der == expected_public.public_to_der
       ephemeral = point(enc)
+      dh = recipient.derive(ephemeral)
+      open_agreement(dh, pk, enc, context_info, authenticated, encrypted)
+    ensure
+      dh&.replace("\x00".b * dh.bytesize)
+    end
+
+    # Trusted adapter primitive; shared DH alone makes no custody assertion.
+    def open_agreement(shared_dh, pk, enc, context_info, authenticated, encrypted)
+      raise ArgumentError, 'Candidate agreement bounds' if context_info.bytesize > 36864 || authenticated.bytesize > 36864 || encrypted.bytesize != 48
+      point(pk); point(enc)
       secrets = []
-      dh = recipient.derive(ephemeral); secrets << dh
+      dh = shared_dh.b.dup; secrets << dh
       raise ArgumentError, 'P256 shared secret width' unless dh.bytesize == 32
       prk = extract(KEM, ''.b, 'eae_prk', dh); secrets << prk
       shared = expand(KEM, prk, 'shared_secret', enc + pk, 32); secrets << shared
@@ -55,5 +65,7 @@ module ZrotextCandidate
       secrets&.each { |value| value.replace("\x00".b * value.bytesize) }
       plaintext&.replace("\x00".b * plaintext.bytesize) unless success
     end
+
+    def software(recipient) = ->(*arguments) { open(recipient, *arguments) }
   end
 end

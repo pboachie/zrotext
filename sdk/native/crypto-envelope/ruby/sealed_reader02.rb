@@ -14,10 +14,17 @@ module ZrotextCandidate
     end
     def active(record,now) = need(record.getbyte(148)==1 && number(record,132)<=now && now<number(record,140))
     def open(input,manifest,now,recipient_role,recipient_id,recipient,current)
-      open_bound(input,manifest,manifest,now,recipient_role,recipient_id,recipient,current,false)
+      open_with_recipient(input,manifest,now,recipient_role,recipient_id,HpkeRecipient.software(recipient),current)
     end
     def open_historical_archive(input,historical,selected,now,recipient_id,recipient,current)
-      open_bound(input,historical,selected,now,2,recipient_id,recipient,current,true)
+      open_historical_with_recipient(input,historical,selected,now,recipient_id,HpkeRecipient.software(recipient),current)
+    end
+    # Trusted callable unwrap adapter; this interface does not attest hardware custody.
+    def open_with_recipient(input,manifest,now,role,id,recipient,current)
+      open_bound(input,manifest,manifest,now,role,id,recipient,current,false)
+    end
+    def open_historical_with_recipient(input,historical,selected,now,id,recipient,current)
+      open_bound(input,historical,selected,now,2,id,recipient,current,true)
     end
     def open_bound(input,manifest,selected_manifest,now,recipient_role,recipient_id,recipient,current,historical)
       need(manifest.instance_of?(ManifestChain::Verified) && manifest.profile==2 && selected_manifest.instance_of?(ManifestChain::Verified) && selected_manifest.profile==2 && selected_manifest.descends_from(manifest) && now>=selected_manifest.comparison_ms && now<selected_manifest.expires_ms)
@@ -41,7 +48,7 @@ module ZrotextCandidate
       need((live.byteslice(130,2).unpack1('n') & (kind==1 ? 4 : 8))!=0 && live.byteslice(33,65)==selected.byteslice(33,65))
       need(current.call(selected_manifest.account,selected_manifest.version,selected_manifest.digest,b.dup));cek=nil
       begin
-        cek=HpkeRecipient.open(recipient,selected.byteslice(33,65),envelope.encapsulated(recipient_role,id),envelope.wrap_info(recipient_role,id),envelope.wrap_aad(recipient_role,id),envelope.wrapped_key(recipient_role,id))
+        cek=recipient.call(selected.byteslice(33,65),envelope.encapsulated(recipient_role,id),envelope.wrap_info(recipient_role,id),envelope.wrap_aad(recipient_role,id),envelope.wrapped_key(recipient_role,id))
         result=Zrotext::CandidateBody.open(content_key:cek,nonce:envelope.nonce,verified_aad:envelope.body_aad,ciphertext:envelope.body_ciphertext)
         need(current.call(selected_manifest.account,selected_manifest.version,selected_manifest.digest,b.dup));result
       ensure

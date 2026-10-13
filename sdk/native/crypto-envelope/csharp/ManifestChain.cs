@@ -47,6 +47,8 @@ public static class ManifestChain {
         internal byte[] Previous=>(byte[])previousBytes.Clone();
         internal readonly int Predecessor;
         internal Verified? Parent{get;}
+        public byte[] EnrolledRootPoint(){var first=this;while(first.Parent is not null)first=first.Parent;return first.RootPoint();}
+        public long Generation=>Number(data,Profile==2?21:23);
         public int Profile{get;} public long Version{get;} public long IssuedMs{get;} public long ExpiresMs{get;} public long ComparisonMs{get;}
         internal Verified(object permit,byte[] b,int profile,int predecessor,long version,long issued,long expires,long comparison,byte[] digest,byte[] account,byte[] root,byte[] previous,Verified? parent=null){Need(ReferenceEquals(permit,ConstructionPermit));data=(byte[])b.Clone();Profile=profile;Predecessor=predecessor;Version=version;IssuedMs=issued;ExpiresMs=expires;ComparisonMs=comparison;digestBytes=(byte[])digest.Clone();accountBytes=(byte[])account.Clone();rootBytes=(byte[])root.Clone();previousBytes=(byte[])previous.Clone();Parent=parent;}
         public bool DescendsFrom(Verified historical){
@@ -63,7 +65,7 @@ public static class ManifestChain {
         int count=b[150+offset];Need(count>=1 && count<=64 && b.Length==215+offset+149*count);
         var account=Part(b,5+offset,16);var root=Part(b,85+offset,65);var previous=Part(b,53+offset,32);
         long generation=Number(b,21+offset),version=Number(b,29+offset),issued=Number(b,37+offset),expires=Number(b,45+offset);
-        Need(!Zero(account) && generation==1 && version>0);Window(issued,expires,now);using var rootPoint=HpkeRecipient.Point(root);
+        Need(!Zero(account) && generation>0 && (profile==2 || generation==1) && version>0);Window(issued,expires,now);using var rootPoint=HpkeRecipient.Point(root);
         byte[]? last=null;var points=new HashSet<string>();int owners=0,archives=0;
         for(int i=0;i<count;i++){
             int at=151+offset+149*i,role=b[at],state=b[at+148],scope=BinaryPrimitives.ReadUInt16BigEndian(b.AsSpan(at+130,2));
@@ -77,12 +79,19 @@ public static class ManifestChain {
         Need(owners==1 && archives==1);var unsigned=Part(b,0,b.Length-64);Signature(root,Part(b,b.Length-64,64),"ZTSE/manifest/v"+profile,unsigned);
         return new Verified(ConstructionPermit,b,profile,predecessor,version,issued,expires,now,SHA256.HashData(unsigned),account,root,previous);
     }
-    public static Verified Genesis02(byte[] input,RootPin pin,long now){var value=Parse(input,2,now);Need(Same(value.AccountValue,pin.Account) && Same(value.Root,pin.Point) && value.Version==1 && Zero(value.Previous));return value;}
+    public static Verified Genesis02(byte[] input,RootPin pin,long now){var value=Parse(input,2,now);Need(Same(value.AccountValue,pin.Account) && Same(value.Root,pin.Point) && value.Generation==1 && value.Version==1 && Zero(value.Previous));return value;}
     public static Verified ContinueChain(byte[] input,Verified prior,int expectedProfile,long now){
         Need(now>=prior.ComparisonMs && !(prior.Profile==3 && expectedProfile==2));if(prior.Profile==2 && expectedProfile==3)Window(prior.IssuedMs,prior.ExpiresMs,now);
-        var value=Parse(input,expectedProfile,now);Need(Same(value.AccountValue,prior.AccountValue) && Same(value.Root,prior.Root));
+        var value=Parse(input,expectedProfile,now);Need(Same(value.AccountValue,prior.AccountValue) && Same(value.Root,prior.Root) && value.Generation==prior.Generation);
         if(value.Profile==prior.Profile && value.Version==prior.Version && Same(value.DigestValue,prior.DigestValue))return Linked(value,prior.Parent);
         Need(prior.Version<long.MaxValue && value.Version==prior.Version+1 && Same(value.Previous,prior.DigestValue));Need(value.Profile==2 || value.Predecessor==prior.Profile);return Linked(value,prior);
+    }
+    /// <summary>External new-root approval, dual signatures and anchored genesis; not durable selection.</summary>
+    public static Verified Rotate02(byte[] transition,byte[] newGenesis,Verified prior,byte[] independentlyApprovedRoot,long now){
+        Need(prior.Profile==2 && now>=prior.ComparisonMs && transition.Length==343 && independentlyApprovedRoot.Length==65);byte[] raw=(byte[])transition.Clone(),expected=(byte[])independentlyApprovedRoot.Clone();Need(Same(Part(raw,0,5),new byte[]{90,84,82,84,2}));
+        Need(prior.Generation<long.MaxValue && Same(Part(raw,5,16),prior.AccountValue) && Number(raw,21)==prior.Generation && Number(raw,29)==prior.Generation+1 && Same(Part(raw,37,65),prior.Root) && Same(Part(raw,102,65),expected) && !Same(expected,prior.Root) && Same(Part(raw,167,32),prior.DigestValue));
+        Window(Number(raw,199),Number(raw,207),now);byte[] unsigned=Part(raw,0,215);Signature(prior.Root,Part(raw,215,64),"ZTSE/root-transition/v2",unsigned);Signature(expected,Part(raw,279,64),"ZTSE/root-transition/v2",unsigned);
+        var value=Parse(newGenesis,2,now);Need(value.Generation==prior.Generation+1 && value.Version==1 && Same(value.AccountValue,prior.AccountValue) && Same(value.Root,expected) && Same(value.Previous,SHA256.HashData(unsigned)));return Linked(value,prior);
     }
     private static Verified Linked(Verified v,Verified? parent)=>new(ConstructionPermit,v.Data,v.Profile,v.Predecessor,v.Version,v.IssuedMs,v.ExpiresMs,v.ComparisonMs,v.DigestValue,v.AccountValue,v.Root,v.Previous,parent);
 }

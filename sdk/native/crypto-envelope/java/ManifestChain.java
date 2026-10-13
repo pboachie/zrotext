@@ -49,6 +49,8 @@ public final class ManifestChain {
         }
         public byte[] bytes(){return bytes.clone();} public byte[] digest(){return digest.clone();}
         public byte[] account(){return account.clone();} public byte[] rootPoint(){return root.clone();}
+        public byte[] enrolledRootPoint(){Verified first=this;while(first.parent!=null)first=first.parent;return first.root.clone();}
+        public long generation(){return ByteBuffer.wrap(bytes,profile==2?21:23,8).getLong();}
         public int profile(){return profile;} public long version(){return version;}
         public long issuedMs(){return issued;} public long expiresMs(){return expires;} public long comparisonMs(){return comparison;}
         public boolean descendsFrom(Verified historical){
@@ -66,7 +68,7 @@ public final class ManifestChain {
         int count=b[150+offset]&255;need(count>=1 && count<=64 && b.length==215+offset+149*count);
         byte[] account=part(b,5+offset,16),root=part(b,85+offset,65),previous=part(b,53+offset,32);
         long generation=number(b,21+offset),version=number(b,29+offset),issued=number(b,37+offset),expires=number(b,45+offset);
-        need(!zero(account) && generation==1 && version>0);window(issued,expires,now);HpkeRecipient.point(root);
+        need(!zero(account) && generation>0 && (profile==2 || generation==1) && version>0);window(issued,expires,now);HpkeRecipient.point(root);
         byte[] last=null;Set<String> points=new HashSet<>();int owners=0,archives=0;
         for(int i=0;i<count;i++){
             int at=151+offset+149*i,role=b[at]&255,state=b[at+148]&255,scope=Short.toUnsignedInt(ByteBuffer.wrap(b,at+130,2).getShort());
@@ -86,16 +88,24 @@ public final class ManifestChain {
     }
     /** Generation-one genesis only. A signed directory object cannot enroll its own root. */
     public static Verified genesis02(byte[] input,RootPin pin,long now)throws GeneralSecurityException{
-        Verified value=parse(input,2,now);need(same(value.account,pin.account) && same(value.root,pin.point) && value.version==1 && zero(value.previous));return value;
+        Verified value=parse(input,2,now);need(same(value.account,pin.account) && same(value.root,pin.point) && value.generation()==1 && value.version==1 && zero(value.previous));return value;
     }
     /** Revalidates every received signature, including semantic currentness at unchanged version. */
     public static Verified continueChain(byte[] input,Verified prior,int expectedProfile,long now)throws GeneralSecurityException{
         need(prior!=null && now>=prior.comparison && !(prior.profile==3 && expectedProfile==2));
         if(prior.profile==2 && expectedProfile==3)window(prior.issued,prior.expires,now);
-        Verified value=parse(input,expectedProfile,now);need(same(value.account,prior.account) && same(value.root,prior.root));
+        Verified value=parse(input,expectedProfile,now);need(same(value.account,prior.account) && same(value.root,prior.root) && value.generation()==prior.generation());
         if(value.profile==prior.profile && value.version==prior.version && same(value.digest,prior.digest))return linked(value,prior.parent);
         need(prior.version<Long.MAX_VALUE && value.version==prior.version+1 && same(value.previous,prior.digest));
         need(value.profile==2 || value.predecessor==prior.profile);return linked(value,prior);
+    }
+    /** Independently approved new root plus dual-signed transition and anchored genesis. No durable selection. */
+    public static Verified rotate02(byte[] transition,byte[] newGenesis,Verified prior,byte[] independentlyApprovedRoot,long now)throws GeneralSecurityException{
+        need(prior!=null && prior.profile==2 && now>=prior.comparison && transition.length==343 && independentlyApprovedRoot.length==65);
+        byte[] raw=transition.clone(),expected=independentlyApprovedRoot.clone();need(same(part(raw,0,5),new byte[]{90,84,82,84,2}));
+        need(prior.generation()<Long.MAX_VALUE && same(part(raw,5,16),prior.account) && number(raw,21)==prior.generation() && number(raw,29)==prior.generation()+1 && same(part(raw,37,65),prior.root) && same(part(raw,102,65),expected) && !same(expected,prior.root) && same(part(raw,167,32),prior.digest));
+        window(number(raw,199),number(raw,207),now);byte[] unsigned=part(raw,0,215);signature(prior.root,part(raw,215,64),"ZTSE/root-transition/v2",unsigned);signature(expected,part(raw,279,64),"ZTSE/root-transition/v2",unsigned);
+        Verified value=parse(newGenesis,2,now);need(value.generation()==prior.generation()+1 && value.version==1 && same(value.account,prior.account) && same(value.root,expected) && same(value.previous,sha(unsigned)));return linked(value,prior);
     }
     private static Verified linked(Verified value,Verified parent){return new Verified(value.bytes,value.profile,value.predecessor,value.version,value.issued,value.expires,value.comparison,value.digest,value.account,value.root,value.previous,parent);}
 }

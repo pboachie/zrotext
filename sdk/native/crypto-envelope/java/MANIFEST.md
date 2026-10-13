@@ -1,7 +1,7 @@
 # Candidate managed manifest provenance
 
 Java `ManifestChain`, C# `ManifestChain`, and Ruby `ManifestChain` verify signed
-generation-one historical manifest chains using native P-256 verification.
+historical manifest chains using native P-256 verification.
 Enroll a profile02 root pin against an independently authenticated fingerprint,
 verify profile02 genesis, then pass the returned token into each continuation.
 Every received manifest is checked, including a different valid signature over
@@ -15,8 +15,11 @@ time windows, exact version and previous-digest continuity, and explicit expecte
 profile. The first profile03 manifest requires a still-fresh verified profile02
 predecessor. Profile03 successors may outlive their historical predecessor.
 Comparison time cannot move backwards. Time and fingerprint authenticity remain
-caller responsibilities. Root rotation, generations above one, profile03
-genesis, and downgrade to profile02 are refused.
+caller responsibilities. Profile02 root rotation requires explicit dual-signed
+transition verification, an independently approved new-root point and anchored
+new-generation genesis. See the [durable root journal](../root-journal.md).
+Ordinary continuation cannot replace a root. Profile03 generations above one,
+profile03 genesis, and downgrade to profile02 are refused.
 
 These tokens establish historical cryptographic provenance. They do not establish
 durable current selection, live authorization, envelope signer/recipient
