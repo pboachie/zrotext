@@ -86,6 +86,14 @@ def output_inventory(directory, extensions=None):
     return inventory
 
 
+def generate_outputs(binary, config, env):
+    # Establish Tungsten ownership before copying preserved extensions. A fresh
+    # non-empty directory without its manifest is intentionally refused upstream.
+    run([binary, "generate", config], cwd=ROOT, env=env)
+    stage_extensions(config / "generated", config / "extensions")
+    run([binary, "generate", config, "--check"], cwd=ROOT, env=env)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True,
@@ -118,9 +126,7 @@ def main(argv=None):
         return 0
     # Outputs are build artifacts. Check mode may regenerate them, but never
     # updates the tracked digest lock. A second pass checks determinism too.
-    stage_extensions(CONFIG / "generated", CONFIG / "extensions")
-    run([binary, "generate", CONFIG], cwd=ROOT, env=env)
-    run([binary, "generate", CONFIG, "--check"], cwd=ROOT, env=env)
+    generate_outputs(binary, CONFIG, env)
     inventory = output_inventory(CONFIG / "generated", CONFIG / "extensions")
     snapshot = CONFIG / "generated.lock.json"
     if args.check:

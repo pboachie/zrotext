@@ -105,6 +105,25 @@ class GenerationPolicyTests(unittest.TestCase):
             (generated / "python/custom/__init__.py").write_bytes(b"tampered")
             self.assertNotEqual(first, sdk.output_inventory(generated, extensions))
 
+    def test_fresh_generation_establishes_ownership_before_staging_extensions(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = Path(temp)
+            seed = config / "extensions/python/custom/__init__.py"
+            seed.parent.mkdir(parents=True)
+            seed.write_bytes(b"approved")
+            generated = config / "generated"
+
+            def generator(args, **_kwargs):
+                if "--check" not in args:
+                    self.assertFalse(generated.exists(), "fresh output must not be pre-populated")
+                    (generated / "python").mkdir(parents=True)
+                else:
+                    self.assertEqual((generated / "python/custom/__init__.py").read_bytes(), b"approved")
+
+            with patch.object(sdk, "run", side_effect=generator) as run:
+                sdk.generate_outputs("tungsten", config, {})
+                self.assertEqual(run.call_count, 2)
+
     def test_source_packaging_rejects_tampered_or_unbounded_inputs(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
