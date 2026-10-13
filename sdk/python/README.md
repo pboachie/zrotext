@@ -10,7 +10,8 @@ Publication requires a separate maintainer-approved release; no registry
 availability is implied. Its import name remains `zrotext_client`.
 
 From the repository root, build a wheel and source archive without downloading
-build dependencies. Select a new temporary directory outside the checkout:
+build dependencies. Select a new directory below the system temporary directory,
+outside the checkout (Python's `tempfile.gettempdir()` identifies its root):
 
 ```sh
 python scripts/package_python.py build --out "$TEMP_PACKAGE"

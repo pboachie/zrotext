@@ -3,9 +3,11 @@
 
 import argparse
 import importlib.util
+import os
 from pathlib import Path
 import stat
 import tarfile
+import tempfile
 import zipfile
 
 from privacy_guard import scan_blob
@@ -23,11 +25,17 @@ def backend():
 
 def checked_path(value, external=False):
     path = Path(value).absolute()
+    if external and path.resolve().is_relative_to(ROOT.resolve()):
+        raise ValueError("artifact output must be outside the checkout")
+    temporary_root = Path(tempfile.gettempdir()).resolve()
+    # Normalize before I/O, then establish an independent filesystem boundary.
+    normalized = Path(os.path.normpath(path))
+    if os.path.commonpath((str(temporary_root), str(normalized))) != str(temporary_root) or normalized == temporary_root:
+        raise ValueError("artifact path must be below the system temporary directory")
+    path = normalized
     for item in (path, *path.parents):
         if item.is_symlink() or getattr(item, "is_junction", lambda: False)():
             raise ValueError("linked artifact path refused")
-    if external and path.resolve().is_relative_to(ROOT.resolve()):
-        raise ValueError("artifact output must be outside the checkout")
     return path
 
 

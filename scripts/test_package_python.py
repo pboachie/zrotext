@@ -113,6 +113,10 @@ assert importlib.util.find_spec('workflow_client') is None
             package.build(self.root / "artifacts")
         with self.assertRaisesRegex(ValueError, "outside"):
             package.build(package.ROOT / "dist")
+        with self.assertRaisesRegex(ValueError, "temporary"):
+            package.verify(package.ROOT / self.wheel.name)
+        with self.assertRaisesRegex(ValueError, "temporary"):
+            package.checked_path(Path(tempfile.gettempdir()) / ".." / "outside-artifact")
 
 
 if __name__ == "__main__":
