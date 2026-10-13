@@ -29,8 +29,8 @@ public final class OriginalReplyCheckpoint {
     }
     private List<ManifestChain.Verified> verify(List<Saved> rows,long now)throws GeneralSecurityException{
         need(now>0 && rows.size()>=1 && rows.size()<=CAPACITY);var history=new ArrayList<ManifestChain.Verified>();ManifestChain.Verified previous=null;
-        for(var row:rows){need(row.comparison>0 && row.comparison<=now && row.bytes.length>=364 && row.bytes.length<=9751);var m=previous==null?ManifestChain.genesis02(row.bytes,trust,row.comparison):ManifestChain.continueChain(row.bytes,previous,2,row.comparison);need(m.generation()==1 && m.version()==history.size()+1);history.add(m);previous=m;}
-        need(previous!=null);history.set(history.size()-1,ManifestChain.continueChain(previous.bytes(),previous,2,now));return List.copyOf(history);
+        for(var row:rows){need(row.comparison>0 && (row.comparison<=now || row.comparison-now<=30000) && row.bytes.length>=364 && row.bytes.length<=9751);var m=ManifestChain.originalAccepted02(row.bytes,trust,previous,row.comparison);need(m.generation()==1 && m.version()==history.size()+1);history.add(m);previous=m;}
+        need(previous!=null);history.set(history.size()-1,ManifestChain.originalAccepted02(previous.bytes(),trust,previous,now));return List.copyOf(history);
     }
     private static boolean prefix(Saved old,Saved proposed){return same(Arrays.copyOf(old.bytes,old.bytes.length-64),Arrays.copyOf(proposed.bytes,proposed.bytes.length-64));}
     private byte[] encode(State value)throws IOException{

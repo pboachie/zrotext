@@ -14,6 +14,13 @@ checks the current manifest at the requested time. Acceptance permits only
 extension of the accepted unsigned prefix and retains its original signed bytes
 and times. Root rotations and profile03 history are refused by this bounded API.
 
+For original-grant integration, authenticated server acceptance timestamps may
+be up to 30 seconds ahead of the local comparison, matching the maintained
+client. Private generation-one profile02 replay verifies each signature at its
+own acceptance time, then rechecks currentness at local time. Server acceptance
+does not become the durable local clock floor. Generic manifest APIs retain their
+comparison guards; see [current proof integration](original-current.md).
+
 `snapshot` (`ReadSnapshot` in C#) re-verifies without advancing durable time.
 Its comparison field reports the persisted floor. Before exposing new plaintext
 or effects, call `accept`/`Accept` with the expected revision, full accepted

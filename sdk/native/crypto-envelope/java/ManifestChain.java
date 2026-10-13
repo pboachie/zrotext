@@ -99,6 +99,14 @@ public final class ManifestChain {
         need(prior.version<Long.MAX_VALUE && value.version==prior.version+1 && same(value.previous,prior.digest));
         need(value.profile==2 || value.predecessor==prior.profile);return linked(value,prior);
     }
+    // Original-grant accepted rows use server timestamps, not the local comparison floor.
+    // Package-private, profile02/generation-one only; every signature/root/chain is reverified.
+    static Verified originalAccepted02(byte[] input,RootPin pin,Verified prior,long at)throws GeneralSecurityException{
+        if(prior==null)return genesis02(input,pin,at);
+        need(prior.profile==2 && prior.generation()==1 && same(prior.account,pin.account) && same(prior.root,pin.point));
+        Verified historical=new Verified(prior.bytes,prior.profile,prior.predecessor,prior.version,prior.issued,prior.expires,0,prior.digest,prior.account,prior.root,prior.previous,prior.parent);
+        return continueChain(input,historical,2,at);
+    }
     /** Independently approved new root plus dual-signed transition and anchored genesis. No durable selection. */
     public static Verified rotate02(byte[] transition,byte[] newGenesis,Verified prior,byte[] independentlyApprovedRoot,long now)throws GeneralSecurityException{
         need(prior!=null && prior.profile==2 && now>=prior.comparison && transition.length==343 && independentlyApprovedRoot.length==65);

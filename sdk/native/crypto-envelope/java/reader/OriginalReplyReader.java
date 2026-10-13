@@ -31,6 +31,7 @@ public final class OriginalReplyReader {
             for(byte[] value:new byte[][]{account,device,line,interval,connector,grant,reader})hash.update(value);hash.update((byte)peer.length());hash.update(peer.getBytes(StandardCharsets.US_ASCII));return hash.digest();
         }
         byte[] checkpointAccount(){return account.clone();}
+        byte[][] proofFields(){return new byte[][]{account.clone(),device.clone(),line.clone(),interval.clone(),connector.clone(),grant.clone(),reader.clone()};}
     }
     /** Verified dual-phone evidence, not a current grant or durable accepted-history receipt. */
     public static final class Selection {
