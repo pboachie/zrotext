@@ -1,0 +1,20 @@
+{
+  "purpose": "Synthetic outbound03 composition policy inputs; consumers must construct and verify genuine signed manifests and accepted election evidence",
+  "defaults": {"issued_ms": 9000, "key_from_ms": 9000, "key_until_ms": 2000000, "observed_ms": 30000, "now_ms": 30000, "expires_ms": 40000},
+  "cases": [
+    {"name": "current-active-lifetime", "accept": true},
+    {"name": "observed-before-issued-with-active-keys", "key_from_ms": 7000, "observed_ms": 8000, "accept": true},
+    {"name": "future-issued-within-manifest-skew", "issued_ms": 35000, "key_from_ms": 7000, "accept": true},
+    {"name": "observed-equals-key-start", "observed_ms": 9000, "accept": true},
+    {"name": "observed-before-device-start", "key_from_ms": 7000, "late_role": 1, "late_from_ms": 9000, "observed_ms": 8000, "accept": false},
+    {"name": "observed-before-archive-start", "key_from_ms": 7000, "late_role": 2, "late_from_ms": 9000, "observed_ms": 8000, "accept": false},
+    {"name": "observed-before-integration-start", "key_from_ms": 7000, "late_role": 3, "late_from_ms": 9000, "observed_ms": 8000, "accept": false},
+    {"name": "observed-before-signer-start", "key_from_ms": 7000, "late_role": 5, "late_from_ms": 9000, "observed_ms": 8000, "accept": false},
+    {"name": "unselected-device-event-key-does-not-bound-outbound", "key_from_ms": 7000, "late_role": 4, "late_from_ms": 9000, "observed_ms": 8000, "accept": true},
+    {"name": "expiry-equals-key-end", "key_until_ms": 40000, "accept": true},
+    {"name": "expiry-exceeds-key-end", "key_until_ms": 39999, "accept": false},
+    {"name": "trusted-clock-before-accepted-comparison", "now_ms": 9000, "observed_ms": 9000, "accept": false},
+    {"name": "expiry-at-current-time", "now_ms": 40000, "accept": false},
+    {"name": "observation-after-current-time", "observed_ms": 30001, "accept": false}
+  ]
+}

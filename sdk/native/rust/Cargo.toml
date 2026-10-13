@@ -1,0 +1,16 @@
+[package]
+name = "zrotext-webhook"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "AGPL-3.0-only"
+description = "Raw-body webhook verification for ZROtext SDK consumers"
+repository = "https://github.com/pboachie/zrotext"
+readme = "README.md"
+include = ["src/**", "tests/**", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE"]
+
+[workspace]
+
+[dependencies]
+hmac = "0.12"
+sha2 = "0.10"

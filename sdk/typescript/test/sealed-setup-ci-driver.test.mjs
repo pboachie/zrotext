@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import test from 'node:test';
-import {CleanupFailure,runOwnedProcess,ownedProcessFailureObservation,assertOwnedPidTerminated} from './owned-process-fixture.mjs';
+import {CleanupFailure,runOwnedProcess,ownedProcessFailureObservation,ownedProcessFailureStdout,ownedProcessFailureCleanup,assertOwnedPidTerminated} from './owned-process-fixture.mjs';
 import childProcess from 'node:child_process';
 import {syncBuiltinESMExports} from 'node:module';
 import {EventEmitter} from 'node:events';
@@ -11,7 +11,7 @@ import {createHash} from 'node:crypto';
 import {packageOutput,confinedOutput} from '../../../scripts/package_conversation_browser.mjs';
 import {mkdtemp,writeFile,rm,readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {parseOptions,selectExecutable,ReadyParser,serverPassed,SERVER_TEST,capture,executableDigest,joinOwnedAcceptance,createBrowserPackage,assertPhoneConsumerOutput,phoneConsumerBuildFailureDiagnostic} from '../../../scripts/sealed_setup_ci_driver.mjs';
+import {parseOptions,selectExecutable,ReadyParser,serverPassed,SERVER_TEST,capture,executableDigest,joinOwnedAcceptance,createBrowserPackage,assertPhoneConsumerOutput,phoneConsumerBuildFailureDiagnostic,phoneConsumerBuildProgress,phoneConsumerBuildProgressDiagnostic,phoneConsumerBuildSettlementDiagnostic} from '../../../scripts/sealed_setup_ci_driver.mjs';
 const id='11111111-1111-4111-8111-111111111111',root=path.resolve('fixture-root'),manifest=path.join(root,'crates/server/Cargo.toml'),exe=path.join(root,'target/fixture.exe');
 function ready(){const paired=Buffer.alloc(65);paired[0]=4;return {version:1,synthetic:true,port:4444,controlToken:'07'.repeat(32),origin:'https://owner.example.test:4443',baseline:{accountId:id,userId:id,sessionId:id,deviceId:id,lineId:id,nextGeneration:'1',pairedPoint:paired.toString('hex'),pairedFingerprintHex:createHash('sha256').update(paired).digest('hex'),rootFactor:'fixture-factor'.padEnd(26,'x'),lineFactor:'fixture-factor'.padEnd(26,'y'),cookies:[{name:'__Host-zrotext_session',value:'fixture-session'},{name:'__Host-zrotext_csrf',value:'fixture-csrf'}],lease:{connectionEpoch:'1',deploymentEpoch:'1',siteId:'fixture-site',instanceId:'fixture-instance'}}};}
 const record=prefix=>prefix+JSON.stringify(ready())+'\n';
@@ -104,8 +104,65 @@ test('phone build diagnostic exposes only a known five-field observation at the 
     const error=await ownedRejection(),value=observation(error,'exit-failure',3,Buffer.byteLength(canary),Buffer.byteLength(canary));
     error.message=canary;error.stack=canary;error.code=canary;error.signal=canary;
     const line=phoneConsumerBuildFailureDiagnostic('phone-consumer-build',error);assert.equal(line,'PHONE_CONSUMER_BUILD_FAILURE '+JSON.stringify(value));assert.equal(line.includes(canary),false);
+    assert.equal(phoneConsumerBuildProgressDiagnostic('phone-consumer-build',error),'PHONE_CONSUMER_BUILD_PROGRESS {"last_marker":"unknown"}');
+    assert.equal(phoneConsumerBuildSettlementDiagnostic('phone-consumer-build',error),null,'Exit close did not run owned cleanup');
     assert.equal(phoneConsumerBuildFailureDiagnostic('compiled-browser-native-consumption',error),null);
-    for(const foreign of [null,undefined,7,'private',Error(canary),new Proxy({},{get(){assert.fail('Do not inspect a foreign error');}})]){assert.equal(ownedProcessFailureObservation(foreign),null);assert.equal(phoneConsumerBuildFailureDiagnostic('phone-consumer-build',foreign),null);}
+    assert.equal(phoneConsumerBuildProgressDiagnostic('compiled-browser-native-consumption',error),null);
+    assert.equal(phoneConsumerBuildSettlementDiagnostic('compiled-browser-native-consumption',error),null);
+    for(const foreign of [null,undefined,7,'private',Error(canary),new Proxy({},{get(){assert.fail('Do not inspect a foreign error');}})]){
+      assert.equal(ownedProcessFailureObservation(foreign),null);assert.equal(ownedProcessFailureStdout(foreign),null);assert.equal(ownedProcessFailureCleanup(foreign),null);
+      assert.equal(phoneConsumerBuildFailureDiagnostic('phone-consumer-build',foreign),null);assert.equal(phoneConsumerBuildProgressDiagnostic('phone-consumer-build',foreign),null);assert.equal(phoneConsumerBuildSettlementDiagnostic('phone-consumer-build',foreign),null);
+    }
+  });
+});
+
+test('phone build progress accepts only complete exact allowlisted public task markers',()=>{
+  const tasks=[['buildAndroidOwnerCustodyNative','native-custody'],['preBuild','pre-build'],['preDebugBuild','debug-pre-build'],['kspDebugKotlin','debug-ksp'],['compileDebugKotlin','debug-kotlin'],['compileDebugJavaWithJavac','debug-java'],['kspDebugUnitTestKotlin','unit-test-ksp'],['compileDebugUnitTestKotlin','unit-test-kotlin']];
+  for(const [task,marker]of tasks)for(const ending of ['\n','\r\n'])for(const status of ['',' UP-TO-DATE',' FROM-CACHE',' NO-SOURCE',' SKIPPED',' FAILED'])assert.equal(phoneConsumerBuildProgress(`synthetic-private-output${ending}> Task :app:${task}${status}${ending}`),marker);
+  const known='> Task :app:compileDebugKotlin\n';
+  assert.equal(phoneConsumerBuildProgress(known+'> Task :app:compileDebugUnitTestKotlin\n'),'unit-test-kotlin');
+  for(const output of [null,'synthetic-private-output\n',known+'> Task :app:syntheticPrivateTask\n',known+'> Task :app:compileDebugUnitTestKotlin',known+'incomplete',known+'prefix > Task :app:compileDebugUnitTestKotlin\n',known+'> Task :app:compileDebugUnitTestKotlin synthetic-private-output\n','x'.repeat(16*1024*1024+1)])assert.equal(phoneConsumerBuildProgress(output),'unknown');
+});
+
+test('phone build deadline diagnostics freeze progress and wait for owned close',async t=>{
+  const before='synthetic-private-output\n> Task :app:buildAndroidOwnerCustodyNative\r\n';let releaseKiller,releaseChild,cleanupStarted;
+  const started=new Promise(resolve=>cleanupStarted=resolve);
+  await withSyntheticProcess(t,{start:child=>{child.stdout.emit('data',Buffer.from(before.slice(0,40)));child.stdout.emit('data',Buffer.from(before.slice(40)));child.stderr.emit('data',Buffer.from('private'));},cleanup:(child,killer)=>{
+    releaseKiller=()=>killer.emit('close',0);releaseChild=()=>{child.stdout.emit('data',Buffer.from('> Task :app:compileDebugUnitTestKotlin\n'));child.stderr.emit('data',Buffer.from('late-private'));child.emit('close',9);};cleanupStarted();
+  }},async()=>{
+    let settled=false;const pending=ownedRejection({timeoutMs:10}).then(error=>{settled=true;return error;});await started;assert.equal(settled,false);
+    releaseKiller();await Promise.resolve();await Promise.resolve();assert.equal(settled,false,'Cleanup tool exit alone does not join the original child');releaseChild();
+    const error=await pending,value=observation(error,'deadline',null,Buffer.byteLength(before),7);
+    assert.equal(ownedProcessFailureStdout(error),before);assert.equal(ownedProcessFailureCleanup(error),'joined');
+    assert.equal(phoneConsumerBuildFailureDiagnostic('phone-consumer-build',error),'PHONE_CONSUMER_BUILD_FAILURE '+JSON.stringify(value));
+    const progress=phoneConsumerBuildProgressDiagnostic('phone-consumer-build',error);assert.equal(progress,'PHONE_CONSUMER_BUILD_PROGRESS {"last_marker":"native-custody"}');assert.equal(progress.includes('private'),false);
+    assert.equal(phoneConsumerBuildSettlementDiagnostic('phone-consumer-build',error),'PHONE_CONSUMER_BUILD_SETTLEMENT {"owned_cleanup":"joined"}');
+  });
+});
+
+test('phone build output bound reports unknown despite a prior complete marker',async t=>{
+  const before='> Task :app:compileDebugKotlin\n';
+  await withSyntheticProcess(t,{start:child=>{child.stdout.emit('data',Buffer.from(before));child.stderr.emit('data',Buffer.from('private'));}},async()=>{
+    const error=await ownedRejection({maximum:Buffer.byteLength(before)});observation(error,'output-bound',null,Buffer.byteLength(before),7);
+    assert.equal(phoneConsumerBuildProgressDiagnostic('phone-consumer-build',error),'PHONE_CONSUMER_BUILD_PROGRESS {"last_marker":"unknown"}');
+    assert.equal(phoneConsumerBuildSettlementDiagnostic('phone-consumer-build',error),'PHONE_CONSUMER_BUILD_SETTLEMENT {"owned_cleanup":"joined"}');
+  });
+});
+
+test('phone build cleanup rejection preserves original failure and reports unconfirmed',async t=>{
+  const refused=new CleanupFailure('synthetic-private-cleanup'),before='> Task :app:buildAndroidOwnerCustodyNative\n';
+  await withSyntheticProcess(t,{start:child=>child.stdout.emit('data',Buffer.from(before)),cleanupFailure:refused},async()=>{
+    const error=await ownedRejection({timeoutMs:10});assert.equal(error,refused);observation(error,'deadline',null,Buffer.byteLength(before),0);
+    assert.equal(ownedProcessFailureCleanup(error),'unconfirmed');assert.equal(phoneConsumerBuildProgressDiagnostic('phone-consumer-build',error),'PHONE_CONSUMER_BUILD_PROGRESS {"last_marker":"native-custody"}');
+    assert.equal(phoneConsumerBuildSettlementDiagnostic('phone-consumer-build',error),'PHONE_CONSUMER_BUILD_SETTLEMENT {"owned_cleanup":"unconfirmed"}');
+  });
+});
+
+test('phone build launch without an owned PID does not invent cleanup settlement',async t=>{
+  await withSyntheticProcess(t,{start:child=>{child.pid=undefined;child.emit('error',Error('synthetic-private-launch'));child.emit('close',0);}},async()=>{
+    const error=await ownedRejection();observation(error,'launch-error',null,0,0);assert.equal(ownedProcessFailureCleanup(error),null);
+    assert.equal(phoneConsumerBuildProgressDiagnostic('phone-consumer-build',error),'PHONE_CONSUMER_BUILD_PROGRESS {"last_marker":"unknown"}');
+    assert.equal(phoneConsumerBuildSettlementDiagnostic('phone-consumer-build',error),null);
   });
 });
 

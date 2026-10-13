@@ -206,7 +206,7 @@ pub fn verify(
     {
         return Err("envelope context mismatch");
     }
-    let (point, deadline) = manifest.authorize(
+    let (point, not_before, deadline) = manifest.authorize(
         &Authorization03 {
             kind: p.kind,
             account: &p.account,
@@ -217,7 +217,10 @@ pub fn verify(
         },
         now,
     )?;
-    if p.observed > now || p.expires.is_some_and(|e| now >= e || e > deadline) {
+    if p.observed > now
+        || p.kind == 1 && p.observed < not_before
+        || p.expires.is_some_and(|e| now >= e || e > deadline)
+    {
         return Err("envelope authority deadline");
     }
     signature(
