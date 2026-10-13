@@ -46,6 +46,7 @@ func nativeAPI() (*ncryptAPI, error) {
 }
 
 // Keep converted pointers alive through this syscall forwarding frame.
+//
 //go:uintptrescapes
 func (a *ncryptAPI) call(name string, args ...uintptr) error {
 	p, e := a.dll.FindProc(name)
