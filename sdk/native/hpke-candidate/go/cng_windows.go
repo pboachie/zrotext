@@ -46,6 +46,7 @@ func nativeAPI() (*ncryptAPI, error) {
 }
 
 // Keep converted pointers alive through this syscall forwarding frame.
+//
 //go:uintptrescapes
 func (a *ncryptAPI) call(name string, args ...uintptr) error {
 	p, e := a.dll.FindProc(name)
@@ -372,4 +373,12 @@ func OpenHardwareArchive02(input []byte, historical, current *Manifest, custody 
 		return "", ErrProtectedUnavailable
 	}
 	return openArchive02(input, historical, current, context, custody.OpenCEK)
+}
+
+// OpenHardwareElected03 uses only the independently qualified native recipient.
+func OpenHardwareElected03(input []byte, m *Manifest, p *ElectionProof, current ElectionRecord, custody *HardwareRecipient, context ElectedContext) (string, error) {
+	if custody == nil {
+		return "", ErrProtectedUnavailable
+	}
+	return openElected03(input, m, p, current, context, custody.OpenCEK)
 }

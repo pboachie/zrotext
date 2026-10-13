@@ -19,7 +19,7 @@ pub struct ArchiveContext<'a> {
     pub peer: &'a str,
     pub now: u64,
 }
-fn key<'a>(m: &'a Manifest, role: u8, id: &[u8]) -> Option<&'a [u8]> {
+pub(crate) fn key<'a>(m: &'a Manifest, role: u8, id: &[u8]) -> Option<&'a [u8]> {
     let offset = if m.profile == 3 { 2 } else { 0 };
     (0..m.raw[150 + offset] as usize)
         .map(|i| &m.raw[151 + offset + i * 149..151 + offset + (i + 1) * 149])
@@ -28,7 +28,7 @@ fn key<'a>(m: &'a Manifest, role: u8, id: &[u8]) -> Option<&'a [u8]> {
 fn number(b: &[u8], at: usize) -> u64 {
     u64::from_be_bytes(b[at..at + 8].try_into().expect("validated internal width"))
 }
-fn active(w: &[u8], now: u64, scope: u16) -> bool {
+pub(crate) fn active(w: &[u8], now: u64, scope: u16) -> bool {
     w[148] == 1
         && number(w, 132) <= now
         && now < number(w, 140)

@@ -1,6 +1,8 @@
 //! Candidate RFC9180 base-mode recipient primitive, never envelope authority.
 #[cfg(windows)]
 pub mod cng;
+pub mod elected_reader;
+pub mod election;
 pub mod envelope;
 pub mod manifest;
 pub mod reader;
