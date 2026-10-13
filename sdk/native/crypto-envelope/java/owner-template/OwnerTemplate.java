@@ -71,6 +71,36 @@ public final class OwnerTemplate implements AutoCloseable {
   byte[] wire;try{wire=transport.get(path,session,remaining(w));}catch(Failure error){if(error.code.equals("owner_changed"))close();throw error;}
   live(w);var scope=TemplateStore.parse(wire);long revision=TemplateStore.number(scope.aad(),94);need(revision>=head);authorize(w,scope,session);HpkeRecipient.point(TemplateStore.part(wire,222,65));String digest=TemplateStore.hex(MessageDigest.getInstance("SHA-256").digest(wire));authorize(w,scope,session);need(revision!=head || digest.equals(headDigest));live(w);head=revision;headDigest=digest;return new Snapshot(scope,wire,digest);
  }
+ /** Immutable local preview only; no persistence or send authority. Strings cannot guarantee erasure. */
+ public record OpenedPreview(TemplateContent.Preview preview,long revision,String encryptedDigest,boolean matchesPending){public boolean requestAcknowledged(){return false;}}
+ static final class Opening implements AutoCloseable {
+  private final OwnerTemplate client,guard;
+  Opening(OwnerTemplate client,String origin,Binding binding,byte[] template,CurrentSource current,SessionSource session,boolean enabled,long timeoutMs,String roots)throws Failure{
+   if(client==null)throw new Failure("invalid_request");
+   try{need(client.origin.equals(origin) && client.binding.same(binding) && Arrays.equals(client.template,template));guard=new OwnerTemplate(origin,binding,template,current,session,enabled,timeoutMs,roots);this.client=client;if(!enabled)close();}
+   catch(Exception error){client.close();throw new Failure("invalid_request");}
+  }
+  @Override public void close(){guard.close();client.close();}
+  interface PointSource{byte[] point()throws Exception;}
+  private void clientLive()throws Failure{synchronized(client.lock){if(client.closed)throw new Failure("closed");}}
+  OpenedPreview open(PointSource point,HpkeRecipient.ContentRecipient recipient)throws Failure{
+   try{var result=(OpenedPreview)guard.execute(w->{byte[] wire=null;try{
+    guard.live(w);clientLive();byte[] pk=point.point().clone();HpkeRecipient.point(pk);var session=guard.credentials(w);guard.authorize(w,null,session);
+    byte[] selected=null;for(var k:guard.prior.keyRecords())if(k[0]==2 && Arrays.equals(TemplateStore.part(k,1,32),guard.binding.readers[1]))selected=TemplateStore.part(k,33,65);need(Arrays.equals(pk,selected));
+    var snapshot=client.readLatest();guard.live(w);clientLive();var scope=snapshot.scope();wire=snapshot.envelope();guard.authorize(w,scope,session);
+    var authority=new EncryptedTemplate.Authority(guard.prior,guard.now);var content=EncryptedTemplate.open(scope,wire,recipient,()->authority);
+    clientLive();guard.live(w);need(Arrays.equals(pk,point.point()));guard.authorize(w,scope,session);var preview=content.preview();guard.authorize(w,scope,session);clientLive();need(Arrays.equals(pk,point.point()));guard.live(w);
+    return new OpenedPreview(preview,TemplateStore.number(scope.aad(),94),snapshot.encryptedDigest(),snapshot.matchesPending());
+   }catch(Exception error){close();throw error;}finally{if(wire!=null)Arrays.fill(wire,(byte)0);}});clientLive();return result;
+   }catch(Exception error){close();throw error instanceof Failure f?f:new Failure("refused");}
+  }
+  OpenedPreview openLatestSoftware(PrivateKey key,byte[] publicPoint)throws Failure{
+   need(key!=null && publicPoint!=null);byte[] pk=publicPoint.clone();return open(()->{
+    var publicKey=HpkeRecipient.point(pk);var proof=Signature.getInstance("SHA256withECDSA");byte[] domain="ZT/template-opening/key-binding/v1\0".getBytes(StandardCharsets.US_ASCII);
+    proof.initSign(key);proof.update(domain);proof.update(pk);byte[] signature=proof.sign();proof.initVerify(publicKey);proof.update(domain);proof.update(pk);need(proof.verify(signature));return pk.clone();
+   },HpkeRecipient.softwareContent(key));
+  }
+ }
  public record Review(String requestId,int expectedRevision,EncryptedTemplate.Scope scope,String encryptedDigest){}
  public record Pending(String requestId,String templateId,int revision,String encryptedDigest){}
  public record Acknowledgement(Pending identity){public String state(){return "acknowledged_saved_revision";}}
