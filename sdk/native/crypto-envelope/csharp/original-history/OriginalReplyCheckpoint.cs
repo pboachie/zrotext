@@ -28,8 +28,8 @@ public sealed class OriginalReplyCheckpoint {
     private static List<Saved> Capture(IReadOnlyList<ManifestChain.Verified> history){Need(history.Count>=1 && history.Count<=Capacity);var rows=new List<Saved>();foreach(var m in history){Need(m.Profile==2 && m.Generation==1);rows.Add(new Saved(m.ComparisonMs,m.Bytes()));}return rows;}
     private IReadOnlyList<ManifestChain.Verified> Verify(List<Saved> rows,long now){
         Need(now>0 && rows.Count>=1 && rows.Count<=Capacity);var history=new List<ManifestChain.Verified>();ManifestChain.Verified? previous=null;
-        foreach(var row in rows){Need(row.Comparison>0 && row.Comparison<=now && row.Bytes.Length>=364 && row.Bytes.Length<=9751);var m=previous is null?ManifestChain.Genesis02(row.Bytes,trust,row.Comparison):ManifestChain.ContinueChain(row.Bytes,previous,2,row.Comparison);Need(m.Generation==1 && m.Version==history.Count+1);history.Add(m);previous=m;}
-        history[^1]=ManifestChain.ContinueChain(previous!.Bytes(),previous,2,now);return history.AsReadOnly();
+        foreach(var row in rows){Need(row.Comparison>0 && (row.Comparison<=now || row.Comparison-now<=30000) && row.Bytes.Length>=364 && row.Bytes.Length<=9751);var m=ManifestChain.OriginalAccepted02(row.Bytes,trust,previous,row.Comparison);Need(m.Generation==1 && m.Version==history.Count+1);history.Add(m);previous=m;}
+        history[^1]=ManifestChain.OriginalAccepted02(previous!.Bytes(),trust,previous,now);return history.AsReadOnly();
     }
     private static byte[] Encode(State state){using var data=new MemoryStream();data.Write(Long(state.Revision));data.Write(Long(state.Comparison));data.Write(Int(state.Rows.Count));foreach(var row in state.Rows){data.Write(Long(row.Comparison));data.Write(Int(row.Bytes.Length));data.Write(row.Bytes);}return data.ToArray();}
     private State Decode(byte[] bytes){

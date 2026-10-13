@@ -156,7 +156,7 @@ public final class OriginalHttp {
             reader.beginObject();
             while (reader.hasNext()) {
                 String name = reader.nextName(); if (!seen.add(name)) throw new Failure(false);
-                JsonElement value = JsonParser.parseReader(reader);
+                JsonElement value = uniqueValue(reader,0);
                 if (name.equals("kind")) kind = value; else if (name.equals("result")) result = value; else throw new Failure(false);
             }
             reader.endObject();
@@ -167,5 +167,18 @@ public final class OriginalHttp {
             if (error instanceof InterruptedException) Thread.currentThread().interrupt();
             throw new Failure(attempted && request != null && "consume".equals(request.method));
         }
+    }
+    // Preserve exact-object proof semantics: never collapse nested duplicate names.
+    private static JsonElement uniqueValue(JsonReader reader,int depth)throws IOException,Failure{
+        if(depth>64)throw new Failure(false);
+        if(reader.peek()==JsonToken.BEGIN_OBJECT){
+            JsonObject object=new JsonObject();reader.beginObject();
+            while(reader.hasNext()){String name=reader.nextName();if(object.has(name))throw new Failure(false);object.add(name,uniqueValue(reader,depth+1));}
+            reader.endObject();return object;
+        }
+        if(reader.peek()==JsonToken.BEGIN_ARRAY){
+            JsonArray array=new JsonArray();reader.beginArray();while(reader.hasNext())array.add(uniqueValue(reader,depth+1));reader.endArray();return array;
+        }
+        return JsonParser.parseReader(reader);
     }
 }

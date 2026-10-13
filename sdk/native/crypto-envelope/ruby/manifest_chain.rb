@@ -113,6 +113,14 @@ module ZrotextCandidate
       need(prior.version<2**63-1 && value.version==prior.version+1 && value.previous==prior.digest)
       need(value.profile==2 || value.predecessor==prior.profile);linked(value,prior)
     end
+    # Private original-grant server-time replay; never changes the local clock floor.
+    def original_accepted02(input,pin,prior,at)
+      return genesis02(input,pin,at) unless prior
+      need(prior.instance_of?(Verified) && prior.profile==2 && prior.generation==1 && prior.account==pin.account && prior.root_point==pin.point)
+      historical=Verified.send(:new,prior.bytes,prior.profile,prior.predecessor,prior.version,prior.issued_ms,prior.expires_ms,0,prior.digest,prior.account,prior.root_point,prior.previous,prior.parent)
+      continue_chain(input,historical,2,at)
+    end
+    private_class_method :original_accepted02
     # External successor approval is never learned from the signed transition itself.
     def rotate02(transition,new_genesis,prior,independently_approved_root,now)
       need(prior.instance_of?(Verified) && prior.profile==2 && now.is_a?(Integer) && now>=prior.comparison_ms && transition.bytesize==343 && independently_approved_root.bytesize==65)

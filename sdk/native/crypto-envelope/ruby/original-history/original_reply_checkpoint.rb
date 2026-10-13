@@ -52,10 +52,10 @@ module ZrotextCandidate
     def verify(rows,now)
       need(now.is_a?(Integer) && now.between?(1,2**63-1) && rows.size.between?(1,CAPACITY));history=[];previous=nil
       rows.each do |time,raw|
-        need(time.between?(1,now) && raw.bytesize.between?(364,9751));m=previous ? ManifestChain.continue_chain(raw,previous,2,time) : ManifestChain.genesis02(raw,@trust,time)
+        need(time.between?(1,now+30000) && raw.bytesize.between?(364,9751));m=ManifestChain.send(:original_accepted02,raw,@trust,previous,time)
         need(m.generation==1 && m.version==history.size+1);history<<m;previous=m
       end
-      history[-1]=ManifestChain.continue_chain(previous.bytes,previous,2,now);history.freeze
+      history[-1]=ManifestChain.send(:original_accepted02,previous.bytes,@trust,previous,now);history.freeze
     end
     def read(file,count)
       value=file.read(count);need(value && value.bytesize==count);value

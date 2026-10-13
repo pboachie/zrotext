@@ -86,6 +86,14 @@ public static class ManifestChain {
         if(value.Profile==prior.Profile && value.Version==prior.Version && Same(value.DigestValue,prior.DigestValue))return Linked(value,prior.Parent);
         Need(prior.Version<long.MaxValue && value.Version==prior.Version+1 && Same(value.Previous,prior.DigestValue));Need(value.Profile==2 || value.Predecessor==prior.Profile);return Linked(value,prior);
     }
+    // Original-grant server acceptance time is separate from the local durable floor.
+    // Internal profile02/generation-one adapter; generic ContinueChain stays unchanged.
+    internal static Verified OriginalAccepted02(byte[] input,RootPin pin,Verified? prior,long at){
+        if(prior is null)return Genesis02(input,pin,at);
+        Need(prior.Profile==2 && prior.Generation==1 && Same(prior.AccountValue,pin.Account) && Same(prior.Root,pin.Point));
+        var historical=new Verified(ConstructionPermit,prior.Data,prior.Profile,prior.Predecessor,prior.Version,prior.IssuedMs,prior.ExpiresMs,0,prior.DigestValue,prior.AccountValue,prior.Root,prior.Previous,prior.Parent);
+        return ContinueChain(input,historical,2,at);
+    }
     /// <summary>External new-root approval, dual signatures and anchored genesis; not durable selection.</summary>
     public static Verified Rotate02(byte[] transition,byte[] newGenesis,Verified prior,byte[] independentlyApprovedRoot,long now){
         Need(prior.Profile==2 && now>=prior.ComparisonMs && transition.Length==343 && independentlyApprovedRoot.Length==65);byte[] raw=(byte[])transition.Clone(),expected=(byte[])independentlyApprovedRoot.Clone();Need(Same(Part(raw,0,5),new byte[]{90,84,82,84,2}));
