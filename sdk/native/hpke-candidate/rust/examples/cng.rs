@@ -12,28 +12,25 @@ fn main() {
         }
         return;
     }
-    if std::env::args().len() != 1 {
+    let elected =
+        std::env::args().len() == 2 && std::env::args().nth(1).as_deref() == Some("--elected");
+    if std::env::args().len() != 1 && !elected {
         eprintln!("unsupported arguments");
         std::process::exit(1)
     }
-    if let Err(error) = exercise() {
+    if let Err(error) = exercise(elected) {
         eprintln!("{error}");
         std::process::exit(1)
     }
-    println!("native Windows hardware archive read, reopen and exact owned-key cleanup passed");
+    println!("native Windows hardware profile read, reopen and exact owned-key cleanup passed");
 }
 #[cfg(windows)]
-fn exercise() -> Result<(), Box<dyn std::error::Error>> {
-    use base64::{Engine, engine::general_purpose::STANDARD};
+fn exercise(elected: bool) -> Result<(), Box<dyn std::error::Error>> {
     use std::{
         fs::OpenOptions,
         io::{Read, Seek, SeekFrom, Write},
     };
-    use zrotext_hpke_candidate::{
-        cng::{HardwareRecipient, NativeError},
-        manifest::{enroll_root, verify_manifest},
-        reader::{ArchiveContext, open_hardware_archive02},
-    };
+    use zrotext_hpke_candidate::cng::{HardwareRecipient, NativeError};
     HardwareRecipient::probe()?;
     let mut random = [0u8; 16];
     getrandom::fill(&mut random)?;
@@ -73,34 +70,22 @@ fn exercise() -> Result<(), Box<dyn std::error::Error>> {
             return Err("fixture size".into());
         }
         let d: serde_json::Value = serde_json::from_str(&input)?;
-        if d.get("archiveScalar").is_some() {
-            return Err("producer exported recipient scalar".into());
+        let private_field = if elected {
+            "readerScalar"
+        } else {
+            "archiveScalar"
+        };
+        if d.get(private_field).is_some() {
+            return Err("producer exported selected recipient scalar".into());
         }
-        let bytes = |name: &str| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-            Ok(STANDARD.decode(d[name].as_str().ok_or("fixture field")?)?)
-        };
-        let root = enroll_root(&bytes("rootPin")?, &bytes("fingerprint")?).map_err(|_| "root")?;
-        let now = d["now"].as_u64().ok_or("fixture time")?;
-        let manifest =
-            verify_manifest(&bytes("manifest")?, &root, None, 2, now).map_err(|_| "manifest")?;
-        let account: [u8; 16] = bytes("account")?.try_into().map_err(|_| "account width")?;
-        let device: [u8; 16] = bytes("device")?.try_into().map_err(|_| "device width")?;
-        let line: [u8; 16] = bytes("line")?.try_into().map_err(|_| "line width")?;
-        let reader: [u8; 32] = bytes("reader")?.try_into().map_err(|_| "reader width")?;
-        let context = ArchiveContext {
-            account: &account,
-            device: &device,
-            line: &line,
-            reader: &reader,
-            peer: "+12",
-            now,
-        };
         let reopened = HardwareRecipient::open(&key.alias()?, &public)?;
-        let raw = bytes("inbound")?;
-        let value = open_hardware_archive02(&raw, &manifest, &manifest, &reopened, &context)
-            .map_err(|_| "native reader")?;
-        if value.as_str() != d["text"].as_str().ok_or("text")? {
+        let value = open_fixture(&d, &reopened, elected, "+12")?;
+        let field = if elected { "bodyText" } else { "text" };
+        if value.as_str() != d[field].as_str().ok_or("text")? {
             return Err("plaintext mismatch".into());
+        }
+        if elected && open_fixture(&d, &reopened, true, "+13").is_ok() {
+            return Err("wrong peer accepted".into());
         }
         let mut other_entropy = [0u8; 32];
         getrandom::fill(&mut other_entropy)?;
@@ -115,7 +100,7 @@ fn exercise() -> Result<(), Box<dyn std::error::Error>> {
             return Err("wrong public binding".into());
         }
         reopened.close()?;
-        if open_hardware_archive02(&raw, &manifest, &manifest, &reopened, &context).is_ok() {
+        if open_fixture(&d, &reopened, elected, "+12").is_ok() {
             return Err("closed provider accepted".into());
         }
         Ok(())
@@ -132,4 +117,85 @@ fn exercise() -> Result<(), Box<dyn std::error::Error>> {
     serde_json::to_writer(&mut receipt, &serde_json::json!({"owned_key_deleted":true}))?;
     receipt.sync_all()?;
     result
+}
+
+#[cfg(windows)]
+fn open_fixture(
+    d: &serde_json::Value,
+    custody: &zrotext_hpke_candidate::cng::HardwareRecipient,
+    elected: bool,
+    peer: &str,
+) -> Result<zeroize::Zeroizing<String>, Box<dyn std::error::Error>> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use zrotext_hpke_candidate::{
+        elected_reader::{ElectedContext, open_hardware_elected03},
+        election::{ElectionEvidence, ElectionRecord, verify_accepted_election03},
+        manifest::{enroll_root, verify_manifest},
+        reader::{ArchiveContext, open_hardware_archive02},
+    };
+    let b = |name: &str| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        Ok(STANDARD.decode(d[name].as_str().ok_or("fixture field")?)?)
+    };
+    let root = enroll_root(&b("rootPin")?, &b("fingerprint")?).map_err(|_| "root")?;
+    if elected {
+        let record = |name: &str| -> Result<ElectionRecord, Box<dyn std::error::Error>> {
+            let mut r = ElectionRecord::default();
+            for (k, v) in d[name].as_object().ok_or("record")? {
+                if let Some(s) = v.as_str() {
+                    r.bytes.insert(k.clone(), STANDARD.decode(s)?);
+                } else {
+                    r.numbers
+                        .insert(k.clone(), v.as_u64().ok_or("record number")?);
+                }
+            }
+            Ok(r)
+        };
+        let prior = verify_manifest(&b("signed02")?, &root, None, 2, 10000).map_err(|_| "prior")?;
+        let proof = verify_accepted_election03(ElectionEvidence {
+            bundle: &b("bundle")?,
+            expected_core: &b("core")?,
+            accepted: &record("accepted")?,
+            predecessor: &prior,
+            signed02: &b("signed02")?,
+            signed03: &b("signed03")?,
+            device_point: &b("deviceSigningPoint")?,
+            owner_point: &b("ownerApprovalPoint")?,
+        })
+        .map_err(|_| "proof")?;
+        let message: [u8; 16] = b("message")?.try_into().map_err(|_| "message")?;
+        return open_hardware_elected03(
+            &b("envelope")?,
+            proof.accepted_manifest(),
+            &proof,
+            &record("authority")?,
+            custody,
+            &ElectedContext {
+                message: &message,
+                peer,
+                now: 30000,
+            },
+        )
+        .map_err(|_| "native elected reader".into());
+    }
+    let now = d["now"].as_u64().ok_or("time")?;
+    let manifest = verify_manifest(&b("manifest")?, &root, None, 2, now).map_err(|_| "manifest")?;
+    let account: [u8; 16] = b("account")?.try_into().map_err(|_| "account")?;
+    let device: [u8; 16] = b("device")?.try_into().map_err(|_| "device")?;
+    let line: [u8; 16] = b("line")?.try_into().map_err(|_| "line")?;
+    let reader: [u8; 32] = b("reader")?.try_into().map_err(|_| "reader")?;
+    open_hardware_archive02(
+        &b("inbound")?,
+        &manifest,
+        &manifest,
+        custody,
+        &ArchiveContext {
+            account: &account,
+            device: &device,
+            line: &line,
+            reader: &reader,
+            peer,
+            now,
+        },
+    )
+    .map_err(|_| "native archive reader".into())
 }

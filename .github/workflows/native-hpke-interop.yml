@@ -91,6 +91,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run build --prefix "$env:RUNNER_TEMP/archive/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Prepare exact elected public-point producer
+        shell: pwsh
+        run: |
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/election"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C "$env:RUNNER_TEMP/election" checkout --detach 304d512b7a420a3102278f32baed095f3e778989
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm ci --prefix "$env:RUNNER_TEMP/election/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build --prefix "$env:RUNNER_TEMP/election/sdk/typescript"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Native Windows build and conditional protected qualification
         shell: pwsh
         env:
@@ -103,4 +114,8 @@ jobs:
           python sdk/native/hpke-candidate/run-cng.py --producer "$env:RUNNER_TEMP/archive" --language rust
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python sdk/native/hpke-candidate/run-cng.py --producer "$env:RUNNER_TEMP/archive" --language go
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python sdk/native/hpke-candidate/run-cng.py --producer "$env:RUNNER_TEMP/election" --language rust --profile 3
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python sdk/native/hpke-candidate/run-cng.py --producer "$env:RUNNER_TEMP/election" --language go --profile 3
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
