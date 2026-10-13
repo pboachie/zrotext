@@ -39,4 +39,3 @@ jobs:
         run: dotnet run --project sdk/native/crypto-envelope/csharp/manifest-tests/ManifestTest.csproj < "$RUNNER_TEMP/manifests.tsv"
       - name: Ruby manifest chain verification
         run: ruby sdk/native/crypto-envelope/ruby/manifest_test.rb < "$RUNNER_TEMP/manifests.tsv"
-

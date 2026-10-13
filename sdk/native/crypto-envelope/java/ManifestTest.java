@@ -39,4 +39,3 @@ public final class ManifestTest {
         check(rows==2);System.out.println(checks+" manifest checks passed");
     }
 }
-
