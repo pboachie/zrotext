@@ -120,19 +120,34 @@ class LifecycleTests(unittest.TestCase):
         # Maintained wire contract does not require unique IDs or timestamp ordering.
         self.respond(dict(messages=[metadata()]*20,next_cursor=ID));self.assertEqual(len(self.client.list()['messages']),20)
 
-    def test_redirect_framing_disconnect_deadline_and_tls_refuse_without_resubmission(self):
+    def test_redirect_framing_disconnect_deadline_refuse_without_resubmission(self):
         for status,body,headers in ((302,b'',{'Location':'/redirected'}),(307,b'',{'Location':'https://other.example.invalid/'}),
             (200,metadata(),{'extra-length':100}),(200,b'x'*16385,{}),(0,b'',{}),(503,{'code':'not_found'},{})):
             before=len(self.calls);self.respond(body,status,headers)
             with self.assertRaises(SealedLifecycleError) as caught:self.client.cancel(ID)
             self.assertEqual((caught.exception.state,caught.exception.attempts),('unknown',1));self.assertEqual(len(self.calls),before+1)
-        self.respond(metadata(),delay=0.3);started=time.monotonic()
+        before=len(self.calls);self.respond(metadata(),delay=0.3);started=time.monotonic()
         with self.assertRaises(SealedLifecycleError) as caught:SealedLifecycleClient(self.origin,'synthetic',timeout_ms=50).cancel(ID)
         self.assertEqual(caught.exception.code,'timeout');self.assertLess(time.monotonic()-started,0.25)
-        before=len(self.calls)
-        with patch.dict(os.environ,{'SSL_CERT_FILE':str(Path(self.temp.name)/'missing.pem')}):
-            with self.assertRaises(SealedLifecycleError):self.client.status(ID)
-        self.assertEqual(len(self.calls),before)
+        # Observe all admitted handlers before counting: cancellation can race a
+        # POST already dispatched, but must never resubmit or publish its result.
+        self.server.shutdown();self.server.server_close()
+        self.assertLessEqual(len(self.calls)-before,1)
+        self.assertTrue(all(row[0]=='POST' for row in self.calls[before:]))
+
+    def test_invalid_ca_refuses_on_fresh_server_and_oracle_detects_bypass(self):
+        trusted=ssl.create_default_context()
+        def refusal():
+            with patch.dict(os.environ,{'SSL_CERT_FILE':str(Path(self.temp.name)/'missing.pem')}):
+                with self.assertRaises(SealedLifecycleError):self.client.status(ID)
+            self.assertEqual(self.calls,[])
+        refusal()
+        # Real TLS positive mutation: an explicitly supplied trusted context
+        # bypasses the missing configuration, which the refusal oracle must catch.
+        self.respond(metadata())
+        with patch('ssl._create_default_https_context',return_value=trusted):
+            with self.assertRaises(AssertionError):refusal()
+        self.assertEqual([row[:2] for row in self.calls],[('GET','/v1/sealed/messages/'+ID)])
 
 
 if __name__=='__main__':

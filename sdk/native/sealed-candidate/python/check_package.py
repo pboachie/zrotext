@@ -117,7 +117,7 @@ def main():
             template_open=json.loads(run(['node',ROOT/'template-interop.mjs','--consume'],cwd=temporary,
                 input=json.dumps(dict(fixture=fixtures['template'],envelope=template_result['envelope'],expectedCanonical=template_result['canonical']))))
             assert template_result['installed'] and template_open['verified'] and template_open['preview']==fixtures['template']['preview']
-            assert json.loads(run([python,'-I',lifecycle_consumer],cwd=temporary))==dict(installed=True,real_tls_groups=5)
+            assert json.loads(run([python,'-I',lifecycle_consumer],cwd=temporary))==dict(installed=True,real_tls_groups=6)
             for context_fixture in context_fixtures:
                 context_result=json.loads(run([python,'-I',context_consumer],cwd=temporary,input=json.dumps(context_fixture)))
                 context_open=json.loads(run(['node',ROOT/'workflow-context-interop.mjs','--consume'],cwd=temporary,input=json.dumps(dict(fixture=context_fixture,envelope=context_result['envelope'],plaintext=context_fixture['plaintext']))))
