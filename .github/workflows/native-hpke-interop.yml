@@ -30,6 +30,12 @@ jobs:
         run: |
           git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$RUNNER_TEMP/envelopes"
           git -C "$RUNNER_TEMP/envelopes" checkout --detach 9ddd579b1965180db4ccfa503cce9c338b970f68
+      - name: Prepare maintained TypeScript archive producer
+        run: |
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$RUNNER_TEMP/archive"
+          git -C "$RUNNER_TEMP/archive" checkout --detach 93a65d737dfb0de603c732241c667f90771f60dd
+          npm ci --prefix "$RUNNER_TEMP/archive/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm run build --prefix "$RUNNER_TEMP/archive/sdk/typescript"
       - run: rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
       - name: Rust native recipient and package
         working-directory: sdk/native/hpke-candidate/rust
@@ -39,12 +45,14 @@ jobs:
           node "$RUNNER_TEMP/producer/sdk/typescript/test/emit-native-hpke.mjs" | cargo +1.97.1 run --locked --example interop
           python "$RUNNER_TEMP/envelopes/sdk/native/crypto-envelope/java/envelope_rows.py" | cargo +1.97.1 run --locked --example envelope
           cargo +1.97.1 run --locked --example manifest < ../../../../protocol/v1/vectors/sealed-profile03-contract-01.json
+          node "$RUNNER_TEMP/archive/sdk/native/sealed-candidate/python/produce-fixture.mjs" | node ../reader-controls.mjs | cargo +1.97.1 run --locked --example reader
           cargo +1.97.1 package --locked
       - name: Go native recipient
         working-directory: sdk/native/hpke-candidate/go
         run: |
           test -z "$(gofmt -l .)"
           go vet ./...
+          node "$RUNNER_TEMP/archive/sdk/native/sealed-candidate/python/produce-fixture.mjs" | node ../reader-controls.mjs | go run ./cmd/reader
           go run ./cmd/manifest < ../../../../protocol/v1/vectors/sealed-profile03-contract-01.json
           python "$RUNNER_TEMP/envelopes/sdk/native/crypto-envelope/java/envelope_rows.py" | go run ./cmd/envelope
           node "$RUNNER_TEMP/producer/sdk/typescript/test/emit-native-hpke.mjs" | go run ./cmd/interop

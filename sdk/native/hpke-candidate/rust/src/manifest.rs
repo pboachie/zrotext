@@ -12,16 +12,17 @@ pub struct RootTrust {
 }
 /// Owned signed evidence, never a mutable caller-provided trust structure.
 pub struct Manifest {
-    raw: Vec<u8>,
-    profile: u8,
-    predecessor: u8,
-    version: u64,
-    issued: u64,
-    expires: u64,
-    comparison: u64,
-    digest: [u8; 32],
-    account: [u8; 16],
-    root: [u8; 65],
+    pub(crate) raw: Vec<u8>,
+    pub(crate) profile: u8,
+    pub(crate) predecessor: u8,
+    pub(crate) version: u64,
+    pub(crate) issued: u64,
+    pub(crate) expires: u64,
+    pub(crate) comparison: u64,
+    pub(crate) digest: [u8; 32],
+    pub(crate) account: [u8; 16],
+    pub(crate) root: [u8; 65],
+    pub(crate) lineage: Vec<[u8; 32]>,
 }
 fn number(b: &[u8], at: usize) -> Result<u64, Error> {
     let n = u64::from_be_bytes(b[at..at + 8].try_into().map_err(|_| Error::Shape)?);
@@ -37,7 +38,7 @@ fn point(p: &[u8]) -> Result<(), Error> {
     PublicKey::from_sec1_bytes(p).map_err(|_| Error::Shape)?;
     Ok(())
 }
-fn window(issued: u64, expires: u64, now: u64) -> bool {
+pub(crate) fn window(issued: u64, expires: u64, now: u64) -> bool {
     now > 0
         && now <= i64::MAX as u64
         && issued > 0
@@ -211,7 +212,15 @@ pub fn verify_manifest(
     } else if expected != 2 || version != 1 || prev_digest != [0; 32] {
         return Err(Error::Authentication);
     }
+    let mut lineage = previous.map(|m| m.lineage.clone()).unwrap_or_default();
+    if previous.is_none_or(|m| m.version != version) {
+        if lineage.len() >= 1024 {
+            return Err(Error::Shape);
+        }
+        lineage.push(digest);
+    }
     Ok(Manifest {
+        lineage,
         raw: b.to_vec(),
         profile: expected,
         predecessor,

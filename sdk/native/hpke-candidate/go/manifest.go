@@ -17,6 +17,7 @@ type RootTrust struct {
 
 // Manifest is owned cryptographic provenance, not live or durable authority.
 type Manifest struct {
+	lineage                              [][32]byte
 	raw                                  []byte
 	profile, predecessor                 byte
 	version, issued, expires, comparison uint64
@@ -194,7 +195,17 @@ func VerifyManifest(input []byte, root *RootTrust, previous *Manifest, expected 
 			}
 		}
 	}
-	return &Manifest{b, expected, predecessor, version, issued, expiry, now, digest, root.account, root.point}, nil
+	var lineage [][32]byte
+	if previous != nil {
+		lineage = append(lineage, previous.lineage...)
+	}
+	if previous == nil || version != previous.version {
+		if len(lineage) >= 1024 {
+			return nil, ErrShape
+		}
+		lineage = append(lineage, digest)
+	}
+	return &Manifest{lineage, b, expected, predecessor, version, issued, expiry, now, digest, root.account, root.point}, nil
 }
 func (m *Manifest) Digest() [32]byte { return m.digest }
 func (m *Manifest) Version() uint64  { return m.version }

@@ -1,6 +1,7 @@
 //! Candidate RFC9180 base-mode recipient primitive, never envelope authority.
 pub mod envelope;
 pub mod manifest;
+pub mod reader;
 use aes_gcm::{
     Aes128Gcm, KeyInit, Nonce,
     aead::{Aead, Payload},

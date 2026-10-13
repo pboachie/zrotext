@@ -8,10 +8,10 @@ use sha2::{Digest, Sha256};
 
 /// Owned, signature-verified syntax; signer authorization is a separate requirement.
 pub struct IntegrityEnvelope {
-    data: Vec<u8>,
-    prefix: usize,
-    body_end: usize,
-    unsigned_end: usize,
+    pub(crate) data: Vec<u8>,
+    pub(crate) prefix: usize,
+    pub(crate) body_end: usize,
+    pub(crate) unsigned_end: usize,
 }
 fn number(p: &[u8], at: usize) -> Result<u64, Error> {
     let value = u64::from_be_bytes(p[at..at + 8].try_into().map_err(|_| Error::Shape)?);
