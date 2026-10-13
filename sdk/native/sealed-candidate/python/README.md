@@ -24,7 +24,7 @@ local qualification. Missing crypto dependencies fail installation/import;
 unsupported protected capabilities raise `CngUnavailable` or `SealedError`.
 There is no silent software fallback. Python 3.12 is the exercised CI version.
 
-Wheel contents are restricted to the package's thirteen modules and distribution
+Wheel contents are restricted to an explicit runtime module allowlist and distribution
 metadata/license. Source archives add build metadata and this README; neither
 archive includes tests, fixture producers, private receipts, sample scalars or
 repository tooling. Both carry AGPL-3.0-only license metadata and full text.
@@ -651,3 +651,122 @@ That fixture plumbing does not expand the public root signer's domain API.
 Installed wheel/sdist consumers exercise the explicit software candidate and
 independent verification; the separate local TPM test establishes the tested
 Windows provider observation, not remote attestation or browser/device acceptance.
+# Workflow context content candidate
+
+`workflow_context_aad`, `seal_workflow_context`, and `open_workflow_context`
+implement the maintained ZTWC01 archive representation. The separately named
+`seal_integration_workflow_context` and `open_integration_workflow_context`
+require the explicitly selected role-3 reader; they never alias the archive
+reader or issue a runtime grant. Inputs use the maintained camel-case scope
+fields with native positive integers, byte identities, and kind 1, 2 or 3.
+Plaintext is opaque bytes of length 1..32768, including non-UTF-8 data.
+
+Both directions require a genuine verified profile-02 manifest, exact account,
+generation/version/digest, active selected inbound-read reader, and active
+role-4 signer for the intended device/line. Expiry must be future and no more
+than 30 days from the caller's current comparison. Opening compares the entire
+222-byte expected AAD before custody; the bound recipient public point must
+match the selected manifest key. Every seal draws a fresh HPKE encapsulation.
+The existing HPKE suite and exact `ZT/workflow-context/hpke/v1` transcript match
+the TypeScript candidate; no new format is introduced.
+
+Opening defaults to a locally qualified Windows TPM recipient. Software
+recipient tests require explicit `require_protected=False`; unsupported or
+wrong keys never fall back. Optional `WorkflowContextCancellation` provides
+one-way cancellation. Up to four operations may remain in native work, each
+with a ten-second outward deadline. Cancelled/timed-out native calls retain
+their admission until actual settlement, suppress late output, and clear owned
+mutable content/derived-key buffers where possible. Provider calls cannot be
+preempted; callers retain key ownership/cleanup receipts until settlement.
+Immutable Python results, caller-owned data and provider copies are outside
+that clearing guarantee. There are no automatic retries.
+
+The supplied comparison time is one explicit application observation, not an
+independent clock or current server authority. The trusted application must
+check interval, session, peer, reader and permission freshness around its own
+waits/effects. These operations do not provide HTTP transport, persistence,
+current integration grants, contact encryption or dispatch permission.
+Maintained contact commitment production still accepts opaque already-encrypted
+bytes; its reserved future HPKE framing is not activated by this module.
+
+The focused suite independently seals and opens using the maintained TypeScript
+implementation, exercises both reader roles with genuine signed manifests,
+and tests actual protected custody when the Windows platform provider is
+available. Clean wheel and sdist consumers repeat both roles through ordinary
+installed imports. Hardware-unavailable hosted jobs retain explicit skips;
+they are not hardware acceptance.
+
+## Standalone sealed lifecycle metadata
+
+`SealedLifecycleClient(origin, credential, timeout_ms=15000)` supports cold
+`status(message_id)`, `cancel(message_id)` and `list(cursor=None)` observations
+without a locally prepared ciphertext. It uses the existing sealed metadata
+routes, one bearer credential and no content, cookies, redirects, proxy settings
+or retries. Native timeout is a total outward deadline bounded to 1..120000 ms;
+the maintained TypeScript constructor allows a wider timeout input range. The
+native bound is explicit and is not a claim of arbitrary-timeout equivalence.
+Origin input follows the existing strict native HTTPS boundary: no credentials,
+path beyond `/`, query, fragment, backslashes or whitespace. It does not promise
+the browser URL parser's normalization of every otherwise accepted input.
+
+Responses require the maintained exact fields, lowercase UUIDs, known message
+states and JavaScript safe integer limits. Integral JSON floats are accepted
+and normalized to native integers. Pages contain at most 20 rows; a non-null
+cursor requires exactly 20 rows and the final message ID. As in the maintained
+client, this contract does not assert unique row IDs or timestamp ordering.
+No automatic paging is performed. Every raw response is capped at 16384 bytes;
+truncated HTTP framing, malformed UTF-8/JSON, wrong identities and false
+cancellation receipts fail closed.
+
+`SealedLifecycleError` exposes redacted `code`, `status`, `state`, and `attempts`.
+Local invalid inputs/admission failures are `refused` with zero attempts.
+Recognized server rejections are `refused` with one attempt; `unavailable` is
+conservatively `unknown`. Network loss, deadlines, redirects and malformed
+responses are `unknown`, including possible cancellation after lost response.
+Query status after uncertainty; no result here permits resubmission, re-encryption
+or a new caller intent. A metadata state named `unknown` remains a successful
+observation of that state. TLS uses ordinary system trust and hostname checks.
+Unresolved native I/O retains one of 16 bounded admissions until settlement.
+
+The existing `SealedHttpClient` and `PreparedSubmission` reconciliation path
+remain separate: they still validate exact persisted ciphertext and application
+authority. This metadata client neither constructs such a submission nor grants
+cryptographic authority, delivery permission or access to plaintext. It is not
+an owner-cookie transport or a browser ceremony. The same real synthetic TLS
+suite runs against source and clean installed wheel/sdist imports, and 54
+response-validation cases are compared with the maintained TypeScript client.
+
+## Template persistence contract helpers
+
+`template_save_request(scope, request_id, expected_revision, envelope)` creates
+the maintained owner-template save intent without performing I/O. It binds the
+existing encrypted-template scope to the exact captured envelope, requires the
+next revision to equal expected revision plus one (0..127 expected, 1..128 new),
+and checks the bounded authenticated-header and ciphertext-length framing.
+The request ID must be a nonzero lowercase UUID. Integral numeric expected
+revisions are accepted and normalized to integers, matching the maintained API.
+
+The returned `TemplateSaveRequest` has `path`, `headers`, immutable `body`,
+`revision`, and lowercase full-envelope SHA-256 `encrypted_digest`. Generated
+headers and record fields are immutable snapshots. The only headers are content
+type, idempotency key and expected revision. The builder neither seals new
+ciphertext nor checks HPKE authentication/curve validity; pair it with
+`seal_encrypted_template` and retain the exact resulting save intent as needed.
+
+`template_save_receipt(request, body)` checks a strict UTF-8 JSON response of
+at most 256 bytes with the sole field `revision` equal to the request's integer
+revision. It returns `{"revision": n}`. Numeric `1.0`/`1e0`, one leading UTF-8
+BOM and JSON's last-value handling of duplicate member names follow the
+maintained implementation; double BOM, extra fields, wrong revisions and
+malformed input refuse. This is not a canonical JSON or signature verifier.
+`TemplateStoreError` redacts failed inputs. Native receipt inputs use the
+explicit `TemplateSaveRequest` record and a valid 1..128 request revision.
+
+A request is structural persistence metadata, not a private verification token.
+The trusted transport must independently supply current owner authentication,
+CSRF, exact response correlation and permission. These helpers do not create
+that transport, acknowledge sending, provide dispatch authority, or infer a
+browser session. The installed consumers seal genuine native encrypted
+templates, build requests, validate receipts, and have maintained TypeScript
+independently compare the request and decrypt its exact body. Source tests also
+compare 42 accepted/refused request and raw-receipt cases.
