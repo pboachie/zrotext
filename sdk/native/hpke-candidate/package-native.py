@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
@@ -26,8 +27,13 @@ VERSION = "0.1.0"
 PRODUCERS = {
     "archive": "a13ea1e3d6f6db594485c19b36c43fe642e67c7a",
     "election": "304d512b7a420a3102278f32baed095f3e778989",
+    "original": "72124e1a3ff28e782f870eeddbdc33cacf8ca3b4",
+    "template": "26e876da9f34372d9cf26511993cf633971e0037",
 }
-HARNESSES = ("journal", "root", "cng", "compose", "compose02")
+HARNESSES = ("journal", "root", "cng", "compose", "compose02", "original", "reply_checkpoint",
+             "reply_http", "reply_current", "reply_read", "reply_page", "reply_consumption", "reply_proposal",
+             "template", "template_crypto")
+ORIGINAL_TLS = ("http", "current", "read", "page", "consumption", "proposal")
 
 
 def run(*args, **kwargs):
@@ -124,6 +130,8 @@ def rust_package(stage, output):
         (consumer / "src/bin").mkdir(parents=True)
         for name in HARNESSES:
             shutil.copy2(ROOT / "rust/examples" / (name + ".rs"), consumer / "src/bin" / (name + ".rs"))
+        shutil.copytree(ROOT / "rust/examples/read_custody", consumer / "src/bin/read_custody")
+        shutil.copytree(ROOT / "rust/examples/template_custody", consumer / "src/bin/template_custody")
         (consumer / "Cargo.toml").write_text('''[package]
 name = "native-installed-consumer"
 version = "0.0.0"
@@ -185,7 +193,7 @@ def go_package(stage, output):
     consumer.mkdir()
     (consumer / "go.mod").write_text("module example.invalid/native-consumer\n\ngo 1.26.0\n\nrequire " + MODULE + " " + version + "\n")
     for name in HARNESSES:
-        shutil.copytree(ROOT / "go/cmd" / name, consumer / "cmd" / name)
+        shutil.copytree(ROOT / "go/cmd" / name.replace("_", "-"), consumer / "cmd" / name)
     shutil.rmtree(project)
     env = safe_env()
     env.update(GOPROXY=feed.as_uri() + ",https://proxy.golang.org", GOSUMDB="sum.golang.org", GONOSUMDB=MODULE,
@@ -213,19 +221,57 @@ def load(name):
     return module
 
 
-def acceptance(binaries, archive, election):
+def original_acceptance(binaries, producer):
+    """Every executable comes from the ordinary installed consumer build."""
+    env = safe_env()
+    fixture = run("node", producer / "sdk/native/sealed-candidate/python/produce-selected-reply02.mjs",
+                  env=env, capture_output=True, text=True).stdout
+    for name in ("original", "reply_checkpoint"):
+        run(binaries[name], input=fixture, text=True, timeout=90)
+    for name in ORIGINAL_TLS:
+        argv = [sys.executable, ROOT / ("test-original-" + name + ".py"),
+                "--binary", binaries["reply_" + name]]
+        if name != "http":
+            argv += ["--producer", producer]
+        run(*argv, env=env)
+
+
+def template_acceptance(binaries, original, template, *, hardware=False):
+    """Reuse independent oracles against installed consumer executables only."""
+    env = safe_env()
+    if not hardware:
+        run(sys.executable, ROOT / "test-template-content.py", "--producer", original,
+            "--binary", binaries["template"], env=env)
+    argv = [sys.executable, ROOT / "test-template-crypto.py", "--producer", template,
+            "--binary", binaries["template_crypto"]]
+    if hardware:
+        argv.append("--hardware")
+    run(*argv, env=env)
+    if hardware:
+        run(*argv, "--fail-setup", env=env)
+
+
+def acceptance(binaries, archive, election, original, template):
     env = safe_env()
     fixture = run("node", election / "sdk/native/sealed-candidate/python/produce-election03.mjs", env=env, capture_output=True, text=True).stdout
     run(binaries["journal"], input=fixture, text=True)
     fixture = run("node", archive / "sdk/native/sealed-candidate/python/produce-fixture.mjs", env=env, capture_output=True, text=True).stdout
     fixture = run("node", ROOT / "root-controls.mjs", archive, input=fixture, env=env, capture_output=True, text=True).stdout
     run(binaries["root"], input=fixture, text=True)
+    template_acceptance(binaries, original, template)
+    original_acceptance(binaries, original)
     qualified = False
     if os.name == "nt":
         results = [load("run-cng").exercise(binaries["cng"], archive, 2),
                    load("run-cng").exercise(binaries["cng"], election, 3),
                    load("run-compose").exercise(binaries["compose"], election),
                    load("run-compose02").exercise(binaries["compose02"], archive)]
+        original_protected = load("run-cng").exercise(binaries["cng"], original, original=True)
+        results.append(original_protected)
+        if original_protected:
+            run(sys.executable, ROOT / "test-original-read.py", "--binary", binaries["reply_read"],
+                "--producer", original, "--hardware", env=env)
+            template_acceptance(binaries, original, template, hardware=True)
         qualified = all(results)
     return qualified
 
@@ -235,6 +281,8 @@ def main():
     parser.add_argument("--language", choices=("rust", "go"), required=True)
     parser.add_argument("--archive", type=Path, required=True)
     parser.add_argument("--election", type=Path, required=True)
+    parser.add_argument("--original", type=Path, required=True)
+    parser.add_argument("--template", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--require-protected", action="store_true")
     args = parser.parse_args()
@@ -248,7 +296,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="zrotext-native-package-") as directory:
         package = rust_package if args.language == "rust" else go_package
         for binaries, artifact in package(Path(directory), args.output):
-            qualified = acceptance(binaries, args.archive, args.election)
+            qualified = acceptance(binaries, args.archive, args.election, args.original, args.template)
             report = {"experimental": True, "published": False, "language": args.language,
                       "version": VERSION, "archive": artifact.name, "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
                       "license": "AGPL-3.0-only", "producer_revisions": PRODUCERS,
@@ -256,7 +304,10 @@ def main():
                       "source_inventory": {name: hashlib.sha256((ROOT / args.language / name).read_bytes()).hexdigest()
                                            for name in source_files(args.language)},
                       "ordinary_registry_consumer": True, "staged_library_sources_removed": True,
-                      "journal_root_acceptance": True, "protected_acceptance": qualified}
+                      "journal_root_acceptance": True,
+                      "original_acceptance": {"reader_checkpoint": True, "tls_suites": list(ORIGINAL_TLS)},
+                      "template_acceptance": {"content_segments": True, "software_interop": True},
+                      "protected_acceptance": qualified}
             (args.output / "qualification.json").write_text(json.dumps(report, indent=2) + "\n")
             print(json.dumps(report))
             if args.require_protected and not qualified:
