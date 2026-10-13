@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import runpy
 from pathlib import Path
 import subprocess
 import sys
@@ -24,6 +25,7 @@ def main():
     parser.add_argument('--fixture', type=Path, required=True)
     parser.add_argument('--producer', type=Path, required=True)
     parser.add_argument('--ruby', default='ruby')
+    parser.add_argument('--command-file', type=Path, help='Trusted installed consumer argv; skips source compilation')
     parser.add_argument('--hardware', action='store_true')
     parser.add_argument('--jna', type=Path)
     args = parser.parse_args(); fixture = args.fixture.resolve(strict=True)
@@ -36,7 +38,9 @@ def main():
         'DOTNET_STARTUP_HOOKS', 'RUBYOPT', 'RUBYLIB', 'NODE_OPTIONS', 'NODE_PATH')}
     with tempfile.TemporaryDirectory(prefix='zrotext-managed-read-') as directory:
         folder = Path(directory)
-        if args.language == 'java':
+        if args.command_file:
+            command = runpy.run_path(str(HERE / 'installed-command.py'))['load'](args.command_file)
+        elif args.language == 'java':
             spec = importlib.util.spec_from_file_location('http_build', HERE / 'original-http-run.py')
             http = importlib.util.module_from_spec(spec); spec.loader.exec_module(http)
             jars = []
