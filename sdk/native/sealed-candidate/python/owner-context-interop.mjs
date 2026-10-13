@@ -1,0 +1,20 @@
+// Genuine maintained context encryption under current owner binding.
+import {execFileSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
+import {webcrypto} from 'node:crypto';
+import {enrollRootPin02,verifyManifest02} from '../../../typescript/dist/draft02-manifest.js';
+import {sealWorkflowContext} from '../../../typescript/dist/workflow-context.js';
+globalThis.crypto??=webcrypto;
+const f=JSON.parse(execFileSync(process.execPath,[fileURLToPath(new URL('./owner-template-interop.mjs',import.meta.url))],{encoding:'utf8'}));
+const dec=x=>new Uint8Array(Buffer.from(x,'base64')),b64=x=>Buffer.from(x).toString('base64');
+const numeric=['bindingGeneration','revision','expiresMs','trustGeneration','manifestVersion'];
+const scope=Object.fromEntries(Object.entries(f.scope).map(([k,v])=>[k,numeric.includes(k)?BigInt(v):dec(v)]));
+scope.contextId=scope.templateId;delete scope.templateId;scope.kind=3;
+const manifest=await verifyManifest02(dec(f.manifest),await enrollRootPin02(dec(f.rootPin),dec(f.fingerprint)),BigInt(f.now));
+const plaintext=new TextEncoder().encode('Synthetic owner facts');
+f.scope=Object.fromEntries(Object.entries(scope).map(([k,v])=>[k,typeof v==='bigint'?Number(v):typeof v==='number'?v:b64(v)]));
+f.envelope=b64(await sealWorkflowContext(manifest,scope,BigInt(f.now),plaintext));
+f.newer=b64(await sealWorkflowContext(manifest,{...scope,revision:2n},BigInt(f.now),plaintext));
+f.kinds={};for(const kind of [1,2])f.kinds[kind]=b64(await sealWorkflowContext(manifest,{...scope,kind},BigInt(f.now),plaintext));
+f.role=2;f.selectedScalar=f.archiveScalar;f.plaintext=b64(plaintext);
+process.stdout.write(JSON.stringify(f));

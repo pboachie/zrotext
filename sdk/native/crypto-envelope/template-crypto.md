@@ -1,0 +1,21 @@
+# Candidate managed encrypted templates
+
+Java, C#, and Ruby `EncryptedTemplate` seal and open canonical template content using the maintained ZTWT01 transport. This is client cryptography only: it does not save a template, authenticate a server, authorize workflow actions, or send messages. Installed package qualification and publication remain separate.
+
+Capture `Scope` from independently expected application context before invoking callbacks; never promote fields read from untrusted ciphertext into that expectation. The copied 222-byte AAD binds account, device, line, interval, template, binding generation, revision, expiry, trust generation, manifest version/digest, peer digest, and selected reader. The transport uses a 291-byte header and bounded ciphertext. Revision is 1 through 128; all integers are positive signed 64-bit values. Expiry must be future and no more than 30 days from the current comparison.
+
+The required authority callback returns a verified profile02 manifest and current comparison. The application must consult its actual current permission/selection when supplying this result; a cached signature alone does not establish current authority. Before crypto and before exposing a result, the companion rechecks the exact account/generation/version/digest, active role2 reader with workflow scope, and active role4 signer for the expected device/line. The second comparison cannot decrease, and current root/enrolled root must remain unchanged. This callback boundary does not persist a clock or implement a template store transaction.
+
+Sealing uses fresh P256 ephemeral HPKE with the dedicated template info domain and exact AAD. Variable content is 1 through 32768 bytes; it is encrypted directly, not treated as a 32-byte content key. The existing public CEK APIs still accept exactly 48 ciphertext bytes and return exactly 32 plaintext bytes. Opening authenticates the full envelope, rechecks current authority after AEAD, then parses exact canonical content. Transport digest identifies ciphertext bytes only.
+
+For software keys, use `HpkeRecipient.softwareContent` / `SoftwareContent` / `software_content`. For Windows hardware custody, pass the qualified `ProtectedRecipient` (Ruby: its `open_content` method). Unsupported provider/platform, wrong public point, or closed handles refuse without scalar export or software fallback. The generic content adapter is a trusted application interface and does not itself attest custody. Existing provider qualification, private-export refusal, public-point binding, and native ECDH checks remain in force.
+
+Owned mutable plaintext and key-schedule buffers are cleared on success and failure. Returned content contains native strings; immutable strings and provider/internal allocations cannot be guaranteed physically erased. Caller keys remain caller-owned.
+
+## Qualification
+
+Run `python sdk/native/crypto-envelope/template-crypto-run.py --language java --fixture <reviewed-native-template-crypto-checkout> --producer <reviewed-maintained-checkout>`; substitute `csharp` or `ruby` and optionally `--ruby <executable>`. The runner checks exact clean fixture pins, uses the maintained TypeScript producer, and runs 412 software controls including two fresh native ciphertexts independently opened by TypeScript. Each native probe also checks real variable-content boundaries and exact CEK32-only behavior. Java reuses pinned Gson and JNA 5.17.0; JNA supplies the already established Windows custody boundary. C#/Ruby add no dependency.
+
+On a host with the qualified Windows Platform Crypto Provider, add `--hardware` for 49 protected-opening controls and `--hardware --fail-setup` for owned-key cleanup after setup failure. The probe fsyncs a private pending receipt before creation, sends only its public point to the maintained producer, deletes only its exact owned key, verifies refused reopening, and records deletion. Failures after creation are failures, not capability skips. Keep pending receipts if deletion cannot be confirmed.
+
+The source workflow executes software controls on Windows/Linux. Local executed Windows software and actual protected-key checks do not establish Linux execution, hosted CI completion, installed package qualification, attestation, or live service acceptance. Legacy independent HPKE vectors remain a separate regression gate.

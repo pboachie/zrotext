@@ -1,5 +1,32 @@
 # ZROtext sealed TypeScript SDK
 
+## Workflow transport cancellation
+
+`WorkflowToolClient` accepts an optional caller `AbortSignal` on
+`readiness(signal)`, `cancel(requestId, key, signal)`, and
+`call(method, params, maxAttempts, signal)`. Existing calls remain valid;
+`maxAttempts` still defaults to one. Application-owned transports can forward
+their permission-lifetime signal without exposing workflow credentials to tools:
+
+```js
+// Run inside the trusted application transport boundary, not page/model code.
+const response = await client.call(method, params, 1, permissionLifetime.signal);
+```
+
+An already-aborted signal returns `unavailable`, `refused`, zero attempts and
+sends nothing. Cancellation after dispatch aborts the underlying request and
+suppresses late success, including when an injected transport ignores abort.
+It reports `response_unknown`, `unknown`, with the dispatched attempt count;
+this never proves that a mutation was cancelled on the server. An already
+decoded explicit rate-limit refusal can remain a refusal, but cancellation
+prevents another attempt. Reconcile uncertain operations using their original
+identity. The existing per-attempt deadline, response binding, credential scope
+and validation remain enforced. The signal must be an `AbortSignal` from the
+client's JavaScript realm. Abort reasons are never included in public errors.
+
+This transport capability is a prerequisite for authenticated WebMCP application
+integration; it does not itself create a browser session or permission grant.
+
 Status is per module, and the boundaries are deliberate:
 
 - **Production-shaped: envelope composition** (`src/sealed-envelope.ts`,

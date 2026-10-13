@@ -1,0 +1,633 @@
+{
+  "agent": 1,
+  "defaults": {
+    "safety": {
+      "get": "read_only",
+      "post": "mutating",
+      "put": "mutating",
+      "patch": "mutating",
+      "delete": "destructive"
+    },
+    "idempotency": "none",
+    "preview": "local",
+    "unknown_outcome": {
+      "on_timeout": "unknown",
+      "on_connection_reset": "unknown",
+      "on_ambiguous_status": "unknown"
+    },
+    "retries": {
+      "read_only": {
+        "max": 0,
+        "backoff": {
+          "base_ms": 200,
+          "max_ms": 5000,
+          "jitter": "full"
+        }
+      },
+      "mutating": {
+        "max": 0
+      },
+      "honor_retry_after": true
+    },
+    "disclosure": {
+      "mode": "auto",
+      "threshold": 24,
+      "description_budget_tokens": 60,
+      "schema_budget_tokens": 600
+    }
+  },
+  "tools": [
+    {
+      "operation": "public.submitAlphaMessage",
+      "safety": "irreversible",
+      "idempotency": {
+        "policy": "caller_owned",
+        "header": "Idempotency-Key",
+        "persist": "required"
+      },
+      "confirmation": {
+        "summary_fields": [
+          "recipient_e164",
+          "device_id",
+          "test_case_id",
+          "expires_at_ms"
+        ],
+        "message": "Queues a synthetic test SMS to {recipient_e164} from device {device_id}. Only allowlisted recipients are accepted. Carrier rules still apply."
+      },
+      "verify": {
+        "operation": "public.getAlphaMessageStatus",
+        "args": {
+          "message_id": "$response.message_id"
+        },
+        "expect": {
+          "state": {
+            "in": [
+              "accepted",
+              "queued",
+              "claimed",
+              "submitting",
+              "submitted",
+              "delivered"
+            ]
+          }
+        },
+        "terminal": {
+          "state": {
+            "in": [
+              "delivered",
+              "delivery_unknown",
+              "unknown",
+              "failed",
+              "cancelled",
+              "expired"
+            ]
+          }
+        },
+        "poll": {
+          "interval_ms": 1000,
+          "budget_ms": 60000
+        }
+      },
+      "remediation": {
+        "queue_full": {
+          "text": "The device queue is full. Wait, then retry with the SAME Idempotency-Key and identical body.",
+          "retryable": "same_key_only"
+        },
+        "rate_limited": {
+          "text": "The account is over its submission budget (60 accepted submissions per minute) or already has four body-carrying requests in flight. Wait for Retry-After, then retry with the SAME Idempotency-Key and identical body.",
+          "retryable": "same_key_only"
+        },
+        "invalid_request": {
+          "text": "The server refused a field. expires_at_ms must be in the future and at most 15 minutes ahead; recipient_e164 is a plus sign and 2-15 digits with no leading zero; test_case_id is 1-32 of A-Z a-z 0-9 - _; the body has no other members. Correct the call; this is a new attempt, so use a new client_message_id and Idempotency-Key only if the content changes.",
+          "retryable": "after_remediation"
+        },
+        "quota_exceeded": {
+          "text": "The account's quota is exhausted. Stop; do not retry.",
+          "retryable": "never"
+        },
+        "billing_pending": {
+          "category": "PRECONDITION_FAILED",
+          "text": "Account billing is not active. Stop; the owner must act.",
+          "retryable": "never"
+        },
+        "payment_hold": {
+          "text": "Payment hold on the account. Stop; the owner must act.",
+          "retryable": "never"
+        },
+        "recipient_suppressed": {
+          "text": "The recipient opted out. Never retry, never choose another number. Stop and report.",
+          "retryable": "never"
+        },
+        "conflict": {
+          "text": "client_message_id or Idempotency-Key was reused with different content. Do not change the key; check your stored intent.",
+          "retryable": "never"
+        },
+        "not_found": {
+          "text": "The device is unknown, revoked or not bound to this credential's scope.",
+          "retryable": "never"
+        }
+      },
+      "server_rules": [
+        {
+          "field": "expires_at_ms",
+          "max_ahead_minutes": 15,
+          "status": 400,
+          "code": "invalid_request"
+        }
+      ]
+    },
+    {
+      "operation": "public.getAlphaMessageStatus",
+      "remediation_note": "States unknown and delivery_unknown require reconciliation by the owner; never resubmit."
+    },
+    {
+      "operation": "public.cancelAlphaMessage",
+      "safety": "mutating",
+      "remediation": {
+        "conflict": {
+          "text": "The message already left the queue; cancellation is no longer possible. Read its status instead.",
+          "retryable": "never"
+        }
+      }
+    },
+    {
+      "operation": "public.createWebhookEndpoint",
+      "safety": "mutating",
+      "response": {
+        "sensitive_fields": [
+          "signing_secret_b64url"
+        ],
+        "shown_once": true
+      },
+      "remediation": {
+        "invalid_webhook_endpoint": {
+          "text": "The callback URL must be an HTTPS DNS name on port 443 (at most 2048 bytes) with no IP literal, userinfo or fragment, and not under a reserved or internal suffix: .test, .example, .invalid, .local, .localhost, .internal and .onion are all refused, so a placeholder such as hooks.example.test cannot be created.",
+          "retryable": "after_remediation"
+        },
+        "endpoint_limit": {
+          "text": "The account already has eight endpoints including disabled ones. Disable or reuse one.",
+          "retryable": "never"
+        }
+      },
+      "server_rules": [
+        {
+          "field": "callback_url",
+          "reject_host_suffixes": [
+            ".test",
+            ".example",
+            ".invalid",
+            ".local",
+            ".localhost",
+            ".internal",
+            ".onion"
+          ],
+          "status": 400,
+          "code": "invalid_webhook_endpoint"
+        }
+      ],
+      "verify": {
+        "operation": "public.listWebhookEndpoints",
+        "expect": {
+          "endpoints": {
+            "contains": {
+              "endpoint_id": "$response.endpoint_id"
+            }
+          }
+        }
+      }
+    },
+    {
+      "operation": "public.enableWebhookEndpoint",
+      "safety": "mutating",
+      "verify": {
+        "operation": "public.listWebhookEndpoints",
+        "expect": {
+          "endpoints": {
+            "contains": {
+              "endpoint_id": "$args.endpoint_id",
+              "enabled": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "operation": "public.disableWebhookEndpoint",
+      "safety": "destructive",
+      "confirmation": {
+        "summary_fields": [
+          "endpoint_id"
+        ],
+        "message": "Disables endpoint {endpoint_id} and permanently retires its pending deliveries. Enabling later does not replay them."
+      }
+    },
+    {
+      "operation": "public.rotateWebhookEndpoint",
+      "safety": "destructive",
+      "response": {
+        "sensitive_fields": [
+          "signing_secret_b64url"
+        ],
+        "shown_once": true
+      },
+      "confirmation": {
+        "summary_fields": [
+          "endpoint_id"
+        ],
+        "message": "Rotates the signing secret of {endpoint_id}. The endpoint is disabled and its pending deliveries are permanently retired. The new secret is shown exactly once."
+      },
+      "remediation_note": "After storing the new secret, call enable to resume fan-out."
+    },
+    {
+      "operation": "public.replayWebhookDelivery",
+      "safety": "mutating",
+      "idempotency": {
+        "policy": "caller_owned",
+        "header": "Idempotency-Key",
+        "persist": "required"
+      },
+      "remediation": {
+        "replay_not_eligible": {
+          "text": "Only a dead delivery with terminal_reason failed on an ENABLED endpoint can be replayed, and a key may not be reused for a different delivery. Check the delivery page; do not retry.",
+          "retryable": "never"
+        },
+        "replay_limit": {
+          "text": "This delivery already used all three generations. Stop.",
+          "retryable": "never"
+        }
+      }
+    },
+    {
+      "operation": "public.selectWebhookSealedEvents",
+      "safety": "mutating",
+      "gate": "SEALED_WEBHOOK_DELIVERY_ENABLED"
+    },
+    {
+      "operation": "public.revokeOwnerDevice",
+      "safety": "destructive",
+      "confirmation": {
+        "summary_fields": [
+          "device_id"
+        ],
+        "message": "Revokes device {device_id}. Queued messages on it will not be dispatched."
+      }
+    },
+    {
+      "operation": "sealed.submitSealedOutbound",
+      "gate": "SEALED_ADMISSION_ENABLED",
+      "safety": "irreversible",
+      "idempotency": {
+        "policy": "content_identity",
+        "note": "The unsigned-envelope digest is the identity. Retries resend the identical bytes. Never attach an Idempotency-Key header."
+      },
+      "confirmation": {
+        "summary_fields": [],
+        "message": "Submits one sealed outbound envelope for device dispatch. Content is opaque to this client."
+      }
+    },
+    {
+      "operation": "sealed.uploadSealedInboundEvent",
+      "gate": "SEALED_ADMISSION_ENABLED",
+      "safety": "mutating",
+      "idempotency": {
+        "policy": "content_identity"
+      }
+    },
+    {
+      "operation": "sealed.cancelSealedMessage",
+      "gate": "SEALED_ADMISSION_ENABLED",
+      "safety": "mutating"
+    },
+    {
+      "operation": "sealed.createSealedWebhookEndpoint",
+      "gate": "SEALED_ADMISSION_ENABLED",
+      "response": {
+        "sensitive_fields": [
+          "signing_secret_b64url"
+        ],
+        "shown_once": true
+      }
+    },
+    {
+      "operation": "sealed.rotateSealedWebhookEndpoint",
+      "gate": "SEALED_ADMISSION_ENABLED",
+      "safety": "destructive",
+      "response": {
+        "sensitive_fields": [
+          "signing_secret_b64url"
+        ],
+        "shown_once": true
+      }
+    },
+    {
+      "operation": "sealed.disableSealedWebhookEndpoint",
+      "gate": "SEALED_ADMISSION_ENABLED",
+      "safety": "destructive"
+    },
+    {
+      "operation": "sealed.replaySealedWebhookDelivery",
+      "gate": "SEALED_ADMISSION_ENABLED",
+      "idempotency": {
+        "policy": "caller_owned",
+        "header": "Idempotency-Key",
+        "persist": "required"
+      }
+    },
+    {
+      "operation": "sealed.listSealedMessages",
+      "gate": "SEALED_ADMISSION_ENABLED"
+    },
+    {
+      "operation": "sealed.getSealedMessage",
+      "gate": "SEALED_ADMISSION_ENABLED"
+    },
+    {
+      "operation": "sealed.listSealedDevices",
+      "gate": "SEALED_ADMISSION_ENABLED"
+    },
+    {
+      "operation": "sealed.getSealedDevice",
+      "gate": "SEALED_ADMISSION_ENABLED"
+    },
+    {
+      "operation": "sealed.listSealedWebhookEndpoints",
+      "gate": "SEALED_ADMISSION_ENABLED"
+    },
+    {
+      "operation": "sealed.listSealedWebhookDeliveries",
+      "gate": "SEALED_ADMISSION_ENABLED"
+    },
+    {
+      "operation": "sealed.enableSealedWebhookEndpoint",
+      "gate": "SEALED_ADMISSION_ENABLED"
+    },
+    {
+      "operation": "sealed.getSealedUsage",
+      "gate": "SEALED_ADMISSION_ENABLED"
+    },
+    {
+      "operation": "workflow.workflowReadiness",
+      "gate": "WORKFLOW_TOOLS_ENABLED"
+    },
+    {
+      "operation": "workflow.action.send",
+      "gate": "WORKFLOW_TOOLS_ENABLED",
+      "safety": "irreversible",
+      "confirmation": {
+        "summary_fields": [
+          "key.action_id"
+        ],
+        "message": "Prepares dispatch metadata for an owner-confirmed sealed message. Schemas confer no authority; the grant does."
+      }
+    },
+    {
+      "operation": "workflow.action.schedule",
+      "gate": "WORKFLOW_TOOLS_ENABLED",
+      "safety": "mutating"
+    },
+    {
+      "operation": "workflow.action.propose",
+      "gate": "WORKFLOW_TOOLS_ENABLED",
+      "safety": "mutating"
+    },
+    {
+      "operation": "workflow.action.cancel",
+      "gate": "WORKFLOW_TOOLS_ENABLED",
+      "safety": "mutating"
+    },
+    {
+      "operation": "workflow.contact.read",
+      "gate": "WORKFLOW_TOOLS_ENABLED",
+      "safety": "read_only"
+    },
+    {
+      "operation": "workflow.context.metadata",
+      "gate": "WORKFLOW_TOOLS_ENABLED",
+      "safety": "read_only"
+    },
+    {
+      "operation": "workflow.context.content",
+      "gate": "WORKFLOW_TOOLS_ENABLED",
+      "safety": "read_only"
+    },
+    {
+      "operation": "workflow.action.status",
+      "gate": "WORKFLOW_TOOLS_ENABLED",
+      "safety": "read_only"
+    }
+  ],
+  "errors": {
+    "envelope": {
+      "schema": "Error",
+      "code_field": "code"
+    },
+    "ambiguous_statuses": [
+      408,
+      503
+    ],
+    "non_json": [
+      {
+        "status": 413,
+        "media": "text/plain",
+        "category": "REQUEST_TOO_LARGE",
+        "retryable": "never",
+        "text": "Body over the route's byte limit (4 KiB on POST /v1/webhooks, 1 KiB on POST /v1/alpha/messages)."
+      },
+      {
+        "status": 400,
+        "media": "text/plain",
+        "category": "MALFORMED_REQUEST",
+        "retryable": "never",
+        "text": "A path or query parameter failed framework parsing before authentication. UUIDs must be canonical; unknown query fields are rejected."
+      },
+      {
+        "status": 503,
+        "media": "none",
+        "category": "UPSTREAM_UNAVAILABLE",
+        "retryable": "after_delay",
+        "text": "Ingress admission saturated; Retry-After is 1 second. For a mutation this is ambiguous only if the request was admitted; the runtime reports OUTCOME_UNKNOWN."
+      },
+      {
+        "status": 408,
+        "media": "none",
+        "category": "OUTCOME_UNKNOWN",
+        "retryable": "same_key_only",
+        "text": "The body did not arrive within ten seconds or the handler did not answer within thirty. The request may have been applied."
+      }
+    ],
+    "codes": {
+      "unauthorized": {
+        "category": "AUTH_FAILED",
+        "retryable": "never",
+        "text": "Session cookie or bearer token missing, expired or revoked. Obtain a new credential; do not retry."
+      },
+      "forbidden": {
+        "category": "AUTH_FAILED",
+        "retryable": "never",
+        "text": "CSRF pair or Origin missing or mismatched, or the key lacks the required scope bound to this device."
+      },
+      "rate_limited": {
+        "category": "RATE_LIMITED",
+        "retryable": "after_delay",
+        "text": "Four body-carrying requests are already in flight for this account. Wait and retry."
+      },
+      "unavailable": {
+        "category": "UPSTREAM_UNAVAILABLE",
+        "retryable": "after_delay"
+      },
+      "not_found": {
+        "category": "NOT_FOUND",
+        "retryable": "never"
+      },
+      "conflict": {
+        "category": "CONFLICT",
+        "retryable": "never"
+      },
+      "invalid_request": {
+        "category": "VALIDATION_FAILED",
+        "retryable": "never"
+      }
+    }
+  },
+  "gates": {
+    "SEALED_WEBHOOK_DELIVERY_ENABLED": {
+      "disabled_status": 404,
+      "text": "This deployment answers 404 because SEALED_WEBHOOK_DELIVERY_ENABLED is off. This is a deployment setting, not a missing resource; do not retry with other IDs."
+    },
+    "SEALED_ADMISSION_ENABLED": {
+      "disabled_status": 404,
+      "text": "The sealed plane is mounted only when SEALED_ADMISSION_ENABLED is set on the server. Against a default deployment every sealed call fails by design."
+    },
+    "WORKFLOW_TOOLS_ENABLED": {
+      "disabled_status": 404,
+      "text": "The workflow transport is mounted only when WORKFLOW_TOOLS_ENABLED is set on the server, and every call also needs a current workflow grant. Against a default deployment every workflow call fails by design."
+    }
+  },
+  "macros": [
+    {
+      "name": "public.submitAlphaMessageAndAwait",
+      "summary": "Submit a synthetic-alpha message and wait for a terminal delivery state.",
+      "safety": "irreversible",
+      "input": {
+        "extends": "public.submitAlphaMessage",
+        "add": {
+          "wait_budget_ms": {
+            "type": "integer",
+            "default": 60000,
+            "maximum": 300000
+          }
+        }
+      },
+      "steps": [
+        {
+          "call": "public.submitAlphaMessage",
+          "args": "$input",
+          "as": "accepted"
+        },
+        {
+          "poll": "public.getAlphaMessageStatus",
+          "args": {
+            "message_id": "$accepted.message_id"
+          },
+          "until": {
+            "state": {
+              "in": [
+                "delivered",
+                "delivery_unknown",
+                "unknown",
+                "failed",
+                "cancelled",
+                "expired"
+              ]
+            }
+          },
+          "interval_ms": 1000,
+          "budget_ms": "$input.wait_budget_ms",
+          "as": "status"
+        }
+      ],
+      "output": {
+        "message_id": "$accepted.message_id",
+        "created": "$accepted.created",
+        "state": "$status.state",
+        "requires_reconciliation": {
+          "expr": "$status.state in ['unknown','delivery_unknown']"
+        },
+        "timed_out": {
+          "expr": "$status == null"
+        }
+      }
+    },
+    {
+      "name": "public.listAllOwnerDevices",
+      "summary": "All enrolled devices across pages.",
+      "safety": "read_only",
+      "steps": [
+        {
+          "paginate": "public.listOwnerDevices",
+          "max_pages": 20,
+          "as": "devices"
+        }
+      ],
+      "output": "$devices"
+    }
+  ],
+  "disclosure": {
+    "clusters": [
+      {
+        "name": "messaging",
+        "summary": "Submit, track and cancel messages.",
+        "operations": [
+          "public.alpha_messages.*",
+          "public.owner_messages.*",
+          "sealed.messages.*",
+          "sealed.inbound_events.*",
+          "public.submitAlphaMessageAndAwait"
+        ]
+      },
+      {
+        "name": "webhooks",
+        "summary": "Webhook endpoints, deliveries, replays and secrets.",
+        "operations": [
+          "public.webhooks.*",
+          "sealed.webhooks.*"
+        ]
+      },
+      {
+        "name": "devices",
+        "summary": "Enrolled phones and their lines.",
+        "operations": [
+          "public.devices.*",
+          "sealed.devices.*",
+          "public.listAllOwnerDevices"
+        ]
+      },
+      {
+        "name": "workflow",
+        "summary": "Authorized workflow tools under a workflow grant.",
+        "operations": [
+          "workflow.*"
+        ]
+      },
+      {
+        "name": "usage",
+        "summary": "Usage history.",
+        "operations": [
+          "sealed.usage.*"
+        ]
+      }
+    ],
+    "prune": {
+      "descriptions": {
+        "max_sentences": 2,
+        "drop_phrases": [
+          "Implemented today (",
+          "crates/server/src/",
+          "as implemented by"
+        ]
+      },
+      "drop_fields": [],
+      "keep_examples": false
+    }
+  }
+}

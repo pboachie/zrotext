@@ -1,0 +1,16 @@
+[build-system]
+requires = []
+build-backend = "_build_backend"
+backend-path = ["."]
+
+[project]
+name = "zrotext-client"
+version = "0.1.7rc1"
+description = "Dependency-free client for ZROtext's restricted synthetic-alpha API"
+requires-python = ">=3.11"
+license = "AGPL-3.0-only"
+readme = "README.md"
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/pboachie/zrotext"

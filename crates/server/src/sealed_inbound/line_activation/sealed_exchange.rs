@@ -123,10 +123,15 @@ pub async fn open(
   let tx=client.transaction().await?;
   registration::lock_scope(&tx,p,id,line,device,Some(r.get(0)),None).await.map_err(|_|ExchangeError::Refused)?;
   let c=LineChallenge{id:r.get(0),account_id:p.tenant.account_id(),line_id:line,device_id:device,generation:r.get(1),nonce:nonce(&r,2).ok_or(ExchangeError::Refused)?};
-  tx.commit().await?;return Ok((c,r.get(3)));
+  tx.commit().await?;
+  // The owning device's socket may be idling between activation polls.
+  crate::device_socket::wake_sms_line_activation();
+  return Ok((c,r.get(3)));
  }
     let c = issue_registered_line_challenge(client, p, line, device, id).await?;
     let expiry=client.query_one("SELECT (extract(epoch FROM expires_at)*1000)::bigint FROM line_activation_challenges WHERE id=$1 AND protocol_version=1",&[&c.id]).await?.get(0);
+    // The owning device's socket may be idling between activation polls.
+    crate::device_socket::wake_sms_line_activation();
     Ok((c, expiry))
 }
 
@@ -343,6 +348,9 @@ pub async fn approve(
         r.get(0),
     )
     .await?;
+    // Push the approval acknowledgement now rather than at the device's
+    // idle activation-poll cadence.
+    crate::device_socket::wake_sms_line_activation();
     Ok(())
 }
 

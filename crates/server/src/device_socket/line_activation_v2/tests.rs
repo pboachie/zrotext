@@ -3,6 +3,124 @@ use super::*;
 use p256::ecdsa::{Signature, SigningKey, signature::Signer};
 use p256::elliptic_curve::Generate;
 
+fn poll_ack() -> Ack {
+    Ack {
+        challenge_id: Uuid::new_v4(),
+        account_id: Uuid::new_v4(),
+        line_id: Uuid::new_v4(),
+        device_id: Uuid::new_v4(),
+        generation: 1,
+        device_statement_sha256: [8; 32],
+        device_signature_sha256: [9; 32],
+    }
+}
+
+// Synthetic errors exercise the production ACK flow, not PostgreSQL decoding.
+fn deferred_ack(code: &&str) -> Option<bool> {
+    matches!(*code, "55P03" | "57014").then_some(false)
+}
+
+#[tokio::test]
+async fn ack_lookup_and_validation_deferrals_preserve_a_sent_challenge() {
+    for code in ["55P03", "57014"] {
+        for lookup_failed in [true, false] {
+            let ack = poll_ack();
+            let prior = Uuid::new_v4();
+            let mut sent = vec![prior];
+            let mut publisher_called = false;
+            let next = if lookup_failed {
+                Err(code)
+            } else {
+                Ok(Some(ack))
+            };
+            let outcome = finish_ack_poll(next, &mut sent, true, deferred_ack, |selected| {
+                publisher_called = true;
+                assert_eq!(selected.challenge_id, ack.challenge_id);
+                std::future::ready(Err(code))
+            })
+            .await;
+            assert_eq!(publisher_called, !lookup_failed);
+            assert_eq!(outcome, Some(true));
+            assert_eq!(
+                sms_line_poll_delay(outcome.unwrap()),
+                Duration::from_secs(3)
+            );
+            assert_eq!(sent, [prior]);
+
+            // A deferred ACK was not marked sent and can succeed on the next poll.
+            let recovered = finish_ack_poll(Ok(Some(ack)), &mut sent, false, deferred_ack, |_| {
+                std::future::ready(Ok(true))
+            })
+            .await;
+            assert_eq!(recovered, Some(true));
+            assert_eq!(sent, [prior, ack.challenge_id]);
+        }
+    }
+}
+
+#[tokio::test]
+async fn ack_deferrals_without_a_challenge_stay_idle_and_refusals_stop() {
+    let ack = poll_ack();
+    let mut sent = Vec::new();
+    for code in ["55P03", "57014"] {
+        for lookup_failed in [true, false] {
+            let next = if lookup_failed {
+                Err(code)
+            } else {
+                Ok(Some(ack))
+            };
+            let outcome = finish_ack_poll(next, &mut sent, false, deferred_ack, |_| {
+                std::future::ready(Err(code))
+            })
+            .await;
+            assert_eq!(outcome, Some(false));
+            assert_eq!(
+                sms_line_poll_delay(outcome.unwrap()),
+                Duration::from_secs(30)
+            );
+            assert!(sent.is_empty());
+        }
+    }
+    for code in ["unavailable", "invalid_input", "42P01"] {
+        for lookup_failed in [true, false] {
+            let next = if lookup_failed {
+                Err(code)
+            } else {
+                Ok(Some(ack))
+            };
+            assert_eq!(
+                finish_ack_poll(next, &mut sent, true, deferred_ack, |_| {
+                    std::future::ready(Err(code))
+                })
+                .await,
+                None
+            );
+            assert!(sent.is_empty());
+        }
+    }
+    assert_eq!(
+        finish_ack_poll(Ok(Some(ack)), &mut sent, true, deferred_ack, |_| {
+            std::future::ready(Ok(false))
+        })
+        .await,
+        None
+    );
+    assert!(sent.is_empty());
+    for pushed in [true, false] {
+        let mut publisher_called = false;
+        assert_eq!(
+            finish_ack_poll(Ok(None), &mut sent, pushed, deferred_ack, |_| {
+                publisher_called = true;
+                std::future::ready(Ok(true))
+            })
+            .await,
+            Some(pushed)
+        );
+        assert!(!publisher_called);
+        assert!(sent.is_empty());
+    }
+}
+
 #[test]
 fn selected_single_protocol_is_the_only_line_version_admission() {
     for token in [PROTOCOL, SEALED_PROTOCOL] {
