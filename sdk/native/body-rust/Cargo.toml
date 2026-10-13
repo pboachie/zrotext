@@ -1,0 +1,13 @@
+[package]
+name = "zrotext-body-text"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "AGPL-3.0-only"
+description = "Candidate ZTSE strict body text validation"
+repository = "https://github.com/pboachie/zrotext"
+readme = "README.md"
+include = ["src/**", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE"]
+[workspace]
+[dev-dependencies]
+serde_json = "1"

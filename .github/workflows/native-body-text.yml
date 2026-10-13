@@ -1,0 +1,34 @@
+name: Native body text parity
+on:
+  pull_request:
+    paths: ['sdk/native/body-*/**', 'protocol/v1/vectors/ztse-body-text-01.json', '.github/workflows/native-body-text.yml']
+  push:
+    branches: [main]
+    paths: ['sdk/native/body-*/**', 'protocol/v1/vectors/ztse-body-text-01.json', '.github/workflows/native-body-text.yml']
+permissions:
+  contents: read
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: rustup toolchain install 1.88.0 --profile minimal --component clippy --component rustfmt
+      - working-directory: sdk/native/body-rust
+        run: |
+          cargo +1.88.0 fmt --check
+          cargo +1.88.0 clippy --locked --all-targets -- -D warnings
+          cargo +1.88.0 test --locked
+          cargo +1.88.0 package --locked
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.22'
+          cache: false
+      - working-directory: sdk/native/body-go
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test ./...
