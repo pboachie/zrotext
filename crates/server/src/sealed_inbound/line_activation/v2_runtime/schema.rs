@@ -116,18 +116,27 @@ async fn constraints<C: GenericClient + Sync>(
 ) -> Result<()> {
     // PostgreSQL 18 also catalogs NOT NULL constraints as type n; ordered
     // column metadata above validates those independently on all supported PGs.
-    let rows=db.query("SELECT pg_get_constraintdef(oid),convalidated,condeferrable,condeferred,connoinherit FROM pg_constraint WHERE conrelid=to_regclass($1) AND contype<>'n'",&[&table]).await?;
+    // PK, UNIQUE and FK constraints are inherently non-inheritable and PG 18
+    // catalogs them with connoinherit set; only CHECK constraints must remain
+    // inheritable, matching the openings verifier.
+    let rows=db.query("SELECT contype::text,pg_get_constraintdef(oid),convalidated,condeferrable,condeferred,connoinherit FROM pg_constraint WHERE conrelid=to_regclass($1) AND contype<>'n'",&[&table]).await?;
     let wanted: BTreeSet<_> = expected.iter().map(|s| canonical(s)).collect();
     if rows.len() != expected.len() || wanted.len() != expected.len() {
         return Err(invalid());
     }
     let mut actual = BTreeSet::new();
     for row in rows {
-        if !row.get::<_, bool>(1)
-            || row.get::<_, bool>(2)
+        let kind: String = row.get(0);
+        let unexpected_inheritance = match kind.as_str() {
+            "c" => row.get::<_, bool>(5),
+            "p" | "u" | "f" => !row.get::<_, bool>(5),
+            _ => false,
+        };
+        if !row.get::<_, bool>(2)
             || row.get::<_, bool>(3)
             || row.get::<_, bool>(4)
-            || !actual.insert(canonical(&row.get::<_, String>(0)))
+            || unexpected_inheritance
+            || !actual.insert(canonical(&row.get::<_, String>(1)))
         {
             return Err(invalid());
         }
@@ -257,7 +266,9 @@ pub async fn require_installed<C: GenericClient + Sync>(db: &C) -> Result<()> {
     trigger_names(
         db,
         "line_activation_v2_observations",
-        &["line_activation_v2_observation_before_insert_or_update_or_delete"],
+        // Migration 096 declares a 64-byte trigger name; PostgreSQL truncates
+        // identifiers to 63 bytes, so the installed name drops the final "e".
+        &["line_activation_v2_observation_before_insert_or_update_or_delet"],
     )
     .await?;
     guard(
@@ -281,7 +292,8 @@ pub async fn require_installed<C: GenericClient + Sync>(db: &C) -> Result<()> {
     guard(
         db,
         "line_activation_v2_observations",
-        "line_activation_v2_observation_before_insert_or_update_or_delete",
+        // Same 63-byte truncation as the trigger-name check above.
+        "line_activation_v2_observation_before_insert_or_update_or_delet",
         "line_activation_v2_observation_guard",
         31,
         EXCHANGE,

@@ -21,6 +21,25 @@ async fn send(socket: &mut WebSocket, value: serde_json::Value) -> bool {
     text.len() <= MAX_FRAME_BYTES && socket.send(Message::Text(text.into())).await.is_ok()
 }
 
+/// A lock or statement timeout during a poll is contention with another
+/// holder of the exchange rows, not a failure of the exchange itself: the
+/// next poll retries instead of forcing the device connection to reconnect.
+fn poll_deferred(error: &sealed_exchange::ExchangeError) -> Option<bool> {
+    match error {
+        sealed_exchange::ExchangeError::Database(error) => {
+            // 55P03 lock_timeout and 57014 statement_timeout.
+            match error.code().map(|code| code.code()) {
+                Some("55P03" | "57014") => Some(false),
+                _ => {
+                    eprintln!("sealed line push refused the poll: {error}");
+                    None
+                }
+            }
+        }
+        _ => None,
+    }
+}
+
 /// No acknowledgement is retired by merely writing to the socket. The exact
 /// phone installation receipt is required, so dropped frames repeat safely.
 pub(super) async fn push(
@@ -28,13 +47,23 @@ pub(super) async fn push(
     database_url: &str,
     session: InboundSession<'_>,
 ) -> Option<bool> {
-    let mut client = runtime_db::connect_device(database_url).await.ok()?;
-    let challenge = sealed_exchange::next_challenge(&mut client, session)
-        .await
-        .ok()?;
-    let ack = sealed_exchange::next_ack(&mut client, session, &[])
-        .await
-        .ok()?;
+    // A failed poll connection is contention or a restart in progress, not an
+    // exchange failure; the next poll retries without closing the device.
+    let mut client = match runtime_db::connect_device(database_url).await {
+        Ok(client) => client,
+        Err(error) => {
+            eprintln!("sealed line poll connect deferred: {error}");
+            return Some(false);
+        }
+    };
+    let challenge = match sealed_exchange::next_challenge(&mut client, session).await {
+        Ok(value) => value,
+        Err(error) => return poll_deferred(&error),
+    };
+    let ack = match sealed_exchange::next_ack(&mut client, session, &[]).await {
+        Ok(value) => value,
+        Err(error) => return poll_deferred(&error),
+    };
     drop(client);
     let mut pushed = false;
     if let Some(c) = challenge {
@@ -94,14 +123,21 @@ mod tests {
 
     async fn frame(socket: &mut Socket, kind: &str) -> serde_json::Value {
         tokio::time::timeout(Duration::from_secs(35), async {
+            let mut last = serde_json::Value::Null;
             loop {
-                let WireMessage::Text(text) = socket.next().await.unwrap().unwrap() else {
-                    continue;
+                let message = socket.next().await.unwrap_or_else(|| {
+                    panic!("stream closed while awaiting {kind}; last frame: {last}")
+                });
+                let text = match message {
+                    Ok(WireMessage::Text(text)) => text,
+                    Ok(_) => continue,
+                    Err(error) => panic!("stream errored while awaiting {kind}: {error}"),
                 };
                 let value: serde_json::Value = serde_json::from_str(&text).unwrap();
                 if value["type"] == kind {
                     return value;
                 }
+                last = value;
             }
         })
         .await
@@ -257,6 +293,10 @@ mod tests {
             frame(&mut socket, "sealed_line_proof_ack").await["accepted"],
             true
         );
+        // A real phone keeps its 45-second read deadline alive with heartbeats
+        // while the owner completes the out-of-band approval; the activation
+        // is otherwise only guaranteed on the next (30-second) idle poll.
+        write(&mut socket, serde_json::json!({"v":1,"type":"heartbeat"})).await;
         let view = sealed_exchange::view(
             &mut c.owner.f.connect().await,
             &c.owner.principal,
@@ -276,6 +316,9 @@ mod tests {
         )
         .await
         .unwrap();
+        // Keep the read deadline alive across the idle poll that delivers the
+        // activation, exactly as a phone sending two heartbeats a minute.
+        write(&mut socket, serde_json::json!({"v":1,"type":"heartbeat"})).await;
         let ack = frame(&mut socket, "sealed_line_activated").await;
         assert_eq!(frame(&mut socket, "sealed_line_activated").await, ack);
         let mut receipt = ack.clone();

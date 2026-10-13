@@ -314,31 +314,72 @@ pub(super) async fn push(
     sent: &mut Vec<Uuid>,
     retire: bool,
 ) -> Option<bool> {
-    let mut db = runtime_db::connect_device(url).await.ok()?;
-    if purpose == Purpose::Sms && retire {
-        runtime::retire_sms(&mut db, s).await.ok()?;
+    // A failed poll connection is contention or a restart in progress, not an
+    // exchange failure; the next poll retries without closing the device.
+    let mut db = match runtime_db::connect_device(url).await {
+        Ok(db) => db,
+        Err(error) => {
+            eprintln!("v2 line poll connect deferred: {error}");
+            return Some(false);
+        }
+    };
+    if purpose == Purpose::Sms
+        && retire
+        && let Err(error) = runtime::retire_sms(&mut db, s).await
+    {
+        return poll_deferred(&error);
     }
     let mut pushed = false;
-    if let Some(c) = runtime::next_challenge(&mut db, s, purpose).await.ok()? {
-        runtime::current_challenge(&mut db, s, purpose, &c)
-            .await
-            .ok()?;
-        if !send(socket, challenge_frame(c, purpose, s.connection_epoch)).await {
-            return None;
+    match runtime::next_challenge(&mut db, s, purpose).await {
+        Err(error) => return poll_deferred(&error),
+        Ok(Some(c)) => {
+            if let Err(error) = runtime::current_challenge(&mut db, s, purpose, &c).await {
+                return poll_deferred(&error);
+            }
+            if !send(socket, challenge_frame(c, purpose, s.connection_epoch)).await {
+                return None;
+            }
+            pushed = true;
         }
-        pushed = true;
+        Ok(None) => {}
     }
-    if sent.len() < MAX_SMS_LINE_ACKS_PER_CONNECTION
-        && let Some(a) = runtime::next_ack(&mut db, s, purpose, sent).await.ok()?
-    {
-        runtime::current_ack(&mut db, s, a).await.ok()?;
-        if !send(socket, ack_frame(a, purpose, s.connection_epoch)).await {
-            return None;
+    if sent.len() < MAX_SMS_LINE_ACKS_PER_CONNECTION {
+        match runtime::next_ack(&mut db, s, purpose, sent).await {
+            Err(error) => return poll_deferred(&error),
+            Ok(Some(a)) => {
+                if let Err(error) = runtime::current_ack(&mut db, s, a).await {
+                    return poll_deferred(&error);
+                }
+                if !send(socket, ack_frame(a, purpose, s.connection_epoch)).await {
+                    return None;
+                }
+                sent.push(a.challenge_id);
+                pushed = true;
+            }
+            Ok(None) => {}
         }
-        sent.push(a.challenge_id);
-        pushed = true;
     }
     Some(pushed)
+}
+/// A lock or statement timeout during a poll is contention with another
+/// holder of the exchange rows, not a failure of the exchange itself: the
+/// next poll retries instead of forcing the device connection to reconnect.
+fn poll_deferred(
+    error: &crate::sealed_inbound::line_activation::LineActivationError,
+) -> Option<bool> {
+    match error {
+        crate::sealed_inbound::line_activation::LineActivationError::Database(error) => {
+            // 55P03 lock_timeout and 57014 statement_timeout.
+            match error.code().map(|code| code.code()) {
+                Some("55P03" | "57014") => Some(false),
+                _ => {
+                    eprintln!("v2 line push refused the poll: {error}");
+                    None
+                }
+            }
+        }
+        _ => None,
+    }
 }
 #[cfg(test)]
 mod db_tests;

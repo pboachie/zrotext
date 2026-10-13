@@ -431,12 +431,6 @@ async fn setup_retention_worker_prunes_expired_proposals_and_preserves_live_pend
         atomic::{AtomicBool, Ordering},
     };
     let (f, p, c, selected, r) = fixture().await;
-    // The actual worker also cleans protocol-versioned activation exchanges.
-    f.db.batch_execute(include_str!(
-        "../../../../../../deploy/compose/migrations/094_line_activation_protocol_version.sql"
-    ))
-    .await
-    .unwrap();
     let encoded = encode_record(&r).unwrap();
     let hash: [u8; 32] = Sha256::digest(&r.packet).into();
     // Storage-only rows deliberately use fixed expired times. They do not

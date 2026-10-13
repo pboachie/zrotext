@@ -197,6 +197,22 @@ impl GenuineCase {
             include_str!(
                 "../../../../../../deploy/compose/migrations/065_conversation_activation.sql"
             ),
+            // The sealed registration, exchange and v2 migrations are not in
+            // the inherited prerequisite list, but the explicit startup
+            // composition fail-closes until they are installed alongside the
+            // typed proposal schema.
+            include_str!(
+                "../../../../../../deploy/compose/migrations/086_sealed_line_key_registration.sql"
+            ),
+            include_str!(
+                "../../../../../../deploy/compose/migrations/087_sealed_line_activation_exchanges.sql"
+            ),
+            include_str!(
+                "../../../../../../deploy/compose/migrations/094_line_activation_protocol_version.sql"
+            ),
+            include_str!(
+                "../../../../../../deploy/compose/migrations/096_line_activation_v2_exchanges.sql"
+            ),
             include_str!(
                 "../../../../../../deploy/compose/migrations/097_owner_android_proposals.sql"
             ),
@@ -467,16 +483,8 @@ async fn mounted_request(
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; actual opt-in startup and synthetic public prerequisites"]
 async fn explicit_startup_requires_complete_proposal_schema_and_mounts_issue_and_context() {
     let c = GenuineCase::new().await;
-    for sql in [
-        include_str!(
-            "../../../../../../deploy/compose/migrations/086_sealed_line_key_registration.sql"
-        ),
-        include_str!(
-            "../../../../../../deploy/compose/migrations/087_sealed_line_activation_exchanges.sql"
-        ),
-    ] {
-        c.f.db.batch_execute(sql).await.unwrap();
-    }
+    // The sealed registration and exchange migrations already landed with the
+    // fixture; only the proposal schema is torn down and rebuilt below.
     c.f.db.batch_execute("DROP TABLE owner_android_proposals; DROP FUNCTION reject_owner_android_proposal_update()")
         .await.unwrap();
     assert!(matches!(

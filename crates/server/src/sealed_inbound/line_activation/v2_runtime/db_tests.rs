@@ -516,7 +516,9 @@ async fn schema_refuses_same_count_constraint_target_default_and_trigger_drift()
         ),
     ] {
         let tx = c.db.transaction().await.unwrap();
-        let name:String=tx.query_one("SELECT quote_ident(conname) FROM pg_constraint WHERE conrelid=to_regclass($1) AND pg_get_constraintdef(oid) LIKE $2",&[&table,&pattern]).await.unwrap().get(0);
+        // PostgreSQL 18 catalogs NOT NULL columns as constraints too; the
+        // verifier ignores them, so drift lookups must as well.
+        let name:String=tx.query_one("SELECT quote_ident(conname) FROM pg_constraint WHERE conrelid=to_regclass($1) AND contype<>'n' AND pg_get_constraintdef(oid) LIKE $2",&[&table,&pattern]).await.unwrap().get(0);
         tx.batch_execute(&format!("ALTER TABLE {table} DROP CONSTRAINT {name}; ALTER TABLE {table} ADD CONSTRAINT {name} {replacement}")).await.unwrap();
         assert!(
             unavailable(schema::require_installed(&tx).await),
@@ -717,6 +719,18 @@ async fn approval_rechecks_owner_membership_device_revocation_and_owner_expiry_a
         let tx = blocker.transaction().await.unwrap();
         match case {
             "membership_revoked" => {
+                // The memberships owner-revocation check makes this state
+                // unreachable in production; dropping it before the approval
+                // starts (never under lock contention) lets this disposable
+                // fixture still prove that a lapsed owner membership fails
+                // the LIVE recheck. The identity trigger permits revoked_at
+                // because it only guards identity and role.
+                tx.execute(
+                    "ALTER TABLE memberships DROP CONSTRAINT memberships_owner_not_revoked",
+                    &[],
+                )
+                .await
+                .unwrap();
                 tx.query_one(
                     "SELECT user_id FROM memberships WHERE account_id=$1 AND user_id=$2 FOR UPDATE",
                     &[&c.principal.tenant.account_id(), &c.principal.user_id],
@@ -781,7 +795,12 @@ async fn approval_rechecks_owner_membership_device_revocation_and_owner_expiry_a
                 .unwrap();
             }
             "membership_revoked" => {
-                tx.execute("UPDATE memberships SET revoked_at=clock_timestamp() WHERE account_id=$1 AND user_id=$2",&[&c.principal.tenant.account_id(),&c.principal.user_id]).await.unwrap();
+                tx.execute(
+                    "UPDATE memberships SET revoked_at=clock_timestamp() WHERE account_id=$1 AND user_id=$2",
+                    &[&c.principal.tenant.account_id(), &c.principal.user_id],
+                )
+                .await
+                .unwrap();
             }
             "device_revoked" => {
                 tx.execute(
