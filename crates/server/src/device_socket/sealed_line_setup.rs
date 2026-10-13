@@ -94,14 +94,21 @@ mod tests {
 
     async fn frame(socket: &mut Socket, kind: &str) -> serde_json::Value {
         tokio::time::timeout(Duration::from_secs(35), async {
+            let mut last = serde_json::Value::Null;
             loop {
-                let WireMessage::Text(text) = socket.next().await.unwrap().unwrap() else {
-                    continue;
+                let message = socket.next().await.unwrap_or_else(|| {
+                    panic!("stream closed while awaiting {kind}; last frame: {last}")
+                });
+                let text = match message {
+                    Ok(WireMessage::Text(text)) => text,
+                    Ok(_) => continue,
+                    Err(error) => panic!("stream errored while awaiting {kind}: {error}"),
                 };
                 let value: serde_json::Value = serde_json::from_str(&text).unwrap();
                 if value["type"] == kind {
                     return value;
                 }
+                last = value;
             }
         })
         .await
