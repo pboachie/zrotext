@@ -100,6 +100,10 @@ although the server rejects that combination. Retain the existing validators;
 generated schema success alone is not equivalent client-side validation.
 [#64](https://github.com/pboachie/tungsten/issues/64) tracks checkout-dependent
 Rust template bytes; the runner rejects CRLF templates before building.
+[#65](https://github.com/pboachie/tungsten/issues/65) tracks the missing
+no-redirect policy: generated TypeScript/Python read calls follow same-origin
+redirects even with retries disabled. Existing clients reject these redirects;
+retain those clients until explicit redirect-policy parity is available.
 Clean-consumer installation must work without sibling checkout dependencies,
 editable installs or Go replacements before claiming registry readiness.
 
