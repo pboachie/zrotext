@@ -27,6 +27,8 @@ public sealed class SignedEnvelope {
         var b=(byte[])input.Clone();var signer=(byte[])trustedSigner.Clone();
         Require(b[0]==90 && b[1]==84 && b[2]==83 && b[3]==69 && b[4]==expectedProfile && b[6]==0 && b[7]==0);
         int kind=b[5];Require(kind is 1 or 2);Require(expectedProfile!=3 || kind==1);
+        if(expectedProfile==3 && b.AsSpan(26,16).SequenceEqual(new byte[16]))
+            throw new CryptographicException("Profile03 message identity");
         Require(b.Length<=(kind==1?34213:34082));
         int size=BinaryPrimitives.ReadUInt16BigEndian(b.AsSpan(8,2));
         Require(size>=(kind==1?157:172) && size<=(kind==1?170:185));

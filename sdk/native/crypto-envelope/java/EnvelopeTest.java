@@ -21,6 +21,11 @@ public final class EnvelopeTest {
             var signed=SignedEnvelope.verify(bytes,profile,signer);
             if(!Arrays.equals(signed.bodyAad(),bodyAad) || !Arrays.equals(signed.wrapInfo(role,id),hex.parseHex(f[7])) || !Arrays.equals(signed.wrapAad(role,id),hex.parseHex(f[8])))throw new AssertionError("Transcript mismatch");
             checks+=3;rows++;
+            if(profile==3){
+                byte[] zeroMessage=bytes.clone();Arrays.fill(zeroMessage,26,42,(byte)0);
+                try {SignedEnvelope.verify(zeroMessage,profile,signer);throw new AssertionError("Zero message accepted");}
+                catch(GeneralSecurityException expected){if(!"Profile03 message identity".equals(expected.getMessage()))throw expected;checks++;}
+            }
             byte[] copied=signed.bytes();Arrays.fill(copied,(byte)0);
             if(!Arrays.equals(signed.bytes(),bytes))throw new AssertionError("Mutable snapshot");checks++;
             for(int at:new int[]{0,4,5,6,7,8,9,10,74,114,146,154,162,bytes.length-65,bytes.length-1}) {

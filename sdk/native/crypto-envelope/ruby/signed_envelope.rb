@@ -21,6 +21,7 @@ module ZrotextCandidate
       require_valid(bytes.byteslice(0,4)=='ZTSE' && bytes.getbyte(4)==expected_profile && bytes.byteslice(6,2)=="\x00\x00".b)
       kind=bytes.getbyte(5)
       require_valid([1,2].include?(kind) && (expected_profile!=3 || kind==1))
+      raise ArgumentError,'Profile03 message identity' if expected_profile==3 && bytes.byteslice(26,16)=="\x00".b*16
       require_valid(bytes.bytesize<=(kind==1 ? 34213 : 34082))
       size=bytes.byteslice(8,2).unpack1('n')
       require_valid(size.between?(kind==1 ? 157 : 172,kind==1 ? 170 : 185))

@@ -17,6 +17,16 @@ $stdin.each_line do |line|
   signed=ZrotextCandidate::SignedEnvelope.verify(bytes,profile,signer)
   raise 'Transcript mismatch' unless signed.body_aad==body_aad && signed.wrap_info(role,id)==[f[7]].pack('H*') && signed.wrap_aad(role,id)==[f[8]].pack('H*')
   checks+=3;rows+=1
+  if profile==3
+    zero_message=bytes.dup;zero_message[26,16]="\x00".b*16
+    begin
+      ZrotextCandidate::SignedEnvelope.verify(zero_message,profile,signer)
+      raise 'Zero message accepted'
+    rescue ArgumentError=>error
+      raise unless error.message=='Profile03 message identity'
+      checks+=1
+    end
+  end
   copied=signed.bytes;copied.replace('');raise 'Mutable snapshot' unless signed.bytes==bytes;checks+=1
   [0,4,5,6,7,8,9,10,74,114,146,154,162,bytes.bytesize-65,bytes.bytesize-1].each do |at|
     changed=bytes.dup;changed.setbyte(at,changed.getbyte(at)^1)

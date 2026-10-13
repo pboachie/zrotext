@@ -6,7 +6,7 @@ supports outbound and inbound shapes; profile03 currently supports outbound
 only. Profile01, mismatches and unsupported profile03 inbound fail closed.
 
 The parser checks exact lengths, flags, signed-range integer fields, canonical
-peer syntax, bounded expiry, inbound event identity/sequence, body length,
+peer syntax, nonzero profile03 message identity, bounded expiry, inbound event identity/sequence, body length,
 recipient counts/roles/order, all encapsulated curve points, signer key identity,
 raw P-256 scalar ranges and low-S canonicality. It verifies the exact
 `ZTSE/sign/v2` or `ZTSE/sign/v3` transcript through native ECDSA before creating an
@@ -41,7 +41,7 @@ Extracting that point for a test is not manifest verification.
 Rows contain nine tab-separated fields: name, profile, envelope hex, signer point
 hex, body AAD hex, recipient role, recipient key ID hex, wrap info hex, wrap AAD hex.
 The six recipient rows span profile02 outbound/inbound and profile03 outbound.
-Each language executes 150 checks, including exact transcripts, profile refusal,
+Each language executes 153 checks, including exact transcripts, profile refusal,
 signed-byte mutations, truncation/trailing bytes, high-S alias rejection,
 recipient lookup and input/output mutation isolation. These tests do not imply
 full reader acceptance or execution by a real recipient device.

@@ -34,6 +34,8 @@ public final class SignedEnvelope {
         int kind=b[5]; require(kind==1 || kind==2);
         // Profile03 inbound has no reviewed producer/authority contract here.
         require(expectedProfile!=3 || kind==1);
+        if(expectedProfile==3 && Arrays.equals(Arrays.copyOfRange(b,26,42),new byte[16]))
+            throw new GeneralSecurityException("Profile03 message identity");
         require(b.length<=(kind==1?34213:34082));
         int size=Short.toUnsignedInt(ByteBuffer.wrap(b,8,2).getShort());
         require(size>=(kind==1?157:172) && size<=(kind==1?170:185));

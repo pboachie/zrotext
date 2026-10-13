@@ -14,6 +14,11 @@ for(string? line;(line=Console.ReadLine()) is not null;) {
     var signed=SignedEnvelope.Verify(bytes,profile,signer);
     if(!signed.BodyAad().AsSpan().SequenceEqual(bodyAad) || !signed.WrapInfo(role,id).AsSpan().SequenceEqual(Convert.FromHexString(f[7])) || !signed.WrapAad(role,id).AsSpan().SequenceEqual(Convert.FromHexString(f[8])))throw new Exception("Transcript mismatch");
     checks+=3;rows++;
+    if(profile==3){
+        var zeroMessage=(byte[])bytes.Clone();zeroMessage.AsSpan(26,16).Clear();
+        try{SignedEnvelope.Verify(zeroMessage,profile,signer);throw new Exception("Zero message accepted");}
+        catch(CryptographicException error) when(error.Message=="Profile03 message identity"){checks++;}
+    }
     var copied=signed.Bytes();Array.Clear(copied);if(!signed.Bytes().AsSpan().SequenceEqual(bytes))throw new Exception("Mutable snapshot");checks++;
     foreach(int at in new[]{0,4,5,6,7,8,9,10,74,114,146,154,162,bytes.Length-65,bytes.Length-1}) {
         var changed=(byte[])bytes.Clone();changed[at]^=1;Reject(()=>SignedEnvelope.Verify(changed,profile,signer));
