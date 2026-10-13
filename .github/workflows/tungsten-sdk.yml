@@ -27,7 +27,7 @@ jobs:
         shell: bash
         run: |
           revision=$(python3 -c 'import json; print(json.load(open("sdk/tungsten/generator.lock.json"))["revision"])')
-          git clone --no-checkout https://github.com/pboachie/tungsten.git "$RUNNER_TEMP/tungsten"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/tungsten.git "$RUNNER_TEMP/tungsten"
           git -C "$RUNNER_TEMP/tungsten" checkout --detach "$revision"
       - name: Generate and verify all targets
         run: python3 scripts/tungsten_sdk.py --source "$RUNNER_TEMP/tungsten" --check

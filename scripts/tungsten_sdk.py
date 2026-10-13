@@ -40,6 +40,11 @@ def verify_source(source, lock):
                 capture_output=True, text=True).stdout
     if dirty.strip():
         raise ValueError("Tungsten source must be clean, including untracked source files")
+    # Rust include_str! embeds this checkout's literal bytes. Git status alone
+    # cannot detect autocrlf conversion, which changes the generated inventory.
+    template = source / "crates/tungsten-emit-rs/src/sdk/support_template.rs"
+    if b"\r" in template.read_bytes():
+        raise ValueError("Tungsten requires an LF checkout; use git clone -c core.autocrlf=false")
 
 
 def extension_files(extensions):

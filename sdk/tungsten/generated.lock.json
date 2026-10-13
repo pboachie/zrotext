@@ -361,7 +361,7 @@
   "rust/zrotext-sdk/src/resources/workflow_tools_action.rs": "235ef3c690d635a57945011a8bbc8ec6479c6d84bee7b2f3bbe0246103568de4",
   "rust/zrotext-sdk/src/resources/workflow_tools_contact.rs": "578c6e98df0dd5a3622ab63ae69ec217ca50e0df848962055f87473bebd53968",
   "rust/zrotext-sdk/src/resources/workflow_tools_context.rs": "aaebeb000354f455daefe951bc364d583504451cd7944964ce752cb1f81eb6e4",
-  "rust/zrotext-sdk/src/support.rs": "9d5b11ec2800bf0bd97ddbb96a0019a45497166dad105ff0b8400f14ae74ca55",
+  "rust/zrotext-sdk/src/support.rs": "814d0a84729500f6443a7af8ab9171e1fe506c3b3614c308b4ae4f49cd738318",
   "typescript/README.md": "216a6efcc98be53872a7c2a139f80ec88ce61c26354060550437dbf8e9446509",
   "typescript/package.json": "a87bb5e1e570675354ff232b2a1b133cae4b6dacc6e5d215263a886a2d8818ce",
   "typescript/src/client.ts": "1f08ebfb5abb90c7718ad773e7e75b10bb869eccfa9f96d036e92fc7c0df26bb",

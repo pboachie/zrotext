@@ -53,6 +53,18 @@ class GenerationPolicyTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "clean"):
                     sdk.verify_source(source, lock)
 
+    def test_rejects_noncanonical_embedded_template_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            template = source / "crates/tungsten-emit-rs/src/sdk/support_template.rs"
+            template.parent.mkdir(parents=True)
+            template.write_bytes(b"// template\r\n")
+            answers = [subprocess.CompletedProcess([], 0, stdout="expected"),
+                       subprocess.CompletedProcess([], 0, stdout="")]
+            with patch.object(sdk, "run", side_effect=answers):
+                with self.assertRaisesRegex(ValueError, "LF checkout"):
+                    sdk.verify_source(source, {"revision": "expected", "runtime_revision": "expected"})
+
     def test_inventory_detects_changes_without_hashing_installed_dependencies(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

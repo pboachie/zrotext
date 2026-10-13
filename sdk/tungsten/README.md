@@ -9,7 +9,9 @@ Generated clients do not implement sealed-content encryption or key custody.
 ## Reproduce the output
 
 Check out Tungsten at the revision in `generator.lock.json` into a clean external
-directory. Install that checkout's Rust toolchain and Go, then run from this repo:
+directory using `git clone -c core.autocrlf=false` so embedded templates retain
+their canonical LF bytes. Install that checkout's Rust toolchain and Go, then run
+from this repo:
 
 ```sh
 python3 scripts/tungsten_sdk.py --source /path/to/tungsten
@@ -92,6 +94,8 @@ Conditional JSON Schema refinement is also blocked by
 selection validator accepts enabling without encrypted-transfer confirmation,
 although the server rejects that combination. Retain the existing validators;
 generated schema success alone is not equivalent client-side validation.
+[#64](https://github.com/pboachie/tungsten/issues/64) tracks checkout-dependent
+Rust template bytes; the runner rejects CRLF templates before building.
 Clean-consumer installation must work without sibling checkout dependencies,
 editable installs or Go replacements before claiming registry readiness.
 
