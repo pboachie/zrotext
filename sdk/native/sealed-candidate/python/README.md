@@ -28,7 +28,7 @@ Wheel contents are restricted to the package's thirteen modules and distribution
 metadata/license. Source archives add build metadata and this README; neither
 archive includes tests, fixture producers, private receipts, sample scalars or
 repository tooling. Both carry AGPL-3.0-only license metadata and full text.
-`check_package.py --output <artifact-directory> --workflow-source <reviewed-workflow-package>` builds both formats in temporary
+`check_package.py --output <artifact-directory> --workflow-source <reviewed-workflow-package> --time-policy-source <shared-fixture-checkout>` builds both formats in temporary
 storage, checks exact archive/dependency contents, installs each into a fresh
 virtual environment and exercises real signed evidence, decryption, composition
 and journal replay outside the checkout. Its isolated consumers then pass their
@@ -505,3 +505,36 @@ software fixture key and test native opening with an actual qualified TPM when
 available. They do not qualify arbitrary nonextractable WebCrypto template keys:
 browser custody needs separate acceptance and is not covered by the software
 fixture result. The native path binds the exact manifest public point.
+
+Historical contact integrity helpers accept genuine generation-one profile02
+manifest history and independently compared account, HTTPS origin and root
+fingerprint. `verify_contact_reader_statement01`, `verify_contact_field01`,
+`verify_contact_mutation01` and `verify_contact_transition01` verify low-S root
+signatures, exact binary encodings, revision links and retained/replaced/cleared
+field commitments. Their opaque tokens prove historical integrity only. They do
+not install access, authorize a current owner, decrypt contact fields, sign new
+contact content or establish current deletion state. No network or storage effect
+is performed. Identity accessors return defensive copies.
+
+Origin compatibility remains an explicit candidate gate: canonical ASCII hosts,
+IPv4, IPv6 and nondefault ports are checked against maintained TypeScript URL
+behavior, but all `xn--` host labels are currently refused. Some are valid inputs
+under the full contract (for example `https://xn--fa-hia.invalid`); a reviewed
+WHATWG/UTS46 implementation is still required before full origin parity can be
+claimed. Python's built-in IDNA conversion is not substituted for that contract.
+The fresh TypeScript fixture signs a genuine genesis-to-successor history and
+create/update/clear/conversion commitments; its ciphertexts are opaque synthetic
+payloads, not evidence of a production contact encryption implementation.
+
+Outbound profile03 composition requires every selected signer/recipient key's
+activation time to be at or before the signed observation, in addition to trusted
+current-time activation and the existing upper expiry bounds. Manifest issuance
+is a separate freshness/skew check; an otherwise valid observation before issuance
+is not refused solely for that reason. Profile02 and inbound rules are unchanged.
+The shared fourteen-case fixture generator constructs genuine fresh root-signed
+manifests and dual-signed elections. Accepted native outputs independently open
+all three HPKE wraps in maintained TypeScript. Set `ZROTEXT_TIME_POLICY_SOURCE`
+to the pinned shared fixture checkout when running native tests; provide the same
+checkout with `check_package.py --time-policy-source` for installed qualification.
+The CI workflow records the exact shared source revision and builds its TypeScript
+fixture dependencies separately.

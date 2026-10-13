@@ -34,3 +34,12 @@ __all__ = ['SealedError', 'SoftwareRecipient', 'CheckpointStore', 'ElectionJourn
            'TemplateError','canonical_template_bytes','template_digest','estimate_segments','preview_encrypted_template',
            'encrypted_template_aad','seal_encrypted_template_bytes','open_encrypted_template_bytes',
            'seal_encrypted_template','open_encrypted_template','encrypted_template_digest']
+
+from .contact_integrity import (ContactIntegrityError,encode_contact_reader_statement01,parse_contact_reader_statement01,
+    verify_contact_reader_statement01,encode_contact_field01,parse_contact_field01,verify_contact_field01,
+    encode_contact_mutation01,parse_contact_mutation01,verify_contact_mutation01,verify_contact_transition01,
+    contact_statement_identity,contact_field_identity,contact_mutation_identity,contact_transition_identity)
+__all__ += ['ContactIntegrityError','encode_contact_reader_statement01','parse_contact_reader_statement01',
+    'verify_contact_reader_statement01','encode_contact_field01','parse_contact_field01','verify_contact_field01',
+    'encode_contact_mutation01','parse_contact_mutation01','verify_contact_mutation01','verify_contact_transition01',
+    'contact_statement_identity','contact_field_identity','contact_mutation_identity','contact_transition_identity']
