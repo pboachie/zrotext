@@ -47,6 +47,7 @@ module ZrotextCandidate
         @digest=digest.freeze;@account=account.freeze;@root=root.freeze;@previous=previous.freeze;@parent=parent;freeze
       end
       private_class_method :new
+      def generation = ManifestChain.number(@bytes,@profile==2 ? 21 : 23)
       def bytes = @bytes.dup
       def digest = @digest.dup
       def account = @account.dup
@@ -75,7 +76,7 @@ module ZrotextCandidate
       count=bytes.getbyte(150+offset);need(count.between?(1,64) && bytes.bytesize==215+offset+149*count)
       account=bytes.byteslice(5+offset,16);root=bytes.byteslice(85+offset,65);previous=bytes.byteslice(53+offset,32)
       generation=number(bytes,21+offset);version=number(bytes,29+offset);issued=number(bytes,37+offset);expires=number(bytes,45+offset)
-      need(!zero(account) && generation==1 && version>0);window(issued,expires,now);HpkeRecipient.point(root)
+      need(!zero(account) && generation>0 && (profile==2 || generation==1) && version>0);window(issued,expires,now);HpkeRecipient.point(root)
       last=nil;points={};owners=0;archives=0
       count.times do |i|
         at=151+offset+149*i;role=bytes.getbyte(at);state=bytes.getbyte(at+148);scope=bytes.byteslice(at+130,2).unpack1('n')
@@ -99,15 +100,24 @@ module ZrotextCandidate
     private_class_method :parse
     def genesis02(input,pin,now)
       need(pin.instance_of?(RootPin));value=parse(input,2,now)
-      need(value.account==pin.account && value.root_point==pin.point && value.version==1 && zero(value.previous));value
+      need(value.account==pin.account && value.root_point==pin.point && value.generation==1 && value.version==1 && zero(value.previous));value
     end
     def continue_chain(input,prior,expected_profile,now)
       need(prior.instance_of?(Verified) && now.is_a?(Integer) && now>=prior.comparison_ms && !(prior.profile==3 && expected_profile==2))
       window(prior.issued_ms,prior.expires_ms,now) if prior.profile==2 && expected_profile==3
-      value=parse(input,expected_profile,now);need(value.account==prior.account && value.root_point==prior.root_point)
+      value=parse(input,expected_profile,now);need(value.account==prior.account && value.root_point==prior.root_point && value.generation==prior.generation)
       return linked(value,prior.parent) if value.profile==prior.profile && value.version==prior.version && value.digest==prior.digest
       need(prior.version<2**63-1 && value.version==prior.version+1 && value.previous==prior.digest)
       need(value.profile==2 || value.predecessor==prior.profile);linked(value,prior)
+    end
+    # External successor approval is never learned from the signed transition itself.
+    def rotate02(transition,new_genesis,prior,independently_approved_root,now)
+      need(prior.instance_of?(Verified) && prior.profile==2 && now.is_a?(Integer) && now>=prior.comparison_ms && transition.bytesize==343 && independently_approved_root.bytesize==65)
+      raw=transition.b.dup;expected=independently_approved_root.b.dup;need(raw.byteslice(0,5)=="ZTRT\x02".b)
+      need(prior.generation<2**63-1 && raw.byteslice(5,16)==prior.account && number(raw,21)==prior.generation && number(raw,29)==prior.generation+1 && raw.byteslice(37,65)==prior.root_point && raw.byteslice(102,65)==expected && expected!=prior.root_point && raw.byteslice(167,32)==prior.digest)
+      window(number(raw,199),number(raw,207),now);unsigned=raw.byteslice(0,215)
+      signature(prior.root_point,raw.byteslice(215,64),'ZTSE/root-transition/v2',unsigned);signature(expected,raw.byteslice(279,64),'ZTSE/root-transition/v2',unsigned)
+      value=parse(new_genesis,2,now);need(value.generation==prior.generation+1 && value.version==1 && value.account==prior.account && value.root_point==expected && value.previous==sha(unsigned));linked(value,prior)
     end
     def linked(value,parent)
       Verified.send(:new,value.bytes,value.profile,value.predecessor,value.version,value.issued_ms,value.expires_ms,value.comparison_ms,value.digest,value.account,value.root_point,value.previous,parent)
