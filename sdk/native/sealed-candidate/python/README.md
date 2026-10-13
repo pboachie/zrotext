@@ -538,3 +538,10 @@ to the pinned shared fixture checkout when running native tests; provide the sam
 checkout with `check_package.py --time-policy-source` for installed qualification.
 The CI workflow records the exact shared source revision and builds its TypeScript
 fixture dependencies separately.
+
+The native outbound03 reader applies the same selected signer/recipient key
+lifetime coverage (`key.start <= observed` and `expires <= key.end`) before any
+HPKE unwrap. It does not add a manifest-issuance lower bound to observation.
+Shared accepted cases self-open natively as well as independently in TypeScript;
+authentically signed out-of-lifetime ciphertext is refused before recipient use.
+Profile02 and inbound envelope checks retain their existing policies.
