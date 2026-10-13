@@ -140,6 +140,8 @@ def ruby_package(stage, feed, ruby):
         "install", "--local", "--no-document", "--install-dir", home,
         next(feed.glob("zrotext-sdk-*.gem")), env=env, cwd=feed)
     run(ruby, CONFIG / "ruby-package-consumer.rb", env=env, cwd=stage)
+    managed = load("managed_package_wire", CONFIG / "package-managed.py")
+    managed.wire_checks([ruby, CONFIG / "package-wire/probe.rb"], env)
     # Prove inherited Ruby source paths cannot falsely qualify the archives,
     # even when that shim loads the real gem and populates Gem.loaded_specs.
     injected = stage / "source-injection"

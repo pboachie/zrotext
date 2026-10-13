@@ -81,7 +81,7 @@ runtime source and generated inventory, adds AGPL SDK and Apache runtime license
 files in staging, builds ordinary wheels or gems, removes staging source, then
 installs into an isolated consumer. Python additionally runs the ten injected
 wire checks from the installed wheel. Ruby loads the packaged client and its
-runtime. The Python build and consumer dependency versions are pinned in
+runtime and runs the managed wire checks described below. The Python build and consumer dependency versions are pinned in
 `python-package-requirements.txt`; its binary dependencies make the feed specific
 to the build platform. Each output has archive hashes and a qualification manifest.
 
@@ -91,7 +91,16 @@ and loads all namespaces. Maven builds JAR/POM pairs, resolves the SDK plus its
 runtime from a file repository into a fresh dependency cache, and compiles/runs
 a consumer. NuGet produces nupkg files, maps candidate coordinates exclusively to
 the local feed, and restores/builds/runs a consumer from a separate package cache.
-These are package entry-point checks; the separate transport and sealed-profile
+Java, C#, and Ruby each run nineteen synthetic HTTP checks using the installed
+archives after staging source removal. These reuse the reviewed managed wire
+probes: owner cookie/CSRF and bearer authentication, missing-auth refusal,
+malformed JSON and strict response validation, bounded read timeout, no automatic
+rate-limit retry, cross-origin redirect refusal, uncertain mutation outcomes,
+disabled sealed gates, caller-owned idempotency, preview confirmation, and
+unknown/planned-operation exclusion. Maven compiles the probe against resolved
+JARs; NuGet rebuilds its consumer against PackageReferences; Ruby retains its
+installed-gem origin check and source-injection refusal. Pagination and same-origin
+read redirects are not qualified by these nineteen cases. Separate sealed-profile
 suites remain required. No test invokes a live ZROtext server.
 
 Go uses a temporary file module proxy, a fresh module/build cache, no `replace`,

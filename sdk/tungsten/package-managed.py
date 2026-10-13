@@ -1,5 +1,6 @@
 """Archive and clean-consumer gates for npm, Maven, and NuGet candidates."""
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,13 @@ MAVEN = "http://maven.apache.org/POM/4.0.0"
 
 def run(*args, **kwargs):
     return subprocess.run(list(map(str, args)), check=True, **kwargs)
+
+
+def wire_checks(command, env):
+    spec = importlib.util.spec_from_file_location("installed_managed_wire", CONFIG / "package-wire/managed.py")
+    checks = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(checks)
+    checks.exercise(list(map(str, command)), env)
 
 
 def executable(name):
@@ -155,6 +163,12 @@ System.out.println("Installed Maven client loaded"); } }''')
            if key not in ("CLASSPATH", "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS")}
     run(executable("java"), "-cp", str(consumer / "target/classes") + os.pathsep
         + str(consumer / "target/dependency/*"), "Consumer", cwd=consumer, env=env)
+    classes = consumer / "wire-classes"
+    classes.mkdir()
+    classpath = str(consumer / "target/dependency/*")
+    run(executable("javac"), "--release", "17", "-Xlint:all", "-Werror", "-cp", classpath,
+        "-d", classes, CONFIG / "package-wire/Probe.java", cwd=consumer, env=env)
+    wire_checks([executable("java"), "-cp", str(classes) + os.pathsep + classpath, "Probe"], env)
 
 
 def csharp_package(stage, feed):
@@ -212,3 +226,7 @@ System.Console.WriteLine("Installed NuGet client loaded");''')
     run(dotnet, "restore", consumer / "Consumer.csproj", "--configfile", config, env=env, cwd=consumer)
     run(dotnet, "run", "--project", consumer / "Consumer.csproj", "--no-restore", "-c", "Release",
         env=env, cwd=consumer)
+    shutil.copyfile(CONFIG / "package-wire/Probe.cs", consumer / "Program.cs")
+    run(dotnet, "build", consumer / "Consumer.csproj", "--no-restore", "-t:Rebuild", "-c", "Release",
+        env=env, cwd=consumer)
+    wire_checks([dotnet, consumer / "bin/Release/net10.0/Consumer.dll"], env)
