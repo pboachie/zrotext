@@ -45,8 +45,9 @@ class ArchiveTests(unittest.TestCase):
     def test_closed_runtime_inventory(self):
         for language in ('java', 'csharp', 'ruby'):
             paths = managed.runtime_sources(language)
-            self.assertEqual(len(paths), 17)
-            self.assertEqual(len(set(paths)), 17)
+            expected = 17 if language == 'java' else 21
+            self.assertEqual(len(paths), expected)
+            self.assertEqual(len(set(paths)), expected)
 
     def test_installed_command_rejects_shell_strings_and_invalid_arguments(self):
         load = runpy.run_path(str(Path(__file__).with_name('installed-command.py')))['load']

@@ -82,6 +82,26 @@ jobs:
           ref: 50c7258eb7e616ba8f0574d167bff7b999a9bd8d
           path: current-fixture
           persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: d127e5c86f3b17db371acc608eedcf6419264ba7
+          path: read-fixture
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: e3ed703a2c5eb0f72fc4138fade0859637dff3d5
+          path: page-fixture
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: a0cd1763406b6c0a05f7ea57a897664f39667b75
+          path: owner-fixture
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: a32ef83ad24746a99b3ba8895170b588b718e236
+          path: proposal-fixture
+          persist-credentials: false
       - name: Build independent producers
         shell: pwsh
         run: |
@@ -98,5 +118,5 @@ jobs:
       - name: Qualify clean installed candidate consumers
         shell: pwsh
         run: |
-          python sdk/native/crypto-envelope/package-managed.py --target ${{ matrix.language }} --out "$env:RUNNER_TEMP/native-artifacts" --producer02 producer02 --producer03 producer03 --custody-producer custody-producer --root-producer root-producer --root-controls root-controls --controls controls --original-producer original-producer --http-fixture http-fixture --current-fixture current-fixture
+          python sdk/native/crypto-envelope/package-managed.py --target ${{ matrix.language }} --out "$env:RUNNER_TEMP/native-artifacts" --producer02 producer02 --producer03 producer03 --custody-producer custody-producer --root-producer root-producer --root-controls root-controls --controls controls --original-producer original-producer --http-fixture http-fixture --current-fixture current-fixture --read-fixture read-fixture --page-fixture page-fixture --owner-fixture owner-fixture --proposal-fixture proposal-fixture
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
