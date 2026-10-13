@@ -1,0 +1,42 @@
+name: Native HPKE recipient interop
+on:
+  pull_request:
+    paths: ['sdk/native/hpke-candidate/**', '.github/workflows/native-hpke-interop.yml']
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  interop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.13.0'
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.22'
+          cache: false
+      - name: Prepare independent reviewed producer
+        run: |
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$RUNNER_TEMP/producer"
+          git -C "$RUNNER_TEMP/producer" checkout --detach 4028720ca2b066ddd964e78b02efa1de01080cf4
+          npm ci --prefix "$RUNNER_TEMP/producer/sdk/typescript" --ignore-scripts --no-audit --no-fund
+      - run: rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
+      - name: Rust native recipient and package
+        working-directory: sdk/native/hpke-candidate/rust
+        run: |
+          cargo +1.97.1 fmt --check
+          cargo +1.97.1 clippy --locked --all-targets -- -D warnings
+          node "$RUNNER_TEMP/producer/sdk/typescript/test/emit-native-hpke.mjs" | cargo +1.97.1 run --locked --example interop
+          cargo +1.97.1 package --locked
+      - name: Go native recipient
+        working-directory: sdk/native/hpke-candidate/go
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          node "$RUNNER_TEMP/producer/sdk/typescript/test/emit-native-hpke.mjs" | go run ./cmd/interop
