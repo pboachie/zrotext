@@ -248,3 +248,13 @@ Public local mock fixtures and an automated scenario command are documented in
 to verify seeded IR responses, gates, authentication shapes, workflow mapping,
 pagination and synthetic failure/replay behavior. These checks cannot establish
 real token authority, cryptography, transaction durability or device acceptance.
+
+
+Managed raw-body webhook companions have separate licensed archive gates:
+`python sdk/native/package-webhooks.py --target java --out <external-directory>`
+(and `csharp` or `ruby`). Their clean Maven, NuGet and gem consumers run the
+shared raw-byte signature, tampering and replay-window vectors after source
+staging removal. See the [Java](../native/java/README.md),
+[C#](../native/csharp/README.md) and [Ruby](../native/ruby/README.md) guides for
+candidate coordinates. These helpers remain outside generated files and require
+receiver-owned event deduplication; they do not add sealed-content acceptance.
