@@ -121,3 +121,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python sdk/native/hpke-candidate/run-cng.py --producer "$env:RUNNER_TEMP/election" --language go --profile 3
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python sdk/native/hpke-candidate/run-compose.py --producer "$env:RUNNER_TEMP/election" --language rust
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python sdk/native/hpke-candidate/run-compose.py --producer "$env:RUNNER_TEMP/election" --language go
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

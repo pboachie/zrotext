@@ -90,7 +90,8 @@ type HardwareRecipient struct {
 	qualified, closed bool
 }
 
-func startHardware() (*HardwareRecipient, error) {
+func startHardware() (*HardwareRecipient, error) { return startHardwareAlgorithm("ECDH_P256") }
+func startHardwareAlgorithm(algorithm string) (*HardwareRecipient, error) {
 	a, e := nativeAPI()
 	if e != nil {
 		return nil, e
@@ -105,7 +106,7 @@ func startHardware() (*HardwareRecipient, error) {
 		}
 	}
 	if e == nil {
-		e = a.call("NCryptIsAlgSupported", r.provider, uintptr(unsafe.Pointer(wide("ECDH_P256"))), 0)
+		e = a.call("NCryptIsAlgSupported", r.provider, uintptr(unsafe.Pointer(wide(algorithm))), 0)
 	}
 	if e != nil {
 		r.Close()
@@ -242,7 +243,8 @@ func (r *HardwareRecipient) qualify() error {
 	}
 	return nil
 }
-func (r *HardwareRecipient) public() ([]byte, error) {
+func (r *HardwareRecipient) public() ([]byte, error) { return r.publicMagic(0x314b4345) }
+func (r *HardwareRecipient) publicMagic(magic uint32) ([]byte, error) {
 	if r.closed || r.key == 0 {
 		return nil, ErrProtectedUnavailable
 	}
@@ -252,7 +254,7 @@ func (r *HardwareRecipient) public() ([]byte, error) {
 	if e != nil {
 		return nil, e
 	}
-	if size != 72 || binary.LittleEndian.Uint32(blob[:4]) != 0x314b4345 || binary.LittleEndian.Uint32(blob[4:8]) != 32 {
+	if size != 72 || binary.LittleEndian.Uint32(blob[:4]) != magic || binary.LittleEndian.Uint32(blob[4:8]) != 32 {
 		return nil, ErrProtectedUnavailable
 	}
 	public := append([]byte{4}, blob[8:]...)
