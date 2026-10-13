@@ -10,7 +10,7 @@ Run with Python 3.11+, Node, OpenSSL, Cargo/Rust 1.97.1 or Go 1.26.9 on PATH.
 The signed TLS fixture producer additionally requires Python `cryptography`:
 
 ```sh
-python sdk/native/hpke-candidate/package-native.py --language rust --archive PATH_TO_REVIEWED_PROFILE02_PRODUCER --election PATH_TO_REVIEWED_PROFILE03_PRODUCER --original PATH_TO_REVIEWED_ORIGINAL_PRODUCER --template PATH_TO_REVIEWED_TEMPLATE_PRODUCER --output NEW_OUTPUT_DIRECTORY --require-protected
+python sdk/native/hpke-candidate/package-native.py --language rust --archive PATH_TO_REVIEWED_PROFILE02_PRODUCER --election PATH_TO_REVIEWED_PROFILE03_PRODUCER --original PATH_TO_REVIEWED_ORIGINAL_PRODUCER --template PATH_TO_REVIEWED_TEMPLATE_PRODUCER --save-oracle PATH_TO_REVIEWED_SAVE_ORACLE --opening-oracle PATH_TO_REVIEWED_OPENING_ORACLE --output NEW_OUTPUT_DIRECTORY --require-protected
 ```
 
 Use `--language go` for the Go module. The script verifies exact producer commits
@@ -30,7 +30,7 @@ public checksum database. No path, replace, workspace or private-checkout
 dependency is accepted. Consumer dependency/build caches are fresh.
 
 Installed acceptance runs actual journal crash/CAS/restore and authenticated
-root transition controls. Fifteen separately compiled consumer probes also
+root transition controls. Eighteen separately compiled consumer probes also
 cover selected original ciphertext, durable history, HTTPS transport, signed
 current proofs, verified reads and page discovery, saved owner-review intent,
 and typed proposal consumption/status. The six actual TLS suites preserve
@@ -43,8 +43,34 @@ Template consumers compare canonical content and SMS segment previews with the
 maintained TypeScript oracle, then exercise authenticated ZTWT01 sealing and
 opening against an independently pinned producer. TypeScript opens two fresh
 native seals. Current-authority changes, clock regression, malformed scopes,
-tampering and content-size limits must fail closed. These are cryptographic and
-local-content APIs; owner template storage and HTTP operations remain separate.
+tampering and content-size limits must fail closed.
+
+Separate installed owner-template consumers exercise authenticated cold HTTPS
+reads and reviewed save, explicit retry and GET reconciliation against the
+maintained state machine. The fixture verifies Cookie/CSRF authority, exact
+ciphertext and idempotency identity, refusal and uncertainty, busy/close
+fencing, deadlines and contradictory heads. A matching reconciliation read
+does not acknowledge or silently clear an uncertain write. No automatic retry
+or live owner-service acceptance is implied.
+
+The current-template opening consumer uses a sixth pinned producer/oracle and
+the installed library's explicit opening lifecycle. Software TLS controls and
+maintained comparisons check exact client binding, currentness, point binding,
+tamper refusal, delayed callbacks and client closure before plaintext publication.
+Repeated opening of ciphertext matching pending intent never acknowledges the
+earlier write. On a qualified provider the same installed executable runs actual
+protected opening, provider/client closure and interrupted-setup cleanup. These
+checks borrow the caller's recipient; lifecycle close never deletes its key.
+The qualification report records opening separately from cold/save and overall
+protected acceptance. No browser ceremony or live owner-service claim follows.
+
+`--owner-deadline-case-ms` records the declared caller deadline for the
+post-handshake owner-template cases (default 100, allowed 100..2000). Hosted CI
+explicitly selects 1000ms so cold TLS can reach the intended response/callback
+phase; the fixture extends its delayed response accordingly and still requires
+one request, no late success and a bounded return. The separate 100ms
+pre-dispatch refusal remains unchanged. This option changes fixture call
+parameters, not the library defaults, and never retries a failed test.
 
 On qualified Windows PCP hardware the gate also runs both
 profile readers and protected profile02/profile03 composition, current-state

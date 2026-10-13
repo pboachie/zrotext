@@ -62,6 +62,37 @@ class PackagePolicy(unittest.TestCase):
         self.assertEqual(calls[3][6:], ("--hardware", "--fail-setup"))
         self.assertFalse(any(call[0] in ("cargo", "go") for call in calls))
 
+    def test_owner_template_transport_and_recovery_use_installed_probes(self):
+        binaries = {name: Path("installed") / name for name in packages.HARNESSES}
+        with patch.object(packages, "run") as run:
+            packages.owner_template_acceptance(binaries, Path("template-producer"), Path("save-oracle"), 1000)
+        calls = [call.args for call in run.call_args_list]
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][1].name, "test-owner-template.py")
+        self.assertEqual(calls[1][1].name, "test-template-save.py")
+        for call, name in zip(calls, ("owner_template", "template_save")):
+            self.assertEqual(call[2:6], ("--producer", Path("template-producer"), "--deadline-case-ms", "1000"))
+            self.assertEqual(call[-2:], ("--binary", binaries[name]))
+            self.assertNotIn("--language", call)
+        self.assertEqual(calls[1][6:8], ("--save-oracle", Path("save-oracle")))
+        self.assertFalse(any(call[0] in ("cargo", "go") for call in calls))
+
+    def test_opening_and_owned_cleanup_use_installed_probe(self):
+        binaries = {name: Path("installed") / name for name in packages.HARNESSES}
+        with patch.object(packages, "run") as run:
+            packages.template_opening_acceptance(binaries, Path("template"), Path("oracle"), 1000)
+            packages.template_opening_acceptance(binaries, Path("template"), Path("oracle"), 1000, hardware=True)
+        calls = [call.args for call in run.call_args_list]
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][1].name, "test-template-opening.py")
+        self.assertEqual(calls[0][2:-2], ("--producer", Path("template"), "--opening-oracle", Path("oracle"), "--deadline-case-ms", "1000"))
+        self.assertEqual(calls[1][1].name, "test-template-opening-hardware.py")
+        self.assertEqual(calls[1][2:-2], ("--producer", Path("oracle")))
+        for call in calls:
+            self.assertEqual(call[-2:], ("--binary", binaries["template_opening"]))
+            self.assertNotIn("--allow-unqualified", call)
+        self.assertFalse(any(call[0] in ("cargo", "go") for call in calls))
+
 
 if __name__ == "__main__":
     unittest.main()
