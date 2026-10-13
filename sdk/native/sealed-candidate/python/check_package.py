@@ -13,7 +13,7 @@ import venv
 import zipfile
 
 ROOT=Path(__file__).resolve().parent
-MODULES={'__init__','sealed_candidate','checkpoint_store','cng_custody','cng_signing','election03','election_journal','compose03','compose02','outbound_journal','root_checkpoint','reply_selection','outbound02_journal','sealed_http','original_reply_reader','original_reply_client','original_reply_checkpoint','encrypted_template','contact_integrity','contact_history','contact_producer','workflow_context','sealed_lifecycle','template_store','owner_template','owner_template_save','owner_context','template_authoring','template_opening','conversation_proposals','enrollment_ceremony','genesis_ceremony','conversation_signer','context_authoring'}
+MODULES={'__init__','sealed_candidate','checkpoint_store','cng_custody','cng_signing','election03','election_journal','compose03','compose02','outbound_journal','root_checkpoint','reply_selection','outbound02_journal','sealed_http','original_reply_reader','original_reply_client','original_reply_checkpoint','encrypted_template','contact_integrity','contact_history','contact_producer','workflow_context','sealed_lifecycle','template_store','owner_template','owner_template_save','owner_context','template_authoring','template_opening','conversation_proposals','enrollment_ceremony','genesis_ceremony','conversation_signer','context_authoring','opening_capacity'}
 PACKAGE='zrotext_native_candidate'
 DIST=PACKAGE+'-0.1.0a1'
 
@@ -95,6 +95,8 @@ def main():
         owner_context_fixture=json.loads(run(['node',ROOT/'owner-context-interop.mjs'],cwd=temporary))
         context_authoring_consumer=temporary/'context_authoring_consumer.py';shutil.copyfile(ROOT/'installed_context_authoring_consumer.py',context_authoring_consumer)
         context_authoring_fixture=json.loads(run(['node',ROOT/'context-authoring-interop.mjs'],cwd=temporary))
+        opening_capacity_consumer=temporary/'opening_capacity_consumer.py';shutil.copyfile(ROOT/'installed_opening_capacity_consumer.py',opening_capacity_consumer)
+        opening_capacity_fixture=json.loads(run(['node',ROOT/'opening-capacity-interop.mjs'],cwd=temporary))
         owner_fixture=json.loads(run(['node',ROOT/'owner-template-interop.mjs'],cwd=temporary))
         context_consumer=temporary/'context_consumer.py';shutil.copyfile(ROOT/'installed_context_consumer.py',context_consumer)
         context_fixtures=[json.loads(run(['node',ROOT/'workflow-context-interop.mjs',str(role)],cwd=temporary)) for role in (2,3)]
@@ -154,6 +156,8 @@ def main():
             assert context_authoring_result['installed'] and context_authoring_result['context_authoring_tls']==11
             context_authoring_open=json.loads(run(['node',ROOT/'context-authoring-interop.mjs','--consume'],cwd=temporary,input=json.dumps(dict(fixture=context_authoring_fixture,outputs=context_authoring_result['outputs']))))
             assert context_authoring_open==dict(verified=True,opened=5)
+            capacity_result=json.loads(run([python,'-I',opening_capacity_consumer],cwd=temporary,input=json.dumps(opening_capacity_fixture)))
+            assert capacity_result==dict(installed=True,opening_capacity_tls=10)
             owner_save_result=json.loads(run([python,'-I',owner_save_consumer],cwd=temporary,input=json.dumps(owner_fixture)))
             assert owner_save_result==dict(installed=True,owner_template_save_tls=10)
             owner_result=json.loads(run([python,'-I',owner_consumer],cwd=temporary,input=json.dumps(owner_fixture)))
