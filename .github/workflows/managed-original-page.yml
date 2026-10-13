@@ -1,0 +1,60 @@
+name: Managed authenticated original page discovery
+on:
+  pull_request:
+    paths:
+      - 'sdk/native/crypto-envelope/**'
+      - 'sdk/native/crypto-candidate/**'
+      - '.github/workflows/managed-original-page.yml'
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  managed-original-page:
+    strategy:
+      matrix:
+        os: [windows-2025, ubuntu-24.04]
+        language: [java, csharp, ruby]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        if: matrix.language == 'java'
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+        if: matrix.language == 'csharp'
+        with:
+          dotnet-version: '8.0.x'
+      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a
+        if: matrix.language == 'ruby'
+        with:
+          ruby-version: '3.3.9'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: e3ed703a2c5eb0f72fc4138fade0859637dff3d5
+          path: fixture
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
+          path: producer
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24.13.0'
+      - name: Build independent signed producer and TLS fixture dependency
+        shell: pwsh
+        run: |
+          python -m pip install cryptography==46.0.5
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm ci --ignore-scripts --prefix producer/sdk/typescript
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run build --prefix producer/sdk/typescript
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Exercise signed page discovery and exact cursor correlation
+        run: python sdk/native/crypto-envelope/original-page-run.py --language ${{ matrix.language }} --fixture fixture --producer producer

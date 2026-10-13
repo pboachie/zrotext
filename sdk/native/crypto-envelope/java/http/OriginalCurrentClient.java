@@ -136,4 +136,45 @@ public final class OriginalCurrentClient {
         finally{if(acquired)lock.unlock();}
     }
 
+    public record PageCursor(String eventId,long acceptedAtMs) {}
+    public record EventMetadata(String eventId,long acceptedAtMs,long observedAtMs,long historicalManifestVersion,long activationManifestVersion,String disposition,List<String> activeRequestIds) {
+        public EventMetadata { activeRequestIds=List.copyOf(activeRequestIds); }
+    }
+    public static final class Page {
+        private final List<EventMetadata> events;private final PageCursor next;private final Verified authority;
+        private Page(List<EventMetadata> events,PageCursor next,Verified authority){this.events=List.copyOf(events);this.next=next;this.authority=authority;}
+        public List<EventMetadata> events(){return events;}
+        public PageCursor next(){return next;}
+        public Verified authority(){return authority;}
+    }
+    private static String pageId(JsonElement value)throws OriginalHttp.Failure{
+        String text=string(value);need(text.matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}") && !text.equals("00000000-0000-0000-0000-000000000000"));return text;
+    }
+    private static PageCursor pageCursor(String id,long time)throws OriginalHttp.Failure{return new PageCursor(pageId(new JsonPrimitive(id)),positive(time));}
+    /** Discovery metadata only; no consumption or workflow authority. */
+    public Page page(String credential,PageCursor cursor,int limit,LongSupplier clock)throws OriginalHttp.Failure{
+        boolean acquired=false;
+        try{
+            need(limit>=1 && limit<=32 && clock!=null);PageCursor after=cursor==null?null:pageCursor(cursor.eventId(),cursor.acceptedAtMs());
+            need(!lock.isHeldByCurrentThread() && lock.tryLock());acquired=true;var saved=savedAt(clock);var latest=saved.history().get(saved.history().size()-1);
+            var wire=transport.exchange(credential,new OriginalHttp.Request("page",latest.version(),null,null,limit,after==null?null:new OriginalHttp.Cursor(after.eventId(),after.acceptedAtMs()),null,null));
+            var r=object(JsonParser.parseString(wire.untrustedJson()),"events","next","proof");need(r.get("events").isJsonArray());var rows=r.getAsJsonArray("events");need(rows.size()<=limit);
+            var events=new ArrayList<EventMetadata>();var ids=new HashSet<String>();
+            for(var row:rows){
+                var e=object(row,"event_id","accepted_at_ms","observed_at_ms","historical_manifest_version","activation_manifest_version","disposition","active_request_ids");
+                String id=pageId(e.get("event_id"));need(ids.add(id));long accepted=integer(e.get("accepted_at_ms")),observed=integer(e.get("observed_at_ms")),historical=integer(e.get("historical_manifest_version")),activation=integer(e.get("activation_manifest_version"));
+                var current=pageCursor(id,accepted);need(after==null || accepted>after.acceptedAtMs() || accepted==after.acceptedAtMs() && id.compareTo(after.eventId())>0);after=current;
+                String disposition=string(e.get("disposition"));need(Set.of("unassociated","owner_review","request_available").contains(disposition));
+                need(e.get("active_request_ids").isJsonArray());var requests=e.getAsJsonArray("active_request_ids");need(requests.size()<=8);var unique=new HashSet<String>();var captured=new ArrayList<String>();
+                for(var request:requests){String rid=pageId(request);need(unique.add(rid));captured.add(rid);}
+                events.add(new EventMetadata(id,accepted,observed,historical,activation,disposition,captured));
+            }
+            PageCursor next=null;
+            if(r.get("next").isJsonNull())need(events.size()<limit);
+            else{var c=object(r.get("next"),"event_id","accepted_at_ms");next=pageCursor(pageId(c.get("event_id")),integer(c.get("accepted_at_ms")));need(events.size()==limit && next.equals(after));}
+            return new Page(events,next,acceptProof(r.get("proof"),saved,latest,clock));
+        }catch(Exception error){if(error instanceof InterruptedException)Thread.currentThread().interrupt();throw new OriginalHttp.Failure(false);}
+        finally{if(acquired)lock.unlock();}
+    }
+
 }
