@@ -6,7 +6,7 @@ using System.Text;
 using Microsoft.Win32.SafeHandles;
 namespace Zrotext.Candidate;
 
-/// <summary>Locally qualified PCP signing for historical contact fields only.</summary>
+/// <summary>Locally qualified PCP signing for historical contact fields and mutations only.</summary>
 public sealed class ProtectedContactSigner:IDisposable {
     private const string Provider="Microsoft Platform Crypto Provider",Prefix="zrotext-managed-csharp-contact-p256-";
     private const uint Silent=0x40;

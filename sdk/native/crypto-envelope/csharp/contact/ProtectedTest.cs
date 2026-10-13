@@ -5,7 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Buffers.Binary;
 namespace Zrotext.Candidate;
-// Private native setup signing is test-only. Runtime capability remains field-only.
+// Private native setup signing is test-only. Runtime capability remains limited to typed contact fields and mutations.
 internal static class ContactProtectedTest {
     internal static object Run(JsonElement input,string directory,string receipt,bool mutationMode=false){
         var f=JsonNode.Parse(input.GetRawText())!.AsObject();var parser=new ContactOrigin(directory);

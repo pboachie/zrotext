@@ -7,7 +7,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.*;
 import java.util.*;
 
-/** Locally qualified Windows PCP signer for historical contact fields only. */
+/** Locally qualified Windows PCP signer for historical contact fields and mutations only. */
 public final class ProtectedContactSigner implements AutoCloseable {
     private static final String PROVIDER="Microsoft Platform Crypto Provider",PREFIX="zrotext-managed-java-contact-p256-";
     private static final int SILENT=0x40;
