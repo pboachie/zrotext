@@ -67,9 +67,10 @@ except WorkflowError as error:
   return new Promise((resolveResult, reject) => {
     const env = { ...process.env, PYTHONPATH: pythonPath };
     delete env.NODE_EXTRA_CA_CERTS;
-    if (trusted) env.NODE_EXTRA_CA_CERTS = join(directory, 'ca.pem');
+    delete env.SSL_CERT_FILE;
+    if (trusted) env.SSL_CERT_FILE = join(directory, 'ca.pem');
     const child = spawn(python, ['-B', '-c', script], { env, stdio: ['pipe', 'pipe', 'pipe'] });
-    const timer = setTimeout(() => { child.kill(); reject(new Error('bounded Python bridge deadline')); }, 20000);
+    const timer = setTimeout(() => { child.kill(); reject(new Error('bounded Python client deadline')); }, 20000);
     let stdout = '', stderr = '';
     child.stdout.on('data', bytes => { stdout += bytes; if (stdout.length > 196608) child.kill(); });
     child.stderr.on('data', bytes => { stderr += bytes; if (stderr.length > 65536) child.kill(); });
