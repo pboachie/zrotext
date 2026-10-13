@@ -5,16 +5,20 @@ use p256::{
     ecdsa::{Signature, VerifyingKey, signature::Verifier},
 };
 use sha2::{Digest, Sha256};
-/// Independently compared generation-one root pin.
+/// Independently compared initial root or verified profile02 successor trust.
 pub struct RootTrust {
     account: [u8; 16],
     point: [u8; 65],
+    generation: u64,
+    anchor: [u8; 32],
+    comparison: u64,
 }
 /// Owned signed evidence, never a mutable caller-provided trust structure.
 pub struct Manifest {
     pub(crate) raw: Vec<u8>,
     pub(crate) profile: u8,
     pub(crate) predecessor: u8,
+    pub(crate) generation: u64,
     pub(crate) version: u64,
     pub(crate) issued: u64,
     pub(crate) expires: u64,
@@ -62,6 +66,9 @@ pub fn enroll_root(pin: &[u8], compared: &[u8]) -> Result<RootTrust, Error> {
         return Err(Error::Authentication);
     }
     Ok(RootTrust {
+        generation: 1,
+        anchor: [0; 32],
+        comparison: 0,
         account: pin[5..21].try_into().map_err(|_| Error::Shape)?,
         point: pin[29..].try_into().map_err(|_| Error::Shape)?,
     })
@@ -99,7 +106,10 @@ pub fn verify_manifest(
     if !(1..=64).contains(&count) || b.len() != 215 + offset + 149 * count {
         return Err(Error::Shape);
     }
-    if number(b, 21 + offset)? != 1 {
+    if number(b, 21 + offset)? != root.generation
+        || now < root.comparison
+        || (expected == 3 && root.generation != 1)
+    {
         return Err(Error::Shape);
     }
     let version = number(b, 29 + offset)?;
@@ -186,7 +196,11 @@ pub fn verify_manifest(
     let digest: [u8; 32] = Sha256::digest(unsigned).into();
     let prev_digest = &b[53 + offset..85 + offset];
     if let Some(prior) = previous {
-        if prior.account != root.account || prior.root != root.point || now < prior.comparison {
+        if prior.account != root.account
+            || prior.root != root.point
+            || prior.generation != root.generation
+            || now < prior.comparison
+        {
             return Err(Error::Authentication);
         }
         if version == prior.version {
@@ -209,7 +223,7 @@ pub fn verify_manifest(
                 return Err(Error::Authentication);
             }
         }
-    } else if expected != 2 || version != 1 || prev_digest != [0; 32] {
+    } else if expected != 2 || version != 1 || prev_digest != root.anchor {
         return Err(Error::Authentication);
     }
     let mut lineage = previous.map(|m| m.lineage.clone()).unwrap_or_default();
@@ -221,6 +235,7 @@ pub fn verify_manifest(
     }
     Ok(Manifest {
         lineage,
+        generation: root.generation,
         raw: b.to_vec(),
         profile: expected,
         predecessor,
@@ -242,5 +257,76 @@ impl Manifest {
     }
     pub fn signed_bytes(&self) -> &[u8] {
         &self.raw
+    }
+}
+
+/// Authenticate an exact profile02 root succession against current old history.
+/// `expected_new_root` must be independently compared, never copied from the wire.
+/// Persist this transition and its new genesis atomically before accepting effects.
+pub fn verify_root_transition02(
+    input: &[u8],
+    old: &Manifest,
+    expected_new_root: &[u8],
+    now: u64,
+) -> Result<RootTrust, Error> {
+    if input.len() != 343
+        || &input[..5] != b"ZTRT\x02"
+        || old.profile != 2
+        || expected_new_root.len() != 65
+        || old.generation >= i64::MAX as u64
+        || now < old.comparison
+        || old.version == 0
+    {
+        return Err(Error::Shape);
+    }
+    let b = input;
+    if b[5..21] != old.account
+        || number(b, 21)? != old.generation
+        || number(b, 29)? != old.generation + 1
+        || b[37..102] != old.root
+        || &b[102..167] != expected_new_root
+        || b[102..167] == old.root
+        || b[167..199] != old.digest
+        || !window(number(b, 199)?, number(b, 207)?, now)
+    {
+        return Err(Error::Authentication);
+    }
+    point(expected_new_root)?;
+    let transcript = [
+        b"ZTSE/root-transition/v2\0".as_slice(),
+        &215u32.to_be_bytes(),
+        &b[..215],
+    ]
+    .concat();
+    for (public, signature) in [(&b[37..102], &b[215..279]), (&b[102..167], &b[279..343])] {
+        let signature = Signature::from_slice(signature).map_err(|_| Error::Shape)?;
+        if signature.normalize_s() != signature {
+            return Err(Error::Authentication);
+        }
+        VerifyingKey::from_sec1_bytes(public)
+            .map_err(|_| Error::Shape)?
+            .verify(&transcript, &signature)
+            .map_err(|_| Error::Authentication)?;
+    }
+    Ok(RootTrust {
+        account: old.account,
+        point: expected_new_root.try_into().map_err(|_| Error::Shape)?,
+        generation: old.generation + 1,
+        anchor: Sha256::digest(&b[..215]).into(),
+        comparison: now,
+    })
+}
+impl Manifest {
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub(crate) fn root_trust(&self) -> RootTrust {
+        RootTrust {
+            account: self.account,
+            point: self.root,
+            generation: self.generation,
+            anchor: [0; 32],
+            comparison: self.comparison,
+        }
     }
 }

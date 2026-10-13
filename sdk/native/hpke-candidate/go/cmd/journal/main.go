@@ -236,12 +236,12 @@ func main() {
 		panic("root substitution")
 	}
 	mutate("UPDATE identity SET fingerprint=?", b("fingerprint"))
-	mutate("PRAGMA user_version=2")
+	mutate("PRAGMA user_version=3")
 	if other, e := hpke.OpenJournal(path, b("rootPin"), b("fingerprint")); e == nil {
 		other.Close()
 		panic("schema version")
 	}
-	mutate("PRAGMA user_version=1")
+	mutate("PRAGMA user_version=2")
 	empty := filepath.Join(dir, "empty.db")
 	if e = os.WriteFile(empty, nil, 0600); e != nil {
 		panic(e)

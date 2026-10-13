@@ -38,6 +38,7 @@ type Journal struct {
 	path             string
 	identity         os.FileInfo
 	pin, fingerprint []byte
+	transitionRoots  map[uint64][65]byte
 }
 
 func canonicalAccepted(a ElectionRecord) []byte {
@@ -63,6 +64,21 @@ func captureExpectations(e *ElectionExpectations) (*ElectionExpectations, error)
 	return &ElectionExpectations{Core: append([]byte(nil), e.Core...), Accepted: a, DevicePoint: append([]byte(nil), e.DevicePoint...), OwnerPoint: append([]byte(nil), e.OwnerPoint...)}, nil
 }
 func OpenJournal(path string, pin, fingerprint []byte) (*Journal, error) {
+	return OpenJournalWithTransitions(path, pin, fingerprint, nil)
+}
+
+// OpenJournalWithTransitions requires independently compared new public roots,
+// keyed by the journal revision containing the transitioned genesis. All stored
+// transitions must match an expectation on every reopen; wire roots are not trust.
+func OpenJournalWithTransitions(path string, pin, fingerprint []byte, roots map[uint64][65]byte) (*Journal, error) {
+	capturedRoots := map[uint64][65]byte{}
+	for rev, point := range roots {
+		if rev < 2 || rev > journalCapacity {
+			return nil, ErrJournal
+		}
+		capturedRoots[rev] = point
+	}
+
 	if _, err := EnrollRoot(pin, fingerprint); err != nil {
 		return nil, err
 	}
@@ -100,7 +116,7 @@ func OpenJournal(path string, pin, fingerprint []byte) (*Journal, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	j := &Journal{db: db, path: absolute, identity: identity, pin: append([]byte(nil), pin...), fingerprint: append([]byte(nil), fingerprint...)}
+	j := &Journal{transitionRoots: capturedRoots, db: db, path: absolute, identity: identity, pin: append([]byte(nil), pin...), fingerprint: append([]byte(nil), fingerprint...)}
 	success := false
 	defer func() {
 		if !success {
@@ -113,7 +129,7 @@ func OpenJournal(path string, pin, fingerprint []byte) (*Journal, error) {
 			return nil, e
 		}
 		defer tx.Rollback()
-		statements := []string{"PRAGMA application_id=1515474506", "PRAGMA user_version=1", "CREATE TABLE identity (id INTEGER PRIMARY KEY CHECK(id=1), root BLOB NOT NULL, fingerprint BLOB NOT NULL) STRICT", "CREATE TABLE manifests (revision INTEGER PRIMARY KEY, comparison INTEGER NOT NULL, signed BLOB NOT NULL) STRICT", "CREATE TABLE elections (revision INTEGER PRIMARY KEY, bundle BLOB NOT NULL, accepted BLOB NOT NULL, core BLOB NOT NULL, device BLOB NOT NULL, owner BLOB NOT NULL) STRICT"}
+		statements := []string{"CREATE TABLE transitions (revision INTEGER PRIMARY KEY, signed BLOB NOT NULL) STRICT", "PRAGMA application_id=1515474506", "PRAGMA user_version=2", "CREATE TABLE identity (id INTEGER PRIMARY KEY CHECK(id=1), root BLOB NOT NULL, fingerprint BLOB NOT NULL) STRICT", "CREATE TABLE manifests (revision INTEGER PRIMARY KEY, comparison INTEGER NOT NULL, signed BLOB NOT NULL) STRICT", "CREATE TABLE elections (revision INTEGER PRIMARY KEY, bundle BLOB NOT NULL, accepted BLOB NOT NULL, core BLOB NOT NULL, device BLOB NOT NULL, owner BLOB NOT NULL) STRICT"}
 		for _, statement := range statements {
 			if _, e = tx.Exec(statement); e != nil {
 				return nil, e
@@ -163,15 +179,15 @@ func (j *Journal) checkSchema() error {
 	if e := j.db.QueryRow("PRAGMA application_id").Scan(&app); e != nil || app != journalApp {
 		return ErrJournal
 	}
-	if e := j.db.QueryRow("PRAGMA user_version").Scan(&version); e != nil || version != 1 {
+	if e := j.db.QueryRow("PRAGMA user_version").Scan(&version); e != nil || version != 2 {
 		return ErrJournal
 	}
-	rows, e := j.db.Query("SELECT type,name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name LIMIT 4")
+	rows, e := j.db.Query("SELECT type,name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name LIMIT 5")
 	if e != nil {
 		return e
 	}
 	defer rows.Close()
-	expected := []string{"elections", "identity", "manifests"}
+	expected := []string{"elections", "identity", "manifests", "transitions"}
 	i := 0
 	for rows.Next() {
 		var kind, name string
@@ -198,6 +214,33 @@ func (j *Journal) load(tx *sql.Tx, expect *ElectionExpectations) (*JournalSnapsh
 		return nil, 0, ErrJournal
 	}
 	root, e := EnrollRoot(j.pin, j.fingerprint)
+	if e != nil {
+		return nil, 0, e
+	}
+	transitionRows, e := tx.Query("SELECT revision,CASE WHEN length(signed)=343 THEN signed END FROM transitions ORDER BY revision LIMIT 1025")
+	if e != nil {
+		return nil, 0, e
+	}
+	transitions := map[uint64][]byte{}
+	for transitionRows.Next() {
+		var rev uint64
+		var raw []byte
+		if e = transitionRows.Scan(&rev, &raw); e != nil {
+			transitionRows.Close()
+			return nil, 0, e
+		}
+		if rev < 2 || rev > journalCapacity || len(raw) != 343 {
+			transitionRows.Close()
+			return nil, 0, ErrJournal
+		}
+		if _, ok := j.transitionRoots[rev]; !ok {
+			transitionRows.Close()
+			return nil, 0, ErrJournal
+		}
+		transitions[rev] = raw
+	}
+	e = transitionRows.Err()
+	transitionRows.Close()
 	if e != nil {
 		return nil, 0, e
 	}
@@ -235,6 +278,19 @@ func (j *Journal) load(tx *sql.Tx, expect *ElectionExpectations) (*JournalSnapsh
 			return nil, 0, ErrJournal
 		}
 		previous := snapshot.Manifest
+		transition, rotated := transitions[rev]
+		if rotated {
+			compared := j.transitionRoots[rev]
+			if electionCount != 0 || raw[4] != 2 {
+				return nil, 0, ErrJournal
+			}
+			root, e = VerifyRootTransition02(transition, previous, compared[:], now)
+			if e != nil {
+				return nil, 0, e
+			}
+			previous = nil
+			delete(transitions, rev)
+		}
 		next, e := VerifyManifest(raw, root, previous, raw[4], now)
 		if e != nil {
 			return nil, 0, e
@@ -259,6 +315,9 @@ func (j *Journal) load(tx *sql.Tx, expect *ElectionExpectations) (*JournalSnapsh
 	}
 	if e = rows.Err(); e != nil {
 		return nil, 0, e
+	}
+	if len(transitions) != 0 {
+		return nil, 0, ErrJournal
 	}
 	if electionCount == 1 && snapshot.Proof == nil {
 		return nil, 0, ErrJournal
@@ -316,6 +375,9 @@ func (j *Journal) AppendManifest(raw []byte, expected, now uint64, expect *Elect
 	if e != nil {
 		return 0, e
 	}
+	if snapshot.Manifest != nil {
+		root = snapshot.Manifest.rootTrust()
+	}
 	next, e := VerifyManifest(raw, root, snapshot.Manifest, raw[4], now)
 	if e != nil {
 		return 0, e
@@ -367,6 +429,55 @@ func (j *Journal) AppendElection(signed, bundle []byte, expected uint64, expect 
 		return 0, e
 	}
 	if _, e = tx.Exec("INSERT INTO elections VALUES (?,?,?,?,?,?)", expected+1, bundle, canonicalAccepted(captured.Accepted), captured.Core, captured.DevicePoint, captured.OwnerPoint); e != nil {
+		return 0, e
+	}
+	if e = tx.Commit(); e != nil {
+		return 0, e
+	}
+	return expected + 1, nil
+}
+
+// AppendTransition02 commits the dual-signed transition and its exact new genesis
+// in one immediate CAS transaction. Old signed history remains in the journal.
+func (j *Journal) AppendTransition02(transition, genesis []byte, expected, now uint64) (uint64, error) {
+	if len(transition) != 343 || len(genesis) < 364 || len(genesis) > 9751 || genesis[4] != 2 {
+		return 0, ErrShape
+	}
+	transition = append([]byte(nil), transition...)
+	genesis = append([]byte(nil), genesis...)
+	compared, ok := j.transitionRoots[expected+1]
+	if !ok {
+		return 0, ErrJournal
+	}
+	if e := j.checkSchema(); e != nil {
+		return 0, e
+	}
+	tx, e := j.db.BeginTx(context.Background(), nil)
+	if e != nil {
+		return 0, e
+	}
+	defer tx.Rollback()
+	snapshot, last, e := j.load(tx, nil)
+	if e != nil {
+		return 0, e
+	}
+	if snapshot.Revision != expected {
+		return 0, ErrJournalConflict
+	}
+	if expected >= journalCapacity || now < last || snapshot.Manifest == nil || snapshot.Proof != nil {
+		return 0, ErrJournal
+	}
+	root, e := VerifyRootTransition02(transition, snapshot.Manifest, compared[:], now)
+	if e != nil {
+		return 0, e
+	}
+	if _, e = VerifyManifest(genesis, root, nil, 2, now); e != nil {
+		return 0, e
+	}
+	if _, e = tx.Exec("INSERT INTO manifests VALUES (?,?,?)", expected+1, now, genesis); e != nil {
+		return 0, e
+	}
+	if _, e = tx.Exec("INSERT INTO transitions VALUES (?,?)", expected+1, transition); e != nil {
 		return 0, e
 	}
 	if e = tx.Commit(); e != nil {

@@ -2,10 +2,11 @@
 use crate::{
     Error,
     election::{ElectionEvidence, ElectionProof, ElectionRecord, verify_accepted_election03},
-    manifest::{Manifest, enroll_root, verify_manifest, window},
+    manifest::{Manifest, enroll_root, verify_manifest, verify_root_transition02, window},
 };
 use rusqlite::{Connection, OpenFlags, TransactionBehavior, params};
 use std::{
+    collections::BTreeMap,
     fs::{self, OpenOptions},
     path::{Path, PathBuf},
     sync::Mutex,
@@ -107,6 +108,7 @@ pub struct Journal {
     identity: same_file::Handle,
     pin: Vec<u8>,
     fingerprint: Vec<u8>,
+    transition_roots: BTreeMap<u64, [u8; 65]>,
 }
 impl Journal {
     pub fn open(
@@ -114,7 +116,18 @@ impl Journal {
         pin: &[u8],
         fingerprint: &[u8],
     ) -> Result<Self, JournalError> {
+        Self::open_with_transitions(path, pin, fingerprint, &BTreeMap::new())
+    }
+    /// Independently compared new roots keyed by the revision of transitioned genesis.
+    /// Every stored transition requires its expectation on each reopen.
+    pub fn open_with_transitions(
+        path: impl AsRef<Path>,
+        pin: &[u8],
+        fingerprint: &[u8],
+        roots: &BTreeMap<u64, [u8; 65]>,
+    ) -> Result<Self, JournalError> {
         enroll_root(pin, fingerprint)?;
+        need(roots.keys().all(|r| (2..=CAPACITY).contains(r)))?;
         let path = std::path::absolute(path)?;
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
@@ -141,7 +154,7 @@ impl Journal {
         connection.pragma_update(None, "trusted_schema", "OFF")?;
         if created {
             let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            tx.execute_batch("PRAGMA application_id=1515474506; PRAGMA user_version=1; CREATE TABLE identity (id INTEGER PRIMARY KEY CHECK(id=1), root BLOB NOT NULL, fingerprint BLOB NOT NULL) STRICT; CREATE TABLE manifests (revision INTEGER PRIMARY KEY, comparison INTEGER NOT NULL, signed BLOB NOT NULL) STRICT; CREATE TABLE elections (revision INTEGER PRIMARY KEY, bundle BLOB NOT NULL, accepted BLOB NOT NULL, core BLOB NOT NULL, device BLOB NOT NULL, owner BLOB NOT NULL) STRICT;")?;
+            tx.execute_batch("PRAGMA application_id=1515474506; PRAGMA user_version=2; CREATE TABLE transitions (revision INTEGER PRIMARY KEY, signed BLOB NOT NULL) STRICT; CREATE TABLE identity (id INTEGER PRIMARY KEY CHECK(id=1), root BLOB NOT NULL, fingerprint BLOB NOT NULL) STRICT; CREATE TABLE manifests (revision INTEGER PRIMARY KEY, comparison INTEGER NOT NULL, signed BLOB NOT NULL) STRICT; CREATE TABLE elections (revision INTEGER PRIMARY KEY, bundle BLOB NOT NULL, accepted BLOB NOT NULL, core BLOB NOT NULL, device BLOB NOT NULL, owner BLOB NOT NULL) STRICT;")?;
             tx.execute(
                 "INSERT INTO identity VALUES (1,?1,?2)",
                 params![pin, fingerprint],
@@ -154,6 +167,7 @@ impl Journal {
             identity,
             pin: pin.to_vec(),
             fingerprint: fingerprint.to_vec(),
+            transition_roots: roots.clone(),
         };
         {
             let c = result
@@ -175,8 +189,8 @@ impl Journal {
         )?;
         let app: i64 = c.query_row("PRAGMA application_id", [], |r| r.get(0))?;
         let version: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        need(app == APP && version == 1)?;
-        let mut statement=c.prepare("SELECT type,name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name LIMIT 4")?;
+        need(app == APP && version == 2)?;
+        let mut statement=c.prepare("SELECT type,name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name LIMIT 5")?;
         let values = statement
             .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -186,6 +200,7 @@ impl Journal {
                     ("table".into(), "elections".into()),
                     ("table".into(), "identity".into()),
                     ("table".into(), "manifests".into()),
+                    ("table".into(), "transitions".into()),
                 ],
         )
     }
@@ -201,7 +216,23 @@ impl Journal {
         expected: Option<&ElectionExpectations>,
     ) -> Result<(JournalSnapshot, u64), JournalError> {
         self.check_identity(c)?;
-        let root = enroll_root(&self.pin, &self.fingerprint)?;
+        let mut root = enroll_root(&self.pin, &self.fingerprint)?;
+        let mut transitions = BTreeMap::new();
+        {
+            let mut statement=c.prepare("SELECT revision,CASE WHEN length(signed)=343 THEN signed END FROM transitions ORDER BY revision LIMIT 1025")?;
+            let mut rows = statement.query([])?;
+            while let Some(r) = rows.next()? {
+                let revision =
+                    u64::try_from(r.get::<_, i64>(0)?).map_err(|_| JournalError::Refused)?;
+                let raw: Vec<u8> = r.get(1)?;
+                need(
+                    (2..=CAPACITY).contains(&revision)
+                        && raw.len() == 343
+                        && self.transition_roots.contains_key(&revision),
+                )?;
+                transitions.insert(revision, raw);
+            }
+        }
         let count: i64 = c.query_row("SELECT count(*) FROM elections", [], |r| r.get(0))?;
         need((0..=1).contains(&count))?;
         let captured = if count == 1 {
@@ -243,8 +274,23 @@ impl Journal {
                     && now >= last
                     && raw.len() >= 364,
             )?;
-            let next = verify_manifest(&raw, &root, result.manifest.as_ref(), raw[4], now)?;
-            if let Some(prior) = &result.manifest {
+            let transition = transitions.remove(&revision);
+            let prior = if let Some(transition) = &transition {
+                need(count == 0 && raw[4] == 2)?;
+                root = verify_root_transition02(
+                    transition,
+                    result.manifest.as_ref().ok_or(JournalError::Refused)?,
+                    self.transition_roots
+                        .get(&revision)
+                        .ok_or(JournalError::Refused)?,
+                    now,
+                )?;
+                None
+            } else {
+                result.manifest.as_ref()
+            };
+            let next = verify_manifest(&raw, &root, prior, raw[4], now)?;
+            if let Some(prior) = prior {
                 need(next.version == prior.version + 1)?;
             }
             if revision == election_revision {
@@ -268,7 +314,7 @@ impl Journal {
             result.manifest = Some(next);
             last = now;
         }
-        need(count == 0 || result.proof.is_some())?;
+        need(transitions.is_empty() && (count == 0 || result.proof.is_some()))?;
         Ok((result, last))
     }
     pub fn snapshot(
@@ -306,7 +352,11 @@ impl Journal {
         if raw[4] == 3 {
             need(snapshot.manifest.as_ref().is_some_and(|m| m.profile == 3))?;
         }
-        let root = enroll_root(&self.pin, &self.fingerprint)?;
+        let root = if let Some(m) = &snapshot.manifest {
+            m.root_trust()
+        } else {
+            enroll_root(&self.pin, &self.fingerprint)?
+        };
         let next = verify_manifest(raw, &root, snapshot.manifest.as_ref(), raw[4], now)?;
         if let Some(m) = &snapshot.manifest {
             need(next.version == m.version + 1)?;
@@ -366,6 +416,53 @@ impl Journal {
                 e.device_point,
                 e.owner_point
             ],
+        )?;
+        tx.commit()?;
+        Ok(expected_revision + 1)
+    }
+}
+
+impl Journal {
+    /// Atomically commit a verified transition and new genesis under revision CAS.
+    pub fn append_transition02(
+        &self,
+        transition: &[u8],
+        genesis: &[u8],
+        expected_revision: u64,
+        now: u64,
+    ) -> Result<u64, JournalError> {
+        need(
+            transition.len() == 343
+                && (364..=9751).contains(&genesis.len())
+                && genesis[4] == 2
+                && expected_revision < CAPACITY,
+        )?;
+        let compared = self
+            .transition_roots
+            .get(&(expected_revision + 1))
+            .ok_or(JournalError::Refused)?;
+        let mut c = self.connection.lock().map_err(|_| JournalError::Refused)?;
+        self.check_schema(&c)?;
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (snapshot, last) = self.load(&tx, None)?;
+        if snapshot.revision != expected_revision {
+            return Err(JournalError::Conflict);
+        }
+        need(now >= last && snapshot.proof.is_none())?;
+        let root = verify_root_transition02(
+            transition,
+            snapshot.manifest.as_ref().ok_or(JournalError::Refused)?,
+            compared,
+            now,
+        )?;
+        verify_manifest(genesis, &root, None, 2, now)?;
+        tx.execute(
+            "INSERT INTO manifests VALUES (?1,?2,?3)",
+            params![(expected_revision + 1) as i64, now as i64, genesis],
+        )?;
+        tx.execute(
+            "INSERT INTO transitions VALUES (?1,?2)",
+            params![(expected_revision + 1) as i64, transition],
         )?;
         tx.commit()?;
         Ok(expected_revision + 1)

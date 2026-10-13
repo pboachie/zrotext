@@ -127,7 +127,7 @@ func VerifyAcceptedElection03(bundle, expectedCore []byte, record ElectionRecord
 			return nil, ErrAuthentication
 		}
 	}
-	root := &RootTrust{account: prior.account, point: prior.root}
+	root := prior.rootTrust()
 	m, err := VerifyManifest(signed03, root, prior, 3, n["acceptedAtMs"])
 	if err != nil {
 		return nil, err

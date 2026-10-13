@@ -144,9 +144,9 @@ fn main() {
     mutate("UPDATE identity SET fingerprint=zeroblob(32)", None);
     assert!(Journal::open(&path, &b("rootPin"), &b("fingerprint")).is_err());
     mutate("UPDATE identity SET fingerprint=?1", Some(b("fingerprint")));
-    mutate("PRAGMA user_version=2", None);
+    mutate("PRAGMA user_version=3", None);
     assert!(Journal::open(&path, &b("rootPin"), &b("fingerprint")).is_err());
-    mutate("PRAGMA user_version=1", None);
+    mutate("PRAGMA user_version=2", None);
     let empty = dir.join("empty.db");
     std::fs::write(&empty, []).unwrap();
     assert!(Journal::open(&empty, &b("rootPin"), &b("fingerprint")).is_err());

@@ -54,12 +54,14 @@ jobs:
           node "$RUNNER_TEMP/archive/sdk/native/sealed-candidate/python/produce-fixture.mjs" | node ../reader-controls.mjs | cargo +1.97.1 run --locked --example reader
           node "$RUNNER_TEMP/election/sdk/native/sealed-candidate/python/produce-election03.mjs" | cargo +1.97.1 run --locked --example election
           node "$RUNNER_TEMP/election/sdk/native/sealed-candidate/python/produce-election03.mjs" | cargo +1.97.1 run --locked --example journal
+          node "$RUNNER_TEMP/archive/sdk/native/sealed-candidate/python/produce-fixture.mjs" | node ../root-controls.mjs "$RUNNER_TEMP/archive" | cargo +1.97.1 run --locked --example root
           cargo +1.97.1 package --locked
       - name: Go native recipient
         working-directory: sdk/native/hpke-candidate/go
         run: |
           test -z "$(gofmt -l .)"
           go vet ./...
+          node "$RUNNER_TEMP/archive/sdk/native/sealed-candidate/python/produce-fixture.mjs" | node ../root-controls.mjs "$RUNNER_TEMP/archive" | go run ./cmd/root
           node "$RUNNER_TEMP/election/sdk/native/sealed-candidate/python/produce-election03.mjs" | go run ./cmd/journal
           node "$RUNNER_TEMP/election/sdk/native/sealed-candidate/python/produce-election03.mjs" | go run ./cmd/election
           node "$RUNNER_TEMP/archive/sdk/native/sealed-candidate/python/produce-fixture.mjs" | node ../reader-controls.mjs | go run ./cmd/reader
