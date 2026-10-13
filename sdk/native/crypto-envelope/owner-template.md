@@ -15,7 +15,7 @@ validation and publication. Current root/enrollment, manifest version/digest,
 comparison time, key expiry and caller-declared freshness bound the operation.
 Session changes, closed clients and late callbacks cannot publish a snapshot.
 
-A cold snapshot contains copied opaque ciphertext and its encrypted digest.
+A cold snapshot without a prepared record contains copied opaque ciphertext and its encrypted digest.
 It does **not** authenticate the AEAD body, expose plaintext, acknowledge a save,
 match a pending request, or authorize sending. Explicit opening remains in
 `EncryptedTemplate`. Within one client, a lower revision or different bytes at
@@ -42,7 +42,9 @@ expected revision, exact encrypted bytes and required headers. Its receipt
 validator requires exactly canonical `{"revision":N}` bytes, matching the
 maintained owner client's stricter receipt check. This is stronger than the loose
 low-level receipt JSON parser. The helper performs no save, acknowledgement,
-reconciliation or retry; those state-machine APIs remain a separate slice.
+reconciliation or retry. The separate reviewed state-machine API is documented
+in [template-save.md](template-save.md); its reconciliation snapshots can match
+pending bytes without acknowledging the request.
 
 ## Reproduce source acceptance
 
