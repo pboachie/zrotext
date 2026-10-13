@@ -293,6 +293,10 @@ mod tests {
             frame(&mut socket, "sealed_line_proof_ack").await["accepted"],
             true
         );
+        // A real phone keeps its 45-second read deadline alive with heartbeats
+        // while the owner completes the out-of-band approval; the activation
+        // is otherwise only guaranteed on the next (30-second) idle poll.
+        write(&mut socket, serde_json::json!({"v":1,"type":"heartbeat"})).await;
         let view = sealed_exchange::view(
             &mut c.owner.f.connect().await,
             &c.owner.principal,
@@ -312,6 +316,9 @@ mod tests {
         )
         .await
         .unwrap();
+        // Keep the read deadline alive across the idle poll that delivers the
+        // activation, exactly as a phone sending two heartbeats a minute.
+        write(&mut socket, serde_json::json!({"v":1,"type":"heartbeat"})).await;
         let ack = frame(&mut socket, "sealed_line_activated").await;
         assert_eq!(frame(&mut socket, "sealed_line_activated").await, ack);
         let mut receipt = ack.clone();
