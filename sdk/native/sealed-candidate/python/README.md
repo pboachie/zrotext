@@ -1008,7 +1008,42 @@ not exercise a live proposal transaction or imply its independent authority.
 |---|---|
 | Sealed composition, metadata, original replies, contact/template/context content and owner template/context persistence | Native primitives and bounded installed clients exist; reviewed integration, broader platform/provider matrix and live service/device gates remain separate. |
 | DOM-free template authoring/opening | Native host callbacks and protected opening exist; browser visibility, user activation and DOM adapters remain retained. |
-| Conversation genesis/activation/refresh public files | Exact portable export/comparison companion exists; existing-root signing, one-shot installation/CAS and owner enrollment ceremony integration remain separate. |
+| Conversation genesis/activation/refresh public files | Exact portable export/comparison companion exists; native reviewed role-5 enrollment exists; genesis signing and one-shot genesis installation/CAS remain separate. |
 | Owner context authoring, disclosure/review and acknowledged-opening UI | Maintained DOM/session/custody lifecycle is retained; no Python DOM equivalence is claimed. Portable opening-capacity transports and host ceremony integrations still require their own review and ownership checks. |
 | Root/archive recovery and protected custody | Existing native Windows PCP is separately qualified; browser backup unlock/recovery lifecycle and other native protected providers remain distinct gaps. |
 | Generated clients and legacy entrypoints | Generated schema/runtime/redirect/deadline and registry gates still prevent replacement; legacy entrypoints remain present. |
+
+### Reviewed role-5 enrollment
+
+`ConversationEnrollment` implements the maintained existing-root enrollment
+sequence. It captures an exact interval/session/peer/reader binding and target
+public point; reverifies the trusted predecessor and selected role-1/2 reader
+liveness; presents immutable public review; signs a successor adding exactly one
+role-5 key; independently verifies that signature and current authority; then
+invokes the caller-owned installation CAS with predecessor digest, verified
+successor, proposed high-water and captured binding. All existing key records
+remain byte-for-byte unchanged, and the added key expires within thirty minutes
+and the existing manifest lifetime.
+
+Normal synchronous review callback completion consumes approval; throwing
+refuses. Awaitables are not accepted as implicit approval. The install adapter
+must atomically compare predecessor/high-water and live session/consent. Like the
+maintained API, this operation does **not** perform storage readback: its result
+is a verified accepted successor, never an unlocked signer, persisted-state
+proof or send authority. Installation-admitted failures/timeouts/cancellation
+report `state='unknown'`, cannot be retried automatically, and consume the one-shot
+operation. Unsettled trusted callbacks retain bounded worker capacity. Current
+clock samples anchor a monotonically shortened elapsed deadline before the
+callback starts, so a stale delayed sample cannot extend validity.
+
+The default requires exact locally qualified `EnrollmentRootSigner` custody,
+with the predecessor's independently trusted public root. This capability rejects
+generic signing and genesis transcripts; it can sign only the reviewed role-5
+addition derived from genuine predecessor evidence. Explicit
+`require_protected=False` permits `SoftwareEnrollmentRootSigner` for experiments.
+Closing the ceremony never deletes the application's key. The installed consumer
+uses a private crypto primitive solely to provision a fresh synthetic protected
+predecessor; production enrollment does not gain a generic provisioning API.
+Windows PCP acceptance is reported separately from unavailable-platform skips,
+with exact owned test-key receipts. Browser activation, live consent/CAS server
+integration, remote attestation and other protected providers remain separate.

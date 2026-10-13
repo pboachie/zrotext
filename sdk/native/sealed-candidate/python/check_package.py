@@ -13,7 +13,7 @@ import venv
 import zipfile
 
 ROOT=Path(__file__).resolve().parent
-MODULES={'__init__','sealed_candidate','checkpoint_store','cng_custody','cng_signing','election03','election_journal','compose03','compose02','outbound_journal','root_checkpoint','reply_selection','outbound02_journal','sealed_http','original_reply_reader','original_reply_client','original_reply_checkpoint','encrypted_template','contact_integrity','contact_history','contact_producer','workflow_context','sealed_lifecycle','template_store','owner_template','owner_template_save','owner_context','template_authoring','template_opening','conversation_proposals'}
+MODULES={'__init__','sealed_candidate','checkpoint_store','cng_custody','cng_signing','election03','election_journal','compose03','compose02','outbound_journal','root_checkpoint','reply_selection','outbound02_journal','sealed_http','original_reply_reader','original_reply_client','original_reply_checkpoint','encrypted_template','contact_integrity','contact_history','contact_producer','workflow_context','sealed_lifecycle','template_store','owner_template','owner_template_save','owner_context','template_authoring','template_opening','conversation_proposals','enrollment_ceremony'}
 PACKAGE='zrotext_native_candidate'
 DIST=PACKAGE+'-0.1.0a1'
 
@@ -82,6 +82,8 @@ def main():
         lifecycle_consumer=temporary/'installed_lifecycle_consumer.py';shutil.copyfile(ROOT/'installed_lifecycle_consumer.py',lifecycle_consumer)
         owner_consumer=temporary/'installed_owner_template_consumer.py';shutil.copyfile(ROOT/'installed_owner_template_consumer.py',owner_consumer)
         owner_save_consumer=temporary/'owner_save_consumer.py';shutil.copyfile(ROOT/'installed_owner_template_save_consumer.py',owner_save_consumer)
+        enrollment_consumer=temporary/'enrollment_consumer.py';shutil.copyfile(ROOT/'installed_enrollment_consumer.py',enrollment_consumer)
+        enrollment_fixture=json.loads(run(['node',ROOT/'enrollment-interop.mjs'],cwd=temporary))
         proposal_consumer=temporary/'proposal_consumer.py';shutil.copyfile(ROOT/'installed_conversation_proposals_consumer.py',proposal_consumer)
         proposal_fixture=json.loads(run(['node',ROOT/'conversation-proposals-interop.mjs'],cwd=temporary))
         opening_consumer=temporary/'opening_consumer.py';shutil.copyfile(ROOT/'installed_template_opening_consumer.py',opening_consumer)
@@ -95,6 +97,7 @@ def main():
         time_cases=json.loads(run(['node',time_cli,'--reader-cases'],cwd=temporary))
         assert len(time_cases['cases'])==14
         opening_qualifications=[]
+        enrollment_qualifications=[]
         for index,artifact in enumerate((wheel,sdist)):
             python=environment(temporary/f'consumer-{index}')
             run([python,'-m','pip','install',artifact],cwd=temporary)
@@ -116,6 +119,9 @@ def main():
                 context_result=json.loads(run([python,'-I',context_consumer],cwd=temporary,input=json.dumps(context_fixture)))
                 context_open=json.loads(run(['node',ROOT/'workflow-context-interop.mjs','--consume'],cwd=temporary,input=json.dumps(dict(fixture=context_fixture,envelope=context_result['envelope'],plaintext=context_fixture['plaintext']))))
                 assert context_result['installed'] and context_open['verified'] and context_open['role']==context_fixture['role']
+            enrollment_result=json.loads(run([python,'-I',enrollment_consumer,ROOT/'enrollment-interop.mjs'],cwd=temporary,input=json.dumps(enrollment_fixture)))
+            assert enrollment_result['installed'] and enrollment_result['enrollment_verified']
+            enrollment_qualifications.append(enrollment_result)
             proposal_result=json.loads(run([python,'-I',proposal_consumer],cwd=temporary,input=json.dumps(proposal_fixture)))
             assert proposal_result==dict(installed=True,typed_proposals=3,public_comparisons=2)
             opening_result=json.loads(run([python,'-I',opening_consumer,ROOT/'owner-template-interop.mjs'],cwd=temporary,input=json.dumps(owner_fixture)))
@@ -154,7 +160,7 @@ def main():
             reply_result=json.loads(run([python,'-I',reply_consumer],cwd=temporary,input=json.dumps(fixtures['selection'])))
             assert reply_result==dict(installed=True,workflow_coinstalled=True,original_reply_https=True)
         shutil.copyfile(wheel,args.output/wheel.name);shutil.copyfile(sdist,args.output/sdist.name)
-    print(json.dumps({'wheel_and_sdist':'passed','isolated_consumers':2,'installed_crypto_and_durability':'passed','template_opening':opening_qualifications}))
+    print(json.dumps({'wheel_and_sdist':'passed','isolated_consumers':2,'installed_crypto_and_durability':'passed','template_opening':opening_qualifications,'enrollment':enrollment_qualifications}))
 
 
 if __name__=='__main__':main()
