@@ -22,6 +22,15 @@ Implemented and executed with PyCA `cryptography==50.0.2`:
   lineage, RFC 9180 base-mode P-256/HKDF-SHA256/AES128GCM unwrap with the profile's
   exact info and empty wrap AAD, then AES256GCM authentication and strict body text.
   Integration wraps refuse until an independently accepted selection is implemented.
+- Profile-03 accepted-election proof: exact original signed02/accepted03 evidence,
+  expected core, immutable accepted-record digests, device signature, owner
+  signature over the device-signature digest, and registry key IDs. Independently
+  authenticated current authority must match account, device, line, binding,
+  selected reader, root, accepted lineage, manifest and live permission deadline.
+- Current profile-03 outbound ciphertext opening to the elected reader, using
+  nonempty profile03 wrap AAD and authenticated body text. The caller supplies
+  independently expected message identity and peer; hardware custody is required
+  by default. The returned text and byte digests confer no SMS authority.
 
 The HPKE implementation uses native PyCA ECDH, HKDF and AEAD primitives with the
 [RFC 9180](https://www.rfc-editor.org/rfc/rfc9180.html) labeled schedule. TypeScript
@@ -29,6 +38,32 @@ The HPKE implementation uses native PyCA ECDH, HKDF and AEAD primitives with the
 existing signed genesis, rotation and profile-03 vectors rather than accepting
 shape-only stand-ins. Profile-03 public vectors contain no recipient private
 scalar and therefore establish public verification, not profile-03 decryption.
+The separate `produce-election03.mjs` test invokes the maintained TS election
+verifier and outbound composer with fresh ciphertext, including a TPM public
+recipient supplied by the native test. That executable producer/consumer path
+tests actual profile03 decryption without exporting the TPM private key.
+
+## Election inputs are trusted adapter records
+
+`verify_accepted_election03` requires independently authenticated `expected_core`,
+the immutable accepted record, device enrollment signing point and owner approval
+point. Supplying received packet fields as these expected values does not prove
+the adapter's authority. The module authenticates the relation between these
+inputs and exact signed evidence; it does not read a backend, confirm MFA or
+commit an election. It retains the original signed02 bytes rather than accepting
+a newly signed semantic alias as original evidence.
+
+`require_current_election03` requires a separate present-authority tuple. A
+historical accepted challenge may have expired, but its signatures never renew
+current permission. The present tuple must name a manifest whose verified lineage
+contains the accepted03 identity. Concurrent durable election selection and
+trusted-clock/current-permission acquisition remain adapter responsibilities.
+The signed-manifest checkpoint stores manifest lineage, not a live permission.
+
+`open_elected_outbound03` reads current selected ciphertext only; it does not
+admit archived03 envelopes, issue a live grant, verify a separate audience grant,
+advance replay state, or call an SMS receiver. `require_hardware=False` is an
+explicit software-candidate test option; no platform failure triggers fallback.
 
 ## Custody and authority boundary
 
@@ -87,7 +122,7 @@ and text refusal does not retain a plaintext-carrying decode exception.
 | Surface | Current boundary / required follow-on |
 |---|---|
 | Native outbound composition | Not implemented; needs fresh CSPRNG material, authorized signer custody, exact replay persistence and independent TS consumption |
-| Profile-03 body opening | Public origin/manifest verification only; needs accepted election, independently authenticated current account/device/line/audience permission and exact nonempty wrap AAD |
+| Profile-03 body opening | Current elected ciphertext verified/opened, including TPM tests; live backend/admission/grant/audience and receiver composition remain separate |
 | Protected custody | Windows TPM provider with actual key/ECDH/opening/reopen tests; remote attestation, independent antirollback and other OS providers remain unsupported |
 | Integration reader selection | Unsupported; needs exact phone-approved selection and interval binding, never an archive alias |
 | Live authority and delivery | SDK/server/grant/journal/receiver integration and controlled device acceptance remain under #1054/#1004 |
