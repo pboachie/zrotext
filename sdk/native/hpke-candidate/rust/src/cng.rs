@@ -456,7 +456,7 @@ const CONTACT_PREFIX: &str = "zrotext-candidate-contact-root-";
 #[cfg(test)]
 #[path = "contact_hardware_tests.rs"]
 mod contact_hardware_tests;
-/// Dedicated qualified PCP contact-field capability. No generic domain, manifest,
+/// Dedicated qualified PCP contact commitment/mutation capability. No generic domain, manifest,
 /// statement or envelope signing API; deletion remains the caller's responsibility.
 pub struct ContactRootSigner {
     signer: HardwareSigner,
@@ -517,6 +517,39 @@ impl ContactRootSigner {
         }
         let digest = Sha256::digest(crate::contact::transcript(
             crate::contact::FIELD_DOMAIN,
+            unsigned,
+        ));
+        let sig = signer_digest(state, &digest)?;
+        signer_verify(expected, &digest, &sig)?;
+        Ok(sig)
+    }
+    pub(crate) fn sign_contact_mutation(
+        &self,
+        unsigned: &[u8],
+        expected: &[u8],
+        live: impl Fn() -> bool,
+    ) -> Result<Vec<u8>, NativeError> {
+        use sha2::{Digest, Sha256};
+        let guard = self
+            .signer
+            .state
+            .lock()
+            .map_err(|_| refused("poisoned lock"))?;
+        let state = &guard.0;
+        if !live()
+            || !state.qualified
+            || state.closed
+            || unsigned.len() != 304
+            || &unsigned[..5] != b"ZTCM\x01"
+            || state.public_magic(0x31534345)? != expected
+        {
+            return Err(refused("contact capability"));
+        }
+        if !live() {
+            return Err(refused("contact deadline"));
+        }
+        let digest = Sha256::digest(crate::contact::transcript(
+            crate::contact::mutation::DOMAIN,
             unsigned,
         ));
         let sig = signer_digest(state, &digest)?;

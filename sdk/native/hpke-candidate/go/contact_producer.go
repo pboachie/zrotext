@@ -75,6 +75,18 @@ func ProduceSoftwareContactField01(ctx context.Context, scalar []byte, st *Conta
 // cleanup belongs to the admitted worker until actual settlement, including
 // after caller cancellation. Non-admitted callers release it immediately.
 func contactProduce(ctx context.Context, st *ContactStatement, e ContactExpected, unsigned []byte, sign func(limited context.Context) ([]byte, error), cleanup func()) (*ContactProduction, error) {
+
+	expected := ContactExpected{Account: append([]byte(nil), e.Account...), Origin: e.Origin, RootFingerprint: append([]byte(nil), e.RootFingerprint...), Contact: append([]byte(nil), e.Contact...), RoutingDigest: append([]byte(nil), e.RoutingDigest...)}
+	return contactExecute(ctx, sign, cleanup, func(sig []byte) (*ContactProduction, error) {
+		field, err := VerifyContactField01(append(append([]byte(nil), unsigned...), sig...), st, expected)
+		if err != nil {
+			return nil, err
+		}
+		return &ContactProduction{field: field}, nil
+	})
+}
+
+func contactExecute[T any](ctx context.Context, sign func(context.Context) ([]byte, error), cleanup func(), verify func([]byte) (*T, error)) (*T, error) {
 	if ctx == nil || ctx.Err() != nil {
 		cleanup()
 		return nil, ErrShape
@@ -85,12 +97,10 @@ func contactProduce(ctx context.Context, st *ContactStatement, e ContactExpected
 		cleanup()
 		return nil, ErrShape
 	}
-	// Independent byte snapshots are captured before starting concurrent work.
-	expected := ContactExpected{Account: append([]byte(nil), e.Account...), Origin: e.Origin, RootFingerprint: append([]byte(nil), e.RootFingerprint...), Contact: append([]byte(nil), e.Contact...), RoutingDigest: append([]byte(nil), e.RoutingDigest...)}
 	limited, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	type result struct {
-		p *ContactProduction
+		p *T
 		e error
 	}
 	done := make(chan result, 1)
@@ -109,12 +119,12 @@ func contactProduce(ctx context.Context, st *ContactStatement, e ContactExpected
 			done <- result{e: ErrShape}
 			return
 		}
-		field, err := VerifyContactField01(append(append([]byte(nil), unsigned...), sig...), st, expected)
-		if err != nil {
-			done <- result{e: err}
+		value, err := verify(sig)
+		if limited.Err() != nil {
+			done <- result{e: ErrShape}
 			return
 		}
-		done <- result{p: &ContactProduction{field: field}}
+		done <- result{p: value, e: err}
 	}()
 	select {
 	case <-limited.Done():
