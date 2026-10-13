@@ -940,3 +940,35 @@ session loss and original deadline closure. Wheel and sdist consumers use normal
 installed imports and pass their freshly sealed ciphertext to the maintained
 TypeScript decryptor. These are local candidate checks, not browser or live
 owner-session acceptance; stable SDK entrypoints remain unchanged.
+
+## Current template opening lifecycle
+
+`OwnerTemplateOpening(origin, binding, template_id, client=..., read_current=...,
+current_session=..., enabled=True)` owns a dedicated `OwnerTemplateClient` with
+the exact same configured origin and binding. `open_latest(custody)` first
+requires a genuine qualified protected recipient, reads the current ciphertext,
+checks current signed authority and the exact recipient point, decrypts locally,
+and repeats current/session and custody checks before publishing an immutable
+preview. Successful repeated reads retain monotonic current/head observations.
+The preview never acknowledges a write; `matchesPending` remains the supplied
+client's observation of uncertain local intent, not a receipt.
+
+Call `invalidate()` on draft/review replacement, owner or custody loss, hiding
+or navigation. Close cancels outward results and the dedicated client's work;
+it never deletes or closes the caller-owned key. Unresolved callbacks or crypto
+retain worker admission until settlement. Default protected opening never falls
+back to software. Explicit `require_protected=False` permits the existing
+software candidate only; it does not relax currentness, ciphertext or point
+binding. Browser activation/visibility and protected browser key imports remain
+separate retained adapters. This is neither live login nor an authority server.
+
+Six actual maintained opening scenarios compare acceptance, preview and dispatch
+counts. Seven synthetic TLS groups cover currentness, provider refusal, immutable
+preview, exact client methods, cancellation during crypto and tamper/redirect
+refusal. On Windows with a qualified Platform Crypto Provider, the seventh group
+uses a fresh receipt-tracked hardware key with independently produced maintained
+ciphertext and checks provider close after decryption suppresses plaintext.
+The same group runs from both isolated installed archives and reports hardware
+qualification or a skip explicitly; a skipped provider check is not acceptance.
+Mutable envelope copies are cleared; Python strings/provider copies have no
+complete erasure guarantee. No durable restart history is added by this bridge.
