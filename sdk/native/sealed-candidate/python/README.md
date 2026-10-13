@@ -103,6 +103,25 @@ regression and unsupported profile downgrades. It stores public signed evidence
 only. Use an access-controlled local directory. Root transitions are currently
 outside this checkpoint adapter's generation-one chain surface.
 
+`ElectionJournal` uses a separate database format to atomically append the exact
+signed03 manifest, accepted binding/election tuple and original signed bundle
+after an existing signed02 checkpoint. A competing writer must supply the same
+expected revision; only one commits. Reopening and `snapshot_election` reverify
+the signed history and original bundle against independently authenticated
+expected core, accepted record and registry signing points supplied again by
+the caller. Stored bytes cannot supply those expectations. Later signed03
+manifest updates also require these expectations; second elections and root
+transitions are refused. Existing plain checkpoint databases are not migrated
+implicitly. A failed initial schema creation leaves an unusable file rather
+than authorizing an automatic reset.
+
+This journal persists local evidence of an externally accepted election, not
+server acceptance, fresh permission or a sender replay decision. Current
+authority must still be independently refreshed and checked before opening.
+Tests cover restart and actual TypeScript candidate opening, concurrent CAS,
+failed second insert, process exit before commit, evidence substitution and
+deleted/corrupt journal refusal. Missing records never reset trust.
+
 SQLite transactions provide local crash/concurrency durability, **not hardware
 antirollback**: restoring an old complete valid database cannot be detected
 without an independent high-water source. No live grant, audience permission,
