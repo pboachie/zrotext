@@ -230,7 +230,7 @@ store.accept(list(history)+[next_token],scope=scope,expected_revision=revision,c
 '''
         data=dict(path=str(self.path),pin=reply.decode(self.original['rootPin']).hex(),fingerprint=reply.decode(self.original['fingerprint']).hex(),
                   scope={k:v.hex() if type(v) is bytes else v for k,v in self.scope.items()},successor=self.original['successor'])
-        result=subprocess.run([sys.executable,'-c',program],input=json.dumps(data),text=True,capture_output=True)
+        result=subprocess.run([sys.executable,'-c',program],input=json.dumps(data),text=True,capture_output=True,cwd=Path(__file__).resolve().parent)
         self.assertEqual(result.returncode,23,result.stderr);revision,comparison,history=self.snapshot()
         self.assertEqual((revision,comparison,len(history)),(1,10000,2))
 
