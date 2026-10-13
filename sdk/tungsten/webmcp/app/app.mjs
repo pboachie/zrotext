@@ -3,11 +3,20 @@ import { registerWorkflowTools } from '/adapter.mjs';
 const login = document.querySelector('#login'), access = document.querySelector('#access');
 const register = document.querySelector('#register'), logout = document.querySelector('#logout'), status = document.querySelector('#status');
 let session, lifetime, registration, expiry, signIn, generation = 0;
+const supported = () => globalThis.isSecureContext && typeof document.modelContext?.registerTool === 'function';
+const unavailable = 'This browser does not provide native WebMCP. Use a browser with WebMCP enabled. No tools registered.';
+function capability() {
+  const enabled = supported();
+  access.disabled = !enabled; login.querySelector('button').disabled = !enabled;
+  if (!enabled) status.textContent = unavailable;
+  return enabled;
+}
 function close() {
   generation++; signIn?.abort(); signIn = undefined;
   lifetime?.abort(); registration?.close(); clearTimeout(expiry);
   session = undefined; registration = undefined; register.disabled = true; logout.disabled = true;
   status.textContent = 'Signed out. No tools registered.';
+  capability();
 }
 async function post(path, value, signal, csrf) {
   const current = generation;
@@ -19,6 +28,7 @@ async function post(path, value, signal, csrf) {
 }
 login.addEventListener('submit', async event => {
   event.preventDefault(); close(); const key = access.value; access.value = '';
+  if (!capability()) return;
   const current = generation; signIn = new AbortController();
   try {
     const authenticated = await post('/session/login', { accessKey: key }, signIn.signal);
@@ -49,3 +59,4 @@ logout.addEventListener('click', async () => {
   if (csrf) try { await post('/session/logout', {}, undefined, csrf); } catch { if (current === generation) status.textContent = 'Tools closed. Server sign-out could not be confirmed; the session will expire.'; }
 });
 addEventListener('pagehide', close);
+capability();

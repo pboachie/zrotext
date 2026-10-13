@@ -5,6 +5,9 @@ keeping the scoped ZROtext workflow credential on its server. It is intended for
 candidate integration and testing. It does not use or impersonate the ZROtext
 owner dashboard session. Signing in never registers tools; the user must choose
 **Register workflow tools** in a browser supporting the native document API.
+Browsers without native WebMCP show an unsupported-browser message and disable
+sign-in and registration before accepting an application access key. No polyfill
+or alternate browser authority is installed.
 
 The app supports Node 22 or later and is locally qualified with Node 24 and
 Chromium 153. WebMCP remains experimental. Build the generated catalog using the
@@ -83,5 +86,13 @@ OpenSSL available for synthetic certificates, set `ZT_WEBMCP_BROWSER` to the
 supported Chromium executable when necessary, and run:
 
 ```sh
-node --test sdk/tungsten/webmcp/app/app.test.mjs
+node --test sdk/tungsten/webmcp/app/app.test.mjs sdk/tungsten/webmcp/app/capability.test.mjs
 ```
+
+Install the pinned Playwright Chromium, Firefox and WebKit engines for the
+capability suite. It runs actual browsers: Chromium with WebMCP enabled and
+disabled, plus Firefox and WebKit without a native registration API. A changed
+capability fails the gate and requires native registration qualification before
+expanding support. The installed package report records the exact engine
+versions and capabilities. These desktop engine checks do not qualify branded
+Safari, mobile browsers, or a physical device.
