@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools==84.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zrotext-workflow-candidate"
+version = "0.1.0a1"
+description = "Native scoped ZROtext workflow client candidate"
+requires-python = ">=3.11"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+readme = "README.md"
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/pboachie/zrotext"
+
+[tool.setuptools]
+packages = ["zrotext_workflow"]
+
+[tool.setuptools.package-data]
+zrotext_workflow = ["workflow_contract.json"]

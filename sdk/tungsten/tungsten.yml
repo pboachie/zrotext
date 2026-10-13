@@ -1,0 +1,304 @@
+{
+  "tungsten": 1,
+  "api": {
+    "name": "zrotext",
+    "title": "ZROtext",
+    "docs_url": "https://github.com/pboachie/zrotext",
+    "description": "Open-source Android SMS gateway. Three API planes: the public owner and alpha routes, the default-off sealed plane, and the authorized workflow tools. Planned routes are documented but not callable."
+  },
+  "inputs": [
+    {
+      "namespace": "public",
+      "spec": "../../protocol/v1/openapi/public-v1.json",
+      "include": {
+        "extension": "x-implemented",
+        "equals": true
+      },
+      "planned_from": {
+        "extension": "x-implemented",
+        "equals": false
+      }
+    },
+    {
+      "namespace": "sealed",
+      "spec": "../../protocol/v1/openapi/sealed-v1.json",
+      "note": "Every route is mounted only under SEALED_ADMISSION_ENABLED."
+    },
+    {
+      "namespace": "workflow",
+      "spec": "../../protocol/v1/openapi/workflow-tools-v1.json",
+      "rpc_unflatten": {
+        "path": "/v1/workflow/tools",
+        "method": "post",
+        "discriminator": "method",
+        "params": "params",
+        "name_strip_prefix": "workflow."
+      }
+    }
+  ],
+  "overlays": [],
+  "servers": {
+    "default": "http://localhost:8080",
+    "allow_override": true
+  },
+  "resources": {
+    "public": {
+      "webhooks": {
+        "path": "/v1/webhooks",
+        "children": {
+          "deliveries": {
+            "path": "/v1/webhooks/{endpoint_id}/deliveries"
+          }
+        }
+      },
+      "owner_messages": {
+        "path": "/v1/owner/messages"
+      },
+      "alpha_messages": {
+        "path": "/v1/alpha/messages"
+      },
+      "devices": {
+        "path": "/v1/enrollment/devices"
+      }
+    },
+    "sealed": {
+      "messages": {
+        "path": "/v1/sealed/messages"
+      },
+      "inbound_events": {
+        "path": "/v1/sealed/inbound-events"
+      },
+      "devices": {
+        "path": "/v1/sealed/devices"
+      },
+      "webhooks": {
+        "path": "/v1/sealed/webhooks",
+        "children": {
+          "deliveries": {
+            "path": "/v1/sealed/webhooks/{endpoint_id}/deliveries"
+          }
+        }
+      },
+      "usage": {
+        "path": "/v1/sealed/usage"
+      }
+    },
+    "workflow": {
+      "tools": {
+        "path": "/v1/workflow/tools",
+        "children": {
+          "contact": {},
+          "context": {},
+          "action": {}
+        }
+      }
+    }
+  },
+  "naming": {
+    "operations": {
+      "public.listWebhookEndpoints": "list",
+      "public.createWebhookEndpoint": "create",
+      "public.listWebhookDeliveries": "list",
+      "public.replayWebhookDelivery": "replay",
+      "public.enableWebhookEndpoint": "enable",
+      "public.disableWebhookEndpoint": "disable",
+      "public.rotateWebhookEndpoint": "rotate",
+      "public.selectWebhookSealedEvents": "select_sealed_events",
+      "public.listOwnerMessages": "list",
+      "public.submitAlphaMessage": "submit",
+      "public.getAlphaMessageStatus": "get_status",
+      "public.cancelAlphaMessage": "cancel",
+      "public.listOwnerDevices": "list",
+      "public.revokeOwnerDevice": "revoke",
+      "sealed.submitSealedOutbound": "submit",
+      "sealed.listSealedMessages": "list",
+      "sealed.getSealedMessage": "get",
+      "sealed.cancelSealedMessage": "cancel",
+      "sealed.uploadSealedInboundEvent": "upload",
+      "sealed.listSealedDevices": "list",
+      "sealed.getSealedDevice": "get",
+      "sealed.listSealedWebhookEndpoints": "list",
+      "sealed.createSealedWebhookEndpoint": "create",
+      "sealed.listSealedWebhookDeliveries": "list",
+      "sealed.replaySealedWebhookDelivery": "replay",
+      "sealed.enableSealedWebhookEndpoint": "enable",
+      "sealed.disableSealedWebhookEndpoint": "disable",
+      "sealed.rotateSealedWebhookEndpoint": "rotate",
+      "sealed.getSealedUsage": "list",
+      "workflow.workflowReadiness": "readiness"
+    },
+    "fields": {
+      "preserve_wire_names_in_ts": false
+    }
+  },
+  "auth_profiles": {
+    "ownerSession": {
+      "composite": [
+        {
+          "cookie": "__Host-zrotext_session"
+        },
+        {
+          "cookie": "__Host-zrotext_csrf"
+        },
+        {
+          "header": {
+            "name": "x-zrotext-csrf",
+            "equals_cookie": "__Host-zrotext_csrf"
+          }
+        },
+        {
+          "header": {
+            "name": "Origin",
+            "from_config": "origin",
+            "when": "mutation"
+          }
+        }
+      ],
+      "satisfies": [
+        "ownerSession",
+        "ownerCsrf"
+      ],
+      "config": {
+        "origin": {
+          "env": "ZROTEXT_ORIGIN",
+          "description": "Exact configured HTTPS origin of the owner deployment."
+        }
+      }
+    },
+    "bearerAuth": {
+      "bearer": {
+        "env": "ZROTEXT_API_KEY"
+      }
+    },
+    "workflowCredential": {
+      "bearer": {
+        "env": "ZROTEXT_WORKFLOW_TOKEN",
+        "prefix": "ztw_"
+      }
+    }
+  },
+  "pagination": {
+    "public.listWebhookDeliveries": {
+      "cursor": {
+        "param": "before",
+        "field": "next_before",
+        "items": "deliveries",
+        "page_size_param": "limit"
+      }
+    },
+    "public.listOwnerMessages": {
+      "cursor": {
+        "param": "before",
+        "field": "next_cursor",
+        "items": "messages"
+      }
+    },
+    "public.listOwnerDevices": {
+      "cursor": {
+        "param": "before",
+        "field": "next_cursor",
+        "items": "devices",
+        "has_more": "has_more"
+      }
+    },
+    "sealed.listSealedMessages": {
+      "cursor": {
+        "param": "cursor",
+        "field": "next_cursor",
+        "items": "messages"
+      }
+    },
+    "sealed.listSealedDevices": {
+      "cursor": {
+        "param": "before",
+        "field": "next_cursor",
+        "items": "devices"
+      }
+    },
+    "sealed.listSealedWebhookDeliveries": {
+      "cursor": {
+        "param": "before",
+        "field": "next_before",
+        "items": "deliveries",
+        "page_size_param": "limit"
+      }
+    },
+    "sealed.getSealedUsage": {
+      "cursor": {
+        "param": "before",
+        "field": "next_before",
+        "items": "usage",
+        "page_size_param": "limit"
+      }
+    }
+  },
+  "targets": {
+    "typescript": {
+      "package": "@elysra/zrotext",
+      "out": "generated/typescript",
+      "runtime": "0.1.1"
+    },
+    "python": {
+      "package": "zrotext-sdk",
+      "module": "zrotext_sdk",
+      "out": "generated/python",
+      "runtime": "==0.1.0",
+      "models": "pydantic"
+    },
+    "rust": {
+      "crate": "zrotext-sdk",
+      "out": "generated/rust",
+      "runtime": "=0.1.0",
+      "cli": {
+        "bin": "zrotext-api",
+        "crate": "zrotext-api-cli",
+        "kit": "=0.1.0"
+      }
+    },
+    "go": {
+      "out": "generated/go",
+      "external": true,
+      "module": "github.com/pboachie/zrotext/sdk/tungsten/generated/go",
+      "package": "zrotext",
+      "runtime_version": "v0.1.0"
+    },
+    "java": {
+      "out": "generated/java",
+      "group_id": "io.github.pboachie.zrotext",
+      "artifact_id": "zrotext-sdk",
+      "package": "io.github.pboachie.zrotext",
+      "runtime": "0.1.0"
+    },
+    "csharp": {
+      "out": "generated/csharp",
+      "package_id": "Zrotext.Sdk",
+      "namespace": "Zrotext.Sdk",
+      "runtime": "0.1.1"
+    },
+    "ruby": {
+      "out": "generated/ruby",
+      "gem": "zrotext-sdk",
+      "module": "ZrotextSdk",
+      "runtime": "= 0.1.0"
+    },
+    "mcp": {
+      "package": "@elysra/zrotext-mcp",
+      "out": "generated/mcp",
+      "sdk": "@elysra/zrotext@0.1.0",
+      "runtime": "0.1.1"
+    },
+    "webmcp": {
+      "package": "@elysra/zrotext-webmcp",
+      "out": "generated/webmcp",
+      "sdk": "@elysra/zrotext@0.1.0",
+      "runtime": "0.1.1",
+      "sdk_runtime": "0.1.1"
+    },
+    "docs": {
+      "out": "generated/docs"
+    }
+  },
+  "output": {
+    "license_header": "SPDX-License-Identifier: AGPL-3.0-only"
+  }
+}

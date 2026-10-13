@@ -67,10 +67,55 @@ jobs:
           ref: 1b7732ec36bf705f78e69a2cea95b792f04dc772
           path: controls
           persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
+          path: original-producer
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 6307413ae33fa4623483ca5adf306045b3efffb1
+          path: http-fixture
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 50c7258eb7e616ba8f0574d167bff7b999a9bd8d
+          path: current-fixture
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: d127e5c86f3b17db371acc608eedcf6419264ba7
+          path: read-fixture
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: e3ed703a2c5eb0f72fc4138fade0859637dff3d5
+          path: page-fixture
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: a0cd1763406b6c0a05f7ea57a897664f39667b75
+          path: owner-fixture
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: a32ef83ad24746a99b3ba8895170b588b718e236
+          path: proposal-fixture
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 5d6d683a78461ccb1782014989cb5e4a3f2927f2
+          path: template-fixture
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 26e876da9f34372d9cf26511993cf633971e0037
+          path: template-producer
+          persist-credentials: false
       - name: Build independent producers
         shell: pwsh
         run: |
-          foreach ($path in @('producer02','producer03','custody-producer','root-producer')) {
+          foreach ($path in @('producer02','producer03','custody-producer','root-producer','original-producer','template-producer')) {
             npm ci --ignore-scripts --prefix "$path/sdk/typescript"
             if ($LASTEXITCODE) { exit $LASTEXITCODE }
             npm run build --prefix "$path/sdk/typescript"
@@ -78,8 +123,10 @@ jobs:
           }
       - name: Reject unexpected archive payloads
         run: python sdk/native/crypto-envelope/package-managed-test.py
+      - name: Install synthetic TLS certificate dependency
+        run: python -m pip install cryptography==46.0.5
       - name: Qualify clean installed candidate consumers
         shell: pwsh
         run: |
-          python sdk/native/crypto-envelope/package-managed.py --target ${{ matrix.language }} --out "$env:RUNNER_TEMP/native-artifacts" --producer02 producer02 --producer03 producer03 --custody-producer custody-producer --root-producer root-producer --root-controls root-controls --controls controls
+          python sdk/native/crypto-envelope/package-managed.py --target ${{ matrix.language }} --out "$env:RUNNER_TEMP/native-artifacts" --producer02 producer02 --producer03 producer03 --custody-producer custody-producer --root-producer root-producer --root-controls root-controls --controls controls --original-producer original-producer --http-fixture http-fixture --current-fixture current-fixture --read-fixture read-fixture --page-fixture page-fixture --owner-fixture owner-fixture --proposal-fixture proposal-fixture --template-fixture template-fixture --template-producer template-producer
           if ($LASTEXITCODE) { exit $LASTEXITCODE }

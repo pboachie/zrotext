@@ -94,9 +94,12 @@ const SMS_LINE_IDLE_POLL_SECONDS: u64 = 30;
 const SMS_LINE_RETIRE_INTERVAL: Duration = Duration::from_secs(60);
 const MAX_SMS_LINE_ACKS_PER_CONNECTION: usize = 64;
 /// Process-wide wake for sockets idling between activation polls; the owner
-/// side calls wake_sms_line_challenges after opening a challenge. Other hub
-/// instances are covered by the idle poll.
+/// side calls wake_sms_line_activation after opening or approving a challenge.
+/// Other hub instances are covered by the idle poll.
 static SMS_LINE_CHALLENGE_WAKE: LazyLock<Notify> = LazyLock::new(Notify::new);
+/// Latches wakes raised while a socket loop is executing another select
+/// branch: notify_waiters alone cannot reach a dropped notified() future.
+static SMS_LINE_WAKE_PENDING: AtomicBool = AtomicBool::new(false);
 
 /// Poll spacing for the activation loop: fast while the previous poll pushed
 /// a frame (an exchange is open), slow while the device has nothing pending.
@@ -113,7 +116,13 @@ fn sms_line_poll_delay(pushed: bool) -> Duration {
 /// poll. Called by the activation exchange layer; writes from other hub
 /// instances are covered by the idle poll.
 pub fn wake_sms_line_activation() {
+    SMS_LINE_WAKE_PENDING.store(true, Ordering::Release);
     SMS_LINE_CHALLENGE_WAKE.notify_waiters();
+}
+/// Consumes a wake that may have been raised while this loop was busy; every
+/// loop iteration checks before parking so a wake is never dropped.
+fn take_sms_line_wake() -> bool {
+    SMS_LINE_WAKE_PENDING.swap(false, Ordering::AcqRel)
 }
 static DEVICE_SOCKET_ADMISSION: LazyLock<SocketAdmission> = LazyLock::new(|| {
     SocketAdmission::new(
@@ -1222,6 +1231,10 @@ async fn run_socket(
     let mut close_with_code = None;
     let mut conversation_session = None;
     loop {
+        if take_sms_line_wake() {
+            sms_line_next_poll = tokio::time::Instant::now();
+            sealed_line_next_poll = tokio::time::Instant::now();
+        }
         tokio::select! {
             message = receive_frame(&mut socket, &mut frame_budget) => {
                 match message {
@@ -1812,11 +1825,13 @@ async fn run_socket(
                     }
                 }
             },
-            // The owner just opened a challenge: poll now instead of waiting
-            // for the idle cadence.
+            // The owner just opened or approved a challenge: poll now instead
+            // of waiting for the idle cadence.
             _ = SMS_LINE_CHALLENGE_WAKE.notified(), if state.sms_line_activation_enabled || sealed_setup_enabled => {
-                sms_line_next_poll = tokio::time::Instant::now();
-                sealed_line_next_poll = tokio::time::Instant::now();
+                if take_sms_line_wake() {
+                    sms_line_next_poll = tokio::time::Instant::now();
+                    sealed_line_next_poll = tokio::time::Instant::now();
+                }
             },
             _ = state.drain_notify.notified() => {
                 close_reason = "site_drain";
@@ -2388,6 +2403,20 @@ mod sms_line_cadence_tests {
             .await
             .expect("waiting socket was not woken")
             .expect("wake sender dropped");
+    }
+
+    #[test]
+    fn a_wake_raised_while_every_socket_loop_is_busy_is_still_observed() {
+        // notify_waiters alone cannot reach a notified() future that is not
+        // parked: a wake raised while a loop is executing another select
+        // branch would be dropped. The pending flag preserves it for the next
+        // loop iteration.
+        wake_sms_line_activation();
+        assert!(
+            take_sms_line_wake(),
+            "a wake raised while the socket loop was busy must still be observed"
+        );
+        assert!(!take_sms_line_wake());
     }
 }
 

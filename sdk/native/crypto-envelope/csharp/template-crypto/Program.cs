@@ -2,6 +2,9 @@ using System.Text.Json;
 using System.Security.Cryptography;
 using Zrotext.Candidate;
 
+// Internal primitive boundaries belong to the source assembly's unit checks.
+// The external package consumer exercises only the public template APIs below.
+#if !ZROTEXT_INSTALLED_CONSUMER
 using(var boundary=ECDiffieHellman.Create(ECCurve.NamedCurves.nistP256)){
  var q=boundary.ExportParameters(false).Q;var point=new byte[65];point[0]=4;q.X!.CopyTo(point,1);q.Y!.CopyTo(point,33);
  foreach(int size in new[]{1,31,32,33,32768}){
@@ -12,6 +15,7 @@ using(var boundary=ECDiffieHellman.Create(ECCurve.NamedCurves.nistP256)){
  }
  foreach(int size in new[]{0,32769}){try{HpkeRecipient.SealContent(point,Array.Empty<byte>(),Array.Empty<byte>(),new byte[size]);throw new Exception("Content size accepted");}catch(CryptographicException){}}
 }
+#endif
 ProtectedRecipient? owner=null;string? receipt=null;
 try {
 if(args.SequenceEqual(new[]{"--hardware"})) {

@@ -1,0 +1,46 @@
+name: Scoped WebMCP adapter
+on:
+  pull_request:
+    paths:
+      - 'sdk/tungsten/webmcp/**'
+      - 'sdk/tungsten/package-webmcp.py'
+      - 'sdk/tungsten/generated.lock.json'
+      - 'sdk/typescript/**'
+      - 'web/owner/package.json'
+      - 'web/owner/package-lock.json'
+      - '.github/workflows/scoped-webmcp.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'sdk/tungsten/webmcp/**'
+      - 'sdk/tungsten/package-webmcp.py'
+      - 'sdk/tungsten/generated.lock.json'
+      - 'sdk/typescript/**'
+      - 'web/owner/package.json'
+      - 'web/owner/package-lock.json'
+      - '.github/workflows/scoped-webmcp.yml'
+permissions:
+  contents: read
+jobs:
+  scoped-webmcp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.13.0'
+      - name: Build shared guarded workflow vocabulary
+        run: |
+          npm --prefix sdk/typescript ci --ignore-scripts --no-audit --no-fund
+          npm --prefix sdk/typescript run build
+      - name: Verify explicit registration and permission lifecycle
+        run: node --test sdk/tungsten/webmcp/adapter.test.mjs
+      - name: Install isolated native browser
+        run: |
+          npm --prefix web/owner ci --ignore-scripts --no-audit --no-fund
+          web/owner/node_modules/.bin/playwright install --with-deps chromium
+      - name: Verify native browser registration and execution
+        run: node --test sdk/tungsten/webmcp/browser.test.mjs

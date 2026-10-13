@@ -184,7 +184,7 @@ impl VerifiedManifest03 {
         &self,
         request: &Authorization03<'_>,
         now: u64,
-    ) -> Check<([u8; 65], u64)> {
+    ) -> Check<([u8; 65], u64, u64)> {
         let Authorization03 {
             kind,
             account,
@@ -218,6 +218,7 @@ impl VerifiedManifest03 {
             return Err("reader count");
         }
         let mut deadline = self.identity.expires_ms.min(signer.until);
+        let mut not_before = signer.from;
         let (mut devices, mut archives, mut integrations) = (0, 0, 0);
         let mut previous = None;
         for &(role, id) in readers {
@@ -240,11 +241,12 @@ impl VerifiedManifest03 {
                 _ => return Err("reader role/subject"),
             }
             deadline = deadline.min(r.until);
+            not_before = not_before.max(r.from);
         }
         if devices != usize::from(!inbound) || archives != 1 || integrations > 6 {
             return Err("reader set");
         }
-        Ok((signer.point, deadline))
+        Ok((signer.point, not_before, deadline))
     }
 }
 

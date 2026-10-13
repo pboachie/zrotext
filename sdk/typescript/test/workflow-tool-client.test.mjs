@@ -130,7 +130,7 @@ test('exact proposal and scheduling validation never widens owner timing authori
   for (const value of [{ ...request, ordinal: 1 }, { ...request, policy: { ...policy, max_occurrences: 2 } },
     { ...request, key: { ...key, approved: true } }]) assert.throws(() => validateWorkflowRequest('workflow.action.schedule', value));
 });
-test('Python functions and canonical digest reuse the same SDK and protocol vector', async () => {
+test('native Python functions and canonical digest match the shared protocol vector', async () => {
   const vector = JSON.parse(await readFile(new URL('../../../protocol/v1/vectors/workflow-action-01.json', import.meta.url)));
   const source = `import sys,json
 sys.path.insert(0,sys.argv[1])
@@ -138,10 +138,8 @@ from workflow_client import workflow_functions,action_digest,WorkflowClient,Work
 v=json.load(sys.stdin)
 assert action_digest(v["action"])==v["binding_digest"]
 assert len(workflow_functions())==8
-c=WorkflowClient("https://gateway.example", "secret-not-a-valid-credential")
-assert "secret" not in repr(c)
 try:
- c.call("send", {"plaintext":"synthetic"})
+ c=WorkflowClient("https://gateway.example", "secret-not-a-valid-credential")
  raise AssertionError("accepted")
 except WorkflowError as error:
  assert error.code=="invalid_configuration"

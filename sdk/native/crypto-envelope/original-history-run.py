@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import json
 import os
+import runpy
 from pathlib import Path
 import shutil
 import subprocess
@@ -22,6 +23,7 @@ def main():
     parser.add_argument('--language', choices=('java', 'csharp', 'ruby'), required=True)
     parser.add_argument('--producer', type=Path, required=True)
     parser.add_argument('--ruby', default='ruby')
+    parser.add_argument('--command-file', type=Path, help='Trusted installed test driver argument JSON')
     args = parser.parse_args(); producer = args.producer.resolve()
     if run('git', '-C', producer, 'rev-parse', 'HEAD', capture_output=True, text=True).stdout.strip() != PIN:
         raise ValueError('Unexpected maintained producer revision')
@@ -35,7 +37,9 @@ def main():
     wire = original.rows(fixture)
     with tempfile.TemporaryDirectory(prefix='zrotext-original-history-') as folder:
         temp = Path(folder)
-        if args.language == 'java':
+        if args.command_file:
+            command = runpy.run_path(str(HERE / 'installed-command.py'))['load'](args.command_file)
+        elif args.language == 'java':
             java = HERE / 'java'
             sources = [java / name for name in ('HpkeRecipient.java', 'ManifestChain.java', 'SignedEnvelope.java',
                        'reader/OriginalReplyReader.java', 'original-history/OriginalReplyCheckpoint.java',
