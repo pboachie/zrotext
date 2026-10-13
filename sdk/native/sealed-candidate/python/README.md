@@ -814,3 +814,48 @@ The installed wheel and sdist run genuine signed-current synthetic TLS controls
 with explicit session/CSRF callbacks. Maintained TypeScript differential tests
 cover twelve cold-read cases. These establish local candidate behavior, not a
 live browser session, owner server acceptance, or browser custody qualification.
+
+### Owner template save, retry and reconciliation
+
+`OwnerTemplateClient` extends the current reader with the maintained owner's
+save state machine. It additionally requires `consume_ciphertext_review(review)`,
+a trusted host callback that consumes the exact request ID, expected revision,
+read-only scope and encrypted digest. It receives neither plaintext nor owner
+credentials. The native callback is synchronous and must return `None`; an
+awaitable or other return value is refused. Successful return represents local
+review consumption; the
+relay independently authenticates owner persistence authority.
+
+Call `prepare_save(request_id, expected_revision, scope, envelope)` to capture
+immutable bytes and receive an opaque, per-client ticket. Then `commit(ticket)`
+makes one POST. `retry_unknown(ticket)` is an explicit caller action that reuses
+the exact original body, revision and idempotency key. No operation retries
+automatically. Each ticket permits at most three total POST attempts and three
+`verify_unknown(ticket)` observations within its original, possibly shortened,
+lease. A ticket cannot be fabricated, transferred, reused after acknowledgement,
+or refreshed with new randomness, review, CSRF, cookie, ciphertext or deadline.
+
+After dispatch may have occurred, all HTTP refusals and malformed or lost
+responses retain an unknown outcome. `pending()` returns a copy of the original
+request/template/revision/digest metadata. Authentication refusals and changed
+owner/session authority destroy the live ticket but retain that metadata.
+`close()` or deadline expiry also destroys the ticket without clearing an
+uncertain pending identity. Python's immutable byte/string copies are not a
+secure erasure guarantee; closed records lose the client's retained reference.
+
+A successful canonical receipt plus fresh post-response authority produces
+`acknowledged_saved_revision`. `verify_unknown(ticket)` or `read_latest()` during
+uncertainty returns `verified_current_snapshot` with `requestAcknowledged=False`,
+even if `matchesPending=True`. An observed equal ciphertext never upgrades an
+unknown write to acknowledgement or clears its pending intent. The original
+idempotent POST may be retried explicitly while its authority remains valid.
+
+Prepared records and pending metadata are in memory, not durable restart
+recovery. New application sessions must independently resolve uncertainty; this
+API does not authorize replacing an uncertain intent after restart. No owner
+login, browser custody fallback, sending authority, live session acceptance or
+remote idempotency implementation is supplied. The cold `OwnerTemplateReader`
+remains available unchanged. Twenty-seven actual maintained TypeScript scenarios
+and nine synthetic TLS groups exercise saves, exact replay, current/session
+fences, sticky uncertainty, bounds, cancellation and reconciliation; both clean
+installed artifacts repeat the TLS groups.

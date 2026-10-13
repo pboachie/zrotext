@@ -13,7 +13,7 @@ import venv
 import zipfile
 
 ROOT=Path(__file__).resolve().parent
-MODULES={'__init__','sealed_candidate','checkpoint_store','cng_custody','cng_signing','election03','election_journal','compose03','compose02','outbound_journal','root_checkpoint','reply_selection','outbound02_journal','sealed_http','original_reply_reader','original_reply_client','original_reply_checkpoint','encrypted_template','contact_integrity','contact_history','contact_producer','workflow_context','sealed_lifecycle','template_store','owner_template'}
+MODULES={'__init__','sealed_candidate','checkpoint_store','cng_custody','cng_signing','election03','election_journal','compose03','compose02','outbound_journal','root_checkpoint','reply_selection','outbound02_journal','sealed_http','original_reply_reader','original_reply_client','original_reply_checkpoint','encrypted_template','contact_integrity','contact_history','contact_producer','workflow_context','sealed_lifecycle','template_store','owner_template','owner_template_save'}
 PACKAGE='zrotext_native_candidate'
 DIST=PACKAGE+'-0.1.0a1'
 
@@ -80,7 +80,8 @@ def main():
         contact_consumer=temporary/'contact_consumer.py';shutil.copyfile(ROOT/'installed_contact_consumer.py',contact_consumer)
         producer_consumer=temporary/'producer_consumer.py';shutil.copyfile(ROOT/'installed_contact_producer_consumer.py',producer_consumer)
         lifecycle_consumer=temporary/'installed_lifecycle_consumer.py';shutil.copyfile(ROOT/'installed_lifecycle_consumer.py',lifecycle_consumer)
-        owner_consumer=temporary/'owner_consumer.py';shutil.copyfile(ROOT/'installed_owner_template_consumer.py',owner_consumer)
+        owner_consumer=temporary/'installed_owner_template_consumer.py';shutil.copyfile(ROOT/'installed_owner_template_consumer.py',owner_consumer)
+        owner_save_consumer=temporary/'owner_save_consumer.py';shutil.copyfile(ROOT/'installed_owner_template_save_consumer.py',owner_save_consumer)
         owner_fixture=json.loads(run(['node',ROOT/'owner-template-interop.mjs'],cwd=temporary))
         context_consumer=temporary/'context_consumer.py';shutil.copyfile(ROOT/'installed_context_consumer.py',context_consumer)
         context_fixtures=[json.loads(run(['node',ROOT/'workflow-context-interop.mjs',str(role)],cwd=temporary)) for role in (2,3)]
@@ -108,6 +109,8 @@ def main():
                 context_result=json.loads(run([python,'-I',context_consumer],cwd=temporary,input=json.dumps(context_fixture)))
                 context_open=json.loads(run(['node',ROOT/'workflow-context-interop.mjs','--consume'],cwd=temporary,input=json.dumps(dict(fixture=context_fixture,envelope=context_result['envelope'],plaintext=context_fixture['plaintext']))))
                 assert context_result['installed'] and context_open['verified'] and context_open['role']==context_fixture['role']
+            owner_save_result=json.loads(run([python,'-I',owner_save_consumer],cwd=temporary,input=json.dumps(owner_fixture)))
+            assert owner_save_result==dict(installed=True,owner_template_save_tls=9)
             owner_result=json.loads(run([python,'-I',owner_consumer],cwd=temporary,input=json.dumps(owner_fixture)))
             assert owner_result==dict(installed=True,owner_template_tls=5)
             store_result=json.loads(run([python,'-I',store_consumer],cwd=temporary,input=json.dumps(fixtures['template'])))
