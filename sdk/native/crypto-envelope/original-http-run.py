@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import json
 import os
+import runpy
 from pathlib import Path
 import subprocess
 import sys
@@ -28,6 +29,7 @@ def main():
     parser.add_argument('--language', choices=('java', 'csharp', 'ruby'), required=True)
     parser.add_argument('--fixture', type=Path, required=True)
     parser.add_argument('--ruby', default='ruby')
+    parser.add_argument('--command-file', type=Path, help='Trusted installed test driver argument JSON')
     args = parser.parse_args()
     fixture = args.fixture.resolve(strict=True)
     if run('git', '-C', fixture, 'rev-parse', 'HEAD', capture_output=True, text=True).stdout.strip() != PIN:
@@ -38,7 +40,9 @@ def main():
         'DOTNET_STARTUP_HOOKS', 'RUBYOPT', 'RUBYLIB')}
     with tempfile.TemporaryDirectory(prefix='zrotext-managed-http-') as directory:
         folder = Path(directory)
-        if args.language == 'java':
+        if args.command_file:
+            command = runpy.run_path(str(HERE / 'installed-command.py'))['load'](args.command_file)
+        elif args.language == 'java':
             jars = []
             for path, expected in JARS:
                 target = folder / Path(path).name

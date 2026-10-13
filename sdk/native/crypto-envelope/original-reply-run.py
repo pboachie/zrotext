@@ -27,6 +27,17 @@ def rows(fixture):
                      for name, value in fixture.items() if name != 'now') + '\n'
 
 
+def installed_commands(path):
+    commands = json.loads(path.read_text(encoding='utf-8'))
+    if not isinstance(commands, dict) or set(commands) != {'software', 'protected'}:
+        raise ValueError('Expected software and protected installed commands')
+    for command in commands.values():
+        if not isinstance(command, list) or not command or any(
+                not isinstance(value, str) or not value or '\0' in value for value in command):
+            raise ValueError('Expected nonempty installed command argument lists')
+    return commands['software'], commands['protected']
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--language', choices=('java', 'csharp', 'ruby'), required=True)
@@ -34,6 +45,7 @@ def main():
     parser.add_argument('--jna', type=Path)
     parser.add_argument('--ruby', default='ruby')
     parser.add_argument('--require-hardware', action='store_true')
+    parser.add_argument('--command-file', type=Path, help='Trusted installed consumer argument lists; no source compilation')
     args = parser.parse_args(); producer = args.producer.resolve()
     if run('git', '-C', producer, 'rev-parse', 'HEAD', capture_output=True, text=True).stdout.strip() != PIN:
         raise ValueError('Unexpected producer revision')
@@ -44,7 +56,9 @@ def main():
     cli = producer / 'sdk/native/sealed-candidate/python/produce-selected-reply02.mjs'
     with tempfile.TemporaryDirectory(prefix='zrotext-original-reply-') as folder:
         temp = Path(folder)
-        if args.language == 'java':
+        if args.command_file:
+            software, protected = installed_commands(args.command_file.resolve())
+        elif args.language == 'java':
             jar = args.jna.resolve() if args.jna else temp / 'jna.jar'
             if not args.jna:
                 urllib.request.urlretrieve('https://repo.maven.apache.org/maven2/net/java/dev/jna/jna/5.17.0/jna-5.17.0.jar', jar)

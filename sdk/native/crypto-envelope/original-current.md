@@ -54,6 +54,9 @@ controls duplicate otherwise valid proof/chain fields and require refusal.
 Every driver also attempts reentry from its clock callback and requires refusal
 without an extra request; Java explicitly excludes its lock's reentrant case.
 
+The same controls run against installed archives through the
+[managed package gate](packages.md); `--command-file` selects a trusted local
+test driver's explicit argument vector and skips runtime source compilation.
 These are synthetic native tests. Read/page/consume/status proof integration,
-output Propose credentials, automatic reply execution, installed package
-qualification, live service acceptance and registry publication are separate.
+output Propose credentials, automatic reply execution, live service acceptance
+and registry publication are separate.

@@ -22,15 +22,21 @@ CS_ID = "Zrotext.Native.Candidate"
 RUBY_ID = "zrotext-native-candidate"
 MODULES = ["HpkeRecipient", "SignedEnvelope", "ManifestChain", "Election03",
            "SealedReader02", "ElectedReader03", "OriginalReplyReader", "ProtectedRecipient", "ProtectedSigner",
-           "Compose03", "Compose02", "RootJournal", "ElectionJournal", "CandidateBody"]
+           "Compose03", "Compose02", "RootJournal", "ElectionJournal", "CandidateBody",
+           "OriginalReplyCheckpoint", "OriginalHttp", "OriginalCurrentClient"]
 SUITES = {"root-journal": "RootJournalTest", "election-journal": "ElectionJournalTest",
-          "custody": "CustodyTest", "composition": "ComposeTest", "composition02": "Compose02Test"}
+          "custody": "CustodyTest", "composition": "ComposeTest", "composition02": "Compose02Test",
+          "original-reply": "OriginalReplyTest", "original-protected": "OriginalProtectedTest",
+          "original-history": "OriginalHistoryTest", "http": "HttpTest", "current-http": "CurrentTest"}
 PINS = {"producer02": "a13ea1e3d6f6db594485c19b36c43fe642e67c7a",
         "producer03": "304d512b7a420a3102278f32baed095f3e778989",
         "custody_producer": "a5fb59c2c5bc81e80b5b8d4b836afd51c5304653",
         "root_producer": "93a65d737dfb0de603c732241c667f90771f60dd",
         "root_controls": "26e73753c4ff5e3b27abdca6f5b67ed3ce5a0273",
-        "controls": "1b7732ec36bf705f78e69a2cea95b792f04dc772"}
+        "controls": "1b7732ec36bf705f78e69a2cea95b792f04dc772",
+        "original_producer": "72124e1a3ff28e782f870eeddbdc33cacf8ca3b4",
+        "http_fixture": "6307413ae33fa4623483ca5adf306045b3efffb1",
+        "current_fixture": "50c7258eb7e616ba8f0574d167bff7b999a9bd8d"}
 
 
 def run(*args, **kw):
@@ -65,6 +71,8 @@ def runtime_sources(target):
     result = []
     for module in MODULES:
         name = re.sub(r"(?<!^)(?=[A-Z])", "_", module).lower() if target == "ruby" else module
+        if target == 'ruby' and module == 'OriginalCurrentClient':
+            name = 'original_current'
         candidates = list((HERE / target).rglob(name + "." + extension))
         if module == "CandidateBody":
             candidates = [HERE.parent / "crypto-candidate" / target / (name + "." + extension)]
@@ -100,7 +108,9 @@ def java(stage, source, feed, env):
         ('maven-resources-plugin', '3.3.1', ''), ('maven-jar-plugin', '3.4.2', ''), ('maven-surefire-plugin', '3.5.2', ''))) + '</plugins>'
     dependency = '<dependency><groupId>{}</groupId><artifactId>{}</artifactId><version>{}</version></dependency>'
     jna = dependency.format('net.java.dev.jna', 'jna', '5.17.0')
-    write(source / 'pom.xml', header.format(JAVA_ID) + '<dependencies>' + jna + '</dependencies><build><sourceDirectory>src</sourceDirectory><resources><resource><directory>resources</directory></resource></resources>' + plugins + '</build></project>')
+    gson = dependency.format('com.google.code.gson', 'gson', '2.14.0')
+    annotations = dependency.format('com.google.errorprone', 'error_prone_annotations', '2.48.0')
+    write(source / 'pom.xml', header.format(JAVA_ID) + '<dependencies>' + jna + gson + annotations + '</dependencies><build><sourceDirectory>src</sourceDirectory><resources><resource><directory>resources</directory></resource></resources>' + plugins + '</build></project>')
     run(mvn, '--batch-mode', '-Dmaven.repo.local=' + str(stage / 'build-cache'), 'package', cwd=source, env=env)
     name = JAVA_ID + '-' + VERSION + '.jar'
     expected = {p.relative_to(source / 'target/classes').as_posix() for p in (source / 'target/classes').rglob('*') if p.is_file()}
@@ -115,7 +125,8 @@ def java(stage, source, feed, env):
             write(file.with_name(file.name + '.' + algorithm), hashlib.new(algorithm, file.read_bytes()).hexdigest())
     consumer = stage / 'consumer'; consumer.mkdir()
     for suite, test in SUITES.items():
-        copy(HERE / 'java' / suite / (test + '.java'), consumer / 'src/main/java' / (test + '.java'))
+        directory = 'original-reply' if suite == 'original-protected' else 'http' if suite == 'current-http' else suite
+        copy(HERE / 'java' / directory / (test + '.java'), consumer / 'src/main/java' / (test + '.java'))
     write(consumer / 'pom.xml', header.format('installed-consumer') + '<repositories><repository><id>candidate</id><url>' + feed.as_uri() + '</url></repository></repositories><dependencies>' + dependency.format('io.github.pboachie.zrotext', JAVA_ID, VERSION) + '</dependencies><build>' + plugins + '</build></project>')
     shutil.rmtree(source)
     run(mvn, '--batch-mode', '-Dmaven.repo.local=' + str(stage / 'consumer-cache'), 'compile', 'org.apache.maven.plugins:maven-dependency-plugin:3.8.1:copy-dependencies', cwd=consumer, env=env)
@@ -123,11 +134,15 @@ def java(stage, source, feed, env):
     if installed.read_bytes() != (destination / name).read_bytes():
         raise ValueError('Maven resolved another candidate')
     dependencies = sorted((consumer / 'target/dependency').glob('*.jar'))
-    if {p.name for p in dependencies} != {name, 'jna-5.17.0.jar'}:
+    if {p.name for p in dependencies} != {name, 'jna-5.17.0.jar', 'gson-2.14.0.jar', 'error_prone_annotations-2.48.0.jar'}:
         raise ValueError('Unexpected Java dependencies')
     jna_jar = consumer / 'target/dependency/jna-5.17.0.jar'
     if hashlib.sha256(jna_jar.read_bytes()).hexdigest() != 'b3a9408e7c51e08ef0e3bfcc08f443f6ec0f6191ba8cd7c18d53d2b22e5bdbc0':
         raise ValueError('Resolved JNA checksum mismatch')
+    for jar, expected_hash in (('gson-2.14.0.jar', '2cbd119bf1961c28788310963dc80ba65f58cdeec1dd139c8bdb1240faa2c36f'),
+                               ('error_prone_annotations-2.48.0.jar', 'b49c5c958316ed67a09c699dda9aa749caf434d51d863dea599ef36a49b9c855')):
+        if hashlib.sha256((consumer / 'target/dependency' / jar).read_bytes()).hexdigest() != expected_hash:
+            raise ValueError('Resolved JSON dependency checksum mismatch')
     classpath = os.pathsep.join(map(str, [consumer / 'target/classes', *dependencies]))
     return {suite: [tool('java'), '-cp', classpath, 'org.zrotext.candidate.' + test] for suite, test in SUITES.items()}, env
 
@@ -195,15 +210,17 @@ def ruby(stage, source, feed, env):
                 raise ValueError('Gem payload differs from reviewed source')
     commands = {}
     for suite in SUITES:
-        name = 'test.rb' if suite.endswith('journal') else ('custody_test.rb' if suite == 'custody' else 'compose_test.rb')
-        text = (HERE / 'ruby' / suite / name).read_text(encoding='utf-8')
+        name = ('protected.rb' if suite == 'original-protected' else 'current_test.rb' if suite == 'current-http' else 'test.rb' if suite.endswith('journal') or suite in ('original-reply', 'original-history', 'http')
+                else 'custody_test.rb' if suite == 'custody' else 'compose_test.rb')
+        directory = 'original-reply' if suite == 'original-protected' else 'http' if suite == 'current-http' else suite
+        text = (HERE / 'ruby' / directory / name).read_text(encoding='utf-8')
         text, count = re.subn(r"^require_relative '[^']+'$", "require 'zrotext_native_candidate'", text, flags=re.M)
         if not count:
             raise ValueError('Review changed Ruby consumer imports')
         consumer = stage / 'consumer' / suite / name
         # Check every loaded candidate module, including child-process restores.
         guard = "\nexpected=Gem.loaded_specs.fetch('zrotext-native-candidate').full_gem_path\n$LOADED_FEATURES.grep(/zrotext_native_candidate/).each { |f| raise 'outside installed gem' unless File.realpath(f).start_with?(File.realpath(expected)+File::SEPARATOR) }\n"
-        text = text.replace('include ZrotextCandidate', guard + 'include ZrotextCandidate')
+        text = text.replace("require 'zrotext_native_candidate'", "require 'zrotext_native_candidate'" + guard, 1)
         write(consumer, text)
         commands[suite] = [executable, str(consumer)]
     shutil.rmtree(source)
@@ -240,6 +257,19 @@ def acceptance(args, stage, commands, env):
             if receipt.exists():
                 raise ValueError('Preserve pending native cleanup receipt: ' + str(receipt))
     run(sys.executable, HERE / 'composition02-run.py', '--language', args.target, '--producer', args.producer02, '--controls', args.controls, '--command-file', command_files['composition02'], cwd=stage, env=env)
+    original_commands = stage / 'original-installed.json'
+    write(original_commands, json.dumps({'software': commands['original-reply'], 'protected': commands['original-protected']}))
+    run(sys.executable, HERE / 'original-reply-run.py', '--language', args.target,
+        '--producer', args.original_producer, '--command-file', original_commands, cwd=stage, env=env)
+
+    run(sys.executable, HERE / 'original-history-run.py', '--language', args.target,
+        '--producer', args.original_producer, '--command-file', command_files['original-history'], cwd=stage, env=env)
+    run(sys.executable, HERE / 'original-http-run.py', '--language', args.target,
+        '--fixture', args.http_fixture, '--command-file', command_files['http'], cwd=stage, env=env)
+    run(sys.executable, HERE / 'original-current-run.py', '--language', args.target,
+        '--fixture', args.current_fixture, '--producer', args.original_producer,
+        '--command-file', command_files['current-http'], cwd=stage, env=env)
+
 
 
 def main():
