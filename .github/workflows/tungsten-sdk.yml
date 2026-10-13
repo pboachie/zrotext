@@ -5,6 +5,8 @@ on:
       - 'sdk/tungsten/**'
       - 'sdk/mcp/**'
       - 'sdk/typescript/**'
+      - 'web/owner/package.json'
+      - 'web/owner/package-lock.json'
       - 'protocol/v1/openapi/**'
       - 'scripts/*tungsten*'
       - '.github/workflows/tungsten-sdk.yml'
@@ -93,5 +95,17 @@ jobs:
         with:
           name: experimental-sdk-sources
           path: ${{ runner.temp }}/zrotext-sdk-sources
+          if-no-files-found: error
+          retention-days: 7
+      - name: Install pinned native browser test dependency
+        run: |
+          npm --prefix web/owner ci --ignore-scripts --no-audit --no-fund
+          web/owner/node_modules/.bin/playwright install --with-deps chromium
+      - name: Build experimental WebMCP archive and exercise installed browser
+        run: python3 sdk/tungsten/package-webmcp.py --out "$RUNNER_TEMP/zrotext-webmcp"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: experimental-webmcp
+          path: ${{ runner.temp }}/zrotext-webmcp
           if-no-files-found: error
           retention-days: 7
