@@ -80,3 +80,37 @@ python3 -m unittest discover -s sdk/python/tests -t sdk/python
 ```
 
 Tests use a loopback stub HTTP server and no network.
+
+## Native workflow adapter
+
+`workflow_client.py` now implements the eight existing scoped workflow tools in
+Python without launching Node. Its public `WorkflowClient`, `WorkflowError`,
+`workflow_functions` and `action_digest` names remain available. Configuration
+errors, including invalid credential realms, are rejected at construction.
+This adapter is separate from the alpha client's distributable package. The
+unpublished `zrotext-workflow-candidate==0.1.0a1` wheel/sdist supplies normal
+`zrotext_workflow` imports; existing source `workflow_client` imports forward to
+the same implementation. See [packaging and acceptance gaps](workflow/README.md).
+
+The client requires HTTPS and a dedicated `ztw_` workflow credential. It validates
+the shared closed schemas, canonical action digest and response identity before
+returning results. It never approves actions or grants radio authority. Only an
+explicit rate-limit refusal can retry, with a caller-selected maximum of three
+identical attempts; the default is one. Network failures, malformed replies,
+unavailable outcomes and timeouts remain unknown and are never retried.
+
+Each attempt has a total deadline covering connection and body reading. A timed
+out resolver cannot later submit a request; outstanding resolver/transport workers
+are bounded to sixteen across the process. Capacity exhaustion returns a redacted
+unknown failure without sending. TLS uses Python's system trust configuration
+(including `SSL_CERT_FILE`), with hostname verification enabled; Node-specific CA
+settings no longer apply. Redirects, ambient proxies and cookies are not used.
+Credential strings cannot be guaranteed erased by the Python runtime.
+
+The packaged `workflow/zrotext_workflow/workflow_contract.json` is exported from the executable TypeScript
+schemas using `node sdk/typescript/scripts/export-python-workflow-contract.mjs`
+after building TypeScript. Ordinary SDK tests pin exact schema/annotation parity,
+canonical digest vectors and refusal behavior. The existing HTTPS fixture tests
+now exercise the native implementation with an independently trusted test CA.
+`workflow_bridge.mjs` remains available for differential reference; the Python
+client does not call it.
