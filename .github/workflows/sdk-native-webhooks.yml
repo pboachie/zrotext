@@ -37,7 +37,7 @@ jobs:
           javac --release 17 -Xlint:all -Werror -d "$RUNNER_TEMP/webhook-java" sdk/native/java/src/org/zrotext/Webhook.java sdk/native/java/test/WebhookTest.java
           java -cp "$RUNNER_TEMP/webhook-java" WebhookTest sdk/native/webhook-vectors.tsv
       - name: Check C# against shared vectors
-        run: dotnet run --project sdk/native/csharp/tests/Tests.csproj -- sdk/native/webhook-vectors.tsv
+        run: dotnet run --project sdk/native/csharp/tests/Tests.csproj
       - name: Check Ruby against shared vectors
         run: |
           ruby --version

@@ -4,7 +4,7 @@ using Zrotext;
 
 byte[] key = Encoding.ASCII.GetBytes("0123456789abcdef0123456789abcdef");
 int count = 0;
-foreach (string line in File.ReadLines(args[0]).Skip(1))
+foreach (string line in File.ReadLines("sdk/native/webhook-vectors.tsv").Skip(1))
 {
     string[] row = line.Split('\t');
     string actual = "ok";

@@ -19,7 +19,7 @@ SMS delivery guarantee is supplied. This package is not published to NuGet.
 Run from the repository root:
 
 ```sh
-dotnet run --project sdk/native/csharp/tests/Tests.csproj -- sdk/native/webhook-vectors.tsv
+dotnet run --project sdk/native/csharp/tests/Tests.csproj
 ```
 
 The shared server/binary vectors and extra newline/wrong-key checks execute
