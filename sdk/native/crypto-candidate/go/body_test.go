@@ -128,3 +128,32 @@ func TestAuthenticatedBoundaries(t *testing.T) {
 		}
 	}
 }
+
+func TestWebCryptoSyntheticProfile03Body(t *testing.T) {
+	raw, err := os.ReadFile("../rust/tests/profile03-body.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v map[string]string
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatal(err)
+	}
+	if v["status"] != "SYNTHETIC_PRIMITIVE_ONLY" {
+		t.Fatal("fixture status")
+	}
+	decode := func(s string) []byte {
+		b, err := hex.DecodeString(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	aad := decode(v["aadHex"])
+	if !bytes.HasPrefix(aad, []byte("ZTSE/body/v3\x00")) {
+		t.Fatal("domain")
+	}
+	got, err := Open(decode(v["keyHex"]), decode(v["nonceHex"]), aad, decode(v["ciphertextHex"]))
+	if err != nil || got != v["text"] {
+		t.Fatalf("synthetic v3: %v", err)
+	}
+}

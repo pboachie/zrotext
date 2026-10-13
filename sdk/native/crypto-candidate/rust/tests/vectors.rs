@@ -127,3 +127,19 @@ fn authenticates_text_at_exact_boundaries() {
         );
     }
 }
+
+#[test]
+fn webcrypto_synthetic_ciphertext_with_public_profile03_aad() {
+    let v: Value = serde_json::from_str(include_str!("profile03-body.json")).unwrap();
+    assert_eq!(v["status"], "SYNTHETIC_PRIMITIVE_ONLY");
+    let aad = hex(v["aadHex"].as_str().unwrap());
+    assert!(aad.starts_with(b"ZTSE/body/v3\0"));
+    let text = open(
+        &hex(v["keyHex"].as_str().unwrap()),
+        &hex(v["nonceHex"].as_str().unwrap()),
+        &aad,
+        &hex(v["ciphertextHex"].as_str().unwrap()),
+    )
+    .unwrap();
+    assert_eq!(text.as_str(), v["text"].as_str().unwrap());
+}

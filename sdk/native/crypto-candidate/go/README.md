@@ -22,3 +22,8 @@ Run cargo test --locked / cargo clippy --locked --all-targets -- -D warnings in
 rust, or go test ./... / go vet ./... in go. Source-only corpus tests are excluded
 from Rust archives. Full HPKE, signatures, manifests and profile03 parity remain
 separate acceptance work.
+
+A separate Node WebCrypto-generated synthetic ciphertext uses the exact public
+profile 03 body AAD. Both native primitives open it; CI reproduces the bytes.
+Its synthetic CEK is unrelated to the original envelope. This is cross-runtime
+primitive evidence, not original profile 03 decryption or authority validation.
