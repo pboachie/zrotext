@@ -416,7 +416,11 @@ same manifest identity. The 64-manifest capacity fails closed without eviction.
 Root transitions and profile03 are not inferred from original-reply proof chains.
 If the postcommit freshness check observes a later time, a final comparison-only
 CAS transaction persists that time before authority or plaintext is returned.
-No newer, unpersisted clock sample is taken after that final transaction.
+The trusted client samples and revalidates freshness and the signed manifest
+while holding the write lock, so lock contention cannot bypass expiry. No newer,
+unpersisted clock sample is taken after that final transaction. Commit latency
+after the last locked check remains part of the trusted local storage boundary;
+this is not a real-time guarantee against a stalled operating system.
 
 Durable consumption and status bracket their single request with fresh, committed
 current proofs. A stale concurrent client fails CAS before consumption; failure

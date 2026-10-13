@@ -149,8 +149,13 @@ class OriginalReplyClient:
         for version,manifest in staged.items():history[version]=s._accept(s._manifests,manifest)
         latest=s._accept(s._manifests,s._parse_manifest(previous.raw,previous.trust,fresh));history[identity.version]=latest
         if self._checkpoint is not None:
-            revision,_,tokens=self._checkpoint.accept([history[v] for v in sorted(history)],scope=self._scope,
-                                      expected_revision=self._checkpoint_revision,comparison_ms=fresh)
+            def locked_fence(token,floor):
+                comparison=_positive(self._clock())
+                s.require(comparison>=floor and observed-30000<=comparison<=observed+30000 and comparison<expires,'original locked proof freshness')
+                current=s._bound(s._manifests,token);s._parse_manifest(current.raw,current.trust,comparison)
+                return comparison
+            revision,fresh,tokens=self._checkpoint.accept([history[v] for v in sorted(history)],scope=self._scope,
+                                      expected_revision=self._checkpoint_revision,comparison_ms=fresh,_fence=locked_fence)
             # Commit may block or have an uncertain outcome. A postcommit failure
             # leaves this client stale: explicit reopen is required, never reset.
             after=_positive(self._clock())
@@ -160,9 +165,8 @@ class OriginalReplyClient:
                 # Durably retain every observed comparison, including time spent
                 # committing the history. Do not sample a new unpersisted clock
                 # after this final comparison transaction.
-                revision,_,tokens=self._checkpoint.accept(tokens,scope=self._scope,
-                                          expected_revision=revision,comparison_ms=after)
-                fresh=after
+                revision,fresh,tokens=self._checkpoint.accept(tokens,scope=self._scope,
+                                          expected_revision=revision,comparison_ms=after,_fence=locked_fence)
             self._checkpoint_revision=revision;history={s.manifest_identity(t)['version']:t for t in tokens};latest=tokens[-1]
         self._history=history;self._latest=latest;self._last=fresh
         return dict(scope=dict(self._scope),revision='1',expires_ms=expires,now_ms=fresh,manifest=self._latest)

@@ -114,7 +114,7 @@ class OriginalReplyCheckpoint:
             history=self._verify(rows,self._pin,self._fingerprint,now);db.commit()
             return revision,comparison,history
 
-    def accept(self,history,*,scope,expected_revision,comparison_ms):
+    def accept(self,history,*,scope,expected_revision,comparison_ms,_fence=None):
         """Commit exact accepted prefix plus successors and comparison under CAS.
 
         An exception after commit may still mean durable acceptance. Reopen and
@@ -134,6 +134,12 @@ class OriginalReplyCheckpoint:
                     # Keep the previously accepted bytes and acceptance time.
                     s.require(saved[0]==candidate[0] and s.sha(saved[2][:-64])==s.sha(candidate[2][:-64]),'reply checkpoint fork')
                 rows=old+proposed[len(old):];tokens=self._verify(rows,self._pin,self._fingerprint,now)
+                if _fence is not None:
+                    # Trusted client-only fence: sample/revalidate after acquiring
+                    # the write lock and replaying evidence, before publication.
+                    checked=_positive(_fence(tokens[-1],now))
+                    s.require(checked>=now,'reply checkpoint locked clock rollback')
+                    now=checked;tokens=self._verify(rows,self._pin,self._fingerprint,now)
                 db.executemany('INSERT INTO manifests VALUES (?,?,?)',rows[len(old):])
                 db.execute('UPDATE state SET revision=?,comparison=? WHERE id=1',(revision+1,now));db.commit()
                 return revision+1,now,tokens

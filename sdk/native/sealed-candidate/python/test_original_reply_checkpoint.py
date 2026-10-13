@@ -162,6 +162,38 @@ class DurableReplyTests(unittest.TestCase):
         with self.assertRaises(OriginalReplyError):self.durable()
         self.assertEqual(sum(json.loads(c[3])['method']=='consume' for c in self.calls),1)
 
+    def held_lock(self,expired):
+        real=self.client._checkpoint.accept;held=threading.Event();waiting=threading.Event();connection=[];count=[]
+        def delayed(*args,**kwargs):
+            if len(count)==1:waiting.set()
+            value=real(*args,**kwargs);count.append(1)
+            if len(count)==1:
+                self.now=11000
+                db=sqlite3.connect(self.path,check_same_thread=False,isolation_level=None)
+                db.execute('BEGIN IMMEDIATE');connection.append(db);held.set()
+            return value
+        self.respond('current',reply.proof(self.original))
+        with patch.object(self.client._checkpoint,'accept',delayed),ThreadPoolExecutor(max_workers=1) as pool:
+            future=pool.submit(self.client.current)
+            try:
+                self.assertTrue(held.wait(10));self.assertTrue(waiting.wait(10));self.assertFalse(future.done())
+                self.now=20000 if expired else 12000
+                connection[0].commit();connection[0].close();connection.clear()
+                if expired:
+                    with self.assertRaises(OriginalReplyError):future.result(timeout=10)
+                    self.assertEqual(self.snapshot()[:2],(2,10000))
+                else:
+                    self.assertEqual(future.result(timeout=10)['now_ms'],12000)
+                    self.assertEqual(self.snapshot()[:2],(3,12000))
+                    self.now=11500
+                    with self.assertRaises(OriginalReplyError):self.durable()
+            finally:
+                for db in connection:db.rollback();db.close()
+
+    def test_final_fence_rechecks_expiry_after_another_writer_releases_lock(self):self.held_lock(True)
+
+    def test_final_fence_persists_comparison_sampled_with_write_lock(self):self.held_lock(False)
+
     def test_missing_foreign_scope_tampered_history_and_recreate_refused(self):
         with self.assertRaises(Exception):OriginalReplyCheckpoint.create(self.path,reply.decode(self.original['rootPin']),reply.decode(self.original['fingerprint']),scope=self.scope,accepted_history=self.history,comparison_ms=self.now)
         foreign=dict(self.scope,read_grant=bytes([99])*16)
