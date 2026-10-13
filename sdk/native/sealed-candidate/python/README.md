@@ -1174,3 +1174,34 @@ confirmation/envelope signatures and both HPKE recipient opens. Windows source
 and isolated wheel/sdist consumers create and delete actual owned PCP keys.
 Absent hardware is an explicit skip after a read-only capability probe; it is not protected acceptance. Other platforms run the software interoperability path without claiming Windows
 custody. Legacy TypeScript and Python entry points remain unchanged.
+
+
+### Owner opening create and status candidate
+
+`OwnerOpeningCapacityClient` prepares one immutable opening request from an
+acknowledged `OwnerContextAuthoring.saved_source()` tuple. The caller supplies an
+explicit origin-bound cookie/CSRF session adapter, genuine current profile-02
+manifest observations and a synchronous joint-review callback. Normal callback
+return accepts that exact review; awaitables are refused. Preparation never posts.
+`create(ticket)` sends only after explicit caller invocation. This is a portable
+host boundary, not browser consent or a browser custody replacement.
+
+Preparation compares the saved source twice and checks active phone, archive and
+workflow signer roles, manifest continuity and the decision window. Following
+the maintained client, create/status use the original capped deadline and session
+fences; they do not silently reobserve current authority after preparation.
+`status(opening_id)` returns metadata and never resolves an uncertain creation.
+The default shared attempt budget is one. A caller can explicitly select up to
+three attempts, including status calls; `retry(ticket)` preserves exact request
+bytes and identity. Refusals after a prior uncertain dispatch remain uncertain.
+No redirects, automatic retries, proxies or cookie discovery occur.
+
+The closed response parser bounds body size and rejects duplicate keys, JSON
+numbers/arrays, noncanonical decimal fields and uncorrelated identities. DTO
+version/count values are Python integers; maintained JavaScript exposes BigInts.
+Unresolved host/transport workers retain bounded admission until settlement;
+close/cancellation suppress late publication. Native session adapters and cleanup
+remain explicit caller responsibilities. This companion does not implement offers,
+reservations or DOM consumers and does not activate a deployed opening service.
+Synthetic maintained-client comparisons and actual TLS consumers run against both
+clean wheel and sdist installations; live owner sessions are not exercised.

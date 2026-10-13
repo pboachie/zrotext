@@ -36,7 +36,7 @@ PRODUCERS = {
 }
 HARNESSES = ("journal", "root", "cng", "compose", "compose02", "original", "reply_checkpoint",
              "reply_http", "reply_current", "reply_read", "reply_page", "reply_consumption", "reply_proposal",
-             "template", "template_crypto", "owner_template", "template_save", "template_opening", "template_authoring", "contact", "contact_mutation")
+             "template", "template_crypto", "owner_template", "template_save", "template_opening", "template_authoring", "contact", "contact_mutation", "contact_history")
 ORIGINAL_TLS = ("http", "current", "read", "page", "consumption", "proposal")
 
 
@@ -292,6 +292,9 @@ def contact_acceptance(binaries, contact, hardware=False):
     run(sys.executable, ROOT / ("test-contact-hardware.py" if hardware else "test-contact-mutation.py"),
         "--producer", contact, "--binary", binaries["contact_mutation"],
         *(["--mutation"] if hardware else []), env=safe_env())
+    if not hardware:
+        run(sys.executable, ROOT / "test-contact-history.py", "--producer", contact,
+            "--binary", binaries["contact_history"], env=safe_env())
 
 
 def acceptance(binaries, archive, election, original, template, save_oracle, opening_oracle, authoring_oracle, contact, deadline_case_ms):
@@ -376,8 +379,11 @@ def main():
                       "contact_acceptance": {"historical_integrity": True, "maintained_differential": True,
                                              "protected_fields": qualified, "current_permission": False},
                       "contact_mutation_acceptance": {"historical_transitions": True, "software_production": True,
-                                                      "protected_production": qualified, "durable_history": False,
+                                                      "protected_production": qualified, "durable_history": True,
                                                       "current_permission": False},
+                      "contact_history_acceptance": {"local_metadata": True, "signed_root_recheck": True,
+                                                     "session_cas": True, "restart_and_crash": True,
+                                                     "current_permission": False, "external_rollback_protection": False},
                       "protected_acceptance": qualified}
             (args.output / "qualification.json").write_text(json.dumps(report, indent=2) + "\n")
             print(json.dumps(report))

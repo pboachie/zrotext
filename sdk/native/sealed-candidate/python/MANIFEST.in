@@ -27,3 +27,5 @@ exclude installed_conversation_proposals_consumer.py
 exclude installed_enrollment_consumer.py
 exclude installed_genesis_ceremony_consumer.py
 exclude installed_conversation_signer_consumer.py
+
+exclude installed_opening_capacity_consumer.py
