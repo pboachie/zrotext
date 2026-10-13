@@ -505,3 +505,23 @@ software fixture key and test native opening with an actual qualified TPM when
 available. They do not qualify arbitrary nonextractable WebCrypto template keys:
 browser custody needs separate acceptance and is not covered by the software
 fixture result. The native path binds the exact manifest public point.
+
+Historical contact integrity helpers accept genuine generation-one profile02
+manifest history and independently compared account, HTTPS origin and root
+fingerprint. `verify_contact_reader_statement01`, `verify_contact_field01`,
+`verify_contact_mutation01` and `verify_contact_transition01` verify low-S root
+signatures, exact binary encodings, revision links and retained/replaced/cleared
+field commitments. Their opaque tokens prove historical integrity only. They do
+not install access, authorize a current owner, decrypt contact fields, sign new
+contact content or establish current deletion state. No network or storage effect
+is performed. Identity accessors return defensive copies.
+
+Origin compatibility remains an explicit candidate gate: canonical ASCII hosts,
+IPv4, IPv6 and nondefault ports are checked against maintained TypeScript URL
+behavior, but all `xn--` host labels are currently refused. Some are valid inputs
+under the full contract (for example `https://xn--fa-hia.invalid`); a reviewed
+WHATWG/UTS46 implementation is still required before full origin parity can be
+claimed. Python's built-in IDNA conversion is not substituted for that contract.
+The fresh TypeScript fixture signs a genuine genesis-to-successor history and
+create/update/clear/conversion commitments; its ciphertexts are opaque synthetic
+payloads, not evidence of a production contact encryption implementation.

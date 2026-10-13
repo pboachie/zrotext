@@ -13,7 +13,7 @@ import venv
 import zipfile
 
 ROOT=Path(__file__).resolve().parent
-MODULES={'__init__','sealed_candidate','checkpoint_store','cng_custody','cng_signing','election03','election_journal','compose03','compose02','outbound_journal','root_checkpoint','reply_selection','outbound02_journal','sealed_http','original_reply_reader','original_reply_client','original_reply_checkpoint','encrypted_template'}
+MODULES={'__init__','sealed_candidate','checkpoint_store','cng_custody','cng_signing','election03','election_journal','compose03','compose02','outbound_journal','root_checkpoint','reply_selection','outbound02_journal','sealed_http','original_reply_reader','original_reply_client','original_reply_checkpoint','encrypted_template','contact_integrity'}
 PACKAGE='zrotext_native_candidate'
 DIST=PACKAGE+'-0.1.0a1'
 
@@ -68,16 +68,18 @@ def main():
         run([builder,'-m','pip','wheel','--no-deps','--wheel-dir',workflow_output,args.workflow_source.resolve()],cwd=temporary)
         workflow_wheel=next(workflow_output.glob('zrotext_workflow_candidate-0.1.0a1-*.whl'))
         fixtures={name:json.loads(run(['node',ROOT/producer],cwd=temporary)) for name,producer in
-                  (('archive','produce-fixture.mjs'),('election','produce-election03.mjs'),('selection','produce-selected-reply02.mjs'),('template','template-interop.mjs'))}
+                  (('archive','produce-fixture.mjs'),('election','produce-election03.mjs'),('selection','produce-selected-reply02.mjs'),('template','template-interop.mjs'),('contact','contact-interop.mjs'))}
         fixtures['rotation']=json.loads((ROOT.parents[3]/'sdk/typescript/test/vectors/draft02-rotation.json').read_text())
         consumer=temporary/'consumer.py';shutil.copyfile(ROOT/'installed_consumer.py',consumer)
         http_consumer=temporary/'http_consumer.py';shutil.copyfile(ROOT/'installed_http_consumer.py',http_consumer)
         reply_consumer=temporary/'reply_consumer.py';shutil.copyfile(ROOT/'installed_reply_consumer.py',reply_consumer)
         template_consumer=temporary/'template_consumer.py';shutil.copyfile(ROOT/'installed_template_consumer.py',template_consumer)
+        contact_consumer=temporary/'contact_consumer.py';shutil.copyfile(ROOT/'installed_contact_consumer.py',contact_consumer)
         for index,artifact in enumerate((wheel,sdist)):
             python=environment(temporary/f'consumer-{index}')
             run([python,'-m','pip','install',artifact],cwd=temporary)
             run([python,'-I','-c',"import zrotext_native_candidate,importlib.util;assert importlib.util.find_spec('zrotext_workflow') is None"],cwd=temporary)
+            assert json.loads(run([python,'-I',contact_consumer],cwd=temporary,input=json.dumps(fixtures['contact'])))==dict(installed=True,historical_contact_integrity=True)
             template_result=json.loads(run([python,'-I',template_consumer],cwd=temporary,input=json.dumps(fixtures['template'])))
             template_open=json.loads(run(['node',ROOT/'template-interop.mjs','--consume'],cwd=temporary,
                 input=json.dumps(dict(fixture=fixtures['template'],envelope=template_result['envelope'],expectedCanonical=template_result['canonical']))))
