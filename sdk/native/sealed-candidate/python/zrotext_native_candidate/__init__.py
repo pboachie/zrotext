@@ -13,9 +13,11 @@ from .compose03 import Composition, SoftwareSigner, compose_outbound03
 from .outbound_journal import OutboundJournal
 from .compose02 import SealedEnvelopeError, SEALED_CONTENT_TYPE, compose_outbound02
 from .root_checkpoint import RootCheckpointStore
+from .reply_selection import verify_archive_reply_selection02
 
 __version__ = '0.1.0a1'
 __all__ = ['SealedError', 'SoftwareRecipient', 'CheckpointStore', 'ElectionJournal',
            'CngUnavailable', 'HardwareRecipient', 'probe_platform', 'HardwareSigner',
            'Composition', 'SoftwareSigner', 'compose_outbound03', 'OutboundJournal',
-           'SealedEnvelopeError', 'SEALED_CONTENT_TYPE', 'compose_outbound02', 'RootCheckpointStore']
+           'SealedEnvelopeError', 'SEALED_CONTENT_TYPE', 'compose_outbound02', 'RootCheckpointStore',
+           'verify_archive_reply_selection02']

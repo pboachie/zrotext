@@ -24,7 +24,7 @@ local qualification. Missing crypto dependencies fail installation/import;
 unsupported protected capabilities raise `CngUnavailable` or `SealedError`.
 There is no silent software fallback. Python 3.12 is the exercised CI version.
 
-Wheel contents are restricted to the package's eleven modules and distribution
+Wheel contents are restricted to the package's twelve modules and distribution
 metadata/license. Source archives add build metadata and this README; neither
 archive includes tests, fixture producers, private receipts, sample scalars or
 repository tooling. Both carry AGPL-3.0-only license metadata and full text.
@@ -48,11 +48,11 @@ Implemented and executed with PyCA `cryptography==50.0.2`:
 - Bounded profile-02/03 inbound/outbound envelope syntax, origin signature,
   manifest/line/device/recipient binding and exact byte identity. Public
   verification returns no execution capability or accepted election.
-- Full profile-02 archive-only inbound opening: historical signer authority at
+- Full profile-02 archive inbound opening: historical signer authority at
   observation time, current reader authority, same root and accepted predecessor
   lineage, RFC 9180 base-mode P-256/HKDF-SHA256/AES128GCM unwrap with the profile's
   exact info and empty wrap AAD, then AES256GCM authentication and strict body text.
-  Integration wraps refuse until an independently accepted selection is implemented.
+  Additional integration wraps require an independently verified exact selection.
 - Profile-03 accepted-election proof: exact original signed02/accepted03 evidence,
   expected core, immutable accepted-record digests, device signature, owner
   signature over the device-signature digest, and registry key IDs. Independently
@@ -233,12 +233,33 @@ TypeScript and legacy Python entrypoints remain unchanged.
 
 ## Remaining work before full native parity
 
+`verify_archive_reply_selection02` verifies the bounded ZTCA02 payload and both
+phone approval/installation low-S signatures on an independently accepted
+activation manifest. Supply independent acceptance time, account/device/line,
+conversation interval, peer and archive reader. The returned opaque token holds
+an immutable snapshot; copying its metadata cannot mint another verified token.
+Pass it as `selection`, together with `interval`, to `open_archive_candidate02`
+or `open_archive_protected02`. Opening checks activation lineage, historical
+signer authority, current archive authority and exactly the approved archive and
+integration wrap set before using the archive key. It never acquires a role-3
+private key or grants an integration capability. Without selection, the existing
+single-archive-wrap rule remains in force.
+
+Selection expiry bounds installation acceptance; it does not independently
+delete previously captured content. The signed epochs/session identify the
+approved payload and do not establish current backend permission. Callers must
+supply independently accepted activation/current evidence; no device-service
+call, permission renewal, live capture or delivery is implemented here. Tests
+execute the maintained TypeScript selection verifier and archive reader before
+opening the same signed selection and ciphertext natively. Wheel and sdist
+consumers exercise this path outside the source checkout.
+
 | Surface | Current boundary / required follow-on |
 |---|---|
 | Native outbound composition | Native fresh crypto, TPM signing and exact local ciphertext replay implemented; live grant/transport/receiver integration remains separate |
 | Profile-03 body opening | Current elected ciphertext verified/opened, including TPM tests; live backend/admission/grant/audience and receiver composition remain separate |
 | Protected custody | Windows TPM provider with actual key/ECDH/opening/reopen tests; remote attestation, independent antirollback and other OS providers remain unsupported |
-| Integration reader selection | Unsupported; needs exact phone-approved selection and interval binding, never an archive alias |
+| Integration reader selection | Signed selection verifies exact archive-opening wrap sets; role-3 grant acquisition and live integration remain separate |
 | Live authority and delivery | SDK/server/grant/journal/receiver integration and controlled device acceptance remain under #1054/#1004 |
 | Publication / replacement | Neither stable package removal nor registry publication is authorized by these tests |
 

@@ -416,8 +416,9 @@ def _unwrap(provider, expected_point, ephemeral, ciphertext, info, aad):
             value[:] = bytes(len(value))
 
 
-def open_archive_candidate02(raw, historical, current, custody, *, account, device, line, peer, reader_id, now_ms):
-    """Candidate archive read. No integration-wrap selection supported.
+def open_archive_candidate02(raw, historical, current, custody, *, account, device, line, peer, reader_id, now_ms,
+                             selection=None, interval=None):
+    """Candidate archive read with optional independently verified selected wraps.
 
     Caller must independently supply trusted current manifest, time and routing.
     This returns text, never a grant, durable replay receipt or dispatch authority.
@@ -438,7 +439,11 @@ def open_archive_candidate02(raw, historical, current, custody, *, account, devi
                         comparison_ms=parsed.observed)
     require(0 < p.observed <= now, 'future observation')
     reader_id = capture(reader_id, 32)
-    require(len(p.wraps) == 1 and p.wraps[0][:2] == (2, reader_id), 'archive-only selection required')
+    if selection is None:
+        require(len(p.wraps) == 1 and p.wraps[0][:2] == (2, reader_id), 'archive-only selection required')
+    else:
+        from .reply_selection import _authorize_archive
+        _authorize_archive(selection, p, old, live, interval, reader_id)
     reader = next((k for k in live.keys if k.role == 2 and k.id == reader_id), None)
     require(reader is not None and reader.active(now) and reader.scope & 8, 'current reader revoked')
     wrap = p.wraps[0]

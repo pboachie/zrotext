@@ -26,6 +26,16 @@ outbound02=package.compose_outbound02(manifest=manifest,now_ms=10000,message_id=
     device_id=decode(archive['device']),line_id=decode(archive['line']),peer='+12',observed_ms=10000,expires_ms=20000,
     content='Native composed02 🌱',signer=package.SoftwareSigner(ec.derive_private_key(5,ec.SECP256R1())),
     recipients=[(k.role,k.id,k.point) for k in s._bound(s._manifests,manifest).keys if k.role in (1,2)],require_hardware=False)
+selected=fixture['selection']
+selected_pin=s.enroll_root02(decode(selected['rootPin']),decode(selected['fingerprint']))
+predecessor=s.verify_manifest02(decode(selected['predecessor']),selected_pin,selected['now'])
+activation=s.verify_manifest02(decode(selected['activation']),s.advance_trust02(selected_pin,predecessor),selected['now'])
+scope={name:decode(selected[name]) for name in ('account','device','line','interval')}
+proof=package.verify_archive_reply_selection02(decode(selected['selection']),decode(selected['approval']),
+    decode(selected['installation']),activation,selected['now'],**scope,peer='+12',archive_reader=decode(selected['reader']))
+selected_custody=package.SoftwareRecipient(ec.derive_private_key(int.from_bytes(decode(selected['archiveScalar']),'big'),ec.SECP256R1()))
+assert s.open_archive_candidate02(decode(selected['inbound']),activation,activation,selected_custody,
+    **scope,peer='+12',reader_id=decode(selected['reader']),now_ms=selected['now'],selection=proof)==selected['text']
 with tempfile.TemporaryDirectory() as directory:
     rotation=fixture['rotation']
     rotated=package.RootCheckpointStore(Path(directory)/'roots.db',decode(rotation['old_root_pin_b64']),

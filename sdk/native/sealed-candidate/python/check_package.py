@@ -13,7 +13,7 @@ import venv
 import zipfile
 
 ROOT=Path(__file__).resolve().parent
-MODULES={'__init__','sealed_candidate','checkpoint_store','cng_custody','cng_signing','election03','election_journal','compose03','compose02','outbound_journal','root_checkpoint'}
+MODULES={'__init__','sealed_candidate','checkpoint_store','cng_custody','cng_signing','election03','election_journal','compose03','compose02','outbound_journal','root_checkpoint','reply_selection'}
 PACKAGE='zrotext_native_candidate'
 DIST=PACKAGE+'-0.1.0a1'
 
@@ -63,7 +63,7 @@ def main():
         wheel=next((source/'dist').glob('*.whl'));sdist=next((source/'dist').glob('*.tar.gz'))
         check_wheel(wheel);check_sdist(sdist)
         fixtures={name:json.loads(run(['node',ROOT/producer],cwd=temporary)) for name,producer in
-                  (('archive','produce-fixture.mjs'),('election','produce-election03.mjs'))}
+                  (('archive','produce-fixture.mjs'),('election','produce-election03.mjs'),('selection','produce-selected-reply02.mjs'))}
         fixtures['rotation']=json.loads((ROOT.parents[3]/'sdk/typescript/test/vectors/draft02-rotation.json').read_text())
         consumer=temporary/'consumer.py';shutil.copyfile(ROOT/'installed_consumer.py',consumer)
         for index,artifact in enumerate((wheel,sdist)):
