@@ -36,7 +36,8 @@ partial/corrupt storage and old enrollment preservation. Actual native readers
 open a newly encrypted inbound after new-root genesis/successor restore and
 suppress plaintext if the journal advances between the pre/post checks.
 Cross-root historical ciphertext remains refused, even with an unchanged archive
-key. Profile03 root transitions and durable election storage remain unsupported.
+key. Profile03 root transitions remain unsupported. Durable accepted elections use
+the separate [election journal](election-journal.md).
 
 ```text
 python sdk/native/crypto-envelope/root-journal-run.py --language java --producer PRODUCER --controls CONTROLS

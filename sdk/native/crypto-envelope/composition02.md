@@ -67,5 +67,6 @@ The additional clean controls checkout is pinned to
 `1b7732ec36bf705f78e69a2cea95b792f04dc772`. Tests cover separate-process protected
 signer reopen and exact replay, signed retained/revoked successors, concurrent
 retry, clock regression, corruption, postcommit authority loss, and independently
-opened rotated-root composition. Durable profile03 election selection and clean
-native package consumers remain separate gates. No live transport is exercised.
+opened rotated-root composition. Durable profile03 election selection uses the separate
+[election journal](election-journal.md). Clean native package consumers remain
+a separate gate. No live transport is exercised.
