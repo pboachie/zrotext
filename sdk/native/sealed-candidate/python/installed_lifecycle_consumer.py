@@ -52,7 +52,8 @@ class LifecycleTests(unittest.TestCase):
             .add_extension(x509.SubjectAlternativeName([x509.DNSName('localhost'),x509.IPAddress(ipaddress.ip_address(socket.gethostbyname('localhost')))]),False).add_extension(x509.BasicConstraints(ca=True,path_length=None),True).sign(key,hashes.SHA256()))
         ca=folder/'ca.pem';private=folder/'key.pem';ca.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
         private.write_bytes(key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption()))
-        self.server=ThreadingHTTPServer(('localhost',0),Handler);context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.load_cert_chain(ca,private)
+        self.server=ThreadingHTTPServer(('localhost',0),Handler);self.server.daemon_threads=False
+        context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.load_cert_chain(ca,private)
         self.server.socket=context.wrap_socket(self.server.socket,server_side=True)
         threading.Thread(target=self.server.serve_forever,daemon=True).start()
         self.addCleanup(self.server.server_close);self.addCleanup(self.server.shutdown)
