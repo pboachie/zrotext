@@ -80,12 +80,14 @@ public sealed class ProtectedContactSigner:IDisposable {
         var r=new BigInteger(raw.AsSpan(0,32),true,true);var s=new BigInteger(raw.AsSpan(32,32),true,true);Need(r>0 && r<Order && s>0 && s<Order);
         if(s>Order/2){byte[] low=(Order-s).ToByteArray(true,true);Array.Clear(raw,32,32);low.CopyTo(raw,64-low.Length);}return raw;
     }
-    internal byte[] SignField(byte[] input,Action live){lock(gate){
-        Need(qualified && !closed);byte[] unsigned=ContactField.Unsigned(input),domain=Encoding.ASCII.GetBytes("ZT/contact-field/commitment/v1\0"),transcript=new byte[domain.Length+4+unsigned.Length];
+    internal byte[] SignField(byte[] input,Action live){lock(gate){return SignContact(input,live,false);}}
+    internal byte[] SignMutation(byte[] input,Action live){lock(gate){return SignContact(input,live,true);}}
+    private byte[] SignContact(byte[] input,Action live,bool mutation){
+        Need(qualified && !closed);byte[] unsigned=mutation?ContactField.Mutation.Unsigned(input):ContactField.Unsigned(input),domain=Encoding.ASCII.GetBytes(mutation?"ZT/contact-field/mutation/v1\0":"ZT/contact-field/commitment/v1\0"),transcript=new byte[domain.Length+4+unsigned.Length];
         domain.CopyTo(transcript,0);BinaryPrimitives.WriteInt32BigEndian(transcript.AsSpan(domain.Length,4),unsigned.Length);unsigned.CopyTo(transcript,domain.Length+4);
         try{live();byte[] signature=SignDigest(SHA256.HashData(transcript));using var point=HpkeRecipient.Point(PublicRaw());using var verifier=ECDsa.Create(point.ExportParameters(false));Need(verifier.VerifyData(transcript,signature,HashAlgorithmName.SHA256,DSASignatureFormat.IeeeP1363FixedFieldConcatenation));return signature;}
         finally{CryptographicOperations.ZeroMemory(unsigned);CryptographicOperations.ZeroMemory(transcript);}
-    }}
+    }
     public void DeleteCreated(){lock(gate){Need(created && !closed && !key.IsInvalid);Check(Native.NCryptDeleteKey(key,0));key.SetHandleAsInvalid();created=qualified=false;Dispose();}}
     public void Dispose(){lock(gate){if(closed)return;closed=true;qualified=false;key.Dispose();provider.Dispose();}}
 }
