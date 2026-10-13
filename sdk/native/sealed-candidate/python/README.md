@@ -1008,7 +1008,7 @@ not exercise a live proposal transaction or imply its independent authority.
 |---|---|
 | Sealed composition, metadata, original replies, contact/template/context content and owner template/context persistence | Native primitives and bounded installed clients exist; reviewed integration, broader platform/provider matrix and live service/device gates remain separate. |
 | DOM-free template authoring/opening | Native host callbacks and protected opening exist; browser visibility, user activation and DOM adapters remain retained. |
-| Conversation genesis/activation/refresh public files | Exact portable export/comparison companion exists; native reviewed role-5 enrollment exists; genesis signing and one-shot genesis installation/CAS remain separate. |
+| Conversation genesis/activation/refresh public files | Exact portable export/comparison companion exists; native existing-root genesis and reviewed role-5 enrollment exist; other root/recovery and browser custody integration remain separate. |
 | Owner context authoring, disclosure/review and acknowledged-opening UI | Maintained DOM/session/custody lifecycle is retained; no Python DOM equivalence is claimed. Portable opening-capacity transports and host ceremony integrations still require their own review and ownership checks. |
 | Root/archive recovery and protected custody | Existing native Windows PCP is separately qualified; browser backup unlock/recovery lifecycle and other native protected providers remain distinct gaps. |
 | Generated clients and legacy entrypoints | Generated schema/runtime/redirect/deadline and registry gates still prevent replacement; legacy entrypoints remain present. |
@@ -1047,3 +1047,31 @@ predecessor; production enrollment does not gain a generic provisioning API.
 Windows PCP acceptance is reported separately from unavailable-platform skips,
 with exact owned test-key receipts. Browser activation, live consent/CAS server
 integration, remote attestation and other protected providers remain separate.
+
+### Existing-root genesis ceremony
+
+`ConversationGenesis` composes the maintained one-shot genesis sequence: capture
+independently compared root/phone input, check current owner/device/key/line state,
+consume an immutable public review, sign with the exact existing root, verify the
+signature, call the application's installation CAS, then independently verify
+fresh readback. Normal synchronous review callback completion consumes approval;
+throw to decline. Awaitable callbacks are refused rather than treated as consent.
+
+The installation adapter must atomically enforce version zero and the supplied
+session/device/key/line authority. Callback success alone never establishes an
+installed manifest. Installation has an explicit effect-admission boundary;
+exceptions, cancellation or timeouts after that boundary report `state='unknown'`.
+There is no automatic retry. A ceremony is consumed once, including refusal, and
+unsettled callbacks retain bounded worker capacity after caller cancellation.
+Callbacks are trusted host integration, not server authority or DOM activation.
+
+`GenesisRootSigner` is a dedicated Windows Platform Crypto Provider capability
+restricted to canonical four-role generation-one manifest-v2 genesis signing.
+It does not broaden outbound/contact signing authorities. Default protected
+policy refuses software and unqualified providers. `SoftwareGenesisRootSigner`
+requires explicit `require_protected=False` for experiments. The application owns
+key lifetime; closing the ceremony does not delete its key. Hardware qualification
+is local provider evidence, not remote attestation or a browser custody claim.
+Clean wheel/sdist consumers independently verify native signatures with the
+maintained TypeScript reader and report actual protected-provider qualification
+separately from a platform-unavailable skip.
