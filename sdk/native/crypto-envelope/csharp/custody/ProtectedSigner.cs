@@ -80,10 +80,12 @@ public sealed class ProtectedSigner:IDisposable {
         var r=new BigInteger(raw.AsSpan(0,32),true,true);var s=new BigInteger(raw.AsSpan(32,32),true,true);Need(r>0 && r<Order && s>0 && s<Order);
         if(s>Order/2){byte[] low=(Order-s).ToByteArray(true,true);Array.Clear(raw,32,32);low.CopyTo(raw,64-low.Length);}return raw;
     }
-    public byte[] SignEnvelope03(byte[] unsigned){lock(gate){
+    public byte[] SignEnvelope03(byte[] unsigned)=>SignProfile(unsigned,3);
+    public byte[] SignEnvelope02(byte[] unsigned)=>SignProfile(unsigned,2);
+    private byte[] SignProfile(byte[] unsigned,int profile){lock(gate){
         Need(qualified && !closed && unsigned.Length>=493 && unsigned.Length<=34149);byte[] captured=(byte[])unsigned.Clone();
-        Need(captured.AsSpan(0,8).SequenceEqual(new byte[]{90,84,83,69,3,1,0,0}));
-        byte[] domain=Encoding.ASCII.GetBytes("ZTSE/sign/v3\0"),transcript=new byte[domain.Length+4+captured.Length];domain.CopyTo(transcript,0);BinaryPrimitives.WriteInt32BigEndian(transcript.AsSpan(domain.Length),captured.Length);captured.CopyTo(transcript,domain.Length+4);
+        Need(captured.AsSpan(0,8).SequenceEqual(new byte[]{90,84,83,69,(byte)profile,1,0,0}));
+        byte[] domain=Encoding.ASCII.GetBytes("ZTSE/sign/v"+profile+"\0"),transcript=new byte[domain.Length+4+captured.Length];domain.CopyTo(transcript,0);BinaryPrimitives.WriteInt32BigEndian(transcript.AsSpan(domain.Length),captured.Length);captured.CopyTo(transcript,domain.Length+4);
         byte[] signature=SignDigest(SHA256.HashData(transcript));using var point=HpkeRecipient.Point(PublicRaw());using var verifier=ECDsa.Create(point.ExportParameters(false));
         Need(verifier.VerifyData(transcript,signature,HashAlgorithmName.SHA256,DSASignatureFormat.IeeeP1363FixedFieldConcatenation));return signature;
     }}

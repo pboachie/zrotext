@@ -56,9 +56,11 @@ public final class ProtectedSigner implements AutoCloseable {
         need(property(key,"Export Policy")==0);int status=call("NCryptExportKey",key,null,new WString("ECCPRIVATEBLOB"),null,null,0,new IntByReference(),SILENT);need(status==0x80090010 || status==0x8009000a);
         byte[] challenge=new byte[32];new SecureRandom().nextBytes(challenge);byte[] signature=signDigest(challenge);var verifier=Signature.getInstance("NONEwithECDSAinP1363Format");verifier.initVerify(HpkeRecipient.point(publicRaw()));verifier.update(challenge);need(verifier.verify(signature));qualified=true;
     }
-    public synchronized byte[] signEnvelope03(byte[] input)throws GeneralSecurityException{
-        need(qualified && !closed && input.length>=493 && input.length<=34149);byte[] unsigned=input.clone();need(Arrays.equals(Arrays.copyOfRange(unsigned,0,8),new byte[]{90,84,83,69,3,1,0,0}));
-        byte[] domain="ZTSE/sign/v3\0".getBytes(StandardCharsets.US_ASCII),transcript=ByteBuffer.allocate(domain.length+4+unsigned.length).put(domain).putInt(unsigned.length).put(unsigned).array();
+    public synchronized byte[] signEnvelope03(byte[] input)throws GeneralSecurityException{return signProfile(input,3);}
+    public synchronized byte[] signEnvelope02(byte[] input)throws GeneralSecurityException{return signProfile(input,2);}
+    private byte[] signProfile(byte[] input,int profile)throws GeneralSecurityException{
+        need(qualified && !closed && input.length>=493 && input.length<=34149);byte[] unsigned=input.clone();need(Arrays.equals(Arrays.copyOfRange(unsigned,0,8),new byte[]{90,84,83,69,(byte)profile,1,0,0}));
+        byte[] domain=("ZTSE/sign/v"+profile+"\0").getBytes(StandardCharsets.US_ASCII),transcript=ByteBuffer.allocate(domain.length+4+unsigned.length).put(domain).putInt(unsigned.length).put(unsigned).array();
         byte[] signature=signDigest(MessageDigest.getInstance("SHA-256").digest(transcript));var verifier=Signature.getInstance("SHA256withECDSAinP1363Format");verifier.initVerify(HpkeRecipient.point(publicRaw()));verifier.update(transcript);need(verifier.verify(signature));return signature;
     }
     public synchronized void deleteCreated()throws GeneralSecurityException{need(created && !closed && key!=null);check(call("NCryptDeleteKey",key,0));key=null;created=qualified=false;close();}

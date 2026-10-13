@@ -7,13 +7,16 @@ module ZrotextCandidate
   class ProtectedSigner < ProtectedRecipient
     def self.alias_prefix = 'zrotext-managed-ruby-sign-p256-'
     def call(*) = raise(ArgumentError,'Signing custody cannot unwrap recipient secrets')
-    def sign_envelope03(unsigned)
+    def sign_envelope03(unsigned) = sign_profile(unsigned,3)
+    def sign_envelope02(unsigned) = sign_profile(unsigned,2)
+    private
+    def sign_profile(unsigned,profile)
       @lock.synchronize do
         need(@qualified && !@closed && unsigned.bytesize.between?(493,34149))
         captured=unsigned.b.dup
-        need(captured.byteslice(0,8)=="ZTSE\x03\x01\x00\x00".b)
-        signature=sign_digest(OpenSSL::Digest::SHA256.digest("ZTSE/sign/v3\x00".b+[captured.bytesize].pack('N')+captured))
-        ManifestChain.signature(public_raw,signature,'ZTSE/sign/v3',captured)
+        need(captured.byteslice(0,8)=="ZTSE".b+[profile,1,0,0].pack('C4'))
+        signature=sign_digest(OpenSSL::Digest::SHA256.digest("ZTSE/sign/v#{profile}\x00".b+[captured.bytesize].pack('N')+captured))
+        ManifestChain.signature(public_raw,signature,"ZTSE/sign/v#{profile}",captured)
         signature
       end
     end
