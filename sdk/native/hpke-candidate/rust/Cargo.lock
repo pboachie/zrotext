@@ -613,6 +613,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "base64",
+ "getrandom",
  "hkdf",
  "p256",
  "serde_json",

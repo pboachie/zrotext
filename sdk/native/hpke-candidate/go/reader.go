@@ -35,6 +35,11 @@ func activeKey(w []byte, now uint64, scope uint16) bool {
 // OpenSoftwareArchive02 is a candidate archive-only inbound reader. It returns
 // authenticated text, never radio authority, an accepted grant or replay receipt.
 func OpenSoftwareArchive02(input []byte, historical, current *Manifest, scalar []byte, context ArchiveContext) (string, error) {
+	return openArchive02(input, historical, current, context, func(public, enc, info, aad, ct []byte) ([]byte, error) {
+		return OpenSoftwareCEK(scalar, public, enc, info, aad, ct)
+	})
+}
+func openArchive02(input []byte, historical, current *Manifest, context ArchiveContext, unwrap func([]byte, []byte, []byte, []byte, []byte) ([]byte, error)) (string, error) {
 	if len(input) < 426 || len(input) > 34082 || historical == nil || current == nil || historical.profile != 2 || current.profile != 2 || len(context.Account) != 16 || len(context.Device) != 16 || len(context.Line) != 16 || len(context.Reader) != 32 {
 		return "", ErrShape
 	}
@@ -86,7 +91,7 @@ func OpenSoftwareArchive02(input []byte, historical, current *Manifest, scalar [
 	if err != nil {
 		return "", err
 	}
-	cek, err := OpenSoftwareCEK(scalar, reader[33:98], w[33:98], info, aad, w[98:])
+	cek, err := unwrap(reader[33:98], w[33:98], info, aad, w[98:])
 	if err != nil {
 		return "", err
 	}

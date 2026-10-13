@@ -56,3 +56,43 @@ jobs:
           go run ./cmd/manifest < ../../../../protocol/v1/vectors/sealed-profile03-contract-01.json
           python "$RUNNER_TEMP/envelopes/sdk/native/crypto-envelope/java/envelope_rows.py" | go run ./cmd/envelope
           node "$RUNNER_TEMP/producer/sdk/typescript/test/emit-native-hpke.mjs" | go run ./cmd/interop
+
+  windows-protected:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.13.0'
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.22'
+          cache: false
+      - run: rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
+      - name: Prepare exact public-point-only producer
+        shell: pwsh
+        run: |
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/archive"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C "$env:RUNNER_TEMP/archive" checkout --detach 93a65d737dfb0de603c732241c667f90771f60dd
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm ci --prefix "$env:RUNNER_TEMP/archive/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build --prefix "$env:RUNNER_TEMP/archive/sdk/typescript"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Native Windows build and conditional protected qualification
+        shell: pwsh
+        env:
+          RUSTUP_TOOLCHAIN: '1.97.1'
+        run: |
+          cargo fmt --manifest-path sdk/native/hpke-candidate/rust/Cargo.toml --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo clippy --manifest-path sdk/native/hpke-candidate/rust/Cargo.toml --locked --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python sdk/native/hpke-candidate/run-cng.py --producer "$env:RUNNER_TEMP/archive" --language rust
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python sdk/native/hpke-candidate/run-cng.py --producer "$env:RUNNER_TEMP/archive" --language go
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -60,6 +60,12 @@ func OpenSoftwareCEK(private, public, enc, info, aad, ciphertext []byte) ([]byte
 		return nil, ErrAuthentication
 	}
 	defer clear(dh)
+	return openSharedCEK(dh, public, enc, info, aad, ciphertext)
+}
+func openSharedCEK(dh, public, enc, info, aad, ciphertext []byte) ([]byte, error) {
+	if len(dh) != 32 || len(public) != 65 || len(enc) != 65 || len(info) > 36864 || len(aad) > 36864 || len(ciphertext) != 48 {
+		return nil, ErrShape
+	}
 	eae := extract(nil, kemSuite, "eae_prk", dh)
 	defer clear(eae)
 	shared := expand(eae, kemSuite, "shared_secret", join(enc, public), 32)

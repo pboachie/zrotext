@@ -43,6 +43,24 @@ pub fn open_software_archive02(
     scalar: &[u8],
     context: &ArchiveContext<'_>,
 ) -> Result<Zeroizing<String>, Error> {
+    open_archive02(
+        input,
+        historical,
+        current,
+        context,
+        |public, enc, info, aad, ct| open_software_cek(scalar, public, enc, info, aad, ct),
+    )
+}
+fn open_archive02<F>(
+    input: &[u8],
+    historical: &Manifest,
+    current: &Manifest,
+    context: &ArchiveContext<'_>,
+    unwrap: F,
+) -> Result<Zeroizing<String>, Error>
+where
+    F: FnOnce(&[u8], &[u8], &[u8], &[u8], &[u8]) -> Result<Zeroizing<Vec<u8>>, Error>,
+{
     if !(426..=34082).contains(&input.len())
         || historical.profile != 2
         || current.profile != 2
@@ -95,7 +113,7 @@ pub fn open_software_archive02(
         return Err(Error::Authentication);
     }
     let (info, aad) = envelope.wrap_transcript(0)?;
-    let cek = open_software_cek(scalar, &reader[33..98], &w[33..98], &info, &aad, &w[98..])?;
+    let cek = unwrap(&reader[33..98], &w[33..98], &info, &aad, &w[98..])?;
     let cipher = Aes256Gcm::new_from_slice(&cek).map_err(|_| Error::Shape)?;
     let plain = Zeroizing::new(
         cipher
@@ -125,4 +143,21 @@ pub fn open_software_archive02(
 /// No qualified native protected provider is installed by this candidate module.
 pub fn open_protected_archive02() -> Result<Zeroizing<String>, Error> {
     Err(Error::ProtectedUnavailable)
+}
+
+#[cfg(windows)]
+pub fn open_hardware_archive02(
+    input: &[u8],
+    historical: &Manifest,
+    current: &Manifest,
+    custody: &crate::cng::HardwareRecipient,
+    context: &ArchiveContext<'_>,
+) -> Result<Zeroizing<String>, Error> {
+    open_archive02(
+        input,
+        historical,
+        current,
+        context,
+        |public, enc, info, aad, ct| custody.open_cek(public, enc, info, aad, ct),
+    )
 }

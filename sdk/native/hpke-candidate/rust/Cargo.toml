@@ -7,6 +7,7 @@ license = "AGPL-3.0-only"
 description = "Candidate base-mode HPKE recipient primitive"
 [workspace]
 [dependencies]
+getrandom = "0.4"
 aes-gcm = { version = "0.11.1", features = ["zeroize"] }
 p256 = { version = "0.14.0", features = ["ecdh", "ecdsa"] }
 hkdf = "0.13.0"

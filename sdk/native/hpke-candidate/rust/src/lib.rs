@@ -1,4 +1,6 @@
 //! Candidate RFC9180 base-mode recipient primitive, never envelope authority.
+#[cfg(windows)]
+pub mod cng;
 pub mod envelope;
 pub mod manifest;
 pub mod reader;
@@ -72,7 +74,26 @@ pub fn open_software_cek(
     }
     let pk = PublicKey::from_sec1_bytes(enc).map_err(|_| Error::Shape)?;
     let dh = diffie_hellman(sk.to_nonzero_scalar(), pk.as_affine());
-    let eae = extract(&[], KEM, b"eae_prk", dh.raw_secret_bytes());
+    open_shared_cek(dh.raw_secret_bytes(), public, enc, info, aad, ciphertext)
+}
+fn open_shared_cek(
+    dh: &[u8],
+    public: &[u8],
+    enc: &[u8],
+    info: &[u8],
+    aad: &[u8],
+    ciphertext: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, Error> {
+    if dh.len() != 32
+        || public.len() != 65
+        || enc.len() != 65
+        || info.len() > 36864
+        || aad.len() > 36864
+        || ciphertext.len() != 48
+    {
+        return Err(Error::Shape);
+    }
+    let eae = extract(&[], KEM, b"eae_prk", dh);
     let shared = expand(&eae, KEM, b"shared_secret", &[enc, public].concat(), 32)?;
     let psk_hash = extract(&[], SUITE, b"psk_id_hash", &[]);
     let info_hash = extract(&[], SUITE, b"info_hash", info);
