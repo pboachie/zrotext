@@ -27,6 +27,7 @@ public static class OriginalReplyReader {
         }
         internal byte[] Account=>(byte[])account.Clone();internal byte[] Device=>(byte[])device.Clone();internal byte[] Line=>(byte[])line.Clone();internal byte[] Interval=>(byte[])interval.Clone();internal byte[] Connector=>(byte[])connector.Clone();internal byte[] Grant=>(byte[])grant.Clone();internal byte[] Reader=>(byte[])reader.Clone();
         internal bool Matches(Scope? other)=>other is not null && Same(account,other.account) && Same(device,other.device) && Same(line,other.line) && Same(interval,other.interval) && Same(connector,other.connector) && Same(grant,other.grant) && Same(reader,other.reader) && Peer==other.Peer;
+        internal byte[] CheckpointBinding(){using var hash=IncrementalHash.CreateHash(HashAlgorithmName.SHA256);hash.AppendData(Encoding.ASCII.GetBytes("ZTSE/native/original-checkpoint-scope/v1\0"));foreach(var b in new[]{account,device,line,interval,connector,grant,reader})hash.AppendData(b);hash.AppendData(new[]{(byte)Peer.Length});hash.AppendData(Encoding.ASCII.GetBytes(Peer));return hash.GetHashAndReset();}
     }
     /// <summary>Dual-phone evidence, not a live grant or durable history receipt.</summary>
     public sealed class Selection {

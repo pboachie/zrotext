@@ -26,6 +26,11 @@ public final class OriginalReplyReader {
             need(peer!=null && peer.matches("\\+[1-9][0-9]{1,14}"));this.peer=peer;
         }
         private boolean matches(Scope other){return other!=null && same(account,other.account) && same(device,other.device) && same(line,other.line) && same(interval,other.interval) && same(connector,other.connector) && same(grant,other.grant) && same(reader,other.reader) && peer.equals(other.peer);}
+        byte[] checkpointBinding()throws GeneralSecurityException{
+            var hash=MessageDigest.getInstance("SHA-256");hash.update("ZTSE/native/original-checkpoint-scope/v1\0".getBytes(StandardCharsets.US_ASCII));
+            for(byte[] value:new byte[][]{account,device,line,interval,connector,grant,reader})hash.update(value);hash.update((byte)peer.length());hash.update(peer.getBytes(StandardCharsets.US_ASCII));return hash.digest();
+        }
+        byte[] checkpointAccount(){return account.clone();}
     }
     /** Verified dual-phone evidence, not a current grant or durable accepted-history receipt. */
     public static final class Selection {
