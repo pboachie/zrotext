@@ -55,13 +55,16 @@ python3 -m unittest discover -s sdk/python/tests -t sdk/python
 
 Tests use a loopback stub HTTP server and no network.
 
-## Native workflow adapter (source checkout)
+## Native workflow adapter
 
 `workflow_client.py` now implements the eight existing scoped workflow tools in
 Python without launching Node. Its public `WorkflowClient`, `WorkflowError`,
 `workflow_functions` and `action_digest` names remain available. Configuration
 errors, including invalid credential realms, are rejected at construction.
-This source adapter is separate from the alpha client's distributable package.
+This adapter is separate from the alpha client's distributable package. The
+unpublished `zrotext-workflow-candidate==0.1.0a1` wheel/sdist supplies normal
+`zrotext_workflow` imports; existing source `workflow_client` imports forward to
+the same implementation. See [packaging and acceptance gaps](workflow/README.md).
 
 The client requires HTTPS and a dedicated `ztw_` workflow credential. It validates
 the shared closed schemas, canonical action digest and response identity before
@@ -78,7 +81,7 @@ unknown failure without sending. TLS uses Python's system trust configuration
 settings no longer apply. Redirects, ambient proxies and cookies are not used.
 Credential strings cannot be guaranteed erased by the Python runtime.
 
-The checked `workflow_contract.json` is exported from the executable TypeScript
+The packaged `workflow/zrotext_workflow/workflow_contract.json` is exported from the executable TypeScript
 schemas using `node sdk/typescript/scripts/export-python-workflow-contract.mjs`
 after building TypeScript. Ordinary SDK tests pin exact schema/annotation parity,
 canonical digest vectors and refusal behavior. The existing HTTPS fixture tests

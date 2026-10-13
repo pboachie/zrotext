@@ -29,7 +29,7 @@ function sample(schema) {
   return 'UTC';
 }
 test('checked Python contract exactly matches executable TypeScript schemas and annotations', async () => {
-  const checked = JSON.parse(await readFile(new URL('../../python/workflow_contract.json', import.meta.url)));
+  const checked = JSON.parse(await readFile(new URL('../../python/workflow/zrotext_workflow/workflow_contract.json', import.meta.url)));
   assert.deepEqual(checked, { tools: workflowTools, readiness: workflowReadinessSchema });
 });
 test('native request and schema verdicts match TypeScript across every tool and malformed field', () => {
