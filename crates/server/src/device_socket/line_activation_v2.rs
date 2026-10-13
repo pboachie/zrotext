@@ -314,7 +314,15 @@ pub(super) async fn push(
     sent: &mut Vec<Uuid>,
     retire: bool,
 ) -> Option<bool> {
-    let mut db = runtime_db::connect_device(url).await.ok()?;
+    // A failed poll connection is contention or a restart in progress, not an
+    // exchange failure; the next poll retries without closing the device.
+    let mut db = match runtime_db::connect_device(url).await {
+        Ok(db) => db,
+        Err(error) => {
+            eprintln!("v2 line poll connect deferred: {error}");
+            return Some(false);
+        }
+    };
     if purpose == Purpose::Sms
         && retire
         && let Err(error) = runtime::retire_sms(&mut db, s).await
@@ -364,7 +372,10 @@ fn poll_deferred(
             // 55P03 lock_timeout and 57014 statement_timeout.
             match error.code().map(|code| code.code()) {
                 Some("55P03" | "57014") => Some(false),
-                _ => None,
+                _ => {
+                    eprintln!("v2 line push refused the poll: {error}");
+                    None
+                }
             }
         }
         _ => None,

@@ -30,7 +30,10 @@ fn poll_deferred(error: &sealed_exchange::ExchangeError) -> Option<bool> {
             // 55P03 lock_timeout and 57014 statement_timeout.
             match error.code().map(|code| code.code()) {
                 Some("55P03" | "57014") => Some(false),
-                _ => None,
+                _ => {
+                    eprintln!("sealed line push refused the poll: {error}");
+                    None
+                }
             }
         }
         _ => None,
@@ -44,7 +47,15 @@ pub(super) async fn push(
     database_url: &str,
     session: InboundSession<'_>,
 ) -> Option<bool> {
-    let mut client = runtime_db::connect_device(database_url).await.ok()?;
+    // A failed poll connection is contention or a restart in progress, not an
+    // exchange failure; the next poll retries without closing the device.
+    let mut client = match runtime_db::connect_device(database_url).await {
+        Ok(client) => client,
+        Err(error) => {
+            eprintln!("sealed line poll connect deferred: {error}");
+            return Some(false);
+        }
+    };
     let challenge = match sealed_exchange::next_challenge(&mut client, session).await {
         Ok(value) => value,
         Err(error) => return poll_deferred(&error),
