@@ -10,7 +10,7 @@ import java.util.*;
 import javax.crypto.KeyAgreement;
 
 /** Locally qualified Windows PCP recipient; no software fallback or remote attestation. */
-public final class ProtectedRecipient implements HpkeRecipient.Recipient,AutoCloseable {
+public final class ProtectedRecipient implements HpkeRecipient.Recipient,HpkeRecipient.ContentRecipient,AutoCloseable {
     private static final String PROVIDER="Microsoft Platform Crypto Provider",PREFIX="zrotext-managed-java-p256-";
     private static final int SILENT=0x40;
     private final NativeLibrary api;
@@ -85,6 +85,11 @@ public final class ProtectedRecipient implements HpkeRecipient.Recipient,AutoClo
         need(qualified && !closed);byte[] pk=publicPoint.clone(),ephemeral=enc.clone(),context=info.clone(),authenticated=aad.clone(),encrypted=ciphertext.clone();
         need(context.length<=36864 && authenticated.length<=36864 && encrypted.length==48 && MessageDigest.isEqual(pk,publicRaw()));
         byte[] shared=exchange(ephemeral);try{return HpkeRecipient.openAgreement(shared,pk,ephemeral,context,authenticated,encrypted);}finally{Arrays.fill(shared,(byte)0);}
+    }
+    @Override public synchronized byte[] openContent(byte[] publicPoint,byte[] enc,byte[] info,byte[] aad,byte[] ciphertext)throws GeneralSecurityException{
+        need(qualified && !closed);byte[] pk=publicPoint.clone(),ephemeral=enc.clone(),context=info.clone(),authenticated=aad.clone(),encrypted=ciphertext.clone();
+        need(context.length<=36864 && authenticated.length<=36864 && encrypted.length>=17 && encrypted.length<=32784 && MessageDigest.isEqual(pk,publicRaw()));
+        byte[] shared=exchange(ephemeral);try{return HpkeRecipient.openContentAgreement(shared,pk,ephemeral,context,authenticated,encrypted);}finally{Arrays.fill(shared,(byte)0);}
     }
     public synchronized void deleteCreated()throws GeneralSecurityException{need(created && !closed && key!=null);check(call("NCryptDeleteKey",key,0));key=null;created=false;qualified=false;close();}
     private void free(Pointer handle){if(handle!=null)call("NCryptFreeObject",handle);}

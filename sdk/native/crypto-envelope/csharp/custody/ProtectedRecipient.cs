@@ -7,7 +7,7 @@ using Microsoft.Win32.SafeHandles;
 namespace Zrotext.Candidate;
 
 /// <summary>Locally qualified Windows PCP recipient. No remote attestation or software fallback.</summary>
-public sealed class ProtectedRecipient:IDisposable {
+public sealed class ProtectedRecipient:IDisposable,HpkeRecipient.IContentRecipient {
     private const string Provider="Microsoft Platform Crypto Provider",Prefix="zrotext-managed-csharp-p256-";
     private const uint Silent=0x40;
     private readonly object gate=new();private Handle provider=new(),key=new();private NativeAdapter? adapter;
@@ -110,6 +110,9 @@ public sealed class ProtectedRecipient:IDisposable {
         public override byte[] DeriveKeyMaterial(ECDiffieHellmanPublicKey otherPartyPublicKey)=>throw new NotSupportedException("Raw qualified agreement only");
         public override void ImportParameters(ECParameters parameters)=>throw new NotSupportedException("No private import");
         protected override void Dispose(bool disposing){if(disposing)publicKey.Dispose();base.Dispose(disposing);}
+    }
+    public byte[] OpenContent(byte[] publicPoint,byte[] enc,byte[] info,byte[] aad,byte[] ciphertext){
+        lock(gate){Need(qualified && !closed);return HpkeRecipient.OpenContent(adapter!,publicPoint,enc,info,aad,ciphertext);}
     }
     public string OpenProfile02(byte[] input,ManifestChain.Verified manifest,long now,int role,byte[] recipientId,SealedReader02.ICurrentSelection current){
         lock(gate){Need(qualified && !closed);return SealedReader02.Open(input,manifest,now,role,recipientId,adapter!,current);}

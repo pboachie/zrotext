@@ -15,6 +15,9 @@ public final class HpkeRecipient {
     public interface Recipient {
         byte[] unwrap(byte[] publicPoint,byte[] enc,byte[] info,byte[] aad,byte[] ciphertext)throws GeneralSecurityException;
     }
+    /** Trusted application content adapter; this interface alone makes no custody claim. */
+    public interface ContentRecipient { byte[] openContent(byte[] publicPoint,byte[] enc,byte[] info,byte[] aad,byte[] ciphertext)throws GeneralSecurityException; }
+    public static ContentRecipient softwareContent(PrivateKey key){return (pk,enc,info,aad,ct)->openContent(key,pk,enc,info,aad,ct);}
     static Recipient software(PrivateKey key){return (pk,enc,info,aad,ct)->open(key,pk,enc,info,aad,ct);}
     private static final byte[] EMPTY = new byte[0];
     private static final byte[] KEM = new byte[] {75,69,77,0,16};
@@ -56,7 +59,11 @@ public final class HpkeRecipient {
     /** Caller supplies an already authorized key handle; exportability is not attested here. */
     public static byte[] open(PrivateKey recipient, byte[] publicPoint, byte[] encapsulated,
                               byte[] info, byte[] aad, byte[] ciphertext) throws GeneralSecurityException {
-        if (info.length > 36864 || aad.length > 36864 || ciphertext.length != 48)
+        if(ciphertext.length!=48)throw new GeneralSecurityException("Candidate wrap bounds");
+        return openContent(recipient,publicPoint,encapsulated,info,aad,ciphertext);
+    }
+    static byte[] openContent(PrivateKey recipient,byte[] publicPoint,byte[] encapsulated,byte[] info,byte[] aad,byte[] ciphertext)throws GeneralSecurityException {
+        if (info.length > 36864 || aad.length > 36864 || (ciphertext.length<17 || ciphertext.length>32784))
             throw new GeneralSecurityException("Candidate wrap bounds");
         byte[] pk = publicPoint.clone(), enc = encapsulated.clone(), contextInfo = info.clone();
         byte[] authenticated = aad.clone(), encrypted = ciphertext.clone();
@@ -73,12 +80,26 @@ public final class HpkeRecipient {
         KeyAgreement agreement = KeyAgreement.getInstance("ECDH");
         agreement.init(recipient); agreement.doPhase(ephemeral, true);
         byte[] shared=agreement.generateSecret();
-        try{return openAgreement(shared,pk,enc,contextInfo,authenticated,encrypted);}
+        try{return openContentAgreement(shared,pk,enc,contextInfo,authenticated,encrypted);}
         finally{Arrays.fill(shared,(byte)0);}
     }
     // Native adapters must independently prove public binding before supplying DH.
     static byte[] openAgreement(byte[] shared,byte[] pk,byte[] enc,byte[] contextInfo,byte[] authenticated,byte[] encrypted)throws GeneralSecurityException{
-        if(shared.length!=32 || contextInfo.length>36864 || authenticated.length>36864 || encrypted.length!=48)
+        if(encrypted.length!=48)throw new GeneralSecurityException("Candidate agreement bounds");
+        return openContentAgreement(shared,pk,enc,contextInfo,authenticated,encrypted);
+    }
+    static byte[] openContentAgreement(byte[] shared,byte[] pk,byte[] enc,byte[] contextInfo,byte[] authenticated,byte[] encrypted)throws GeneralSecurityException{
+        return cryptContent(shared,pk,enc,contextInfo,authenticated,encrypted,false);
+    }
+    static byte[] sealContent(byte[] pk,byte[] info,byte[] aad,byte[] plain)throws GeneralSecurityException{
+        if(plain.length<1 || plain.length>32768)throw new GeneralSecurityException("Candidate content bounds");
+        var generator=KeyPairGenerator.getInstance("EC");generator.initialize(new ECGenParameterSpec("secp256r1"));var ephemeral=generator.generateKeyPair();var publicKey=(java.security.interfaces.ECPublicKey)ephemeral.getPublic();
+        byte[] enc=new byte[65];enc[0]=4;byte[] x=publicKey.getW().getAffineX().toByteArray(),y=publicKey.getW().getAffineY().toByteArray();int nx=Math.min(32,x.length),ny=Math.min(32,y.length);System.arraycopy(x,x.length-nx,enc,33-nx,nx);System.arraycopy(y,y.length-ny,enc,65-ny,ny);
+        var agreement=KeyAgreement.getInstance("ECDH");agreement.init(ephemeral.getPrivate());agreement.doPhase(point(pk),true);byte[] shared=agreement.generateSecret();
+        try{return join(enc,cryptContent(shared,pk,enc,info,aad,plain,true));}finally{Arrays.fill(shared,(byte)0);}
+    }
+    private static byte[] cryptContent(byte[] shared,byte[] pk,byte[] enc,byte[] contextInfo,byte[] authenticated,byte[] encrypted,boolean seal)throws GeneralSecurityException{
+        if(shared.length!=32 || contextInfo.length>36864 || authenticated.length>36864 || (seal?(encrypted.length<1 || encrypted.length>32768):(encrypted.length<17 || encrypted.length>32784)))
             throw new GeneralSecurityException("Candidate agreement bounds");
         point(pk);point(enc);
         byte[][] secrets = new byte[6][];
@@ -92,7 +113,7 @@ public final class HpkeRecipient {
             secrets[4] = expand(SUITE, secrets[3], "key", context, 16);
             secrets[5] = expand(SUITE, secrets[3], "base_nonce", context, 12);
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-            cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(secrets[4], "AES"), new GCMParameterSpec(128, secrets[5]));
+            cipher.init(seal?Cipher.ENCRYPT_MODE:Cipher.DECRYPT_MODE, new SecretKeySpec(secrets[4], "AES"), new GCMParameterSpec(128, secrets[5]));
             cipher.updateAAD(authenticated);
             return cipher.doFinal(encrypted);
         } finally {
