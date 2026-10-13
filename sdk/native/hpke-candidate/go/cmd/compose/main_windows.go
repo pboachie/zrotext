@@ -130,6 +130,12 @@ func timeCases(d map[string]json.RawMessage, signer *hpke.HardwareSigner) error 
 		if (e == nil) != policy.Accept {
 			return fmt.Errorf("policy case %s: %v", policy.Name, e)
 		}
+		if e == nil {
+			opened, err := hpke.OpenSoftwareElected03(out, r.Manifest, r.Proof, record(c, "authority"), decode(c, "readerScalar"), hpke.ElectedContext{Message: r.Message, Peer: r.Peer, Now: policy.Now})
+			if err != nil || opened != r.Content {
+				return errors.New("native selected reader self-open")
+			}
+		}
 		var envelope any
 		if e == nil {
 			envelope = base64.StdEncoding.EncodeToString(out)

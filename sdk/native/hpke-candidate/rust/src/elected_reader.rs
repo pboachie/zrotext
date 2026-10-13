@@ -73,7 +73,6 @@ where
     need(
         observed > 0
             && observed <= now
-            && observed >= m.issued
             && observed < m.expires
             && expires > now
             && expires <= m.expires

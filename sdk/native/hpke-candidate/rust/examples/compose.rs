@@ -146,6 +146,26 @@ mod native {
                 output.is_ok() == accept,
                 case["name"].as_str().ok_or("name")?,
             )?;
+            if let Ok(ref envelope) = output {
+                let opened = crypto(
+                    zrotext_hpke_candidate::elected_reader::open_software_elected03(
+                        envelope,
+                        r.manifest,
+                        &proof,
+                        &record(case, "authority"),
+                        &b(case, "readerScalar"),
+                        &zrotext_hpke_candidate::elected_reader::ElectedContext {
+                            message: &r.message,
+                            peer: r.peer,
+                            now,
+                        },
+                    ),
+                )?;
+                need(
+                    opened.as_str() == r.content,
+                    "native selected reader self-open",
+                )?;
+            }
             results.push(serde_json::json!({"name":case["name"], "envelope":output.ok().map(|v|STANDARD.encode(v))}));
         }
         println!("{}", serde_json::json!({"results":results}));
