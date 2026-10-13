@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unittest
 
 HERE = Path(__file__).resolve().parent
 
@@ -56,11 +57,20 @@ def main():
         subprocess.run(["go", "mod", "edit", "-replace=github.com/pboachie/tungsten/runtimes/go="+(source / "runtimes/go").as_posix()], cwd=go, check=True)
         suffix = ".exe" if os.name == "nt" else ""
         subprocess.run(["go", "build", "-o", stage / ("go-wire"+suffix), "./cmd/wire"], cwd=go, check=True)
+        def load(name, path):
+            spec = importlib.util.spec_from_file_location(name, path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+        tests = load("native_wire_tests", HERE / "test_wire.py")
+        probe = load("native_redirect_probe", HERE / "probe_redirect.py")
         for binary in [stage / "target/debug" / ("native-wire"+suffix), stage / ("go-wire"+suffix)]:
-            env["ZROTEXT_TEST_NATIVE"] = str(binary)
-            env["ZROTEXT_NATIVE_LANGUAGE"] = "go" if binary.name.startswith("go-") else "rust"
-            subprocess.run([sys.executable, HERE / "test_wire.py"], env=env, check=True)
-            subprocess.run([sys.executable, HERE / "probe_redirect.py"], env=env, check=True)
+            tests.Wire.binary = str(binary)
+            tests.Wire.language = "go" if binary.name.startswith("go-") else "rust"
+            result = unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromModule(tests))
+            if not result.wasSuccessful():
+                raise ValueError("Native wire acceptance failed")
+            probe.probe_redirect(tests.Wire)
     print("Native SDK source build and synthetic acceptance passed; no registry or deployed acceptance implied")
 
 if __name__ == "__main__":

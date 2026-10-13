@@ -39,12 +39,12 @@ class Wire(unittest.TestCase):
     def invoke(self,operation="public.getAlphaMessageStatus",args=None,**extra):
         request=dict(base=self.base,token=self.token,operation=operation,args=args if args is not None else {"message_id":IDENTITY})
         # Generated dynamic argument spelling differs; wire spelling is checked below.
-        if os.environ.get("ZROTEXT_NATIVE_LANGUAGE") == "go" and "message_id" in request["args"]:
+        if self.language == "go" and "message_id" in request["args"]:
             request["args"] = {("messageId" if k == "message_id" else k): v for k,v in request["args"].items()}
         request.update(extra)
         env={k:v for k,v in os.environ.items() if k.upper() not in {"HTTP_PROXY","HTTPS_PROXY","ALL_PROXY"}}
         env["NO_PROXY"]="127.0.0.1"
-        process=subprocess.run([os.environ["ZROTEXT_TEST_NATIVE"]],input=json.dumps(request),capture_output=True,text=True,env=env,timeout=15)
+        process=subprocess.run([self.binary],input=json.dumps(request),capture_output=True,text=True,env=env,timeout=15)
         self.assertEqual(process.returncode,0,process.stderr)
         self.assertNotIn(self.token,process.stdout+process.stderr)
         return json.loads(process.stdout)
@@ -91,4 +91,3 @@ class Wire(unittest.TestCase):
         self.reply=(302,{"Location":"http://localhost:"+str(self.server.server_port)+"/redirected"}, {})
         self.assertFalse(self.invoke()["ok"]);self.assertEqual(len(self.calls),1)
 
-if __name__=="__main__": unittest.main()
