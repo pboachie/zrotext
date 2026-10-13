@@ -132,3 +132,4 @@ fn open_shared_cek(
 pub fn open_protected_cek() -> Result<Zeroizing<Vec<u8>>, Error> {
     Err(Error::ProtectedUnavailable)
 }
+pub mod original_read;

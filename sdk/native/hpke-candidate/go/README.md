@@ -137,3 +137,5 @@ Original-reply accepted history and comparison clocks can be persisted with the 
 [Original-grant HTTPS transport](../ORIGINAL-HTTP.md) returns untrusted wire JSON; authenticated client integration remains required.
 
 [Verified original current proof](../ORIGINAL-CURRENT.md) binds HTTPS scope and signed history before durable CAS advancement.
+
+[Verified original HTTPS read](../ORIGINAL-READ.md) authenticates selection and ciphertext, then persists fresh current authority before releasing plaintext.

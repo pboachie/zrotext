@@ -47,4 +47,5 @@ selected role3 ciphertext after restoring history and durably accepting both
 reader comparisons. These tests use explicit synthetic software recipient custody;
 the existing protected reader entry point and its independent hardware gate remain
 separate. [Current HTTPS grant proofs](ORIGINAL-CURRENT.md) now integrate with
-this checkpoint; verified read/page/consume/status operations remain pending.
+this checkpoint. [Verified reads](ORIGINAL-READ.md) also integrate software and
+protected custody; page/consume/status operations remain pending.

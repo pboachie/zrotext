@@ -213,13 +213,16 @@ pub fn verify_original_reply_selection02(
         digest,
     })
 }
-struct Checked {
+pub(crate) struct Checked {
     manifest: Manifest,
     revision: String,
     now: u64,
     expires: u64,
 }
-fn authority(value: OriginalAuthority<'_>, scope: &OriginalScope) -> Result<Checked, Error> {
+pub(crate) fn authority(
+    value: OriginalAuthority<'_>,
+    scope: &OriginalScope,
+) -> Result<Checked, Error> {
     need(
         value.scope == *scope
             && !value.revision.is_empty()
@@ -282,6 +285,18 @@ where
     F: FnMut() -> Result<OriginalAuthority<'a>, Error>,
     U: FnOnce(&[u8], &[u8], &[u8], &[u8], &[u8]) -> Result<Zeroizing<Vec<u8>>, Error>,
 {
+    open_checked(b, options, || authority(current()?, options.scope), unwrap)
+}
+pub(crate) fn open_checked<F, U>(
+    b: &[u8],
+    options: &OriginalRead<'_>,
+    mut current: F,
+    unwrap: U,
+) -> Result<Zeroizing<String>, Error>
+where
+    F: FnMut() -> Result<Checked, Error>,
+    U: FnOnce(&[u8], &[u8], &[u8], &[u8], &[u8]) -> Result<Zeroizing<Vec<u8>>, Error>,
+{
     let OriginalRead {
         event,
         scope,
@@ -296,7 +311,7 @@ where
             && valid_scope(scope),
     )?;
     need(b[4] == 2 && b[5] == 2 && b[26..42] == *event)?;
-    let initial = authority(current()?, scope)?;
+    let initial = current()?;
     let m = &initial.manifest;
     need(
         historical.account == scope.account
@@ -374,7 +389,7 @@ where
             )
             .map_err(|_| Error::Authentication)?,
     );
-    let final_value = authority(current()?, scope)?;
+    let final_value = current()?;
     let f = &final_value.manifest;
     need(
         final_value.revision == initial.revision

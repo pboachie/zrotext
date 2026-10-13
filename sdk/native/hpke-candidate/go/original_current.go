@@ -117,6 +117,10 @@ func (c *OriginalCurrentClient) Current(ctx context.Context, grant string, clock
 		return nil, bad
 	}
 	defer c.mu.Unlock()
+	return c.currentLocked(ctx, grant, clock)
+}
+func (c *OriginalCurrentClient) currentLocked(ctx context.Context, grant string, clock func() uint64) (*VerifiedOriginalCurrent, error) {
+	bad := OriginalHTTPError{}
 	if c.failed {
 		return nil, bad
 	}
@@ -142,11 +146,24 @@ func (c *OriginalCurrentClient) Current(ctx context.Context, grant string, clock
 	if e != nil {
 		return nil, bad
 	}
-	p, e := replyObject(wire.JSON, "account_id", "interval_id", "device_id", "line_id", "connector_id", "read_grant_id", "reader_id", "root_generation", "authority_revision", "expires_at_ms", "observed_at_ms", "current_manifest_version", "current_manifest_digest", "manifest_chain")
+	return c.acceptProof(wire.JSON, saved, latest, clock)
+}
+func (c *OriginalCurrentClient) acceptProof(raw []byte, saved *OriginalReplySnapshot, baseline *Manifest, clock func() uint64) (*VerifiedOriginalCurrent, error) {
+	bad := OriginalHTTPError{}
+	sample := func() (uint64, error) {
+		n := clock()
+		if !replyPositive(n) || n < c.last {
+			return 0, bad
+		}
+		c.last = n
+		return n, nil
+	}
+	latest := saved.History[len(saved.History)-1]
+	p, e := replyObject(raw, "account_id", "interval_id", "device_id", "line_id", "connector_id", "read_grant_id", "reader_id", "root_generation", "authority_revision", "expires_at_ms", "observed_at_ms", "current_manifest_version", "current_manifest_digest", "manifest_chain")
 	if e != nil {
 		return nil, bad
 	}
-	now, e = sample()
+	now, e := sample()
 	if e != nil {
 		return nil, bad
 	}
@@ -176,7 +193,7 @@ func (c *OriginalCurrentClient) Current(ctx context.Context, grant string, clock
 		return nil, bad
 	}
 	history := append([]*Manifest(nil), saved.History...)
-	previous := latest
+	previous := baseline
 	for i, raw := range chain {
 		entry, e := replyObject(raw, "version", "accepted_at_ms", "manifest_b64")
 		if e != nil {
@@ -192,7 +209,7 @@ func (c *OriginalCurrentClient) Current(ctx context.Context, grant string, clock
 		}
 		want := previous.version + 1
 		if i == 0 {
-			want = latest.version
+			want = baseline.version
 		}
 		if version != want {
 			return nil, bad
@@ -209,8 +226,14 @@ func (c *OriginalCurrentClient) Current(ctx context.Context, grant string, clock
 		if e != nil || m.version != version || m.generation != latest.generation || m.root != latest.root {
 			return nil, bad
 		}
-		if i == 0 {
-			if m.digest != latest.digest {
+		if version <= latest.version {
+			matched := false
+			for _, cached := range saved.History {
+				if cached.version == version && cached.digest == m.digest {
+					matched = true
+				}
+			}
+			if !matched {
 				return nil, bad
 			}
 		} else {
@@ -219,7 +242,7 @@ func (c *OriginalCurrentClient) Current(ctx context.Context, grant string, clock
 		previous = m
 	}
 	version, e := replyInteger(p["current_manifest_version"])
-	if e != nil || version != previous.version {
+	if e != nil || version != previous.version || version < latest.version {
 		return nil, bad
 	}
 	generation, e := replyInteger(p["root_generation"])

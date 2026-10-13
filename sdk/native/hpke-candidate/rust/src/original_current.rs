@@ -28,17 +28,17 @@ impl VerifiedOriginalCurrent {
         }
     }
 }
-struct State {
-    revision: u64,
-    last: u64,
-    failed: bool,
+pub(super) struct State {
+    pub(super) revision: u64,
+    pub(super) last: u64,
+    pub(super) failed: bool,
 }
 pub struct OriginalCurrentClient {
-    transport: OriginalHttp,
-    checkpoint: Arc<OriginalReplyCheckpoint>,
-    scope: OriginalScope,
-    root: RootTrust,
-    state: Mutex<State>,
+    pub(super) transport: OriginalHttp,
+    pub(super) checkpoint: Arc<OriginalReplyCheckpoint>,
+    pub(super) scope: OriginalScope,
+    pub(super) root: RootTrust,
+    pub(super) state: Mutex<State>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -78,7 +78,7 @@ fn positive(v: u64) -> bool {
 fn hex(b: &[u8]) -> String {
     b.iter().map(|v| format!("{v:02x}")).collect()
 }
-fn uuid(b: &[u8; 16]) -> String {
+pub(super) fn uuid(b: &[u8; 16]) -> String {
     let h = hex(b);
     format!(
         "{}-{}-{}-{}-{}",
@@ -89,7 +89,7 @@ fn uuid(b: &[u8; 16]) -> String {
         &h[20..]
     )
 }
-fn sample(state: &mut State, clock: &impl Fn() -> u64) -> Result<u64, HttpError> {
+pub(super) fn sample(state: &mut State, clock: &impl Fn() -> u64) -> Result<u64, HttpError> {
     let n = clock();
     need(positive(n) && n >= state.last)?;
     state.last = n;
@@ -133,8 +133,17 @@ impl OriginalCurrentClient {
     ) -> Result<VerifiedOriginalCurrent, HttpError> {
         let bad = HttpError::Unavailable;
         let mut state = self.state.try_lock().map_err(|_| bad)?;
+        self.current_locked(grant, &clock, &mut state)
+    }
+    pub(super) fn current_locked(
+        &self,
+        grant: &str,
+        clock: &impl Fn() -> u64,
+        state: &mut State,
+    ) -> Result<VerifiedOriginalCurrent, HttpError> {
+        let bad = HttpError::Unavailable;
         need(!state.failed)?;
-        let now = sample(&mut state, &clock)?;
+        let now = sample(state, clock)?;
         let saved = self.checkpoint.snapshot(&self.scope, now).map_err(|_| {
             state.failed = true;
             bad
@@ -147,8 +156,20 @@ impl OriginalCurrentClient {
         let wire = self
             .transport
             .exchange(grant, latest.version, Request::Current)?;
-        let p: Proof = serde_json::from_str(wire.json.get()).map_err(|_| bad)?;
-        let now = sample(&mut state, &clock)?;
+        self.accept_proof(wire.json.get(), &saved, latest, clock, state)
+    }
+    pub(super) fn accept_proof(
+        &self,
+        raw: &str,
+        saved: &OriginalReplySnapshot,
+        baseline: &Manifest,
+        clock: &impl Fn() -> u64,
+        state: &mut State,
+    ) -> Result<VerifiedOriginalCurrent, HttpError> {
+        let bad = HttpError::Unavailable;
+        let latest = saved.history.last().ok_or(bad)?;
+        let p: Proof = serde_json::from_str(raw).map_err(|_| bad)?;
+        let now = sample(state, clock)?;
         need(positive(p.observed_at_ms) && positive(p.expires_at_ms))?;
         let fresh = |n: u64| {
             n < p.expires_at_ms && n <= p.observed_at_ms + 30000 && p.observed_at_ms <= n + 30000
@@ -171,14 +192,14 @@ impl OriginalCurrentClient {
         )?;
         let mut staged = Vec::new();
         for (i, entry) in p.manifest_chain.iter().enumerate() {
-            let previous = staged.last().unwrap_or(latest);
+            let previous = staged.last().unwrap_or(baseline);
             need(
                 positive(entry.accepted_at_ms)
                     && entry.accepted_at_ms <= now + 30000
                     && positive(entry.version)
                     && entry.version
                         == if i == 0 {
-                            latest.version
+                            baseline.version
                         } else {
                             previous.version + 1
                         },
@@ -193,30 +214,42 @@ impl OriginalCurrentClient {
                     && m.generation == latest.generation
                     && m.root == latest.root,
             )?;
-            if i == 0 {
-                need(m.digest == latest.digest)?
-            };
+            if m.version <= latest.version {
+                need(
+                    saved
+                        .history
+                        .iter()
+                        .any(|cached| cached.version == m.version && cached.digest == m.digest),
+                )?;
+            }
             staged.push(m);
         }
         let current = staged.last().ok_or(bad)?;
         need(
             positive(p.current_manifest_version)
                 && p.current_manifest_version == current.version
+                && current.version >= latest.version
                 && p.root_generation == latest.generation
                 && p.current_manifest_digest == hex(&current.digest)
-                && saved.history.len() + staged.len() - 1 <= 64,
+                && saved.history.len()
+                    + staged.iter().filter(|m| m.version > latest.version).count()
+                    <= 64,
         )?;
-        let now = sample(&mut state, &clock)?;
+        let now = sample(state, clock)?;
         need(fresh(now))?;
         accepted_manifest_at(&current.raw, &self.root, Some(current), now).map_err(|_| bad)?;
-        let history: Vec<_> = saved.history.iter().chain(staged.iter().skip(1)).collect();
+        let history: Vec<_> = saved
+            .history
+            .iter()
+            .chain(staged.iter().filter(|m| m.version > latest.version))
+            .collect();
         let mut commit = |history: &[&Manifest],
                           revision: u64,
                           at: u64|
          -> Result<OriginalReplySnapshot, HttpError> {
             self.checkpoint
                 .accept(&self.scope, history, revision, at, |m, floor| {
-                    let n = sample(&mut state, &clock).map_err(|_| JournalError::Refused)?;
+                    let n = sample(state, clock).map_err(|_| JournalError::Refused)?;
                     if n < floor || !fresh(n) {
                         return Err(JournalError::Refused);
                     }
@@ -238,7 +271,7 @@ impl OriginalCurrentClient {
         // A failure after the first commit must never leave an apparently reusable
         // stale in-memory revision. Preserve this flag until the full fence succeeds.
         state.failed = true;
-        let after = sample(&mut state, &clock)?;
+        let after = sample(state, clock)?;
         need(after >= committed.comparison && fresh(after))?;
         let current = committed.history.last().ok_or(bad)?;
         accepted_manifest_at(&current.raw, &self.root, Some(current), after).map_err(|_| bad)?;
@@ -252,7 +285,7 @@ impl OriginalCurrentClient {
                     committed.revision,
                     after,
                     |m, floor| {
-                        let n = sample(&mut state, &clock).map_err(|_| JournalError::Refused)?;
+                        let n = sample(state, clock).map_err(|_| JournalError::Refused)?;
                         if n < floor || !fresh(n) {
                             return Err(JournalError::Refused);
                         }
