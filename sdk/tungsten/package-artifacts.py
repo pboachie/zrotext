@@ -176,7 +176,7 @@ def main():
     policy.verify_source(args.source.resolve(), lock)
     packages = load("source_packages", CONFIG / "package-sources.py")
     inventory = json.loads((CONFIG / "generated.lock.json").read_text())
-    generated = packages.reviewed_files(CONFIG / "generated", inventory)[args.target]
+    generated = packages.documented_files(packages.reviewed_files(CONFIG / "generated", inventory)[args.target])
     generated["LICENSE"] = (ROOT / "LICENSE").read_bytes().replace(b"\r\n", b"\n")
     with tempfile.TemporaryDirectory(prefix="zrotext-package-consumer-") as temp:
         stage = Path(temp)
@@ -199,6 +199,9 @@ def main():
             managed = load("managed_packages", CONFIG / "package-managed.py")
             getattr(managed, args.target + "_package")(stage, feed)
         shutil.copytree(feed, destination)
+    # Some binary formats omit README files. Keep the same guide beside every
+    # feed and cover it with the qualification manifest's hashes.
+    (destination / "PACKAGE-GUIDE.md").write_bytes(packages.package_guide())
     sums = {p.relative_to(destination).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
             for p in sorted(destination.rglob("*")) if p.is_file()}
     report = {

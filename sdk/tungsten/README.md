@@ -6,6 +6,11 @@ CLI, local MCP server, experimental WebMCP adapter, and API/LLM documentation.
 Existing clients remain the supported entry points for their documented scope.
 Generated clients do not implement sealed-content encryption or key custody.
 
+The [package guide](PACKAGE-GUIDE.md) summarizes all seven coordinates, runtime
+requirements and migration blockers. Packaging prepends it to staged SDK/source
+README files and includes a hashed sidecar beside every binary feed. Generated
+registry examples are intended coordinates, not public availability claims.
+
 ## Reproduce the output
 
 Check out Tungsten at the revision in `generator.lock.json` into a clean external
