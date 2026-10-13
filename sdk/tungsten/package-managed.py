@@ -80,6 +80,7 @@ def typescript_package(stage, feed):
         "void [client.public, client.sealed, client.workflow];\n")
     run(executable("node"), consumer / "node_modules/typescript/bin/tsc", "--noEmit", "--strict",
         "--module", "NodeNext", "--target", "ES2022", "consumer.ts", cwd=consumer)
+    env = {key: value for key, value in os.environ.items() if key not in ("NODE_PATH", "NODE_OPTIONS")}
     run(executable("node"), "--input-type=module", "-e",
         "import {ZrotextClient} from '@elysra/zrotext'; "
         "import {fileURLToPath} from 'node:url'; import {realpathSync} from 'node:fs'; "
@@ -90,7 +91,19 @@ def typescript_package(stage, feed):
         "const c=new ZrotextClient({baseUrl:'https://sdk.example.invalid'});"
         "if(!c.public || !c.sealed || !c.workflow)throw Error('missing namespace');"
         "console.log('Installed npm client loaded');", cwd=consumer,
-        env={key: value for key, value in os.environ.items() if key not in ("NODE_PATH", "NODE_OPTIONS")})
+        env=env)
+    # Keep the source contract cases identical, changing only their imports to
+    # public package exports. Refuse drift instead of silently testing source.
+    contracts = (CONFIG / "contract.test.mjs").read_text(encoding="utf-8")
+    imports = ("import { ZrotextClient } from './generated/typescript/dist/client.js';\n"
+               "import { operations, api } from './generated/typescript/dist/descriptors.js';")
+    if contracts.count(imports) != 1:
+        raise ValueError("Review changed TypeScript contract imports")
+    contracts = contracts.replace(imports, "import { ZrotextClient, descriptors } from '@elysra/zrotext';\n"
+                                 "const { operations, api } = descriptors;")
+    (consumer / "contract.test.mjs").write_text(contracts, encoding="utf-8")
+    shutil.copyfile(CONFIG / "package-wire/typescript.test.mjs", consumer / "wire.test.mjs")
+    run(executable("node"), "--test", "contract.test.mjs", "wire.test.mjs", cwd=consumer, env=env)
 
 
 def java_package(stage, feed):

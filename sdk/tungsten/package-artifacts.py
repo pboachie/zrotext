@@ -202,12 +202,18 @@ def main():
         "target": args.target, "runtime_revision": lock["runtime_revision"],
         "qualification": "isolated archive consumer; public registry availability unverified",
         "sha256": sums}
+    if args.target == "typescript":
+        report["compatibility_blockers"] = [
+            "Tungsten #65: same-origin reads follow redirects; executed TODO test remains failing. "
+            "Not qualified to replace an existing no-redirect client."]
     if args.target == "rust":
         report["distribution"] = ("Candidate-registry qualification only: crate metadata and locks refer "
                                   "to the temporary registry. Rebuild against released runtime coordinates "
                                   "before distribution; these are not public-registry-ready crates.")
     (destination / "manifest.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(args.target + " archives and isolated consumer passed; no publication performed")
+    for blocker in report.get("compatibility_blockers", []):
+        print("UNQUALIFIED compatibility: " + blocker)
 
 
 if __name__ == "__main__":

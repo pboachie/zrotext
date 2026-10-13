@@ -87,7 +87,15 @@ to the build platform. Each output has archive hashes and a qualification manife
 
 For the three additional targets, put Node/npm, JDK 17 or newer/Maven, and the
 .NET 10 SDK on PATH respectively. npm compiles an installed TypeScript consumer
-and loads all namespaces. Maven builds JAR/POM pairs, resolves the SDK plus its
+and loads all namespaces. Its installed consumer also runs the twelve existing
+injected transport contracts through public package exports, plus eight passing
+real HTTP checks for authentication, pagination, validation, malformed responses,
+cross-origin redirects, stalled bodies, gates/rate limits, and uncertain confirmed
+sends. A ninth real HTTP case executes as an explicitly failing TODO for
+[Tungsten #65](https://github.com/pboachie/tungsten/issues/65): same-origin reads
+follow redirects. The artifact manifest records this compatibility blocker;
+successful package construction does not qualify replacement of existing clients.
+Maven builds JAR/POM pairs, resolves the SDK plus its
 runtime from a file repository into a fresh dependency cache, and compiles/runs
 a consumer. NuGet produces nupkg files, maps candidate coordinates exclusively to
 the local feed, and restores/builds/runs a consumer from a separate package cache.
