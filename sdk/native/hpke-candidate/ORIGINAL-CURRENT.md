@@ -49,3 +49,5 @@ monotonic local floor, wrong scope/identity/signatures, chain/schema failures,
 locked/postcommit deadlines, competing-writer CAS, stale-instance refusal, and
 reopen/rollback behavior. The existing checkpoint crash/CAS/restored-reader suite
 continues to cover storage recovery independently.
+Other native runtime probes can use `--command-file <trusted-local-json-argv>`
+instead of `--binary`; the helper executes that argument array without a shell.

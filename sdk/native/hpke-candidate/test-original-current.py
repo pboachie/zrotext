@@ -35,12 +35,20 @@ class Handler(tls.http.server.BaseHTTPRequestHandler):
 
 
 def main():
-    p = argparse.ArgumentParser(); p.add_argument('--binary',required=True); p.add_argument('--producer',required=True)
+    p = argparse.ArgumentParser(); p.add_argument('--producer',required=True)
+    command = p.add_mutually_exclusive_group(required=True)
+    command.add_argument('--binary')
+    command.add_argument('--command-file',help='Trusted local JSON argv, never server data')
     args = p.parse_args(); producer = Path(args.producer).resolve(strict=True)
     def git(*words): return subprocess.check_output(['git','-C',str(producer),*words],text=True).strip()
     assert git('rev-parse','HEAD') == PIN and not git('status','--porcelain'), 'exact clean reviewed producer required'
     f = json.loads(subprocess.check_output(['node',str(producer/'sdk/native/sealed-candidate/python/produce-selected-reply02.mjs')],text=True,encoding='utf-8'))
-    binary = str(Path(args.binary).resolve(strict=True))
+    if args.binary:
+        argv = [str(Path(args.binary).resolve(strict=True))]
+    else:
+        argv = json.loads(Path(args.command_file).read_text(encoding='utf-8'))
+        if not isinstance(argv,list) or not argv or any(not isinstance(v,str) or not v or '\0' in v for v in argv):
+            p.error('command file must contain nonempty string arguments without NUL')
     decode = lambda name: base64.b64decode(f[name],validate=True)
     proof = {field:str(uuid.UUID(bytes=decode(name))) for field,name in {
         'account_id':'account','interval_id':'interval','device_id':'device','line_id':'line',
@@ -63,7 +71,7 @@ def main():
                 server.proof=copy.deepcopy(proof);mutate(server.proof);server.calls=0
                 payload=dict(Fixture=f,Origin=f'https://{server.server_address[0]}:{server.server_port}',
                     Roots=roots,Grant=server.grant,Clock=clock,Retry=retry,Conflict=conflict)
-                result=subprocess.run([binary],input=json.dumps(payload),text=True,encoding='utf-8',capture_output=True,check=True,timeout=10)
+                result=subprocess.run(argv,input=json.dumps(payload),text=True,encoding='utf-8',capture_output=True,check=True,timeout=10)
                 actual=json.loads(result.stdout)
                 assert actual['ok']==ok and actual['revision']==revision and actual['floor']==floor and actual['history']==history and actual['rollback_refused'],(name,actual)
                 assert server.calls==1,(name,server.calls)
