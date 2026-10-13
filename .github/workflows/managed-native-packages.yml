@@ -147,10 +147,20 @@ jobs:
           ref: 059556de2fe314ec0d88833a8d3e4d6ee41a8066
           path: template-authoring-oracle
           persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 62a00c790ef7537b92f196e9de44a94debbb088f
+          path: contact-fixture
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ccf28fe445ba959aa01d99fed6bd9ee3188b749c
+          path: contact-producer
+          persist-credentials: false
       - name: Build independent producers
         shell: pwsh
         run: |
-          foreach ($path in @('producer02','producer03','custody-producer','root-producer','original-producer','template-producer','template-save-oracle','template-opening-oracle','template-authoring-oracle')) {
+          foreach ($path in @('producer02','producer03','custody-producer','root-producer','original-producer','template-producer','template-save-oracle','template-opening-oracle','template-authoring-oracle','contact-producer')) {
             npm ci --ignore-scripts --prefix "$path/sdk/typescript"
             if ($LASTEXITCODE) { exit $LASTEXITCODE }
             npm run build --prefix "$path/sdk/typescript"
@@ -159,9 +169,27 @@ jobs:
       - name: Reject unexpected archive payloads
         run: python sdk/native/crypto-envelope/package-managed-test.py
       - name: Install synthetic TLS certificate dependency
-        run: python -m pip install cryptography==46.0.5
+        run: python -m pip install cryptography==46.0.5 ada-url==1.27.0
+      - name: Build licensed origin asset on Linux
+        if: runner.os == 'Linux'
+        run: python sdk/native/crypto-envelope/contact-origin/build.py --out "$RUNNER_TEMP/contact-origin"
+      - name: Build licensed origin asset on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw 'C++ compiler unavailable' }
+          $batch = Join-Path $env:RUNNER_TEMP 'contact-origin-build.cmd'
+          @"
+          @call "$vs/VC/Auxiliary/Build/vcvars64.bat"
+          @if errorlevel 1 exit /b 1
+          @python sdk/native/crypto-envelope/contact-origin/build.py --out "$env:RUNNER_TEMP/contact-origin"
+          "@ | Set-Content -LiteralPath $batch
+          & cmd /c $batch
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Qualify clean installed candidate consumers
         shell: pwsh
         run: |
-          python sdk/native/crypto-envelope/package-managed.py --target ${{ matrix.language }} --out "$env:RUNNER_TEMP/native-artifacts" --producer02 producer02 --producer03 producer03 --custody-producer custody-producer --root-producer root-producer --root-controls root-controls --controls controls --original-producer original-producer --http-fixture http-fixture --current-fixture current-fixture --read-fixture read-fixture --page-fixture page-fixture --owner-fixture owner-fixture --proposal-fixture proposal-fixture --template-fixture template-fixture --template-producer template-producer --owner-template-fixture owner-template-fixture --template-save-fixture template-save-fixture --template-save-oracle template-save-oracle --template-opening-fixture template-opening-fixture --template-opening-oracle template-opening-oracle --template-authoring-fixture template-authoring-fixture --template-authoring-oracle template-authoring-oracle
+          python sdk/native/crypto-envelope/package-managed.py --target ${{ matrix.language }} --out "$env:RUNNER_TEMP/native-artifacts" --producer02 producer02 --producer03 producer03 --custody-producer custody-producer --root-producer root-producer --root-controls root-controls --controls controls --original-producer original-producer --http-fixture http-fixture --current-fixture current-fixture --read-fixture read-fixture --page-fixture page-fixture --owner-fixture owner-fixture --proposal-fixture proposal-fixture --template-fixture template-fixture --template-producer template-producer --owner-template-fixture owner-template-fixture --template-save-fixture template-save-fixture --template-save-oracle template-save-oracle --template-opening-fixture template-opening-fixture --template-opening-oracle template-opening-oracle --template-authoring-fixture template-authoring-fixture --template-authoring-oracle template-authoring-oracle --contact-fixture contact-fixture --contact-producer contact-producer --origin-asset "$env:RUNNER_TEMP/contact-origin"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }

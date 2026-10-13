@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 import re
+import platform
+import runpy
 import shutil
 import subprocess
 import sys
@@ -24,7 +26,7 @@ MODULES = ["HpkeRecipient", "SignedEnvelope", "ManifestChain", "Election03",
            "SealedReader02", "ElectedReader03", "OriginalReplyReader", "ProtectedRecipient", "ProtectedSigner",
            "Compose03", "Compose02", "RootJournal", "ElectionJournal", "CandidateBody",
            "OriginalReplyCheckpoint", "OriginalHttp", "OriginalCurrentClient", "TemplateContent", "EncryptedTemplate",
-           "OwnerTemplate", "TemplateStore", "OwnerTemplateOpening"]
+           "OwnerTemplate", "TemplateStore", "OwnerTemplateOpening", "ContactOrigin", "ContactField", "ProtectedContactSigner"]
 TARGET_MODULES = {"java": ["OwnerTemplateTransport"],
                   "csharp": ["OwnerTemplateTransport", "OwnerTemplateSave", "OwnerTemplateAuthoring"],
                   "ruby": ["OwnerTemplateSave", "OwnerTemplateAuthoring"]}
@@ -38,7 +40,7 @@ SUITES = {"root-journal": "RootJournalTest", "election-journal": "ElectionJourna
           "owner-http": "OwnerReviewTest", "proposal-http": "ProposalTest",
           "template": "TemplateTest", "template-crypto": "ProtectedTemplateTest",
           "owner-template": "OwnerTemplateTest", "owner-template-save": "OwnerTemplateSaveTest",
-          "owner-template-opening": "ProtectedOpeningTest", "owner-template-authoring": "OwnerTemplateAuthoringTest"}
+          "owner-template-opening": "ProtectedOpeningTest", "owner-template-authoring": "OwnerTemplateAuthoringTest", "contact": "ContactPackageTest"}
 PINS = {"producer02": "a13ea1e3d6f6db594485c19b36c43fe642e67c7a",
         "producer03": "304d512b7a420a3102278f32baed095f3e778989",
         "custody_producer": "a5fb59c2c5bc81e80b5b8d4b836afd51c5304653",
@@ -60,7 +62,9 @@ PINS = {"producer02": "a13ea1e3d6f6db594485c19b36c43fe642e67c7a",
         "template_opening_fixture": "c059e5cfc83ec889cfc183b52767fe10735a02af",
         "template_opening_oracle": "c843543f13e3bbd6ac17a260a4b0523f0748324f",
         "template_authoring_fixture": "b784cb6a23564a6eb7ac16cbf57134d95b8b2313",
-        "template_authoring_oracle": "059556de2fe314ec0d88833a8d3e4d6ee41a8066"}
+        "template_authoring_oracle": "059556de2fe314ec0d88833a8d3e4d6ee41a8066",
+        "contact_fixture": "62a00c790ef7537b92f196e9de44a94debbb088f",
+        "contact_producer": "ccf28fe445ba959aa01d99fed6bd9ee3188b749c"}
 
 
 def run(*args, **kw):
@@ -154,7 +158,8 @@ def java(stage, source, feed, env):
         directory = 'original-reply' if suite == 'original-protected' else 'http' if suite.endswith('-http') else suite
         if suite == 'owner-template-save':
             directory = 'owner-template'
-        copy(HERE / 'java' / directory / (test + '.java'), consumer / 'src/main/java' / (test + '.java'))
+        selected = HERE / 'contact-package/java' if suite == 'contact' else HERE / 'java' / directory
+        copy(selected / (test + '.java'), consumer / 'src/main/java' / (test + '.java'))
     copy(HERE / 'java/template-crypto/TemplateCryptoTest.java', consumer / 'src/main/java/TemplateCryptoTest.java')
     copy(HERE / 'java/owner-template/OwnerTemplateLifecycleTest.java', consumer / 'src/main/java/OwnerTemplateLifecycleTest.java')
     copy(HERE / 'java/owner-template-opening/OwnerTemplateOpeningTest.java', consumer / 'src/main/java/OwnerTemplateOpeningTest.java')
@@ -175,7 +180,7 @@ def java(stage, source, feed, env):
         if hashlib.sha256((consumer / 'target/dependency' / jar).read_bytes()).hexdigest() != expected_hash:
             raise ValueError('Resolved JSON dependency checksum mismatch')
     classpath = os.pathsep.join(map(str, [consumer / 'target/classes', *dependencies]))
-    return {suite: [tool('java'), '-cp', classpath, 'org.zrotext.candidate.' + test] for suite, test in SUITES.items()}, env
+    return {suite: [tool('java'), '-cp', classpath, ('org.zrotext.consumer.' if suite == 'contact' else 'org.zrotext.candidate.') + test] for suite, test in SUITES.items()}, env
 
 
 def csharp(stage, source, feed, env):
@@ -202,7 +207,8 @@ def csharp(stage, source, feed, env):
     for suite in SUITES:
         consumer = stage / 'consumer' / suite
         directory = 'read-http' if suite == 'protected-read-http' else suite
-        copy(HERE / 'csharp' / directory / 'Program.cs', consumer / 'Program.cs')
+        selected = HERE / 'contact-package/csharp' if suite == 'contact' else HERE / 'csharp' / directory
+        copy(selected / 'Program.cs', consumer / 'Program.cs')
         if suite == 'owner-template':
             copy(HERE / 'csharp/owner-template/LifecycleTest.cs', consumer / 'LifecycleTest.cs')
         constants = '<DefineConstants>$(DefineConstants);ZROTEXT_INSTALLED_CONSUMER</DefineConstants>' if suite == 'template-crypto' else ''
@@ -251,13 +257,14 @@ def ruby(stage, source, feed, env):
                 'owner-http': 'owner_review_test.rb', 'proposal-http': 'proposal_test.rb',
                 'template': 'test.rb', 'template-crypto': 'test.rb',
                 'owner-template': 'test.rb', 'owner-template-save': 'save_test.rb',
-                'owner-template-opening': 'opening_test.rb', 'owner-template-authoring': 'authoring_test.rb'}.get(suite, name)
+                'owner-template-opening': 'opening_test.rb', 'owner-template-authoring': 'authoring_test.rb', 'contact': 'test.rb'}.get(suite, name)
         directory = 'original-reply' if suite == 'original-protected' else 'http' if suite.endswith('-http') else suite
         if suite in ('owner-template-save', 'owner-template-opening', 'owner-template-authoring'):
             directory = 'owner-template'
-        text = (HERE / 'ruby' / directory / name).read_text(encoding='utf-8')
+        selected = HERE / 'contact-package/ruby' if suite == 'contact' else HERE / 'ruby' / directory
+        text = (selected / name).read_text(encoding='utf-8')
         text, count = re.subn(r"^require_relative '[^']+'$", "require 'zrotext_native_candidate'", text, flags=re.M)
-        if not count:
+        if not count and suite != 'contact':
             raise ValueError('Review changed Ruby consumer imports')
         consumer = stage / 'consumer' / suite / name
         # Check every loaded candidate module, including child-process restores.
@@ -277,6 +284,47 @@ def ruby(stage, source, feed, env):
     if rejected.returncode == 0 or 'outside installed gem' not in rejected.stderr:
         raise ValueError('Installed Ruby source injection was not rejected')
     return commands, env
+
+
+def origin_archive(stage, feed, input_directory):
+    """Archive complete licensed native source, then consume only its relocation."""
+    source = input_directory.resolve(strict=True)
+    builder = runpy.run_path(str(HERE / 'contact-origin/build.py'))
+    manifest = json.loads((source / 'manifest.json').read_text(encoding='utf-8'))
+    library = 'zrotext_contact_origin.dll' if os.name == 'nt' else 'libzrotext_contact_origin.dylib' if sys.platform == 'darwin' else 'libzrotext_contact_origin.so'
+    required = {library, 'LICENSE', 'ADA-LICENSE-MIT', 'source/contact_origin.cpp', 'source/BUILDING.md', *('source/' + name for name in builder['FILES'])}
+    if manifest['ada_revision'] != builder['REVISION'] or manifest['ada_version'] != '3.3.0' or manifest['library'] != library or set(manifest['sha256']) != required:
+        raise ValueError('Unexpected origin inventory or source revision')
+    if {p.relative_to(source).as_posix() for p in source.rglob('*') if p.is_file()} != required | {'manifest.json'}:
+        raise ValueError('Origin asset contains unlisted files')
+    for name, digest in manifest['sha256'].items():
+        if hashlib.sha256((source / name).read_bytes()).hexdigest() != digest:
+            raise ValueError('Origin asset integrity mismatch')
+    for name, (_, digest) in builder['FILES'].items():
+        if hashlib.sha256((source / 'source' / name).read_bytes()).hexdigest() != digest:
+            raise ValueError('Origin dependency source mismatch')
+    if (source / 'source/BUILDING.md').read_text(encoding='utf-8') != builder['BUILDING']:
+        raise ValueError('Origin build recipe changed')
+    for actual, expected in ((source / 'source/contact_origin.cpp', HERE / 'contact-origin/contact_origin.cpp'),
+                             (source / 'LICENSE', ROOT / 'LICENSE'), (source / 'ADA-LICENSE-MIT', source / 'source/LICENSE-MIT')):
+        if actual.read_bytes().replace(b'\r\n', b'\n') != expected.read_bytes().replace(b'\r\n', b'\n'):
+            raise ValueError('Origin wrapper or license mismatch')
+    system, architecture = platform.system().lower(), platform.machine().lower()
+    if not re.fullmatch('[a-z0-9_]+', system + architecture):
+        raise ValueError('Unsupported platform identifier')
+    archive = feed / ('zrotext-contact-origin-' + system + '-' + architecture + '-' + VERSION + '.zip')
+    with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED) as packed:
+        for name in sorted(required | {'manifest.json'}):
+            packed.writestr(name, (source / name).read_bytes())
+    check_zip(archive, required | {'manifest.json'}, 'LICENSE', (source / 'LICENSE').read_bytes())
+    installed = stage / 'installed-origin'
+    with zipfile.ZipFile(archive) as packed:
+        # Closed literal inventory checked above; no archive-provided extraction paths.
+        for name in sorted(required | {'manifest.json'}):
+            target = installed / name; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(packed.read(name))
+    return installed, {'os': system, 'architecture': architecture, 'ada_revision': builder['REVISION'],
+                       'archive': archive.name, 'sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
+                       'qualification': 'Only this runtime platform exercised; no other asset readiness implied'}
 
 
 def owner_template_acceptance(args, stage, command_files, env):
@@ -311,6 +359,9 @@ def acceptance(args, stage, commands, env):
     for suite, command in commands.items():
         command_files[suite] = stage / (suite + '.json')
         write(command_files[suite], json.dumps(command))
+    run(sys.executable, HERE / 'contact-package/run.py', '--command-file', command_files['contact'],
+        '--fixture', args.contact_fixture, '--producer', args.contact_producer, '--origin-asset', args.installed_origin,
+        cwd=stage, env=env)
     template_suites = args.template_fixture / 'sdk/native/hpke-candidate'
     run(sys.executable, template_suites / 'test-template-content.py', '--producer', args.original_producer,
         '--command-file', command_files['template'], cwd=stage, env=env)
@@ -349,6 +400,7 @@ def acceptance(args, stage, commands, env):
             '--fixture', fixture, '--producer', args.original_producer,
             '--command-file', command_files[suite], cwd=stage, env=env)
     opening_qualified = False
+    contact_qualified = False
     if os.name == 'nt':
         probe = subprocess.run(commands['original-protected'] + ['--probe'], cwd=stage, env=env, timeout=30)
         if probe.returncode == 77:
@@ -358,11 +410,20 @@ def acceptance(args, stage, commands, env):
             run(*template_command, '--hardware', cwd=stage, env=env)
             run(*template_command, '--hardware', '--fail-setup', cwd=stage, env=env)
             template_lifecycle_acceptance(args, stage, command_files, env, hardware=True)
+            contact_probe = subprocess.run(commands['contact'] + [str(args.installed_origin), '--probe'], cwd=stage, env=env, timeout=30)
+            if contact_probe.returncode == 77:
+                print('UNQUALIFIED: installed protected contact requires native PCP signing')
+            else:
+                contact_probe.check_returncode()
+                run(sys.executable, HERE / 'contact-package/run.py', '--command-file', command_files['contact'],
+                    '--fixture', args.contact_fixture, '--producer', args.contact_producer, '--origin-asset', args.installed_origin,
+                    '--hardware', cwd=stage, env=env)
+                contact_qualified = True
             opening_qualified = True
             run(sys.executable, HERE / 'original-read-run.py', '--language', args.target,
                 '--fixture', args.read_fixture, '--producer', args.original_producer,
                 '--command-file', command_files['protected-read-http'], '--hardware', cwd=stage, env=env)
-    return opening_qualified
+    return opening_qualified, contact_qualified
 
 
 
@@ -370,6 +431,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--target', choices=('java', 'csharp', 'ruby'), required=True)
     parser.add_argument('--out', type=Path, required=True)
+    parser.add_argument('--origin-asset', type=Path, required=True)
     for name in PINS:
         parser.add_argument('--' + name.replace('_', '-'), type=Path, required=True)
     args = parser.parse_args()
@@ -382,13 +444,16 @@ def main():
         stage = Path(directory); source = stage / 'source'; feed = stage / 'feed'; feed.mkdir()
         copy(ROOT / 'LICENSE', source / 'LICENSE')
         copy(HERE / 'packages.md', source / 'README.md')
+        args.installed_origin, origin_report = origin_archive(stage, feed, args.origin_asset)
         commands, env = globals()[args.target](stage, source, feed, env_clean())
         if source.exists():
             raise ValueError('Source staging was not removed')
-        opening_qualified = acceptance(args, stage, commands, env)
+        opening_qualified, contact_qualified = acceptance(args, stage, commands, env)
         shutil.copytree(feed, output)
     report = {'target': args.target, 'scope': 'Installed candidate consumers; native qualification requires QUALIFIED output; no publication or full SDK parity',
               'fixture_revisions': PINS,
+              'contact_acceptance': {'software': True, 'protected': contact_qualified, 'origin_asset': origin_report,
+                                     'current_permission': False, 'published': False},
               'owner_template_acceptance': {'cold_tls': True, 'save_tls': True, 'maintained_differential': True,
                                            'lifecycle_framing': True,
                                            'deadline_case_ms': 1000 if args.target in ('java', 'csharp') else 100},
