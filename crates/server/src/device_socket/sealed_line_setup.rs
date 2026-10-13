@@ -21,6 +21,22 @@ async fn send(socket: &mut WebSocket, value: serde_json::Value) -> bool {
     text.len() <= MAX_FRAME_BYTES && socket.send(Message::Text(text.into())).await.is_ok()
 }
 
+/// A lock or statement timeout during a poll is contention with another
+/// holder of the exchange rows, not a failure of the exchange itself: the
+/// next poll retries instead of forcing the device connection to reconnect.
+fn poll_deferred(error: &sealed_exchange::ExchangeError) -> Option<bool> {
+    match error {
+        sealed_exchange::ExchangeError::Database(error) => {
+            // 55P03 lock_timeout and 57014 statement_timeout.
+            match error.code().map(|code| code.code()) {
+                Some("55P03" | "57014") => Some(false),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// No acknowledgement is retired by merely writing to the socket. The exact
 /// phone installation receipt is required, so dropped frames repeat safely.
 pub(super) async fn push(
@@ -29,12 +45,14 @@ pub(super) async fn push(
     session: InboundSession<'_>,
 ) -> Option<bool> {
     let mut client = runtime_db::connect_device(database_url).await.ok()?;
-    let challenge = sealed_exchange::next_challenge(&mut client, session)
-        .await
-        .ok()?;
-    let ack = sealed_exchange::next_ack(&mut client, session, &[])
-        .await
-        .ok()?;
+    let challenge = match sealed_exchange::next_challenge(&mut client, session).await {
+        Ok(value) => value,
+        Err(error) => return poll_deferred(&error),
+    };
+    let ack = match sealed_exchange::next_ack(&mut client, session, &[]).await {
+        Ok(value) => value,
+        Err(error) => return poll_deferred(&error),
+    };
     drop(client);
     let mut pushed = false;
     if let Some(c) = challenge {
