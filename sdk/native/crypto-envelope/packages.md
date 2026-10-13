@@ -15,8 +15,8 @@ The closed package inventory includes body AEAD, HPKE, canonical signed envelope
 manifest lineage, elected profile03 proofs/readers, software readers, native
 protected recipients/signers, profile02/03 composition and retry journals, root
 selection, election selection, and selected original-reply verification/opening.
-See [the original-reply boundary and source acceptance](original-replies.md);
-installed original-reply acceptance remains a separate gate. Existing authority
+See [the original-reply boundary](https://github.com/pboachie/zrotext/blob/a51c04d87ee51eaf1912b877f1cc9666f02af8cf/sdk/native/crypto-envelope/original-replies.md); the installed gate also
+runs its software and protected-recipient consumers against the archived library. Existing authority
 adapters remain mandatory.
 This inventory does not imply full client/API parity, protected key portability,
 production authorization, or registry release readiness. Protected custody uses
@@ -25,7 +25,7 @@ Outbound profile03 follows the signed key-lifetime policy; cross-language
 alignment remains tracked in issue #1226.
 
 `package-managed.py --target java --out <new-external-directory>` also requires
-six exact producer/control checkout arguments listed by `--help`. Run `npm ci
+seven exact producer/control checkout arguments listed by `--help`. Run `npm ci
 --ignore-scripts` and `npm run build` in each producer's `sdk/typescript` first.
 Use target `csharp` or `ruby` for the corresponding archive. Build tools must be
 on PATH. The helper requires clean tracked fixture sources at the exact pins.
@@ -34,7 +34,11 @@ It builds licensed closed archives, removes runtime source staging, resolves
 ordinary Maven/NuGet coordinates with a fresh cache or installs the gem into a
 fresh GEM_HOME, and runs external consumers against the installed library.
 Consumers reuse root/election restore and reader controls, native recipient
-qualification, and both native composition/retry suites. Maintained TypeScript
+qualification, both native composition/retry suites, and selected original-reply
+signature, authority, software-opening and native protected-opening controls.
+The original-reply producer is pinned separately; its native mode receives only
+the recipient public point and never supplies that recipient's private scalar.
+Maintained TypeScript
 independently verifies and decrypts native composed ciphertext. Runtime library
 sources are never compiled into consumers. The fixture orchestration remains
 external to the packages; private generated values and cleanup receipts are not
