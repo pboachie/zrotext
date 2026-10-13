@@ -10,7 +10,7 @@ Run with Python 3.11+, Node, OpenSSL, Cargo/Rust 1.97.1 or Go 1.26.9 on PATH.
 The signed TLS fixture producer additionally requires Python `cryptography`:
 
 ```sh
-python sdk/native/hpke-candidate/package-native.py --language rust --archive PATH_TO_REVIEWED_PROFILE02_PRODUCER --election PATH_TO_REVIEWED_PROFILE03_PRODUCER --original PATH_TO_REVIEWED_ORIGINAL_PRODUCER --output NEW_OUTPUT_DIRECTORY --require-protected
+python sdk/native/hpke-candidate/package-native.py --language rust --archive PATH_TO_REVIEWED_PROFILE02_PRODUCER --election PATH_TO_REVIEWED_PROFILE03_PRODUCER --original PATH_TO_REVIEWED_ORIGINAL_PRODUCER --template PATH_TO_REVIEWED_TEMPLATE_PRODUCER --output NEW_OUTPUT_DIRECTORY --require-protected
 ```
 
 Use `--language go` for the Go module. The script verifies exact producer commits
@@ -30,7 +30,7 @@ public checksum database. No path, replace, workspace or private-checkout
 dependency is accepted. Consumer dependency/build caches are fresh.
 
 Installed acceptance runs actual journal crash/CAS/restore and authenticated
-root transition controls. Thirteen separately compiled consumer probes also
+root transition controls. Fifteen separately compiled consumer probes also
 cover selected original ciphertext, durable history, HTTPS transport, signed
 current proofs, verified reads and page discovery, saved owner-review intent,
 and typed proposal consumption/status. The six actual TLS suites preserve
@@ -39,11 +39,22 @@ from an uncertain response without a second consume. Fixture generation uses
 the exact maintained original producer recorded in `PRODUCERS`; test runners
 receive installed executable paths and never rebuild the library from source.
 
+Template consumers compare canonical content and SMS segment previews with the
+maintained TypeScript oracle, then exercise authenticated ZTWT01 sealing and
+opening against an independently pinned producer. TypeScript opens two fresh
+native seals. Current-authority changes, clock regression, malformed scopes,
+tampering and content-size limits must fail closed. These are cryptographic and
+local-content APIs; owner template storage and HTTP operations remain separate.
+
 On qualified Windows PCP hardware the gate also runs both
 profile readers and protected profile02/profile03 composition, current-state
 replay and clock controls, with independent maintained TypeScript signature
 verification and both recipient openings, plus selected original opening and
-the final-proof TLS read checks over an enrolled protected recipient.
+the final-proof TLS read checks over an enrolled protected recipient. Template
+opening uses a fresh nonexportable recipient; its fixture contains only the
+recipient public point. Successful completion and interrupted fixture setup
+both require exact owned-key deletion. The existing protected-recipient probe
+must qualify before these hardware checks run; no software fallback is used.
 `--require-protected` fails when that
 capability is unavailable. Hosted CI may report protected acceptance false;
 software/archive success does not establish native hardware acceptance.

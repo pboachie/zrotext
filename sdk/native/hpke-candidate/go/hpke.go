@@ -41,7 +41,13 @@ func expand(prk, suite []byte, label string, info []byte, n int) []byte {
 // OpenSoftwareCEK opens exactly one 32-byte content key, sequence zero. It does
 // not authorize the transcript, establish trust or enforce a replay journal.
 func OpenSoftwareCEK(private, public, enc, info, aad, ciphertext []byte) ([]byte, error) {
-	if len(private) != 32 || len(public) != 65 || public[0] != 4 || len(enc) != 65 || enc[0] != 4 || len(info) > 36864 || len(aad) > 36864 || len(ciphertext) != 48 {
+	if len(ciphertext) != 48 {
+		return nil, ErrShape
+	}
+	return openSoftwareContent(private, public, enc, info, aad, ciphertext)
+}
+func openSoftwareContent(private, public, enc, info, aad, ciphertext []byte) ([]byte, error) {
+	if len(private) != 32 || len(public) != 65 || public[0] != 4 || len(enc) != 65 || enc[0] != 4 || len(info) > 36864 || len(aad) > 36864 || (len(ciphertext) < 17 || len(ciphertext) > 32784) {
 		return nil, ErrShape
 	}
 	sk, e := ecdh.P256().NewPrivateKey(private)
@@ -60,10 +66,10 @@ func OpenSoftwareCEK(private, public, enc, info, aad, ciphertext []byte) ([]byte
 		return nil, ErrAuthentication
 	}
 	defer clear(dh)
-	return openSharedCEK(dh, public, enc, info, aad, ciphertext)
+	return openSharedContent(dh, public, enc, info, aad, ciphertext)
 }
-func openSharedCEK(dh, public, enc, info, aad, ciphertext []byte) ([]byte, error) {
-	if len(dh) != 32 || len(public) != 65 || len(enc) != 65 || len(info) > 36864 || len(aad) > 36864 || len(ciphertext) != 48 {
+func openSharedContent(dh, public, enc, info, aad, ciphertext []byte) ([]byte, error) {
+	if len(dh) != 32 || len(public) != 65 || len(enc) != 65 || len(info) > 36864 || len(aad) > 36864 || (len(ciphertext) < 17 || len(ciphertext) > 32784) {
 		return nil, ErrShape
 	}
 	eae := extract(nil, kemSuite, "eae_prk", dh)

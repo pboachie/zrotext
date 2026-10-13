@@ -70,6 +70,19 @@ pub fn open_software_cek(
     aad: &[u8],
     ciphertext: &[u8],
 ) -> Result<Zeroizing<Vec<u8>>, Error> {
+    if ciphertext.len() != 48 {
+        return Err(Error::Shape);
+    };
+    open_software_content(private, public, enc, info, aad, ciphertext)
+}
+fn open_software_content(
+    private: &[u8],
+    public: &[u8],
+    enc: &[u8],
+    info: &[u8],
+    aad: &[u8],
+    ciphertext: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, Error> {
     if private.len() != 32
         || public.len() != 65
         || public[0] != 4
@@ -77,7 +90,7 @@ pub fn open_software_cek(
         || enc[0] != 4
         || info.len() > 36864
         || aad.len() > 36864
-        || ciphertext.len() != 48
+        || !(17..=32784).contains(&ciphertext.len())
     {
         return Err(Error::Shape);
     }
@@ -87,9 +100,9 @@ pub fn open_software_cek(
     }
     let pk = PublicKey::from_sec1_bytes(enc).map_err(|_| Error::Shape)?;
     let dh = diffie_hellman(sk.to_nonzero_scalar(), pk.as_affine());
-    open_shared_cek(dh.raw_secret_bytes(), public, enc, info, aad, ciphertext)
+    open_shared_content(dh.raw_secret_bytes(), public, enc, info, aad, ciphertext)
 }
-fn open_shared_cek(
+fn open_shared_content(
     dh: &[u8],
     public: &[u8],
     enc: &[u8],
@@ -102,7 +115,7 @@ fn open_shared_cek(
         || enc.len() != 65
         || info.len() > 36864
         || aad.len() > 36864
-        || ciphertext.len() != 48
+        || !(17..=32784).contains(&ciphertext.len())
     {
         return Err(Error::Shape);
     }
@@ -138,4 +151,5 @@ pub mod original_read;
 
 pub mod original_proposal;
 pub mod template;
+pub mod template_crypto;
 pub mod workflow_action;

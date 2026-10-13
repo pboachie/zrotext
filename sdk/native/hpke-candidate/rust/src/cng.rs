@@ -1,5 +1,5 @@
 //! Native Windows PCP handles. No scalar import, overwrite or software fallback.
-use crate::{Error, open_shared_cek};
+use crate::{Error, open_shared_content};
 use p256::{PublicKey, SecretKey, ecdh::diffie_hellman, elliptic_curve::sec1::ToSec1Point};
 use std::{ptr, sync::Mutex};
 use zeroize::Zeroizing;
@@ -419,12 +419,25 @@ impl HardwareRecipient {
         aad: &[u8],
         ct: &[u8],
     ) -> Result<Zeroizing<Vec<u8>>, Error> {
+        if ct.len() != 48 {
+            return Err(Error::ProtectedUnavailable);
+        };
+        self.open_content(public, enc, info, aad, ct)
+    }
+    pub(crate) fn open_content(
+        &self,
+        public: &[u8],
+        enc: &[u8],
+        info: &[u8],
+        aad: &[u8],
+        ct: &[u8],
+    ) -> Result<Zeroizing<Vec<u8>>, Error> {
         let state = self.state.lock().map_err(|_| Error::ProtectedUnavailable)?;
         if !state.qualified
             || state.closed
             || info.len() > 36864
             || aad.len() > 36864
-            || ct.len() != 48
+            || !(17..=32784).contains(&ct.len())
         {
             return Err(Error::ProtectedUnavailable);
         }
@@ -434,7 +447,7 @@ impl HardwareRecipient {
         let dh = state
             .exchange(enc)
             .map_err(|_| Error::ProtectedUnavailable)?;
-        open_shared_cek(&dh, public, enc, info, aad, ct)
+        open_shared_content(&dh, public, enc, info, aad, ct)
     }
 }
 
