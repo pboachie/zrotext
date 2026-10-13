@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><TreatWarningsAsErrors>true</TreatWarningsAsErrors></PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../http/OriginalHttp.cs" /><Compile Include="../http/OriginalCurrentClient.cs" />
+    <Compile Include="../original-history/OriginalReplyCheckpoint.cs" /><Compile Include="../OriginalReplyReader.cs" />
+    <Compile Include="../ManifestChain.cs" /><Compile Include="../HpkeRecipient.cs" /><Compile Include="../SignedEnvelope.cs" />
+    <Compile Include="../../../crypto-candidate/csharp/CandidateBody.cs" />
+  <Compile Include="../http/OriginalReadClient.cs" /><Compile Include="../custody/ProtectedRecipient.cs" /><Compile Include="../SealedReader02.cs" /><Compile Include="../ElectedReader03.cs" /><Compile Include="../Election03.cs" /></ItemGroup>
+</Project>
