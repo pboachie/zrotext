@@ -908,3 +908,35 @@ Concurrent prepares recheck ownership after worker admission. Shared cleanup
 only clears pending metadata when that operation owns the saved record; a
 rejected overlapping prepare cannot clear another unknown template or context
 intent. Deterministic admission barriers exercise both clients across this gap.
+
+## Native reviewed template authoring
+
+`OwnerTemplateAuthoring` composes the maintained DOM-free draft-review contract
+with a dedicated `OwnerTemplateClient`. Supply independent current owner state,
+an exact origin-bound cookie/CSRF session, draft state (`epoch`, `revision`,
+`custodyLive`), a plaintext review callback, and ciphertext metadata review.
+`prepare(request_id, expected_revision, scope, template, values, epoch=...,
+draft_revision=...)` captures canonical content and immutable review fields.
+Only exact `True` accepts plaintext review; ciphertext review must return `None`.
+No sealing occurs before accepted review and renewed authority checks. Preparation
+returns an opaque ticket without dispatching HTTP. Call `author.client.commit(ticket)`
+explicitly to persist; unknown outcomes retain the existing exact retry semantics.
+
+The host must invalidate the author on draft, navigation, session or custody
+changes. `custodyLive` is a trusted host lease fact, not proof of a protected key
+or browser user activation. This public-key sealing bridge neither unlocks a
+private key nor substitutes for DOM/browser ceremony adapters. The original
+bounded authoring deadline closes its owned client even after ticket return.
+One author admits one reviewed draft, and unresolved callbacks retain worker
+admission after cancellation. Callbacks are synchronous; coroutine returns do
+not grant approval. Immutable Python plaintext/string copies are not erasable.
+
+Twelve actual maintained TypeScript scenarios compare review acceptance and
+review/effect counts; native error labels remain candidate API labels rather
+than an exception-identity compatibility claim. Independent callback mutation,
+client ownership and cancellation regressions qualify native host boundaries.
+Three synthetic TLS groups exercise explicit commit, exact uncertain retry,
+session loss and original deadline closure. Wheel and sdist consumers use normal
+installed imports and pass their freshly sealed ciphertext to the maintained
+TypeScript decryptor. These are local candidate checks, not browser or live
+owner-session acceptance; stable SDK entrypoints remain unchanged.

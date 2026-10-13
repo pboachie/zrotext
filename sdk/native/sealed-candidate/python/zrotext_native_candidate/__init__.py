@@ -65,3 +65,6 @@ __all__ += ['TemplateStoreError','TemplateSaveRequest','template_save_request','
 from .owner_template import OwnerTemplateReader, OwnerTemplateError
 from .owner_template_save import OwnerTemplateClient
 from .owner_context import OwnerWorkflowContextClient, OwnerContextError
+
+from .template_authoring import OwnerTemplateAuthoring,TemplateAuthoringError
+__all__ += ['OwnerTemplateAuthoring','TemplateAuthoringError']
