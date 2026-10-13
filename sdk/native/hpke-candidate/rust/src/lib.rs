@@ -137,4 +137,5 @@ pub mod original_page;
 pub mod original_read;
 
 pub mod original_proposal;
+pub mod template;
 pub mod workflow_action;
