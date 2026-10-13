@@ -68,3 +68,6 @@ from .owner_context import OwnerWorkflowContextClient, OwnerContextError
 
 from .template_authoring import OwnerTemplateAuthoring,TemplateAuthoringError
 __all__ += ['OwnerTemplateAuthoring','TemplateAuthoringError']
+
+from .template_opening import OwnerTemplateOpening,TemplateOpeningError
+__all__ += ['OwnerTemplateOpening','TemplateOpeningError']

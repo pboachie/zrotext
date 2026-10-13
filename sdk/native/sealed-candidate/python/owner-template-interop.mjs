@@ -24,7 +24,7 @@ if(process.argv[2]==='--cases'){
  }
  process.stdout.write(JSON.stringify(results));
 }else{
- const f=JSON.parse(execFileSync(process.execPath,[fileURLToPath(new URL('./template-interop.mjs',import.meta.url))],{encoding:'utf8'}));
+ const f=JSON.parse(execFileSync(process.execPath,[fileURLToPath(new URL('./template-interop.mjs',import.meta.url)),...process.argv.slice(2)],{encoding:'utf8'}));
  const scope=scopeOf(f);scope.peerDigest=new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode('+12')));
  const binding={account:scope.accountId,device:scope.deviceId,line:scope.lineId,interval:scope.intervalId,session:new Uint8Array(16).fill(31),generation:1n,peer:'+12',phoneReader:new Uint8Array(32).fill(32),archiveReader:scope.readerId};
  f.scope=Object.fromEntries(Object.entries(scope).map(([k,v])=>[k,typeof v==='bigint'?Number(v):b64(v)]));

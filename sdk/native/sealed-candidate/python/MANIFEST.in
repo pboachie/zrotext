@@ -19,3 +19,5 @@ exclude installed_owner_template_save_consumer.py
 exclude installed_owner_context_consumer.py
 
 exclude installed_template_authoring_consumer.py
+
+exclude installed_template_opening_consumer.py
