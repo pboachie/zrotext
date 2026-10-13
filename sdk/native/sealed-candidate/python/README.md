@@ -45,6 +45,15 @@ Implemented and executed with PyCA `cryptography==50.0.2`:
   profile-02 evidence and subsequent profile-03 successors. Unsupported genesis
   and generation transitions refuse. Historical predecessor evidence cannot be
   replaced with caller-created metadata.
+- `verify_manifest03_current` independently verifies received current03 bytes
+  against a genuine accepted03 token, requiring the same unsigned identity and
+  predecessor profile and a nonregressing fresh comparison time. Alternate valid
+  low-S signatures are accepted as semantic identity; the original token and
+  persisted election bytes remain unchanged. The new immutable token has its own
+  comparison floor. This neither installs new authority nor authorizes exact
+  transport replay or replacement of retained signed evidence. Tests compare ten
+  acceptance/refusal cases with the maintained TypeScript verifier and confirm
+  the election journal still rejects same-version byte replacement.
 - Bounded profile-02/03 inbound/outbound envelope syntax, origin signature,
   manifest/line/device/recipient binding and exact byte identity. Public
   verification returns no execution capability or accepted election.

@@ -241,6 +241,23 @@ def verify_manifest03(raw, predecessor, now):
     return _accept(_manifests, parsed)
 
 
+def verify_manifest03_current(raw, current, now):
+    """Verify received current03 evidence without advancing or replacing history.
+
+    Alternate valid signatures can establish semantic identity. They do not
+    replace immutable stored election bytes or establish exact transport replay.
+    The returned token owns a new comparison floor; the original is unchanged.
+    """
+    prior = _bound(_manifests, current)
+    now = integer(now)
+    require(prior.profile == 3 and now >= prior.comparison, 'current03 provenance/comparison')
+    parsed = _parse_manifest(raw, prior.trust, now)
+    require(parsed.profile == 3 and parsed.predecessor == prior.predecessor and
+            (parsed.trust.version, parsed.trust.digest) == (prior.trust.version, prior.trust.digest),
+            'current03 identity fork/rollback')
+    return _accept(_manifests, parsed)
+
+
 def verify_root_transition02(raw, trust, now, independently_compared_new_root):
     old = _bound(_trusts, trust)
     raw = capture(raw, 343)

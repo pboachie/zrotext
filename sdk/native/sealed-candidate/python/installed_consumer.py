@@ -55,6 +55,9 @@ with tempfile.TemporaryDirectory() as directory:
         device_signing_point=decode(f['deviceSigningPoint']),owner_approval_point=decode(f['ownerApprovalPoint']))
     journal.accept_election(expected_revision=1,signed03=decode(f['signed03']),bundle=decode(f['bundle']),**expected)
     _,manifest,proof=journal.snapshot_election(30000,**expected)
+    original_manifest=manifest
+    manifest=package.verify_manifest03_current(decode(f['signed03']),original_manifest,30000)
+    assert s.manifest_identity(manifest)==s.manifest_identity(original_manifest)
     custody=package.SoftwareRecipient(ec.derive_private_key(int.from_bytes(decode(f['readerScalar']),'big'),ec.SECP256R1()))
     opened=e.open_elected_outbound03(raw=decode(f['envelope']),manifest=manifest,proof=proof,current_authority=record(f['authority']),
         custody=custody,expected_message_id=decode(f['message']),expected_peer='+12',now_ms=30000,require_hardware=False)
