@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 pub struct RootTrust {
     account: [u8; 16],
     point: [u8; 65],
+    enrolled: [u8; 65],
     generation: u64,
     anchor: [u8; 32],
     comparison: u64,
@@ -26,6 +27,7 @@ pub struct Manifest {
     pub(crate) digest: [u8; 32],
     pub(crate) account: [u8; 16],
     pub(crate) root: [u8; 65],
+    pub(crate) enrolled: [u8; 65],
     pub(crate) lineage: Vec<[u8; 32]>,
 }
 fn number(b: &[u8], at: usize) -> Result<u64, Error> {
@@ -66,6 +68,7 @@ pub fn enroll_root(pin: &[u8], compared: &[u8]) -> Result<RootTrust, Error> {
         return Err(Error::Authentication);
     }
     Ok(RootTrust {
+        enrolled: pin[29..].try_into().map_err(|_| Error::Shape)?,
         generation: 1,
         anchor: [0; 32],
         comparison: 0,
@@ -196,7 +199,8 @@ pub fn verify_manifest(
     let digest: [u8; 32] = Sha256::digest(unsigned).into();
     let prev_digest = &b[53 + offset..85 + offset];
     if let Some(prior) = previous {
-        if prior.account != root.account
+        if prior.enrolled != root.enrolled
+            || prior.account != root.account
             || prior.root != root.point
             || prior.generation != root.generation
             || now < prior.comparison
@@ -246,6 +250,7 @@ pub fn verify_manifest(
         digest,
         account: root.account,
         root: root.point,
+        enrolled: root.enrolled,
     })
 }
 impl Manifest {
@@ -311,6 +316,7 @@ pub fn verify_root_transition02(
     Ok(RootTrust {
         account: old.account,
         point: expected_new_root.try_into().map_err(|_| Error::Shape)?,
+        enrolled: old.enrolled,
         generation: old.generation + 1,
         anchor: Sha256::digest(&b[..215]).into(),
         comparison: now,
@@ -324,6 +330,7 @@ impl Manifest {
         RootTrust {
             account: self.account,
             point: self.root,
+            enrolled: self.enrolled,
             generation: self.generation,
             anchor: [0; 32],
             comparison: self.comparison,

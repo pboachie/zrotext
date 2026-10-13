@@ -1,9 +1,12 @@
 //! Durable exact profile03 outbound retry state, never transport permission.
 use crate::{
+    Error,
+    compose::Plan,
     compose::{ComposeRequest, authorize, compose, recheck},
+    compose02::{self, ComposeRequest02},
     envelope::verify_envelope,
     journal::JournalError,
-    manifest::enroll_root,
+    manifest::{Manifest, enroll_root},
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use std::{
@@ -107,8 +110,37 @@ impl OutboundJournal {
     /// Reauthorize every replay and after commit. An error after commit is ambiguous;
     /// retry only the exact original intent to retrieve already committed ciphertext.
     pub fn compose_or_replay(&self, r: &ComposeRequest<'_>) -> Result<Vec<u8>, JournalError> {
-        let mut p = authorize(r)?;
-        need(self.pin[5..21] == r.manifest.account && self.pin[29..94] == r.manifest.root)?;
+        let p = authorize(r)?;
+        self.compose_or_replay_plan(r.manifest, p, &|p| recheck(r, p), &|p| compose(r, p))
+    }
+    /// Exact current profile02 candidate replay, never a live dispatch grant.
+    pub fn compose_or_replay02(&self, r: &ComposeRequest02<'_>) -> Result<Vec<u8>, JournalError> {
+        let p = compose02::authorize(r)?;
+        let current = |p: &mut Plan| compose02::require_current(r, p);
+        let mut p = p;
+        current(&mut p)?;
+        self.compose_or_replay_plan(
+            r.manifest,
+            p,
+            &|p| {
+                compose02::recheck(r, p)?;
+                current(p)
+            },
+            &|p| {
+                let envelope = compose02::compose(r, p)?;
+                current(p)?;
+                Ok(envelope)
+            },
+        )
+    }
+    fn compose_or_replay_plan(
+        &self,
+        manifest: &Manifest,
+        mut p: Plan,
+        recheck: &dyn Fn(&mut Plan) -> Result<(), Error>,
+        compose: &dyn Fn(&mut Plan) -> Result<Vec<u8>, Error>,
+    ) -> Result<Vec<u8>, JournalError> {
+        need(self.pin[5..21] == manifest.account && self.pin[29..94] == manifest.enrolled)?;
         let mut c = self.connection.lock().map_err(|_| JournalError::Refused)?;
         self.check(&c)?;
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -120,7 +152,7 @@ impl OutboundJournal {
             if intent != p.intent {
                 return Err(JournalError::Conflict);
             };
-            let verified = verify_envelope(&envelope, &p.public, 3)?;
+            let verified = verify_envelope(&envelope, &p.public, p.prefix[4])?;
             need(
                 envelope[..verified.prefix] == p.prefix
                     && envelope[verified.body_end] as usize == p.recipients.len(),
@@ -131,17 +163,17 @@ impl OutboundJournal {
                         == k[..33],
                 )?;
             }
-            recheck(r, &mut p)?;
+            recheck(&mut p)?;
             tx.execute(
                 "UPDATE identity SET comparison=?1 WHERE id=1",
                 [p.now as i64],
             )?;
             tx.commit()?;
-            finalize(&mut c, r, &mut p)?;
+            finalize(&mut c, &mut p, recheck)?;
             return Ok(envelope);
         }
         need(count < 256)?;
-        let envelope = compose(r, &mut p)?;
+        let envelope = compose(&mut p)?;
         tx.execute(
             "INSERT INTO outbound VALUES(?1,?2,?3)",
             params![&p.prefix[10..74], p.intent, envelope],
@@ -151,7 +183,7 @@ impl OutboundJournal {
             [p.now as i64],
         )?;
         tx.commit()?;
-        finalize(&mut c, r, &mut p)?;
+        finalize(&mut c, &mut p, recheck)?;
         Ok(envelope)
     }
 }
@@ -164,10 +196,10 @@ fn floor(c: &Connection, now: u64) -> Result<(), JournalError> {
 }
 fn finalize(
     c: &mut Connection,
-    r: &ComposeRequest<'_>,
-    p: &mut crate::compose::Plan,
+    p: &mut Plan,
+    recheck: &dyn Fn(&mut Plan) -> Result<(), Error>,
 ) -> Result<(), JournalError> {
-    recheck(r, p)?;
+    recheck(p)?;
     let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
     floor(&tx, p.now)?;
     tx.execute(

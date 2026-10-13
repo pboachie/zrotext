@@ -149,11 +149,43 @@ func (j *OutboundJournal) ComposeOrReplay(request ComposeRequest) ([]byte, error
 		return nil, e
 	}
 	defer clear(p.text)
+	return j.composeOrReplayPlan(r.Manifest, p, func(p *composePlan) error { return recheckCompose(r, p) }, func(p *composePlan) ([]byte, error) { return composeProtected(r, p) })
+}
+
+// ComposeOrReplay02 persists exact current candidate intent; it is not live dispatch permission.
+func (j *OutboundJournal) ComposeOrReplay02(request ComposeRequest02) ([]byte, error) {
+	r := captureCompose02(request)
+	p, e := authorizeCompose02(r)
+	if e != nil {
+		return nil, e
+	}
+	defer clear(p.text)
+	current := func(p *composePlan) error { return requireCurrentCompose02(r, p) }
+	if e = current(p); e != nil {
+		return nil, e
+	}
+	return j.composeOrReplayPlan(r.Manifest, p, func(p *composePlan) error {
+		if e := recheckCompose02(r, p); e != nil {
+			return e
+		}
+		return current(p)
+	}, func(p *composePlan) ([]byte, error) {
+		envelope, e := composeProtected02(r, p)
+		if e != nil {
+			return nil, e
+		}
+		if e = current(p); e != nil {
+			return nil, e
+		}
+		return envelope, nil
+	})
+}
+func (j *OutboundJournal) composeOrReplayPlan(manifest *Manifest, p *composePlan, recheck func(*composePlan) error, compose func(*composePlan) ([]byte, error)) ([]byte, error) {
 	root, e := EnrollRoot(j.pin, j.fingerprint)
 	if e != nil {
 		return nil, e
 	}
-	if !bytes.Equal(root.account[:], r.Manifest.account[:]) || !bytes.Equal(root.point[:], r.Manifest.root[:]) {
+	if !bytes.Equal(root.account[:], manifest.account[:]) || !bytes.Equal(root.point[:], manifest.enrolled[:]) {
 		return nil, ErrAuthentication
 	}
 	if e = j.check(); e != nil {
@@ -178,7 +210,7 @@ func (j *OutboundJournal) ComposeOrReplay(request ComposeRequest) ([]byte, error
 		if !bytes.Equal(intent, p.intent) {
 			return nil, ErrJournalConflict
 		}
-		verified, e := VerifyEnvelope(envelope, p.public, 3)
+		verified, e := VerifyEnvelope(envelope, p.public, p.prefix[4])
 		if e != nil {
 			return nil, e
 		}
@@ -190,7 +222,7 @@ func (j *OutboundJournal) ComposeOrReplay(request ComposeRequest) ([]byte, error
 				return nil, ErrAuthentication
 			}
 		}
-		if e = recheckCompose(r, p); e != nil {
+		if e = recheck(p); e != nil {
 			return nil, e
 		}
 		if _, e = tx.Exec("UPDATE identity SET comparison=? WHERE id=1", p.now); e != nil {
@@ -199,7 +231,7 @@ func (j *OutboundJournal) ComposeOrReplay(request ComposeRequest) ([]byte, error
 		if e = tx.Commit(); e != nil {
 			return nil, e
 		}
-		if e = j.finalize(r, p); e != nil {
+		if e = j.finalize(p, recheck); e != nil {
 			return nil, e
 		}
 		return envelope, nil
@@ -210,7 +242,7 @@ func (j *OutboundJournal) ComposeOrReplay(request ComposeRequest) ([]byte, error
 	if count >= 256 {
 		return nil, ErrJournal
 	}
-	envelope, e = composeProtected(r, p)
+	envelope, e = compose(p)
 	if e != nil {
 		return nil, e
 	}
@@ -223,7 +255,7 @@ func (j *OutboundJournal) ComposeOrReplay(request ComposeRequest) ([]byte, error
 	if e = tx.Commit(); e != nil {
 		return nil, e
 	}
-	if e = j.finalize(r, p); e != nil {
+	if e = j.finalize(p, recheck); e != nil {
 		return nil, e
 	}
 	return envelope, nil
@@ -236,8 +268,8 @@ func outboundFloor(tx *sql.Tx, now uint64) error {
 	}
 	return nil
 }
-func (j *OutboundJournal) finalize(r ComposeRequest, p *composePlan) error {
-	if e := recheckCompose(r, p); e != nil {
+func (j *OutboundJournal) finalize(p *composePlan, recheck func(*composePlan) error) error {
+	if e := recheck(p); e != nil {
 		return e
 	}
 	tx, e := j.db.Begin()

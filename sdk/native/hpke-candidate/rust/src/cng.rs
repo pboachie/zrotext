@@ -632,18 +632,28 @@ impl HardwareSigner {
         Ok(())
     }
     pub fn sign_envelope03(&self, unsigned: &[u8]) -> Result<Vec<u8>, NativeError> {
+        self.sign_profile(unsigned, 3)
+    }
+    pub fn sign_envelope02(&self, unsigned: &[u8]) -> Result<Vec<u8>, NativeError> {
+        self.sign_profile(unsigned, 2)
+    }
+    fn sign_profile(&self, unsigned: &[u8], profile: u8) -> Result<Vec<u8>, NativeError> {
         use sha2::{Digest, Sha256};
         let guard = self.state.lock().map_err(|_| refused("poisoned lock"))?;
         let state = &guard.0;
         if !state.qualified
             || state.closed
             || !(493..=34149).contains(&unsigned.len())
-            || unsigned[..8] != [90, 84, 83, 69, 3, 1, 0, 0]
+            || unsigned[..8] != [90, 84, 83, 69, profile, 1, 0, 0]
         {
             return Err(refused("unsigned envelope shape"));
         }
         let transcript = [
-            b"ZTSE/sign/v3\0".as_slice(),
+            if profile == 2 {
+                b"ZTSE/sign/v2\0".as_slice()
+            } else {
+                b"ZTSE/sign/v3\0".as_slice()
+            },
             &(unsigned.len() as u32).to_be_bytes(),
             unsigned,
         ]

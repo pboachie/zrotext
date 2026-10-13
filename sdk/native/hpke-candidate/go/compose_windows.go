@@ -173,7 +173,10 @@ func wrapCandidate(point, cek, info, aad []byte) ([]byte, error) {
 	}
 	return join(enc, ct), nil
 }
-func composeProtected(r ComposeRequest, p *composePlan) ([]byte, error) {
+func composeProfile(p *composePlan, signer *HardwareSigner, profile byte) ([]byte, error) {
+	bodyLabel, wrapLabel := []byte("ZTSE/body/v3\x00"), []byte("ZTSE/wrap/v3\x00")
+	bodyLabel[11] = '0' + profile
+	wrapLabel[11] = '0' + profile
 	cek := make([]byte, 32)
 	if _, e := rand.Read(cek); e != nil {
 		return nil, e
@@ -183,26 +186,38 @@ func composeProtected(r ComposeRequest, p *composePlan) ([]byte, error) {
 	if _, e := rand.Read(nonce); e != nil {
 		return nil, e
 	}
-	body, e := encryptCandidate(cek, nonce, p.text, join([]byte("ZTSE/body/v3\x00"), p.prefix))
+	body, e := encryptCandidate(cek, nonce, p.text, join(bodyLabel, p.prefix))
 	if e != nil {
 		return nil, e
 	}
 	unsigned := join(p.prefix, nonce, binary.BigEndian.AppendUint32(nil, uint32(len(body))), body, []byte{byte(len(p.recipients))})
 	for _, record := range p.recipients {
 		suffix := join(p.prefix, record[:33])
-		wrap, e := wrapCandidate(record[33:98], cek, join([]byte("ZTSE/wrap/v3\x00"), suffix), join([]byte("ZTSE/wrap-aad/v3\x00"), suffix))
+		aad := []byte(nil)
+		if profile == 3 {
+			aad = join([]byte("ZTSE/wrap-aad/v3\x00"), suffix)
+		}
+		wrap, e := wrapCandidate(record[33:98], cek, join(wrapLabel, suffix), aad)
 		if e != nil {
 			return nil, e
 		}
 		unsigned = append(unsigned, record[:33]...)
 		unsigned = append(unsigned, wrap...)
 	}
-	sig, e := r.Signer.SignEnvelope03(unsigned)
+	sig, e := signer.signProfile(unsigned, profile)
 	if e != nil {
 		return nil, e
 	}
 	envelope := join(unsigned, sig)
-	if _, e = VerifyEnvelope(envelope, p.public, 3); e != nil {
+	if _, e = VerifyEnvelope(envelope, p.public, profile); e != nil {
+		return nil, e
+	}
+	return envelope, nil
+}
+
+func composeProtected(r ComposeRequest, p *composePlan) ([]byte, error) {
+	envelope, e := composeProfile(p, r.Signer, 3)
+	if e != nil {
 		return nil, e
 	}
 	if e = recheckCompose(r, p); e != nil {

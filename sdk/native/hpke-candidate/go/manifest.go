@@ -11,6 +11,7 @@ import (
 
 // RootTrust is enrolled generation-one trust or authenticated profile02 successor trust.
 type RootTrust struct {
+	enrolled               [65]byte
 	account                [16]byte
 	point                  [65]byte
 	generation, comparison uint64
@@ -19,6 +20,7 @@ type RootTrust struct {
 
 // Manifest is owned cryptographic provenance, not live or durable authority.
 type Manifest struct {
+	enrolled                                         [65]byte
 	lineage                                          [][32]byte
 	raw                                              []byte
 	profile, predecessor                             byte
@@ -43,6 +45,7 @@ func EnrollRoot(pin, compared []byte) (*RootTrust, error) {
 	r := &RootTrust{generation: 1}
 	copy(r.account[:], pin[5:21])
 	copy(r.point[:], pin[29:])
+	copy(r.enrolled[:], pin[29:])
 	return r, nil
 }
 func manifestNumber(b []byte, at int) (uint64, error) {
@@ -181,7 +184,7 @@ func VerifyManifest(input []byte, root *RootTrust, previous *Manifest, expected 
 			return nil, ErrAuthentication
 		}
 	} else {
-		if previous.account != root.account || previous.root != root.point || previous.generation != root.generation || now < previous.comparison {
+		if previous.enrolled != root.enrolled || previous.account != root.account || previous.root != root.point || previous.generation != root.generation || now < previous.comparison {
 			return nil, ErrAuthentication
 		}
 		if version == previous.version {
@@ -207,7 +210,7 @@ func VerifyManifest(input []byte, root *RootTrust, previous *Manifest, expected 
 		}
 		lineage = append(lineage, digest)
 	}
-	return &Manifest{lineage, b, expected, predecessor, generation, version, issued, expiry, now, digest, root.account, root.point}, nil
+	return &Manifest{root.enrolled, lineage, b, expected, predecessor, generation, version, issued, expiry, now, digest, root.account, root.point}, nil
 }
 func (m *Manifest) Digest() [32]byte { return m.digest }
 func (m *Manifest) Version() uint64  { return m.version }
@@ -246,11 +249,11 @@ func VerifyRootTransition02(input []byte, old *Manifest, expectedNewRoot []byte,
 			return nil, ErrAuthentication
 		}
 	}
-	result := &RootTrust{account: old.account, generation: old.generation + 1, comparison: now, anchor: sha256.Sum256(b[:215])}
+	result := &RootTrust{enrolled: old.enrolled, account: old.account, generation: old.generation + 1, comparison: now, anchor: sha256.Sum256(b[:215])}
 	copy(result.point[:], b[102:167])
 	return result, nil
 }
 func (m *Manifest) Generation() uint64 { return m.generation }
 func (m *Manifest) rootTrust() *RootTrust {
-	return &RootTrust{account: m.account, point: m.root, generation: m.generation, comparison: m.comparison}
+	return &RootTrust{enrolled: m.enrolled, account: m.account, point: m.root, generation: m.generation, comparison: m.comparison}
 }

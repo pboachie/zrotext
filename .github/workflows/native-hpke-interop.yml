@@ -106,6 +106,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run build --prefix "$env:RUNNER_TEMP/election/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Prepare exact profile02 signing producer
+        shell: pwsh
+        run: |
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/compose02"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C "$env:RUNNER_TEMP/compose02" checkout --detach a13ea1e3d6f6db594485c19b36c43fe642e67c7a
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm ci --prefix "$env:RUNNER_TEMP/compose02/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build --prefix "$env:RUNNER_TEMP/compose02/sdk/typescript"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Native Windows build and conditional protected qualification
         shell: pwsh
         env:
@@ -126,4 +137,8 @@ jobs:
           python sdk/native/hpke-candidate/run-compose.py --producer "$env:RUNNER_TEMP/election" --language rust
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python sdk/native/hpke-candidate/run-compose.py --producer "$env:RUNNER_TEMP/election" --language go
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python sdk/native/hpke-candidate/run-compose02.py --producer "$env:RUNNER_TEMP/compose02" --language rust
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python sdk/native/hpke-candidate/run-compose02.py --producer "$env:RUNNER_TEMP/compose02" --language go
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -207,7 +207,21 @@ fn wrap(point: &[u8], cek: &[u8], info: &[u8], aad: &[u8]) -> Result<Vec<u8>, Er
         .map_err(|_| Error::Authentication)?;
     Ok([enc.as_bytes(), &cipher].concat())
 }
-pub(crate) fn compose(r: &ComposeRequest<'_>, p: &mut Plan) -> Result<Vec<u8>, Error> {
+pub(crate) fn compose_profile(
+    p: &Plan,
+    signer: &HardwareSigner,
+    profile: u8,
+) -> Result<Vec<u8>, Error> {
+    let body_label = if profile == 2 {
+        b"ZTSE/body/v2\0"
+    } else {
+        b"ZTSE/body/v3\0"
+    };
+    let wrap_label = if profile == 2 {
+        b"ZTSE/wrap/v2\0"
+    } else {
+        b"ZTSE/wrap/v3\0"
+    };
     let mut cek = Zeroizing::new([0u8; 32]);
     let mut nonce = [0u8; 12];
     getrandom::fill(&mut *cek).map_err(|_| Error::ProtectedUnavailable)?;
@@ -218,7 +232,7 @@ pub(crate) fn compose(r: &ComposeRequest<'_>, p: &mut Plan) -> Result<Vec<u8>, E
             &Nonce::try_from(nonce.as_slice()).map_err(|_| Error::Shape)?,
             Payload {
                 msg: &p.text,
-                aad: &[b"ZTSE/body/v3\0".as_slice(), &p.prefix].concat(),
+                aad: &[body_label.as_slice(), &p.prefix].concat(),
             },
         )
         .map_err(|_| Error::Authentication)?;
@@ -235,23 +249,34 @@ pub(crate) fn compose(r: &ComposeRequest<'_>, p: &mut Plan) -> Result<Vec<u8>, E
         let wrapped = wrap(
             &k[33..98],
             &*cek,
-            &[b"ZTSE/wrap/v3\0".as_slice(), &suffix].concat(),
-            &[b"ZTSE/wrap-aad/v3\0".as_slice(), &suffix].concat(),
+            &[wrap_label.as_slice(), &suffix].concat(),
+            &if profile == 3 {
+                [b"ZTSE/wrap-aad/v3\0".as_slice(), &suffix].concat()
+            } else {
+                Vec::new()
+            },
         )?;
         unsigned.extend_from_slice(&k[..33]);
         unsigned.extend_from_slice(&wrapped);
     }
-    let signature = r
-        .signer
-        .sign_envelope03(&unsigned)
-        .map_err(|_| Error::ProtectedUnavailable)?;
+    let signature = if profile == 2 {
+        signer.sign_envelope02(&unsigned)
+    } else {
+        signer.sign_envelope03(&unsigned)
+    }
+    .map_err(|_| Error::ProtectedUnavailable)?;
     unsigned.extend_from_slice(&signature);
-    verify_envelope(&unsigned, &p.public, 3)?;
-    recheck(r, p)?;
+    verify_envelope(&unsigned, &p.public, profile)?;
     Ok(unsigned)
 }
 /// Fresh ciphertext only. Use durable exact replay for retryable requests.
 pub fn compose_protected03(r: &ComposeRequest<'_>) -> Result<Vec<u8>, Error> {
     let mut p = authorize(r)?;
     compose(r, &mut p)
+}
+
+pub(crate) fn compose(r: &ComposeRequest<'_>, p: &mut Plan) -> Result<Vec<u8>, Error> {
+    let envelope = compose_profile(p, r.signer, 3)?;
+    recheck(r, p)?;
+    Ok(envelope)
 }

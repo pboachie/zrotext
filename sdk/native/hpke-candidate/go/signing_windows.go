@@ -218,17 +218,25 @@ func (s *HardwareSigner) DeleteCreated() error {
 	return nil
 }
 func (s *HardwareSigner) SignEnvelope03(unsigned []byte) ([]byte, error) {
+	return s.signProfile(unsigned, 3)
+}
+func (s *HardwareSigner) SignEnvelope02(unsigned []byte) ([]byte, error) {
+	return s.signProfile(unsigned, 2)
+}
+func (s *HardwareSigner) signProfile(unsigned []byte, profile byte) ([]byte, error) {
 	if s == nil || s.native == nil {
 		return nil, ErrProtectedUnavailable
 	}
 	r := s.native
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !r.qualified || r.closed || len(unsigned) < 493 || len(unsigned) > 34149 || !bytes.Equal(unsigned[:8], []byte{'Z', 'T', 'S', 'E', 3, 1, 0, 0}) {
+	if !r.qualified || r.closed || len(unsigned) < 493 || len(unsigned) > 34149 || !bytes.Equal(unsigned[:8], []byte{'Z', 'T', 'S', 'E', profile, 1, 0, 0}) {
 		return nil, ErrShape
 	}
 	captured := append([]byte(nil), unsigned...)
-	transcript := append([]byte("ZTSE/sign/v3\x00"), binary.BigEndian.AppendUint32(nil, uint32(len(captured)))...)
+	label := []byte("ZTSE/sign/v3\x00")
+	label[11] = '0' + profile
+	transcript := append(label, binary.BigEndian.AppendUint32(nil, uint32(len(captured)))...)
 	transcript = append(transcript, captured...)
 	digest := sha256.Sum256(transcript)
 	sig, e := s.signDigest(digest[:])
