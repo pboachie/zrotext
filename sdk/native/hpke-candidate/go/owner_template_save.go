@@ -38,6 +38,7 @@ type ownerSaved struct {
 	timer              *time.Timer
 }
 type ownerSaveResult struct {
+	value    any
 	ticket   *TemplateTicket
 	snapshot *OwnerTemplateSnapshot
 	ack      *TemplateAcknowledgement
@@ -127,18 +128,29 @@ func (c *OwnerTemplateClient) ticket(t *TemplateTicket, w *ownerTemplateWork) (*
 // Admission precedes every saved/pending decision. A losing prepare never owns
 // another operation's record, and cannot clear its ticket or uncertainty.
 func (c *OwnerTemplateClient) execute(ctx context.Context, op func(context.Context, *ownerTemplateWork) (ownerSaveResult, error)) (ownerSaveResult, error) {
+	return c.executeOwned(ctx, op, nil)
+}
+func (c *OwnerTemplateClient) executeOwned(ctx context.Context, op func(context.Context, *ownerTemplateWork) (ownerSaveResult, error), cleanup func()) (ownerSaveResult, error) {
 	empty := ownerSaveResult{}
+	rejected := func() {
+		if cleanup != nil {
+			cleanup()
+		}
+	}
 	if c == nil || ctx == nil {
+		rejected()
 		return empty, OwnerTemplateError{Code: "invalid_request"}
 	}
 	r := c.reader
 	if !r.busy.CompareAndSwap(false, true) {
+		rejected()
 		return empty, c.classify(OwnerTemplateError{Code: "busy"})
 	}
 	select {
 	case ownerTemplateAdmission <- struct{}{}:
 	default:
 		r.busy.Store(false)
+		rejected()
 		return empty, c.classify(OwnerTemplateError{Code: "capacity"})
 	}
 	ctx, cancel := context.WithTimeout(ctx, r.options.Timeout)
@@ -157,6 +169,9 @@ func (c *OwnerTemplateClient) execute(ctx context.Context, op func(context.Conte
 	finished := false
 	go func() {
 		defer func() {
+			if cleanup != nil {
+				cleanup()
+			}
 			r.mu.Lock()
 			r.cancel = nil
 			r.mu.Unlock()

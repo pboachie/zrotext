@@ -33,7 +33,7 @@ public final class OwnerTemplate implements AutoCloseable {
  private static final ExecutorService WORKERS=Executors.newFixedThreadPool(8,r->{var t=new Thread(r,"zrotext-owner-template");t.setDaemon(true);return t;});
  private final Object lock=new Object();private final String origin,path;private final Binding binding;private final byte[] template;private final CurrentSource source;private final SessionSource sessions;private final long timeout;private final OwnerTemplateTransport transport;
  private final Reviewer review;private Saved saved;private Pending pending;
- private boolean closed,busy;private long now,head;private ManifestChain.Verified prior;private String headDigest;
+ private boolean closed,busy;private long lifetimeDeadline=Long.MAX_VALUE;private long now,head;private ManifestChain.Verified prior;private String headDigest;
  private static final class Work {long deadline;boolean done,foreground,released;Object result;Failure error;Runnable finish;Work(long deadline){this.deadline=deadline;}}
  public OwnerTemplate(String origin,Binding binding,byte[] template,CurrentSource source,SessionSource sessions,boolean enabled,long timeoutMs,String additionalRootsPem)throws Failure{this(origin,binding,template,source,sessions,enabled,timeoutMs,additionalRootsPem,null);}
  public OwnerTemplate(String origin,Binding binding,byte[] template,CurrentSource source,SessionSource sessions,boolean enabled,long timeoutMs,String additionalRootsPem,Reviewer review)throws Failure{
@@ -48,7 +48,7 @@ public final class OwnerTemplate implements AutoCloseable {
  private Failure classify(Exception error){if(error instanceof Failure f && Set.of("invalid_request","pending_write","busy","capacity").contains(f.code))return f;if(pending!=null)return new Failure("response_unknown",true);return error instanceof Failure f?f:new Failure("read_refused");}
  private void releaseWork(Work w){if(w.done && w.foreground && !w.released){w.released=true;busy=false;if(closed)saved=null;ADMISSION.release();lock.notifyAll();}}
  private Object execute(Operation op)throws Failure{
-  final Work w;synchronized(lock){if(busy)throw new Failure("busy");if(closed)throw classify(new Failure("closed"));if(!ADMISSION.tryAcquire())throw new Failure("capacity");busy=true;w=new Work(System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(timeout));}
+  final Work w;synchronized(lock){if(busy)throw new Failure("busy");if(closed)throw classify(new Failure("closed"));if(!ADMISSION.tryAcquire())throw new Failure("capacity");busy=true;w=new Work(Math.min(lifetimeDeadline,System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(timeout)));}
   try{WORKERS.execute(()->{try{var result=op.run(w);synchronized(lock){w.result=result;}}catch(Exception error){synchronized(lock){w.error=classify(error);}}finally{synchronized(lock){w.done=true;releaseWork(w);lock.notifyAll();}}});}catch(RuntimeException error){synchronized(lock){busy=false;}ADMISSION.release();throw new Failure("capacity");}
   try{synchronized(lock){for(;;){live(w);if(w.done){if(w.error!=null)throw w.error;if(w.finish!=null)w.finish.run();return w.result;}try{TimeUnit.NANOSECONDS.timedWait(lock,Math.max(1,w.deadline-System.nanoTime()));}catch(InterruptedException error){Thread.currentThread().interrupt();close();throw classify(new Failure("closed"));}}}}
   finally{synchronized(lock){w.foreground=true;releaseWork(w);}}
@@ -70,6 +70,70 @@ public final class OwnerTemplate implements AutoCloseable {
   var session=credentials(w);if(expected!=null && !session.equals(expected)){close();throw new Failure("owner_changed");}authorize(w,null,session);if(!credentials(w).equals(session)){close();throw new Failure("owner_changed");}
   byte[] wire;try{wire=transport.get(path,session,remaining(w));}catch(Failure error){if(error.code.equals("owner_changed"))close();throw error;}
   live(w);var scope=TemplateStore.parse(wire);long revision=TemplateStore.number(scope.aad(),94);need(revision>=head);authorize(w,scope,session);HpkeRecipient.point(TemplateStore.part(wire,222,65));String digest=TemplateStore.hex(MessageDigest.getInstance("SHA-256").digest(wire));authorize(w,scope,session);need(revision!=head || digest.equals(headDigest));live(w);head=revision;headDigest=digest;return new Snapshot(scope,wire,digest);
+ }
+ /** Immutable local preview only; no persistence or send authority. Strings cannot guarantee erasure. */
+ public record OpenedPreview(TemplateContent.Preview preview,long revision,String encryptedDigest,boolean matchesPending){public boolean requestAcknowledged(){return false;}}
+ static final class Opening implements AutoCloseable {
+  private final OwnerTemplate client,guard;
+  Opening(OwnerTemplate client,String origin,Binding binding,byte[] template,CurrentSource current,SessionSource session,boolean enabled,long timeoutMs,String roots)throws Failure{
+   if(client==null)throw new Failure("invalid_request");
+   try{need(client.origin.equals(origin) && client.binding.same(binding) && Arrays.equals(client.template,template));guard=new OwnerTemplate(origin,binding,template,current,session,enabled,timeoutMs,roots);this.client=client;if(!enabled)close();}
+   catch(Exception error){client.close();throw new Failure("invalid_request");}
+  }
+  @Override public void close(){guard.close();client.close();}
+  interface PointSource{byte[] point()throws Exception;}
+  private void clientLive()throws Failure{synchronized(client.lock){if(client.closed)throw new Failure("closed");}}
+  OpenedPreview open(PointSource point,HpkeRecipient.ContentRecipient recipient)throws Failure{
+   try{var result=(OpenedPreview)guard.execute(w->{byte[] wire=null;try{
+    guard.live(w);clientLive();byte[] pk=point.point().clone();HpkeRecipient.point(pk);var session=guard.credentials(w);guard.authorize(w,null,session);
+    byte[] selected=null;for(var k:guard.prior.keyRecords())if(k[0]==2 && Arrays.equals(TemplateStore.part(k,1,32),guard.binding.readers[1]))selected=TemplateStore.part(k,33,65);need(Arrays.equals(pk,selected));
+    var snapshot=client.readLatest();guard.live(w);clientLive();var scope=snapshot.scope();wire=snapshot.envelope();guard.authorize(w,scope,session);
+    var authority=new EncryptedTemplate.Authority(guard.prior,guard.now);var content=EncryptedTemplate.open(scope,wire,recipient,()->authority);
+    clientLive();guard.live(w);need(Arrays.equals(pk,point.point()));guard.authorize(w,scope,session);var preview=content.preview();guard.authorize(w,scope,session);clientLive();need(Arrays.equals(pk,point.point()));guard.live(w);
+    return new OpenedPreview(preview,TemplateStore.number(scope.aad(),94),snapshot.encryptedDigest(),snapshot.matchesPending());
+   }catch(Exception error){close();throw error;}finally{if(wire!=null)Arrays.fill(wire,(byte)0);}});clientLive();return result;
+   }catch(Exception error){close();throw error instanceof Failure f?f:new Failure("refused");}
+  }
+  OpenedPreview openLatestSoftware(PrivateKey key,byte[] publicPoint)throws Failure{
+   need(key!=null && publicPoint!=null);byte[] pk=publicPoint.clone();return open(()->{
+    var publicKey=HpkeRecipient.point(pk);var proof=Signature.getInstance("SHA256withECDSA");byte[] domain="ZT/template-opening/key-binding/v1\0".getBytes(StandardCharsets.US_ASCII);
+    proof.initSign(key);proof.update(domain);proof.update(pk);byte[] signature=proof.sign();proof.initVerify(publicKey);proof.update(domain);proof.update(pk);need(proof.verify(signature));return pk.clone();
+   },HpkeRecipient.softwareContent(key));
+  }
+ }
+ /** Independently maintained host lease; custodyLive does not qualify a protected provider. */
+ public record DraftState(long epoch,long revision,boolean custodyLive){}
+ public record DraftReview(String requestId,int expectedRevision,EncryptedTemplate.Scope scope,long epoch,long draftRevision,TemplateContent content,TemplateContent.Preview preview){}
+ public interface DraftSource{DraftState current()throws Exception;}
+ public interface DraftReviewer{boolean consume(DraftReview review)throws Exception;}
+ /** One immutable reviewed draft lifetime. Never commits or sends automatically. */
+ public static final class Authoring implements AutoCloseable {
+  private static final ScheduledExecutorService TIMERS=Executors.newSingleThreadScheduledExecutor(r->{var t=new Thread(r,"zrotext-template-expiry");t.setDaemon(true);return t;});
+  private final OwnerTemplate client,guard;private final DraftSource draft;private final DraftReviewer review;private boolean used;private volatile ScheduledFuture<?> timer;
+  public Authoring(String origin,Binding binding,byte[] template,CurrentSource current,SessionSource session,Reviewer ciphertextReview,DraftSource draft,DraftReviewer review,boolean enabled,long timeoutMs,String roots)throws Failure{
+   need(draft!=null && review!=null && ciphertextReview!=null);this.draft=draft;this.review=review;client=new OwnerTemplate(origin,binding,template,current,session,enabled,timeoutMs,roots,ciphertextReview);
+   try{guard=new OwnerTemplate(origin,binding,template,current,session,enabled,timeoutMs,roots);}catch(Exception error){client.close();throw new Failure("invalid_request");}
+  }
+  public OwnerTemplate client(){return client;}
+  @Override public void close(){guard.close();client.close();var scheduled=timer;if(scheduled!=null)scheduled.cancel(false);}
+  public void invalidate(){close();}
+  private void abort(Ticket owned){guard.close();synchronized(client.lock){if((client.saved!=null && client.saved.ticket!=owned) || (client.busy && owned==null))return;client.close();}}
+  private void draft(Work w,long epoch,long revision)throws Exception{guard.live(w);var d=draft.current();guard.live(w);if(d==null || d.epoch()!=epoch || d.revision()!=revision || !d.custodyLive())throw new Failure("draft_changed");}
+  private void current(Work w,EncryptedTemplate.Scope scope,Session session,long epoch,long revision)throws Exception{draft(w,epoch,revision);guard.authorize(w,scope,session);draft(w,epoch,revision);if(!guard.credentials(w).equals(session))throw new Failure("owner_changed");guard.live(w);}
+  public Ticket prepare(String requestId,int expectedRevision,EncryptedTemplate.Scope scope,TemplateContent content,long epoch,long draftRevision)throws Failure{
+   byte[] canonical=null;final TemplateContent captured;
+   try{need(content!=null && scope!=null);canonical=content.canonical();need(canonical.length<=32768);captured=TemplateContent.parse(canonical);}catch(Exception error){throw new Failure("invalid_draft");}finally{if(canonical!=null)Arrays.fill(canonical,(byte)0);}
+   try{var ticket=(Ticket)guard.execute(w->{synchronized(client.lock){if(used || client.saved!=null || client.pending!=null)throw new Failure("pending_draft");}byte[] wire=null;Ticket owned=null;
+    try{need(epoch>0 && draftRevision>0 && expectedRevision>=0 && expectedRevision<128 && TemplateStore.number(scope.aad(),94)==expectedRevision+1L && requestId!=null && requestId.matches("[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"));
+     var session=guard.credentials(w);var preview=captured.preview();current(w,scope,session,epoch,draftRevision);if(!review.consume(new DraftReview(requestId,expectedRevision,scope,epoch,draftRevision,captured,preview)))throw new Failure("review_declined");
+     current(w,scope,session,epoch,draftRevision);var authority=new EncryptedTemplate.Authority(guard.prior,guard.now);wire=EncryptedTemplate.seal(scope,captured,()->authority);current(w,scope,session,epoch,draftRevision);
+     var prepared=client.prepareSave(scope,requestId,expectedRevision,wire);owned=prepared;current(w,scope,session,epoch,draftRevision);
+     synchronized(client.lock){if(client.closed || client.saved==null || client.saved.ticket!=prepared)throw new Failure("closed");client.saved.deadline=Math.min(client.saved.deadline,w.deadline);client.lifetimeDeadline=Math.min(client.lifetimeDeadline,w.deadline);}
+     w.finish=()->{used=true;timer=TIMERS.schedule(this::close,Math.max(0,w.deadline-System.nanoTime()),TimeUnit.NANOSECONDS);};return prepared;
+    }catch(Exception error){if(error instanceof Failure f && Set.of("pending_write","busy").contains(f.code))throw new Failure("pending_draft");abort(owned);throw error;}finally{if(wire!=null)Arrays.fill(wire,(byte)0);}
+   });synchronized(client.lock){if(client.closed)throw new Failure("closed");}return ticket;
+   }catch(Failure error){if(!Set.of("busy","capacity","pending_draft").contains(error.code))abort(null);throw error;}
+  }
  }
  public record Review(String requestId,int expectedRevision,EncryptedTemplate.Scope scope,String encryptedDigest){}
  public record Pending(String requestId,String templateId,int revision,String encryptedDigest){}
