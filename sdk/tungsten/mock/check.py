@@ -81,6 +81,7 @@ def server(binary, config, env, seed, gates=()):
                 except subprocess.TimeoutExpired:
                     process.kill(); process.wait(timeout=3)
             process.stdout.close(); reader.join(timeout=1)
+            require(process.returncode == 0, "Owned mock did not shut down cleanly")
 
 
 def run(binary, config, env):
