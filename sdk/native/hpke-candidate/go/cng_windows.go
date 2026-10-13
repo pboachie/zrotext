@@ -318,9 +318,15 @@ func (r *HardwareRecipient) exchange(enc []byte) ([]byte, error) {
 	return out, nil
 }
 func (r *HardwareRecipient) OpenCEK(public, enc, info, aad, ct []byte) ([]byte, error) {
+	if len(ct) != 48 {
+		return nil, ErrProtectedUnavailable
+	}
+	return r.openContent(public, enc, info, aad, ct)
+}
+func (r *HardwareRecipient) openContent(public, enc, info, aad, ct []byte) ([]byte, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !r.qualified || r.closed || len(info) > 36864 || len(aad) > 36864 || len(ct) != 48 {
+	if !r.qualified || r.closed || len(info) > 36864 || len(aad) > 36864 || (len(ct) < 17 || len(ct) > 32784) {
 		return nil, ErrProtectedUnavailable
 	}
 	actual, e := r.public()
@@ -335,7 +341,7 @@ func (r *HardwareRecipient) OpenCEK(public, enc, info, aad, ct []byte) ([]byte, 
 		return nil, e
 	}
 	defer clear(dh)
-	return openSharedCEK(dh, public, enc, info, aad, ct)
+	return openSharedContent(dh, public, enc, info, aad, ct)
 }
 func (r *HardwareRecipient) close() {
 	if r.api == nil {

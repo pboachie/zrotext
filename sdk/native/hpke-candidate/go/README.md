@@ -147,3 +147,5 @@ Original-reply accepted history and comparison clocks can be persisted with the 
 Typed saved original-reply proposal consumption/status is documented in [ORIGINAL-PROPOSAL.md](../ORIGINAL-PROPOSAL.md). This does not approve or send an action.
 
 Local template content and preview APIs are documented in [TEMPLATE-CONTENT.md](../TEMPLATE-CONTENT.md); encryption and persistence remain separate.
+
+[Candidate encrypted templates](../TEMPLATE-CRYPTO.md) add authenticated ZTWT01 sealing and software/protected opening with explicit current-authority callbacks. Storage and owner transport remain separate.
