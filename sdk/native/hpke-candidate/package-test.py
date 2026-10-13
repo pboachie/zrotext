@@ -77,6 +77,18 @@ class PackagePolicy(unittest.TestCase):
         self.assertEqual(calls[1][6:8], ("--save-oracle", Path("save-oracle")))
         self.assertFalse(any(call[0] in ("cargo", "go") for call in calls))
 
+    def test_contact_uses_installed_probe_and_strict_protected_fixture(self):
+        binaries = {name: Path("installed") / name for name in packages.HARNESSES}
+        with patch.object(packages, "run") as run:
+            packages.contact_acceptance(binaries, Path("contact"))
+            packages.contact_acceptance(binaries, Path("contact"), hardware=True)
+        calls = [call.args for call in run.call_args_list]
+        self.assertEqual([call[1].name for call in calls], ["test-contact-field.py", "test-contact-hardware.py"])
+        for call in calls:
+            self.assertEqual(call[2:], ("--producer", Path("contact"), "--binary", binaries["contact"]))
+            self.assertNotIn("--allow-unqualified", call)
+            self.assertNotIn(call[0], ("cargo", "go"))
+
     def test_authoring_uses_installed_probe_and_independent_oracle(self):
         binaries = {name: Path("installed") / name for name in packages.HARNESSES}
         with patch.object(packages, "run") as run:

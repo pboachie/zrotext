@@ -1,4 +1,4 @@
-// Public synthetic interoperability probe. No service or persistent custody effects.
+// Synthetic interoperability; explicit hardware mode owns and deletes a test key.
 package main
 
 import (
@@ -14,7 +14,7 @@ type request struct {
 	Operation, Origin, Statement, Field string
 	Fixture                             map[string]json.RawMessage
 	Scalar                              string
-	Cancel                              bool
+	Cancel, Closed                      bool
 }
 
 func text(f map[string]json.RawMessage, k string) string {
@@ -23,7 +23,10 @@ func text(f map[string]json.RawMessage, k string) string {
 	return s
 }
 func decode(s string) []byte { b, _ := base64.StdEncoding.Strict().DecodeString(s); return b }
-func run(r request) map[string]any {
+
+type producer func(context.Context, []byte, *hpke.ContactStatement, hpke.ContactExpected, hpke.ContactFieldInput, bool) (*hpke.ContactProduction, error)
+
+func run(r request, produce producer) map[string]any {
 	no := map[string]any{"accepted": false}
 	if r.Operation == "origin" {
 		return map[string]any{"accepted": hpke.ValidateContactOrigin01(r.Origin) == nil}
@@ -81,22 +84,24 @@ func run(r request) map[string]any {
 	if r.Cancel {
 		cancel()
 	}
-	produced, e := hpke.ProduceSoftwareContactField01(ctx, scalar, st, expected, input)
+	produced, e := produce(ctx, scalar, st, expected, input, r.Closed)
 	if e != nil {
 		return no
 	}
 	return map[string]any{"accepted": true, "bytes": base64.StdEncoding.EncodeToString(produced.Bytes())}
 }
 func main() {
+	produce, cleanup := selectCustody()
+	defer cleanup()
 	var requests []request
 	if json.NewDecoder(os.Stdin).Decode(&requests) != nil {
-		os.Exit(2)
+		panic("fixture input")
 	}
 	out := make([]map[string]any, 0, len(requests))
 	for _, r := range requests {
-		out = append(out, run(r))
+		out = append(out, run(r, produce))
 	}
 	if json.NewEncoder(os.Stdout).Encode(out) != nil {
-		os.Exit(2)
+		panic("fixture output")
 	}
 }

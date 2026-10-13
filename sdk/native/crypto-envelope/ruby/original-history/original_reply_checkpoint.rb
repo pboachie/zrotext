@@ -15,7 +15,7 @@ module ZrotextCandidate
     private_class_method :new
     def self.create(path,pin,fingerprint,scope,history,now)
       result=new(path,pin,fingerprint,scope);rows=result.send(:capture,history);result.send(:verify,rows,now)
-      File.open(result.instance_variable_get(:@path),File::RDWR|File::CREAT|File::EXCL,0600) do |file|
+      File.open(result.instance_variable_get(:@path),File::RDWR|File::BINARY|File::CREAT|File::EXCL,0600) do |file|
         file.binmode;file.flock(File::LOCK_EX);file.write(result.instance_variable_get(:@header));result.send(:append,file,[1,now,rows])
       end
       result
@@ -85,7 +85,7 @@ module ZrotextCandidate
     end
     def access
       need(File.lstat(@path).file? && !File.symlink?(@path))
-      File.open(@path,File::RDWR) do |file|
+      File.open(@path,File::RDWR|File::BINARY) do |file|
         file.binmode;locked=false
         100.times { locked=file.flock(File::LOCK_EX|File::LOCK_NB);break if locked;sleep 0.05 }
         need(locked);yield file,load(file)

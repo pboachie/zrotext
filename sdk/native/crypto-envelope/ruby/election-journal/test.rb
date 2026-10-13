@@ -36,6 +36,7 @@ Dir.mktmpdir('zrotext-election-') do |dir|
   _,status=Open3.capture2(RbConfig.ruby,__FILE__,path,stdin_data:raw_input);check(status.success?)
   key=OpenSSL::PKey.read(OpenSSL::ASN1::Sequence.new([OpenSSL::ASN1::Integer.new(1),OpenSSL::ASN1::OctetString.new(wire['readerScalar']),OpenSSL::ASN1::ASN1Data.new([OpenSSL::ASN1::ObjectId.new('prime256v1')],0,:CONTEXT_SPECIFIC),OpenSSL::ASN1::ASN1Data.new([OpenSSL::ASN1::BitString.new(wire['readerPoint'])],1,:CONTEXT_SPECIFIC)]).to_der)
   check(ElectedReader03.open_software(wire['envelope'],restored[1],restored[2],-> { [authority,30000] },wire['message'],'+12',key).b==wire['text'])
+  original=File.binread(path);binary_tail=original+"\x1a".b;File.binwrite(path,binary_tail);refuses { journal.snapshot(30000) };check(File.binread(path)==binary_tail);File.binwrite(path,original)
   refuses { journal.snapshot(29999) };stable=File.binread(path);File.open(path,'ab') { |file| file.write('x') };refuses { journal.snapshot(30000) };File.binwrite(path,stable);torn=stable.dup;torn.setbyte(130,torn.getbyte(130)^1);File.binwrite(path,torn);refuses { journal.snapshot(30000) };File.binwrite(path,'');refuses { journal.snapshot(30000) };File.binwrite(path,stable)
   refuses { journal.accept(wire['successor'],1,30000) }
   tasks=2.times.map { Thread.new { begin;journal.accept(wire['successor'],2,30000);true;rescue ArgumentError;false;end } };check(tasks.count { |t| t.value }==1)

@@ -53,6 +53,7 @@ begin
     a=Thread.new { call.call };b=Thread.new { call.call };check(a.value==b.value)
     rotated=ManifestChain.rotate02(f.fetch('transition'),f.fetch('newManifest'),manifest,f.fetch('newPoint'),11000);rotated_request=r.merge(manifest:rotated,now_ms:11000);refuses { call.call(r,-> { [rotated,11000] }) }
     File.delete(journal);rotated_bytes=call.call(rotated_request,-> { [rotated,11000] });check(rotated_bytes==call.call(rotated_request,-> { [rotated,11000] }));puts('ROTATED '+Base64.strict_encode64(rotated_bytes))
+    binary_tail=File.binread(journal)+"\x1a".b;File.binwrite(journal,binary_tail);refuses { call.call };check(File.binread(journal)==binary_tail);File.binwrite(journal,binary_tail.byteslice(0,binary_tail.bytesize-1))
     File.delete(journal);calls=0;refuses { call.call(r,-> { calls+=1;raise ArgumentError,'Simulated postcommit authority loss' if calls==6;[manifest,11000] }) };check(calls==6);saved=File.binread(journal);check(call.call==saved.byteslice(270,saved.bytesize-302))
   end
   refuses { owner.sign_envelope03(first.byteslice(0,first.bytesize-64)) };refuses { owner.sign_envelope02("\0".b*493) }
