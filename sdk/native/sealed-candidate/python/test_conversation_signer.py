@@ -8,7 +8,7 @@ import tempfile
 import json
 import unittest
 from unittest.mock import patch
-from installed_conversation_signer_consumer import oracle,inputs,enroll,check
+from installed_conversation_signer_consumer import oracle,inputs,enroll,check,protected_available
 from zrotext_native_candidate import conversation_signer as c
 from zrotext_native_candidate import sealed_candidate as s
 
@@ -62,8 +62,14 @@ class ConversationSignerTests(unittest.TestCase):
                 self.assertEqual(got,want)
     def test_independent_complete_envelope_and_confirmation_consumption(self):
         self.assertEqual(check(SOURCE),dict(installed=True,protected=False,openedRecipients=2,confirmation=True))
+    def test_setup_does_not_automatically_enroll_or_authorize_its_new_key(self):
+        client,_,_=self.client();client.setup()
+        with self.assertRaises(c.ConversationSignerError):client.prepare_review('not enrolled')
+        with self.assertRaises(c.ConversationSignerError):_ = client.public_point
+        self.assertEqual(client.cleanup_state,'complete')
     @unittest.skipUnless(os.name=='nt','Windows PCP qualification requires Windows')
     def test_actual_protected_owned_key_creation_and_deletion(self):
+        if not protected_available(): self.skipTest('Windows hardware provider unavailable')
         self.assertEqual(check(SOURCE,True),dict(installed=True,protected=True,openedRecipients=2,confirmation=True))
     def test_caller_binding_and_current_dictionary_are_snapshots(self):
         client,pin,current=self.client();current['binding']=dict(current['binding']);client.setup();enroll(SOURCE,self.f,client,pin,current)
@@ -162,6 +168,7 @@ class ConversationSignerTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name=='nt','Windows PCP qualification requires Windows')
     def test_protected_key_deletion_waits_for_worker_and_failed_receipt_is_retryable(self):
+        if not protected_available(): self.skipTest('Windows hardware provider unavailable')
         pin,current=inputs(self.f);events=[];entered,release,cancel=threading.Event(),threading.Event(),threading.Event()
         fd,name=tempfile.mkstemp(prefix='zrotext-conversation-deferred-',suffix='.jsonl');os.close(fd);receipt=Path(name)
         fail=[True]

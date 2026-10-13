@@ -126,7 +126,8 @@ def main():
                 assert context_result['installed'] and context_open['verified'] and context_open['role']==context_fixture['role']
             signer_result=json.loads(run([python,'-I',signer_consumer,ROOT/'conversation-signer-interop.mjs'],cwd=temporary))
             assert signer_result['software']==dict(installed=True,protected=False,openedRecipients=2,confirmation=True)
-            assert signer_result['protected']==(dict(installed=True,protected=True,openedRecipients=2,confirmation=True) if os.name=='nt' else None)
+            assert signer_result['skipped'] in (0,1)
+            assert signer_result['protected']==(dict(installed=True,protected=True,openedRecipients=2,confirmation=True) if signer_result['skipped']==0 else None)
             signer_qualifications.append(signer_result)
             enrollment_result=json.loads(run([python,'-I',enrollment_consumer,ROOT/'enrollment-interop.mjs'],cwd=temporary,input=json.dumps(enrollment_fixture)))
             assert enrollment_result['installed'] and enrollment_result['enrollment_verified']

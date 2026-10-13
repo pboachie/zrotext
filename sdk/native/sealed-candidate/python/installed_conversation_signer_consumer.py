@@ -11,6 +11,14 @@ from zrotext_native_candidate import conversation_signer as c
 from zrotext_native_candidate import sealed_candidate as s
 
 
+def protected_available():
+    if os.name != 'nt': return False
+    from zrotext_native_candidate.cng_custody import probe_platform,CngUnavailable
+    try: probe_platform()
+    except CngUnavailable: return False
+    return True
+
+
 def oracle(source, mode=None, value=None):
     return json.loads(subprocess.check_output(['node',str(source)]+([mode] if mode else []),
         input=None if value is None else json.dumps(value),encoding='utf-8'))
@@ -68,5 +76,5 @@ def check(source,hardware=False):
 if __name__=='__main__':
     assert str(Path(c.__file__).resolve()).startswith(str(Path(sys.prefix).resolve())),c.__file__
     source=Path(sys.argv[1]);software=check(source)
-    protected=check(source,True) if os.name=='nt' else None
-    print(json.dumps(dict(software=software,protected=protected)))
+    protected=check(source,True) if protected_available() else None
+    print(json.dumps(dict(software=software,protected=protected,skipped=int(protected is None))))

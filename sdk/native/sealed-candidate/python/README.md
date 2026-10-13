@@ -1129,5 +1129,5 @@ The synthetic acceptance fixture drives the actual maintained setup API for
 byte/refusal and callback-order comparisons, and independently verifies native
 confirmation/envelope signatures and both HPKE recipient opens. Windows source
 and isolated wheel/sdist consumers create and delete actual owned PCP keys.
-Other platforms run the software interoperability path without claiming Windows
+Absent hardware is an explicit skip after a read-only capability probe; it is not protected acceptance. Other platforms run the software interoperability path without claiming Windows
 custody. Legacy TypeScript and Python entry points remain unchanged.
