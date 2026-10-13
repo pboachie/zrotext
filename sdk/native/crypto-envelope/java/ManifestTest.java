@@ -19,6 +19,7 @@ public final class ManifestTest {
             var exposed=original.bytes();exposed[0]^=1;check(original.bytes()[0]==90);
             byte[] wrong=fingerprint.clone();wrong[0]^=1;refuses(()->ManifestChain.RootPin.enroll(pin,wrong));
             refuses(()->ManifestChain.genesis02(manifest,root,original.expiresMs()));
+            refuses(()->ManifestChain.genesis02(manifest,root,0));
             refuses(()->ManifestChain.continueChain(manifest,original,2,now-1));
             for(int at:new int[]{0,21,29,53,85,150,151,manifest.length-1}){
                 byte[] altered=manifest.clone();altered[at]^=1;refuses(()->ManifestChain.genesis02(altered,root,now));

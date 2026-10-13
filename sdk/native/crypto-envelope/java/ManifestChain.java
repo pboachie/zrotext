@@ -19,7 +19,7 @@ public final class ManifestChain {
     private static byte[] sha(byte[] value)throws GeneralSecurityException{return MessageDigest.getInstance("SHA-256").digest(value);}
     private static long number(byte[] value,int at)throws GeneralSecurityException{long n=ByteBuffer.wrap(value,at,8).getLong();need(n>=0);return n;}
     private static void window(long issued,long expires,long now)throws GeneralSecurityException{
-        need(now>=0 && issued>0 && expires>issued && expires-issued<=86400000 && now<expires);
+        need(now>0 && issued>0 && expires>issued && expires-issued<=86400000 && now<expires);
         need(issued<=now || issued-now<=300000);
     }
     private static void signature(byte[] point,byte[] raw,String label,byte[] unsigned)throws GeneralSecurityException{

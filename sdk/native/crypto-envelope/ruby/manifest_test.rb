@@ -24,6 +24,7 @@ STDIN.each_line do |line|
   exposed=original.bytes;exposed.setbyte(0,0);check(original.bytes.getbyte(0)==90)
   wrong=fingerprint.dup;wrong.setbyte(0,wrong.getbyte(0)^1);refuses {Chain::RootPin.enroll(pin,wrong)}
   refuses {Chain.genesis02(manifest,root,original.expires_ms)}
+  refuses {Chain.genesis02(manifest,root,0)}
   refuses {Chain.continue_chain(manifest,original,2,now-1)}
   [0,21,29,53,85,150,151,manifest.bytesize-1].each do |at|
     altered=manifest.dup;altered.setbyte(at,altered.getbyte(at)^1);refuses {Chain.genesis02(altered,root,now)}

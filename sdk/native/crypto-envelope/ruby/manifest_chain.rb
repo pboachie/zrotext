@@ -14,7 +14,7 @@ module ZrotextCandidate
       result=value.byteslice(at,8).unpack1('Q>');need(result<2**63);result
     end
     def window(issued,expires,now)
-      need(now.is_a?(Integer) && now.between?(0,2**63-1) && issued>0 && expires>issued && expires-issued<=86400000 && now<expires)
+      need(now.is_a?(Integer) && now.between?(1,2**63-1) && issued>0 && expires>issued && expires-issued<=86400000 && now<expires)
       need(issued<=now || issued-now<=300000)
     end
     def signature(point,raw,label,unsigned)

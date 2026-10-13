@@ -6,8 +6,9 @@ Enroll a profile02 root pin against an independently authenticated fingerprint,
 verify profile02 genesis, then pass the returned token into each continuation.
 Every received manifest is checked, including a different valid signature over
 the same unsigned current manifest. Tokens own their byte snapshots; exported
-arrays and key records are copies. The C# assembly and Ruby process are trusted
-implementation boundaries, not sandboxes against reflection or hostile code.
+arrays and key records are copies. C# also checks a private construction capability
+before issuing tokens, including when compiled with consumer code in one assembly.
+These language access controls are not sandboxes against reflection or hostile code.
 
 The modules enforce canonical records, key/point/role binding, low-S signatures,
 time windows, exact version and previous-digest continuity, and explicit expected

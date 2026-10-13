@@ -9,6 +9,7 @@ namespace Zrotext.Candidate;
 
 /// <summary>Historical provenance, not live authorization or durable chain selection.</summary>
 public static class ManifestChain {
+    private static readonly object ConstructionPermit=new();
     private static readonly BigInteger Order=new(Convert.FromHexString("FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551"),true,true);
     private static void Need(bool value){if(!value)throw new CryptographicException("Candidate manifest refused");}
     private static byte[] Part(byte[] value,int at,int count)=>value.AsSpan(at,count).ToArray();
@@ -17,7 +18,7 @@ public static class ManifestChain {
     private static byte[] Domain(string value)=>Encoding.ASCII.GetBytes(value+"\0");
     private static byte[] Join(params byte[][] values){int size=0;foreach(var value in values)size+=value.Length;var output=new byte[size];int at=0;foreach(var value in values){value.CopyTo(output,at);at+=value.Length;}return output;}
     private static long Number(byte[] value,int at){long n=BinaryPrimitives.ReadInt64BigEndian(value.AsSpan(at,8));Need(n>=0);return n;}
-    private static void Window(long issued,long expires,long now){Need(now>=0 && issued>0 && expires>issued && expires-issued<=86400000 && now<expires);Need(issued<=now || issued-now<=300000);}
+    private static void Window(long issued,long expires,long now){Need(now>0 && issued>0 && expires>issued && expires-issued<=86400000 && now<expires);Need(issued<=now || issued-now<=300000);}
     private static void Signature(byte[] point,byte[] raw,string label,byte[] unsigned){
         var r=new BigInteger(raw.AsSpan(0,32),true,true);var s=new BigInteger(raw.AsSpan(32,32),true,true);Need(r>0 && r<Order && s>0 && s<=Order/2);
         using var publicPoint=HpkeRecipient.Point(point);using var verifier=ECDsa.Create(publicPoint.ExportParameters(false));
@@ -25,8 +26,10 @@ public static class ManifestChain {
         Need(verifier.VerifyData(Join(Domain(label),size,unsigned),raw,HashAlgorithmName.SHA256,DSASignatureFormat.IeeeP1363FixedFieldConcatenation));
     }
     public sealed class RootPin {
-        internal readonly byte[] Account,Point;
-        private RootPin(byte[] account,byte[] point){Account=account;Point=point;}
+        private readonly byte[] accountBytes,pointBytes;
+        internal byte[] Account=>(byte[])accountBytes.Clone();
+        internal byte[] Point=>(byte[])pointBytes.Clone();
+        private RootPin(byte[] account,byte[] point){accountBytes=(byte[])account.Clone();pointBytes=(byte[])point.Clone();}
         /// <summary>Fingerprint must arrive over an independently authenticated owner channel.</summary>
         public static RootPin Enroll(byte[] input,byte[] comparedFingerprint){
             Need(input.Length==94 && comparedFingerprint.Length==32);var b=(byte[])input.Clone();var compared=(byte[])comparedFingerprint.Clone();
@@ -36,10 +39,15 @@ public static class ManifestChain {
         }
     }
     public sealed class Verified {
-        internal readonly byte[] Data,DigestValue,AccountValue,Root,Previous;
+        private readonly byte[] data,digestBytes,accountBytes,rootBytes,previousBytes;
+        internal byte[] Data=>(byte[])data.Clone();
+        internal byte[] DigestValue=>(byte[])digestBytes.Clone();
+        internal byte[] AccountValue=>(byte[])accountBytes.Clone();
+        internal byte[] Root=>(byte[])rootBytes.Clone();
+        internal byte[] Previous=>(byte[])previousBytes.Clone();
         internal readonly int Predecessor;
         public int Profile{get;} public long Version{get;} public long IssuedMs{get;} public long ExpiresMs{get;} public long ComparisonMs{get;}
-        internal Verified(byte[] b,int profile,int predecessor,long version,long issued,long expires,long comparison,byte[] digest,byte[] account,byte[] root,byte[] previous){Data=b;Profile=profile;Predecessor=predecessor;Version=version;IssuedMs=issued;ExpiresMs=expires;ComparisonMs=comparison;DigestValue=digest;AccountValue=account;Root=root;Previous=previous;}
+        internal Verified(object permit,byte[] b,int profile,int predecessor,long version,long issued,long expires,long comparison,byte[] digest,byte[] account,byte[] root,byte[] previous){Need(ReferenceEquals(permit,ConstructionPermit));data=(byte[])b.Clone();Profile=profile;Predecessor=predecessor;Version=version;IssuedMs=issued;ExpiresMs=expires;ComparisonMs=comparison;digestBytes=(byte[])digest.Clone();accountBytes=(byte[])account.Clone();rootBytes=(byte[])root.Clone();previousBytes=(byte[])previous.Clone();}
         public byte[] Bytes()=>(byte[])Data.Clone();public byte[] Digest()=>(byte[])DigestValue.Clone();public byte[] Account()=>(byte[])AccountValue.Clone();public byte[] RootPoint()=>(byte[])Root.Clone();
         public byte[][] KeyRecords(){int at=Profile==2?151:153,count=Data[at-1];var output=new byte[count][];for(int i=0;i<count;i++)output[i]=Part(Data,at+149*i,149);return output;}
     }
@@ -61,7 +69,7 @@ public static class ManifestChain {
             if(role==6){owners++;Need(Same(point,root) && state==1 && from<=issued && until>=expires);}if(role==2 && state==1)archives++;
         }
         Need(owners==1 && archives==1);var unsigned=Part(b,0,b.Length-64);Signature(root,Part(b,b.Length-64,64),"ZTSE/manifest/v"+profile,unsigned);
-        return new Verified(b,profile,predecessor,version,issued,expires,now,SHA256.HashData(unsigned),account,root,previous);
+        return new Verified(ConstructionPermit,b,profile,predecessor,version,issued,expires,now,SHA256.HashData(unsigned),account,root,previous);
     }
     public static Verified Genesis02(byte[] input,RootPin pin,long now){var value=Parse(input,2,now);Need(Same(value.AccountValue,pin.Account) && Same(value.Root,pin.Point) && value.Version==1 && Zero(value.Previous));return value;}
     public static Verified ContinueChain(byte[] input,Verified prior,int expectedProfile,long now){

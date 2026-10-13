@@ -18,6 +18,10 @@ static class Program {
             var exposed=original.Bytes();exposed[0]^=1;Check(original.Bytes()[0]==90);
             var wrong=(byte[])fingerprint.Clone();wrong[0]^=1;Refuses(()=>ManifestChain.RootPin.Enroll(pin,wrong));
             Refuses(()=>ManifestChain.Genesis02(manifest,root,original.ExpiresMs));
+            Refuses(()=>ManifestChain.Genesis02(manifest,root,0));
+            Refuses(()=>new ManifestChain.Verified(new object(),manifest,2,2,1,1,2,1,new byte[32],new byte[16],new byte[65],new byte[32]));
+            var internalView=original.DigestValue;internalView[0]^=1;Check(original.Digest().SequenceEqual(Hex(f[5])));
+            var rootView=root.Point;rootView[0]=0;Check(ManifestChain.Genesis02(manifest,root,now).Version==1);
             Refuses(()=>ManifestChain.ContinueChain(manifest,original,2,now-1));
             foreach(int at in new[]{0,21,29,53,85,150,151,manifest.Length-1}){
                 var altered=(byte[])manifest.Clone();altered[at]^=1;Refuses(()=>ManifestChain.Genesis02(altered,root,now));
