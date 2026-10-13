@@ -22,6 +22,7 @@ def main():
     parser.add_argument('--controls', type=Path, required=True)
     parser.add_argument('--jna', type=Path)
     parser.add_argument('--ruby', default='ruby')
+    parser.add_argument('--command-file', type=Path, help='Trusted installed-consumer command JSON; skip source compilation')
     args = parser.parse_args()
     producer = args.producer.resolve()
     def run(command, **kw):
@@ -35,21 +36,26 @@ def main():
     env = {k:v for k,v in os.environ.items() if k not in ('NODE_OPTIONS','NODE_PATH','JAVA_TOOL_OPTIONS','_JAVA_OPTIONS','JDK_JAVA_OPTIONS','RUBYOPT','RUBYLIB')}
     with tempfile.TemporaryDirectory(prefix='zrotext-managed-compose02-') as folder:
         temp = Path(folder)
-        if args.language == 'java':
-            jar = args.jna.resolve() if args.jna else temp/'jna.jar'
-            if not args.jna:
-                urllib.request.urlretrieve('https://repo.maven.apache.org/maven2/net/java/dev/jna/jna/5.17.0/jna-5.17.0.jar',jar)
-            if hashlib.sha256(jar.read_bytes()).hexdigest()!=JNA_HASH:
-                raise ValueError('JNA checksum mismatch')
-            java=HERE/'java'
-            sources=sorted(java.glob('*.java'))+sorted((java/'reader').glob('*.java'))+[java/'custody/ProtectedSigner.java']+sorted((java/'composition02').glob('*.java'))+[HERE.parent/'crypto-candidate/java/CandidateBody.java']
-            run(['javac','--release','17','-Xlint:all','-Werror','-cp',jar,'-d',temp,*sources],env=env)
-            command=['java','-cp',str(temp)+os.pathsep+str(jar),'org.zrotext.candidate.Compose02Test']
-        elif args.language == 'csharp':
-            run(['dotnet','build',HERE/'csharp/composition02/Compose02Test.csproj','-o',temp],env=env)
-            command=['dotnet',str(temp/'Compose02Test.dll')]
+        if args.command_file:
+            command=json.loads(args.command_file.read_text(encoding='utf-8'))
+            if not isinstance(command,list) or not command or not all(isinstance(v,str) and v for v in command):
+                raise ValueError('Invalid installed consumer command')
         else:
-            command=[args.ruby,str(HERE/'ruby/composition02/compose_test.rb')]
+            if args.language == 'java':
+                jar = args.jna.resolve() if args.jna else temp/'jna.jar'
+                if not args.jna:
+                    urllib.request.urlretrieve('https://repo.maven.apache.org/maven2/net/java/dev/jna/jna/5.17.0/jna-5.17.0.jar',jar)
+                if hashlib.sha256(jar.read_bytes()).hexdigest()!=JNA_HASH:
+                    raise ValueError('JNA checksum mismatch')
+                java=HERE/'java'
+                sources=sorted(java.glob('*.java'))+sorted((java/'reader').glob('*.java'))+[java/'custody/ProtectedSigner.java']+sorted((java/'composition02').glob('*.java'))+[HERE.parent/'crypto-candidate/java/CandidateBody.java']
+                run(['javac','--release','17','-Xlint:all','-Werror','-cp',jar,'-d',temp,*sources],env=env)
+                command=['java','-cp',str(temp)+os.pathsep+str(jar),'org.zrotext.candidate.Compose02Test']
+            elif args.language == 'csharp':
+                run(['dotnet','build',HERE/'csharp/composition02/Compose02Test.csproj','-o',temp],env=env)
+                command=['dotnet',str(temp/'Compose02Test.dll')]
+            else:
+                command=[args.ruby,str(HERE/'ruby/composition02/compose_test.rb')]
         probe=subprocess.run(command+['--probe'],env=env,timeout=30)
         if probe.returncode==77:
             print('UNQUALIFIED: read-only native signing probe refused before creation')

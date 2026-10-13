@@ -24,6 +24,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--producer', type=Path, required=True)
     parser.add_argument('--jna', type=Path)
+    parser.add_argument('--command-file', type=Path, help='Trusted installed-consumer command JSON; skip source compilation')
     args = parser.parse_args()
     producer = args.producer.resolve()
     if run('git', '-C', producer, 'rev-parse', 'HEAD', capture_output=True, text=True).stdout.strip() != PRODUCER:
@@ -31,16 +32,21 @@ def main():
     run('git', '-C', producer, 'diff', '--quiet', 'HEAD', '--')
     with tempfile.TemporaryDirectory(prefix='zrotext-java-cng-build-') as folder:
         temp = Path(folder)
-        jar = args.jna.resolve() if args.jna else temp / 'jna.jar'
-        if not args.jna:
-            urllib.request.urlretrieve('https://repo.maven.apache.org/maven2/net/java/dev/jna/jna/5.17.0/jna-5.17.0.jar', jar)
-        if hashlib.sha256(jar.read_bytes()).hexdigest() != JNA_SHA256:
-            raise ValueError('JNA checksum mismatch')
-        java = HERE.parent
-        sources = sorted(java.glob('*.java')) + sorted((java / 'reader').glob('*.java')) + sorted(HERE.glob('*.java'))
-        sources.append(java.parent.parent / 'crypto-candidate/java/CandidateBody.java')
-        run('javac', '--release', '17', '-Xlint:all', '-Werror', '-cp', jar, '-d', temp, *sources)
-        command = ['java', '-cp', str(temp) + os.pathsep + str(jar), 'org.zrotext.candidate.CustodyTest']
+        if args.command_file:
+            command=json.loads(args.command_file.read_text(encoding='utf-8'))
+            if not isinstance(command,list) or not command or not all(isinstance(v,str) and v for v in command):
+                raise ValueError('Invalid installed consumer command')
+        else:
+            jar = args.jna.resolve() if args.jna else temp / 'jna.jar'
+            if not args.jna:
+                urllib.request.urlretrieve('https://repo.maven.apache.org/maven2/net/java/dev/jna/jna/5.17.0/jna-5.17.0.jar', jar)
+            if hashlib.sha256(jar.read_bytes()).hexdigest() != JNA_SHA256:
+                raise ValueError('JNA checksum mismatch')
+            java = HERE.parent
+            sources = sorted(java.glob('*.java')) + sorted((java / 'reader').glob('*.java')) + sorted(HERE.glob('*.java'))
+            sources.append(java.parent.parent / 'crypto-candidate/java/CandidateBody.java')
+            run('javac', '--release', '17', '-Xlint:all', '-Werror', '-cp', jar, '-d', temp, *sources)
+            command = ['java', '-cp', str(temp) + os.pathsep + str(jar), 'org.zrotext.candidate.CustodyTest']
         probe = subprocess.run(command + ['--probe'], timeout=30)
         if probe.returncode == 77:
             print('UNQUALIFIED: native PCP unavailable before creation; compilation/refusal only')
