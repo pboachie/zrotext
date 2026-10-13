@@ -94,7 +94,8 @@ fn authenticates_text_at_exact_boundaries() {
         Aes256Gcm, KeyInit, Nonce,
         aead::{Aead, Payload},
     };
-    let key = [7u8; 32];
+    let mut key = [0u8; 32];
+    getrandom::fill(&mut key).unwrap();
     let nonce = Nonce::try_from(&[8u8; 12][..]).unwrap();
     let cipher = Aes256Gcm::new_from_slice(&key).unwrap();
     let aad = vec![9; 36864];

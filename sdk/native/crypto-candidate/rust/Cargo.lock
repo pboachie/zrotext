@@ -307,6 +307,7 @@ name = "zrotext-candidate-body"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
+ "getrandom",
  "serde_json",
  "zeroize",
 ]
