@@ -198,6 +198,13 @@ println!("Installed Rust client loaded");
             "--root", stage / "installed", "zrotext-api-cli", env=env, cwd=consumer)
         binary = stage / "installed/bin" / ("zrotext-api.exe" if os.name == "nt" else "zrotext-api")
         run(binary, "--help", env=env, cwd=consumer)
+        spec = importlib.util.spec_from_file_location("installed_cli_acceptance", wire / "cli.py")
+        checks = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(checks)
+        checks.Acceptance.binary = binary
+        result = unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromModule(checks))
+        if not result.wasSuccessful():
+            raise ValueError("Installed CLI confirmation/reconciliation contracts failed")
     finally:
         server.shutdown()
         server.server_close()

@@ -125,7 +125,13 @@ Staging resolves workspace metadata and local dependencies
 into explicit candidate-registry versions. A temporary localhost sparse registry
 serves those archives while ordinary transitive dependencies resolve from
 crates.io. After removing all source staging, a fresh Cargo home compiles/runs an
-SDK consumer and installs/runs the CLI help with its packaged lock file. There
+SDK consumer and installs/runs the CLI with its packaged lock file. Besides help,
+six subprocess acceptance groups run against that exact installed binary:
+preview/partial confirmation sends nothing; missing authentication/idempotency
+fails before transport; confirmed ambiguous sends make one attempt; status
+reconciliation stays read-only; failed status reads do not retry; and auth status
+redacts credentials without transport. The checks retain synthetic caller keys
+and unknown-outcome semantics. There
 are no path dependencies, patch tables or source-replacement configuration.
 
 Rust's output is specifically **candidate-registry qualification**, not public
