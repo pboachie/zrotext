@@ -3,6 +3,7 @@ import copy
 import functools
 import hashlib
 import http.server
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ import subprocess
 import tarfile
 import threading
 import tomllib
+import unittest
 import zipfile
 
 CRATES_IO = "https://github.com/rust-lang/crates.io-index"
@@ -241,6 +243,17 @@ func main() {
     if '"Replace"' in listing:
         raise ValueError("Go consumer used a source replacement")
     run("go", "run", ".", cwd=consumer, env=env)
+    wire = Path(__file__).resolve().parent / "package-wire"
+    shutil.copy2(wire / "go-main.go", consumer / "main.go")
+    binary = consumer / ("archive-wire.exe" if os.name == "nt" else "archive-wire")
+    run("go", "build", "-o", binary, ".", cwd=consumer, env=env)
+    spec = importlib.util.spec_from_file_location("installed_go_wire", wire / "test_wire.py")
+    checks = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(checks)
+    checks.Wire.binary, checks.Wire.language = str(binary), "go"
+    result = unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromModule(checks))
+    if not result.wasSuccessful():
+        raise ValueError("Installed Go archive wire contracts failed")
     run("go", "mod", "verify", cwd=consumer, env=env)
     # Retain ordinary module checksums, not temporary checkout/cache paths.
     shutil.copy2(consumer / "go.sum", feed / "consumer.go.sum")

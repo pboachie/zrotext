@@ -116,6 +116,15 @@ CLI also needs the versioned-dependency/MSRV repair in
 [Tungsten #70](https://github.com/pboachie/tungsten/issues/70). The staging adaptation
 proves crate compilation/installability without treating it as an emitter fix.
 
+The installed Go consumer also runs twelve synthetic HTTP checks adapted from
+the native wire suite: bearer authentication and scope refusal, argument validation,
+planned-operation exclusion, disabled sealed gates, pagination, malformed JSON and
+response shapes, bounded body-read timeout, mutation/cross-origin redirects, and
+single-attempt uncertain sends preserving caller idempotency. These execute against
+the installed module archives after source staging is removed. Same-origin read
+redirect policy remains blocked by Tungsten #65; this suite does not qualify that
+missing policy or real server permission enforcement.
+
 These feeds include locally built Tungsten runtimes. They prove archive usability,
 not availability on public registries. Upstream runtime distribution issue
 [Tungsten #62](https://github.com/pboachie/tungsten/issues/62) remains a release
