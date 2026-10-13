@@ -14,7 +14,7 @@ import tempfile
 import threading
 
 ROOT = Path(__file__).resolve().parent
-REVISION = "034ccd0a7390a5451745e885e5ffca94f9bbb633"
+REVISION = "3cda99572eafb0dbc2504f88e228f5481234e33f"
 
 
 def run(*args, **kwargs):

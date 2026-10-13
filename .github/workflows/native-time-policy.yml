@@ -34,7 +34,7 @@ jobs:
         run: |
           git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/time-policy"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/time-policy" checkout --detach 034ccd0a7390a5451745e885e5ffca94f9bbb633
+          git -C "$env:RUNNER_TEMP/time-policy" checkout --detach 3cda99572eafb0dbc2504f88e228f5481234e33f
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm ci --prefix "$env:RUNNER_TEMP/time-policy/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -46,4 +46,11 @@ jobs:
           RUSTUP_TOOLCHAIN: '1.97.1'
         run: |
           python sdk/native/hpke-candidate/run-time-policy.py --language '${{ matrix.language }}' --producer "$env:RUNNER_TEMP/time-policy"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Authenticated reader lifetime acceptance and refusal
+        shell: pwsh
+        env:
+          RUSTUP_TOOLCHAIN: '1.97.1'
+        run: |
+          python sdk/native/hpke-candidate/run-time-reader.py --language '${{ matrix.language }}' --producer "$env:RUNNER_TEMP/time-policy"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
