@@ -33,3 +33,9 @@ interop, not full sealed-reader, registry, production or protected custody
 acceptance. See issue1128 for the remaining native protocol layers.
 
 Reference: https://www.rfc-editor.org/rfc/rfc9180.html sections4-5 and7.
+
+## Envelope integrity
+
+`VerifyEnvelope` (Go) / `envelope::verify_envelope` (Rust) validate profile 02 outbound/inbound and profile 03 outbound, including canonical layout, signed-storage integers, recipient ordering and P-256 points, signer key-ID binding, and domain-separated low-S ECDSA. Owned tokens produce exact body/wrap transcripts and unsigned-content digests.
+
+This is signature integrity, not authority: correct verified manifests, current signer/recipient authorization, replay state and protected custody remain caller requirements. Profile 01 and profile 03 inbound are refused. No full reader is claimed. The pinned public exporter supplies six recipient rows; native tests cover exact transcripts, every single-byte mutation, truncation, trailing data and input aliasing.

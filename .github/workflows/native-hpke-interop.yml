@@ -26,6 +26,10 @@ jobs:
           git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$RUNNER_TEMP/producer"
           git -C "$RUNNER_TEMP/producer" checkout --detach 4028720ca2b066ddd964e78b02efa1de01080cf4
           npm ci --prefix "$RUNNER_TEMP/producer/sdk/typescript" --ignore-scripts --no-audit --no-fund
+      - name: Prepare reviewed public envelope fixtures
+        run: |
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$RUNNER_TEMP/envelopes"
+          git -C "$RUNNER_TEMP/envelopes" checkout --detach 9ddd579b1965180db4ccfa503cce9c338b970f68
       - run: rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
       - name: Rust native recipient and package
         working-directory: sdk/native/hpke-candidate/rust
@@ -33,10 +37,12 @@ jobs:
           cargo +1.97.1 fmt --check
           cargo +1.97.1 clippy --locked --all-targets -- -D warnings
           node "$RUNNER_TEMP/producer/sdk/typescript/test/emit-native-hpke.mjs" | cargo +1.97.1 run --locked --example interop
+          python "$RUNNER_TEMP/envelopes/sdk/native/crypto-envelope/java/envelope_rows.py" | cargo +1.97.1 run --locked --example envelope
           cargo +1.97.1 package --locked
       - name: Go native recipient
         working-directory: sdk/native/hpke-candidate/go
         run: |
           test -z "$(gofmt -l .)"
           go vet ./...
+          python "$RUNNER_TEMP/envelopes/sdk/native/crypto-envelope/java/envelope_rows.py" | go run ./cmd/envelope
           node "$RUNNER_TEMP/producer/sdk/typescript/test/emit-native-hpke.mjs" | go run ./cmd/interop
