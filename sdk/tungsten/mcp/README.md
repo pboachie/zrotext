@@ -59,13 +59,20 @@ your MCP host to run `zrotext-mcp` over local stdio. Operator credential-file
 configuration and refusal behavior above remain required. The public module
 exports the guarded adapter; `/stdio` exposes the local transport module.
 
-Installed tests retain all nine reviewed adapter cases, check the actual generated
+Installed tests retain all thirteen reviewed adapter cases, check the actual generated
 nine-tool catalog, exercise a real stdio subprocess, refuse missing or malformed
 operator credentials, and reject owner names and injected confirmation/credentials.
-The thirteen test groups also connect an installed stdio process to a synthetic
+The seventeen test groups also connect an installed stdio process to a synthetic
 HTTPS policy fixture using an operator credential file: exact scoped request
 binding, owner-binding-required metadata, explicit scope refusal, single-attempt
 unknown outcomes and untrusted-certificate refusal are checked. This fixture
 does not establish deployed server authority or approval.
+The alias differential controls compare all nine advertised contracts against
+the maintained guarded definitions. Every workflow method checks exact argument
+forwarding, authority-field and malformed-identity rejection, and preservation
+of refused versus uncertain outcomes without retry or provider-error disclosure.
+These comparisons use a trusted client seam to isolate alias behavior; the TLS
+controls separately exercise the installed workflow transport. They do not
+establish complete legacy tool replacement or live authorization parity.
 No package publication, live authenticated server acceptance or stable sealed
 profile acceptance is implied.

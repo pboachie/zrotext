@@ -104,12 +104,14 @@ def main():
         consumer.mkdir()
         (consumer / "package.json").write_text('{"private":true,"type":"module"}\n')
         run(npm, "install", "--ignore-scripts", "--no-audit", "--no-fund", "--save-exact", archive, cwd=consumer, env=env)
-        # The reviewed nine adapter cases retain identical assertions and use
+        # Adapter controls retain identical assertions and use
         # installed public exports or the packaged guarded comparison fixture.
         tests = (CONFIG / "mcp/adapter.test.mjs").read_text()
         tests = replace_once(tests, "from './adapter.mjs'", "from '@elysra/zrotext-mcp'")
         tests = replace_once(tests, "from '../../mcp/server.mjs'",
                              "from './node_modules/@elysra/zrotext-mcp/lib/sdk/mcp/server.mjs'")
+        tests = replace_once(tests, "from '../../typescript/dist/workflow-tool-client.js'",
+                             "from './node_modules/@elysra/zrotext-mcp/lib/sdk/typescript/dist/workflow-tool-client.js'")
         tests = replace_once(tests, "from './server.mjs'", "from '@elysra/zrotext-mcp/stdio'")
         tests = replace_once(tests, "new URL('./server.mjs', import.meta.url)",
                              "new URL(import.meta.resolve('@elysra/zrotext-mcp/stdio'))")
