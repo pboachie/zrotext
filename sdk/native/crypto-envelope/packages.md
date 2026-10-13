@@ -26,7 +26,7 @@ Outbound profile03 follows the signed key-lifetime policy; cross-language
 alignment remains tracked in issue #1226.
 
 `package-managed.py --target java --out <new-external-directory>` also requires
-eighteen exact producer/control checkout arguments listed by `--help`. Run `npm ci
+twenty-two exact producer/control checkout arguments listed by `--help`. Run `npm ci
 --ignore-scripts` and `npm run build` in each producer's `sdk/typescript` first.
 Use target `csharp` or `ruby` for the corresponding archive. Build tools must be
 on PATH. The helper requires clean tracked fixture sources at the exact pins.
@@ -71,7 +71,7 @@ ciphertext addressed to a fresh nonexportable recipient; both normal completion
 and interrupted fixture setup require exact owned-key deletion. No private
 recipient scalar is supplied. Template content and crypto are included in the
 closed runtime inventory. Separate owner-template modules add authenticated cold
-reads and reviewed save, explicit retry and GET reconciliation. Nineteen external
+reads and reviewed save, explicit retry and GET reconciliation. Twenty-one external
 consumer suites now include the cold/save state-machine comparisons, exact
 Cookie/CSRF and ciphertext identity, busy/close/deadline fences, lifecycle and
 framing controls. A matching read never silently acknowledges an uncertain write.
@@ -82,6 +82,20 @@ retry behavior changes. These are synthetic installed-client checks, not live
 owner-service or full legacy-client acceptance.
 The output manifest records the fixture revisions and this installed
 owner-template acceptance separately from archive hashes and native qualification.
+Installed opening and authoring consumers add independently pinned lifecycle
+comparisons. Opening proves current client/recipient binding and suppresses
+plaintext after client or provider loss; a matching pending read remains
+unacknowledged. Reviewed authoring copies one draft, requires explicit approval,
+preserves foreign reviewed tickets, and returns an opaque ticket without HTTP.
+The original authoring lifetime still bounds subsequent client operations.
+Ruby additionally rejects nonboolean objects with misleading equality methods
+before sealing or dispatch. The protected opening fixture uses fresh owned keys
+and verifies provider closure and exact deletion after interrupted setup; it
+does not delete keys borrowed by application lifecycles. Software opening uses
+an explicit 1000ms post-handshake fixture budget across these three targets.
+The manifest records protected opening separately; unavailable custody is not
+qualified by software success. These tests do not establish DOM/browser
+activation, public registry installation or live owner authority.
 C# internal primitive-width unit checks remain in the ordinary source harness.
 The external installed assembly tests public template APIs; its dedicated
 `ZROTEXT_INSTALLED_CONSUMER` symbol excludes only that internal-access prelude,
