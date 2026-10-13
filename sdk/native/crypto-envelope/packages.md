@@ -8,13 +8,14 @@ Candidate coordinates are Maven
 `io.github.pboachie.zrotext:zrotext-native-candidate:0.1.0-alpha.1`, NuGet
 `Zrotext.Native.Candidate` version `0.1.0-alpha.1`, and Ruby gem
 `zrotext-native-candidate` version `0.1.0.alpha.1`. Java requires Java 17 and the
-ordinary pinned JNA 5.17.0 dependency; C# targets .NET 8; Ruby requires 3.3.
+ordinary pinned JNA 5.17.0, Gson 2.14.0 and Error Prone annotations 2.48.0 dependencies; C# targets .NET 8; Ruby requires 3.3.
 Ruby consumers use `require 'zrotext_native_candidate'`.
 
 The closed package inventory includes body AEAD, HPKE, canonical signed envelopes,
 manifest lineage, elected profile03 proofs/readers, software readers, native
 protected recipients/signers, profile02/03 composition and retry journals, root
-selection, election selection, and selected original-reply verification/opening.
+selection, election selection, selected original-reply verification/opening, accepted-history
+checkpoints, bounded original-grant HTTPS, and authenticated current-proof clients.
 See [the original-reply boundary](https://github.com/pboachie/zrotext/blob/a51c04d87ee51eaf1912b877f1cc9666f02af8cf/sdk/native/crypto-envelope/original-replies.md); the installed gate also
 runs its software and protected-recipient consumers against the archived library. Existing authority
 adapters remain mandatory.
@@ -25,7 +26,7 @@ Outbound profile03 follows the signed key-lifetime policy; cross-language
 alignment remains tracked in issue #1226.
 
 `package-managed.py --target java --out <new-external-directory>` also requires
-seven exact producer/control checkout arguments listed by `--help`. Run `npm ci
+nine exact producer/control checkout arguments listed by `--help`. Run `npm ci
 --ignore-scripts` and `npm run build` in each producer's `sdk/typescript` first.
 Use target `csharp` or `ruby` for the corresponding archive. Build tools must be
 on PATH. The helper requires clean tracked fixture sources at the exact pins.
@@ -36,6 +37,13 @@ fresh GEM_HOME, and runs external consumers against the installed library.
 Consumers reuse root/election restore and reader controls, native recipient
 qualification, both native composition/retry suites, and selected original-reply
 signature, authority, software-opening and native protected-opening controls.
+Installed history consumers also run concurrent process CAS, restart and interrupted-append
+refusal. Installed HTTPS/current-proof consumers run synthetic TLS framing, timeout,
+redirect, duplicate-field, signed authority and durable checkpoint controls. These
+controls retain their independent fixture revisions and execute without compiling
+runtime sources into test drivers. HTTPS uses caller-held original grants and never
+automatically retries uncertain outcomes. Verified current proofs do not yet make
+this package a complete integrated original-reply workflow client.
 The original-reply producer is pinned separately; its native mode receives only
 the recipient public point and never supplies that recipient's private scalar.
 Maintained TypeScript
