@@ -38,11 +38,17 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: '24.13.0'
+      - name: Check out independently signed successor controls
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 51402a99b6473a9d40d89a0f77755c4e109e6da7
+          path: controls
+          persist-credentials: false
       - name: Build independent producer and emit temporary fixture
         run: |
           npm ci --prefix producer/sdk/typescript
           npm run build --prefix producer/sdk/typescript
-          node producer/sdk/native/sealed-candidate/python/produce-fixture.mjs | node sdk/native/crypto-envelope/java/reader/backdated-fixture.mjs | python3 sdk/native/crypto-envelope/java/reader/fixture_rows.py > "$RUNNER_TEMP/readers.tsv"
+          node producer/sdk/native/sealed-candidate/python/produce-fixture.mjs | node controls/sdk/native/hpke-candidate/reader-controls.mjs | node sdk/native/crypto-envelope/java/reader/backdated-fixture.mjs | python3 sdk/native/crypto-envelope/java/reader/fixture_rows.py > "$RUNNER_TEMP/readers.tsv"
       - name: Java native reader
         run: |
           javac --release 17 -Xlint:all -Werror -d "$RUNNER_TEMP/reader-classes" sdk/native/crypto-envelope/java/*.java sdk/native/crypto-envelope/java/reader/*.java sdk/native/crypto-candidate/java/CandidateBody.java

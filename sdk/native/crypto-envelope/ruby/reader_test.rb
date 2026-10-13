@@ -24,6 +24,17 @@ STDIN.each_line do |line|
   ]).to_der)
   reader=ZrotextCandidate::SealedReader02
   current=->(a,v,h,_w) {a==manifest.account && v==manifest.version && h==manifest.digest}
+  chain=ZrotextCandidate::ManifestChain
+  following=chain.continue_chain(d[9],manifest,2,now);rotated=chain.continue_chain(d[10],manifest,2,now)
+  check(following.descends_from(manifest) && !manifest.descends_from(following) && !following.descends_from(rotated))
+  refreshed=chain.continue_chain(d[9],following,2,now);check(refreshed.descends_from(manifest))
+  live=->(_a,v,h,_w) {v==following.version && h==following.digest}
+  if f[0]=='inbound'
+    check(reader.open_historical_archive(d[3],manifest,refreshed,now,d[5],key,live).b==d[7])
+  else
+    refuses {reader.open_historical_archive(d[3],manifest,following,now,d[5],key,live)}
+  end
+  rotated_calls=0;refuses {reader.open_historical_archive(d[3],manifest,rotated,now,d[5],nil,->(_a,_v,_h,_w) {rotated_calls+=1;true})};check(rotated_calls==0)
   check(reader.open(d[3],manifest,now,2,d[5],key,current).b==d[7])
   signer=manifest.key_records.find { |r| r.getbyte(0)==4 };check(ZrotextCandidate::SignedEnvelope.verify(d[8],2,signer.byteslice(33,65)).kind==2)
   backdated_calls=0;refuses {reader.open(d[8],manifest,now,2,d[5],key,->(_a,_v,_h,_w) {backdated_calls+=1;true})};check(backdated_calls==0)

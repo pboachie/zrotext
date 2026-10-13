@@ -42,9 +42,9 @@ module ZrotextCandidate
     end
     class Verified
       attr_reader :profile,:predecessor,:version,:issued_ms,:expires_ms,:comparison_ms
-      def initialize(bytes,profile,predecessor,version,issued,expires,comparison,digest,account,root,previous)
+      def initialize(bytes,profile,predecessor,version,issued,expires,comparison,digest,account,root,previous,parent=nil)
         @bytes=bytes.freeze;@profile=profile;@predecessor=predecessor;@version=version;@issued_ms=issued;@expires_ms=expires;@comparison_ms=comparison
-        @digest=digest.freeze;@account=account.freeze;@root=root.freeze;@previous=previous.freeze;freeze
+        @digest=digest.freeze;@account=account.freeze;@root=root.freeze;@previous=previous.freeze;@parent=parent;freeze
       end
       private_class_method :new
       def bytes = @bytes.dup
@@ -52,6 +52,16 @@ module ZrotextCandidate
       def account = @account.dup
       def root_point = @root.dup
       def previous = @previous.dup
+      def parent = @parent
+      def descends_from(historical)
+        return false unless historical.instance_of?(Verified) && account==historical.account && root_point==historical.root_point
+        value=self
+        while value
+          return true if value.profile==historical.profile && value.version==historical.version && value.digest==historical.digest
+          value=value.parent
+        end
+        false
+      end
       def key_records
         at=@profile==2 ? 151 : 153
         Array.new(@bytes.getbyte(at-1)){|i|@bytes.byteslice(at+149*i,149)}
@@ -95,9 +105,13 @@ module ZrotextCandidate
       need(prior.instance_of?(Verified) && now.is_a?(Integer) && now>=prior.comparison_ms && !(prior.profile==3 && expected_profile==2))
       window(prior.issued_ms,prior.expires_ms,now) if prior.profile==2 && expected_profile==3
       value=parse(input,expected_profile,now);need(value.account==prior.account && value.root_point==prior.root_point)
-      return value if value.profile==prior.profile && value.version==prior.version && value.digest==prior.digest
+      return linked(value,prior.parent) if value.profile==prior.profile && value.version==prior.version && value.digest==prior.digest
       need(prior.version<2**63-1 && value.version==prior.version+1 && value.previous==prior.digest)
-      need(value.profile==2 || value.predecessor==prior.profile);value
+      need(value.profile==2 || value.predecessor==prior.profile);linked(value,prior)
     end
+    def linked(value,parent)
+      Verified.send(:new,value.bytes,value.profile,value.predecessor,value.version,value.issued_ms,value.expires_ms,value.comparison_ms,value.digest,value.account,value.root_point,value.previous,parent)
+    end
+    private_class_method :linked
   end
 end

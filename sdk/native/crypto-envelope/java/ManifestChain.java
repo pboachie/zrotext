@@ -43,13 +43,19 @@ public final class ManifestChain {
         private final byte[] bytes,digest,account,root,previous;
         private final int profile,predecessor;
         private final long version,issued,expires,comparison;
-        private Verified(byte[] b,int profile,int predecessor,long version,long issued,long expires,long comparison,byte[] digest,byte[] account,byte[] root,byte[] previous){
-            this.bytes=b;this.profile=profile;this.predecessor=predecessor;this.version=version;this.issued=issued;this.expires=expires;this.comparison=comparison;this.digest=digest;this.account=account;this.root=root;this.previous=previous;
+        private final Verified parent;
+        private Verified(byte[] b,int profile,int predecessor,long version,long issued,long expires,long comparison,byte[] digest,byte[] account,byte[] root,byte[] previous,Verified parent){
+            this.bytes=b;this.profile=profile;this.predecessor=predecessor;this.version=version;this.issued=issued;this.expires=expires;this.comparison=comparison;this.digest=digest;this.account=account;this.root=root;this.previous=previous;this.parent=parent;
         }
         public byte[] bytes(){return bytes.clone();} public byte[] digest(){return digest.clone();}
         public byte[] account(){return account.clone();} public byte[] rootPoint(){return root.clone();}
         public int profile(){return profile;} public long version(){return version;}
         public long issuedMs(){return issued;} public long expiresMs(){return expires;} public long comparisonMs(){return comparison;}
+        public boolean descendsFrom(Verified historical){
+            if(historical==null || !same(account,historical.account) || !same(root,historical.root))return false;
+            for(Verified value=this;value!=null;value=value.parent)if(value.profile==historical.profile && value.version==historical.version && same(value.digest,historical.digest))return true;
+            return false;
+        }
         public byte[][] keyRecords(){int at=profile==2?151:153,count=bytes[at-1]&255;byte[][] out=new byte[count][];for(int i=0;i<count;i++)out[i]=part(bytes,at+149*i,149);return out;}
     }
     private static Verified parse(byte[] input,int profile,long now)throws GeneralSecurityException{
@@ -76,7 +82,7 @@ public final class ManifestChain {
         }
         need(owners==1 && archives==1);byte[] unsigned=part(b,0,b.length-64);
         signature(root,part(b,b.length-64,64),"ZTSE/manifest/v"+profile,unsigned);
-        return new Verified(b,profile,predecessor,version,issued,expires,now,sha(unsigned),account,root,previous);
+        return new Verified(b,profile,predecessor,version,issued,expires,now,sha(unsigned),account,root,previous,null);
     }
     /** Generation-one genesis only. A signed directory object cannot enroll its own root. */
     public static Verified genesis02(byte[] input,RootPin pin,long now)throws GeneralSecurityException{
@@ -87,8 +93,9 @@ public final class ManifestChain {
         need(prior!=null && now>=prior.comparison && !(prior.profile==3 && expectedProfile==2));
         if(prior.profile==2 && expectedProfile==3)window(prior.issued,prior.expires,now);
         Verified value=parse(input,expectedProfile,now);need(same(value.account,prior.account) && same(value.root,prior.root));
-        if(value.profile==prior.profile && value.version==prior.version && same(value.digest,prior.digest))return value;
+        if(value.profile==prior.profile && value.version==prior.version && same(value.digest,prior.digest))return linked(value,prior.parent);
         need(prior.version<Long.MAX_VALUE && value.version==prior.version+1 && same(value.previous,prior.digest));
-        need(value.profile==2 || value.predecessor==prior.profile);return value;
+        need(value.profile==2 || value.predecessor==prior.profile);return linked(value,prior);
     }
+    private static Verified linked(Verified value,Verified parent){return new Verified(value.bytes,value.profile,value.predecessor,value.version,value.issued,value.expires,value.comparison,value.digest,value.account,value.root,value.previous,parent);}
 }

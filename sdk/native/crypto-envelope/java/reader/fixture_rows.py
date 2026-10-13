@@ -14,4 +14,5 @@ point = next(manifest[151+149*i+33:151+149*i+98] for i in range(manifest[150])
 for name in ("inbound", "outbound"):
     print("\t".join([name, str(fixture["now"])] + [data(key).hex() for key in
         ("rootPin", "fingerprint", "manifest", name, "archiveScalar", "reader")]
-        + [point.hex(), fixture["text"].encode().hex(), data("inboundBackdated").hex()]))
+        + [point.hex(), fixture["text"].encode().hex(), data("inboundBackdated").hex(),
+           data("liveSuccessor").hex(), data("rotatedSuccessor").hex()]))

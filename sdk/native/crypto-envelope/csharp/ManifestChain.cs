@@ -46,8 +46,14 @@ public static class ManifestChain {
         internal byte[] Root=>(byte[])rootBytes.Clone();
         internal byte[] Previous=>(byte[])previousBytes.Clone();
         internal readonly int Predecessor;
+        internal Verified? Parent{get;}
         public int Profile{get;} public long Version{get;} public long IssuedMs{get;} public long ExpiresMs{get;} public long ComparisonMs{get;}
-        internal Verified(object permit,byte[] b,int profile,int predecessor,long version,long issued,long expires,long comparison,byte[] digest,byte[] account,byte[] root,byte[] previous){Need(ReferenceEquals(permit,ConstructionPermit));data=(byte[])b.Clone();Profile=profile;Predecessor=predecessor;Version=version;IssuedMs=issued;ExpiresMs=expires;ComparisonMs=comparison;digestBytes=(byte[])digest.Clone();accountBytes=(byte[])account.Clone();rootBytes=(byte[])root.Clone();previousBytes=(byte[])previous.Clone();}
+        internal Verified(object permit,byte[] b,int profile,int predecessor,long version,long issued,long expires,long comparison,byte[] digest,byte[] account,byte[] root,byte[] previous,Verified? parent=null){Need(ReferenceEquals(permit,ConstructionPermit));data=(byte[])b.Clone();Profile=profile;Predecessor=predecessor;Version=version;IssuedMs=issued;ExpiresMs=expires;ComparisonMs=comparison;digestBytes=(byte[])digest.Clone();accountBytes=(byte[])account.Clone();rootBytes=(byte[])root.Clone();previousBytes=(byte[])previous.Clone();Parent=parent;}
+        public bool DescendsFrom(Verified historical){
+            if(!Same(accountBytes,historical.accountBytes) || !Same(rootBytes,historical.rootBytes))return false;
+            for(Verified? value=this;value is not null;value=value.Parent)if(value.Profile==historical.Profile && value.Version==historical.Version && Same(value.digestBytes,historical.digestBytes))return true;
+            return false;
+        }
         public byte[] Bytes()=>(byte[])Data.Clone();public byte[] Digest()=>(byte[])DigestValue.Clone();public byte[] Account()=>(byte[])AccountValue.Clone();public byte[] RootPoint()=>(byte[])Root.Clone();
         public byte[][] KeyRecords(){int at=Profile==2?151:153,count=Data[at-1];var output=new byte[count][];for(int i=0;i<count;i++)output[i]=Part(Data,at+149*i,149);return output;}
     }
@@ -75,7 +81,8 @@ public static class ManifestChain {
     public static Verified ContinueChain(byte[] input,Verified prior,int expectedProfile,long now){
         Need(now>=prior.ComparisonMs && !(prior.Profile==3 && expectedProfile==2));if(prior.Profile==2 && expectedProfile==3)Window(prior.IssuedMs,prior.ExpiresMs,now);
         var value=Parse(input,expectedProfile,now);Need(Same(value.AccountValue,prior.AccountValue) && Same(value.Root,prior.Root));
-        if(value.Profile==prior.Profile && value.Version==prior.Version && Same(value.DigestValue,prior.DigestValue))return value;
-        Need(prior.Version<long.MaxValue && value.Version==prior.Version+1 && Same(value.Previous,prior.DigestValue));Need(value.Profile==2 || value.Predecessor==prior.Profile);return value;
+        if(value.Profile==prior.Profile && value.Version==prior.Version && Same(value.DigestValue,prior.DigestValue))return Linked(value,prior.Parent);
+        Need(prior.Version<long.MaxValue && value.Version==prior.Version+1 && Same(value.Previous,prior.DigestValue));Need(value.Profile==2 || value.Predecessor==prior.Profile);return Linked(value,prior);
     }
+    private static Verified Linked(Verified v,Verified? parent)=>new(ConstructionPermit,v.Data,v.Profile,v.Predecessor,v.Version,v.IssuedMs,v.ExpiresMs,v.ComparisonMs,v.DigestValue,v.AccountValue,v.Root,v.Previous,parent);
 }
