@@ -141,6 +141,7 @@ def rust_package(stage, output):
         shutil.copytree(ROOT / "rust/examples/contact_custody", consumer / "src/bin/contact_custody")
         shutil.copytree(ROOT / "rust/examples/contact_mutation_custody", consumer / "src/bin/contact_mutation_custody")
         shutil.copytree(ROOT / "rust/examples/context_custody", consumer / "src/bin/context_custody")
+        shutil.copytree(ROOT / "rust/examples/context_limits", consumer / "src/bin/context_limits")
         (consumer / "Cargo.toml").write_text('''[package]
 name = "native-installed-consumer"
 version = "0.0.0"
@@ -301,6 +302,9 @@ def contact_acceptance(binaries, contact, hardware=False):
 
 def context_acceptance(binaries, context, hardware=False):
     """Explicit owner/integration roles through ordinary installed public APIs."""
+    if not hardware:
+        run(sys.executable, ROOT / "test-workflow-context-limits.py",
+            "--binary", binaries["workflow_context"], env=safe_env())
     for role in (2, 3):
         flags = ["--hardware"] if hardware else []
         run(sys.executable, ROOT / "test-workflow-context.py", "--producer", context,
@@ -404,6 +408,7 @@ def main():
                       "workflow_context_acceptance": {"reader_roles": [2, 3], "software_interop": True,
                                                        "protected_opening": qualified,
                                                        "current_authority_recheck": True,
+                                                       "retained_admission_and_deadline": True,
                                                        "persistence": False, "service_acceptance": False},
                       "protected_acceptance": qualified}
             (args.output / "qualification.json").write_text(json.dumps(report, indent=2) + "\n")

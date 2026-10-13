@@ -107,6 +107,9 @@ opaque ZTWC01 bytes, exact scope/domain binding, fresh encapsulation, size limit
 tampering and current-authority rechecks. The maintained SDK independently opens
 software-produced ciphertext. Qualified protected opening exercises both roles
 and requires exact owned-key deletion on success and interrupted setup. These
+installed APIs also run actual ten-second deadline and cancellation controls:
+four unresolved authority callbacks retain their slots, a fifth is refused
+without invoking its callback, and admission returns after settlement. These
 checks do not establish context persistence, a live integration grant or deployed
 service acceptance; the report records those boundaries separately.
 

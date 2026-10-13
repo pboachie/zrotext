@@ -108,11 +108,13 @@ class PackagePolicy(unittest.TestCase):
             packages.context_acceptance(binaries, Path("context"))
             packages.context_acceptance(binaries, Path("context"), hardware=True)
         calls = [call.args for call in run.call_args_list]
-        self.assertEqual(len(calls), 6)
+        self.assertEqual(len(calls), 7)
+        self.assertEqual(calls[0][1].name, "test-workflow-context-limits.py")
+        self.assertEqual(calls[0][2:], ("--binary", binaries["workflow_context"]))
         expected = (("2", ()), ("3", ()), ("2", ("--hardware",)),
                     ("2", ("--hardware", "--fail-setup")), ("3", ("--hardware",)),
                     ("3", ("--hardware", "--fail-setup")))
-        for call, (role, flags) in zip(calls, expected):
+        for call, (role, flags) in zip(calls[1:], expected):
             self.assertEqual(call[1].name, "test-workflow-context.py")
             self.assertEqual(call[2:], ("--producer", Path("context"), "--binary",
                                        binaries["workflow_context"], "--role", role, *flags))
