@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "AGPL-3.0-only"
 license-files = ["LICENSE"]
-dependencies = ["cryptography==50.0.2", "cffi==2.1.1", "pycparser==3.11"]
+dependencies = ["cryptography==50.0.2", "cffi==2.1.1", "pycparser==3.11", "ada-url==1.27.0"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Programming Language :: Python :: 3",

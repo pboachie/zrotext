@@ -20,7 +20,7 @@ const root=await crypto.subtle.importKey('jwk',{kty:'EC',crv:'P-256',x:Buffer.fr
 const sign=async(domain,unsigned)=>{const n=new Uint8Array(4);new DataView(n.buffer).setUint32(0,unsigned.length);return join(unsigned,canonicalSignature02(new Uint8Array(await crypto.subtle.sign({name:'ECDSA',hash:'SHA-256'},root,join(text(domain+'\0'),n,unsigned)))));};
 const nextUnsigned=first.bytes.slice(0,-64);new DataView(nextUnsigned.buffer).setBigUint64(29,2n);nextUnsigned.set(first.digest,53);
 const nextBytes=await sign('ZTSE/manifest/v2',nextUnsigned),next=await verifyManifest02(nextBytes,await advanceManifestTrust02(trust,first),10000n);
-const origin='https://synthetic.invalid',scope={expectedAccountId:decode(f.account),expectedOrigin:origin,expectedRootFingerprint:decode(f.fingerprint),comparison:'declared_issued_ms'};
+const origin='https://xn--fa-hia.invalid',scope={expectedAccountId:decode(f.account),expectedOrigin:origin,expectedRootFingerprint:decode(f.fingerprint),comparison:'declared_issued_ms'};
 async function statement(manifest,generation){
  const reader=manifest.keys.find(k=>k.role===2);
  const raw=await sign('ZT/contact-reader/authorization/v1',statements.encodeContactReaderStatementUnsigned01({authorizationId:fill(Number(generation),16),accountId:manifest.accountId,origin,
@@ -57,7 +57,14 @@ const final=contacts.verifyContactTransition01({previous:changed,next:clear.veri
 const origins=['https://synthetic.invalid','https://synthetic.invalid:8443','https://synthetic.invalid:443','https://SYNTHETIC.invalid','https://synthetic.invalid/',
  'https://synthetic.invalid/path','https://user@synthetic.invalid','https://xn--fa-hia.invalid','https://a!b.invalid','https://a^b.invalid','https://xn--.invalid'];
 origins.push(...Array.from({length:94},(_,i)=>'https://a'+String.fromCharCode(33+i)+'b.invalid'), 'https://'+[127,0,0,1].join('.'),'https://'+[127,1].join('.'),'https://'+['0x7f',1].join('.'),'https://a.0x','https://[::1]','https://[0:0:0:0:0:0:0:1]','https://synthetic.invalid:00080','https://synthetic.invalid:0');
-const originCases=origins.map(origin=>{try{const u=new URL(origin);return {origin,accepted:u.origin===origin&&u.protocol==='https:'&&!u.username&&!u.password&&u.pathname==='/'&&!u.search&&!u.hash};}catch{return {origin,accepted:false};}});
+if(process.argv.length>2){
+ if(process.argv.length!==3||process.argv[2]!=='--origins')throw Error('fixture arguments');
+ let input='';for await(const chunk of process.stdin)input+=chunk;
+ const extra=JSON.parse(input);if(!Array.isArray(extra)||extra.length>10000||extra.some(v=>typeof v!=='string'))throw Error('origin cases');origins.push(...extra);
+}
+const statementNames=['authorizationId','accountId','origin','trustGeneration','manifestVersion','readerGeneration','rootFingerprint','manifestDigest','readerId','readerPoint','issuedMs','untilMs','capability'];
+const unsignedBase=Object.fromEntries(statementNames.map(k=>[k,oldStatement.id[k]]));
+const originCases=origins.map(origin=>{try{const unsigned=statements.encodeContactReaderStatementUnsigned01({...unsignedBase,origin});return {origin,accepted:true,unsigned:b64(unsigned)};}catch{return {origin,accepted:false};}});
 process.stdout.write(JSON.stringify({rootPin:f.rootPin,fingerprint:f.fingerprint,manifest:f.manifest,nextManifest:b64(nextBytes),account:f.account,origin,
  statement:b64(oldStatement.raw),nextStatement:b64(newStatement.raw),contact:b64(contact),routing:b64(routing),name:b64(name.raw),notes:b64(notes.raw),replacement:b64(replacement.raw),
  create:b64(create.raw),update:b64(update.raw),clear:b64(clear.raw),converted:b64(converted.raw),finalDigest:b64(contacts.verifiedContactTransitionIdentity01(final).digest),originCases}));

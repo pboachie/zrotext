@@ -14,6 +14,14 @@ def main():
     first=s.verify_manifest02(d('manifest'),root,10000)
     second=s.verify_manifest02(d('nextManifest'),s.advance_trust02(root,first),10000)
     statement_scope=dict(account=d('account'),origin=f['origin'],root_fingerprint=d('fingerprint'))
+    assert f['origin']=='https://xn--fa-hia.invalid'
+    parsed=n.parse_contact_reader_statement01(d('statement'))
+    fields=('authorizationId','accountId','origin','trustGeneration','manifestVersion','readerGeneration','rootFingerprint','manifestDigest','readerId','readerPoint','issuedMs','untilMs','capability')
+    values={key:parsed[key] for key in fields}
+    for case in f['originCases']:
+        try:encoded=n.encode_contact_reader_statement01(values|dict(origin=case['origin']))
+        except n.ContactIntegrityError:assert not case['accepted']
+        else:assert case['accepted'] and encoded==base64.b64decode(case['unsigned'],validate=True)
     old=n.verify_contact_reader_statement01(d('statement'),first,**statement_scope)
     new=n.verify_contact_reader_statement01(d('nextStatement'),second,**statement_scope)
     scope=dict(contact=d('contact'),routing_digest=d('routing'))
