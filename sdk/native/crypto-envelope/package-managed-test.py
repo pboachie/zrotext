@@ -7,6 +7,8 @@ import tempfile
 import unittest
 import warnings
 import zipfile
+from types import SimpleNamespace
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('managed', Path(__file__).with_name('package-managed.py'))
 managed = importlib.util.module_from_spec(spec)
@@ -45,9 +47,26 @@ class ArchiveTests(unittest.TestCase):
     def test_closed_runtime_inventory(self):
         for language in ('java', 'csharp', 'ruby'):
             paths = managed.runtime_sources(language)
-            expected = 19 if language == 'java' else 23
+            expected = {'java': 22, 'csharp': 27, 'ruby': 26}[language]
             self.assertEqual(len(paths), expected)
             self.assertEqual(len(set(paths)), expected)
+
+    def test_owner_template_gates_use_installed_commands(self):
+        args = SimpleNamespace(target='java', template_producer=Path('producer'),
+                               owner_template_fixture=Path('cold-fixture'), template_save_fixture=Path('save-fixture'),
+                               template_save_oracle=Path('save-oracle'))
+        commands = {name: Path(name + '.json') for name in ('owner-template', 'owner-template-save')}
+        with patch.object(managed, 'run') as run:
+            managed.owner_template_acceptance(args, Path('stage'), commands, {})
+        calls = [call.args for call in run.call_args_list]
+        self.assertEqual(len(calls), 2)
+        for call, suite in zip(calls, commands):
+            self.assertEqual(call[2:6], ('--language', 'java', '--producer', Path('producer')))
+            self.assertEqual(call[-2:], ('--command-file', commands[suite]))
+        self.assertEqual(calls[0][1].name, 'owner-template-run.py')
+        self.assertEqual(calls[1][1].name, 'template-save-run.py')
+        self.assertEqual(calls[0][6:8], ('--fixture', Path('cold-fixture')))
+        self.assertEqual(calls[1][6:10], ('--fixture', Path('save-fixture'), '--save-oracle', Path('save-oracle')))
 
     def test_installed_command_rejects_shell_strings_and_invalid_arguments(self):
         load = runpy.run_path(str(Path(__file__).with_name('installed-command.py')))['load']

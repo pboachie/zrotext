@@ -23,7 +23,11 @@ RUBY_ID = "zrotext-native-candidate"
 MODULES = ["HpkeRecipient", "SignedEnvelope", "ManifestChain", "Election03",
            "SealedReader02", "ElectedReader03", "OriginalReplyReader", "ProtectedRecipient", "ProtectedSigner",
            "Compose03", "Compose02", "RootJournal", "ElectionJournal", "CandidateBody",
-           "OriginalReplyCheckpoint", "OriginalHttp", "OriginalCurrentClient", "TemplateContent", "EncryptedTemplate"]
+           "OriginalReplyCheckpoint", "OriginalHttp", "OriginalCurrentClient", "TemplateContent", "EncryptedTemplate",
+           "OwnerTemplate", "TemplateStore"]
+TARGET_MODULES = {"java": ["OwnerTemplateTransport"],
+                  "csharp": ["OwnerTemplateTransport", "OwnerTemplateSave"],
+                  "ruby": ["OwnerTemplateSave"]}
 SPLIT_MODULES = {"OriginalReadClient": "original_read", "OriginalPageClient": "original_page",
                  "OriginalOwnerReviewClient": "original_owner_review", "OriginalProposalClient": "original_proposal"}
 SUITES = {"root-journal": "RootJournalTest", "election-journal": "ElectionJournalTest",
@@ -32,7 +36,8 @@ SUITES = {"root-journal": "RootJournalTest", "election-journal": "ElectionJourna
           "original-history": "OriginalHistoryTest", "http": "HttpTest", "current-http": "CurrentTest",
           "read-http": "ReadTest", "protected-read-http": "ProtectedReadTest", "page-http": "PageTest",
           "owner-http": "OwnerReviewTest", "proposal-http": "ProposalTest",
-          "template": "TemplateTest", "template-crypto": "ProtectedTemplateTest"}
+          "template": "TemplateTest", "template-crypto": "ProtectedTemplateTest",
+          "owner-template": "OwnerTemplateTest", "owner-template-save": "OwnerTemplateSaveTest"}
 PINS = {"producer02": "a13ea1e3d6f6db594485c19b36c43fe642e67c7a",
         "producer03": "304d512b7a420a3102278f32baed095f3e778989",
         "custody_producer": "a5fb59c2c5bc81e80b5b8d4b836afd51c5304653",
@@ -47,7 +52,10 @@ PINS = {"producer02": "a13ea1e3d6f6db594485c19b36c43fe642e67c7a",
         "owner_fixture": "a0cd1763406b6c0a05f7ea57a897664f39667b75",
         "proposal_fixture": "a32ef83ad24746a99b3ba8895170b588b718e236",
         "template_fixture": "5d6d683a78461ccb1782014989cb5e4a3f2927f2",
-        "template_producer": "26e876da9f34372d9cf26511993cf633971e0037"}
+        "template_producer": "26e876da9f34372d9cf26511993cf633971e0037",
+        "owner_template_fixture": "312e1e0ddfeee21a8af6f75d8c268c7e8346838f",
+        "template_save_fixture": "c98dc2ffc3ab77b74295b9057807e5b51bc17a76",
+        "template_save_oracle": "5a25bac026bebee5eba20dc6048ddc1c773c41ed"}
 
 
 def run(*args, **kw):
@@ -80,7 +88,7 @@ def env_clean():
 def runtime_sources(target):
     extension = {"java": "java", "csharp": "cs", "ruby": "rb"}[target]
     result = []
-    for module in MODULES + ([] if target == 'java' else list(SPLIT_MODULES)):
+    for module in MODULES + TARGET_MODULES[target] + ([] if target == 'java' else list(SPLIT_MODULES)):
         name = re.sub(r"(?<!^)(?=[A-Z])", "_", module).lower() if target == "ruby" else module
         if target == 'ruby' and module == 'OriginalCurrentClient':
             name = 'original_current'
@@ -139,8 +147,11 @@ def java(stage, source, feed, env):
     consumer = stage / 'consumer'; consumer.mkdir()
     for suite, test in SUITES.items():
         directory = 'original-reply' if suite == 'original-protected' else 'http' if suite.endswith('-http') else suite
+        if suite == 'owner-template-save':
+            directory = 'owner-template'
         copy(HERE / 'java' / directory / (test + '.java'), consumer / 'src/main/java' / (test + '.java'))
     copy(HERE / 'java/template-crypto/TemplateCryptoTest.java', consumer / 'src/main/java/TemplateCryptoTest.java')
+    copy(HERE / 'java/owner-template/OwnerTemplateLifecycleTest.java', consumer / 'src/main/java/OwnerTemplateLifecycleTest.java')
     write(consumer / 'pom.xml', header.format('installed-consumer') + '<repositories><repository><id>candidate</id><url>' + feed.as_uri() + '</url></repository></repositories><dependencies>' + dependency.format('io.github.pboachie.zrotext', JAVA_ID, VERSION) + '</dependencies><build>' + plugins + '</build></project>')
     shutil.rmtree(source)
     run(mvn, '--batch-mode', '-Dmaven.repo.local=' + str(stage / 'consumer-cache'), 'compile', 'org.apache.maven.plugins:maven-dependency-plugin:3.8.1:copy-dependencies', cwd=consumer, env=env)
@@ -186,6 +197,8 @@ def csharp(stage, source, feed, env):
         consumer = stage / 'consumer' / suite
         directory = 'read-http' if suite == 'protected-read-http' else suite
         copy(HERE / 'csharp' / directory / 'Program.cs', consumer / 'Program.cs')
+        if suite == 'owner-template':
+            copy(HERE / 'csharp/owner-template/LifecycleTest.cs', consumer / 'LifecycleTest.cs')
         constants = '<DefineConstants>$(DefineConstants);ZROTEXT_INSTALLED_CONSUMER</DefineConstants>' if suite == 'template-crypto' else ''
         write(consumer / 'Consumer.csproj', '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>' + properties + constants + '<OutputType>Exe</OutputType><RollForward>Major</RollForward></PropertyGroup><ItemGroup><PackageReference Include="' + CS_ID + '" Version="' + VERSION + '"/></ItemGroup></Project>')
     shutil.rmtree(source)
@@ -230,8 +243,11 @@ def ruby(stage, source, feed, env):
                 else 'custody_test.rb' if suite == 'custody' else 'compose_test.rb')
         name = {'read-http': 'read_test.rb', 'protected-read-http': 'read_test.rb', 'page-http': 'page_test.rb',
                 'owner-http': 'owner_review_test.rb', 'proposal-http': 'proposal_test.rb',
-                'template': 'test.rb', 'template-crypto': 'test.rb'}.get(suite, name)
+                'template': 'test.rb', 'template-crypto': 'test.rb',
+                'owner-template': 'test.rb', 'owner-template-save': 'save_test.rb'}.get(suite, name)
         directory = 'original-reply' if suite == 'original-protected' else 'http' if suite.endswith('-http') else suite
+        if suite == 'owner-template-save':
+            directory = 'owner-template'
         text = (HERE / 'ruby' / directory / name).read_text(encoding='utf-8')
         text, count = re.subn(r"^require_relative '[^']+'$", "require 'zrotext_native_candidate'", text, flags=re.M)
         if not count:
@@ -241,6 +257,8 @@ def ruby(stage, source, feed, env):
         guard = "\nexpected=Gem.loaded_specs.fetch('zrotext-native-candidate').full_gem_path\n$LOADED_FEATURES.grep(/zrotext_native_candidate/).each { |f| raise 'outside installed gem' unless File.realpath(f).start_with?(File.realpath(expected)+File::SEPARATOR) }\n"
         text = text.replace("require 'zrotext_native_candidate'", "require 'zrotext_native_candidate'" + guard, 1)
         write(consumer, text)
+        if suite == 'owner-template':
+            copy(HERE / 'ruby/owner-template/lifecycle_test.rb', consumer.parent / 'lifecycle_test.rb')
         commands[suite] = [executable, str(consumer)]
     shutil.rmtree(source)
     env = dict(env, GEM_HOME=str(stage / 'gems'), GEM_PATH=str(stage / 'gems'))
@@ -252,6 +270,16 @@ def ruby(stage, source, feed, env):
     if rejected.returncode == 0 or 'outside installed gem' not in rejected.stderr:
         raise ValueError('Installed Ruby source injection was not rejected')
     return commands, env
+
+
+def owner_template_acceptance(args, stage, command_files, env):
+    """Preserve shared transport/lifecycle controls with installed argv only."""
+    common = ['--language', args.target, '--producer', args.template_producer]
+    run(sys.executable, HERE / 'owner-template-run.py', *common,
+        '--fixture', args.owner_template_fixture, '--command-file', command_files['owner-template'], cwd=stage, env=env)
+    run(sys.executable, HERE / 'template-save-run.py', *common,
+        '--fixture', args.template_save_fixture, '--save-oracle', args.template_save_oracle,
+        '--command-file', command_files['owner-template-save'], cwd=stage, env=env)
 
 
 def acceptance(args, stage, commands, env):
@@ -270,6 +298,7 @@ def acceptance(args, stage, commands, env):
     template_command = [sys.executable, template_suites / 'test-template-crypto.py', '--producer', args.template_producer,
                         '--command-file', command_files['template-crypto']]
     run(*template_command, cwd=stage, env=env)
+    owner_template_acceptance(args, stage, command_files, env)
     run(sys.executable, HERE / 'root-journal-run.py', '--language', args.target, '--producer', args.root_producer, '--controls', args.root_controls, '--command-file', command_files['root-journal'], cwd=stage, env=env)
     run(sys.executable, HERE / 'election-journal-run.py', '--language', args.target, '--producer', args.producer03, '--command-file', command_files['election-journal'], cwd=stage, env=env)
     if args.target == 'java':
@@ -335,6 +364,10 @@ def main():
         acceptance(args, stage, commands, env)
         shutil.copytree(feed, output)
     report = {'target': args.target, 'scope': 'Installed candidate consumers; native qualification requires QUALIFIED output; no publication or full SDK parity',
+              'fixture_revisions': PINS,
+              'owner_template_acceptance': {'cold_tls': True, 'save_tls': True, 'maintained_differential': True,
+                                           'lifecycle_framing': True,
+                                           'deadline_case_ms': 1000 if args.target in ('java', 'csharp') else 100},
               'sha256': {p.relative_to(output).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in output.rglob('*') if p.is_file()}}
     write(output / 'manifest.json', json.dumps(report, indent=2) + '\n')
     print(args.target + ' native candidate archive and installed consumers passed')
