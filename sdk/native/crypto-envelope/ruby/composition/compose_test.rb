@@ -69,6 +69,16 @@ begin
   refuses { owner.call(point,point,''.b,''.b,''.b) }
   fixture=node(ARGV[0],'produce-election03.mjs',nil,'--signer-point',point.unpack1('H*'))
   request=inputs(fixture,owner);pin=bytes(fixture,'rootPin');fp=bytes(fixture,'fingerprint')
+  # A valid empty journal whose checksum ends in DOS EOF must survive its first
+  # RDWR open. The CRT can truncate that byte before a later binmode call.
+  binary_journal=File.join(folder,'binary-end.bin');header='ZTJ4'.b+pin+fp
+  comparison=(30000...40000).find { |n| OpenSSL::Digest::SHA256.digest(header+[n].pack('Q>')).getbyte(-1)==26 }
+  check(!comparison.nil?);clock=[comparison].pack('Q>');before=header+clock+OpenSSL::Digest::SHA256.digest(header+clock)
+  File.binwrite(binary_journal,before);binary_request=request.merge(authority:-> { [record(fixture.fetch('authority')),comparison] })
+  binary_envelope=Compose03.compose_or_replay(binary_journal,pin,fp,**binary_request)
+  stable_binary=File.binread(binary_journal);check(stable_binary.start_with?(before));consume(ARGV[0],fixture,binary_envelope)
+  check(Compose03.compose_or_replay(binary_journal,pin,fp,**binary_request)==binary_envelope);check(File.binread(binary_journal)==stable_binary)
+  File.delete(binary_journal)
   a=Compose03.fresh(**request);b=Compose03.fresh(**request);check(a!=b);consume(ARGV[0],fixture,a);consume(ARGV[0],fixture,b)
   ['',"\ufeffbad","bad\0","\xed\xa0\x80".b.force_encoding('UTF-8'),'x'*32769].each { |text| refuses { Compose03.fresh(**request.merge(content:text)) } }
   [{message:"\0".b*16},{observed_ms:8000},{observed_ms:30001},{expires_ms:60001},{peer:'+01'},{recipients:request[:recipients].take(1)},{recipients:request[:recipients]*2}].each { |change| refuses { Compose03.fresh(**request.merge(change)) } }
