@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools==84.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zrotext-native-candidate"
+version = "0.1.0a1"
+description = "Experimental native sealed-content verification, custody and composition companion"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+dependencies = ["cryptography==50.0.2", "cffi==2.1.1", "pycparser==3.11"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+]
+
+[project.urls]
+Repository = "https://github.com/pboachie/zrotext"
+
+[project.optional-dependencies]
+workflow = ["zrotext-workflow-candidate==0.1.0a1"]
+
+[tool.setuptools]
+packages = ["zrotext_native_candidate"]
+include-package-data = false
