@@ -516,12 +516,22 @@ not install access, authorize a current owner, decrypt contact fields, sign new
 contact content or establish current deletion state. No network or storage effect
 is performed. Identity accessors return defensive copies.
 
-Origin compatibility remains an explicit candidate gate: canonical ASCII hosts,
-IPv4, IPv6 and nondefault ports are checked against maintained TypeScript URL
-behavior, but all `xn--` host labels are currently refused. Some are valid inputs
-under the full contract (for example `https://xn--fa-hia.invalid`); a reviewed
-WHATWG/UTS46 implementation is still required before full origin parity can be
-claimed. Python's built-in IDNA conversion is not substituted for that contract.
+Contact origins use the pinned `ada-url==1.27.0` native WHATWG parser, whose
+bundled Ada 3.3.0 matches the maintained Node 24.13 runtime. This dependency is
+necessary for canonical IDNA/punycode, numeric host and IPv6 behavior that Python
+standard-library URL/IDNA parsing does not implement equivalently. Its CFFI
+dependency is already explicitly pinned. CPython 3.12 Windows and Linux binary
+wheels are available; normal package resolution installs the dependency without
+vendoring its binaries into this distribution. See the [maintained bindings](https://github.com/ada-url/ada-python)
+and [pinned release](https://pypi.org/project/ada-url/1.27.0/).
+
+The original input must still be 9..512 printable ASCII characters and exactly
+equal the parser's HTTPS origin, without credentials, path, query or fragment.
+No normalization fallback is accepted. Valid canonical punycode is supported;
+Unicode input and noncanonical aliases remain refused. Dependency/runtime upgrades
+must repeat maintained TypeScript differential qualification. Tests compare actual
+statement encoder acceptance and exact unsigned bytes across host punctuation,
+ports, numeric/IPv6 aliases, Unicode scalar samples and contextual IDNA cases.
 The fresh TypeScript fixture signs a genuine genesis-to-successor history and
 create/update/clear/conversion commitments; its ciphertexts are opaque synthetic
 payloads, not evidence of a production contact encryption implementation.
@@ -538,3 +548,10 @@ to the pinned shared fixture checkout when running native tests; provide the sam
 checkout with `check_package.py --time-policy-source` for installed qualification.
 The CI workflow records the exact shared source revision and builds its TypeScript
 fixture dependencies separately.
+
+The native outbound03 reader applies the same selected signer/recipient key
+lifetime coverage (`key.start <= observed` and `expires <= key.end`) before any
+HPKE unwrap. It does not add a manifest-issuance lower bound to observation.
+Shared accepted cases self-open natively as well as independently in TypeScript;
+authentically signed out-of-lifetime ciphertext is refused before recipient use.
+Profile02 and inbound envelope checks retain their existing policies.

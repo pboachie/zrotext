@@ -35,7 +35,7 @@ def check_wheel(path):
         metadata=BytesParser().parsebytes(archive.read(DIST+'.dist-info/METADATA'))
         assert metadata['Name']=='zrotext-native-candidate' and metadata['Version']=='0.1.0a1'
         assert metadata['Requires-Python']=='>=3.12' and metadata['License-Expression']=='AGPL-3.0-only'
-        assert set(metadata.get_all('Requires-Dist'))=={'cryptography==50.0.2','cffi==2.1.1','pycparser==3.11','zrotext-workflow-candidate==0.1.0a1; extra == "workflow"'}
+        assert set(metadata.get_all('Requires-Dist'))=={'cryptography==50.0.2','cffi==2.1.1','pycparser==3.11','ada-url==1.27.0','zrotext-workflow-candidate==0.1.0a1; extra == "workflow"'}
         assert metadata['Provides-Extra']=='workflow'
         assert archive.read(DIST+'.dist-info/licenses/LICENSE')==ROOT.joinpath('LICENSE').read_bytes()
 
@@ -78,7 +78,7 @@ def main():
         template_consumer=temporary/'template_consumer.py';shutil.copyfile(ROOT/'installed_template_consumer.py',template_consumer)
         contact_consumer=temporary/'contact_consumer.py';shutil.copyfile(ROOT/'installed_contact_consumer.py',contact_consumer)
         time_consumer=temporary/'time_consumer.py';shutil.copyfile(ROOT/'installed_time_consumer.py',time_consumer)
-        time_cases=json.loads(run(['node',time_cli],cwd=temporary))
+        time_cases=json.loads(run(['node',time_cli,'--reader-cases'],cwd=temporary))
         assert len(time_cases['cases'])==14
         for index,artifact in enumerate((wheel,sdist)):
             python=environment(temporary/f'consumer-{index}')

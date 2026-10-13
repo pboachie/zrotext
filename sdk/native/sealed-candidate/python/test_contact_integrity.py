@@ -40,15 +40,29 @@ class ContactTests(unittest.TestCase):
             raw=decode(self.f[key]);parsed=parse(raw)
             self.assertEqual(encode({k:parsed[k] for k in fields}),raw[:-64])
             with self.assertRaises(c.ContactIntegrityError):encode(dict({k:parsed[k] for k in fields},unknown=True))
-    def test_actual_ts_origin_differential_and_explicit_idna_gate(self):
+    def test_actual_ts_origin_differential_including_idna(self):
         for case in self.f['originCases']:
             with self.subTest(origin=case['origin']):
                 try:c._origin(case['origin']);accepted=True
                 except Exception:accepted=False
-                if 'xn--' in case['origin']:
-                    self.assertFalse(accepted)
-                else:self.assertEqual(accepted,case['accepted'])
+                self.assertEqual(accepted,case['accepted'])
+        self.assertEqual(self.f['origin'],'https://xn--fa-hia.invalid')
         self.assertTrue(next(x['accepted'] for x in self.f['originCases'] if x['origin']=='https://xn--fa-hia.invalid'))
+    def test_unicode_contexts_scalar_sampling_and_exact_ts_unsigned_bytes(self):
+        labels=['faß','bücher','δοκιμή','пример','مثال','例子','☃','a\u200cb','a\u200db','a\u0300','\u0300ab','אa','aא','\u200c']
+        labels+=['a'+chr(code)+'b' for code in range(128,0x110000,257) if not 0xd800<=code<=0xdfff]
+        origins=['https://xn--'+label.encode('punycode').decode('ascii')+'.invalid' for label in labels]
+        origins+=['https://'+('a'*504),'https://'+('a'*505),'https://.','https://synthetic.invalid?','https://synthetic.invalid#','https://synthetic.invalid:65536','https://xn--fa-hia.invalid/','https://faß.invalid']
+        f=json.loads(subprocess.check_output(['node',str(Path(__file__).with_name('contact-interop.mjs')),'--origins'],input=json.dumps(origins),encoding='utf-8'))
+        parsed=c.parse_contact_reader_statement01(decode(f['statement']))
+        values={key:parsed[key] for key in c._STATEMENT}
+        for case in f['originCases']:
+            with self.subTest(origin=case['origin']):
+                if case['accepted']:
+                    self.assertEqual(c.encode_contact_reader_statement01(values|dict(origin=case['origin'])),decode(case['unsigned']))
+                else:
+                    with self.assertRaises(c.ContactIntegrityError):c.encode_contact_reader_statement01(values|dict(origin=case['origin']))
+
     def test_signatures_frames_and_points_refused(self):
         for key,verify in [('statement',lambda b:c.verify_contact_reader_statement01(b,self.first,account=decode(self.f['account']),origin=self.f['origin'],root_fingerprint=decode(self.f['fingerprint']))),('name',lambda b:c.verify_contact_field01(b,self.old,**self.scope)),('create',lambda b:c.verify_contact_mutation01(b,self.old,**self.scope))]:
             raw=decode(self.f[key])

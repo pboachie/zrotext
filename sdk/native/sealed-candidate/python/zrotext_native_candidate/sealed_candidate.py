@@ -359,10 +359,14 @@ def verify_envelope(raw, manifest, *, account, device, line, peer, comparison_ms
     signer = next((k for k in m.keys if k.role == (5 if p.kind == 1 else 4) and k.id == p.signer), None)
     require(signer is not None and signer.active(now) and signer.line == p.line and
             (p.kind == 1 or signer.device == p.device), 'signer authority')
+    if p.profile == 3 and p.kind == 1:
+        require(signer.start <= p.observed and p.expires <= signer.end, 'outbound signer lifetime')
     for role, ident, _, _ in p.wraps:
         k = next((k for k in m.keys if k.role == role and k.id == ident), None)
         require(k is not None and k.active(now) and bool(k.scope & (4 if p.kind == 1 else 8)), 'recipient authority')
         require(role != 1 or (k.device, k.line) == (p.device, p.line), 'recipient binding')
+        if p.profile == 3 and p.kind == 1:
+            require(k.start <= p.observed and p.expires <= k.end, 'outbound recipient lifetime')
     verify_signature(signer.point, p.raw[-64:], f'ZTSE/sign/v{p.profile}', p.raw[:-64])
     return p
 

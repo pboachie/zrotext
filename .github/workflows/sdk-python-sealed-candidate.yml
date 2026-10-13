@@ -36,7 +36,7 @@ jobs:
       - name: Checkout pinned shared outbound03 time policy fixtures
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 034ccd0a7390a5451745e885e5ffca94f9bbb633
+          ref: 3cda99572eafb0dbc2504f88e228f5481234e33f
           path: time-policy-source
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97

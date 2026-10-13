@@ -2,3 +2,5 @@
 cryptography==50.0.2
 cffi==2.1.1
 pycparser==3.11
+# WHATWG parser matching the maintained Node runtime; standard IDNA/origin semantics.
+ada-url==1.27.0
