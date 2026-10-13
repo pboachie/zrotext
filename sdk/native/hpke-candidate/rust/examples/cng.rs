@@ -14,18 +14,20 @@ fn main() {
     }
     let elected =
         std::env::args().len() == 2 && std::env::args().nth(1).as_deref() == Some("--elected");
-    if std::env::args().len() != 1 && !elected {
+    let original =
+        std::env::args().len() == 2 && std::env::args().nth(1).as_deref() == Some("--original");
+    if std::env::args().len() != 1 && !elected && !original {
         eprintln!("unsupported arguments");
         std::process::exit(1)
     }
-    if let Err(error) = exercise(elected) {
+    if let Err(error) = exercise(elected, original) {
         eprintln!("{error}");
         std::process::exit(1)
     }
     println!("native Windows hardware profile read, reopen and exact owned-key cleanup passed");
 }
 #[cfg(windows)]
-fn exercise(elected: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn exercise(elected: bool, original: bool) -> Result<(), Box<dyn std::error::Error>> {
     use std::{
         fs::OpenOptions,
         io::{Read, Seek, SeekFrom, Write},
@@ -70,7 +72,9 @@ fn exercise(elected: bool) -> Result<(), Box<dyn std::error::Error>> {
             return Err("fixture size".into());
         }
         let d: serde_json::Value = serde_json::from_str(&input)?;
-        let private_field = if elected {
+        let private_field = if original {
+            "originalScalar"
+        } else if elected {
             "readerScalar"
         } else {
             "archiveScalar"
@@ -79,12 +83,12 @@ fn exercise(elected: bool) -> Result<(), Box<dyn std::error::Error>> {
             return Err("producer exported selected recipient scalar".into());
         }
         let reopened = HardwareRecipient::open(&key.alias()?, &public)?;
-        let value = open_fixture(&d, &reopened, elected, "+12")?;
+        let value = open_fixture(&d, &reopened, elected, original, "+12")?;
         let field = if elected { "bodyText" } else { "text" };
         if value.as_str() != d[field].as_str().ok_or("text")? {
             return Err("plaintext mismatch".into());
         }
-        if elected && open_fixture(&d, &reopened, true, "+13").is_ok() {
+        if (elected || original) && open_fixture(&d, &reopened, elected, original, "+13").is_ok() {
             return Err("wrong peer accepted".into());
         }
         let mut other_entropy = [0u8; 32];
@@ -100,7 +104,7 @@ fn exercise(elected: bool) -> Result<(), Box<dyn std::error::Error>> {
             return Err("wrong public binding".into());
         }
         reopened.close()?;
-        if open_fixture(&d, &reopened, elected, "+12").is_ok() {
+        if open_fixture(&d, &reopened, elected, original, "+12").is_ok() {
             return Err("closed provider accepted".into());
         }
         Ok(())
@@ -124,6 +128,7 @@ fn open_fixture(
     d: &serde_json::Value,
     custody: &zrotext_hpke_candidate::cng::HardwareRecipient,
     elected: bool,
+    original: bool,
     peer: &str,
 ) -> Result<zeroize::Zeroizing<String>, Box<dyn std::error::Error>> {
     use base64::{Engine, engine::general_purpose::STANDARD};
@@ -137,6 +142,51 @@ fn open_fixture(
         Ok(STANDARD.decode(d[name].as_str().ok_or("fixture field")?)?)
     };
     let root = enroll_root(&b("rootPin")?, &b("fingerprint")?).map_err(|_| "root")?;
+    if original {
+        use zrotext_hpke_candidate::original_reply::{
+            OriginalAuthority, OriginalRead, OriginalScope, open_hardware_original_reply02,
+            verify_original_reply_selection02,
+        };
+        let prior =
+            verify_manifest(&b("predecessor")?, &root, None, 2, 10000).map_err(|_| "prior")?;
+        let active = verify_manifest(&b("activation")?, &root, Some(&prior), 2, 10000)
+            .map_err(|_| "active")?;
+        let scope = OriginalScope {
+            account: b("account")?.try_into().map_err(|_| "account")?,
+            device: b("device")?.try_into().map_err(|_| "device")?,
+            line: b("line")?.try_into().map_err(|_| "line")?,
+            interval: b("interval")?.try_into().map_err(|_| "interval")?,
+            connector: b("connector")?.try_into().map_err(|_| "connector")?,
+            read_grant: b("readGrant")?.try_into().map_err(|_| "grant")?,
+            reader: b("originalReader")?.try_into().map_err(|_| "reader")?,
+            peer: peer.into(),
+        };
+        let selection = verify_original_reply_selection02(
+            &b("selection")?,
+            &b("approval")?,
+            &b("installation")?,
+            &active,
+            10000,
+            &scope,
+        )
+        .map_err(|_| "selection")?;
+        let options = OriginalRead {
+            event: b("event")?.try_into().map_err(|_| "event")?,
+            scope: &scope,
+            historical: &active,
+            selection: &selection,
+        };
+        return open_hardware_original_reply02(&b("inbound")?, &options, custody, || {
+            Ok(OriginalAuthority {
+                scope: scope.clone(),
+                revision: "1".into(),
+                now: 10000,
+                expires: 20000,
+                manifest: &active,
+            })
+        })
+        .map_err(|_| "original reader".into());
+    }
     if elected {
         let record = |name: &str| -> Result<ElectionRecord, Box<dyn std::error::Error>> {
             let mut r = ElectionRecord::default();

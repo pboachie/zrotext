@@ -122,3 +122,10 @@ Fresh composition follows the maintained profile02 candidate grammar, including 
 The verified manifest retains its original enrolled root through authenticated profile02 transitions. The outbound journal binds that original trust while the complete intent binds the current root/generation/manifest. Thus supported rotated-root candidates retain exact retry behavior without re-enrollment. A matching account or unverified current root alone cannot establish that provenance. Profile03 still requires its separate authenticated election/current-authority contract.
 
 `run-compose02.py` pins the reviewed TypeScript producer/consumer and checks native protected signing, both recipient decryptions, fresh zero-value boundary cases, process CAS, postcommit comparison failure/recovery, persistent clock rollback refusal, and rotated-root replay after reopen. The rotated consumer uses the maintained manifest/transition verifier and HPKE/WebCrypto APIs to independently verify and decrypt that ciphertext. Shared profile03 native acceptance is rerun when the private composition/journal core changes. Candidate archive checks and conditional hosted provider tests do not establish release or live dispatch readiness.
+
+
+## Selected original role3 replies
+
+The original-reply selection verifier checks both phone approval and installation signatures and returns owned opaque provenance for an independently chosen role3 grant scope. The selected reader requires accepted activation/history ancestry, the exact signed wrap set and freshly authenticated current authority before decryption and again before releasing plaintext. Exportable-scalar and qualified Windows PCP APIs remain explicit; no protected fallback occurs.
+
+This local reader does not implement HTTP read/current/consume/status or persist grant high-water/history. Its callback must come from a trusted independently authenticated grant integration. See `sdk/native/hpke-candidate/ORIGINAL-REPLY.md` in the source repository for the acceptance command and remaining integration boundaries. Existing archive-only readers do not gain role3 authority.

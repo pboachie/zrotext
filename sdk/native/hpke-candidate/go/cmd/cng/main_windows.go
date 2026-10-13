@@ -15,7 +15,7 @@ import (
 	"os"
 )
 
-func exercise(elected bool) (result error) {
+func exercise(elected, original bool) (result error) {
 	if e := hpke.ProbeHardware(); e != nil {
 		return e
 	}
@@ -80,6 +80,9 @@ func exercise(elected bool) (result error) {
 	}
 	privateField := "archiveScalar"
 	textField := "text"
+	if original {
+		privateField = "originalScalar"
+	}
 	if elected {
 		privateField = "readerScalar"
 		textField = "bodyText"
@@ -92,15 +95,15 @@ func exercise(elected bool) (result error) {
 		return e
 	}
 	defer reopened.Close()
-	value, e := openFixture(d, reopened, elected, "+12")
+	value, e := openFixture(d, reopened, elected, original, "+12")
 	if e != nil {
 		return e
 	}
 	if value != getString(textField) {
 		return errors.New("plaintext mismatch")
 	}
-	if elected {
-		if _, e = openFixture(d, reopened, true, "+13"); e == nil {
+	if elected || original {
+		if _, e = openFixture(d, reopened, elected, original, "+13"); e == nil {
 			return errors.New("wrong peer accepted")
 		}
 	}
@@ -113,7 +116,7 @@ func exercise(elected bool) (result error) {
 		return errors.New("wrong public binding accepted")
 	}
 	reopened.Close()
-	if _, e = openFixture(d, reopened, elected, "+12"); e == nil {
+	if _, e = openFixture(d, reopened, elected, original, "+12"); e == nil {
 		return errors.New("closed provider accepted")
 	}
 	return nil
@@ -127,18 +130,19 @@ func main() {
 		return
 	}
 	elected := len(os.Args) == 2 && os.Args[1] == "--elected"
-	if len(os.Args) != 1 && !elected {
+	original := len(os.Args) == 2 && os.Args[1] == "--original"
+	if len(os.Args) != 1 && !elected && !original {
 		fmt.Fprintln(os.Stderr, "unsupported arguments")
 		os.Exit(1)
 	}
-	if e := exercise(elected); e != nil {
+	if e := exercise(elected, original); e != nil {
 		fmt.Fprintln(os.Stderr, e)
 		os.Exit(1)
 	}
 	fmt.Println("native Windows hardware profile read, reopen and exact owned-key cleanup passed")
 }
 
-func openFixture(d map[string]json.RawMessage, custody *hpke.HardwareRecipient, elected bool, peer string) (string, error) {
+func openFixture(d map[string]json.RawMessage, custody *hpke.HardwareRecipient, elected, original bool, peer string) (string, error) {
 	b := func(name string) []byte {
 		var s string
 		if e := json.Unmarshal(d[name], &s); e != nil {
@@ -153,6 +157,33 @@ func openFixture(d map[string]json.RawMessage, custody *hpke.HardwareRecipient, 
 	root, e := hpke.EnrollRoot(b("rootPin"), b("fingerprint"))
 	if e != nil {
 		return "", e
+	}
+	if original {
+		prior, e := hpke.VerifyManifest(b("predecessor"), root, nil, 2, 10000)
+		if e != nil {
+			return "", e
+		}
+		active, e := hpke.VerifyManifest(b("activation"), root, prior, 2, 10000)
+		if e != nil {
+			return "", e
+		}
+		scope := hpke.OriginalScope{Peer: peer}
+		copy(scope.Account[:], b("account"))
+		copy(scope.Device[:], b("device"))
+		copy(scope.Line[:], b("line"))
+		copy(scope.Interval[:], b("interval"))
+		copy(scope.Connector[:], b("connector"))
+		copy(scope.ReadGrant[:], b("readGrant"))
+		copy(scope.Reader[:], b("originalReader"))
+		selection, e := hpke.VerifyOriginalReplySelection02(b("selection"), b("approval"), b("installation"), active, 10000, scope)
+		if e != nil {
+			return "", e
+		}
+		var event [16]byte
+		copy(event[:], b("event"))
+		return hpke.OpenHardwareOriginalReply02(b("inbound"), event, active, selection, scope, custody, func() (hpke.OriginalAuthority, error) {
+			return hpke.OriginalAuthority{Scope: scope, Revision: "1", Now: 10000, Expires: 20000, Manifest: active}, nil
+		})
 	}
 	if elected {
 		record := func(name string) hpke.ElectionRecord {

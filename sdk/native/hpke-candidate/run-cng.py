@@ -21,14 +21,14 @@ def run(*args, **kwargs):
     return subprocess.run(list(map(str, args)), check=True, **kwargs)
 
 
-def exercise(binary, producer, profile=2):
+def exercise(binary, producer, profile=2, original=False):
     probe = subprocess.run([str(binary), "--probe"], capture_output=True, text=True, timeout=30)
     if probe.returncode == 77:
         print("Native PCP capability unavailable; protected reader NOT qualified")
         return False
     if probe.returncode:
         raise RuntimeError("Native capability probe failed")
-    process = subprocess.Popen([str(binary)] + (["--elected"] if profile == 3 else []), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    process = subprocess.Popen([str(binary)] + (["--original"] if original else ["--elected"] if profile == 3 else []), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, text=True)
     ready = queue.Queue()
     threading.Thread(target=lambda: ready.put(process.stdout.readline()), daemon=True).start()
@@ -40,8 +40,9 @@ def exercise(binary, producer, profile=2):
         if set(record) != {"public"} or len(record["public"]) != 130:
             raise ValueError("Unexpected native public-point record")
         env = {key: value for key, value in os.environ.items() if key not in ("NODE_PATH", "NODE_OPTIONS")}
-        fixture = run(shutil.which("node"), producer / ("sdk/native/sealed-candidate/python/produce-election03.mjs" if profile == 3 else "sdk/native/sealed-candidate/python/produce-fixture.mjs"),
-                      "--recipient-point", record["public"], capture_output=True, text=True, timeout=45, env=env).stdout
+        script = "produce-selected-reply02.mjs" if original else "produce-election03.mjs" if profile == 3 else "produce-fixture.mjs"
+        fixture = run(shutil.which("node"), producer / "sdk/native/sealed-candidate/python" / script,
+                      "--reader-point" if original else "--recipient-point", record["public"], capture_output=True, text=True, timeout=45, env=env).stdout
         output, errors = process.communicate(fixture, timeout=45)
         if process.returncode:
             raise RuntimeError("Native protected reader failed: " + errors)

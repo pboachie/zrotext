@@ -113,7 +113,12 @@ fn number(b: &[u8], at: usize) -> Result<u64, Error> {
     need(n > 0 && n <= i64::MAX as u64)?;
     Ok(n)
 }
-fn signature(point: &[u8], raw: &[u8], domain: &str, payload: &[u8]) -> Result<(), Error> {
+pub(crate) fn signature(
+    point: &[u8],
+    raw: &[u8],
+    domain: &str,
+    payload: &[u8],
+) -> Result<(), Error> {
     need(point.len() == 65 && point[0] == 4)?;
     let key = VerifyingKey::from_sec1_bytes(point).map_err(|_| Error::Shape)?;
     let sig = Signature::from_slice(raw).map_err(|_| Error::Shape)?;
