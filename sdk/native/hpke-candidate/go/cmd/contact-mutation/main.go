@@ -264,6 +264,9 @@ func run(r request) map[string]any {
 	return out
 }
 func main() {
+	if hardware() {
+		return
+	}
 	var rows []request
 	if json.NewDecoder(os.Stdin).Decode(&rows) != nil {
 		os.Exit(2)

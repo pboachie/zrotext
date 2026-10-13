@@ -36,7 +36,7 @@ PRODUCERS = {
 }
 HARNESSES = ("journal", "root", "cng", "compose", "compose02", "original", "reply_checkpoint",
              "reply_http", "reply_current", "reply_read", "reply_page", "reply_consumption", "reply_proposal",
-             "template", "template_crypto", "owner_template", "template_save", "template_opening", "template_authoring", "contact")
+             "template", "template_crypto", "owner_template", "template_save", "template_opening", "template_authoring", "contact", "contact_mutation")
 ORIGINAL_TLS = ("http", "current", "read", "page", "consumption", "proposal")
 
 
@@ -138,6 +138,7 @@ def rust_package(stage, output):
         shutil.copytree(ROOT / "rust/examples/template_custody", consumer / "src/bin/template_custody")
         shutil.copytree(ROOT / "rust/examples/opening_custody", consumer / "src/bin/opening_custody")
         shutil.copytree(ROOT / "rust/examples/contact_custody", consumer / "src/bin/contact_custody")
+        shutil.copytree(ROOT / "rust/examples/contact_mutation_custody", consumer / "src/bin/contact_mutation_custody")
         (consumer / "Cargo.toml").write_text('''[package]
 name = "native-installed-consumer"
 version = "0.0.0"
@@ -288,6 +289,9 @@ def contact_acceptance(binaries, contact, hardware=False):
     script = "test-contact-hardware.py" if hardware else "test-contact-field.py"
     run(sys.executable, ROOT / script, "--producer", contact,
         "--binary", binaries["contact"], env=safe_env())
+    run(sys.executable, ROOT / ("test-contact-hardware.py" if hardware else "test-contact-mutation.py"),
+        "--producer", contact, "--binary", binaries["contact_mutation"],
+        *(["--mutation"] if hardware else []), env=safe_env())
 
 
 def acceptance(binaries, archive, election, original, template, save_oracle, opening_oracle, authoring_oracle, contact, deadline_case_ms):
@@ -371,6 +375,9 @@ def main():
                                                         "maintained_differential": True},
                       "contact_acceptance": {"historical_integrity": True, "maintained_differential": True,
                                              "protected_fields": qualified, "current_permission": False},
+                      "contact_mutation_acceptance": {"historical_transitions": True, "software_production": True,
+                                                      "protected_production": qualified, "durable_history": False,
+                                                      "current_permission": False},
                       "protected_acceptance": qualified}
             (args.output / "qualification.json").write_text(json.dumps(report, indent=2) + "\n")
             print(json.dumps(report))

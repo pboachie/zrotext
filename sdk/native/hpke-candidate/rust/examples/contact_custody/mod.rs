@@ -72,6 +72,46 @@ impl Session {
             false
         }
     }
+    #[allow(dead_code)] // Shared consumer helper: field-only binary does not call mutation APIs.
+    pub fn produce_mutation(
+        &self,
+        proposal: &zrotext_hpke_candidate::contact::mutation::Proposal,
+        cancel: &Cancellation,
+        closed: bool,
+    ) -> Result<zrotext_hpke_candidate::contact::mutation::Production, ()> {
+        #[cfg(windows)]
+        {
+            use zrotext_hpke_candidate::cng::ContactRootSigner;
+            let key = &self.owned.as_ref().ok_or(())?.0;
+            let borrowed = std::sync::Arc::new(
+                ContactRootSigner::open(
+                    &key.alias().map_err(|_| ())?,
+                    &key.public_point().map_err(|_| ())?,
+                )
+                .map_err(|_| ())?,
+            );
+            assert!(
+                borrowed.delete_created().is_err(),
+                "borrowed deletion accepted"
+            );
+            if closed {
+                borrowed.close().map_err(|_| ())?;
+            }
+            let result = zrotext_hpke_candidate::contact::mutation::produce_protected_mutation01(
+                borrowed.clone(),
+                proposal,
+                cancel,
+            )
+            .map_err(|_| ());
+            borrowed.close().map_err(|_| ())?;
+            result
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (proposal, cancel, closed);
+            Err(())
+        }
+    }
     pub fn produce(
         &self,
         st: &Statement,
