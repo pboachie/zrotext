@@ -28,7 +28,7 @@ Wheel contents are restricted to the package's thirteen modules and distribution
 metadata/license. Source archives add build metadata and this README; neither
 archive includes tests, fixture producers, private receipts, sample scalars or
 repository tooling. Both carry AGPL-3.0-only license metadata and full text.
-`check_package.py --output <artifact-directory> --workflow-source <reviewed-workflow-package>` builds both formats in temporary
+`check_package.py --output <artifact-directory> --workflow-source <reviewed-workflow-package> --time-policy-source <shared-fixture-checkout>` builds both formats in temporary
 storage, checks exact archive/dependency contents, installs each into a fresh
 virtual environment and exercises real signed evidence, decryption, composition
 and journal replay outside the checkout. Its isolated consumers then pass their
@@ -461,3 +461,80 @@ durable checkpoint reopen, owner-review/proposal consumption and status recovery
 producer independently opens the same role-3 software fixture; an optional public
 point also tests qualified Windows TPM opening without exporting its private key.
 These checks do not claim #1054 live grant deployment or #1004 device acceptance.
+
+## Client-only encrypted templates
+
+`encrypted_template` provides the maintained ZTWT01 candidate template format.
+`canonical_template_bytes(template, values)` validates plain text identifiers,
+reserved names, UTF-16 bounds, paired/lone surrogate rules and sorted canonical
+JSON. `template_digest` hashes those local canonical bytes. A plaintext digest
+must remain in the selected customer client; it is not relay metadata.
+`preview_encrypted_template(content)` returns local substituted text and
+`estimate_segments(text)` applies the bounded GSM/UCS-2 estimate with at most six
+parts. This is not a carrier, billing or actual Android `divideMessage` result.
+
+`seal_encrypted_template(manifest, scope, now_ms, content)` and
+`open_encrypted_template(manifest, scope, now_ms, custody, envelope)` use fresh
+P-256/HKDF-SHA256/AES-128-GCM HPKE encapsulation in the dedicated template domain.
+The scope uses the maintained field names (`accountId`, `deviceId`, `lineId`,
+`intervalId`, `templateId`, `bindingGeneration`, `revision`, `expiresMs`,
+`trustGeneration`, `manifestVersion`, `peerDigest`, `readerId`, `manifestDigest`).
+All scope bytes are captured into the exact 222-byte AAD; the envelope includes
+the encapsulation and exact ciphertext length. A genuine current profile02
+manifest must authorize the active role-2 archive reader and role-4 line signer.
+Integration role-3 credentials are never an archive alias. Expiry is bounded to
+30 days from the supplied comparison, and revisions to 1 through 128.
+
+The bytes variants seal/open authenticated content of 1 through 32768 bytes.
+The structured opener additionally requires strict UTF-8 and exact canonical
+content, rejecting duplicate JSON keys, alternative serialization and unknown
+fields. `encrypted_template_digest` hashes encrypted transport bytes. Protected
+opening defaults to a qualified Windows TPM recipient; software fixtures require
+explicit `require_protected=False`. Provider/manifest public points must match.
+Owned mutable plaintext and derived-key buffers are cleared on success or failure;
+immutable Python/provider copies and returned content remain outside this bound.
+
+These are local candidate content helpers, without a template persistence client,
+current backend grant, browser/device adapter, scheduling or dispatch permission.
+Callers remain responsible for independently current manifest comparison and
+durable accepted history. Contact reader statements and content mutations use
+different domains and are not handled by these template functions.
+
+Interop tests use the maintained TypeScript implementation with its serialized
+software fixture key and test native opening with an actual qualified TPM when
+available. They do not qualify arbitrary nonextractable WebCrypto template keys:
+browser custody needs separate acceptance and is not covered by the software
+fixture result. The native path binds the exact manifest public point.
+
+Historical contact integrity helpers accept genuine generation-one profile02
+manifest history and independently compared account, HTTPS origin and root
+fingerprint. `verify_contact_reader_statement01`, `verify_contact_field01`,
+`verify_contact_mutation01` and `verify_contact_transition01` verify low-S root
+signatures, exact binary encodings, revision links and retained/replaced/cleared
+field commitments. Their opaque tokens prove historical integrity only. They do
+not install access, authorize a current owner, decrypt contact fields, sign new
+contact content or establish current deletion state. No network or storage effect
+is performed. Identity accessors return defensive copies.
+
+Origin compatibility remains an explicit candidate gate: canonical ASCII hosts,
+IPv4, IPv6 and nondefault ports are checked against maintained TypeScript URL
+behavior, but all `xn--` host labels are currently refused. Some are valid inputs
+under the full contract (for example `https://xn--fa-hia.invalid`); a reviewed
+WHATWG/UTS46 implementation is still required before full origin parity can be
+claimed. Python's built-in IDNA conversion is not substituted for that contract.
+The fresh TypeScript fixture signs a genuine genesis-to-successor history and
+create/update/clear/conversion commitments; its ciphertexts are opaque synthetic
+payloads, not evidence of a production contact encryption implementation.
+
+Outbound profile03 composition requires every selected signer/recipient key's
+activation time to be at or before the signed observation, in addition to trusted
+current-time activation and the existing upper expiry bounds. Manifest issuance
+is a separate freshness/skew check; an otherwise valid observation before issuance
+is not refused solely for that reason. Profile02 and inbound rules are unchanged.
+The shared fourteen-case fixture generator constructs genuine fresh root-signed
+manifests and dual-signed elections. Accepted native outputs independently open
+all three HPKE wraps in maintained TypeScript. Set `ZROTEXT_TIME_POLICY_SOURCE`
+to the pinned shared fixture checkout when running native tests; provide the same
+checkout with `check_package.py --time-policy-source` for installed qualification.
+The CI workflow records the exact shared source revision and builds its TypeScript
+fixture dependencies separately.
