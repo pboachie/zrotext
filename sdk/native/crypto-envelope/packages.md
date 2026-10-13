@@ -26,7 +26,7 @@ Outbound profile03 follows the signed key-lifetime policy; cross-language
 alignment remains tracked in issue #1226.
 
 `package-managed.py --target java --out <new-external-directory>` also requires
-nine exact producer/control checkout arguments listed by `--help`. Run `npm ci
+thirteen exact producer/control checkout arguments listed by `--help`. Run `npm ci
 --ignore-scripts` and `npm run build` in each producer's `sdk/typescript` first.
 Use target `csharp` or `ruby` for the corresponding archive. Build tools must be
 on PATH. The helper requires clean tracked fixture sources at the exact pins.
@@ -42,8 +42,18 @@ refusal. Installed HTTPS/current-proof consumers run synthetic TLS framing, time
 redirect, duplicate-field, signed authority and durable checkpoint controls. These
 controls retain their independent fixture revisions and execute without compiling
 runtime sources into test drivers. HTTPS uses caller-held original grants and never
-automatically retries uncertain outcomes. Verified current proofs do not yet make
-this package a complete integrated original-reply workflow client.
+automatically retries uncertain outcomes. Installed consumers additionally run
+verified reads with final network proof, signed page/cursor discovery, saved
+owner-review consumption/status, and typed proposal binding/reconciliation.
+Separate original and output credentials remain confined to their respective
+operations. Exact saved descriptor bytes are retained after an uncertain
+response; status recovery never issues a second consume. These checks use
+independently pinned shared fixtures and ordinary installed runtime modules.
+They do not establish deployed service authority or full legacy SDK parity.
+On qualified Windows PCP hosts, the installed gate also opens selected replies
+through native custody and repeats final-proof TLS negatives over an owned
+protected key. A precreation capability refusal remains explicitly unqualified;
+failures after key creation are fatal and preserve cleanup receipts.
 The original-reply producer is pinned separately; its native mode receives only
 the recipient public point and never supplies that recipient's private scalar.
 Maintained TypeScript

@@ -24,10 +24,14 @@ MODULES = ["HpkeRecipient", "SignedEnvelope", "ManifestChain", "Election03",
            "SealedReader02", "ElectedReader03", "OriginalReplyReader", "ProtectedRecipient", "ProtectedSigner",
            "Compose03", "Compose02", "RootJournal", "ElectionJournal", "CandidateBody",
            "OriginalReplyCheckpoint", "OriginalHttp", "OriginalCurrentClient"]
+SPLIT_MODULES = {"OriginalReadClient": "original_read", "OriginalPageClient": "original_page",
+                 "OriginalOwnerReviewClient": "original_owner_review", "OriginalProposalClient": "original_proposal"}
 SUITES = {"root-journal": "RootJournalTest", "election-journal": "ElectionJournalTest",
           "custody": "CustodyTest", "composition": "ComposeTest", "composition02": "Compose02Test",
           "original-reply": "OriginalReplyTest", "original-protected": "OriginalProtectedTest",
-          "original-history": "OriginalHistoryTest", "http": "HttpTest", "current-http": "CurrentTest"}
+          "original-history": "OriginalHistoryTest", "http": "HttpTest", "current-http": "CurrentTest",
+          "read-http": "ReadTest", "protected-read-http": "ProtectedReadTest", "page-http": "PageTest",
+          "owner-http": "OwnerReviewTest", "proposal-http": "ProposalTest"}
 PINS = {"producer02": "a13ea1e3d6f6db594485c19b36c43fe642e67c7a",
         "producer03": "304d512b7a420a3102278f32baed095f3e778989",
         "custody_producer": "a5fb59c2c5bc81e80b5b8d4b836afd51c5304653",
@@ -36,7 +40,11 @@ PINS = {"producer02": "a13ea1e3d6f6db594485c19b36c43fe642e67c7a",
         "controls": "1b7732ec36bf705f78e69a2cea95b792f04dc772",
         "original_producer": "72124e1a3ff28e782f870eeddbdc33cacf8ca3b4",
         "http_fixture": "6307413ae33fa4623483ca5adf306045b3efffb1",
-        "current_fixture": "50c7258eb7e616ba8f0574d167bff7b999a9bd8d"}
+        "current_fixture": "50c7258eb7e616ba8f0574d167bff7b999a9bd8d",
+        "read_fixture": "d127e5c86f3b17db371acc608eedcf6419264ba7",
+        "page_fixture": "e3ed703a2c5eb0f72fc4138fade0859637dff3d5",
+        "owner_fixture": "a0cd1763406b6c0a05f7ea57a897664f39667b75",
+        "proposal_fixture": "a32ef83ad24746a99b3ba8895170b588b718e236"}
 
 
 def run(*args, **kw):
@@ -69,10 +77,12 @@ def env_clean():
 def runtime_sources(target):
     extension = {"java": "java", "csharp": "cs", "ruby": "rb"}[target]
     result = []
-    for module in MODULES:
+    for module in MODULES + ([] if target == 'java' else list(SPLIT_MODULES)):
         name = re.sub(r"(?<!^)(?=[A-Z])", "_", module).lower() if target == "ruby" else module
         if target == 'ruby' and module == 'OriginalCurrentClient':
             name = 'original_current'
+        if target == 'ruby' and module in SPLIT_MODULES:
+            name = SPLIT_MODULES[module]
         candidates = list((HERE / target).rglob(name + "." + extension))
         if module == "CandidateBody":
             candidates = [HERE.parent / "crypto-candidate" / target / (name + "." + extension)]
@@ -125,7 +135,7 @@ def java(stage, source, feed, env):
             write(file.with_name(file.name + '.' + algorithm), hashlib.new(algorithm, file.read_bytes()).hexdigest())
     consumer = stage / 'consumer'; consumer.mkdir()
     for suite, test in SUITES.items():
-        directory = 'original-reply' if suite == 'original-protected' else 'http' if suite == 'current-http' else suite
+        directory = 'original-reply' if suite == 'original-protected' else 'http' if suite.endswith('-http') else suite
         copy(HERE / 'java' / directory / (test + '.java'), consumer / 'src/main/java' / (test + '.java'))
     write(consumer / 'pom.xml', header.format('installed-consumer') + '<repositories><repository><id>candidate</id><url>' + feed.as_uri() + '</url></repository></repositories><dependencies>' + dependency.format('io.github.pboachie.zrotext', JAVA_ID, VERSION) + '</dependencies><build>' + plugins + '</build></project>')
     shutil.rmtree(source)
@@ -170,7 +180,8 @@ def csharp(stage, source, feed, env):
     check_zip(archive, metadata | {'_rels/.rels', '[Content_Types].xml', CS_ID + '.nuspec', 'lib/net8.0/' + CS_ID + '.dll', 'LICENSE', 'README.md'}, 'LICENSE', (source / 'LICENSE').read_bytes())
     for suite in SUITES:
         consumer = stage / 'consumer' / suite
-        copy(HERE / 'csharp' / suite / 'Program.cs', consumer / 'Program.cs')
+        directory = 'read-http' if suite == 'protected-read-http' else suite
+        copy(HERE / 'csharp' / directory / 'Program.cs', consumer / 'Program.cs')
         write(consumer / 'Consumer.csproj', '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>' + properties + '<OutputType>Exe</OutputType><RollForward>Major</RollForward></PropertyGroup><ItemGroup><PackageReference Include="' + CS_ID + '" Version="' + VERSION + '"/></ItemGroup></Project>')
     shutil.rmtree(source)
     env['NUGET_PACKAGES'] = str(stage / 'consumer-cache')
@@ -212,7 +223,9 @@ def ruby(stage, source, feed, env):
     for suite in SUITES:
         name = ('protected.rb' if suite == 'original-protected' else 'current_test.rb' if suite == 'current-http' else 'test.rb' if suite.endswith('journal') or suite in ('original-reply', 'original-history', 'http')
                 else 'custody_test.rb' if suite == 'custody' else 'compose_test.rb')
-        directory = 'original-reply' if suite == 'original-protected' else 'http' if suite == 'current-http' else suite
+        name = {'read-http': 'read_test.rb', 'protected-read-http': 'read_test.rb', 'page-http': 'page_test.rb',
+                'owner-http': 'owner_review_test.rb', 'proposal-http': 'proposal_test.rb'}.get(suite, name)
+        directory = 'original-reply' if suite == 'original-protected' else 'http' if suite.endswith('-http') else suite
         text = (HERE / 'ruby' / directory / name).read_text(encoding='utf-8')
         text, count = re.subn(r"^require_relative '[^']+'$", "require 'zrotext_native_candidate'", text, flags=re.M)
         if not count:
@@ -269,6 +282,20 @@ def acceptance(args, stage, commands, env):
     run(sys.executable, HERE / 'original-current-run.py', '--language', args.target,
         '--fixture', args.current_fixture, '--producer', args.original_producer,
         '--command-file', command_files['current-http'], cwd=stage, env=env)
+    for runner, fixture, suite in [('read', args.read_fixture, 'read-http'), ('page', args.page_fixture, 'page-http'),
+                                   ('owner-review', args.owner_fixture, 'owner-http'), ('proposal', args.proposal_fixture, 'proposal-http')]:
+        run(sys.executable, HERE / ('original-' + runner + '-run.py'), '--language', args.target,
+            '--fixture', fixture, '--producer', args.original_producer,
+            '--command-file', command_files[suite], cwd=stage, env=env)
+    if os.name == 'nt':
+        probe = subprocess.run(commands['original-protected'] + ['--probe'], cwd=stage, env=env, timeout=30)
+        if probe.returncode == 77:
+            print('UNQUALIFIED: installed protected TLS reads require native PCP')
+        else:
+            probe.check_returncode()
+            run(sys.executable, HERE / 'original-read-run.py', '--language', args.target,
+                '--fixture', args.read_fixture, '--producer', args.original_producer,
+                '--command-file', command_files['protected-read-http'], '--hardware', cwd=stage, env=env)
 
 
 
