@@ -67,6 +67,17 @@ module ZrotextCandidate
       @lock.synchronize { need(@qualified && !@closed); public_raw }
     end
 
+    def open_content(public_point,enc,info,aad,ciphertext)
+      @lock.synchronize do
+        need(@qualified && !@closed)
+        pk,ephemeral,context,authenticated,encrypted=[public_point,enc,info,aad,ciphertext].map { |v| v.b.dup }
+        need(context.bytesize<=36864 && authenticated.bytesize<=36864 && encrypted.bytesize.between?(17,32784) && OpenSSL.fixed_length_secure_compare(pk,public_raw))
+        shared=exchange(ephemeral)
+        begin;HpkeRecipient.open_content_agreement(shared,pk,ephemeral,context,authenticated,encrypted)
+        ensure;shared.replace("\x00".b*shared.bytesize);end
+      end
+    end
+
     def call(public_point, enc, info, aad, ciphertext)
       @lock.synchronize do
         need(@qualified && !@closed)

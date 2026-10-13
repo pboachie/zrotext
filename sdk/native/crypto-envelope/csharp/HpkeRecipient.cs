@@ -8,6 +8,13 @@ namespace Zrotext.Candidate;
 /// <summary>Candidate-only RFC9180 base-mode, sequence-zero CEK unwrap. No manifest authority.</summary>
 public static class HpkeRecipient
 {
+    /// <summary>Trusted application content adapter. This interface alone makes no custody claim.</summary>
+    public interface IContentRecipient { byte[] OpenContent(byte[] publicPoint,byte[] enc,byte[] info,byte[] aad,byte[] ciphertext); }
+    private sealed class SoftwareContentAdapter : IContentRecipient {
+        private readonly ECDiffieHellman key;internal SoftwareContentAdapter(ECDiffieHellman key){this.key=key;}
+        public byte[] OpenContent(byte[] pk,byte[] enc,byte[] info,byte[] aad,byte[] ct)=>HpkeRecipient.OpenContent(key,pk,enc,info,aad,ct);
+    }
+    public static IContentRecipient SoftwareContent(ECDiffieHellman key)=>new SoftwareContentAdapter(key);
     private static readonly byte[] Kem = {75,69,77,0,16};
     private static readonly byte[] Suite = {72,80,75,69,0,16,0,1,0,1};
     private static readonly byte[] Version = Encoding.ASCII.GetBytes("HPKE-v1");
@@ -36,7 +43,11 @@ public static class HpkeRecipient
     /// <summary>Caller supplies an authorized native key handle. Exportability is not attested here.</summary>
     public static byte[] Open(ECDiffieHellman recipient, byte[] publicPoint, byte[] encapsulated,
                               byte[] info, byte[] aad, byte[] ciphertext) {
-        if (info.Length > 36864 || aad.Length > 36864 || ciphertext.Length != 48)
+        if(ciphertext.Length!=48)throw new CryptographicException("Candidate wrap bounds");
+        return OpenContent(recipient,publicPoint,encapsulated,info,aad,ciphertext);
+    }
+    internal static byte[] OpenContent(ECDiffieHellman recipient,byte[] publicPoint,byte[] encapsulated,byte[] info,byte[] aad,byte[] ciphertext) {
+        if (info.Length > 36864 || aad.Length > 36864 || (ciphertext.Length<17 || ciphertext.Length>32784))
             throw new CryptographicException("Candidate wrap bounds");
         var pk = (byte[])publicPoint.Clone(); var enc = (byte[])encapsulated.Clone();
         var contextInfo = (byte[])info.Clone(); var authenticated = (byte[])aad.Clone(); var encrypted = (byte[])ciphertext.Clone();
@@ -46,10 +57,20 @@ public static class HpkeRecipient
             !CryptographicOperations.FixedTimeEquals(actual.Q.X, pk.AsSpan(1,32)) ||
             !CryptographicOperations.FixedTimeEquals(actual.Q.Y, pk.AsSpan(33,32)))
             throw new CryptographicException("Recipient key binding");
+        var shared=recipient.DeriveRawSecretAgreement(ephemeral.PublicKey);
+        try{return CryptContent(shared,pk,enc,contextInfo,authenticated,encrypted,false);}finally{CryptographicOperations.ZeroMemory(shared);}
+    }
+    internal static byte[] SealContent(byte[] pk,byte[] info,byte[] aad,byte[] plain) {
+        if(plain.Length<1 || plain.Length>32768)throw new CryptographicException("Candidate content bounds");
+        using var peer=Point(pk);using var ephemeral=ECDiffieHellman.Create(ECCurve.NamedCurves.nistP256);var q=ephemeral.ExportParameters(false).Q;var enc=Join(new byte[]{4},q.X!,q.Y!);var shared=ephemeral.DeriveRawSecretAgreement(peer.PublicKey);
+        try{return Join(enc,CryptContent(shared,pk,enc,info,aad,plain,true));}finally{CryptographicOperations.ZeroMemory(shared);}
+    }
+    private static byte[] CryptContent(byte[] shared,byte[] pk,byte[] enc,byte[] contextInfo,byte[] authenticated,byte[] encrypted,bool seal) {
+        if(shared.Length!=32 || contextInfo.Length>36864 || authenticated.Length>36864 || (seal?(encrypted.Length<1 || encrypted.Length>32768):(encrypted.Length<17 || encrypted.Length>32784)))throw new CryptographicException("Candidate content bounds");
         var secrets = new byte[6][];
-        var plaintext = new byte[32]; bool success = false;
+        var plaintext = new byte[seal?encrypted.Length+16:encrypted.Length-16]; bool success = false;
         try {
-            secrets[0] = recipient.DeriveRawSecretAgreement(ephemeral.PublicKey);
+            secrets[0] = (byte[])shared.Clone();
             if (secrets[0].Length != 32) throw new CryptographicException("P256 shared secret width");
             secrets[1] = Extract(Kem, Array.Empty<byte>(), "eae_prk", secrets[0]);
             secrets[2] = Expand(Kem, secrets[1], "shared_secret", Join(enc, pk), 32);
@@ -58,7 +79,8 @@ public static class HpkeRecipient
             secrets[4] = Expand(Suite, secrets[3], "key", context, 16);
             secrets[5] = Expand(Suite, secrets[3], "base_nonce", context, 12);
             using var cipher = new AesGcm(secrets[4], 16);
-            cipher.Decrypt(secrets[5], encrypted.AsSpan(0,32), encrypted.AsSpan(32,16), plaintext, authenticated);
+            if(seal)cipher.Encrypt(secrets[5],encrypted,plaintext.AsSpan(0,encrypted.Length),plaintext.AsSpan(encrypted.Length,16),authenticated);
+            else cipher.Decrypt(secrets[5], encrypted.AsSpan(0,encrypted.Length-16), encrypted.AsSpan(encrypted.Length-16,16), plaintext, authenticated);
             success = true; return plaintext;
         } finally {
             foreach (var secret in secrets) if (secret is not null) CryptographicOperations.ZeroMemory(secret);

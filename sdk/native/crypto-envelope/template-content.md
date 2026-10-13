@@ -8,7 +8,7 @@ Construct content from native strings and a string map, or call `parse` / `Parse
 
 `estimate` (Java/Ruby) / `EstimateSegments` (C#) returns a local GSM or UCS-2 estimate, including extension-table septets, multipart capacities, and a six-part cap. Empty text estimates one part, matching the maintained contract. These estimates are not carrier or billing guarantees; the selected device must check actual message parts before dispatch.
 
-No save, template HTTP/store persistence, ZTWT01 encryption/decryption, workflow authority, approval, or sending occurs here. Candidate source availability is separate from installed archive qualification and registry publication.
+No save, template HTTP/store persistence, workflow authority, approval, or sending occurs here. ZTWT01 cryptography is provided by the separate [encrypted-template companion](template-crypto.md). Candidate source availability is separate from installed archive qualification and registry publication.
 
 ## Qualification
 
