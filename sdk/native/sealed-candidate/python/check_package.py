@@ -13,7 +13,7 @@ import venv
 import zipfile
 
 ROOT=Path(__file__).resolve().parent
-MODULES={'__init__','sealed_candidate','checkpoint_store','cng_custody','cng_signing','election03','election_journal','compose03','compose02','outbound_journal','root_checkpoint','reply_selection','outbound02_journal','sealed_http','original_reply_reader','original_reply_client','original_reply_checkpoint','encrypted_template','contact_integrity','contact_history'}
+MODULES={'__init__','sealed_candidate','checkpoint_store','cng_custody','cng_signing','election03','election_journal','compose03','compose02','outbound_journal','root_checkpoint','reply_selection','outbound02_journal','sealed_http','original_reply_reader','original_reply_client','original_reply_checkpoint','encrypted_template','contact_integrity','contact_history','contact_producer'}
 PACKAGE='zrotext_native_candidate'
 DIST=PACKAGE+'-0.1.0a1'
 
@@ -77,6 +77,7 @@ def main():
         reply_consumer=temporary/'reply_consumer.py';shutil.copyfile(ROOT/'installed_reply_consumer.py',reply_consumer)
         template_consumer=temporary/'template_consumer.py';shutil.copyfile(ROOT/'installed_template_consumer.py',template_consumer)
         contact_consumer=temporary/'contact_consumer.py';shutil.copyfile(ROOT/'installed_contact_consumer.py',contact_consumer)
+        producer_consumer=temporary/'producer_consumer.py';shutil.copyfile(ROOT/'installed_contact_producer_consumer.py',producer_consumer)
         time_consumer=temporary/'time_consumer.py';shutil.copyfile(ROOT/'installed_time_consumer.py',time_consumer)
         time_cases=json.loads(run(['node',time_cli,'--reader-cases'],cwd=temporary))
         assert len(time_cases['cases'])==14
@@ -85,6 +86,9 @@ def main():
             run([python,'-m','pip','install',artifact],cwd=temporary)
             run([python,'-I','-c',"import zrotext_native_candidate,importlib.util;assert importlib.util.find_spec('zrotext_workflow') is None"],cwd=temporary)
             assert json.loads(run([python,'-I',contact_consumer],cwd=temporary,input=json.dumps(fixtures['contact'])))==dict(installed=True,historical_contact_integrity=True)
+            produced=json.loads(run([python,'-I',producer_consumer],cwd=temporary,input=json.dumps(fixtures['contact'])))
+            accepted_contact=json.loads(run(['node',ROOT/'contact-producer-interop.mjs'],cwd=temporary,input=json.dumps(produced)))
+            assert accepted_contact['verified'] and accepted_contact['fields']==3 and accepted_contact['transitions']==4
             time_result=json.loads(run([python,'-I',time_consumer],cwd=temporary,input=json.dumps(time_cases)))
             assert time_result['installed'] and len(time_result['outputs'])==sum(f['accept'] for f in time_cases['cases'])
             for output in time_result['outputs']:

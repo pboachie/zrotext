@@ -608,3 +608,46 @@ it does not requalify retained fields' older statements or custody. Tests use re
 SQLite races/process exits and fresh maintained TypeScript signed transitions;
 both installed wheel and sdist consumers exercise create/update/clear, restart
 and terminal reduction through normal public imports.
+
+`produce_contact_field01` and `produce_contact_transition01` produce the
+maintained historical contact commitments over caller-supplied opaque ciphertext.
+They do not encrypt fields, recover an owner key, install a reader, authorize a
+current owner or send data. Supply a genuine statement, exact independently
+expected account/origin/root fingerprint/contact/routing identity, and a separate
+`OwnerRootSigner`. Mutation production additionally requires the exact genuine
+previous transition and statement, expected legacy generation, and matching
+replacement field tokens. Scope, revision, slot and predecessor checks complete
+before signing. The returned `HistoricalProduction` contains copied immutable
+`signed_bytes`, a genuinely verified historical token, and the explicit
+`produced_historical_integrity` classification.
+
+`OwnerRootSigner.create(record_pending_alias)` and `.open(alias, expected_point)`
+reuse the existing local Windows Platform Crypto Provider qualification: exact
+hardware provider, P-256 shape/on-curve point, export-policy observation, private
+export refusal and real signing verification. It has a separate key namespace
+and accepts only `ZT/contact-field/commitment/v1` and
+`ZT/contact-field/mutation/v1`, with strict unsigned frame checks. The existing
+integration `HardwareSigner` domains remain unchanged and reject this root
+capability. Every producer independently matches the key point to the genuine
+statement before signing and verifies the complete signed result before return.
+There is no software fallback. `SoftwareOwnerRootSigner` requires explicit
+`require_hardware=False` and remains an experimental test capability.
+
+Optional `ContactCancellation` is one-way: call `.cancel()` to revoke an ongoing
+operation. The producer checks a ten-second deadline and admits at most four
+workers per loaded module. Cancellation or expiry stops outward delivery without
+claiming to undo a signature. An unresolved provider operation continues to own
+its admission until it actually settles; late output is discarded. No retry is
+performed. Callers own signer handles and pending-alias receipts throughout this
+period. Native threads cannot forcibly cancel an NCrypt call. Mutable working
+frames are cleared when the worker settles; immutable Python/provider copies and
+caller-owned ciphertext are outside that erasure guarantee.
+
+The independent TypeScript consumer verifies native create/update/clear/conversion
+chains and all field signatures. The protected test builds synthetic enrollment
+frames in TypeScript, signs them using private test plumbing on a fresh TPM root,
+and checks actual native commitments in TypeScript before exact owned-key cleanup.
+That fixture plumbing does not expand the public root signer's domain API.
+Installed wheel/sdist consumers exercise the explicit software candidate and
+independent verification; the separate local TPM test establishes the tested
+Windows provider observation, not remote attestation or browser/device acceptance.
