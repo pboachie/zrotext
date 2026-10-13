@@ -7,6 +7,8 @@ Supported methods are current, page, read, status, and owner-review consumption
 with a null proposal descriptor. They never accept an owner credential or attach
 an output workflow credential. Proposal consumption requires a later native
 workflow-validation integration and is unavailable here.
+Consumption serializes `event_id`, `request_id`, `active_request_id` and
+`descriptor` inside the server's required `params` object.
 
 The returned `UntrustedWire`/`OriginalWire` is raw **untrusted JSON**. HTTP success
 does not authenticate a proof, authorize a reader, validate consumption identity,

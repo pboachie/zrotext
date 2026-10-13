@@ -132,8 +132,13 @@ def main():
                     assert 'cookie' not in headers and 'x-zrotext-output-authorization' not in headers
                     expected_fields = {'v','method','accepted_manifest_version'} | {
                         'current':set(), 'read':{'event_id'}, 'status':{'consumption_id'},
-                        'page':{'limit','cursor'}, 'consume':{'event_id','request_id','active_request_id','descriptor'}}[method]
+                        'page':{'limit','cursor'}, 'consume':{'params'}}[method]
                     assert set(request) == expected_fields
+                    if method == 'consume':
+                        # Server RequestBody::Consume and maintained TS client
+                        # both require this nested object, never flat fields.
+                        assert set(request['params']) == {'event_id','request_id','active_request_id','descriptor'}
+                        assert request['params']['descriptor'] is None
                 if mode == 'trickle': assert actual['elapsed'] < .8, actual
                 assert grant not in result.stdout and grant not in result.stderr
                 count += 1

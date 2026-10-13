@@ -99,13 +99,11 @@ func (r OriginalHTTPRequest) body() ([]byte, error) {
 		if !originalUUID(r.EventID) || !originalUUID(r.RequestID) || (r.ActiveRequestID != "" && !originalUUID(r.ActiveRequestID)) {
 			return nil, bad
 		}
-		b["event_id"] = r.EventID
-		b["request_id"] = r.RequestID
-		b["descriptor"] = nil
-		b["active_request_id"] = nil
+		params := map[string]any{"event_id": r.EventID, "request_id": r.RequestID, "descriptor": nil, "active_request_id": nil}
 		if r.ActiveRequestID != "" {
-			b["active_request_id"] = r.ActiveRequestID
+			params["active_request_id"] = r.ActiveRequestID
 		}
+		b["params"] = params
 	default:
 		return nil, bad
 	}

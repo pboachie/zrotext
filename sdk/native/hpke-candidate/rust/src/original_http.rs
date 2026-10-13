@@ -98,10 +98,8 @@ impl Request {
                 {
                     return Err(bad);
                 };
-                b["event_id"] = json!(event_id);
-                b["request_id"] = json!(request_id);
-                b["active_request_id"] = json!(active_request_id);
-                b["descriptor"] = Value::Null
+                b["params"] = json!({"event_id":event_id,"request_id":request_id,
+                    "active_request_id":active_request_id,"descriptor":null})
             }
         }
         let encoded = serde_json::to_vec(&b).map_err(|_| bad)?;
