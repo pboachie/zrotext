@@ -32,6 +32,9 @@ func ProbeHardwareSigner() error {
 	return e
 }
 func CreateHardwareSigner(receipt func(string) error) (*HardwareSigner, error) {
+	return createHardwareSignerPrefix(receipt, signerPrefix)
+}
+func createHardwareSignerPrefix(receipt func(string) error, prefix string) (*HardwareSigner, error) {
 	if receipt == nil {
 		return nil, ErrShape
 	}
@@ -45,7 +48,7 @@ func CreateHardwareSigner(receipt func(string) error) (*HardwareSigner, error) {
 		r.Close()
 		return nil, e
 	}
-	r.name = signerPrefix + hex.EncodeToString(random[:])
+	r.name = prefix + hex.EncodeToString(random[:])
 	if e = receipt(r.name); e != nil {
 		r.Close()
 		return nil, e
@@ -77,9 +80,12 @@ func CreateHardwareSigner(receipt func(string) error) (*HardwareSigner, error) {
 	return s, nil
 }
 func OpenHardwareSigner(name string, expected []byte) (*HardwareSigner, error) {
-	suffix := strings.TrimPrefix(name, signerPrefix)
+	return openHardwareSignerPrefix(name, expected, signerPrefix)
+}
+func openHardwareSignerPrefix(name string, expected []byte, prefix string) (*HardwareSigner, error) {
+	suffix := strings.TrimPrefix(name, prefix)
 	v, e := hex.DecodeString(suffix)
-	if e != nil || len(v) != 16 || name != signerPrefix+hex.EncodeToString(v) || len(expected) != 65 {
+	if e != nil || len(v) != 16 || name != prefix+hex.EncodeToString(v) || len(expected) != 65 {
 		return nil, ErrShape
 	}
 	if x, _ := elliptic.Unmarshal(elliptic.P256(), expected); x == nil {

@@ -2069,6 +2069,7 @@ dependencies = [
  "base64 0.22.1",
  "getrandom 0.4.3",
  "hkdf",
+ "idna",
  "p256",
  "reqwest",
  "rusqlite",
@@ -2076,5 +2077,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "url",
  "zeroize",
 ]
