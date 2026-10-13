@@ -10,7 +10,7 @@ import (
 
 const contactRootPrefix = "zrotext-candidate-contact-root-"
 
-// ContactRootSigner is a dedicated qualified PCP contact-field capability.
+// ContactRootSigner is a dedicated qualified PCP contact commitment/mutation capability.
 // It cannot sign envelopes, manifests, reader statements or arbitrary domains.
 // Do not copy after first use. The caller owns close and exact created-key deletion.
 type ContactRootSigner struct{ signer *HardwareSigner }
@@ -80,6 +80,46 @@ func ProduceProtectedContactField01(ctx context.Context, signer *ContactRootSign
 			return nil, ErrShape
 		}
 		digest := sha256.Sum256(contactTranscript(contactFieldDomain, unsigned))
+		sig, err := s.signDigest(digest[:])
+		if err != nil {
+			return nil, err
+		}
+		if err = verifySignature(point, digest[:], sig); err != nil {
+			return nil, err
+		}
+		return sig, nil
+	}, func() {})
+}
+
+// ProduceProtectedContactMutation01 admits the complete verified transition
+// before inspecting or using the caller-owned qualified contact key.
+func ProduceProtectedContactMutation01(ctx context.Context, signer *ContactRootSigner, st *ContactStatement, e ContactExpected, m ContactMutationInput, legacy uint64, previous *ContactTransition, previousStatement *ContactStatement, replacements []*ContactField) (*ContactMutationProduction, error) {
+	unsigned, err := contactMutationPlan(st, e, m, legacy, previous, previousStatement, replacements)
+	if err != nil {
+		return nil, err
+	}
+	if signer == nil || signer.signer == nil || signer.signer.native == nil {
+		return nil, ErrProtectedUnavailable
+	}
+	return contactProduceMutation(ctx, st, e, legacy, previous, replacements, unsigned, func(limited context.Context) ([]byte, error) {
+		s := signer.signer
+		r := s.native
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if limited.Err() != nil || !r.qualified || r.closed {
+			return nil, ErrProtectedUnavailable
+		}
+		point, err := r.publicMagic(0x31534345)
+		if err != nil {
+			return nil, err
+		}
+		if !bytes.Equal(point, st.rootPoint[:]) {
+			return nil, ErrAuthentication
+		}
+		if limited.Err() != nil {
+			return nil, ErrShape
+		}
+		digest := sha256.Sum256(contactTranscript(contactMutationDomain, unsigned))
 		sig, err := s.signDigest(digest[:])
 		if err != nil {
 			return nil, err

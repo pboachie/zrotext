@@ -65,5 +65,25 @@ jobs:
           }
           python sdk/native/hpke-candidate/test-contact-field.py --producer "$env:RUNNER_TEMP/contact-source" --binary $probe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run signed mutation and transition contracts
+        shell: pwsh
+        env:
+          RUSTUP_TOOLCHAIN: '1.97.1'
+        run: |
+          $probe = "$env:RUNNER_TEMP/contact-mutation"
+          if ($IsWindows) { $probe += '.exe' }
+          if ('${{ matrix.language }}' -eq 'rust') {
+            cargo build --locked --manifest-path sdk/native/hpke-candidate/rust/Cargo.toml --example contact_mutation
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $probe = 'sdk/native/hpke-candidate/rust/target/debug/examples/contact_mutation'
+            if ($IsWindows) { $probe += '.exe' }
+          } else {
+            Push-Location sdk/native/hpke-candidate/go
+            go build -o $probe ./cmd/contact-mutation
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Pop-Location
+          }
+          python sdk/native/hpke-candidate/test-contact-mutation.py --producer "$env:RUNNER_TEMP/contact-source" --binary $probe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       # Hosted software checks do not establish PCP capability. The explicit
       # protected tests and owned receipt/deletion instructions are documented.

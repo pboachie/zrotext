@@ -4,7 +4,8 @@ Rust and Go verify generation-one profile02 contact reader statements and
 produce or verify field commitments over **already encrypted** bytes. The APIs
 return owned signature provenance. They do not encrypt/decrypt contact fields,
 establish current permission, submit requests, or persist history. Mutation and
-transition production are separate from this field capability.
+transition production use the separate typed APIs described in
+[historical contact mutations](contact-mutation.md).
 
 Statement verification requires an actual native `Manifest`, plus independently
 supplied account, canonical origin and compared root fingerprint. It rechecks
@@ -36,7 +37,7 @@ their independently enrolled root authority through their own provisioning.
 The caller owns handle close and exact newly-created-key deletion. Close never
 deletes a persistent key, and opening an existing key never grants deletion.
 
-Field operations admit at most four outstanding workers and have a fixed
+Field and mutation operations share at most four outstanding workers and have a fixed
 ten-second limit; Go contexts and Rust `Cancellation` can stop exposure earlier.
 Cancellation or timeout never releases capacity or clears a key buffer still
 owned by an executing worker. There is no automatic retry. A returned commitment

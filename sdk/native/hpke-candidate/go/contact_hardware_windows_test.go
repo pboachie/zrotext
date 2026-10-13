@@ -138,6 +138,8 @@ func TestContactProtectedHardware(t *testing.T) {
 		t.Fatal(e)
 	}
 	var outputs []map[string]string
+	fields := map[string]*ContactField{}
+	statementsByName := map[string]*ContactStatement{}
 	for _, row := range []struct {
 		field, statement string
 		m                *Manifest
@@ -174,6 +176,8 @@ func TestContactProtectedHardware(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
+		fields[row.field] = out.Verified()
+		statementsByName[row.statement] = st
 		outputs = append(outputs, map[string]string{"bytes": base64.StdEncoding.EncodeToString(out.Bytes()), "statement": row.statement})
 		reopened, e := OpenContactRootSigner(alias, point)
 		if e != nil {
@@ -192,5 +196,64 @@ func TestContactProtectedHardware(t *testing.T) {
 	if string(result["verified"]) != "true" || string(result["fields"]) != "3" {
 		t.Fatal("independent contact verification failed")
 	}
+	expected := ContactExpected{Account: dec(text(f, "account")), Origin: text(f, "origin"), RootFingerprint: dec(text(f, "fingerprint")), Contact: dec(text(f, "contact")), RoutingDigest: dec(text(f, "routing"))}
+	mutations := map[string]string{}
+	producedFields := map[string]string{}
+	for name, field := range fields {
+		producedFields[name] = base64.StdEncoding.EncodeToString(field.Bytes())
+	}
+	var previous *ContactTransition
+	var previousStatement *ContactStatement
+	slot := func(name string) ContactSlot {
+		field := fields[name]
+		s := ContactSlot{Tag: 1, SealRevision: binary.BigEndian.Uint64(field.raw[38:46])}
+		copy(s.Digest[:], field.Digest())
+		return s
+	}
+	for _, name := range []string{"create", "update", "clear", "converted"} {
+		st := statementsByName["statement"]
+		if name == "update" || name == "clear" {
+			st = statementsByName["nextStatement"]
+		}
+		m := contactMutationInput(dec(text(f, name)))
+		var replacements []*ContactField
+		switch name {
+		case "create", "converted":
+			m.Name = slot("name")
+			m.Notes = slot("notes")
+			replacements = []*ContactField{fields["name"], fields["notes"]}
+			previous = nil
+			previousStatement = nil
+		case "update":
+			m.Name = slot("name")
+			m.Notes = slot("replacement")
+			replacements = []*ContactField{fields["replacement"]}
+		case "clear":
+			m.Notes = slot("replacement")
+		}
+		if previous != nil {
+			copy(m.PreviousDigest[:], previous.Mutation().Digest())
+		}
+		result, e := ProduceProtectedContactMutation01(context.Background(), key, st, expected, m, m.LegacyGeneration, previous, previousStatement, replacements)
+		if e != nil {
+			t.Fatal(e)
+		}
+		mutations[name] = base64.StdEncoding.EncodeToString(result.Bytes())
+		closed, e := OpenContactRootSigner(alias, point)
+		if e != nil {
+			t.Fatal(e)
+		}
+		closed.Close()
+		if _, e = ProduceProtectedContactMutation01(context.Background(), closed, st, expected, m, m.LegacyGeneration, previous, previousStatement, replacements); e == nil {
+			t.Fatal("closed mutation provider accepted")
+		}
+		previous = result.Verified()
+		previousStatement = st
+	}
+	verified := run(interop, map[string]any{"fixture": f, "fields": producedFields, "mutations": mutations})
+	if string(verified["verified"]) != "true" || string(verified["transitions"]) != "4" {
+		t.Fatal("independent mutation verification")
+	}
+	t.Log("4 actual protected mutation transitions independently verified; closed mutation provider refused")
 	t.Log("3 actual protected fields independently verified; closed provider and envelope alias refused")
 }
