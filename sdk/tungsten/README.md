@@ -1,0 +1,121 @@
+# Experimental generated ZROtext clients
+
+This integration generates TypeScript, Python, Rust, Go, Java, C#, and Ruby HTTP
+clients from the current public contracts. It also generates a Rust `zrotext-api`
+CLI, local MCP server, experimental WebMCP adapter, and API/LLM documentation.
+Existing clients remain the supported entry points for their documented scope.
+Generated clients do not implement sealed-content encryption or key custody.
+
+## Reproduce the output
+
+Check out Tungsten at the revision in `generator.lock.json` into a clean external
+directory using `git clone -c core.autocrlf=false` so embedded templates retain
+their canonical LF bytes. Install that checkout's Rust toolchain and Go, then run
+from this repo:
+
+```sh
+python3 scripts/tungsten_sdk.py --source /path/to/tungsten
+python3 scripts/tungsten_sdk.py --source /path/to/tungsten --check
+```
+
+On Windows, run inside WSL when using Linux Rust/Go. Windows-created worktrees
+are checked through Windows Git when it is on the WSL PATH. The runner builds
+both tools from the verified clean source; a matching version string alone is
+not accepted. `CARGO_TARGET_DIR` may select an external build cache.
+
+`generated/` is ignored build output. The tracked `generated.lock.json` contains
+SHA-256 digests of every generator-owned file for reviewable deterministic
+checks without committing several megabytes of repeated generated contracts.
+Required preserved `custom` modules live in the reviewed `extensions/` tree;
+the runner stages and hashes them too. They are included in source packages.
+Normal generation refreshes that lock; `--check` regenerates ignored artifacts,
+runs Tungsten's own drift check, and compares the lock without updating it.
+Both manifests use JSON syntax, a YAML subset, so policy tests need no YAML
+dependency. Never hand-edit generated files.
+
+For a local synthetic contract server, use the same command with `--mock`.
+It models the API contract; it does not establish real server, device, carrier,
+authorization, or sealed cryptographic acceptance.
+
+## Boundaries and migration
+
+- Only implemented public operations are callable. Planned aliases remain docs.
+  Sealed and workflow operations retain their server feature gates and scoped
+  credentials. Generation never enables a deployment gate.
+- All automatic HTTP retries default to zero. Persist caller-owned idempotency
+  keys. An uncertain response is not permission to create a new send. Sealed
+  envelope replay identity remains the original bytes, without a new header key.
+- Construct generated TypeScript clients with `validateResponses: 'strict'`.
+  Tungsten defaults to warnings; this is not sufficient for legacy-client parity.
+- The existing `@elysra/zrotext` package is preserved. Generated TypeScript uses
+  that future identity in an isolated build tree, but must not be published over
+  the current package. Method names, Result errors, previews and confirmations
+  differ from existing clients; no compatibility replacement is claimed here.
+- Existing crypto/custody, webhook verification and workflow schema refinements
+  stay outside generated code. OpenAPI alone does not encode every executable
+  workflow validation rule. Python's existing bridge remains until native parity.
+- Generated MCP is an experimental separate artifact, not a replacement for
+  `sdk/mcp`. Do not expose it remotely or give it owner credentials merely to
+  bypass workflow restrictions. WebMCP requires deliberate registration inside
+  an authenticated application; generation does not install browser tools.
+- Profile03 candidate parity and durable authority/device integration remain
+  gated by the current protocol and issue #1054. No physical SMS readiness is
+  implied; controlled-device acceptance is tracked by #1004.
+
+## Validation and package readiness
+
+CI builds the exact compiler and external emitter, regenerates all ten targets,
+checks digests, compiles TypeScript and exercises synthetic transport failures.
+It also compiles Rust/Go/Java/C#, loads Ruby, and builds/installs Python wheels
+against the pinned runtime source. Contract inputs use LF line endings on every
+platform so their generator digests agree across Windows and Linux checkouts.
+Run those tests locally after generation:
+
+```sh
+python3 -m unittest discover -s scripts -p 'test_tungsten_sdk.py'
+cd sdk/tungsten/generated/typescript
+cp ../../typescript.package-lock.json package-lock.json
+npm ci --ignore-scripts
+npm run build
+node --test ../../contract.test.mjs
+```
+
+Generation is not compilation, behavioral parity, package installation, or device
+acceptance. All generated packages remain experimental and unpublished. Their
+licenses and archive contents must be checked before distribution. Independent
+native companion packages have their own tests and readiness documentation.
+
+Upstream dependencies are tracked in Tungsten issues
+[#60](https://github.com/pboachie/tungsten/issues/60) (Go runtime resolution),
+[#61](https://github.com/pboachie/tungsten/issues/61) (target documentation), and
+[#62](https://github.com/pboachie/tungsten/issues/62) (runtime distribution).
+Conditional JSON Schema refinement is also blocked by
+[#63](https://github.com/pboachie/tungsten/issues/63): the generated webhook
+selection validator accepts enabling without encrypted-transfer confirmation,
+although the server rejects that combination. Retain the existing validators;
+generated schema success alone is not equivalent client-side validation.
+[#64](https://github.com/pboachie/tungsten/issues/64) tracks checkout-dependent
+Rust template bytes; the runner rejects CRLF templates before building.
+Clean-consumer installation must work without sibling checkout dependencies,
+editable installs or Go replacements before claiming registry readiness.
+
+For generator updates, review the pinned source and manifest changes together,
+regenerate, inspect the operation surface and digest changes, run native/runtime
+conformance checks, and retain the existing clients until replacement gates pass.
+
+For bounded Rust/Go source compilation (not registry installation), install
+Rust 1.88.0 and run `python3 sdk/tungsten/check-rust-go.py --source /path/to/tungsten`.
+This copies generated packages into temporary directories and binds dependencies
+to the verified runtime source; it never changes the generated package manifests.
+
+`check-managed.py --source /path/to/tungsten --target java` (or `csharp`, `ruby`)
+and `check-python.py --source /path/to/tungsten` qualify the other source builds.
+Java requires 17+, C# requires .NET 10, Ruby requires 3.3+, and Python requires
+3.12+. These source checks do not establish clean registry installation.
+
+After generation, `python3 sdk/tungsten/package-sources.py --out /external/output`
+creates ten deterministic source archives, adds the application license, and
+emits SHA256SUMS. It refuses modified generated files and packages only the
+reviewed inventory, excluding installed dependencies and build caches. CI makes
+these experimental source bundles available as a seven-day artifact. They are
+not registry release packages or an approval to publish them.
