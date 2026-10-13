@@ -29,10 +29,13 @@ PRODUCERS = {
     "election": "304d512b7a420a3102278f32baed095f3e778989",
     "original": "72124e1a3ff28e782f870eeddbdc33cacf8ca3b4",
     "template": "26e876da9f34372d9cf26511993cf633971e0037",
+    "save_oracle": "5a25bac026bebee5eba20dc6048ddc1c773c41ed",
+    "opening_oracle": "c843543f13e3bbd6ac17a260a4b0523f0748324f",
+    "authoring_oracle": "059556de2fe314ec0d88833a8d3e4d6ee41a8066",
 }
 HARNESSES = ("journal", "root", "cng", "compose", "compose02", "original", "reply_checkpoint",
              "reply_http", "reply_current", "reply_read", "reply_page", "reply_consumption", "reply_proposal",
-             "template", "template_crypto")
+             "template", "template_crypto", "owner_template", "template_save", "template_opening", "template_authoring")
 ORIGINAL_TLS = ("http", "current", "read", "page", "consumption", "proposal")
 
 
@@ -132,6 +135,7 @@ def rust_package(stage, output):
             shutil.copy2(ROOT / "rust/examples" / (name + ".rs"), consumer / "src/bin" / (name + ".rs"))
         shutil.copytree(ROOT / "rust/examples/read_custody", consumer / "src/bin/read_custody")
         shutil.copytree(ROOT / "rust/examples/template_custody", consumer / "src/bin/template_custody")
+        shutil.copytree(ROOT / "rust/examples/opening_custody", consumer / "src/bin/opening_custody")
         (consumer / "Cargo.toml").write_text('''[package]
 name = "native-installed-consumer"
 version = "0.0.0"
@@ -251,7 +255,33 @@ def template_acceptance(binaries, original, template, *, hardware=False):
         run(*argv, "--fail-setup", env=env)
 
 
-def acceptance(binaries, archive, election, original, template):
+def owner_template_acceptance(binaries, template, save_oracle, deadline_case_ms):
+    """Cold reads and explicit save recovery use only installed public APIs."""
+    common = ["--producer", template, "--deadline-case-ms", str(deadline_case_ms)]
+    run(sys.executable, ROOT / "test-owner-template.py", *common,
+        "--binary", binaries["owner_template"], env=safe_env())
+    run(sys.executable, ROOT / "test-template-save.py", *common,
+        "--save-oracle", save_oracle, "--binary", binaries["template_save"], env=safe_env())
+
+
+def template_opening_acceptance(binaries, template, opening_oracle, deadline_case_ms, hardware=False):
+    """Opening and owned-key cleanup run against the installed public API."""
+    if hardware:
+        run(sys.executable, ROOT / "test-template-opening-hardware.py", "--producer", opening_oracle,
+            "--binary", binaries["template_opening"], env=safe_env())
+    else:
+        run(sys.executable, ROOT / "test-template-opening.py", "--producer", template,
+            "--opening-oracle", opening_oracle, "--deadline-case-ms", str(deadline_case_ms),
+            "--binary", binaries["template_opening"], env=safe_env())
+
+
+def template_authoring_acceptance(binaries, template, authoring_oracle):
+    """Reviewed preparation and explicit persistence use installed public APIs."""
+    run(sys.executable, ROOT / "test-template-authoring.py", "--producer", template,
+        "--authoring-oracle", authoring_oracle, "--binary", binaries["template_authoring"], env=safe_env())
+
+
+def acceptance(binaries, archive, election, original, template, save_oracle, opening_oracle, authoring_oracle, deadline_case_ms):
     env = safe_env()
     fixture = run("node", election / "sdk/native/sealed-candidate/python/produce-election03.mjs", env=env, capture_output=True, text=True).stdout
     run(binaries["journal"], input=fixture, text=True)
@@ -259,6 +289,9 @@ def acceptance(binaries, archive, election, original, template):
     fixture = run("node", ROOT / "root-controls.mjs", archive, input=fixture, env=env, capture_output=True, text=True).stdout
     run(binaries["root"], input=fixture, text=True)
     template_acceptance(binaries, original, template)
+    owner_template_acceptance(binaries, template, save_oracle, deadline_case_ms)
+    template_opening_acceptance(binaries, template, opening_oracle, deadline_case_ms)
+    template_authoring_acceptance(binaries, template, authoring_oracle)
     original_acceptance(binaries, original)
     qualified = False
     if os.name == "nt":
@@ -272,6 +305,7 @@ def acceptance(binaries, archive, election, original, template):
             run(sys.executable, ROOT / "test-original-read.py", "--binary", binaries["reply_read"],
                 "--producer", original, "--hardware", env=env)
             template_acceptance(binaries, original, template, hardware=True)
+            template_opening_acceptance(binaries, template, opening_oracle, deadline_case_ms, hardware=True)
         qualified = all(results)
     return qualified
 
@@ -283,9 +317,16 @@ def main():
     parser.add_argument("--election", type=Path, required=True)
     parser.add_argument("--original", type=Path, required=True)
     parser.add_argument("--template", type=Path, required=True)
+    parser.add_argument("--save-oracle", type=Path, required=True)
+    parser.add_argument("--opening-oracle", type=Path, required=True)
+    parser.add_argument("--authoring-oracle", type=Path, required=True)
+    parser.add_argument("--owner-deadline-case-ms", type=int, default=100,
+                        help="Declared caller deadline for post-handshake owner-template fixture cases (100..2000)")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--require-protected", action="store_true")
     args = parser.parse_args()
+    if not 100 <= args.owner_deadline_case_ms <= 2000:
+        parser.error("--owner-deadline-case-ms must be 100..2000")
     for name, revision in PRODUCERS.items():
         path = getattr(args, name).resolve()
         if run("git", "-C", path, "rev-parse", "HEAD", capture_output=True, text=True).stdout.strip() != revision:
@@ -296,7 +337,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="zrotext-native-package-") as directory:
         package = rust_package if args.language == "rust" else go_package
         for binaries, artifact in package(Path(directory), args.output):
-            qualified = acceptance(binaries, args.archive, args.election, args.original, args.template)
+            qualified = acceptance(binaries, args.archive, args.election, args.original, args.template,
+                                   args.save_oracle, args.opening_oracle, args.authoring_oracle, args.owner_deadline_case_ms)
             report = {"experimental": True, "published": False, "language": args.language,
                       "version": VERSION, "archive": artifact.name, "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
                       "license": "AGPL-3.0-only", "producer_revisions": PRODUCERS,
@@ -307,6 +349,14 @@ def main():
                       "journal_root_acceptance": True,
                       "original_acceptance": {"reader_checkpoint": True, "tls_suites": list(ORIGINAL_TLS)},
                       "template_acceptance": {"content_segments": True, "software_interop": True},
+                      "owner_template_acceptance": {"cold_tls": True, "save_tls": True,
+                                                    "maintained_differential": True,
+                                                    "deadline_case_ms": args.owner_deadline_case_ms},
+                      "template_opening_acceptance": {"software_tls": True, "maintained_differential": True,
+                                                      "protected": qualified,
+                                                      "deadline_case_ms": args.owner_deadline_case_ms},
+                      "template_authoring_acceptance": {"reviewed_prepare": True, "explicit_commit": True,
+                                                        "maintained_differential": True},
                       "protected_acceptance": qualified}
             (args.output / "qualification.json").write_text(json.dumps(report, indent=2) + "\n")
             print(json.dumps(report))
