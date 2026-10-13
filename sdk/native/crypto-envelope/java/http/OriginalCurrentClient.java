@@ -1,6 +1,7 @@
 package org.zrotext.candidate;
 import com.google.gson.*;
 import java.security.*;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.LongSupplier;
@@ -18,6 +19,7 @@ public final class OriginalCurrentClient {
     private final OriginalReplyCheckpoint checkpoint;
     private final OriginalReplyReader.Scope scope;
     private final ManifestChain.RootPin root;
+    private final byte[] rootBinding;
     private final ReentrantLock lock=new ReentrantLock();
     private long revision,last;
     private boolean failed;
@@ -40,7 +42,7 @@ public final class OriginalCurrentClient {
     public OriginalCurrentClient(OriginalHttp transport,OriginalReplyCheckpoint checkpoint,byte[] pin,byte[] fingerprint,OriginalReplyReader.Scope scope,long now)throws OriginalHttp.Failure{
         try{
             need(transport!=null && checkpoint!=null && scope!=null);positive(now);this.transport=transport;this.checkpoint=checkpoint;this.scope=scope;root=ManifestChain.RootPin.enroll(pin,fingerprint);
-            var saved=checkpoint.snapshot(scope,now);var first=saved.history().get(0);at(first.bytes(),null,first.comparisonMs());revision=saved.revision();last=now;
+            var saved=checkpoint.snapshot(scope,now);var first=saved.history().get(0);at(first.bytes(),null,first.comparisonMs());rootBinding=first.enrolledRootPoint();revision=saved.revision();last=now;
         }catch(Exception error){throw new OriginalHttp.Failure(false);}
     }
     private long sample(LongSupplier clock)throws OriginalHttp.Failure{long now=positive(clock.getAsLong());need(now>=last);last=now;return now;}
@@ -48,24 +50,34 @@ public final class OriginalCurrentClient {
     public Verified current(String credential,LongSupplier clock)throws OriginalHttp.Failure{
         boolean acquired=false;
         try{
-            need(clock!=null && !lock.isHeldByCurrentThread() && lock.tryLock());acquired=true;need(!failed);long now=sample(clock);
-            var saved=checkpoint.snapshot(scope,now);if(saved.revision()!=revision){failed=true;need(false);}
-            var latest=saved.history().get(saved.history().size()-1);
-            var wire=transport.exchange(credential,new OriginalHttp.Request("current",latest.version(),null,null,null,null,null,null));
-            var p=object(JsonParser.parseString(wire.untrustedJson()),FIELDS);now=sample(clock);long observed=integer(p.get("observed_at_ms")),expires=integer(p.get("expires_at_ms"));fresh(now,observed,expires);
+            need(clock!=null && !lock.isHeldByCurrentThread() && lock.tryLock());acquired=true;need(!failed);return currentLocked(credential,clock);
+        }catch(Exception error){if(error instanceof InterruptedException)Thread.currentThread().interrupt();throw new OriginalHttp.Failure(false);}
+        finally{if(acquired)lock.unlock();}
+    }
+    private Verified currentLocked(String credential,LongSupplier clock)throws Exception {
+        need(!failed);var saved=savedAt(clock);var latest=saved.history().get(saved.history().size()-1);
+        var wire=transport.exchange(credential,new OriginalHttp.Request("current",latest.version(),null,null,null,null,null,null));
+        return acceptProof(JsonParser.parseString(wire.untrustedJson()),saved,latest,clock);
+    }
+    private OriginalReplyCheckpoint.Snapshot savedAt(LongSupplier clock)throws Exception{
+        need(!failed);var saved=checkpoint.snapshot(scope,sample(clock));if(saved.revision()!=revision){failed=true;need(false);}return saved;
+    }
+    private Verified acceptProof(JsonElement value,OriginalReplyCheckpoint.Snapshot saved,ManifestChain.Verified first,LongSupplier clock)throws Exception {
+            var p=object(value,FIELDS);long now=sample(clock);long observed=integer(p.get("observed_at_ms")),expires=integer(p.get("expires_at_ms"));fresh(now,observed,expires);
             byte[][] expected=scope.proofFields();String[] names={"account_id","device_id","line_id","interval_id","connector_id","read_grant_id"};
             for(int i=0;i<names.length;i++)uuid(p.get(names[i]),expected[i]);
             need(string(p.get("reader_id")).equals(HexFormat.of().formatHex(expected[6])) && integer(p.get("authority_revision"))==1);
             need(p.get("manifest_chain").isJsonArray());var chain=p.getAsJsonArray("manifest_chain");need(chain.size()>=1 && chain.size()<=32);
-            var history=new ArrayList<>(saved.history());var previous=latest;
+            var latest=saved.history().get(saved.history().size()-1);var history=new ArrayList<>(saved.history());var previous=first;
             for(int i=0;i<chain.size();i++){
                 var entry=object(chain.get(i),"version","accepted_at_ms","manifest_b64");long version=integer(entry.get("version")),accepted=integer(entry.get("accepted_at_ms"));
-                need(accepted<=now+30000 && version==(i==0?latest.version():previous.version()+1));String encoded=string(entry.get("manifest_b64"));need(encoded.length()<=13004);
+                need(accepted<=now+30000 && version==(i==0?first.version():previous.version()+1));String encoded=string(entry.get("manifest_b64"));need(encoded.length()<=13004);
                 byte[] bytes=Base64.getDecoder().decode(encoded);need(bytes.length<=9751 && Base64.getEncoder().encodeToString(bytes).equals(encoded));var current=at(bytes,previous,accepted);
                 need(current.version()==version && current.generation()==latest.generation() && same(current.rootPoint(),latest.rootPoint()));
-                if(i==0)need(same(current.digest(),latest.digest()));else history.add(current);previous=current;
+                var cached=saved.history().stream().filter(m->m.version()==version).findFirst();
+                if(cached.isPresent())need(same(current.digest(),cached.get().digest()));else{need(version>latest.version());history.add(current);}previous=current;
             }
-            need(integer(p.get("current_manifest_version"))==previous.version() && integer(p.get("root_generation"))==latest.generation() && string(p.get("current_manifest_digest")).equals(HexFormat.of().formatHex(previous.digest())) && history.size()<=64);
+            need(previous.version()>=latest.version() && integer(p.get("current_manifest_version"))==previous.version() && integer(p.get("root_generation"))==latest.generation() && string(p.get("current_manifest_digest")).equals(HexFormat.of().formatHex(previous.digest())) && history.size()<=64);
             now=sample(clock);fresh(now,observed,expires);at(previous.bytes(),previous,now);
             OriginalReplyCheckpoint.Fence fence=(manifest,floor)->{
                 try{long time=sample(clock);need(time>=floor);fresh(time,observed,expires);at(manifest.bytes(),manifest,time);return time;}
@@ -76,7 +88,222 @@ public final class OriginalCurrentClient {
             if(after>committed.comparisonMs())committed=checkpoint.accept(scope,committed.history(),committed.revision(),after,fence);
             revision=committed.revision();last=committed.comparisonMs();failed=false;current=committed.history().get(committed.history().size()-1);
             return new Verified(new OriginalReplyReader.Authority(scope,"1",last,expires,current));
+    }
+
+    public static final class Read {
+        private final String plaintext;
+        private final byte[] event,digest;
+        private final long baseline;
+        private final OriginalReplyReader.Authority authority;
+        private Read(String text,byte[] event,byte[] digest,long baseline,OriginalReplyReader.Authority authority){this.plaintext=text;this.event=event.clone();this.digest=digest.clone();this.baseline=baseline;this.authority=authority;}
+        public String plaintext(){return plaintext;}
+        public byte[] event(){return event.clone();}
+        public byte[] envelopeDigest(){return digest.clone();}
+        public long acceptedManifestVersion(){return baseline;}
+        public OriginalReplyReader.Authority authority(){return authority;}
+    }
+    private static byte[] encoded(JsonElement value,int maximum)throws OriginalHttp.Failure{
+        String text=string(value);need(text.length()<=((maximum+2)/3)*4);byte[] out=Base64.getDecoder().decode(text);
+        need(out.length<=maximum && Base64.getEncoder().encodeToString(out).equals(text));return out;
+    }
+    public Read readSoftware(String credential,byte[] event,PrivateKey recipient,LongSupplier clock,long baseline)throws OriginalHttp.Failure{
+        return readWithRecipient(credential,event,HpkeRecipient.software(recipient),clock,baseline);
+    }
+    /** Injected recipients are trusted application code, not a custody claim. */
+    public Read readWithRecipient(String credential,byte[] event,HpkeRecipient.Recipient recipient,LongSupplier clock,long baseline)throws OriginalHttp.Failure{
+        boolean acquired=false;
+        try{
+            need(clock!=null && recipient!=null && !lock.isHeldByCurrentThread() && lock.tryLock());acquired=true;
+            need(event!=null && event.length==16 && !same(event,new byte[16]) && baseline>=0 && baseline<=SAFE);event=event.clone();
+            var saved=savedAt(clock);var latest=saved.history().get(saved.history().size()-1);
+            var first=saved.history().stream().filter(m->latest.version()-m.version()<32 && (baseline==0 || baseline==m.version())).findFirst().orElseThrow();
+            String hex=HexFormat.of().formatHex(event),eventText=hex.substring(0,8)+"-"+hex.substring(8,12)+"-"+hex.substring(12,16)+"-"+hex.substring(16,20)+"-"+hex.substring(20);
+            var wire=transport.exchange(credential,new OriginalHttp.Request("read",first.version(),eventText,null,null,null,null,null));
+            var r=object(JsonParser.parseString(wire.untrustedJson()),"event_id","accepted_at_ms","envelope_b64","historical_manifest_version","statement_b64","approval_signature_b64","installation_signature_b64","activation_manifest_version","proof");
+            need(string(r.get("event_id")).equals(eventText));var initial=acceptProof(r.get("proof"),saved,first,clock);
+            var snap=checkpoint.snapshot(scope,last);if(snap.revision()!=revision){failed=true;need(false);}
+            long hv=integer(r.get("historical_manifest_version")),av=integer(r.get("activation_manifest_version")),accepted=integer(r.get("accepted_at_ms"));need(hv>=first.version() && accepted<=last+30000);
+            var historical=snap.history().stream().filter(m->m.version()==hv).findFirst().orElseThrow();
+            var activation=snap.history().stream().filter(m->m.version()==av).findFirst().orElseThrow();activation=at(activation.bytes(),activation,accepted);
+            var selection=OriginalReplyReader.verifySelection(encoded(r.get("statement_b64"),1536),encoded(r.get("approval_signature_b64"),64),encoded(r.get("installation_signature_b64"),64),activation,accepted,scope);
+            byte[] envelope=encoded(r.get("envelope_b64"),34082);OriginalReplyReader.Authority[] authority={initial.authority()};boolean[] once={true};
+            OriginalReplyReader.AuthoritySource source=()->{
+                if(once[0])once[0]=false;
+                else try{authority[0]=currentLocked(credential,clock).authority();}catch(Exception error){if(error instanceof InterruptedException)Thread.currentThread().interrupt();throw new GeneralSecurityException("Original read refused");}
+                return authority[0];
+            };
+            String plain=OriginalReplyReader.openWithRecipient(envelope,event,historical,selection,scope,recipient,source);
+            return new Read(plain,event,MessageDigest.getInstance("SHA-256").digest(envelope),first.version(),authority[0]);
         }catch(Exception error){if(error instanceof InterruptedException)Thread.currentThread().interrupt();throw new OriginalHttp.Failure(false);}
         finally{if(acquired)lock.unlock();}
     }
+
+    public record PageCursor(String eventId,long acceptedAtMs) {}
+    public record EventMetadata(String eventId,long acceptedAtMs,long observedAtMs,long historicalManifestVersion,long activationManifestVersion,String disposition,List<String> activeRequestIds) {
+        public EventMetadata { activeRequestIds=List.copyOf(activeRequestIds); }
+    }
+    public static final class Page {
+        private final List<EventMetadata> events;private final PageCursor next;private final Verified authority;
+        private Page(List<EventMetadata> events,PageCursor next,Verified authority){this.events=List.copyOf(events);this.next=next;this.authority=authority;}
+        public List<EventMetadata> events(){return events;}
+        public PageCursor next(){return next;}
+        public Verified authority(){return authority;}
+    }
+    private static String pageId(JsonElement value)throws OriginalHttp.Failure{
+        String text=string(value);need(text.matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}") && !text.equals("00000000-0000-0000-0000-000000000000"));return text;
+    }
+    private static PageCursor pageCursor(String id,long time)throws OriginalHttp.Failure{return new PageCursor(pageId(new JsonPrimitive(id)),positive(time));}
+    /** Discovery metadata only; no consumption or workflow authority. */
+    public Page page(String credential,PageCursor cursor,int limit,LongSupplier clock)throws OriginalHttp.Failure{
+        boolean acquired=false;
+        try{
+            need(limit>=1 && limit<=32 && clock!=null);PageCursor after=cursor==null?null:pageCursor(cursor.eventId(),cursor.acceptedAtMs());
+            need(!lock.isHeldByCurrentThread() && lock.tryLock());acquired=true;var saved=savedAt(clock);var latest=saved.history().get(saved.history().size()-1);
+            var wire=transport.exchange(credential,new OriginalHttp.Request("page",latest.version(),null,null,limit,after==null?null:new OriginalHttp.Cursor(after.eventId(),after.acceptedAtMs()),null,null));
+            var r=object(JsonParser.parseString(wire.untrustedJson()),"events","next","proof");need(r.get("events").isJsonArray());var rows=r.getAsJsonArray("events");need(rows.size()<=limit);
+            var events=new ArrayList<EventMetadata>();var ids=new HashSet<String>();
+            for(var row:rows){
+                var e=object(row,"event_id","accepted_at_ms","observed_at_ms","historical_manifest_version","activation_manifest_version","disposition","active_request_ids");
+                String id=pageId(e.get("event_id"));need(ids.add(id));long accepted=integer(e.get("accepted_at_ms")),observed=integer(e.get("observed_at_ms")),historical=integer(e.get("historical_manifest_version")),activation=integer(e.get("activation_manifest_version"));
+                var current=pageCursor(id,accepted);need(after==null || accepted>after.acceptedAtMs() || accepted==after.acceptedAtMs() && id.compareTo(after.eventId())>0);after=current;
+                String disposition=string(e.get("disposition"));need(Set.of("unassociated","owner_review","request_available").contains(disposition));
+                need(e.get("active_request_ids").isJsonArray());var requests=e.getAsJsonArray("active_request_ids");need(requests.size()<=8);var unique=new HashSet<String>();var captured=new ArrayList<String>();
+                for(var request:requests){String rid=pageId(request);need(unique.add(rid));captured.add(rid);}
+                events.add(new EventMetadata(id,accepted,observed,historical,activation,disposition,captured));
+            }
+            PageCursor next=null;
+            if(r.get("next").isJsonNull())need(events.size()<limit);
+            else{var c=object(r.get("next"),"event_id","accepted_at_ms");next=pageCursor(pageId(c.get("event_id")),integer(c.get("accepted_at_ms")));need(events.size()==limit && next.equals(after));}
+            return new Page(events,next,acceptProof(r.get("proof"),saved,latest,clock));
+        }catch(Exception error){if(error instanceof InterruptedException)Thread.currentThread().interrupt();throw new OriginalHttp.Failure(false);}
+        finally{if(acquired)lock.unlock();}
+    }
+
+    public static final class OwnerReviewIntent {
+        private final byte[] record;
+        private OwnerReviewIntent(byte[] record){this.record=record.clone();}
+        public byte[] bytes(){return record.clone();}
+    }
+    public static final class OwnerReviewResult {
+        private final byte[] event,consumption,active;private final Verified authority;
+        private OwnerReviewResult(byte[] event,byte[] consumption,byte[] active,Verified authority){this.event=event.clone();this.consumption=consumption.clone();this.active=active==null?null:active.clone();this.authority=authority;}
+        public byte[] event(){return event.clone();}
+        public byte[] consumption(){return consumption.clone();}
+        public byte[] activeRequest(){return active==null?null:active.clone();}
+        public Verified authority(){return authority;}
+    }
+    private static byte[] ownerId(byte[] value)throws OriginalHttp.Failure{need(value!=null && value.length==16);byte[] owned=value.clone();need(!same(owned,new byte[16]));return owned;}
+    private static String ownerUuid(byte[] bytes){String h=HexFormat.of().formatHex(bytes);return h.substring(0,8)+"-"+h.substring(8,12)+"-"+h.substring(12,16)+"-"+h.substring(16,20)+"-"+h.substring(20);}
+    /** No network or persistence. Caller must sync bytes before effect dispatch. */
+    public OwnerReviewIntent prepareOwnerReview(byte[] event,byte[] request,byte[] activeRequest)throws OriginalHttp.Failure{
+        try{
+            event=ownerId(event);request=ownerId(request);byte[] active=activeRequest==null?null:ownerId(activeRequest),raw=new byte[151];
+            System.arraycopy(new byte[]{90,84,79,82,1},0,raw,0,5);System.arraycopy(rootBinding,0,raw,5,65);System.arraycopy(scope.checkpointBinding(),0,raw,70,32);System.arraycopy(event,0,raw,102,16);System.arraycopy(request,0,raw,118,16);
+            if(active!=null){raw[134]=1;System.arraycopy(active,0,raw,135,16);}return restoreOwnerReview(raw);
+        }catch(Exception error){throw new OriginalHttp.Failure(false);}
+    }
+    public OwnerReviewIntent restoreOwnerReview(byte[] input)throws OriginalHttp.Failure{
+        try{
+            byte[] raw=input.clone();need(raw.length==151 && same(Arrays.copyOfRange(raw,0,5),new byte[]{90,84,79,82,1}) && same(Arrays.copyOfRange(raw,5,70),rootBinding) && same(Arrays.copyOfRange(raw,70,102),scope.checkpointBinding()));
+            ownerId(Arrays.copyOfRange(raw,102,118));ownerId(Arrays.copyOfRange(raw,118,134));need((raw[134]==0 || raw[134]==1) && (raw[134]==0)==same(Arrays.copyOfRange(raw,135,151),new byte[16]));return new OwnerReviewIntent(raw);
+        }catch(Exception error){throw new OriginalHttp.Failure(false);}
+    }
+    public OwnerReviewResult consumeOwnerReview(String credential,OwnerReviewIntent intent,LongSupplier clock)throws OriginalHttp.Failure{return ownerReview(credential,intent,clock,true);}
+    /** Status never consumes, and unavailability does not establish prior absence. */
+    public OwnerReviewResult statusOwnerReview(String credential,OwnerReviewIntent intent,LongSupplier clock)throws OriginalHttp.Failure{return ownerReview(credential,intent,clock,false);}
+    private OwnerReviewResult ownerReview(String credential,OwnerReviewIntent intent,LongSupplier clock,boolean effect)throws OriginalHttp.Failure{
+        boolean acquired=false,dispatched=false;
+        try{
+            need(clock!=null);byte[] owned=restoreOwnerReview(intent.bytes()).bytes();need(!lock.isHeldByCurrentThread() && lock.tryLock());acquired=true;
+            var before=currentLocked(credential,clock);byte[] event=Arrays.copyOfRange(owned,102,118),request=Arrays.copyOfRange(owned,118,134),active=owned[134]==1?Arrays.copyOfRange(owned,135,151):null;
+            var req=effect?new OriginalHttp.Request("consume",before.authority().manifest().version(),ownerUuid(event),null,null,null,ownerUuid(request),active==null?null:ownerUuid(active)):new OriginalHttp.Request("status",before.authority().manifest().version(),null,ownerUuid(request),null,null,null,null);
+            var wire=transport.exchange(credential,req);dispatched=effect;
+            var r=object(JsonParser.parseString(wire.untrustedJson()),"event_id","consumption_id","disposition","active_request_id","action");
+            need(string(r.get("event_id")).equals(ownerUuid(event)) && string(r.get("consumption_id")).equals(ownerUuid(request)) && string(r.get("disposition")).equals("owner_review") && r.get("action").isJsonNull());
+            need(active==null?r.get("active_request_id").isJsonNull():string(r.get("active_request_id")).equals(ownerUuid(active)));
+            return new OwnerReviewResult(event,request,active,currentLocked(credential,clock));
+        }catch(OriginalHttp.Failure error){throw new OriginalHttp.Failure(dispatched || error.unknown);}
+        catch(Exception error){if(error instanceof InterruptedException)Thread.currentThread().interrupt();throw new OriginalHttp.Failure(dispatched);}
+        finally{if(acquired)lock.unlock();}
+    }
+
+
+    /** Immutable canonical binding only; a digest grants no permission. */
+    public static final class WorkflowAction {
+        private static final List<String> NAMES=List.of("account_id","action_id","authority_generation","commitment","content_digest","content_ref","content_version","expires_at","line_id","not_before","purpose_id","recipient_id","revision","routine_id","timezone","window_id");
+        private static final Set<String> NUMBERS=Set.of("authority_generation","content_version","expires_at","not_before","revision");
+        private final String canonical;private final JsonObject fields;
+        private WorkflowAction(String canonical,JsonObject fields){this.canonical=canonical;this.fields=fields.deepCopy();}
+        private static String quote(String value){
+            StringBuilder out=new StringBuilder("\"");
+            for(int i=0;i<value.length();i++){char c=value.charAt(i);switch(c){
+                case '"'->out.append("\\\"");case '\\'->out.append("\\\\");case '\b'->out.append("\\b");case '\t'->out.append("\\t");case '\n'->out.append("\\n");case '\f'->out.append("\\f");case '\r'->out.append("\\r");
+                default->{if(c<32 || c==127)out.append(String.format(Locale.ROOT,"\\u%04x",(int)c));else out.append(c);}
+            }}return out.append('"').toString();
+        }
+        public static WorkflowAction parse(String raw)throws OriginalHttp.Failure{
+            try{
+                need(raw!=null && raw.length()<=4096);var in=new com.google.gson.stream.JsonReader(new java.io.StringReader(raw));in.setStrictness(Strictness.STRICT);
+                need(in.peek()==com.google.gson.stream.JsonToken.BEGIN_OBJECT);in.beginObject();var fields=new JsonObject();var names=new HashSet<String>();
+                while(in.hasNext()){
+                    String name=in.nextName();need(NAMES.contains(name) && names.add(name));
+                    if(NUMBERS.contains(name)){
+                        need(in.peek()==com.google.gson.stream.JsonToken.NUMBER);double n=Double.parseDouble(in.nextString());need(Double.isFinite(n) && n==Math.rint(n) && n>=(name.equals("not_before")?0:1) && n<=9007199254740991L);fields.addProperty(name,(long)n);
+                    }else{need(in.peek()==com.google.gson.stream.JsonToken.STRING);String value=in.nextString();need(value.length()>=1 && value.length()<=128 && value.chars().allMatch(c->c<=127));fields.addProperty(name,value);}
+                }
+                in.endObject();need(in.peek()==com.google.gson.stream.JsonToken.END_DOCUMENT && names.size()==16);in.close();
+                need(fields.get("content_digest").getAsString().matches("[0-9a-f]{64}") && fields.get("not_before").getAsLong()<fields.get("expires_at").getAsLong() && Set.of("informational","sensitive").contains(fields.get("commitment").getAsString()));
+                var out=new StringBuilder("{");for(String name:NAMES){if(out.length()>1)out.append(',');out.append(quote(name)).append(':').append(NUMBERS.contains(name)?fields.get(name).getAsString():quote(fields.get(name).getAsString()));}out.append('}');
+                return new WorkflowAction(out.toString(),fields);
+            }catch(Exception error){throw new OriginalHttp.Failure(false);}
+        }
+        public String canonical(){return canonical;}
+        public String digest(){try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(canonical.getBytes(StandardCharsets.US_ASCII)));}catch(GeneralSecurityException error){throw new IllegalStateException(error);}}
+        private String text(String name){return fields.get(name).getAsString();}
+        private long revision(){return fields.get("revision").getAsLong();}
+        private void production()throws OriginalHttp.Failure{for(String name:List.of("account_id","action_id","line_id","recipient_id","purpose_id","content_ref","routine_id"))pageId(fields.get(name));need(revision()<=128);}
+    }
+    public static final class ProposalIntent {
+        private final byte[] record;private final WorkflowAction descriptor;
+        private ProposalIntent(byte[] record,WorkflowAction descriptor){this.record=record.clone();this.descriptor=descriptor;}
+        public byte[] bytes(){return record.clone();}
+        public WorkflowAction descriptor(){return descriptor;}
+    }
+    public static final class ProposalResult {
+        private final byte[] event,consumption,active;private final Verified authority;private final WorkflowAction action;
+        private ProposalResult(byte[] event,byte[] consumption,byte[] active,Verified authority,WorkflowAction action){this.event=event.clone();this.consumption=consumption.clone();this.active=active.clone();this.authority=authority;this.action=action;}
+        public byte[] event(){return event.clone();}public byte[] consumption(){return consumption.clone();}public byte[] activeRequest(){return active.clone();}public Verified authority(){return authority;}
+        /** Null denotes the correlated owner-review fallback. */
+        public WorkflowAction action(){return action;}
+    }
+    /** No persistence or network; sync the returned bytes before an effect. */
+    public ProposalIntent prepareProposal(byte[] event,byte[] request,byte[] active,WorkflowAction descriptor)throws OriginalHttp.Failure{
+        try{descriptor.production();byte[] prefix=prepareOwnerReview(event,request,ownerId(active)).bytes(),json=descriptor.canonical().getBytes(StandardCharsets.US_ASCII),raw=Arrays.copyOf(prefix,151+json.length);raw[3]=80;System.arraycopy(json,0,raw,151,json.length);return restoreProposal(raw);}catch(Exception error){throw new OriginalHttp.Failure(false);}
+    }
+    public ProposalIntent restoreProposal(byte[] input)throws OriginalHttp.Failure{
+        try{
+            byte[] raw=input.clone();need(raw.length>151 && raw.length<=4096 && same(Arrays.copyOfRange(raw,0,5),new byte[]{90,84,79,80,1}) && raw[134]==1);byte[] prefix=Arrays.copyOf(raw,151);prefix[3]=82;restoreOwnerReview(prefix);
+            byte[] json=Arrays.copyOfRange(raw,151,raw.length);var descriptor=WorkflowAction.parse(new String(json,StandardCharsets.UTF_8));descriptor.production();need(same(json,descriptor.canonical().getBytes(StandardCharsets.US_ASCII)) && descriptor.text("account_id").equals(ownerUuid(scope.proofFields()[0])) && descriptor.text("line_id").equals(ownerUuid(scope.proofFields()[2])));return new ProposalIntent(raw,descriptor);
+        }catch(Exception error){throw new OriginalHttp.Failure(false);}
+    }
+    public ProposalResult consumeProposal(String credential,String output,ProposalIntent intent,LongSupplier clock)throws OriginalHttp.Failure{return proposal(credential,output,intent,clock,true);}
+    public ProposalResult statusProposal(String credential,ProposalIntent intent,LongSupplier clock)throws OriginalHttp.Failure{return proposal(credential,null,intent,clock,false);}
+    private ProposalResult proposal(String credential,String output,ProposalIntent intent,LongSupplier clock,boolean effect)throws OriginalHttp.Failure{
+        boolean acquired=false,dispatched=false;
+        try{
+            need(clock!=null);var owned=restoreProposal(intent.bytes());var descriptor=owned.descriptor();byte[] raw=owned.bytes();if(effect)OriginalHttp.outputCredential(output);
+            need(!lock.isHeldByCurrentThread() && lock.tryLock());acquired=true;var before=currentLocked(credential,clock);
+            byte[] event=Arrays.copyOfRange(raw,102,118),request=Arrays.copyOfRange(raw,118,134),active=Arrays.copyOfRange(raw,135,151);
+            var req=effect?new OriginalHttp.Request("consume",before.authority().manifest().version(),ownerUuid(event),null,null,null,ownerUuid(request),ownerUuid(active)):new OriginalHttp.Request("status",before.authority().manifest().version(),null,ownerUuid(request),null,null,null,null);
+            var wire=effect?transport.exchangeProposal(credential,output,req,descriptor.canonical()):transport.exchange(credential,req);dispatched=effect;
+            var r=object(JsonParser.parseString(wire.untrustedJson()),"event_id","consumption_id","disposition","active_request_id","action");need(string(r.get("event_id")).equals(ownerUuid(event)) && string(r.get("consumption_id")).equals(ownerUuid(request)) && string(r.get("active_request_id")).equals(ownerUuid(active)));
+            WorkflowAction action=null;
+            if(string(r.get("disposition")).equals("owner_review"))need(r.get("action").isJsonNull());
+            else{need(string(r.get("disposition")).equals("proposal"));var a=object(r.get("action"),"account_id","action_id","revision","binding_digest");need(string(a.get("account_id")).equals(descriptor.text("account_id")) && string(a.get("action_id")).equals(descriptor.text("action_id")) && integer(a.get("revision"))==descriptor.revision() && string(a.get("binding_digest")).equals(descriptor.digest()));action=descriptor;}
+            return new ProposalResult(event,request,active,currentLocked(credential,clock),action);
+        }catch(OriginalHttp.Failure error){throw new OriginalHttp.Failure(dispatched || error.unknown);}
+        catch(Exception error){if(error instanceof InterruptedException)Thread.currentThread().interrupt();throw new OriginalHttp.Failure(dispatched);}
+        finally{if(acquired)lock.unlock();}
+    }
+
 }

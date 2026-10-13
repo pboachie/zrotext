@@ -24,47 +24,7 @@ module ZrotextCandidate
     def current(credential:, clock:)
       acquired=false
       need(clock.respond_to?(:call) && @lock.try_lock); acquired=true; need(!@failed)
-      sample=lambda { value=integer(clock.call); need(value>=@last); @last=value; value }
-      now=sample.call
-      saved=@checkpoint.snapshot(@scope,now)
-      if saved.revision!=@revision
-        @failed=true; need(false)
-      end
-      latest=saved.history.last
-      wire=@transport.exchange(credential:credential,method:'current',accepted_manifest_version:latest.version)
-      p=object(JSON.parse(wire.untrusted_json,object_class:OriginalHTTP::UniqueObject,max_nesting:64),FIELDS)
-      now=sample.call; observed=integer(p['observed_at_ms']); expires=integer(p['expires_at_ms'])
-      fresh=lambda { |time| need(time<expires && time<=observed+30000 && observed<=time+30000) }
-      fresh.call(now)
-      {'account_id'=>:account,'device_id'=>:device,'line_id'=>:line,'interval_id'=>:interval,'connector_id'=>:connector,'read_grant_id'=>:grant}.each do |field,key|
-        value=p[field]; OriginalHTTP.uuid!(value); need([value.delete('-')].pack('H*')==@scope.public_send(key))
-      end
-      need(p['reader_id']==@scope.reader.unpack1('H*') && integer(p['authority_revision'])==1)
-      chain=p['manifest_chain']; need(chain.is_a?(Array) && chain.size.between?(1,32))
-      history=saved.history.dup; previous=latest
-      chain.each_with_index do |row,index|
-        entry=object(row,%w[version accepted_at_ms manifest_b64]); version=integer(entry['version']); accepted=integer(entry['accepted_at_ms'])
-        need(accepted<=now+30000 && version==(index.zero? ? latest.version : previous.version+1))
-        encoded=entry['manifest_b64']; need(encoded.is_a?(String) && encoded.length<=13004)
-        bytes=Base64.strict_decode64(encoded); need(bytes.bytesize<=9751 && Base64.strict_encode64(bytes)==encoded)
-        current=at(bytes,previous,accepted)
-        need(current.version==version && current.generation==latest.generation && current.root_point==latest.root_point)
-        if index.zero?
-          need(current.digest==latest.digest)
-        else
-          history<<current
-        end
-        previous=current
-      end
-      need(integer(p['current_manifest_version'])==previous.version && integer(p['root_generation'])==latest.generation && p['current_manifest_digest']==previous.digest.unpack1('H*') && history.size<=64)
-      now=sample.call; fresh.call(now); at(previous.bytes,previous,now)
-      fence=lambda { |manifest,floor| time=sample.call; need(time>=floor); fresh.call(time); at(manifest.bytes,manifest,time); time }
-      @failed=true
-      committed=@checkpoint.accept(@scope,history,@revision,now,&fence)
-      after=sample.call; need(after>=committed.comparison_ms); fresh.call(after); at(committed.history.last.bytes,committed.history.last,after)
-      committed=@checkpoint.accept(@scope,committed.history,committed.revision,after,&fence) if after>committed.comparison_ms
-      @revision=committed.revision; @last=committed.comparison_ms; @failed=false
-      Verified.send(:new,OriginalReplyReader::Authority.new(scope:@scope,revision:'1',now_ms:@last,expires_ms:expires,manifest:committed.history.last))
+      current_locked(credential,clock)
     rescue StandardError
       raise OriginalHTTP::Failure.new, cause: nil
     ensure
@@ -72,6 +32,57 @@ module ZrotextCandidate
     end
 
     private
+    def sample(clock)
+      value=integer(clock.call); need(value>=@last); @last=value; value
+    end
+    def saved_at(clock)
+      need(!@failed); saved=@checkpoint.snapshot(@scope,sample(clock))
+      if saved.revision!=@revision
+        @failed=true; need(false)
+      end
+      saved
+    end
+    def current_locked(credential,clock)
+      saved=saved_at(clock); latest=saved.history.last
+      wire=@transport.exchange(credential:credential,method:'current',accepted_manifest_version:latest.version)
+      accept_proof(JSON.parse(wire.untrusted_json,object_class:OriginalHTTP::UniqueObject,max_nesting:64),saved,latest,clock)
+    end
+    def accept_proof(value,saved,first,clock)
+      p=object(value,FIELDS)
+      now=sample(clock); observed=integer(p['observed_at_ms']); expires=integer(p['expires_at_ms'])
+      fresh=lambda { |time| need(time<expires && time<=observed+30000 && observed<=time+30000) }
+      fresh.call(now)
+      {'account_id'=>:account,'device_id'=>:device,'line_id'=>:line,'interval_id'=>:interval,'connector_id'=>:connector,'read_grant_id'=>:grant}.each do |field,key|
+        value=p[field]; OriginalHTTP.uuid!(value); need([value.delete('-')].pack('H*')==@scope.public_send(key))
+      end
+      need(p['reader_id']==@scope.reader.unpack1('H*') && integer(p['authority_revision'])==1)
+      chain=p['manifest_chain']; need(chain.is_a?(Array) && chain.size.between?(1,32))
+      latest=saved.history.last; history=saved.history.dup; previous=first
+      chain.each_with_index do |row,index|
+        entry=object(row,%w[version accepted_at_ms manifest_b64]); version=integer(entry['version']); accepted=integer(entry['accepted_at_ms'])
+        need(accepted<=now+30000 && version==(index.zero? ? first.version : previous.version+1))
+        encoded=entry['manifest_b64']; need(encoded.is_a?(String) && encoded.length<=13004)
+        bytes=Base64.strict_decode64(encoded); need(bytes.bytesize<=9751 && Base64.strict_encode64(bytes)==encoded)
+        current=at(bytes,previous,accepted)
+        need(current.version==version && current.generation==latest.generation && current.root_point==latest.root_point)
+        cached=saved.history.find { |m| m.version==version }
+        if cached
+          need(current.digest==cached.digest)
+        else
+          need(version>latest.version); history<<current
+        end
+        previous=current
+      end
+      need(previous.version>=latest.version && integer(p['current_manifest_version'])==previous.version && integer(p['root_generation'])==latest.generation && p['current_manifest_digest']==previous.digest.unpack1('H*') && history.size<=64)
+      now=sample(clock); fresh.call(now); at(previous.bytes,previous,now)
+      fence=lambda { |manifest,floor| time=sample(clock); need(time>=floor); fresh.call(time); at(manifest.bytes,manifest,time); time }
+      @failed=true
+      committed=@checkpoint.accept(@scope,history,@revision,now,&fence)
+      after=sample(clock); need(after>=committed.comparison_ms); fresh.call(after); at(committed.history.last.bytes,committed.history.last,after)
+      committed=@checkpoint.accept(@scope,committed.history,committed.revision,after,&fence) if after>committed.comparison_ms
+      @revision=committed.revision; @last=committed.comparison_ms; @failed=false
+      Verified.send(:new,OriginalReplyReader::Authority.new(scope:@scope,revision:'1',now_ms:@last,expires_ms:expires,manifest:committed.history.last))
+    end
     def need(value) = (raise OriginalHTTP::Failure unless value)
     def integer(value)
       need(value.is_a?(Integer) && value.between?(1,SAFE)); value

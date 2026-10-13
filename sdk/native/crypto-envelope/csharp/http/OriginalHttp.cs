@@ -127,7 +127,13 @@ public sealed class OriginalHttp : IDisposable
             (r.Method != "consume" && (r.RequestId is not null || r.ActiveRequestId is not null))) throw new Failure();
         return JsonSerializer.SerializeToUtf8Bytes(fields);
     }
-    public async Task<Wire> ExchangeAsync(string credential, Request request, CancellationToken cancellation = default)
+    public Task<Wire> ExchangeAsync(string credential,Request request,CancellationToken cancellation=default)=>ExchangeCoreAsync(credential,request,null,null,cancellation);
+    internal static string OutputCredential(string value){
+        if(!Regex.IsMatch(value,"\\Aztw_[A-Za-z0-9_-]{43}\\z"))throw new Failure();
+        var raw=Convert.FromBase64String(value[4..].Replace('-','+').Replace('_','/')+"=");if(raw.Length!=32 || Convert.ToBase64String(raw).TrimEnd('=').Replace('+','-').Replace('/','_')!=value[4..])throw new Failure();return value;
+    }
+    internal Task<Wire> ExchangeProposalAsync(string credential,string output,Request request,string descriptor,CancellationToken cancellation)=>ExchangeCoreAsync(credential,request,output,descriptor,cancellation);
+    private async Task<Wire> ExchangeCoreAsync(string credential,Request request,string? outputCredential,string? descriptor,CancellationToken cancellation)
     {
         bool attempted = false;
         try
@@ -136,6 +142,11 @@ public sealed class OriginalHttp : IDisposable
             var raw = Convert.FromBase64String(credential[4..].Replace('-', '+').Replace('_', '/') + "=");
             if (raw.Length != 32 || Convert.ToBase64String(raw).TrimEnd('=').Replace('+', '-').Replace('/', '_') != credential[4..]) throw new Failure();
             byte[] body = Body(request);
+            if(outputCredential is not null || descriptor is not null){
+                OutputCredential(outputCredential!);if(request.Method!="consume" || request.ActiveRequestId is null || descriptor is null)throw new Failure();
+                var value=System.Text.Json.Nodes.JsonNode.Parse(body)!.AsObject();var action=System.Text.Json.Nodes.JsonNode.Parse(descriptor);if(action is not System.Text.Json.Nodes.JsonObject)throw new Failure();value["params"]!["descriptor"]=action;body=JsonSerializer.SerializeToUtf8Bytes(value);
+            }
+            if(body.Length>4096)throw new Failure();
             cancellation.ThrowIfCancellationRequested();
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
             deadline.CancelAfter(timeout);
@@ -143,6 +154,7 @@ public sealed class OriginalHttp : IDisposable
             { Version = HttpVersion.Version11, VersionPolicy = HttpVersionPolicy.RequestVersionExact, Content = new OnceContent(body) };
             message.Headers.TryAddWithoutValidation("Authorization", "Bearer " + credential);
             message.Headers.TryAddWithoutValidation("Cache-Control", "no-store");
+            if(outputCredential is not null)message.Headers.TryAddWithoutValidation("X-Zrotext-Output-Authorization","Bearer "+outputCredential);
             message.Headers.ConnectionClose = true;
             message.Content.Headers.ContentType = new("application/json");
             attempted = true;

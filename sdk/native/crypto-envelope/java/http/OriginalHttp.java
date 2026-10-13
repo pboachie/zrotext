@@ -133,7 +133,13 @@ public final class OriginalHttp {
         public void onError(Throwable t) { result.completeExceptionally(t); }
         public void onComplete() { result.complete(bytes.toByteArray()); }
     }
-    public Wire exchange(String credential, Request request) throws Failure {
+    public Wire exchange(String credential, Request request) throws Failure {return exchangeCore(credential,request,null,null);}
+    static String outputCredential(String value)throws Failure{
+        if(value==null || !value.matches("ztw_[A-Za-z0-9_-]{43}"))throw new Failure(false);
+        byte[] raw=Base64.getUrlDecoder().decode(value.substring(4));if(raw.length!=32 || !Base64.getUrlEncoder().withoutPadding().encodeToString(raw).equals(value.substring(4)))throw new Failure(false);return value;
+    }
+    Wire exchangeProposal(String credential,String output,Request request,String descriptor)throws Failure{return exchangeCore(credential,request,output,descriptor);}
+    private Wire exchangeCore(String credential,Request request,String output,String descriptor)throws Failure {
         boolean attempted = false;
         CompletableFuture<HttpResponse<byte[]>> pending = null;
         try {
@@ -141,10 +147,17 @@ public final class OriginalHttp {
             byte[] key = Base64.getUrlDecoder().decode(credential.substring(4));
             if (key.length != 32 || !Base64.getUrlEncoder().withoutPadding().encodeToString(key).equals(credential.substring(4))) throw new Failure(false);
             byte[] body = body(request);
+            if(output!=null || descriptor!=null){
+                outputCredential(output);if(!request.method.equals("consume") || request.activeRequestId==null || descriptor==null)throw new Failure(false);
+                var value=JsonParser.parseString(new String(body,StandardCharsets.UTF_8)).getAsJsonObject();var action=JsonParser.parseString(descriptor);if(!action.isJsonObject())throw new Failure(false);value.getAsJsonObject("params").add("descriptor",action);body=value.toString().getBytes(StandardCharsets.UTF_8);
+            }
+            if(body.length>4096)throw new Failure(false);
             if (Thread.currentThread().isInterrupted()) throw new Failure(false);
-            HttpRequest message = HttpRequest.newBuilder(endpoint).timeout(Duration.ofMillis(timeoutMs))
+            HttpRequest.Builder builder = HttpRequest.newBuilder(endpoint).timeout(Duration.ofMillis(timeoutMs))
                 .header("Authorization", "Bearer " + credential).header("Content-Type", "application/json")
-                .header("Cache-Control", "no-store").POST(new Once(body)).build();
+                .header("Cache-Control", "no-store").POST(new Once(body));
+            if(output!=null)builder.header("X-Zrotext-Output-Authorization","Bearer "+output);
+            HttpRequest message=builder.build();
             long start = System.nanoTime();
             attempted = true;
             pending = client.sendAsync(message, info -> new Bounded());
