@@ -5,9 +5,9 @@ separately enrolled root and authenticated acceptance expectations are external.
 """
 import json
 
-import election03 as e
-import sealed_candidate as s
-from checkpoint_store import CheckpointStore
+from . import election03 as e
+from . import sealed_candidate as s
+from .checkpoint_store import CheckpointStore
 
 
 def accepted_bytes(record):

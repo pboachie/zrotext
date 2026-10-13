@@ -13,7 +13,7 @@ from weakref import WeakSet
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
-from sealed_candidate import capture, point, require
+from .sealed_candidate import capture, point, require
 
 PROVIDER = 'Microsoft Platform Crypto Provider'
 PREFIX = 'zrotext-candidate-p256-'

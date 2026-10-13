@@ -1,0 +1,7 @@
+include LICENSE README.md pyproject.toml MANIFEST.in
+recursive-include zrotext_native_candidate *.py
+exclude test_*.py
+exclude *.mjs
+exclude requirements.txt
+exclude check_package.py
+exclude installed_consumer.py

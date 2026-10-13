@@ -10,9 +10,9 @@ import subprocess
 import tempfile
 import unittest
 
-from cng_custody import CngUnavailable, HardwareRecipient, probe_platform
-from checkpoint_store import CheckpointStore
-import sealed_candidate as sealed
+from zrotext_native_candidate.cng_custody import CngUnavailable, HardwareRecipient, probe_platform
+from zrotext_native_candidate.checkpoint_store import CheckpointStore
+from zrotext_native_candidate import sealed_candidate as sealed
 
 ROOT = Path(__file__).resolve().parents[4]
 

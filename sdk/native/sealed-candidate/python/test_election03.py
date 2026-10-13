@@ -11,10 +11,10 @@ from unittest.mock import patch
 
 from cryptography.hazmat.primitives.asymmetric import ec
 
-import election03 as election
-import sealed_candidate as s
-from checkpoint_store import CheckpointStore
-from cng_custody import HardwareRecipient, CngUnavailable, probe_platform
+from zrotext_native_candidate import election03 as election
+from zrotext_native_candidate import sealed_candidate as s
+from zrotext_native_candidate.checkpoint_store import CheckpointStore
+from zrotext_native_candidate.cng_custody import HardwareRecipient, CngUnavailable, probe_platform
 from test_sealed_candidate import signed
 
 ROOT = Path(__file__).resolve().parents[4]

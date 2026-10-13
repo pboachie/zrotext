@@ -4,8 +4,8 @@ import os
 from pathlib import Path
 import sqlite3
 
-import compose03 as c
-import sealed_candidate as s
+from . import compose03 as c
+from . import sealed_candidate as s
 
 APP_ID = 0x5a544f43
 

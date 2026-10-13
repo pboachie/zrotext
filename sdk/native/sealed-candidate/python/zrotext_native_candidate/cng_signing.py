@@ -5,8 +5,8 @@ import os
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, utils
 
-import sealed_candidate as s
-from cng_custody import HardwareRecipient, _qualified, SILENT
+from . import sealed_candidate as s
+from .cng_custody import HardwareRecipient, _qualified, SILENT
 
 
 class HardwareSigner(HardwareRecipient):

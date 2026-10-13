@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import sqlite3
 
-import sealed_candidate as sealed
+from . import sealed_candidate as sealed
 
 APP_ID = 0x5a544350
 MAX_RECORDS = 1024

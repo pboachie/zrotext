@@ -11,10 +11,10 @@ import unittest
 
 from cryptography.hazmat.primitives.asymmetric import ec
 
-import election03 as election
-import sealed_candidate as s
-from election_journal import ElectionJournal
-from checkpoint_store import CheckpointStore
+from zrotext_native_candidate import election03 as election
+from zrotext_native_candidate import sealed_candidate as s
+from zrotext_native_candidate.election_journal import ElectionJournal
+from zrotext_native_candidate.checkpoint_store import CheckpointStore
 from test_election03 import produce, decode, record
 from test_sealed_candidate import signed
 
@@ -87,7 +87,7 @@ class JournalTests(unittest.TestCase):
         script = '''
 import os, sqlite3, sys
 from contextlib import contextmanager
-from election_journal import ElectionJournal
+from zrotext_native_candidate.election_journal import ElectionJournal
 from test_election03 import produce, decode, record
 f = produce()
 store = ElectionJournal(sys.argv[1], decode(f['rootPin']), decode(f['fingerprint']))

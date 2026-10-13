@@ -10,7 +10,7 @@ from weakref import WeakKeyDictionary
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-import sealed_candidate as s
+from . import sealed_candidate as s
 
 _ACCEPTED_UUIDS = ('accountId', 'deviceId', 'lineId', 'oldBindingId', 'newBindingId')
 _ACCEPTED_TIMES = ('vaultGeneration', 'oldBindingGeneration', 'newBindingGeneration',

@@ -2,8 +2,39 @@
 
 Experimental cryptographic companion for [native parity #1128](https://github.com/pboachie/zrotext/issues/1128).
 This module is separate from stable Python package exports and generated HTTP
-clients. It does not establish live permission, durable currentness, delivery,
-device custody or release readiness.
+clients. It does not establish live permission, independent rollback protection,
+delivery, remote device attestation or release readiness.
+
+The distribution is `zrotext-native-candidate==0.1.0a1` and its normal Python
+import is `zrotext_native_candidate`. Requires Python 3.12 or later and exactly
+PyCA cryptography 50.0.2, cffi 2.1.1 and pycparser 3.11. Setuptools 84.0.0 is the
+pinned build backend. Existing `zrotext` SDK imports and generated HTTP clients
+are unchanged. No package has been published by this work.
+
+```python
+from zrotext_native_candidate import ElectionJournal, OutboundJournal
+from zrotext_native_candidate import HardwareRecipient, HardwareSigner
+from zrotext_native_candidate import sealed_candidate, election03
+```
+
+Importing on Linux/macOS works for public verification and explicit software
+candidate cryptography. Protected providers require Windows, the actual
+Microsoft Platform Crypto Provider, supported TPM algorithms and successful
+local qualification. Missing crypto dependencies fail installation/import;
+unsupported protected capabilities raise `CngUnavailable` or `SealedError`.
+There is no silent software fallback. Python 3.12 is the exercised CI version.
+
+Wheel contents are restricted to the package's nine modules and distribution
+metadata/license. Source archives add build metadata and this README; neither
+archive includes tests, fixture producers, private receipts, sample scalars or
+repository tooling. Both carry AGPL-3.0-only license metadata and full text.
+`check_package.py --output <artifact-directory>` builds both formats in temporary
+storage, checks exact archive/dependency contents, installs each into a fresh
+virtual environment and exercises real signed evidence, decryption, composition
+and journal replay outside the checkout. Its isolated consumers then pass their
+native ciphertext to the independent TypeScript/HPKE verifier. CI runs this
+check on Ubuntu and Windows; passing package checks do not imply publication or
+full legacy replacement acceptance.
 
 Implemented and executed with PyCA `cryptography==50.0.2`:
 

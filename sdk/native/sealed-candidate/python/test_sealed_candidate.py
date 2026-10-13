@@ -10,7 +10,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, utils
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-import sealed_candidate as sealed
+from zrotext_native_candidate import sealed_candidate as sealed
 
 ROOT = Path(__file__).resolve().parents[4]
 

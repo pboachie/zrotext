@@ -14,11 +14,11 @@ from unittest.mock import patch
 
 from cryptography.hazmat.primitives.asymmetric import ec
 
-import compose03 as c
-import sealed_candidate as s
-from cng_custody import CngUnavailable, probe_platform
-from cng_signing import HardwareSigner
-from outbound_journal import OutboundJournal
+from zrotext_native_candidate import compose03 as c
+from zrotext_native_candidate import sealed_candidate as s
+from zrotext_native_candidate.cng_custody import CngUnavailable, probe_platform
+from zrotext_native_candidate.cng_signing import HardwareSigner
+from zrotext_native_candidate.outbound_journal import OutboundJournal
 from test_election03 import produce, prepare, record, decode
 
 

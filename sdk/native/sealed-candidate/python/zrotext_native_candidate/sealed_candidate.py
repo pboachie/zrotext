@@ -374,7 +374,7 @@ class SoftwareRecipient:
 
 
 def require_protected_custody(provider):
-    from cng_custody import require_hardware
+    from .cng_custody import require_hardware
     return require_hardware(provider)
 
 

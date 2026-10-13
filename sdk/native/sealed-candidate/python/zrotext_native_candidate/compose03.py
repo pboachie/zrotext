@@ -6,9 +6,9 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, utils
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-import election03 as e
-import sealed_candidate as s
-from cng_signing import require_hardware_signer
+from . import election03 as e
+from . import sealed_candidate as s
+from .cng_signing import require_hardware_signer
 
 
 class SoftwareSigner:
