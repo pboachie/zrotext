@@ -1,0 +1,42 @@
+name: Managed candidate manifest provenance
+on:
+  pull_request:
+    paths:
+      - 'sdk/native/crypto-envelope/java/**'
+      - 'sdk/native/crypto-envelope/csharp/**'
+      - 'sdk/native/crypto-envelope/ruby/**'
+      - 'protocol/v1/vectors/**'
+      - '.github/workflows/managed-manifest.yml'
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  managed-manifest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '8.0.x'
+      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1
+        with:
+          ruby-version: '3.3.9'
+      - name: Export existing signed public fixtures
+        run: python3 sdk/native/crypto-envelope/java/manifest_rows.py > "$RUNNER_TEMP/manifests.tsv"
+      - name: Java manifest chain verification
+        run: |
+          javac --release 17 -Xlint:all -Werror -d "$RUNNER_TEMP/manifest-classes" sdk/native/crypto-envelope/java/*.java
+          java -cp "$RUNNER_TEMP/manifest-classes" org.zrotext.candidate.ManifestTest < "$RUNNER_TEMP/manifests.tsv"
+      - name: C# manifest chain verification
+        run: dotnet run --project sdk/native/crypto-envelope/csharp/manifest-tests/ManifestTest.csproj < "$RUNNER_TEMP/manifests.tsv"
+      - name: Ruby manifest chain verification
+        run: ruby sdk/native/crypto-envelope/ruby/manifest_test.rb < "$RUNNER_TEMP/manifests.tsv"
+
