@@ -5,4 +5,5 @@
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
+  <ItemGroup><Compile Remove="envelope-tests/**/*.cs" /></ItemGroup>
 </Project>

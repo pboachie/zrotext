@@ -23,7 +23,7 @@ public static class HpkeRecipient
         var block = HMACSHA256.HashData(key, Join(new byte[] {0, (byte)size}, Version, suite, Encoding.ASCII.GetBytes(label), info, new byte[] {1}));
         try { return block.AsSpan(0, size).ToArray(); } finally { CryptographicOperations.ZeroMemory(block); }
     }
-    private static ECDiffieHellman Point(byte[] bytes) {
+    internal static ECDiffieHellman Point(byte[] bytes) {
         if (bytes.Length != 65 || bytes[0] != 4) throw new CryptographicException("P256 point encoding");
         var x = new BigInteger(bytes.AsSpan(1,32), isUnsigned:true, isBigEndian:true);
         var y = new BigInteger(bytes.AsSpan(33,32), isUnsigned:true, isBigEndian:true);
