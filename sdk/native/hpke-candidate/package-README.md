@@ -6,10 +6,11 @@
 These coordinates are experimental and are not published by this gate. They are
 separate from Tungsten's generated HTTP SDK packages.
 
-Run with Python 3.11+, Node, Cargo/Rust 1.97.1 or Go 1.26.9 on PATH:
+Run with Python 3.11+, Node, OpenSSL, Cargo/Rust 1.97.1 or Go 1.26.9 on PATH.
+The signed TLS fixture producer additionally requires Python `cryptography`:
 
 ```sh
-python sdk/native/hpke-candidate/package-native.py --language rust --archive PATH_TO_REVIEWED_PROFILE02_PRODUCER --election PATH_TO_REVIEWED_PROFILE03_PRODUCER --output NEW_OUTPUT_DIRECTORY --require-protected
+python sdk/native/hpke-candidate/package-native.py --language rust --archive PATH_TO_REVIEWED_PROFILE02_PRODUCER --election PATH_TO_REVIEWED_PROFILE03_PRODUCER --original PATH_TO_REVIEWED_ORIGINAL_PRODUCER --output NEW_OUTPUT_DIRECTORY --require-protected
 ```
 
 Use `--language go` for the Go module. The script verifies exact producer commits
@@ -29,16 +30,27 @@ public checksum database. No path, replace, workspace or private-checkout
 dependency is accepted. Consumer dependency/build caches are fresh.
 
 Installed acceptance runs actual journal crash/CAS/restore and authenticated
-root transition controls. On qualified Windows PCP hardware it also runs both
+root transition controls. Thirteen separately compiled consumer probes also
+cover selected original ciphertext, durable history, HTTPS transport, signed
+current proofs, verified reads and page discovery, saved owner-review intent,
+and typed proposal consumption/status. The six actual TLS suites preserve
+independent read/output credentials, exact descriptor binding, and recovery
+from an uncertain response without a second consume. Fixture generation uses
+the exact maintained original producer recorded in `PRODUCERS`; test runners
+receive installed executable paths and never rebuild the library from source.
+
+On qualified Windows PCP hardware the gate also runs both
 profile readers and protected profile02/profile03 composition, current-state
 replay and clock controls, with independent maintained TypeScript signature
-verification and both recipient openings. `--require-protected` fails when that
+verification and both recipient openings, plus selected original opening and
+the final-proof TLS read checks over an enrolled protected recipient.
+`--require-protected` fails when that
 capability is unavailable. Hosted CI may report protected acceptance false;
 software/archive success does not establish native hardware acceptance.
 
 The companion's existing limitations remain: profile03 root transitions and
 cross-root historical opening are unsupported, current service authorization is
-external, and profile03 observed-time parity remains tracked in #1226. Rust's
+external, and profile03 service/device integration remains tracked in #1054. Rust's
 bundled SQLite 3.53.2 differs from Go's 3.53.4; this gate does not claim all SQLite
 advisories resolved. No server deployment, live delivery, publication or stable
 SDK replacement is performed.

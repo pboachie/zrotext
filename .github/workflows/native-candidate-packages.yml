@@ -29,12 +29,14 @@ jobs:
           go-version: '1.26.9'
           cache: false
       - run: rustup toolchain install 1.97.1 --profile minimal
+      - run: python -m pip install cryptography==46.0.5
       - name: Prepare independently pinned maintained producers
         shell: pwsh
         run: |
           $producers = @{
             archive = 'a13ea1e3d6f6db594485c19b36c43fe642e67c7a'
             election = '304d512b7a420a3102278f32baed095f3e778989'
+            original = '72124e1a3ff28e782f870eeddbdc33cacf8ca3b4'
           }
           foreach ($name in $producers.Keys) {
             git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/$name"
@@ -53,7 +55,7 @@ jobs:
         run: |
           python sdk/native/hpke-candidate/package-test.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python sdk/native/hpke-candidate/package-native.py --language '${{ matrix.language }}' --archive "$env:RUNNER_TEMP/archive" --election "$env:RUNNER_TEMP/election" --output "$env:RUNNER_TEMP/native-package"
+          python sdk/native/hpke-candidate/package-native.py --language '${{ matrix.language }}' --archive "$env:RUNNER_TEMP/archive" --election "$env:RUNNER_TEMP/election" --original "$env:RUNNER_TEMP/original" --output "$env:RUNNER_TEMP/native-package"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       # A hosted runner without qualified PCP can prove archive/software checks,
       # but its qualification.json explicitly leaves protected acceptance false.

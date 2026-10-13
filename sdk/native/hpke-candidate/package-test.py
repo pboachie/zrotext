@@ -3,6 +3,8 @@ import importlib.util
 from pathlib import Path
 import tomllib
 import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
 
 spec = importlib.util.spec_from_file_location("packages", Path(__file__).with_name("package-native.py"))
 packages = importlib.util.module_from_spec(spec)
@@ -31,6 +33,19 @@ class PackagePolicy(unittest.TestCase):
             manifest["dependencies"]["aes-gcm"] = {"version": "0.11.1", field: "unexpected"}
             with self.assertRaises(ValueError):
                 packages.index_entry(manifest, "0" * 64)
+
+    def test_original_gates_use_installed_binaries_without_source_build_fallback(self):
+        binaries = {name: Path("installed") / name for name in packages.HARNESSES}
+        with patch.object(packages, "run", return_value=SimpleNamespace(stdout="synthetic fixture")) as run:
+            packages.original_acceptance(binaries, Path("maintained-producer"))
+        calls = run.call_args_list
+        self.assertEqual(len(calls), 9)
+        self.assertEqual([call.args[0] for call in calls[1:3]], [binaries["original"], binaries["reply_checkpoint"]])
+        self.assertEqual(len(calls[3:]), 6)
+        for call, name in zip(calls[3:], packages.ORIGINAL_TLS):
+            self.assertEqual(call.args[2:4], ("--binary", binaries["reply_" + name]))
+            self.assertNotIn("--language", call.args)
+        self.assertFalse(any(call.args[0] in ("cargo", "go") for call in calls))
 
 
 if __name__ == "__main__":
