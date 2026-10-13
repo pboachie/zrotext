@@ -55,7 +55,7 @@ module ZrotextCandidate
    end
    raise Failure unless review.nil? || review.respond_to?(:call)
    @review=review;@saved=nil;@pending=nil
-   @mutex=Mutex.new;@changed=ConditionVariable.new;@closed=!enabled;@busy=false;@now=0;@prior=nil;@head=0;@head_digest=nil
+   @mutex=Mutex.new;@changed=ConditionVariable.new;@closed=!enabled;@lifetime_deadline=Float::INFINITY;@busy=false;@now=0;@prior=nil;@head=0;@head_digest=nil
   rescue StandardError
    raise Failure.new('invalid_request'),cause:nil
   end
@@ -79,7 +79,7 @@ module ZrotextCandidate
     raise Failure.new('busy') if @busy
     raise classify(Failure.new('closed')) if @closed
     begin;ADMISSION.pop(true);rescue ThreadError;raise Failure.new('capacity');end
-    @busy=true;work={deadline:monotonic+@timeout,done:false,foreground:false,released:false,value:nil,error:nil,finish:nil}
+    @busy=true;work={deadline:[monotonic+@timeout,@lifetime_deadline].min,done:false,foreground:false,released:false,value:nil,error:nil,finish:nil}
    end
    begin
     Thread.new do
