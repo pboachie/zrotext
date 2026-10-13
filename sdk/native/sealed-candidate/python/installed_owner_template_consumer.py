@@ -33,8 +33,10 @@ class OwnerTemplateTests(unittest.TestCase):
         owner=self
         class Handler(BaseHTTPRequestHandler):
             def log_message(self,*args):pass
-            def do_GET(self):
-                owner.calls.append((self.command,self.path,dict(self.headers),b''))
+            def do_GET(self):self.handle_request()
+            def do_POST(self):self.handle_request()
+            def handle_request(self):
+                owner.calls.append((self.command,self.path,dict(self.headers),self.rfile.read(int(self.headers.get('Content-Length','0')))))
                 status,body,headers,delay=owner.responses.pop(0);time.sleep(delay)
                 if status==0:self.connection.shutdown(socket.SHUT_RDWR);self.connection.close();return
                 try:

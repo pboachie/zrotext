@@ -63,3 +63,8 @@ __all__ += ['SealedLifecycleClient','SealedLifecycleError','SEALED_MESSAGE_STATE
 from .template_store import TemplateStoreError,TemplateSaveRequest,template_save_request,template_save_receipt
 __all__ += ['TemplateStoreError','TemplateSaveRequest','template_save_request','template_save_receipt']
 from .owner_template import OwnerTemplateReader, OwnerTemplateError
+from .owner_template_save import OwnerTemplateClient
+from .owner_context import OwnerWorkflowContextClient, OwnerContextError
+
+from .template_authoring import OwnerTemplateAuthoring,TemplateAuthoringError
+__all__ += ['OwnerTemplateAuthoring','TemplateAuthoringError']
