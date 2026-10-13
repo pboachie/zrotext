@@ -18,7 +18,8 @@ selection, and election selection. Existing authority adapters remain mandatory.
 This inventory does not imply full client/API parity, protected key portability,
 production authorization, or registry release readiness. Protected custody uses
 Windows PCP and requires actual native qualification; Java supports 64-bit Windows.
-The unresolved outbound profile03 timing policy remains tracked in issue #1226.
+Outbound profile03 follows the signed key-lifetime policy; cross-language
+alignment remains tracked in issue #1226.
 
 `package-managed.py --target java --out <new-external-directory>` also requires
 six exact producer/control checkout arguments listed by `--help`. Run `npm ci

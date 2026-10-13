@@ -20,7 +20,7 @@ public static class Compose03 {
     private static Request Capture(Request r){Need(r.Message.Length==16 && r.Recipients.Count is >=2 and <=8 && r.Recipients.All(v=>v.Id.Length==32));return r with {Message=(byte[])r.Message.Clone(),Recipients=r.Recipients.Select(v=>new Recipient(v.Role,(byte[])v.Id.Clone())).ToArray()};}
     private static Plan Authorize(Request r){
         var snapshot=r.Authority.Read();long now=snapshot.NowMs;var bound=Election03.RequireCurrent(r.Proof,r.Manifest,snapshot.AuthenticatedRecord,now);
-        Need(r.Message.Length==16 && r.Message.Any(v=>v!=0) && r.ObservedMs>0 && r.ObservedMs>=r.Manifest.IssuedMs && r.ObservedMs<=now && now<r.ExpiresMs && r.ExpiresMs-r.ObservedMs<=900000);
+        Need(r.Message.Length==16 && r.Message.Any(v=>v!=0) && r.ObservedMs>0 && r.ObservedMs<=now && now<r.ExpiresMs && r.ExpiresMs-r.ObservedMs<=900000);
         Need(r.Peer.Length is >=3 and <=16 && r.Peer[0]=='+' && r.Peer[1] is >= '1' and <= '9' && r.Peer.AsSpan(2).ToArray().All(c=>c is >= '0' and <= '9'));
         Need(r.Content.Length is >=1 and <=32768);
         byte[] text=new UTF8Encoding(false,true).GetBytes(r.Content);bool transferred=false;

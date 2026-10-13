@@ -24,7 +24,7 @@ module ZrotextCandidate
       signer=find(records,5,b.byteslice(114,32));active(signer,now);need(signer.byteslice(114,16)==authority.field('lineId'))
       envelope=SignedEnvelope.verify(b,3,signer.byteslice(33,65));prefix=10+b.byteslice(8,2).unpack1('n');need(b.byteslice(164,prefix-164)==peer)
       observed=number(b,146);expires=number(b,154)
-      need(observed>0 && observed<=now && observed>=manifest.issued_ms && now<expires && expires<=manifest.expires_ms && expires<=authority.number('permissionExpiresAtMs'));active(signer,observed);need(expires<=number(signer,140))
+      need(observed>0 && observed<=now && now<expires && expires<=manifest.expires_ms && expires<=authority.number('permissionExpiresAtMs'));active(signer,observed);need(expires<=number(signer,140))
       ending=prefix+16+b.byteslice(prefix+12,4).unpack1('N');elected=authority.field('selectedReaderKeyId');selected=nil
       b.getbyte(ending).times do |i|
         at=ending+1+146*i;role=b.getbyte(at);id=b.byteslice(at+1,32);key=find(records,role,id);active(key,now);active(key,observed)

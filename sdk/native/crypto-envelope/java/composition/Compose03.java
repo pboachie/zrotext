@@ -41,7 +41,7 @@ public final class Compose03 {
     private static byte[] find(byte[][] keys,int role,byte[] id)throws GeneralSecurityException{for(var key:keys)if(key[0]==role && same(part(key,1,32),id))return key;throw new GeneralSecurityException("Manifest key missing");}
     private static Plan authorize(Request r)throws GeneralSecurityException{
         var snapshot=r.authority.read();long now=snapshot.nowMs();var bound=Election03.requireCurrent(r.proof,r.manifest,snapshot.authenticatedRecord(),now);
-        need(!same(r.message,new byte[16]) && r.observedMs>0 && r.observedMs>=r.manifest.issuedMs() && r.observedMs<=now && now<r.expiresMs && r.expiresMs-r.observedMs<=900000);
+        need(!same(r.message,new byte[16]) && r.observedMs>0 && r.observedMs<=now && now<r.expiresMs && r.expiresMs-r.observedMs<=900000);
         need(r.peer.matches("\\+[1-9][0-9]{1,14}"));byte[] text=text(r.content);boolean transferred=false;
         try{
             need(text.length>=1 && text.length<=32768 && !(text.length>=3 && text[0]==(byte)239 && text[1]==(byte)187 && text[2]==(byte)191));for(byte b:text)need(b!=0);

@@ -15,7 +15,7 @@ and observed/expiry values such as 0/1 even when comparison time is later. It
 checks signer/recipient authorization at comparison time. These candidate bytes
 are not current permission, transport authorization, retry authorization or an
 SMS effect. Do not substitute profile03 elected authority or silently apply its
-pending [observed-time policy decision](https://github.com/pboachie/zrotext/issues/1226). The compiler/native method refuses
+separate [outbound03 observed-time policy](https://github.com/pboachie/zrotext/issues/1226). The compiler/native method refuses
 the other signature profile, and offers no software signing fallback.
 
 Run the shared acceptance harness with an exact clean producer checkout:

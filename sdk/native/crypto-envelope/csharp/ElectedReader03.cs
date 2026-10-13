@@ -20,7 +20,7 @@ public static class ElectedReader03 {
         Need(b[4]==3 && b[5]==1 && Same(Part(b,10,16),authority.Field("accountId")) && Same(Part(b,26,16),message) && Same(Part(b,42,16),authority.Field("deviceId")) && Same(Part(b,58,16),authority.Field("lineId")));
         Need(Number(b,74)==manifest.Version && Same(Part(b,82,32),manifest.Digest()));var records=manifest.KeyRecords();var signer=Find(records,5,Part(b,114,32));Active(signer,now);Need(Same(Part(signer,114,16),authority.Field("lineId")));
         var envelope=SignedEnvelope.Verify(b,3,Part(signer,33,65));int prefix=10+BinaryPrimitives.ReadUInt16BigEndian(b.AsSpan(8,2));Need(Encoding.ASCII.GetString(b,164,prefix-164)==peer);
-        long observed=Number(b,146),expires=Number(b,154);Need(observed>0 && observed<=now && observed>=manifest.IssuedMs && now<expires && expires<=manifest.ExpiresMs && expires<=authority.Number("permissionExpiresAtMs"));Active(signer,observed);Need(expires<=Number(signer,140));
+        long observed=Number(b,146),expires=Number(b,154);Need(observed>0 && observed<=now && now<expires && expires<=manifest.ExpiresMs && expires<=authority.Number("permissionExpiresAtMs"));Active(signer,observed);Need(expires<=Number(signer,140));
         int end=prefix+16+BinaryPrimitives.ReadInt32BigEndian(b.AsSpan(prefix+12,4));var elected=authority.Field("selectedReaderKeyId");byte[]? selected=null;
         for(int i=0;i<b[end];i++){
             int at=end+1+146*i,role=b[at];var id=Part(b,at+1,32);var record=Find(records,role,id);Active(record,now);Active(record,observed);

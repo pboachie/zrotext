@@ -23,10 +23,11 @@ across uncertain outcomes; never reset it to force a retry. Recovery requires
 independent application reconciliation. This is not antirollback storage,
 hostile-filesystem protection or a carrier-effect ledger.
 
-The managed observed-time lower bound remains stricter than TypeScript/Python
-outbound authorization. The shared policy and signed-vector decision is tracked
-in [#1226](https://github.com/pboachie/zrotext/issues/1226); no universal protocol
-violation is asserted here.
+Outbound profile03 requires every selected signer/recipient key to cover the
+signed interval `[observed_ms, expires_ms)`, plus fresh current authorization.
+Manifest issuance is not an additional observation lower bound; bounded future
+issuance still follows manifest freshness. The shared signed policy cases and
+cross-language alignment are tracked in [#1226](https://github.com/pboachie/zrotext/issues/1226).
 
 ```text
 ruby sdk/native/crypto-envelope/ruby/composition/compose_test.rb PRODUCER_DIRECTORY PENDING_RECEIPT
