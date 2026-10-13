@@ -651,3 +651,47 @@ That fixture plumbing does not expand the public root signer's domain API.
 Installed wheel/sdist consumers exercise the explicit software candidate and
 independent verification; the separate local TPM test establishes the tested
 Windows provider observation, not remote attestation or browser/device acceptance.
+# Workflow context content candidate
+
+`workflow_context_aad`, `seal_workflow_context`, and `open_workflow_context`
+implement the maintained ZTWC01 archive representation. The separately named
+`seal_integration_workflow_context` and `open_integration_workflow_context`
+require the explicitly selected role-3 reader; they never alias the archive
+reader or issue a runtime grant. Inputs use the maintained camel-case scope
+fields with native positive integers, byte identities, and kind 1, 2 or 3.
+Plaintext is opaque bytes of length 1..32768, including non-UTF-8 data.
+
+Both directions require a genuine verified profile-02 manifest, exact account,
+generation/version/digest, active selected inbound-read reader, and active
+role-4 signer for the intended device/line. Expiry must be future and no more
+than 30 days from the caller's current comparison. Opening compares the entire
+222-byte expected AAD before custody; the bound recipient public point must
+match the selected manifest key. Every seal draws a fresh HPKE encapsulation.
+The existing HPKE suite and exact `ZT/workflow-context/hpke/v1` transcript match
+the TypeScript candidate; no new format is introduced.
+
+Opening defaults to a locally qualified Windows TPM recipient. Software
+recipient tests require explicit `require_protected=False`; unsupported or
+wrong keys never fall back. Optional `WorkflowContextCancellation` provides
+one-way cancellation. Up to four operations may remain in native work, each
+with a ten-second outward deadline. Cancelled/timed-out native calls retain
+their admission until actual settlement, suppress late output, and clear owned
+mutable content/derived-key buffers where possible. Provider calls cannot be
+preempted; callers retain key ownership/cleanup receipts until settlement.
+Immutable Python results, caller-owned data and provider copies are outside
+that clearing guarantee. There are no automatic retries.
+
+The supplied comparison time is one explicit application observation, not an
+independent clock or current server authority. The trusted application must
+check interval, session, peer, reader and permission freshness around its own
+waits/effects. These operations do not provide HTTP transport, persistence,
+current integration grants, contact encryption or dispatch permission.
+Maintained contact commitment production still accepts opaque already-encrypted
+bytes; its reserved future HPKE framing is not activated by this module.
+
+The focused suite independently seals and opens using the maintained TypeScript
+implementation, exercises both reader roles with genuine signed manifests,
+and tests actual protected custody when the Windows platform provider is
+available. Clean wheel and sdist consumers repeat both roles through ordinary
+installed imports. Hardware-unavailable hosted jobs retain explicit skips;
+they are not hardware acceptance.

@@ -13,7 +13,7 @@ import venv
 import zipfile
 
 ROOT=Path(__file__).resolve().parent
-MODULES={'__init__','sealed_candidate','checkpoint_store','cng_custody','cng_signing','election03','election_journal','compose03','compose02','outbound_journal','root_checkpoint','reply_selection','outbound02_journal','sealed_http','original_reply_reader','original_reply_client','original_reply_checkpoint','encrypted_template','contact_integrity','contact_history','contact_producer'}
+MODULES={'__init__','sealed_candidate','checkpoint_store','cng_custody','cng_signing','election03','election_journal','compose03','compose02','outbound_journal','root_checkpoint','reply_selection','outbound02_journal','sealed_http','original_reply_reader','original_reply_client','original_reply_checkpoint','encrypted_template','contact_integrity','contact_history','contact_producer','workflow_context'}
 PACKAGE='zrotext_native_candidate'
 DIST=PACKAGE+'-0.1.0a1'
 
@@ -78,6 +78,8 @@ def main():
         template_consumer=temporary/'template_consumer.py';shutil.copyfile(ROOT/'installed_template_consumer.py',template_consumer)
         contact_consumer=temporary/'contact_consumer.py';shutil.copyfile(ROOT/'installed_contact_consumer.py',contact_consumer)
         producer_consumer=temporary/'producer_consumer.py';shutil.copyfile(ROOT/'installed_contact_producer_consumer.py',producer_consumer)
+        context_consumer=temporary/'context_consumer.py';shutil.copyfile(ROOT/'installed_context_consumer.py',context_consumer)
+        context_fixtures=[json.loads(run(['node',ROOT/'workflow-context-interop.mjs',str(role)],cwd=temporary)) for role in (2,3)]
         time_consumer=temporary/'time_consumer.py';shutil.copyfile(ROOT/'installed_time_consumer.py',time_consumer)
         time_cases=json.loads(run(['node',time_cli,'--reader-cases'],cwd=temporary))
         assert len(time_cases['cases'])==14
@@ -97,6 +99,10 @@ def main():
             template_open=json.loads(run(['node',ROOT/'template-interop.mjs','--consume'],cwd=temporary,
                 input=json.dumps(dict(fixture=fixtures['template'],envelope=template_result['envelope'],expectedCanonical=template_result['canonical']))))
             assert template_result['installed'] and template_open['verified'] and template_open['preview']==fixtures['template']['preview']
+            for context_fixture in context_fixtures:
+                context_result=json.loads(run([python,'-I',context_consumer],cwd=temporary,input=json.dumps(context_fixture)))
+                context_open=json.loads(run(['node',ROOT/'workflow-context-interop.mjs','--consume'],cwd=temporary,input=json.dumps(dict(fixture=context_fixture,envelope=context_result['envelope'],plaintext=context_fixture['plaintext']))))
+                assert context_result['installed'] and context_open['verified'] and context_open['role']==context_fixture['role']
             base_reply=json.loads(run([python,'-I',reply_consumer,'--without-workflow'],cwd=temporary,input=json.dumps(fixtures['selection'])))
             assert base_reply==dict(installed=True,workflow_coinstalled=False,original_reply_https=True)
             run([python,'-m','pip','install',workflow_wheel],cwd=temporary)

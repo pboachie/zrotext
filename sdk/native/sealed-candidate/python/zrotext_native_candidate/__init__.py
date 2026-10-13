@@ -51,3 +51,8 @@ from .contact_producer import (OwnerRootSigner,SoftwareOwnerRootSigner,ContactCa
     ContactProducerError,HistoricalProduction,produce_contact_field01,produce_contact_transition01)
 __all__ += ['OwnerRootSigner','SoftwareOwnerRootSigner','ContactCancellation','ContactProducerError',
     'HistoricalProduction','produce_contact_field01','produce_contact_transition01']
+
+from .workflow_context import (WorkflowContextError,WorkflowContextCancellation,workflow_context_aad,
+    seal_workflow_context,open_workflow_context,seal_integration_workflow_context,open_integration_workflow_context)
+__all__ += ['WorkflowContextError','WorkflowContextCancellation','workflow_context_aad','seal_workflow_context',
+    'open_workflow_context','seal_integration_workflow_context','open_integration_workflow_context']
