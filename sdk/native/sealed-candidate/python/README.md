@@ -391,11 +391,46 @@ Python/provider copies and returned strings are outside the erasure guarantee.
 Current proofs bind the original account, interval, device, line, connector,
 read-grant and reader. Manifest chains are bounded to 32 entries, accepted history
 to 64 snapshots, and currentness to the maintained 30-second observation bound.
-The client rejects forks, gaps, rollback and concurrent operations. Its highwater
-is in memory: applications must supply independently accepted durable history
-when creating a new client. A service response cannot select the local scope or
-custody key. TLS proof verification is component behavior, not evidence that a
+The client rejects forks, gaps, rollback and concurrent operations. Supply an
+`OriginalReplyCheckpoint` for durable accepted history and comparison-clock CAS.
+The explicit `accepted_history` compatibility mode remains memory-only. A service
+response cannot select the local scope or custody key. TLS proof verification is component behavior, not evidence that a
 particular deployment has granted permission or completed device acceptance.
+
+Create a checkpoint once using `OriginalReplyCheckpoint.create(path, root_pin,
+independently_compared_fingerprint, scope=scope, accepted_history=history,
+comparison_ms=now)`. Bootstrap requires a complete independently accepted
+profile02 chain from the supplied generation-one root. On subsequent starts,
+open `OriginalReplyCheckpoint(path, root_pin, independently_compared_fingerprint,
+scope=scope)` and pass `checkpoint=checkpoint` to `OriginalReplyClient`, omitting
+`accepted_history`. Both root comparison and scope remain independent application
+inputs. Existing, missing, foreign, corrupt or unsupported state never triggers
+automatic replacement, migration, enrollment or a new trust baseline.
+
+Every durable proof commits the accepted signed history and comparison clock in
+one SQLite transaction before publishing it to the client. Restore replays every
+signature and predecessor from the external root; an unchanged version still
+advances the CAS revision and accepted comparison clock. The original accepted
+bytes remain stable even if a later proof carries another valid signature of the
+same manifest identity. The 64-manifest capacity fails closed without eviction.
+Root transitions and profile03 are not inferred from original-reply proof chains.
+If the postcommit freshness check observes a later time, a final comparison-only
+CAS transaction persists that time before authority or plaintext is returned.
+No newer, unpersisted clock sample is taken after that final transaction.
+
+Durable consumption and status bracket their single request with fresh, committed
+current proofs. A stale concurrent client fails CAS before consumption; failure
+after an effect attempt remains unknown, including a lost acknowledgement of a
+successful commit. Reopen the existing checkpoint explicitly, then recover using
+the same caller-retained consumption ID and `status`. Never automatically repeat
+`consume`. The final plaintext proof is committed and checked again for expiry
+before release. A failed postcommit fence leaves the old client stale.
+
+SQLite WAL with FULL synchronization provides local transaction durability and
+concurrent CAS. It does not prevent an attacker restoring an older whole database
+or rolling back the host clock and storage together. External durable anchoring
+is required for that threat. No live grant, credential, event ciphertext or
+plaintext is persisted here; fresh authenticated service proofs are still required.
 
 `page(cursor=None, limit=20)` returns bounded event metadata with the maintained
 opaque `(accepted_at_ms, event_id)` cursor; metadata is neither a plaintext read
@@ -418,7 +453,7 @@ CI builds the reviewed workflow package at
 `9c0e969466e2cb8778e03287c7214ba78a50eee1` (#1229), then tests clean installation
 without the extra and co-installation with it. Installed wheel and sdist consumers
 perform actual synthetic TLS selected reading, final current proof, pagination,
-owner-review/proposal consumption and status recovery. The maintained TypeScript
+durable checkpoint reopen, owner-review/proposal consumption and status recovery. The maintained TypeScript
 producer independently opens the same role-3 software fixture; an optional public
 point also tests qualified Windows TPM opening without exporting its private key.
 These checks do not claim #1054 live grant deployment or #1004 device acceptance.

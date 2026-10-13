@@ -71,10 +71,11 @@ class OriginalReplyClient:
     ztr credentials read originals; a separately configured ztw callback is used
     only for proposal consumption. Grant response fields are authenticated by
     this configured TLS service, never taken from an event or webhook alone.
-    Accepted highwater is in-memory; caller-owned durable history remains needed.
+    Supply checkpoint for durable history/clock CAS, or explicitly supply an
+    accepted_history list for compatibility with memory-only callers.
     """
-    def __init__(self,origin,credential,*,scope,custody,accepted_history,clock,
-                 output_credential=None,timeout_ms=5000,require_protected=True):
+    def __init__(self,origin,credential,*,scope,custody,clock,accepted_history=None,
+                 checkpoint=None,output_credential=None,timeout_ms=5000,require_protected=True):
         try:
             self._scope=capture_scope(scope);self._custody=custody;self._clock=clock
             self._protected=require_protected;self._output=output_credential
@@ -82,6 +83,12 @@ class OriginalReplyClient:
             if require_protected or type(custody) is not s.SoftwareRecipient:s.require_protected_custody(custody)
             s.require(type(timeout_ms) is int and 1<=timeout_ms<=10000,'original timeout')
             self._transport=SealedHttpClient(origin,_credential(credential,'ztr_'),lambda _:None,clock=clock,timeout_ms=timeout_ms)
+            self._checkpoint=checkpoint;self._checkpoint_revision=None
+            self._last=_positive(clock())
+            if checkpoint is not None:
+                from .original_reply_checkpoint import OriginalReplyCheckpoint
+                s.require(type(checkpoint) is OriginalReplyCheckpoint and accepted_history is None,'original checkpoint configuration')
+                self._checkpoint_revision,_,accepted_history=checkpoint.snapshot(scope=self._scope,comparison_ms=self._last)
             s.require(type(accepted_history) in (list,tuple) and 1<=len(accepted_history)<=64,'original history capacity')
             self._history={};previous=0
             for token in accepted_history:
@@ -89,7 +96,7 @@ class OriginalReplyClient:
                 s.require(manifest.profile==2 and manifest.trust.account==self._scope['account'] and manifest.trust.version>previous,'original accepted history')
                 s._parse_manifest(manifest.raw,manifest.trust,manifest.issued)
                 previous=manifest.trust.version;self._history[previous]=token
-            self._latest=accepted_history[-1];self._last=_positive(clock())
+            self._latest=accepted_history[-1]
             m=s._bound(s._manifests,self._latest);s._parse_manifest(m.raw,m.trust,self._last)
             self._busy=threading.Lock();self._effect_attempted=False
         except Exception:raise OriginalReplyError() from None
@@ -138,11 +145,26 @@ class OriginalReplyClient:
                   identity.generation==_positive(p['root_generation'])==initial.trust.generation and identity.root==initial.trust.root and
                   identity.version>=high.trust.version and (identity.version!=high.trust.version or identity.digest==high.trust.digest) and
                   len(set(self._history)|set(staged))<=64,'original current highwater')
-        # No external call between final fence and publication. Earlier staged
-        # entries stay independently verified; current comparison uses fresh time.
-        for version,manifest in staged.items():self._history[version]=s._accept(s._manifests,manifest)
-        self._latest=s._accept(s._manifests,s._parse_manifest(previous.raw,previous.trust,fresh))
-        self._history[identity.version]=self._latest;self._last=fresh
+        history=dict(self._history)
+        for version,manifest in staged.items():history[version]=s._accept(s._manifests,manifest)
+        latest=s._accept(s._manifests,s._parse_manifest(previous.raw,previous.trust,fresh));history[identity.version]=latest
+        if self._checkpoint is not None:
+            revision,_,tokens=self._checkpoint.accept([history[v] for v in sorted(history)],scope=self._scope,
+                                      expected_revision=self._checkpoint_revision,comparison_ms=fresh)
+            # Commit may block or have an uncertain outcome. A postcommit failure
+            # leaves this client stale: explicit reopen is required, never reset.
+            after=_positive(self._clock())
+            s.require(after>=fresh and observed-30000<=after<=observed+30000 and after<expires,'original committed proof freshness')
+            committed=s._bound(s._manifests,tokens[-1]);s._parse_manifest(committed.raw,committed.trust,after)
+            if after>fresh:
+                # Durably retain every observed comparison, including time spent
+                # committing the history. Do not sample a new unpersisted clock
+                # after this final comparison transaction.
+                revision,_,tokens=self._checkpoint.accept(tokens,scope=self._scope,
+                                          expected_revision=revision,comparison_ms=after)
+                fresh=after
+            self._checkpoint_revision=revision;history={s.manifest_identity(t)['version']:t for t in tokens};latest=tokens[-1]
+        self._history=history;self._latest=latest;self._last=fresh
         return dict(scope=dict(self._scope),revision='1',expires_ms=expires,now_ms=fresh,manifest=self._latest)
 
     def _current(self):return self._proof(self._request('current'))
@@ -198,18 +220,24 @@ class OriginalReplyClient:
             digest=validation.action_digest(descriptor)
             s.require(self._output is not None,'original output credential unavailable')
             output=_credential(self._output(),'ztw_')
+        if self._checkpoint is not None:self._current()
         result=self._consumption(self._request('consume',additional=dict(params=params),output=output))
         s.require(result['event_id']==params['event_id'] and result['consumption_id']==params['request_id'] and
                   result['active_request_id']==params['active_request_id'],'original consumption binding')
         action=result['action']
         if action is not None:s.require(params['descriptor'] is not None and action['action_id']==params['descriptor']['action_id'] and
                                         action['revision']==params['descriptor']['revision'] and action['binding_digest']==digest,'original proposal digest')
+        if self._checkpoint is not None:self._current()
         return result
 
     @_serialized
     def status(self,consumption_id):
-        _uuid(consumption_id);result=self._consumption(self._request('status',additional=dict(consumption_id=consumption_id)))
-        s.require(result['consumption_id']==consumption_id,'original consumption identity');return result
+        _uuid(consumption_id)
+        if self._checkpoint is not None:self._current()
+        result=self._consumption(self._request('status',additional=dict(consumption_id=consumption_id)))
+        s.require(result['consumption_id']==consumption_id,'original consumption identity')
+        if self._checkpoint is not None:self._current()
+        return result
 
     @_serialized
     def read_verified(self,event,accepted_manifest_version=None):

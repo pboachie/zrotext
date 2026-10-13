@@ -73,11 +73,19 @@ def main():
         threading.Thread(target=server.serve_forever,daemon=True).start()
         try:
             credential=lambda prefix:prefix+base64.urlsafe_b64encode(bytes([88])*32).decode().rstrip('=')
-            client=native.OriginalReplyClient('https://localhost:'+str(server.server_port),credential('ztr_'),scope=scope,custody=custody,
-                accepted_history=[old,active],clock=lambda:10000,output_credential=lambda:credential('ztw_'),require_protected=False)
+            database=directory/'original.sqlite'
+            native.OriginalReplyCheckpoint.create(database,decode(f['rootPin']),decode(f['fingerprint']),scope=scope,
+                                                 accepted_history=[old,active],comparison_ms=10000)
+            def restarted():
+                checkpoint=native.OriginalReplyCheckpoint(database,decode(f['rootPin']),decode(f['fingerprint']),scope=scope)
+                return native.OriginalReplyClient('https://localhost:'+str(server.server_port),credential('ztr_'),scope=scope,custody=custody,
+                    checkpoint=checkpoint,clock=lambda:10000,output_credential=lambda:credential('ztw_'),require_protected=False)
+            client=restarted()
             assert client.read(decode(f['event']))==f['text'];assert client.page()['events'][0]['event_id']==event
             request=dict(request_id=str(uuid.UUID(int=100)),event_id=event,active_request_id=None,descriptor=None)
             assert client.consume(request)['disposition']=='owner_review'
+            client=restarted()
+            assert client.status(request['request_id'])['disposition']=='owner_review'
             descriptor=dict(account_id=uid(scope['account']),action_id=str(uuid.UUID(int=101)),revision=1,line_id=uid(scope['line']),
                 recipient_id=str(uuid.UUID(int=102)),purpose_id=str(uuid.UUID(int=103)),content_ref=str(uuid.UUID(int=104)),content_digest='ab'*32,content_version=1,
                 not_before=10,expires_at=100,timezone='UTC',window_id='window-a',routine_id=str(uuid.UUID(int=105)),authority_generation=1,commitment='informational')
@@ -86,10 +94,11 @@ def main():
                 try:client.consume(request)
                 except native.OriginalReplyError as error:assert error.state=='unavailable'
                 else:raise AssertionError('proposal without workflow extra')
-                assert calls==['read','current','page','consume']
+                assert calls==['read','current','page','current','consume','current','current','status','current']
             else:
                 result=client.consume(request);assert result['disposition']=='proposal' and client.status(request['request_id'])==result
-                assert calls==['read','current','page','consume','consume','status']
+                assert calls==['read','current','page','current','consume','current','current','status','current',
+                               'current','consume','current','current','status','current']
         finally:server.shutdown();server.server_close()
     print(json.dumps(dict(installed=True,workflow_coinstalled=not missing,original_reply_https=True)))
 

@@ -18,6 +18,7 @@ from .outbound02_journal import OutboundJournal02
 from .sealed_http import SealedHttpClient, SealedHttpError, PreparedSubmission
 from .original_reply_client import OriginalReplyClient, OriginalReplyError
 from .original_reply_reader import open_original_reply02
+from .original_reply_checkpoint import OriginalReplyCheckpoint
 
 __version__ = '0.1.0a1'
 __all__ = ['SealedError', 'SoftwareRecipient', 'CheckpointStore', 'ElectionJournal',
@@ -26,4 +27,4 @@ __all__ = ['SealedError', 'SoftwareRecipient', 'CheckpointStore', 'ElectionJourn
            'SealedEnvelopeError', 'SEALED_CONTENT_TYPE', 'compose_outbound02', 'RootCheckpointStore',
            'verify_archive_reply_selection02', 'OutboundJournal02', 'verify_manifest03_current',
            'SealedHttpClient', 'SealedHttpError', 'PreparedSubmission',
-           'OriginalReplyClient', 'OriginalReplyError', 'open_original_reply02']
+           'OriginalReplyClient', 'OriginalReplyError', 'open_original_reply02', 'OriginalReplyCheckpoint']
