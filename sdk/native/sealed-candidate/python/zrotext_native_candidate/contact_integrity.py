@@ -186,9 +186,8 @@ def verify_contact_mutation01(raw,statement,*,contact,routing_digest,legacy_gene
     return s._accept(_mutations,(dict(v,digest=s.sha(v['bytes'])),st))
 
 
-@_closed
-def verify_contact_transition01(previous,next_mutation,replacement_fields):
-    n,st=s._bound(_mutations,next_mutation);old=None if previous is None else s._bound(_transitions,previous)
+def _transition_values(previous,n,st,replacement_fields):
+    old=None if previous is None else s._bound(_transitions,previous)
     s.require(type(replacement_fields) in (list,tuple) and len(replacement_fields)<=2,'contact replacements')
     supplied=[s._bound(_fields,t) for t in replacement_fields];s.require(len({f[0]['kind'] for f in supplied})==len(supplied),'contact duplicate replacements')
     if old is not None:
@@ -211,7 +210,13 @@ def verify_contact_transition01(previous,next_mutation,replacement_fields):
         else:
             s.require(old is not None and slot==p[key] and prior[kind-1] is not None,'contact retained field');current.append(prior[kind-1])
     s.require(len(used)==len(supplied),'contact unused replacements')
-    return s._accept(_transitions,(n,st,tuple(current)))
+    return n,st,tuple(current)
+
+
+@_closed
+def verify_contact_transition01(previous,next_mutation,replacement_fields):
+    n,st=s._bound(_mutations,next_mutation)
+    return s._accept(_transitions,_transition_values(previous,n,st,replacement_fields))
 
 
 @_closed
