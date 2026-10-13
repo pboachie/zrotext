@@ -109,6 +109,9 @@ def python_package(stage, feed):
         "[importlib.import_module(m.name) for m in pkgutil.walk_packages("
         "zrotext_sdk.__path__,zrotext_sdk.__name__+'.')]; print('Installed SDK modules loaded')", cwd=stage)
     run(python, "-I", CONFIG / "python-contract.py", cwd=stage)
+    wire_env = {key: value for key, value in os.environ.items()
+                if key.lower() not in ("http_proxy", "https_proxy", "all_proxy", "no_proxy")}
+    run(python, "-I", CONFIG / "package-wire/python.py", cwd=stage, env=wire_env)
 
 
 def ruby_package(stage, feed, ruby):
@@ -206,6 +209,11 @@ def main():
         report["compatibility_blockers"] = [
             "Tungsten #65: same-origin reads follow redirects; executed TODO test remains failing. "
             "Not qualified to replace an existing no-redirect client."]
+    if args.target == "python":
+        report["compatibility_blockers"] = [
+            "Tungsten #65: same-origin read redirects; executed expected failure.",
+            "Tungsten #66: whole-body deadline; executed expected failure. "
+            "Not qualified to replace an existing bounded no-redirect client."]
     if args.target == "rust":
         report["distribution"] = ("Candidate-registry qualification only: crate metadata and locks refer "
                                   "to the temporary registry. Rebuild against released runtime coordinates "

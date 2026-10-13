@@ -170,8 +170,20 @@ checks digests, compiles TypeScript and exercises synthetic transport failures.
 It also compiles Rust/Go/Java/C#, loads Ruby, and builds/installs Python wheels
 against the pinned runtime source. Installed Python and TypeScript wire checks
 cover credentials, pagination, invalid inputs, redirects, malformed responses,
-confirmation and caller-owned idempotency under uncertain outcomes. Python
-timeout coverage injects an HTTPX timeout; it does not prove wall-clock deadlines.
+confirmation and caller-owned idempotency under uncertain outcomes. Python additionally runs twelve installed-consumer groups against an actual local
+HTTP server after SDK/runtime source staging is removed. They cover installed
+module origins, bearer and owner authentication, cursor pagination, preflight
+refusal, malformed responses, gate/rate refusals, stalled reads, mutation and
+cross-origin redirects, and exact caller idempotency after a lost response.
+Two executed expected failures preserve the existing-client requirements:
+[Tungsten #65](https://github.com/pboachie/tungsten/issues/65) follows same-origin
+read redirects, and [#66](https://github.com/pboachie/tungsten/issues/66) settles
+blocked non-streaming body reads only after the next chunk, beyond the total
+call deadline. An unexpected
+success fails the suite so the gate must be reviewed when the runtime changes.
+The archive manifest records both blockers; ordinary passing cases do not qualify
+the Python runtime for existing-client replacement. These HTTP fixtures do not
+establish TLS, production authentication or sealed cryptographic parity.
 Contract inputs use LF line endings on every
 platform so their generator digests agree across Windows and Linux checkouts.
 Run those tests locally after generation:
