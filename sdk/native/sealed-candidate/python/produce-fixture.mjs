@@ -26,7 +26,8 @@ async function kem(n) {
   const point = new Uint8Array(await suite.kem.serializePublicKey(pair.publicKey));
   return { pair, point, id: await keyId(16,point) };
 }
-const root = await signing(7), origin = await signing(6), outbound = await signing(5);
+const root = await signing(7), origin = await signing(6);
+let outbound = await signing(5);
 const device = await kem(17);
 let archive;
 if (process.argv[2] === '--recipient-point') {
@@ -35,6 +36,12 @@ if (process.argv[2] === '--recipient-point') {
   const point = new Uint8Array(Buffer.from(hex, 'hex'));
   await suite.kem.deserializePublicKey(point);
   archive = {point, id:await keyId(16,point)};
+} else if (process.argv[2] === '--signer-point') {
+  const hex=process.argv[3];
+  if (!/^04[0-9a-f]{128}$/.test(hex ?? '') || process.argv.length!==4) throw Error('public signer point');
+  const point=new Uint8Array(Buffer.from(hex,'hex'));
+  await crypto.subtle.importKey('raw',point,{name:'ECDSA',namedCurve:'P-256'},false,['verify']);
+  outbound={point};archive=await kem(34);
 } else {
   if (process.argv.length !== 2) throw Error('unsupported fixture arguments');
   archive = await kem(34);
@@ -62,11 +69,12 @@ const shared={manifest,nowMs:now,messageId,deviceId,lineId,peer:text('+12'),obse
 const inbound=await prepareInboundEnvelope02({...shared,kind:2,eventId:messageId,localSequence:7n,
   signer:{privateKey:origin.privateKey,publicPoint:origin.point},
   recipients:[{role:2,keyId:archive.id,point:archive.point,ekm:bytes(82,32)}]});
-const outgoing=await prepareOutboundEnvelope02({...shared,kind:1,expiresMs:20000n,
+const outgoing=outbound.privateKey ? await prepareOutboundEnvelope02({...shared,kind:1,expiresMs:20000n,
   signer:{privateKey:outbound.privateKey,publicPoint:outbound.point},
   recipients:[{role:1,keyId:device.id,point:device.point,ekm:bytes(81,32)},
-    {role:2,keyId:archive.id,point:archive.point,ekm:bytes(82,32)}]});
+    {role:2,keyId:archive.id,point:archive.point,ekm:bytes(82,32)}]}) : null;
 process.stdout.write(JSON.stringify({rootPin:b64(rootPin),fingerprint:b64(fingerprint),manifest:b64(manifestBytes),
-  inbound:b64(inbound.envelope),outbound:b64(outgoing.envelope),
+  inbound:b64(inbound.envelope),...(outgoing?{outbound:b64(outgoing.envelope)}:{}),
+  deviceScalar:b64(new Uint8Array(await suite.kem.serializePrivateKey(device.pair.privateKey))),signerPoint:b64(outbound.point),
   ...(archive.pair ? {archiveScalar:b64(new Uint8Array(await suite.kem.serializePrivateKey(archive.pair.privateKey)))} : {}),
   reader:b64(archive.id),account:b64(accountId),device:b64(deviceId),line:b64(lineId),now:Number(now),text:shared.content}));

@@ -13,7 +13,7 @@ import venv
 import zipfile
 
 ROOT=Path(__file__).resolve().parent
-MODULES={'__init__','sealed_candidate','checkpoint_store','cng_custody','cng_signing','election03','election_journal','compose03','outbound_journal'}
+MODULES={'__init__','sealed_candidate','checkpoint_store','cng_custody','cng_signing','election03','election_journal','compose03','compose02','outbound_journal'}
 PACKAGE='zrotext_native_candidate'
 DIST=PACKAGE+'-0.1.0a1'
 
@@ -73,6 +73,8 @@ def main():
             payload=json.dumps(dict(fixture=fixtures['election'],envelope=result['envelope'],expectedText='Native composed 🌱'))
             accepted=json.loads(run(['node',ROOT/'consume-native03.mjs'],cwd=temporary,input=payload))
             assert result['installed'] and accepted=={'verified':True,'openedRecipients':2}
+            payload02=json.dumps(dict(fixture=fixtures['archive'],envelope=result['envelope02'],expectedText='Native composed02 🌱'))
+            assert json.loads(run(['node',ROOT/'consume-native02.mjs'],cwd=temporary,input=payload02))=={'verified':True,'openedRecipients':2}
         shutil.copyfile(wheel,args.output/wheel.name);shutil.copyfile(sdist,args.output/sdist.name)
     print(json.dumps({'wheel_and_sdist':'passed','isolated_consumers':2,'installed_crypto_and_durability':'passed'}))
 

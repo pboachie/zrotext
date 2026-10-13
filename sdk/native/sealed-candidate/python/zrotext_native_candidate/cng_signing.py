@@ -36,7 +36,7 @@ class HardwareSigner(HardwareRecipient):
 
     def sign(self, domain, unsigned):
         require_hardware_signer(self)
-        s.require(type(domain) is str and domain == 'ZTSE/sign/v3', 'outbound signing domain')
+        s.require(type(domain) is str and domain in ('ZTSE/sign/v2', 'ZTSE/sign/v3'), 'outbound signing domain')
         unsigned = s.capture(unsigned, 493, 34149)
         signature = self._sign_digest(s.sha(s.label(domain) + len(unsigned).to_bytes(4, 'big') + unsigned))
         s.verify_signature(self.public_point(), signature, domain, unsigned)

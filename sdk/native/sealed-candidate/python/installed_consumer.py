@@ -22,6 +22,10 @@ custody = package.SoftwareRecipient(ec.derive_private_key(int.from_bytes(decode(
 assert s.open_archive_candidate02(decode(archive['inbound']),manifest,manifest,custody,
     account=decode(archive['account']),device=decode(archive['device']),line=decode(archive['line']),peer='+12',
     reader_id=decode(archive['reader']),now_ms=archive['now']) == archive['text']
+outbound02=package.compose_outbound02(manifest=manifest,now_ms=10000,message_id=bytes([49])*16,
+    device_id=decode(archive['device']),line_id=decode(archive['line']),peer='+12',observed_ms=10000,expires_ms=20000,
+    content='Native composed02 🌱',signer=package.SoftwareSigner(ec.derive_private_key(5,ec.SECP256R1())),
+    recipients=[(k.role,k.id,k.point) for k in s._bound(s._manifests,manifest).keys if k.role in (1,2)],require_hardware=False)
 with tempfile.TemporaryDirectory() as directory:
     journal=package.ElectionJournal(Path(directory)/'election.db',decode(f['rootPin']),decode(f['fingerprint']))
     journal.accept_manifest(decode(f['signed02']),0,10000)
@@ -50,4 +54,4 @@ with tempfile.TemporaryDirectory() as directory:
         try: package.probe_platform()
         except package.CngUnavailable: pass
         else: raise AssertionError('non-Windows platform qualified')
-    print(json.dumps(dict(envelope=base64.b64encode(result.envelope).decode(),installed=True)))
+    print(json.dumps(dict(envelope=base64.b64encode(result.envelope).decode(),envelope02=base64.b64encode(outbound02.envelope).decode(),installed=True)))

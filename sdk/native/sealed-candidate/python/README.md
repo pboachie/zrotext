@@ -24,7 +24,7 @@ local qualification. Missing crypto dependencies fail installation/import;
 unsupported protected capabilities raise `CngUnavailable` or `SealedError`.
 There is no silent software fallback. Python 3.12 is the exercised CI version.
 
-Wheel contents are restricted to the package's nine modules and distribution
+Wheel contents are restricted to the package's ten modules and distribution
 metadata/license. Source archives add build metadata and this README; neither
 archive includes tests, fixture producers, private receipts, sample scalars or
 repository tooling. Both carry AGPL-3.0-only license metadata and full text.
@@ -193,6 +193,25 @@ hashes remain sensitive metadata. Preserve the journal across unknown transport
 outcomes. Deletion or restoration of an older complete database cannot be
 detected here; this is neither hardware antirollback nor an SMS replay/effect
 decision. It does not authorize transport or replace the production receiver.
+
+`compose_outbound02` adds the maintained profile-02 public composer's candidate
+wire contract to this package. Supply a verified profile-02 manifest, explicit
+device/line/message/peer/times, signer custody, and `(role, key_id, public_point)`
+recipient tuples. It returns `Composition` with exact envelope bytes and the
+unsigned SHA-256 retry identity. `SealedEnvelopeError.code` uses the TypeScript
+error categories; ten refusal categories are compared by executing the actual
+TS public wrapper. The Python call uses snake-case names and a string peer.
+Protected signing is the default; production randomness overrides refuse.
+The profile-02 wrap AAD is empty, unlike profile03. Tests independently open
+native output with TS HPKE/WebCrypto, including actual TPM signatures.
+
+Profile-02 grammar intentionally permits a zero message ID and non-live
+candidate observation/expiry times when the maintained composer does. This
+does not authorize sending: admission/current permission remain separate.
+Profile-03 election checks are not silently applied to profile02. Callers must
+retain the returned exact bytes and unsigned digest for profile02 retries;
+the existing `OutboundJournal` API remains specifically profile03. Existing
+TypeScript and legacy Python entrypoints remain unchanged.
 
 ## Remaining work before full native parity
 
