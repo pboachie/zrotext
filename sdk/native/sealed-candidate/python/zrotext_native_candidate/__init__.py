@@ -82,3 +82,6 @@ __all__ += ['ConversationEnrollment','EnrollmentError','EnrollmentRootSigner','S
 
 from .genesis_ceremony import ConversationGenesis,GenesisCeremonyError,GenesisRootSigner,SoftwareGenesisRootSigner
 __all__ += ['ConversationGenesis','GenesisCeremonyError','GenesisRootSigner','SoftwareGenesisRootSigner']
+
+from .conversation_signer import ConversationSignerSetup02,ConversationSignerError,ConversationRole5Signer
+__all__ += ['ConversationSignerSetup02','ConversationSignerError','ConversationRole5Signer']

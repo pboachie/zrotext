@@ -1082,3 +1082,52 @@ is local provider evidence, not remote attestation or a browser custody claim.
 Clean wheel/sdist consumers independently verify native signatures with the
 maintained TypeScript reader and report actual protected-provider qualification
 separately from a platform-unavailable skip.
+
+## Session signer setup and one-use confirmation
+
+`ConversationSignerSetup02(binding, consume_setup_decision, read_current,
+record_pending_alias=..., record_deleted_alias=...)` implements the portable
+maintained conversation signer lifecycle. Call `setup()` once, then independently
+enroll its `public_point` / `key_id` through the existing reviewed enrollment
+ceremony. Setup does not install a manifest or unlock any unrelated signer.
+The current callback supplies a genuine verified profile02 manifest, exact
+binding, authenticated monotonic `nowMs`, and independent `ownerSessionLive` and
+`consentLive` facts. A normal synchronous decision callback return consumes
+approval, including `False`; decline by raising. Awaitable callbacks refuse.
+These host facts are not browser gestures, DOM custody, or server authorization.
+
+`prepare_review(text)` returns immutable signed envelope bytes, message ID,
+body, and exact 30-second ZTCS01 proof. It pins the root/generation, monotonic
+manifest high-water and clock. `sign_reviewed(proof, envelope, text,
+consume_confirmation)` consumes each proof identity before the confirmation
+callback, then rechecks current authority before and after its canonical low-S
+confirmation signature. Confirmation never performs HTTP, delivery or automatic
+enrollment. Public arbitrary signing on `ConversationRole5Signer` is refused;
+its dedicated PCP namespace does not widen the existing composer capabilities.
+
+The default creates a fresh hardware-qualified nonexportable Windows Platform
+Crypto Provider key only after setup approval. There is no Software KSP fallback.
+`require_hardware=False` is an explicit experimental software-key alternative;
+it does not claim protected custody. Pending-alias callbacks must durably record
+and fsync their private receipts before key creation. Deleted-alias callbacks
+must record completion only after successful deletion of that exact owned key.
+No alias enumeration or deletion by prefix occurs.
+
+Every operation has a bounded timeout and optional `threading.Event` cancellation.
+`close()` suppresses future output immediately. An unresolved provider or host
+callback retains the instance and one of four worker slots until actual
+settlement; cleanup occurs afterward. `cleanup_pending` / `cleanup_state` expose
+outstanding custody work. `cleanup()` retries an actual deletion or a failed
+completion receipt without deleting twice. `creation_outcome_unknown` means
+creation failed before returning a handle and internal cleanup cannot be
+certified: retain the original private pending receipt for exact-alias operator
+recovery. Automatic cleanup cannot resolve that state and never reports success.
+Process termination cannot promise key deletion; durable receipts remain needed.
+Python strings, immutable copies and provider memory have no erasure guarantee.
+
+The synthetic acceptance fixture drives the actual maintained setup API for
+byte/refusal and callback-order comparisons, and independently verifies native
+confirmation/envelope signatures and both HPKE recipient opens. Windows source
+and isolated wheel/sdist consumers create and delete actual owned PCP keys.
+Other platforms run the software interoperability path without claiming Windows
+custody. Legacy TypeScript and Python entry points remain unchanged.

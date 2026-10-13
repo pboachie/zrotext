@@ -99,6 +99,20 @@ class ConversationSignerSetup02:
     def cleanup_pending(self):
         with self._guard: return self._key is not None or self._alias is not None
 
+    @property
+    def cleanup_state(self):
+        """Creation uncertainty requires exact-alias operator recovery, not retry.
+
+        A create failure may have performed internal deletion before returning
+        no handle. This client cannot certify that outcome. Keep the durable
+        pending receipt; cleanup never guesses or enumerates/deletes by prefix.
+        """
+        with self._guard:
+            if self._key is not None: return 'key_cleanup_pending'
+            if self._alias is not None:
+                return 'deletion_receipt_pending' if self._deleted else 'creation_outcome_unknown'
+            return 'complete'
+
     def _check(self, op):
         if self._closed or op['cancel'].is_set() or time.monotonic() >= op['deadline']:
             raise ConversationSignerError('closed_or_expired')
@@ -293,7 +307,8 @@ class ConversationSignerSetup02:
 
     def sign_reviewed(self, proof, envelope, text, consume_confirmation, *, timeout=10, cancel=None):
         # Snapshot mutable caller bytes before asynchronous admission.
-        proof,envelope = (bytes(v) if type(v) in (bytes,bytearray) else v for v in (proof,envelope))
+        proof,envelope = (bytes(v) if type(v) in (bytes,bytearray) and lo <= len(v) <= hi else None
+                          for v,lo,hi in ((proof,297,310),(envelope,426,34213)))
         def run(op):
             s.require(self._ready and callable(consume_confirmation), 'confirmation setup')
             s.capture(proof,297,310); s.capture(envelope,426,34213)

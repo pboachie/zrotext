@@ -4,6 +4,8 @@ from pathlib import Path
 import os
 import threading
 import time
+import tempfile
+import json
 import unittest
 from unittest.mock import patch
 from installed_conversation_signer_consumer import oracle,inputs,enroll,check
@@ -113,12 +115,82 @@ class ConversationSignerTests(unittest.TestCase):
         with patch.object(c.ConversationRole5Signer,'create',side_effect=RuntimeError('unsupported')):
             with self.assertRaises(c.ConversationSignerError):client.setup()
         self.assertEqual(calls,['review']);self.assertIsNone(client._key)
+
+    def test_creation_failure_does_not_falsely_certify_owned_alias_deletion(self):
+        _,current=inputs(self.f);events=[]
+        client=c.ConversationSignerSetup02(current['binding'],lambda b:None,lambda:current,
+            record_pending_alias=lambda a:events.append(('pending',a)),record_deleted_alias=lambda a:events.append(('deleted',a)))
+        def failed(receipt):receipt('synthetic-exact-owned-alias');raise OSError('ambiguous creation outcome')
+        with patch.object(c.ConversationRole5Signer,'create',side_effect=failed):
+            with self.assertRaises(c.ConversationSignerError):client.setup()
+        self.assertEqual(client.cleanup_state,'creation_outcome_unknown');self.assertFalse(client.cleanup())
+        self.assertEqual(events,[('pending','synthetic-exact-owned-alias')])
+
+    def test_all_four_worker_slots_remain_owned_through_unresolved_cleanup(self):
+        release=threading.Event();clients=[];entered=[]
+        try:
+            for _ in range(4):
+                client,_,_=self.client();client.setup();clients.append(client);event=threading.Event();entered.append(event);original=client._cleanup
+                def blocked(original=original,event=event):event.set();release.wait(3);return original()
+                client._cleanup=blocked
+                with self.assertRaises(c.ConversationSignerError):client.close(timeout=.02)
+                self.assertTrue(event.is_set());self.assertTrue(client._busy)
+            fifth,_,_=self.client()
+            with self.assertRaises(c.ConversationSignerError) as refused:fifth.setup()
+            self.assertEqual(refused.exception.code,'capacity')
+        finally:
+            release.set()
+            for client in clients:
+                for _ in range(200):
+                    if not client._busy:break
+                    time.sleep(.005)
+                self.assertFalse(client._busy);self.assertEqual(client.cleanup_state,'complete')
     def test_slow_current_sample_cannot_refresh_near_expiry_lifetime(self):
         _,current=inputs(self.f);current['nowMs']=99999
         def read():time.sleep(.01);return current
         client,_,_=self.client(read=read)
         with patch.object(c.ec,'generate_private_key',side_effect=AssertionError('must not generate')):
             with self.assertRaises(c.ConversationSignerError):client.setup()
+
+    def test_confirmation_uses_captured_bytes_and_exact_manifest_highwater(self):
+        client,current=self.ready();review=client.prepare_review('snapshot confirm');proof,envelope=bytearray(review['proof']),bytearray(review['envelope'])
+        def confirm(p,b):proof[:]=bytes(len(proof));envelope[:]=bytes(len(envelope))
+        signature=client.sign_reviewed(proof,envelope,review['body'],confirm)
+        s.verify_signature(client.public_point,signature,c._CONFIRM,review['proof'])
+        _,base=inputs(self.f);current['manifest']=base['manifest']
+        with self.assertRaises(c.ConversationSignerError):client.prepare_review('rollback')
+
+    @unittest.skipUnless(os.name=='nt','Windows PCP qualification requires Windows')
+    def test_protected_key_deletion_waits_for_worker_and_failed_receipt_is_retryable(self):
+        pin,current=inputs(self.f);events=[];entered,release,cancel=threading.Event(),threading.Event(),threading.Event()
+        fd,name=tempfile.mkstemp(prefix='zrotext-conversation-deferred-',suffix='.jsonl');os.close(fd);receipt=Path(name)
+        fail=[True]
+        def record(kind,alias):
+            if kind=='deleted' and fail[0]:fail[0]=False;raise OSError('synthetic receipt unavailable')
+            with receipt.open('a',encoding='utf-8') as stream:
+                stream.write(json.dumps(dict(kind=kind,alias=alias))+'\n');stream.flush();os.fsync(stream.fileno())
+            events.append((kind,alias))
+        client=c.ConversationSignerSetup02(current['binding'],lambda b:None,lambda:current,record_pending_alias=lambda a:record('pending',a),record_deleted_alias=lambda a:record('deleted',a))
+        try:
+            client.setup();enroll(SOURCE,self.f,client,pin,current);review=client.prepare_review('protected deferred');key=client._key
+            original=key._sign_digest;deletions=[];delete=key.delete
+            def blocked(digest):entered.set();release.wait(2);return original(digest)
+            def deleting():deletions.append(True);return delete()
+            key._sign_digest=blocked;key.delete=deleting;out=[]
+            def run():
+                try:out.append(client.sign_reviewed(review['proof'],review['envelope'],review['body'],lambda p,b:None,cancel=cancel))
+                except c.ConversationSignerError:out.append('refused')
+            thread=threading.Thread(target=run);thread.start();self.assertTrue(entered.wait(1));cancel.set();thread.join(1)
+            self.assertEqual(out,['refused']);self.assertEqual(deletions,[]);self.assertTrue(client.cleanup_pending);self.assertFalse(client.close())
+            release.set()
+            for _ in range(200):
+                if not client._busy:break
+                time.sleep(.005)
+            self.assertFalse(client._busy);self.assertEqual(deletions,[True]);self.assertTrue(client.cleanup_pending)
+            self.assertTrue(client.cleanup());self.assertEqual(deletions,[True]);self.assertEqual(events,[('pending',key.name),('deleted',key.name)])
+            receipt.unlink()
+        finally:
+            release.set();client.close()
 
 
 if __name__=='__main__':unittest.main()
