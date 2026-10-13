@@ -55,7 +55,7 @@ def authorize(*, manifest, proof, current_authority, now_ms, message_id, observe
     bound = e.require_current_election03(proof, manifest, current_authority, now)
     m = s._bound(s._manifests, manifest)
     key = next((k for k in m.keys if k.role == 5 and k.id == signer_id), None)
-    s.require(key is not None and key.active(now) and key.scope == 1 and key.line == bound['lineId'] and key.point == public, 'signer authority')
+    s.require(key is not None and key.active(now) and key.start <= observed and key.scope == 1 and key.line == bound['lineId'] and key.point == public, 'signer authority')
     s.require(type(recipients) in (list, tuple) and 2 <= len(recipients) <= 8, 'recipient count')
     requested = []
     for item in recipients:
@@ -66,7 +66,7 @@ def authorize(*, manifest, proof, current_authority, now_ms, message_id, observe
     authorized, deadline = [], min(m.expires, key.end, bound['permissionExpiresAtMs'])
     for role, ident in sorted(requested):
         key = next((k for k in m.keys if k.role == role and k.id == ident), None)
-        s.require(key is not None and key.active(now) and key.scope & 4, 'recipient authority')
+        s.require(key is not None and key.active(now) and key.start <= observed and key.scope & 4, 'recipient authority')
         s.require(role != 1 or (key.device,key.line,key.id) == (bound['deviceId'],bound['lineId'],bound['selectedReaderKeyId']), 'elected recipient')
         deadline = min(deadline, key.end)
         authorized.append((role, ident, key.point))

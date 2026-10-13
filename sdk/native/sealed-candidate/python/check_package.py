@@ -52,7 +52,9 @@ def check_sdist(path):
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--output',type=Path,required=True)
-    parser.add_argument('--workflow-source',type=Path,required=True);args=parser.parse_args()
+    parser.add_argument('--workflow-source',type=Path,required=True)
+    parser.add_argument('--time-policy-source',type=Path,required=True);args=parser.parse_args()
+    time_cli=args.time_policy_source.resolve()/'sdk/typescript/test/fixtures/profile03-time-cli.mjs'
     args.output.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='zrotext-native-package-') as directory:
         temporary=Path(directory);source=temporary/'source';source.mkdir()
@@ -75,11 +77,18 @@ def main():
         reply_consumer=temporary/'reply_consumer.py';shutil.copyfile(ROOT/'installed_reply_consumer.py',reply_consumer)
         template_consumer=temporary/'template_consumer.py';shutil.copyfile(ROOT/'installed_template_consumer.py',template_consumer)
         contact_consumer=temporary/'contact_consumer.py';shutil.copyfile(ROOT/'installed_contact_consumer.py',contact_consumer)
+        time_consumer=temporary/'time_consumer.py';shutil.copyfile(ROOT/'installed_time_consumer.py',time_consumer)
+        time_cases=json.loads(run(['node',time_cli],cwd=temporary))
+        assert len(time_cases['cases'])==14
         for index,artifact in enumerate((wheel,sdist)):
             python=environment(temporary/f'consumer-{index}')
             run([python,'-m','pip','install',artifact],cwd=temporary)
             run([python,'-I','-c',"import zrotext_native_candidate,importlib.util;assert importlib.util.find_spec('zrotext_workflow') is None"],cwd=temporary)
             assert json.loads(run([python,'-I',contact_consumer],cwd=temporary,input=json.dumps(fixtures['contact'])))==dict(installed=True,historical_contact_integrity=True)
+            time_result=json.loads(run([python,'-I',time_consumer],cwd=temporary,input=json.dumps(time_cases)))
+            assert time_result['installed'] and len(time_result['outputs'])==sum(f['accept'] for f in time_cases['cases'])
+            for output in time_result['outputs']:
+                assert json.loads(run(['node',time_cli,'--consume'],cwd=temporary,input=json.dumps(output)))==dict(verified=True,name=output['fixture']['name'],recipients=3)
             template_result=json.loads(run([python,'-I',template_consumer],cwd=temporary,input=json.dumps(fixtures['template'])))
             template_open=json.loads(run(['node',ROOT/'template-interop.mjs','--consume'],cwd=temporary,
                 input=json.dumps(dict(fixture=fixtures['template'],envelope=template_result['envelope'],expectedCanonical=template_result['canonical']))))
