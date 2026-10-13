@@ -1,4 +1,4 @@
-"""Build licensed Python/Ruby archives and install them into clean consumers.
+"""Build licensed SDK archives and install them into clean consumers.
 
 The temporary feed qualifies artifacts, not public registry availability. Never
 publish these candidate packages over the existing supported clients.
@@ -159,7 +159,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--target", choices=["python", "ruby"], required=True)
+    parser.add_argument("--target", choices=["python", "ruby", "typescript", "java", "csharp"], required=True)
     parser.add_argument("--ruby", default="ruby")
     args = parser.parse_args()
     destination = args.out.resolve()
@@ -177,13 +177,18 @@ def main():
         feed = stage / "feed"
         feed.mkdir()
         write_files(stage / "sdk", generated)
-        write_files(stage / "runtime", runtime_files(args.source.resolve(), args.target))
+        runtime_target = "ts" if args.target == "typescript" else args.target
+        write_files(stage / "runtime", runtime_files(args.source.resolve(), runtime_target))
         if args.target == "python":
             python_package(stage, feed)
-        else:
+        elif args.target == "ruby":
             ruby_package(stage, feed, args.ruby)
+        else:
+            managed = load("managed_packages", CONFIG / "package-managed.py")
+            getattr(managed, args.target + "_package")(stage, feed)
         shutil.copytree(feed, destination)
-    sums = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(destination.iterdir())}
+    sums = {p.relative_to(destination).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in sorted(destination.rglob("*")) if p.is_file()}
     (destination / "manifest.json").write_text(json.dumps({
         "target": args.target, "runtime_revision": lock["runtime_revision"],
         "qualification": "isolated archive consumer; public registry availability unverified",

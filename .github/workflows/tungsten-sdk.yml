@@ -68,6 +68,9 @@ jobs:
         run: |
           python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten" --target python --out "$RUNNER_TEMP/zrotext-sdk-packages/python"
           python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten" --target ruby --out "$RUNNER_TEMP/zrotext-sdk-packages/ruby"
+          python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten" --target typescript --out "$RUNNER_TEMP/zrotext-sdk-packages/typescript"
+          python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten" --target java --out "$RUNNER_TEMP/zrotext-sdk-packages/java"
+          python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten" --target csharp --out "$RUNNER_TEMP/zrotext-sdk-packages/csharp"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: experimental-sdk-packages

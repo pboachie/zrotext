@@ -9,6 +9,7 @@ spec = importlib.util.spec_from_file_location("artifacts", Path(__file__).resolv
                                             / "sdk/tungsten/package-artifacts.py")
 artifacts = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(artifacts)
+managed = artifacts.load("managed_packages", artifacts.CONFIG / "package-managed.py")
 
 
 class PackageTests(unittest.TestCase):
@@ -39,6 +40,20 @@ class PackageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Unexpected package"):
                 artifacts.replace_once(path, "original", "replacement")
             self.assertEqual(path.read_text(), "unexpected")
+
+    def test_managed_archive_license_and_content_gate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            archive_path = Path(temp) / "candidate.nupkg"
+            for extra in ("../escape", ".git/config", "obj/cache"):
+                with zipfile.ZipFile(archive_path, "w") as archive:
+                    archive.writestr("LICENSE", b"expected")
+                    archive.writestr(extra, b"unexpected")
+                with self.assertRaisesRegex(ValueError, "Unexpected package"):
+                    managed.check_zip_license(archive_path, b"expected", "LICENSE")
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("LICENSE", b"wrong")
+            with self.assertRaisesRegex(ValueError, "Incorrect archive license"):
+                managed.check_zip_license(archive_path, b"expected", "LICENSE")
 
 
 if __name__ == "__main__":

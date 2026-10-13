@@ -64,11 +64,14 @@ authorization, or sealed cryptographic acceptance.
 
 ## Validation and package readiness
 
-Python and Ruby also have an archive installation gate:
+TypeScript, Python, Java, C#, and Ruby have an archive installation gate:
 
 ```sh
 python3 sdk/tungsten/package-artifacts.py --source /path/to/tungsten --target python --out /tmp/zrotext-python-packages
 python3 sdk/tungsten/package-artifacts.py --source /path/to/tungsten --target ruby --out /tmp/zrotext-ruby-packages
+python3 sdk/tungsten/package-artifacts.py --source /path/to/tungsten --target typescript --out /tmp/zrotext-npm-packages
+python3 sdk/tungsten/package-artifacts.py --source /path/to/tungsten --target java --out /tmp/zrotext-maven-packages
+python3 sdk/tungsten/package-artifacts.py --source /path/to/tungsten --target csharp --out /tmp/zrotext-nuget-packages
 ```
 
 Use a new output directory outside the checkout. The gate verifies the pinned
@@ -80,10 +83,19 @@ runtime. The Python build and consumer dependency versions are pinned in
 `python-package-requirements.txt`; its binary dependencies make the feed specific
 to the build platform. Each output has archive hashes and a qualification manifest.
 
+For the three additional targets, put Node/npm, JDK 17 or newer/Maven, and the
+.NET 10 SDK on PATH respectively. npm compiles an installed TypeScript consumer
+and loads all namespaces. Maven builds JAR/POM pairs, resolves the SDK plus its
+runtime from a file repository into a fresh dependency cache, and compiles/runs
+a consumer. NuGet produces nupkg files, maps candidate coordinates exclusively to
+the local feed, and restores/builds/runs a consumer from a separate package cache.
+These are package entry-point checks; the separate transport and sealed-profile
+suites remain required. No test invokes a live ZROtext server.
+
 These feeds include locally built Tungsten runtimes. They prove archive usability,
-not availability on PyPI or RubyGems. Upstream runtime distribution issue
+not availability on public registries. Upstream runtime distribution issue
 [Tungsten #62](https://github.com/pboachie/tungsten/issues/62) remains a release
-gate. The other five ecosystems still require equivalent package consumer checks.
+gate. Rust and Go still require equivalent package consumer checks.
 No registry publication, legacy-client replacement, or sealed-profile acceptance
 is performed by this command.
 
