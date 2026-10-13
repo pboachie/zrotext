@@ -1,4 +1,8 @@
 //! Instance-bound reviewed ciphertext saves and explicit uncertain recovery.
+#[path = "owner_template_authoring.rs"]
+pub mod authoring;
+#[path = "owner_template_opening.rs"]
+pub mod opening;
 use super::*;
 use crate::template_store::TemplateSaveRequest;
 

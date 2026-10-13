@@ -102,6 +102,7 @@ impl OwnerSession {
 pub type CurrentSource =
     Arc<dyn Fn(&OwnerCall) -> Result<OwnerAuthority, OwnerError> + Send + Sync>;
 pub type SessionSource = Arc<dyn Fn(&OwnerCall) -> Result<OwnerSession, OwnerError> + Send + Sync>;
+#[derive(Clone)]
 pub struct OwnerOptions {
     pub origin: String,
     pub binding: OwnerBinding,
@@ -146,6 +147,7 @@ struct Inner {
     client: Client,
     closed: AtomicBool,
     busy: AtomicBool,
+    lifetime: Mutex<Option<Instant>>,
     state: Mutex<State>,
 }
 /// Shared cancellation/deadline for trusted callbacks. Callbacks must not reenter.
@@ -155,7 +157,12 @@ pub struct OwnerCall {
 }
 impl OwnerCall {
     pub fn deadline(&self) -> Instant {
-        *self.deadline.lock().unwrap()
+        let deadline = *self.deadline.lock().unwrap();
+        self.inner
+            .lifetime
+            .lock()
+            .unwrap()
+            .map_or(deadline, |at| deadline.min(at))
     }
     pub fn cancelled(&self) -> bool {
         self.inner.closed.load(Ordering::Acquire) || Instant::now() >= self.deadline()
@@ -419,6 +426,7 @@ impl OwnerTemplateReader {
                 client,
                 closed,
                 busy: AtomicBool::new(false),
+                lifetime: Mutex::new(None),
                 state: Mutex::new(State {
                     prior: None,
                     now: 0,
