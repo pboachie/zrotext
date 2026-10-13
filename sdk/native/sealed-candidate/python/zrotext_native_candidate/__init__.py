@@ -71,3 +71,8 @@ __all__ += ['OwnerTemplateAuthoring','TemplateAuthoringError']
 
 from .template_opening import OwnerTemplateOpening,TemplateOpeningError
 __all__ += ['OwnerTemplateOpening','TemplateOpeningError']
+
+from .conversation_proposals import (ConversationProposalError,verify_phone_key_export02,verify_archive_public_header02,
+    encode_conversation_genesis_proposal02,encode_conversation_activation_proposal02,encode_conversation_refresh_proposal02)
+__all__ += ['ConversationProposalError','verify_phone_key_export02','verify_archive_public_header02',
+    'encode_conversation_genesis_proposal02','encode_conversation_activation_proposal02','encode_conversation_refresh_proposal02']

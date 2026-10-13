@@ -21,3 +21,5 @@ exclude installed_owner_context_consumer.py
 exclude installed_template_authoring_consumer.py
 
 exclude installed_template_opening_consumer.py
+
+exclude installed_conversation_proposals_consumer.py
