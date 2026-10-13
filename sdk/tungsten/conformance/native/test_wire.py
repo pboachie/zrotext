@@ -90,4 +90,3 @@ class Wire(unittest.TestCase):
     def test_cross_origin_redirect_is_not_followed(self):
         self.reply=(302,{"Location":"http://localhost:"+str(self.server.server_port)+"/redirected"}, {})
         self.assertFalse(self.invoke()["ok"]);self.assertEqual(len(self.calls),1)
-
