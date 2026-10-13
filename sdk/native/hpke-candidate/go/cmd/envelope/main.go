@@ -53,6 +53,13 @@ func main() {
 			panic("index")
 		}
 		original := append([]byte(nil), b...)
+		if profile == 3 {
+			zero := append([]byte(nil), b...)
+			clear(zero[26:42])
+			if _, err := hpke.VerifyEnvelope(zero, signer, profile); err != hpke.ErrShape {
+				panic("zero message shape")
+			}
+		}
 		digest := token.UnsignedDigest()
 		clear(b)
 		if token.UnsignedDigest() != digest {

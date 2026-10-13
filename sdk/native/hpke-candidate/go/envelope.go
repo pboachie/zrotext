@@ -43,6 +43,9 @@ func VerifyEnvelope(input, signer []byte, expectedProfile byte) (*IntegrityEnvel
 	}
 	end := 10 + pl
 	p := b[10:end]
+	if expectedProfile == 3 && bytes.Equal(p[16:32], make([]byte, 16)) {
+		return nil, ErrShape
+	}
 	if int(p[base-1])+base != pl {
 		return nil, ErrShape
 	}

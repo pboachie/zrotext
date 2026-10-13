@@ -35,6 +35,14 @@ fn main() {
         assert!(token.wrap_transcript(8).is_err());
         let digest = token.unsigned_digest();
         let original = b.clone();
+        if profile == 3 {
+            let mut zero = b.clone();
+            zero[26..42].fill(0);
+            assert!(matches!(
+                verify_envelope(&zero, &signer, profile),
+                Err(zrotext_hpke_candidate::Error::Shape)
+            ));
+        }
         b.fill(0);
         assert_eq!(token.unsigned_digest(), digest);
         let mut high = original.clone();

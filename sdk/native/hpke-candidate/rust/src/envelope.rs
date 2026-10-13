@@ -60,6 +60,9 @@ pub fn verify_envelope(
     }
     let end = 10 + pl;
     let p = &b[10..end];
+    if expected_profile == 3 && p[16..32].iter().all(|v| *v == 0) {
+        return Err(Error::Shape);
+    }
     if p[base - 1] as usize + base != pl {
         return Err(Error::Shape);
     }
