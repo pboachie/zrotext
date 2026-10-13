@@ -1,0 +1,44 @@
+name: Native webhook companions
+on:
+  pull_request:
+    paths:
+      - 'sdk/native/java/**'
+      - 'sdk/native/csharp/**'
+      - 'sdk/native/ruby/**'
+      - 'sdk/native/webhook-vectors.tsv'
+      - '.github/workflows/sdk-native-webhooks.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'sdk/native/java/**'
+      - 'sdk/native/csharp/**'
+      - 'sdk/native/ruby/**'
+      - 'sdk/native/webhook-vectors.tsv'
+      - '.github/workflows/sdk-native-webhooks.yml'
+permissions:
+  contents: read
+jobs:
+  native-webhooks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '8.0.x'
+      - name: Check Java against shared vectors
+        run: |
+          javac --release 17 -Xlint:all -Werror -d "$RUNNER_TEMP/webhook-java" sdk/native/java/src/org/zrotext/Webhook.java sdk/native/java/test/WebhookTest.java
+          java -cp "$RUNNER_TEMP/webhook-java" WebhookTest sdk/native/webhook-vectors.tsv
+      - name: Check C# against shared vectors
+        run: dotnet run --project sdk/native/csharp/tests/Tests.csproj
+      - name: Check Ruby against shared vectors
+        run: |
+          ruby --version
+          ruby sdk/native/ruby/test_webhook.rb sdk/native/webhook-vectors.tsv
