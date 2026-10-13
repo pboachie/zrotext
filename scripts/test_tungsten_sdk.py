@@ -18,6 +18,25 @@ spec.loader.exec_module(packages)
 
 
 class GenerationPolicyTests(unittest.TestCase):
+    def test_packaged_documentation_preserves_locked_reference_and_is_deterministic(self):
+        files = {"README.md": b"original generated reference\n", "client.py": b"client"}
+        original = dict(files)
+        staged = packages.documented_files(files)
+        self.assertEqual(files, original)
+        self.assertTrue(staged["README.md"].startswith(packages.package_guide()))
+        self.assertTrue(staged["README.md"].endswith(original["README.md"]))
+        self.assertEqual(staged["client.py"], original["client.py"])
+        self.assertEqual(packages.source_archive(staged), packages.source_archive(packages.documented_files(files)))
+        self.assertEqual(packages.documented_files({})["README.md"], packages.package_guide())
+
+    def test_mock_checks_cannot_combine_with_serve_or_regeneration(self):
+        for other in ("--mock", "--check"):
+            with self.subTest(other=other), patch.object(sdk, "verify_source") as verify:
+                with self.assertRaises(SystemExit) as result:
+                    sdk.main(["--source", "unused", "--mock-check", other])
+                self.assertEqual(result.exception.code, 2)
+                verify.assert_not_called()
+
     def test_callable_surface_excludes_planned_routes(self):
         config = json.loads((sdk.CONFIG / "tungsten.yml").read_text())
         public = next(i for i in config["inputs"] if i["namespace"] == "public")

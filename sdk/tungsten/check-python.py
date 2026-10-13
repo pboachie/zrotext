@@ -1,6 +1,6 @@
 """Build source wheels, install offline, and import the generated Python SDK.
 
-This qualifies local artifacts, not registry publication or HTTP behavior.
+This qualifies local artifacts and injected synthetic HTTP, not publication.
 """
 import argparse
 import importlib.util
@@ -46,7 +46,8 @@ def main():
             "mods=list(pkgutil.walk_packages(zrotext_sdk.__path__,zrotext_sdk.__name__+'.')); "
             "[importlib.import_module(m.name) for m in mods]; print('Imported',len(mods),'SDK modules')",
             cwd=stage)
-    print("Python wheel installation/import passed; registry and live HTTP were not tested")
+        run(python, "-I", config / "python-contract.py", cwd=stage)
+    print("Python wheel and synthetic wire checks passed; registry and live HTTP were not tested")
 
 
 if __name__ == "__main__":

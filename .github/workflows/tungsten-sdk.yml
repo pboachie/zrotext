@@ -3,6 +3,10 @@ on:
   pull_request:
     paths:
       - 'sdk/tungsten/**'
+      - 'sdk/mcp/**'
+      - 'sdk/typescript/**'
+      - 'web/owner/package.json'
+      - 'web/owner/package-lock.json'
       - 'protocol/v1/openapi/**'
       - 'scripts/*tungsten*'
       - '.github/workflows/tungsten-sdk.yml'
@@ -22,7 +26,7 @@ jobs:
         with:
           node-version: '24.13.0'
       - name: Test generation policy
-        run: python3 -m unittest discover -s scripts -p 'test_tungsten_sdk.py'
+        run: python3 -m unittest discover -s scripts -p 'test_tungsten*.py'
       - name: Check out the locked generator
         shell: bash
         run: |
@@ -31,6 +35,8 @@ jobs:
           git -C "$RUNNER_TEMP/tungsten" checkout --detach "$revision"
       - name: Generate and verify all targets
         run: python3 scripts/tungsten_sdk.py --source "$RUNNER_TEMP/tungsten" --check
+      - name: Verify synthetic local mock scenarios
+        run: python3 scripts/tungsten_sdk.py --source "$RUNNER_TEMP/tungsten" --mock-check
       - name: Install the locked TypeScript build graph
         working-directory: sdk/tungsten/generated/typescript
         run: |
@@ -64,9 +70,44 @@ jobs:
         run: python3 sdk/tungsten/check-python.py --source "$RUNNER_TEMP/tungsten"
       - name: Build licensed deterministic source bundles
         run: python3 sdk/tungsten/package-sources.py --out "$RUNNER_TEMP/zrotext-sdk-sources"
+      - name: Build licensed archives and test isolated package consumers
+        run: |
+          python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten" --target python --out "$RUNNER_TEMP/zrotext-sdk-packages/python"
+          python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten" --target ruby --out "$RUNNER_TEMP/zrotext-sdk-packages/ruby"
+          python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten" --target typescript --out "$RUNNER_TEMP/zrotext-sdk-packages/typescript"
+          python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten" --target java --out "$RUNNER_TEMP/zrotext-sdk-packages/java"
+          python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten" --target csharp --out "$RUNNER_TEMP/zrotext-sdk-packages/csharp"
+          python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten" --target go --out "$RUNNER_TEMP/zrotext-sdk-packages/go"
+          python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten" --target rust --out "$RUNNER_TEMP/zrotext-sdk-packages/rust"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: experimental-sdk-packages
+          path: ${{ runner.temp }}/zrotext-sdk-packages
+          if-no-files-found: error
+          retention-days: 7
+      - name: Build guarded MCP archive and exercise installed stdio
+        run: python3 sdk/tungsten/package-mcp.py --out "$RUNNER_TEMP/zrotext-guarded-mcp"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: experimental-guarded-mcp
+          path: ${{ runner.temp }}/zrotext-guarded-mcp
+          if-no-files-found: error
+          retention-days: 7
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: experimental-sdk-sources
           path: ${{ runner.temp }}/zrotext-sdk-sources
+          if-no-files-found: error
+          retention-days: 7
+      - name: Install pinned native browser test dependency
+        run: |
+          npm --prefix web/owner ci --ignore-scripts --no-audit --no-fund
+          web/owner/node_modules/.bin/playwright install --with-deps chromium
+      - name: Build experimental WebMCP archive and exercise installed browser
+        run: python3 sdk/tungsten/package-webmcp.py --out "$RUNNER_TEMP/zrotext-webmcp"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: experimental-webmcp
+          path: ${{ runner.temp }}/zrotext-webmcp
           if-no-files-found: error
           retention-days: 7

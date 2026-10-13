@@ -1,8 +1,9 @@
 # Java webhook companion
 
-Java 17+ source-only companion for Tungsten-generated clients. No runtime or
-third-party dependencies. Compile `src/org/zrotext/Webhook.java` into your
-application; the public package is `org.zrotext`.
+Java 17+ experimental companion for Tungsten-generated clients. No runtime or
+third-party dependencies. The Maven coordinate is
+`io.github.pboachie.zrotext:zrotext-webhooks:0.1.0-alpha.1`; the public Java package
+is `org.zrotext`. Candidate archives are built with the command below.
 
 ```java
 byte[] key = java.util.Base64.getUrlDecoder().decode(signingSecretBase64url);
@@ -28,3 +29,11 @@ java -cp "$build" WebhookTest sdk/native/webhook-vectors.tsv
 The shared vectors bind the existing server HMAC vector and a binary body with
 NUL, invalid UTF-8 and Unicode bytes. Native tests additionally reject newline
 suffixes and a wrong key. This package is not published to Maven Central.
+
+
+Build a licensed candidate feed and verify an isolated ordinary Maven consumer:
+`python sdk/native/package-webhooks.py --target java --out <external-directory>`.
+The source staging is removed before dependency resolution and all shared vectors
+run against the installed jar. Add the generated feed as a Maven repository and
+use the coordinate above; no sibling source checkout is needed. Public registry
+availability and release publication remain separate gates.

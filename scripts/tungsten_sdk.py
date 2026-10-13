@@ -105,9 +105,10 @@ def main(argv=None):
                         help="clean checkout at the revision in generator.lock.json")
     parser.add_argument("--check", action="store_true", help="fail on generated drift")
     parser.add_argument("--mock", action="store_true", help="run the local contract mock")
+    parser.add_argument("--mock-check", action="store_true", help="exercise public synthetic mock scenarios")
     args = parser.parse_args(argv)
-    if args.mock and args.check:
-        parser.error("--mock and --check are mutually exclusive")
+    if sum((args.mock, args.check, args.mock_check)) > 1:
+        parser.error("--mock, --mock-check and --check are mutually exclusive")
     lock = json.loads((CONFIG / "generator.lock.json").read_text(encoding="utf-8"))
     source = args.source.resolve()
     verify_source(source, lock)
@@ -126,6 +127,13 @@ def main(argv=None):
         cwd=source / lock["go_emitter"])
     env["PATH"] = str(binary.parent) + os.pathsep + env.get("PATH", "")
     run([binary, "check", CONFIG], cwd=ROOT, env=env)
+    if args.mock_check:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("tungsten_mock_scenarios", CONFIG / "mock/check.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.run(binary, CONFIG, env)
+        return 0
     if args.mock:
         run([binary, "mock", CONFIG], cwd=ROOT, env=env)
         return 0

@@ -14,6 +14,19 @@ ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "sdk/tungsten"
 
 
+def package_guide():
+    return (CONFIG / "PACKAGE-GUIDE.md").read_bytes().replace(b"\r\n", b"\n")
+
+
+def documented_files(files):
+    """Prepend maintained boundaries in staging without changing locked output."""
+    result = dict(files)
+    guide = package_guide()
+    reference = result.get("README.md", b"")
+    result["README.md"] = guide + (b"\n---\n\n# Generated reference\n\n" + reference if reference else b"")
+    return result
+
+
 def reviewed_files(directory, inventory):
     directory = directory.resolve()
     grouped = {}
@@ -59,6 +72,7 @@ def main():
     destination.mkdir(parents=True, exist_ok=True)
     checksums = []
     for target, files in sorted(grouped.items()):
+        files = documented_files(files)
         files["LICENSE"] = license_bytes
         payload = source_archive(files)
         name = "zrotext-" + target + "-experimental-source.tar.gz"

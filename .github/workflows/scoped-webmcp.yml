@@ -3,13 +3,21 @@ on:
   pull_request:
     paths:
       - 'sdk/tungsten/webmcp/**'
+      - 'sdk/tungsten/package-webmcp.py'
+      - 'sdk/tungsten/generated.lock.json'
       - 'sdk/typescript/**'
+      - 'web/owner/package.json'
+      - 'web/owner/package-lock.json'
       - '.github/workflows/scoped-webmcp.yml'
   push:
     branches: [main]
     paths:
       - 'sdk/tungsten/webmcp/**'
+      - 'sdk/tungsten/package-webmcp.py'
+      - 'sdk/tungsten/generated.lock.json'
       - 'sdk/typescript/**'
+      - 'web/owner/package.json'
+      - 'web/owner/package-lock.json'
       - '.github/workflows/scoped-webmcp.yml'
 permissions:
   contents: read

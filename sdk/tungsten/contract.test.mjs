@@ -115,6 +115,38 @@ test('missing owner CSRF fails before transport', async () => {
   assert.equal(calls, 0);
 });
 
+test('invalid identifiers fail before transport', async () => {
+  const { client, seen } = fixture(() => { throw new Error('must not send'); });
+  const result = await client.public.alphaMessages.getStatus({ messageId: 'invalid' });
+  assert.equal(result.ok, false);
+  assert.equal(seen.length, 0);
+});
+
+test('owner pagination forwards the cursor and stops at null', async () => {
+  const seen = [];
+  const cursors = [messageId, null];
+  const client = new ZrotextClient({
+    baseUrl: 'https://gateway.example.test',
+    auth: { ownerSession: {
+      '__Host-zrotext_session': 'synthetic-session',
+      '__Host-zrotext_csrf': 'synthetic-csrf', origin: 'https://owner.example.test',
+    } },
+    validateResponses: 'strict',
+    fetch: async (url) => {
+      seen.push(new URL(url));
+      return new Response(JSON.stringify({ messages: [], next_cursor: cursors.shift() }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+  const pages = [];
+  for await (const page of client.public.ownerMessages.list.pages()) pages.push(page);
+  assert.equal(pages.length, 2);
+  assert.ok(pages.every(page => page.ok), JSON.stringify(pages));
+  assert.equal(seen[0].searchParams.has('before'), false);
+  assert.equal(seen[1].searchParams.get('before'), messageId);
+});
+
 test('submission requires confirmation and preserves caller idempotency on ambiguity', async () => {
   const { client, seen } = fixture(() => new Response(null, { status: 503 }));
   const args = {

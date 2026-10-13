@@ -1,7 +1,8 @@
 # Ruby webhook companion
 
-Source-only helper for Ruby 3.2+ with its OpenSSL standard library. Add `lib` to
-your load path and require `zrotext/webhook`. No third-party gems are required.
+Experimental helper for Ruby 3.2+ with its OpenSSL standard library. The candidate
+gem is `zrotext-webhooks` version `0.1.0.alpha.1`; require `zrotext/webhook` after
+installation. No third-party gems are required.
 
 ```ruby
 require 'base64'
@@ -25,3 +26,11 @@ From the repository root:
 ```sh
 ruby sdk/native/ruby/test_webhook.rb sdk/native/webhook-vectors.tsv
 ```
+
+
+Build the licensed archive and run its isolated installed consumer:
+`python sdk/native/package-webhooks.py --target ruby --out <external-directory>`.
+Use `gem install --local <archive.gem>` to install the resulting candidate. The
+acceptance helper removes source staging before installation, checks the loaded
+module belongs to the isolated gem directory and runs every shared vector.
+Nothing is published to RubyGems by this command.
