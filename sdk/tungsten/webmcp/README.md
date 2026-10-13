@@ -113,7 +113,7 @@ operation had no effect.
 `python sdk/tungsten/package-webmcp.py --out <external-directory>` builds
 `@elysra/zrotext-webmcp@0.1.0-alpha.1`, checks every archive member, removes
 build staging, and installs the archive in an isolated consumer. Install the
-pinned Playwright browser as above before running this command. The package has
+pinned Playwright Chromium, Firefox and WebKit browsers before running this command. The package has
 zero runtime dependencies; Playwright is only an acceptance-test dependency.
 The archive contains the license, guides, reviewed adapter, three compiled
 workflow modules, the optional authenticated application, and the digest-checked
@@ -129,7 +129,11 @@ preserve the adapter's relative validator imports. Importing the package never
 registers tools or supplies credentials.
 
 The installed acceptance runs thirteen adapter cases, five native registry cases,
-and ten authenticated application cases against package files and the packaged
+ten authenticated application cases, and a four-configuration capability matrix against package files and the packaged
 catalog. Application checks use real HTTPS sessions and native registration with
 a synthetic workflow upstream. They do not establish live grant authorization,
 production deployment, stable browser support, SMS delivery or publication.
+The matrix requires explicit native Chromium registration and verifies disabled
+authentication/registration in Chromium without WebMCP, Firefox and WebKit.
+Exact browser versions and observed capabilities are recorded in the package
+report; WebKit engine acceptance is not Safari or mobile-device acceptance.
