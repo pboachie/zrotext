@@ -49,4 +49,5 @@ the existing protected reader entry point and its independent hardware gate rema
 separate. [Current HTTPS grant proofs](ORIGINAL-CURRENT.md) now integrate with
 this checkpoint. [Verified reads](ORIGINAL-READ.md) also integrate software and
 protected custody, and [page discovery](ORIGINAL-PAGE.md) fences metadata.
-Consume/status operations remain pending.
+[Descriptor-null consume/status](ORIGINAL-CONSUMPTION.md) now uses these fences;
+typed proposals/output authorization remain pending.

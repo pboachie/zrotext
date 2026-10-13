@@ -38,6 +38,7 @@ pub struct OriginalCurrentClient {
     pub(super) checkpoint: Arc<OriginalReplyCheckpoint>,
     pub(super) scope: OriginalScope,
     pub(super) root: RootTrust,
+    pub(super) root_binding: [u8; 65],
     pub(super) state: Mutex<State>,
 }
 #[derive(Deserialize)]
@@ -117,6 +118,7 @@ impl OriginalCurrentClient {
             checkpoint,
             scope,
             root,
+            root_binding: first.enrolled,
             state: Mutex::new(State {
                 revision: saved.revision,
                 last: now,

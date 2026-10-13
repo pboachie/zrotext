@@ -40,7 +40,7 @@ fn need(v: bool) -> Result<()> {
         Err(JournalError::Refused)
     }
 }
-fn scope_hash(s: &OriginalScope) -> Result<[u8; 32]> {
+pub(crate) fn scope_hash(s: &OriginalScope) -> Result<[u8; 32]> {
     need(valid_scope(s))?;
     let mut b = b"ZTSE/native/original-checkpoint-scope/v1\0".to_vec();
     for p in [

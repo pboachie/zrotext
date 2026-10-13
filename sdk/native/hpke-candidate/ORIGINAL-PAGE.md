@@ -39,5 +39,6 @@ exclusive cursors, exact next correlation, closed metadata, event/request
 uniqueness, limits, invalid proof and rollback, and checks one or zero requests.
 Linux and Windows CI run both native probes. These are source/runtime tests,
 not installed-package or live-service qualification. Runtime requirements remain
-Go 1.26.9 and Rust 1.97.1. Authenticated consume/status, workflow proposals,
+Go 1.26.9 and Rust 1.97.1. [Descriptor-null consume/status](ORIGINAL-CONSUMPTION.md) is available separately.
+Typed workflow proposals,
 contact/template parity and installed qualification remain separate work.

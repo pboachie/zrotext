@@ -139,3 +139,5 @@ Original-reply accepted history and comparison clocks can be persisted with the 
 [Verified original HTTPS read](../ORIGINAL-READ.md) authenticates selection and ciphertext, then persists fresh current authority before releasing plaintext.
 
 [Authenticated original pages](../ORIGINAL-PAGE.md) return bounded discovery metadata with exact cursor correlation after durable current-proof verification.
+
+[Saved owner-review consumption/status](../ORIGINAL-CONSUMPTION.md) correlates caller-persisted descriptor-null intent with fresh proofs and preserves unknown outcomes without retry.
