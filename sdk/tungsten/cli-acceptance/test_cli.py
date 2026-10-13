@@ -112,4 +112,3 @@ class Acceptance(unittest.TestCase):
     def test_auth_status_never_prints_credentials_or_calls_transport(self):
         self.invoke(["auth", "status"], 0)
         self.assertEqual(self.calls, [])
-
