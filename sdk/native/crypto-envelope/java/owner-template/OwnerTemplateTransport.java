@@ -47,7 +47,10 @@ final class OwnerTemplateTransport implements AutoCloseable {
         throw new GeneralSecurityException();
     }
 
- byte[] get(String path,OwnerTemplate.Session session,long budgetMs)throws OwnerTemplate.Failure{
+ byte[] get(String path,OwnerTemplate.Session session,long budgetMs)throws OwnerTemplate.Failure{return exchange(path,session,budgetMs,null);}
+ byte[] post(TemplateStore.SaveRequest request,OwnerTemplate.Session session,long budgetMs)throws OwnerTemplate.Failure{return exchange(request.path(),session,budgetMs,request);}
+ private byte[] exchange(String path,OwnerTemplate.Session session,long budgetMs,TemplateStore.SaveRequest request)throws OwnerTemplate.Failure{
+  int limit=request==null?33075:256;
   long deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(budgetMs);
   Socket socket=new Socket();
   synchronized(gate){if(closed)throw new OwnerTemplate.Failure("closed");active=socket;}
@@ -56,14 +59,15 @@ final class OwnerTemplateTransport implements AutoCloseable {
    try(var secure=(SSLSocket)ssl.getSocketFactory().createSocket(socket,endpoint.getHost(),endpoint.getPort()<0?443:endpoint.getPort(),true)){
     synchronized(gate){if(closed)throw new IOException();active=secure;}
     SSLParameters params=new SSLParameters();params.setEndpointIdentificationAlgorithm("HTTPS");params.setProtocols(new String[]{"TLSv1.3","TLSv1.2"});secure.setSSLParameters(params);secure.setSoTimeout(remaining(deadline));secure.startHandshake();
-    var output=secure.getOutputStream();output.write(("GET "+path+" HTTP/1.1\r\nHost: "+endpoint.getRawAuthority()+"\r\nAccept: "+TemplateStore.CONTENT_TYPE+"\r\nCookie: "+session.cookie()+"\r\nX-Zrotext-CSRF: "+session.csrf()+"\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));output.flush();
+    var output=secure.getOutputStream();byte[] payload=request==null?new byte[0]:request.body();var head=new StringBuilder(request==null?"GET ":"POST ").append(path).append(" HTTP/1.1\r\nHost: ").append(endpoint.getRawAuthority()).append("\r\nAccept: ").append(request==null?TemplateStore.CONTENT_TYPE:"application/json").append("\r\nCookie: ").append(session.cookie()).append("\r\nX-Zrotext-CSRF: ").append(session.csrf()).append("\r\nCache-Control: no-store\r\nConnection: close\r\n");
+    if(request!=null){for(var h:request.headers().entrySet())head.append(h.getKey()).append(": ").append(h.getValue()).append("\r\n");head.append("Content-Length: ").append(payload.length).append("\r\n");}head.append("\r\n");output.write(head.toString().getBytes(StandardCharsets.US_ASCII));output.write(payload);output.flush();
     var input=new Parser(secure,deadline);String status=input.line();if(!status.matches("HTTP/1\\.[01] [0-9]{3}(?: .*)?"))throw new IOException();int code=Integer.parseInt(status.substring(9,12));var headers=new TreeMap<String,List<String>>(String.CASE_INSENSITIVE_ORDER);
     for(;;){String line=input.line();if(line.isEmpty())break;int colon=line.indexOf(':');if(colon<=0 || !line.substring(0,colon).matches("[A-Za-z0-9-]+"))throw new IOException();headers.computeIfAbsent(line.substring(0,colon),k->new ArrayList<>()).add(line.substring(colon+1).trim());}
-    if(code>=300 && code<400)throw new OwnerTemplate.Failure("response_unknown",true);if(code==401 || code==403)throw new OwnerTemplate.Failure("owner_changed");if(code!=200 || !headers.getOrDefault("Content-Type",List.of()).equals(List.of(TemplateStore.CONTENT_TYPE)))throw new OwnerTemplate.Failure("read_refused");
+    if(code>=300 && code<400)throw new OwnerTemplate.Failure("response_unknown",true);if(code==401 || code==403)throw new OwnerTemplate.Failure("owner_changed");var types=headers.getOrDefault("Content-Type",List.of());if(code!=200 || types.size()!=1 || !(request==null?types.get(0).equals(TemplateStore.CONTENT_TYPE):types.get(0).matches("(?i)application/json(?:\\s*;\\s*charset=utf-8)?")))throw new OwnerTemplate.Failure("read_refused");
     boolean length=headers.containsKey("Content-Length"),transfer=headers.containsKey("Transfer-Encoding");if(length && transfer)throw new IOException();var body=new ByteArrayOutputStream();
-    if(length){var values=headers.get("Content-Length");if(values.size()!=1 || !values.get(0).matches("[0-9]+"))throw new IOException();int size=Integer.parseInt(values.get(0));if(size>33075)throw new IOException();input.exact(body,size);}
-    else if(transfer){var values=headers.get("Transfer-Encoding");if(values.size()!=1 || !values.get(0).equalsIgnoreCase("chunked"))throw new IOException();for(;;){String hex=input.line().split(";",2)[0];if(!hex.matches("[0-9a-fA-F]{1,8}"))throw new IOException();long size=Long.parseLong(hex,16);if(size>33075-body.size())throw new IOException();if(size==0){if(!input.line().isEmpty())throw new IOException();break;}input.exact(body,(int)size);if(!input.line().isEmpty())throw new IOException();}}
-    else{for(int value;(value=input.read())!=-1;){if(body.size()>=33075)throw new IOException();body.write(value);}}
+    if(length){var values=headers.get("Content-Length");if(values.size()!=1 || !values.get(0).matches("[0-9]+"))throw new IOException();int size=Integer.parseInt(values.get(0));if(size>limit)throw new IOException();input.exact(body,size);}
+    else if(transfer){var values=headers.get("Transfer-Encoding");if(values.size()!=1 || !values.get(0).equalsIgnoreCase("chunked"))throw new IOException();for(;;){String hex=input.line().split(";",2)[0];if(!hex.matches("[0-9a-fA-F]{1,8}"))throw new IOException();long size=Long.parseLong(hex,16);if(size>limit-body.size())throw new IOException();if(size==0){if(!input.line().isEmpty())throw new IOException();break;}input.exact(body,(int)size);if(!input.line().isEmpty())throw new IOException();}}
+    else{for(int value;(value=input.read())!=-1;){if(body.size()>=limit)throw new IOException();body.write(value);}}
     remaining(deadline);return body.toByteArray();
    }
   }catch(OwnerTemplate.Failure error){throw error;}catch(Exception error){throw new OwnerTemplate.Failure("read_refused");}

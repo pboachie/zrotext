@@ -29,12 +29,12 @@ module ZrotextCandidate
    def inspect = '#<OwnerTemplate::Session redacted>'
   end
   class Snapshot
-   def initialize(scope,wire,digest);@scope=scope;@wire=wire.dup.freeze;@digest=digest.freeze;freeze;end
+   def initialize(scope,wire,digest,matches=false);@scope=scope;@wire=wire.dup.freeze;@digest=digest.freeze;@matches=matches;freeze;end
    def scope = @scope
    def envelope = @wire.dup
    def encrypted_digest = @digest
    def request_acknowledged = false
-   def matches_pending = false
+   def matches_pending = @matches
   end
   ADMISSION=SizedQueue.new(8)
   8.times { ADMISSION.push(true) }
@@ -43,7 +43,7 @@ module ZrotextCandidate
    raise Failure unless value.is_a?(String) && value.bytesize==size && value.bytes.any?(&:positive?)
    value.b.dup
   end
-  def initialize(origin:,binding:,template_id:,current:,session:,enabled:false,timeout_ms:10000,additional_roots_pem:'')
+  def initialize(origin:,binding:,template_id:,current:,session:,enabled:false,timeout_ms:10000,additional_roots_pem:'',review:nil)
    raise Failure unless origin.is_a?(String) && origin.ascii_only? && !origin.match?(/[\x00-\x20\x7f\\?#@]/)
    uri=URI.parse(origin);raise Failure unless uri.scheme=='https' && uri.host && uri.host==uri.host.downcase && uri.path.empty? && !uri.userinfo
    raise Failure unless binding.instance_of?(Binding) && current.respond_to?(:call) && session.respond_to?(:call) && [true,false].include?(enabled) && timeout_ms.is_a?(Integer) && timeout_ms.between?(1,10000)
@@ -53,47 +53,69 @@ module ZrotextCandidate
     certs=additional_roots_pem.scan(/-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----/m);raise Failure if certs.empty?
     certs.each { |pem| @store.add_cert(OpenSSL::X509::Certificate.new(pem)) }
    end
+   raise Failure unless review.nil? || review.respond_to?(:call)
+   @review=review;@saved=nil;@pending=nil
    @mutex=Mutex.new;@changed=ConditionVariable.new;@closed=!enabled;@busy=false;@now=0;@prior=nil;@head=0;@head_digest=nil
   rescue StandardError
    raise Failure.new('invalid_request'),cause:nil
   end
-  def close;@mutex.synchronize { @closed=true;@changed.broadcast };end
-  def read_latest
+  def close
+   @mutex.synchronize { @closed=true;@saved=nil unless @busy;@changed.broadcast }
+  end
+  def read_latest = execute { |work| read_work(work) }
+  private
+  def release_work_locked(work)
+   return unless work[:done] && work[:foreground] && !work[:released]
+   work[:released]=true;@busy=false;@saved=nil if @closed;ADMISSION.push(true);@changed.broadcast
+  end
+  def classify(error)
+   return error if error.is_a?(Failure) && %w[invalid_request pending_write busy capacity].include?(error.code)
+   return Failure.new('response_unknown',true) if @pending
+   error.is_a?(Failure) ? error : Failure.new
+  end
+  def execute
    work=nil
    @mutex.synchronize do
-    raise Failure.new('closed') if @closed
     raise Failure.new('busy') if @busy
+    raise classify(Failure.new('closed')) if @closed
     begin;ADMISSION.pop(true);rescue ThreadError;raise Failure.new('capacity');end
-    @busy=true;work={deadline:monotonic+@timeout,done:false,value:nil,error:nil}
+    @busy=true;work={deadline:monotonic+@timeout,done:false,foreground:false,released:false,value:nil,error:nil,finish:nil}
    end
    begin
     Thread.new do
      begin
-      value=read_work(work);@mutex.synchronize { work[:value]=value }
+      value=yield(work);@mutex.synchronize { work[:value]=value }
      rescue StandardError => error
-      @mutex.synchronize { work[:error]=error.is_a?(Failure) ? error : Failure.new }
+      @mutex.synchronize { work[:error]=classify(error) }
      ensure
-      @mutex.synchronize { work[:done]=true;@busy=false;@changed.broadcast };ADMISSION.push(true)
+      @mutex.synchronize { work[:done]=true;release_work_locked(work);@changed.broadcast }
      end
     end
    rescue StandardError
     @mutex.synchronize { @busy=false };ADMISSION.push(true);raise Failure.new
    end
-   @mutex.synchronize do
-    loop do
-     raise Failure.new('closed') if @closed
-     if monotonic>=work[:deadline];@closed=true;@changed.broadcast;raise Failure.new('deadline');end
-     if work[:done];raise work[:error] if work[:error];return work[:value];end
-     @changed.wait(@mutex,[work[:deadline]-monotonic,0].max)
+   begin
+    @mutex.synchronize do
+     loop do
+      raise classify(Failure.new('closed')) if @closed
+      if monotonic>=work[:deadline];@closed=true;@changed.broadcast;raise classify(Failure.new('deadline'));end
+      if work[:done]
+       raise work[:error] if work[:error]
+       work[:finish]&.call
+       return work[:value]
+      end
+      @changed.wait(@mutex,[work[:deadline]-monotonic,0].max)
+     end
     end
+   ensure
+    @mutex.synchronize { work[:foreground]=true;release_work_locked(work) }
    end
   end
-  private
   def monotonic = Process.clock_gettime(Process::CLOCK_MONOTONIC)
   def live(work)
    @mutex.synchronize do
-    raise Failure.new('closed') if @closed
-    if monotonic>=work[:deadline];@closed=true;@changed.broadcast;raise Failure.new('deadline');end
+    raise classify(Failure.new('closed')) if @closed
+    if monotonic>=work[:deadline];@closed=true;@changed.broadcast;raise classify(Failure.new('deadline'));end
    end
   end
   def remaining(work);live(work);@mutex.synchronize { work[:deadline]-monotonic };end
@@ -128,23 +150,31 @@ module ZrotextCandidate
   rescue StandardError
    close;raise Failure.new('owner_changed'),cause:nil
   end
-  def read_work(work)
-   session=credentials(work);authorize(work,nil,session)
-   unless credentials(work)==session;close;raise Failure;end
+  def exchange(work,session,request=nil)
    http=Net::HTTP.new(@uri.host,@uri.port,nil);http.use_ssl=true;http.min_version=OpenSSL::SSL::TLS1_2_VERSION;http.verify_mode=OpenSSL::SSL::VERIFY_PEER;http.verify_hostname=true;http.cert_store=@store;http.max_retries=0
    wait=remaining(work);http.open_timeout=http.read_timeout=http.write_timeout=wait
-   message=Net::HTTP::Get.new(@uri.request_uri);message['Accept']=TemplateStore::CONTENT_TYPE;message['X-Zrotext-CSRF']=session.csrf;message['Cookie']=session.cookie;message['Cache-Control']='no-store'
-   wire=+''.b
+   message=request ? Net::HTTP::Post.new(request.path) : Net::HTTP::Get.new(@uri.request_uri);message['Accept']=request ? 'application/json' : TemplateStore::CONTENT_TYPE;
+   if request;request.headers.each { |key,value| message[key]=value };message.body=request.body;end
+   message['X-Zrotext-CSRF']=session.csrf;message['Cookie']=session.cookie;message['Cache-Control']='no-store'
+   limit=request ? 256 : 33075;wire=+''.b
    Timeout.timeout(wait) do
     http.start do |connection|
      connection.request(message) do |response|
       if [401,403].include?(response.code.to_i);close;raise Failure;end
-      raise Failure unless response.code=='200' && response.get_fields('content-type')==[TemplateStore::CONTENT_TYPE]
-      raise Failure if response.content_length && response.content_length>33075
-      response.read_body { |chunk| raise Failure if wire.bytesize+chunk.bytesize>33075;wire<<chunk;live(work) }
+      types=response.get_fields('content-type');valid_type=types && types.size==1 && (request ? /\Aapplication\/json(?:\s*;\s*charset=utf-8)?\z/i.match?(types.first) : types.first==TemplateStore::CONTENT_TYPE)
+      raise Failure unless response.code=='200' && valid_type
+      raise Failure if response.content_length && response.content_length>limit
+      response.read_body { |chunk| raise Failure if wire.bytesize+chunk.bytesize>limit;wire<<chunk;live(work) }
      end
     end
    end
+   wire
+  end
+  def read_work(work,expected=nil)
+   session=credentials(work);unless !expected || session==expected;close;raise Failure;end
+   authorize(work,nil,session)
+   unless credentials(work)==session;close;raise Failure;end
+   wire=exchange(work,session)
    live(work);scope=TemplateStore.parse(wire);revision=TemplateStore.number(scope.aad,94);raise Failure if revision<@head
    authorize(work,scope,session);HpkeRecipient.point(wire.byteslice(222,65));digest=OpenSSL::Digest::SHA256.hexdigest(wire);authorize(work,scope,session)
    raise Failure if revision==@head && digest!=@head_digest
@@ -152,3 +182,5 @@ module ZrotextCandidate
   end
  end
 end
+
+require_relative 'owner_template_save'

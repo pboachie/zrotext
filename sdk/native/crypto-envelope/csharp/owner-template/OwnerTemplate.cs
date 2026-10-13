@@ -4,8 +4,8 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Diagnostics;
 namespace Zrotext.Candidate;
-/// <summary>Cold opaque current snapshots, never decryption or save/send acknowledgement.</summary>
-public sealed class OwnerTemplate:IDisposable {
+/// <summary>Opaque current snapshots and explicit reviewed persistence; never decryption or sending.</summary>
+public sealed partial class OwnerTemplate:IDisposable {
  public sealed class Failure:Exception {public string Code{get;}public bool Unknown{get;}public Failure(string code="read_refused",bool unknown=false):base("Owner template "+code){Code=code;Unknown=unknown;}}
  private static void Need(bool b){if(!b)throw new Failure("invalid_request");}
  private static byte[] Bytes(byte[] b,int size){Need(b.Length==size && b.Any(v=>v!=0));return (byte[])b.Clone();}
@@ -21,25 +21,29 @@ public sealed class OwnerTemplate:IDisposable {
  }
  public sealed record Session(string Origin,string Cookie,string Csrf){public override string ToString()=>"OwnerTemplate.Session[redacted]";}
  public sealed class Snapshot {
-  private readonly EncryptedTemplate.Scope scope;private readonly byte[] wire;private readonly string digest;
-  internal Snapshot(EncryptedTemplate.Scope scope,byte[] wire,string digest){this.scope=scope;this.wire=(byte[])wire.Clone();this.digest=digest;}
-  public EncryptedTemplate.Scope Scope=>scope;public byte[] Envelope()=>(byte[])wire.Clone();public string EncryptedDigest=>digest;public bool RequestAcknowledged=>false;public bool MatchesPending=>false;
+  private readonly EncryptedTemplate.Scope scope;private readonly byte[] wire;private readonly string digest;private readonly bool matches;
+  internal Snapshot(EncryptedTemplate.Scope scope,byte[] wire,string digest,bool matches=false){this.scope=scope;this.wire=(byte[])wire.Clone();this.digest=digest;this.matches=matches;}
+  public EncryptedTemplate.Scope Scope=>scope;public byte[] Envelope()=>(byte[])wire.Clone();public string EncryptedDigest=>digest;public bool RequestAcknowledged=>false;public bool MatchesPending=>matches;
  }
  private static readonly SemaphoreSlim Admission=new(8,8);
  private readonly object gate=new();private readonly string origin,path;private readonly Binding binding;private readonly byte[] template;private readonly Func<Current> source;private readonly Func<Session> sessions;private readonly int timeout;private readonly OwnerTemplateTransport transport;
+ private readonly Action<Review>? review;private Saved? saved;private PendingIdentity? pending;
  private bool closed,busy;private long now,head;private ManifestChain.Verified? prior;private string? headDigest;
- private sealed class Work(long deadline){internal long Deadline=deadline;internal bool Done;internal Snapshot? Result;internal Failure? Error;}
+ private sealed class Work(long deadline){internal long Deadline=deadline;internal bool Done,Foreground,Released;internal object? Result;internal Failure? Error;internal Action? Finish;}
  private static long Tick()=>Stopwatch.GetTimestamp();private static long Span(long ms)=>ms*Stopwatch.Frequency/1000;
- public OwnerTemplate(string origin,Binding binding,byte[] template,Func<Current> source,Func<Session> sessions,bool enabled=false,int timeoutMs=10000,string additionalRootsPem=""){
-  try{Need(Uri.TryCreate(origin,UriKind.Absolute,out var u) && u.Scheme=="https" && u.Host.Length>0 && origin==u.GetLeftPart(UriPartial.Authority) && !origin.Contains('@') && !origin[8..].Contains('/'));Need(source is not null && sessions is not null && timeoutMs>=1 && timeoutMs<=10000);this.origin=origin;this.binding=binding.Copy();this.template=Bytes(template,16);this.source=source!;this.sessions=sessions!;timeout=timeoutMs;closed=!enabled;path="/v1/owner/workflow/templates/"+TemplateStore.Uuid(this.template);transport=new(origin,timeoutMs,additionalRootsPem);}catch{throw new Failure("invalid_request");}
+ public OwnerTemplate(string origin,Binding binding,byte[] template,Func<Current> source,Func<Session> sessions,bool enabled=false,int timeoutMs=10000,string additionalRootsPem="",Action<Review>? review=null){
+  try{Need(Uri.TryCreate(origin,UriKind.Absolute,out var u) && u.Scheme=="https" && u.Host.Length>0 && origin==u.GetLeftPart(UriPartial.Authority) && !origin.Contains('@') && !origin[8..].Contains('/'));Need(source is not null && sessions is not null && timeoutMs>=1 && timeoutMs<=10000);this.review=review;this.origin=origin;this.binding=binding.Copy();this.template=Bytes(template,16);this.source=source!;this.sessions=sessions!;timeout=timeoutMs;closed=!enabled;path="/v1/owner/workflow/templates/"+TemplateStore.Uuid(this.template);transport=new(origin,timeoutMs,additionalRootsPem);}catch{throw new Failure("invalid_request");}
  }
- public void Dispose(){lock(gate){closed=true;Monitor.PulseAll(gate);}transport.Dispose();}
- private void Live(Work w){lock(gate){if(closed)throw new Failure("closed");if(Tick()>=w.Deadline){closed=true;Monitor.PulseAll(gate);transport.Dispose();throw new Failure("deadline");}}}
+ public void Dispose(){lock(gate){closed=true;if(!busy)saved=null;Monitor.PulseAll(gate);}transport.Dispose();}
+ private void Live(Work w){lock(gate){if(closed)throw Classify(new Failure("closed"));if(Tick()>=w.Deadline){closed=true;Monitor.PulseAll(gate);transport.Dispose();throw Classify(new Failure("deadline"));}}}
  private int Remaining(Work w){Live(w);lock(gate){return (int)Math.Max(1,(w.Deadline-Tick())*1000/Stopwatch.Frequency);}}
- public Snapshot ReadLatest(){
-  Work w;lock(gate){if(closed)throw new Failure("closed");if(busy)throw new Failure("busy");if(!Admission.Wait(0))throw new Failure("capacity");busy=true;w=new(Tick()+Span(timeout));}
-  try{_ = Task.Run(()=>{try{var value=Read(w);lock(gate){w.Result=value;}}catch(Exception error){lock(gate){w.Error=error as Failure??new Failure();}}finally{lock(gate){w.Done=true;busy=false;Monitor.PulseAll(gate);}Admission.Release();}});}catch{lock(gate){busy=false;}Admission.Release();throw new Failure("capacity");}
-  lock(gate){for(;;){Live(w);if(w.Done){if(w.Error is not null)throw w.Error;return w.Result!;}Monitor.Wait(gate,Remaining(w));}}
+ private Failure Classify(Exception error){if(error is Failure f && new[]{"invalid_request","pending_write","busy","capacity"}.Contains(f.Code))return f;if(pending is not null)return new Failure("response_unknown",true);return error as Failure??new Failure();}
+ private void ReleaseWork(Work w){if(w.Done && w.Foreground && !w.Released){w.Released=true;busy=false;if(closed)saved=null;Admission.Release();Monitor.PulseAll(gate);}}
+ private object Execute(Func<Work,object> operation){
+  Work w;lock(gate){if(busy)throw new Failure("busy");if(closed)throw Classify(new Failure("closed"));if(!Admission.Wait(0))throw new Failure("capacity");busy=true;w=new(Tick()+Span(timeout));}
+  try{_ = Task.Run(()=>{try{var value=operation(w);lock(gate){w.Result=value;}}catch(Exception error){lock(gate){w.Error=Classify(error);}}finally{lock(gate){w.Done=true;ReleaseWork(w);Monitor.PulseAll(gate);}}});}catch{lock(gate){busy=false;}Admission.Release();throw new Failure("capacity");}
+  try{lock(gate){for(;;){Live(w);if(w.Done){if(w.Error is not null)throw w.Error;w.Finish?.Invoke();return w.Result!;}Monitor.Wait(gate,Remaining(w));}}}
+  finally{lock(gate){w.Foreground=true;ReleaseWork(w);}}
  }
  private Session Credentials(Work w){Live(w);var s=sessions();Live(w);Need(s is not null && s.Origin==origin && s.Cookie.Length>=1 && s.Cookie.Length<=4096 && s.Cookie.Contains('=') && s.Cookie.All(c=>c>=32 && c<=126) && s.Csrf.Length>=1 && s.Csrf.Length<=256 && s.Csrf.All(c=>c>=33 && c<=126));return s!;}
  private static bool Active(byte[] k,long at,int permission)=>k[148]==1 && TemplateStore.Number(k,132)<=at && at<TemplateStore.Number(k,140) && (BinaryPrimitives.ReadUInt16BigEndian(k.AsSpan(130,2))&permission)!=0;
@@ -52,8 +56,8 @@ public sealed class OwnerTemplate:IDisposable {
    long duration=Math.Min(a.ValidForMs,expiry-a.NowMs);Need(duration>0);lock(gate){w.Deadline=Math.Min(w.Deadline,start+Span(duration));Monitor.PulseAll(gate);}Need(Credentials(w)==session);Live(w);prior=m;now=a.NowMs;
   }catch{Dispose();throw new Failure("owner_changed");}
  }
- private Snapshot Read(Work w){
-  var session=Credentials(w);Authorize(w,null,session);if(Credentials(w)!=session){Dispose();throw new Failure("owner_changed");}
+ private Snapshot Read(Work w,Session? expected){
+  var session=Credentials(w);if(expected is not null && session!=expected){Dispose();throw new Failure("owner_changed");}Authorize(w,null,session);if(Credentials(w)!=session){Dispose();throw new Failure("owner_changed");}
   byte[] wire;try{wire=transport.Get(path,session,Remaining(w));}catch(Failure e){if(e.Code=="owner_changed")Dispose();throw;}
   Live(w);var scope=TemplateStore.Parse(wire);long revision=TemplateStore.Number(scope.Aad(),94);Need(revision>=head);Authorize(w,scope,session);using var point=HpkeRecipient.Point(wire[222..287]);string digest=TemplateStore.Hex(SHA256.HashData(wire));Authorize(w,scope,session);Need(revision!=head || digest==headDigest);Live(w);head=revision;headDigest=digest;return new(scope,wire,digest);
  }
