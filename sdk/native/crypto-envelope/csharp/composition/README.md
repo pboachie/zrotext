@@ -19,6 +19,7 @@ manifest and every selected key's start time. Existing TypeScript/Python outboun
 authorization is based on trusted current time and does not enforce that same
 lower bound. This stricter managed behavior remains a documented parity question,
 not a claim that the other implementations violate a settled protocol rule.
+The shared policy and signed-vector decision is tracked in [#1226](https://github.com/pboachie/zrotext/issues/1226).
 
 `ComposeOrReplay` requires an application-owned private directory and a retained
 journal path. It binds the independently enrolled root and complete canonical

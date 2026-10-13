@@ -19,8 +19,10 @@ module ZrotextCandidate
       'NCryptFinalizeKey' => [P,I], 'NCryptExportKey' => [P,P,P,P,P,I,P,I],
       'NCryptImportKey' => [P,P,P,P,P,P,I,I], 'NCryptSecretAgreement' => [P,P,P,I],
       'NCryptDeriveKey' => [P,P,P,P,I,P,I], 'NCryptDeleteKey' => [P,I],
+      'NCryptSignHash' => [P,P,P,I,P,I,P,I],
       'NCryptFreeObject' => [P]
     }.transform_values(&:freeze).freeze
+    def self.alias_prefix = PREFIX
 
     def self.probe
       value = new
@@ -45,7 +47,8 @@ module ZrotextCandidate
     end
 
     def self.open(alias_name, expected_public)
-      raise ArgumentError, 'Alias shape' unless /\Azrotext-managed-ruby-p256-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\z/.match?(alias_name)
+      pattern = /\A#{Regexp.escape(alias_prefix)}[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\z/
+      raise ArgumentError, 'Alias shape' unless pattern.match?(alias_name)
       expected = expected_public.b.dup
       HpkeRecipient.point(expected)
       value = new
@@ -119,13 +122,15 @@ module ZrotextCandidate
       @provider = output.unpack1('Q<')
       begin
         need((property(@provider,'Impl Type') & 1) != 0)
-        check(native('NCryptIsAlgSupported',@provider,wide('ECDH_P256'),0))
+        check(native('NCryptIsAlgSupported',@provider,wide(algorithm),0))
       rescue StandardError
         close
         raise
       end
     end
     private_class_method :new
+    def algorithm = 'ECDH_P256'
+    def public_magic = 0x314b4345
 
     def need(value) = (raise ArgumentError,'Protected recipient refused' unless value)
     def wide(value) = (value.encode('UTF-16LE').b + "\x00\x00".b)
@@ -143,10 +148,10 @@ module ZrotextCandidate
       output.unpack1('L<')
     end
     def create_key(receipt)
-      @alias_name = (PREFIX + SecureRandom.uuid).freeze
+      @alias_name = (self.class.alias_prefix + SecureRandom.uuid).freeze
       receipt.call(@alias_name)
       output = handle_buffer
-      check(native('NCryptCreatePersistedKey',@provider,output,wide('ECDH_P256'),wide(@alias_name),0,SILENT))
+      check(native('NCryptCreatePersistedKey',@provider,output,wide(algorithm),wide(@alias_name),0,SILENT))
       @key = output.unpack1('Q<'); @created = true
       check(native('NCryptSetProperty',@key,wide('Export Policy'),size_buffer,4,0))
       check(native('NCryptFinalizeKey',@key,SILENT))
@@ -164,16 +169,19 @@ module ZrotextCandidate
       need(!@closed && @key != 0)
       blob = "\x00".b * 72; size = size_buffer
       check(native('NCryptExportKey',@key,0,wide('ECCPUBLICBLOB'),0,blob,72,size,SILENT))
-      need(size.unpack1('L<') == 72 && blob.unpack('L<2') == [0x314b4345,32])
+      need(size.unpack1('L<') == 72 && blob.unpack('L<2') == [public_magic,32])
       point = "\x04".b + blob.byteslice(8,64)
       HpkeRecipient.point(point)
       point
     end
-    def qualify
+    def qualify_policy
       need(property(@key,'Export Policy').zero?)
       status = native('NCryptExportKey',@key,0,wide('ECCPRIVATEBLOB'),0,0,0,size_buffer,SILENT)
       need([0x80090010,0x8009000a].include?(status))
-      point = public_raw
+      public_raw
+    end
+    def qualify
+      point = qualify_policy
       peer = OpenSSL::PKey::EC.generate('prime256v1')
       expected = peer.derive(HpkeRecipient.point(point))
       actual = exchange(peer.public_key.to_octet_string(:uncompressed))

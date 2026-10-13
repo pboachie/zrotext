@@ -22,6 +22,7 @@ The managed candidate preserves the stricter reader requirement that observed
 time is at or after manifest/key issuance. Existing TypeScript/Python outbound
 authorization uses trusted current time without that same lower bound. This is
 an explicit unresolved parity question, not a settled universal protocol rule.
+The shared policy and signed-vector decision is tracked in [#1226](https://github.com/pboachie/zrotext/issues/1226).
 
 ```text
 python sdk/native/crypto-envelope/java/composition/run.py --producer PRODUCER_CHECKOUT
