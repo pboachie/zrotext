@@ -770,3 +770,47 @@ browser session. The installed consumers seal genuine native encrypted
 templates, build requests, validate receipts, and have maintained TypeScript
 independently compare the request and decrypt its exact body. Source tests also
 compare 42 accepted/refused request and raw-receipt cases.
+
+### Current owner template ciphertext loading
+
+`OwnerTemplateReader(origin, binding, template_id, read_current=..., current_session=...,
+ enabled=True).read_latest()` implements the maintained owner template client's
+cold `readLatest` branch. It returns a current ciphertext snapshot, never
+plaintext or an acknowledgement of a save. The dedicated save-ticket and
+unknown-write reconciliation state machine is not provided by this reader.
+
+The trusted application supplies `read_current()` with exactly `binding`, a
+genuine verified profile02 `manifest`, `nowMs`, `ownerSessionLive`, `consentLive`,
+`phase` (`active`), and `validForMs` (positive, at most 60000). Binding fields are
+`account`, `device`, `line`, `interval`, `session`, `generation`, `peer`,
+`phoneReader`, and `archiveReader`, matching the maintained owner contract.
+Template, account, device, line, interval, reader, peer digest, manifest identity,
+expiry, active reader and phone signing authority are checked before release.
+The manifest is cryptographically reverified on every current observation.
+
+Native code has no ambient browser owner session. The independently authenticated
+host must supply `current_session()` with exactly `origin`, `cookie`, and `csrf`.
+The origin must equal the configured canonical HTTPS origin. The cookie is a
+bounded printable ASCII Cookie header (1–4096 characters, containing `=`); CSRF
+is 1–256 non-whitespace printable ASCII characters. These values must remain
+unchanged throughout each operation. The adapter does not obtain a session,
+interpret cookie claims, or promote workflow bearer grants to owner authority.
+The relay remains responsible for authenticating the supplied session and CSRF.
+No cookie jar, Set-Cookie adoption, proxy environment, redirects or retries are
+used. System TLS verification remains mandatory. Returned ciphertext is not
+cryptographically authenticated plaintext; use the separate protected template
+opening operation with independently current custody authority.
+
+`timeout_ms` is a total 1–10000 millisecond deadline and is shortened by current
+lease and key/template expiry. `close()` cancels outward results and prevents
+later dispatch or release; a blocked trusted callback cannot be preempted.
+Eight global worker slots and each reader's busy admission remain occupied until
+that worker actually settles. Callbacks must not reenter the reader. Root,
+manifest, comparison-clock and observed template-head floors are retained only
+in memory: this is not durable restart or database rollback protection. Root
+changes close the reader instead of silently resetting trust.
+
+The installed wheel and sdist run genuine signed-current synthetic TLS controls
+with explicit session/CSRF callbacks. Maintained TypeScript differential tests
+cover twelve cold-read cases. These establish local candidate behavior, not a
+live browser session, owner server acceptance, or browser custody qualification.
