@@ -64,6 +64,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--producer', type=Path, required=True)
     parser.add_argument('--binary', type=Path, required=True)
+    parser.add_argument('--mutation', action='store_true')
     args = parser.parse_args()
     source = args.producer.resolve(strict=True)
     assert subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip() == PIN
@@ -89,6 +90,18 @@ def main():
                 cleanup_verified = True
                 continue
             fixture = provision(source, identity)
+            if args.mutation:
+                out, _ = child.communicate(json.dumps(fixture), timeout=90)
+                assert child.returncode == 0, 'installed protected mutation consumer failed'
+                lines = out.splitlines()
+                assert len(lines) == 2 and json.loads(lines[-1]) == dict(owned_key_deleted=True)
+                cleanup_verified = True
+                result = json.loads(lines[0])
+                assert set(result) == {'fields', 'mutations', 'refusals'} and result['refusals'] == 12
+                report = node(source, 'contact-producer-interop.mjs', dict(fixture=fixture, fields=result['fields'], mutations=result['mutations']))
+                assert report['verified'] is True and report['fields'] == 3 and report['transitions'] == 4
+                assert len(base64.b64decode(report['finalDigest'], validate=True)) == 32
+                continue
             requests = [dict(operation='produce', fixture=fixture, field=field, statement=statement)
                         for field, statement in [('name', 'statement'), ('notes', 'statement'), ('replacement', 'nextStatement')]]
             requests += [dict(requests[0], cancel=True), dict(requests[0], closed=True)]
@@ -117,7 +130,8 @@ def main():
                 except subprocess.TimeoutExpired:
                     child.terminate(); child.communicate(timeout=10)
                     raise AssertionError('unresponsive owned child; private cleanup receipt retained')
-    print('6 protected contact consumer controls and setup-failure EOF cleanup passed; 3 fields independently verified')
+    print('4 protected mutations, 12 refusal controls, 3 fields and setup-failure EOF cleanup passed' if args.mutation else
+          '6 protected contact consumer controls and setup-failure EOF cleanup passed; 3 fields independently verified')
 
 
 if __name__ == '__main__':

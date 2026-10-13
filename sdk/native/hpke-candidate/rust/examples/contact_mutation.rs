@@ -2,6 +2,8 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use std::io::{self, Read};
+mod contact_custody;
+mod contact_mutation_custody;
 use zrotext_hpke_candidate::{
     contact::{
         mutation::{self, Input, Proposal, Slot, Transition},
@@ -237,8 +239,17 @@ fn run(r: &Value) -> Result<Value, ()> {
     Ok(json!({"accepted":true,"mutationVerified":true,"fields":fields}))
 }
 fn main() {
+    let custody = contact_custody::Session::new();
     let mut s = String::new();
     io::stdin().read_to_string(&mut s).expect("input");
+    if custody.protected() {
+        let fixture: Value = serde_json::from_str(&s).expect("synthetic fixture");
+        println!(
+            "{}",
+            contact_mutation_custody::run(&fixture, &custody).expect("protected transitions")
+        );
+        return;
+    }
     let rows: Vec<Value> = serde_json::from_str(&s).expect("synthetic JSON");
     let out: Vec<_> = rows
         .iter()
