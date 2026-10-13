@@ -82,7 +82,10 @@ class OriginalHTTP
       end
       out[key.to_s] = value
     end
-    out['descriptor'] = nil if method == 'consume'
+    if method == 'consume'
+      out['params'] = { 'event_id' => out.delete('event_id'), 'request_id' => out.delete('request_id'),
+                        'active_request_id' => out.delete('active_request_id'), 'descriptor' => nil }
+    end
     JSON.generate(out)
   rescue Failure
     raise

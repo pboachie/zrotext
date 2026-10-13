@@ -10,7 +10,7 @@ import tempfile
 import urllib.request
 
 HERE = Path(__file__).resolve().parent
-PIN = '78a3900ed1fea531c3fbe894696ee19805e0f1c9'
+PIN = '6307413ae33fa4623483ca5adf306045b3efffb1'
 JARS = (
     ('com/google/code/gson/gson/2.14.0/gson-2.14.0.jar',
      '2cbd119bf1961c28788310963dc80ba65f58cdeec1dd139c8bdb1240faa2c36f'),

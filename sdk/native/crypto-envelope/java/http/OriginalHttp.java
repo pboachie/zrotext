@@ -96,7 +96,10 @@ public final class OriginalHttp {
                     JsonObject cursor = new JsonObject(); cursor.addProperty("event_id", uuid(r.cursor.eventId)); cursor.addProperty("accepted_at_ms", r.cursor.acceptedAtMs); b.add("cursor", cursor);
                 }
             }
-            case "consume" -> { b.addProperty("event_id", uuid(r.eventId)); b.addProperty("request_id", uuid(r.requestId)); b.addProperty("active_request_id", r.activeRequestId == null ? null : uuid(r.activeRequestId)); b.add("descriptor", JsonNull.INSTANCE); }
+            case "consume" -> {
+                JsonObject params = new JsonObject(); params.addProperty("event_id", uuid(r.eventId)); params.addProperty("request_id", uuid(r.requestId));
+                params.addProperty("active_request_id", r.activeRequestId == null ? null : uuid(r.activeRequestId)); params.add("descriptor", JsonNull.INSTANCE); b.add("params", params);
+            }
             default -> throw new Failure(false);
         }
         if ((!r.method.equals("read") && !r.method.equals("consume") && r.eventId != null) || (!r.method.equals("status") && r.consumptionId != null) || (!r.method.equals("page") && (r.limit != null || r.cursor != null)) || (!r.method.equals("consume") && (r.requestId != null || r.activeRequestId != null))) throw new Failure(false);

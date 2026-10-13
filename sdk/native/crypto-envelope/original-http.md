@@ -14,6 +14,8 @@ canonical original-grant credential and a closed request description. No output
 credential, owner credential, arbitrary RPC name or automatic descriptor is
 accepted. Consume always sends `descriptor: null`; the caller retains its request
 identity and must reconcile an uncertain outcome separately.
+Its four consume fields are nested inside `params`, matching the server's
+closed request schema and the maintained TypeScript client.
 
 TLS uses platform trust and hostname verification. Independently trusted PEM CA
 roots may be added by the application; a certificate returned by the service is
@@ -41,7 +43,7 @@ standard JSON and HTTP libraries.
 
 Run `original-http-run.py --language java|csharp|ruby --fixture CHECKOUT`, where
 `CHECKOUT` is the clean shared native transport fixture commit
-`78a3900ed1fea531c3fbe894696ee19805e0f1c9`. Java needs a JDK supporting release 17,
+`6307413ae33fa4623483ca5adf306045b3efffb1`. Java needs a JDK supporting release 17,
 C# needs .NET 8, and Ruby uses 3.3.9. The Python fixture requires cryptography.
 Use `--ruby PATH` to select a portable interpreter.
 

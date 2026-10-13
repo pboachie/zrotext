@@ -113,9 +113,12 @@ public sealed class OriginalHttp : IDisposable
                 }
                 break;
             case "consume":
-                fields["event_id"] = Uuid(r.EventId); fields["request_id"] = Uuid(r.RequestId);
-                fields["active_request_id"] = r.ActiveRequestId is null ? null : Uuid(r.ActiveRequestId);
-                fields["descriptor"] = null; break;
+                fields["params"] = new Dictionary<string, object?>
+                {
+                    ["event_id"] = Uuid(r.EventId), ["request_id"] = Uuid(r.RequestId),
+                    ["active_request_id"] = r.ActiveRequestId is null ? null : Uuid(r.ActiveRequestId), ["descriptor"] = null
+                };
+                break;
             default: throw new Failure();
         }
         if ((r.Method != "read" && r.Method != "consume" && r.EventId is not null) ||

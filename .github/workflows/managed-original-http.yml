@@ -35,7 +35,7 @@ jobs:
           ruby-version: '3.3.9'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 78a3900ed1fea531c3fbe894696ee19805e0f1c9
+          ref: 6307413ae33fa4623483ca5adf306045b3efffb1
           path: fixture
           persist-credentials: false
       - name: Install synthetic TLS certificate dependency
