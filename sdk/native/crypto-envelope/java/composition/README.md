@@ -41,3 +41,11 @@ claiming erasure of immutable strings or provider/runtime copies.
 
 Profile02 composition, Ruby composition, root transitions and clean native
 package consumers remain separate gates. No live transport or SMS is exercised.
+
+The ZTJ4 journal persists a root-bound checksummed comparison-clock high-water
+mark under the exclusive lock. Every accepted authority comparison, including
+the postcommit check, advances it durably before output. Reopening with a lower
+clock, torn clock metadata, and older ZTJ3 files refuses. Reconcile old journals
+explicitly; never reset uncertain state. This detects trusted clock regression
+against retained storage, not malicious filesystem rollback. Tests exercise
+separate-process clock rollback, later postcommit time, and torn/old metadata.

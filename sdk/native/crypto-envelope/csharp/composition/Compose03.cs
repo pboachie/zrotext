@@ -47,7 +47,7 @@ public static class Compose03 {
         var result=new Plan(prefix,text,recipients.ToArray(),point,intent,now);transferred=true;return result;
         }finally{if(!transferred)CryptographicOperations.ZeroMemory(text);}
     }
-    private static void Recheck(Request r,Plan plan){var fresh=Authorize(r);try{Need(fresh.Now>=plan.Now && Same(fresh.Intent,plan.Intent));}finally{CryptographicOperations.ZeroMemory(fresh.Text);}}
+    private static long Recheck(Request r,Plan plan,long floor){var fresh=Authorize(r);try{Need(fresh.Now>=floor && Same(fresh.Intent,plan.Intent));return fresh.Now;}finally{CryptographicOperations.ZeroMemory(fresh.Text);}}
     private static byte[] Extract(byte[] suite,byte[] salt,string label,byte[] data)=>HMACSHA256.HashData(salt,Join(Encoding.ASCII.GetBytes("HPKE-v1"),suite,Encoding.ASCII.GetBytes(label),data));
     private static byte[] Expand(byte[] suite,byte[] key,string label,byte[] info,int size){byte[] block=HMACSHA256.HashData(key,Join(new byte[]{0,(byte)size},Encoding.ASCII.GetBytes("HPKE-v1"),suite,Encoding.ASCII.GetBytes(label),info,new byte[]{1}));try{return Part(block,0,size);}finally{CryptographicOperations.ZeroMemory(block);}}
     private static byte[] Encrypt(byte[] key,byte[] nonce,byte[] text,byte[] aad){var cipher=new byte[text.Length];var tag=new byte[16];using var aes=new AesGcm(key,16);aes.Encrypt(nonce,text,cipher,tag,aad);return Join(cipher,tag);}
@@ -63,16 +63,16 @@ public static class Compose03 {
             return Join(enc,Encrypt(key,nonce,cek,aad));
         }finally{foreach(var value in material)CryptographicOperations.ZeroMemory(value);}
     }
-    private static byte[] Compose(Request r,Plan plan){
+    private static (byte[] Envelope,long Now) Compose(Request r,Plan plan,long floor){
         byte[] cek=RandomNumberGenerator.GetBytes(32);
         try{
             byte[] nonce=RandomNumberGenerator.GetBytes(12),body=Encrypt(cek,nonce,plan.Text,Join(Label("ZTSE/body/v3"),plan.Prefix));var wraps=new List<byte[]>();
             foreach(var recipient in plan.Recipients){byte[] suffix=Join(plan.Prefix,new byte[]{(byte)recipient.Role},recipient.Id);wraps.Add(Join(new byte[]{(byte)recipient.Role},recipient.Id,Wrap(recipient.Point,cek,Join(Label("ZTSE/wrap/v3"),suffix),Join(Label("ZTSE/wrap-aad/v3"),suffix))));}
             byte[] size=new byte[4];BinaryPrimitives.WriteInt32BigEndian(size,body.Length);byte[] unsigned=Join(plan.Prefix,nonce,size,body,new byte[]{(byte)wraps.Count},Join(wraps.ToArray()));
-            byte[] envelope=Join(unsigned,r.Signer.SignEnvelope03(unsigned));SignedEnvelope.Verify(envelope,3,plan.Public);Recheck(r,plan);return envelope;
+            byte[] envelope=Join(unsigned,r.Signer.SignEnvelope03(unsigned));SignedEnvelope.Verify(envelope,3,plan.Public);return (envelope,Recheck(r,plan,floor));
         }finally{CryptographicOperations.ZeroMemory(cek);}
     }
-    public static byte[] Fresh(Request request){var r=Capture(request);var plan=Authorize(r);try{return Compose(r,plan);}finally{CryptographicOperations.ZeroMemory(plan.Text);}}
+    public static byte[] Fresh(Request request){var r=Capture(request);var plan=Authorize(r);try{return Compose(r,plan,plan.Now).Envelope;}finally{CryptographicOperations.ZeroMemory(plan.Text);}}
 
     /// <summary>Trusted private application path. Persist exact ciphertext before exposure; never reset after uncertain outcomes.</summary>
     public static byte[] ComposeOrReplay(string path,byte[] rootPin,byte[] comparedFingerprint,Request request){
@@ -80,7 +80,7 @@ public static class Compose03 {
         var r=Capture(request);var plan=Authorize(r);
         try{
             Need(Same(trust.Account,r.Manifest.Account()) && Same(trust.Point,r.Manifest.Root));
-            byte[] header=Join(new byte[]{90,84,74,51},pin,fingerprint),identity=Part(plan.Prefix,10,64);
+            byte[] header=Join(new byte[]{90,84,74,52},pin,fingerprint),identity=Part(plan.Prefix,10,64);
             string full=Path.GetFullPath(path);Need(!Directory.Exists(full));
             if(File.Exists(full))Need((File.GetAttributes(full)&FileAttributes.ReparsePoint)==0);
             FileStream? stream=null;bool fresh=false;
@@ -92,9 +92,12 @@ public static class Compose03 {
                 }
             }
             Need(stream is not null);using var file=stream!;
-            if(fresh){file.Write(header);file.Flush(true);}
-            Need(file.Length>=header.Length && file.Length<=10000000);file.Position=0;
+            if(fresh){byte[] initial=U64(plan.Now);file.Write(Join(header,initial,SHA256.HashData(Join(header,initial))));file.Flush(true);}
+            Need(file.Length>=header.Length+40 && file.Length<=10000000);file.Position=0;
             byte[] actual=new byte[header.Length];file.ReadExactly(actual);Need(Same(actual,header));
+            byte[] clock=new byte[8],clockHash=new byte[32];file.ReadExactly(clock);file.ReadExactly(clockHash);Need(Same(clockHash,SHA256.HashData(Join(header,clock))));long floor=Num(clock,0);Need(floor>0);
+            void Advance(long now){Need(now>=floor);if(now>floor){long position=file.Position;byte[] next=U64(now);file.Position=header.Length;file.Write(Join(next,SHA256.HashData(Join(header,next))));file.Flush(true);file.Position=position;floor=now;}}
+            Advance(plan.Now);
             byte[]? stored=null;int count=0;
             while(file.Position<file.Length){
                 Need(++count<=256 && file.Length-file.Position>=132);byte[] leading=new byte[100];file.ReadExactly(leading);int size=BinaryPrimitives.ReadInt32BigEndian(leading.AsSpan(96));
@@ -107,10 +110,10 @@ public static class Compose03 {
                     stored=envelope;
                 }
             }
-            Recheck(r,plan);
+            Advance(Recheck(r,plan,floor));
             if(stored is not null)return stored;
-            Need(count<256);byte[] created=Compose(r,plan),length=new byte[4];BinaryPrimitives.WriteInt32BigEndian(length,created.Length);byte[] record=Join(identity,plan.Intent,length,created);
-            file.Write(record);file.Write(SHA256.HashData(record));file.Flush(true);Recheck(r,plan);return created;
+            Need(count<256);var composed=Compose(r,plan,floor);Advance(composed.Now);byte[] created=composed.Envelope,length=new byte[4];BinaryPrimitives.WriteInt32BigEndian(length,created.Length);byte[] record=Join(identity,plan.Intent,length,created);
+            file.Write(record);file.Write(SHA256.HashData(record));file.Flush(true);Advance(Recheck(r,plan,floor));return created;
         }finally{CryptographicOperations.ZeroMemory(plan.Text);}
     }
 }

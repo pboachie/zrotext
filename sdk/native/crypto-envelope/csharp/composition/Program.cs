@@ -25,8 +25,8 @@ static class Program {
     }
     static void Consume(string directory,JsonElement fixture,byte[] envelope){var input=JsonSerializer.Serialize(new{fixture,envelope=Convert.ToBase64String(envelope),expectedText="Native composed 🌱"});using var result=JsonDocument.Parse(RunNode(directory,"consume-native03.mjs",input:input));Check(result.RootElement.GetProperty("verified").GetBoolean() && result.RootElement.GetProperty("openedRecipients").GetInt32()==2);}
     static void Main(string[] args){
-        if(args.Length==5 && args[0]=="--replay"){
-            using var fixture=JsonDocument.Parse(File.ReadAllText(args[1]));using var signer=ProtectedSigner.Open(args[3],Convert.FromHexString(args[4]));var f=fixture.RootElement;Console.WriteLine(Convert.ToBase64String(Compose03.ComposeOrReplay(args[2],B(f,"rootPin"),B(f,"fingerprint"),Inputs(f,signer))));return;
+        if((args.Length==5 || args.Length==6) && args[0]=="--replay"){
+            using var fixture=JsonDocument.Parse(File.ReadAllText(args[1]));using var signer=ProtectedSigner.Open(args[3],Convert.FromHexString(args[4]));var f=fixture.RootElement;Console.WriteLine(Convert.ToBase64String(Compose03.ComposeOrReplay(args[2],B(f,"rootPin"),B(f,"fingerprint"),Inputs(f,signer) with{Authority=new Authority(Record(f.GetProperty("authority")),args.Length==6?long.Parse(args[5]):30000)})));return;
         }
         if(args.Length!=2)throw new ArgumentException("Producer directory and fresh pending receipt required");
         try{ProtectedSigner.Probe();}catch(Exception e)when(e is PlatformNotSupportedException or CryptographicException){Console.WriteLine("UNQUALIFIED: read-only signing capability unavailable; no creation attempted");return;}
@@ -50,6 +50,13 @@ static class Program {
             Refuses(()=>Compose03.ComposeOrReplay(journal,pin,fingerprint,interrupted with{Authority=new DynamicAuthority(()=>new(++afterReads==4?revoked:valid,30000))}));Check(afterReads==4);
             long persisted=new FileInfo(journal).Length;byte[] recovered=Compose03.ComposeOrReplay(journal,pin,fingerprint,interrupted);Check(new FileInfo(journal).Length==persisted);SignedEnvelope.Verify(recovered,3,point);
             string partial=Path.Combine(folder,"partial.bin");File.Copy(journal,partial);using(var f=new FileStream(partial,FileMode.Append))f.Write(new byte[]{1,2,3});Refuses(()=>Compose03.ComposeOrReplay(partial,pin,fingerprint,request));
+            Check(committed.SequenceEqual(Compose03.ComposeOrReplay(journal,pin,fingerprint,request with{Authority=new Authority(valid,31000)})));
+            info.ArgumentList.Add("30000");using(var child=Process.Start(info)!){string output=child.StandardOutput.ReadToEnd(),error=child.StandardError.ReadToEnd();child.WaitForExit();Check(child.ExitCode!=0 && output.Length==0 && error.Contains("Candidate composition refused"));}
+            Check(committed.SequenceEqual(Compose03.ComposeOrReplay(journal,pin,fingerprint,request with{Authority=new Authority(valid,31000)})));
+            int laterCalls=0;Compose03.ComposeOrReplay(journal,pin,fingerprint,request with{Message=RandomNumberGenerator.GetBytes(16),Authority=new DynamicAuthority(()=>new(valid,++laterCalls==4?32000:31000))});Check(laterCalls==4);
+            Refuses(()=>Compose03.ComposeOrReplay(journal,pin,fingerprint,request with{Authority=new Authority(valid,31000)}));
+            byte[] torn=File.ReadAllBytes(journal);torn[130]^=1;File.WriteAllBytes(partial,torn);Refuses(()=>Compose03.ComposeOrReplay(partial,pin,fingerprint,request with{Authority=new Authority(valid,32000)}));
+            byte[] legacy=File.ReadAllBytes(journal);legacy[3]=51;File.WriteAllBytes(partial,legacy);Refuses(()=>Compose03.ComposeOrReplay(partial,pin,fingerprint,request with{Authority=new Authority(valid,32000)}));
             string alias=signer.Alias;signer.DeleteCreated();deleted=true;Refuses(()=>signer.SignEnvelope03(fresh.AsSpan(0,fresh.Length-64).ToArray()));Refuses(()=>ProtectedSigner.Open(alias,point).Dispose());File.Delete(receipt);
             foreach(string file in new[]{journal,fixturePath,partial})File.Delete(file);Directory.Delete(folder);Console.WriteLine($"QUALIFIED: {checks} native protected composition/replay checks passed; owned key deleted");
         }finally{if(owner is not null){try{if(!deleted){owner.DeleteCreated();File.Delete(receipt);}}finally{owner.Dispose();}}}

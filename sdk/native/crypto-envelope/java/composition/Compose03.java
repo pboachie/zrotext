@@ -62,7 +62,7 @@ public final class Compose03 {
             var result=new Plan(prefix,text,List.copyOf(targets),point,intent,now);transferred=true;return result;
         }finally{if(!transferred)Arrays.fill(text,(byte)0);}
     }
-    private static void recheck(Request r,Plan plan)throws GeneralSecurityException{var fresh=authorize(r);try{need(fresh.now>=plan.now && same(fresh.intent,plan.intent));}finally{Arrays.fill(fresh.text,(byte)0);}}
+    private static long recheck(Request r,Plan plan,long floor)throws GeneralSecurityException{var fresh=authorize(r);try{need(fresh.now>=floor && same(fresh.intent,plan.intent));return fresh.now;}finally{Arrays.fill(fresh.text,(byte)0);}}
     private static byte[] mac(byte[] key,byte[] data)throws GeneralSecurityException{var mac=Mac.getInstance("HmacSHA256");mac.init(new SecretKeySpec(key.length==0?new byte[32]:key,"HmacSHA256"));return mac.doFinal(data);}
     private static byte[] extract(byte[] suite,byte[] salt,String label,byte[] data)throws GeneralSecurityException{return mac(salt,join("HPKE-v1".getBytes(StandardCharsets.US_ASCII),suite,label.getBytes(StandardCharsets.US_ASCII),data));}
     private static byte[] expand(byte[] suite,byte[] key,String label,byte[] info,int size)throws GeneralSecurityException{byte[] block=mac(key,join(new byte[]{0,(byte)size},"HPKE-v1".getBytes(StandardCharsets.US_ASCII),suite,label.getBytes(StandardCharsets.US_ASCII),info,new byte[]{1}));try{return Arrays.copyOf(block,size);}finally{Arrays.fill(block,(byte)0);}}
@@ -76,34 +76,44 @@ public final class Compose03 {
             return join(enc,encrypt(buffers[4],buffers[5],cek,aad));
         }finally{for(var b:buffers)if(b!=null)Arrays.fill(b,(byte)0);}
     }
-    private static byte[] compose(Request r,Plan plan)throws GeneralSecurityException{
+    private record Composed(byte[] envelope,long now){}
+    private static Composed compose(Request r,Plan plan,long floor)throws GeneralSecurityException{
         var random=new SecureRandom();byte[] cek=new byte[32];random.nextBytes(cek);
         try{byte[] nonce=new byte[12];random.nextBytes(nonce);byte[] body=encrypt(cek,nonce,plan.text,join(label("ZTSE/body/v3"),plan.prefix));var wraps=new ArrayList<byte[]>();
             for(var target:plan.targets){byte[] suffix=join(plan.prefix,new byte[]{(byte)target.role},target.id);wraps.add(join(new byte[]{(byte)target.role},target.id,wrap(target.point,cek,join(label("ZTSE/wrap/v3"),suffix),join(label("ZTSE/wrap-aad/v3"),suffix))));}
-            byte[] unsigned=join(plan.prefix,nonce,ByteBuffer.allocate(4).putInt(body.length).array(),body,new byte[]{(byte)wraps.size()},join(wraps.toArray(byte[][]::new))),envelope=join(unsigned,r.signer.signEnvelope03(unsigned));SignedEnvelope.verify(envelope,3,plan.publicPoint);recheck(r,plan);return envelope;
+            byte[] unsigned=join(plan.prefix,nonce,ByteBuffer.allocate(4).putInt(body.length).array(),body,new byte[]{(byte)wraps.size()},join(wraps.toArray(byte[][]::new))),envelope=join(unsigned,r.signer.signEnvelope03(unsigned));SignedEnvelope.verify(envelope,3,plan.publicPoint);return new Composed(envelope,recheck(r,plan,floor));
         }finally{Arrays.fill(cek,(byte)0);}
     }
-    public static byte[] fresh(Request request)throws GeneralSecurityException{var r=capture(request);var plan=authorize(r);try{return compose(r,plan);}finally{Arrays.fill(plan.text,(byte)0);}}
+    public static byte[] fresh(Request request)throws GeneralSecurityException{var r=capture(request);var plan=authorize(r);try{return compose(r,plan,plan.now).envelope;}finally{Arrays.fill(plan.text,(byte)0);}}
     private static void write(FileChannel file,byte[] bytes)throws IOException{var b=ByteBuffer.wrap(bytes);while(b.hasRemaining())file.write(b);}
     private static byte[] read(FileChannel file,int count)throws IOException{var b=ByteBuffer.allocate(count);while(b.hasRemaining())if(file.read(b)<0)throw new EOFException("Partial journal");return b.array();}
+    private static final class Clock {
+        private final FileChannel file;private final byte[] header;private long floor;
+        private Clock(FileChannel file,byte[] header)throws IOException,GeneralSecurityException{
+            this.file=file;this.header=header;byte[] clock=read(file,8);need(same(read(file,32),sha(join(header,clock))));floor=num(clock,0);need(floor>0);
+        }
+        private void advance(long now)throws IOException,GeneralSecurityException{
+            need(now>=floor);if(now>floor){long position=file.position();byte[] clock=u64(now);file.position(header.length);write(file,join(clock,sha(join(header,clock))));file.force(true);file.position(position);floor=now;}
+        }
+    }
     public static byte[] composeOrReplay(Path path,byte[] rootPin,byte[] comparedFingerprint,Request request)throws GeneralSecurityException,IOException,InterruptedException{
         byte[] pin=rootPin.clone(),fingerprint=comparedFingerprint.clone();ManifestChain.RootPin.enroll(pin,fingerprint);var r=capture(request);var plan=authorize(r);
         try{
-            need(same(part(pin,5,16),r.manifest.account()) && same(part(pin,29,65),r.manifest.rootPoint()));byte[] header=join(new byte[]{90,84,74,51},pin,fingerprint),identity=part(plan.prefix,10,64);boolean created;
+            need(same(part(pin,5,16),r.manifest.account()) && same(part(pin,29,65),r.manifest.rootPoint()));byte[] header=join(new byte[]{90,84,74,52},pin,fingerprint),identity=part(plan.prefix,10,64);boolean created;
             FileChannel channel;
             try{channel=FileChannel.open(path,StandardOpenOption.CREATE_NEW,StandardOpenOption.READ,StandardOpenOption.WRITE,LinkOption.NOFOLLOW_LINKS);created=true;}
             catch(FileAlreadyExistsException e){channel=FileChannel.open(path,StandardOpenOption.READ,StandardOpenOption.WRITE,LinkOption.NOFOLLOW_LINKS);created=false;}
             try(var file=channel){
                 FileLock acquired=null;for(int attempt=0;attempt<100 && acquired==null;attempt++){try{acquired=file.tryLock();}catch(OverlappingFileLockException busy){/* Another local caller owns the lock. */}if(acquired==null)Thread.sleep(50);}need(acquired!=null);
                 try(var lock=acquired){
-                    need(lock.isValid());if(created){write(file,header);file.force(true);}need(file.size()>=header.length && file.size()<=10000000);file.position(0);need(same(read(file,header.length),header));int count=0;byte[] stored=null;
+                    need(lock.isValid());if(created){byte[] initial=u64(plan.now);write(file,join(header,initial,sha(join(header,initial))));file.force(true);}need(file.size()>=header.length+40 && file.size()<=10000000);file.position(0);need(same(read(file,header.length),header));var clock=new Clock(file,header);clock.advance(plan.now);int count=0;byte[] stored=null;
                     while(file.position()<file.size()){
                         need(++count<=256 && file.size()-file.position()>=132);byte[] leading=read(file,100);int size=ByteBuffer.wrap(leading,96,4).getInt();need(size>=557 && size<=34213 && file.size()-file.position()>=size+32);byte[] envelope=read(file,size);need(same(read(file,32),sha(join(leading,envelope))));
                         if(same(part(leading,0,64),identity)){need(stored==null && same(part(leading,64,32),plan.intent));SignedEnvelope.verify(envelope,3,plan.publicPoint);need(same(part(envelope,0,plan.prefix.length),plan.prefix));int end=plan.prefix.length+16+ByteBuffer.wrap(envelope,plan.prefix.length+12,4).getInt();need((envelope[end]&255)==plan.targets.size());
                             for(int i=0;i<plan.targets.size();i++)need(envelope[end+1+146*i]==plan.targets.get(i).role && same(part(envelope,end+2+146*i,32),plan.targets.get(i).id));stored=envelope;
                         }
                     }
-                    recheck(r,plan);if(stored!=null)return stored;need(count<256);byte[] envelope=compose(r,plan),record=join(identity,plan.intent,ByteBuffer.allocate(4).putInt(envelope.length).array(),envelope);write(file,record);write(file,sha(record));file.force(true);recheck(r,plan);return envelope;
+                    clock.advance(recheck(r,plan,clock.floor));if(stored!=null)return stored;need(count<256);var composed=compose(r,plan,clock.floor);clock.advance(composed.now);byte[] envelope=composed.envelope,record=join(identity,plan.intent,ByteBuffer.allocate(4).putInt(envelope.length).array(),envelope);write(file,record);write(file,sha(record));file.force(true);clock.advance(recheck(r,plan,clock.floor));return envelope;
                 }
             }
         }finally{Arrays.fill(plan.text,(byte)0);}

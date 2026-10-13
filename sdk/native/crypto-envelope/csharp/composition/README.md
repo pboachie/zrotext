@@ -47,3 +47,11 @@ its owned native key. No publication, transport call or live SMS occurs.
 
 Profile02 composition, Java/Ruby composition, root transitions and clean native
 package consumption remain separate gates.
+
+The ZTJ4 journal persists a root-bound checksummed comparison-clock high-water
+mark under the exclusive lock. Every accepted authority comparison, including
+the postcommit check, advances it durably before output. Reopening with a lower
+clock, torn clock metadata, and older ZTJ3 files refuses. Reconcile old journals
+explicitly; never reset uncertain state. This detects trusted clock regression
+against retained storage, not malicious filesystem rollback. Tests exercise
+separate-process clock rollback, later postcommit time, and torn/old metadata.
