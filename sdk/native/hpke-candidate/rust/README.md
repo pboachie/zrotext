@@ -143,3 +143,5 @@ Original-reply accepted history and comparison clocks can be persisted with the 
 [Saved owner-review consumption/status](../ORIGINAL-CONSUMPTION.md) correlates caller-persisted descriptor-null intent with fresh proofs and preserves unknown outcomes without retry.
 
 Typed saved original-reply proposal consumption/status is documented in [ORIGINAL-PROPOSAL.md](../ORIGINAL-PROPOSAL.md). This does not approve or send an action.
+
+Local template content and preview APIs are documented in [TEMPLATE-CONTENT.md](../TEMPLATE-CONTENT.md); encryption and persistence remain separate.
