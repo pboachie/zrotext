@@ -67,7 +67,11 @@ authorization, or sealed cryptographic acceptance.
 CI builds the exact compiler and external emitter, regenerates all ten targets,
 checks digests, compiles TypeScript and exercises synthetic transport failures.
 It also compiles Rust/Go/Java/C#, loads Ruby, and builds/installs Python wheels
-against the pinned runtime source. Contract inputs use LF line endings on every
+against the pinned runtime source. Installed Python and TypeScript wire checks
+cover credentials, pagination, invalid inputs, redirects, malformed responses,
+confirmation and caller-owned idempotency under uncertain outcomes. Python
+timeout coverage injects an HTTPX timeout; it does not prove wall-clock deadlines.
+Contract inputs use LF line endings on every
 platform so their generator digests agree across Windows and Linux checkouts.
 Run those tests locally after generation:
 
