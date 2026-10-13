@@ -1,0 +1,40 @@
+name: Candidate native body conformance
+on:
+  pull_request:
+    paths:
+      - 'sdk/native/crypto-candidate/**'
+      - 'protocol/v1/vectors/ztse-body-text-01.json'
+      - '.github/workflows/sdk-candidate-body.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'sdk/native/crypto-candidate/**'
+      - 'protocol/v1/vectors/ztse-body-text-01.json'
+      - '.github/workflows/sdk-candidate-body.yml'
+permissions:
+  contents: read
+jobs:
+  candidate-body:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '8.0.x'
+      - name: Extract existing synthetic fixture cases
+        run: python3 sdk/native/crypto-candidate/export_vectors.py "$RUNNER_TEMP/body-vectors.tsv"
+      - name: Verify Java body conformance
+        run: |
+          javac --release 17 -Xlint:all -Werror -d "$RUNNER_TEMP/body-java" sdk/native/crypto-candidate/java/*.java
+          java -cp "$RUNNER_TEMP/body-java" BodyTest "$RUNNER_TEMP/body-vectors.tsv"
+      - name: Verify C# body conformance
+        run: dotnet run --project sdk/native/crypto-candidate/csharp/Tests.csproj < "$RUNNER_TEMP/body-vectors.tsv"
+      - name: Verify Ruby body conformance
+        run: ruby sdk/native/crypto-candidate/ruby/test_body.rb "$RUNNER_TEMP/body-vectors.tsv"
