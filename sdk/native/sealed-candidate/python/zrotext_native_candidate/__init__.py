@@ -19,6 +19,9 @@ from .sealed_http import SealedHttpClient, SealedHttpError, PreparedSubmission
 from .original_reply_client import OriginalReplyClient, OriginalReplyError
 from .original_reply_reader import open_original_reply02
 from .original_reply_checkpoint import OriginalReplyCheckpoint
+from .encrypted_template import (TemplateError,canonical_template_bytes,template_digest,estimate_segments,
+    preview_encrypted_template,encrypted_template_aad,seal_encrypted_template_bytes,open_encrypted_template_bytes,
+    seal_encrypted_template,open_encrypted_template,encrypted_template_digest)
 
 __version__ = '0.1.0a1'
 __all__ = ['SealedError', 'SoftwareRecipient', 'CheckpointStore', 'ElectionJournal',
@@ -27,4 +30,7 @@ __all__ = ['SealedError', 'SoftwareRecipient', 'CheckpointStore', 'ElectionJourn
            'SealedEnvelopeError', 'SEALED_CONTENT_TYPE', 'compose_outbound02', 'RootCheckpointStore',
            'verify_archive_reply_selection02', 'OutboundJournal02', 'verify_manifest03_current',
            'SealedHttpClient', 'SealedHttpError', 'PreparedSubmission',
-           'OriginalReplyClient', 'OriginalReplyError', 'open_original_reply02', 'OriginalReplyCheckpoint']
+           'OriginalReplyClient', 'OriginalReplyError', 'open_original_reply02', 'OriginalReplyCheckpoint',
+           'TemplateError','canonical_template_bytes','template_digest','estimate_segments','preview_encrypted_template',
+           'encrypted_template_aad','seal_encrypted_template_bytes','open_encrypted_template_bytes',
+           'seal_encrypted_template','open_encrypted_template','encrypted_template_digest']
