@@ -87,3 +87,6 @@ __all__ += ['ConversationGenesis','GenesisCeremonyError','GenesisRootSigner','So
 
 from .conversation_signer import ConversationSignerSetup02,ConversationSignerError,ConversationRole5Signer
 __all__ += ['ConversationSignerSetup02','ConversationSignerError','ConversationRole5Signer']
+
+from .opening_capacity import OwnerOpeningCapacityClient,OpeningCapacityError
+__all__ += ['OwnerOpeningCapacityClient','OpeningCapacityError']
