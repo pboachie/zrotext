@@ -344,22 +344,40 @@ pub(super) async fn push(
         Ok(None) => {}
     }
     if sent.len() < MAX_SMS_LINE_ACKS_PER_CONNECTION {
-        match runtime::next_ack(&mut db, s, purpose, sent).await {
-            Err(error) => return poll_deferred(&error),
-            Ok(Some(a)) => {
-                if let Err(error) = runtime::current_ack(&mut db, s, a).await {
-                    return poll_deferred(&error);
-                }
-                if !send(socket, ack_frame(a, purpose, s.connection_epoch)).await {
-                    return None;
-                }
-                sent.push(a.challenge_id);
-                pushed = true;
-            }
-            Ok(None) => {}
-        }
+        let next = runtime::next_ack(&mut db, s, purpose, sent).await;
+        return finish_ack_poll(next, sent, pushed, poll_deferred, |a| async move {
+            runtime::current_ack(&mut db, s, a).await?;
+            Ok(send(socket, ack_frame(a, purpose, s.connection_epoch)).await)
+        })
+        .await;
     }
     Some(pushed)
+}
+/// Finish the acknowledgement part without discarding a challenge already sent.
+/// The publisher rechecks live authority immediately before the socket write.
+async fn finish_ack_poll<E, F>(
+    next: Result<Option<Ack>, E>,
+    sent: &mut Vec<Uuid>,
+    pushed: bool,
+    deferred: impl Fn(&E) -> Option<bool>,
+    publish: impl FnOnce(Ack) -> F,
+) -> Option<bool>
+where
+    F: std::future::Future<Output = Result<bool, E>>,
+{
+    let ack = match next {
+        Err(error) => return deferred(&error).map(|_| pushed),
+        Ok(Some(ack)) => ack,
+        Ok(None) => return Some(pushed),
+    };
+    match publish(ack).await {
+        Err(error) => deferred(&error).map(|_| pushed),
+        Ok(false) => None,
+        Ok(true) => {
+            sent.push(ack.challenge_id);
+            Some(true)
+        }
+    }
 }
 /// A lock or statement timeout during a poll is contention with another
 /// holder of the exchange rows, not a failure of the exchange itself: the

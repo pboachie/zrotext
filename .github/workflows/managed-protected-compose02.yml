@@ -1,0 +1,58 @@
+name: Managed protected profile02 composition
+on:
+  pull_request:
+    paths:
+      - 'sdk/native/crypto-envelope/**'
+      - 'sdk/native/crypto-candidate/**'
+      - '.github/workflows/managed-protected-compose02.yml'
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  managed-protected-compose02:
+    strategy:
+      matrix:
+        os: [windows-2025, ubuntu-24.04]
+        language: [java, csharp, ruby]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        if: matrix.language == 'java'
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+        if: matrix.language == 'csharp'
+        with:
+          dotnet-version: '8.0.x'
+      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a
+        if: matrix.language == 'ruby'
+        with:
+          ruby-version: '3.3.9'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: a13ea1e3d6f6db594485c19b36c43fe642e67c7a
+          path: producer
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 1b7732ec36bf705f78e69a2cea95b792f04dc772
+          path: controls
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24.13.0'
+      - name: Build independent producer and consumer
+        shell: pwsh
+        run: |
+          npm ci --ignore-scripts --prefix producer/sdk/typescript
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run build --prefix producer/sdk/typescript
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Exercise native profile02 signing and independent open
+        run: python sdk/native/crypto-envelope/composition02-run.py --language ${{ matrix.language }} --producer producer --controls controls

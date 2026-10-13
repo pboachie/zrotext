@@ -3,6 +3,32 @@
 Standard library only (`urllib`, `hmac`); no dependencies, not published to PyPI.
 It mirrors the minimal TypeScript client in [`sdk/typescript`](../typescript/README.md).
 
+## Preview artifacts
+
+The `zrotext-client` distribution is a Python 3.11+ preview (`0.1.7rc1`).
+Publication requires a separate maintainer-approved release; no registry
+availability is implied. Its import name remains `zrotext_client`.
+
+From the repository root, build a wheel and source archive without downloading
+build dependencies. Select a new directory below the system temporary directory,
+outside the checkout (Python's `tempfile.gettempdir()` identifies its root):
+
+```sh
+python scripts/package_python.py build --out "$TEMP_PACKAGE"
+python scripts/package_python.py verify "$TEMP_PACKAGE/zrotext_client-0.1.7rc1-py3-none-any.whl"
+python scripts/package_python.py verify "$TEMP_PACKAGE/zrotext_client-0.1.7rc1.tar.gz"
+python -m pip install --no-index --no-deps "$TEMP_PACKAGE/zrotext_client-0.1.7rc1-py3-none-any.whl"
+```
+
+The source archive includes an offline PEP 517 backend and can also be built
+with `python -m pip wheel --no-index --no-deps --no-build-isolation ARCHIVE`.
+Only the existing alpha client and webhook helpers enter the wheel. The workflow
+Node bridge, simulators, sealed experiments and test fixtures are excluded.
+Verification checks every artifact entry against reviewed source, including
+metadata, hashes and the complete AGPL-3.0-only license. It refuses altered,
+unlisted, linked and oversized entries. Both artifacts are reproducible for the
+same source and Python toolchain; no publication command is supplied.
+
 **Scope.** `AlphaClient` covers only the allowlisted synthetic-alpha test plane the
 server actually implements: `POST /v1/alpha/messages`, `GET /v1/alpha/messages/{id}`
 and `POST /v1/alpha/messages/{id}/cancel`
@@ -54,3 +80,37 @@ python3 -m unittest discover -s sdk/python/tests -t sdk/python
 ```
 
 Tests use a loopback stub HTTP server and no network.
+
+## Native workflow adapter
+
+`workflow_client.py` now implements the eight existing scoped workflow tools in
+Python without launching Node. Its public `WorkflowClient`, `WorkflowError`,
+`workflow_functions` and `action_digest` names remain available. Configuration
+errors, including invalid credential realms, are rejected at construction.
+This adapter is separate from the alpha client's distributable package. The
+unpublished `zrotext-workflow-candidate==0.1.0a1` wheel/sdist supplies normal
+`zrotext_workflow` imports; existing source `workflow_client` imports forward to
+the same implementation. See [packaging and acceptance gaps](workflow/README.md).
+
+The client requires HTTPS and a dedicated `ztw_` workflow credential. It validates
+the shared closed schemas, canonical action digest and response identity before
+returning results. It never approves actions or grants radio authority. Only an
+explicit rate-limit refusal can retry, with a caller-selected maximum of three
+identical attempts; the default is one. Network failures, malformed replies,
+unavailable outcomes and timeouts remain unknown and are never retried.
+
+Each attempt has a total deadline covering connection and body reading. A timed
+out resolver cannot later submit a request; outstanding resolver/transport workers
+are bounded to sixteen across the process. Capacity exhaustion returns a redacted
+unknown failure without sending. TLS uses Python's system trust configuration
+(including `SSL_CERT_FILE`), with hostname verification enabled; Node-specific CA
+settings no longer apply. Redirects, ambient proxies and cookies are not used.
+Credential strings cannot be guaranteed erased by the Python runtime.
+
+The packaged `workflow/zrotext_workflow/workflow_contract.json` is exported from the executable TypeScript
+schemas using `node sdk/typescript/scripts/export-python-workflow-contract.mjs`
+after building TypeScript. Ordinary SDK tests pin exact schema/annotation parity,
+canonical digest vectors and refusal behavior. The existing HTTPS fixture tests
+now exercise the native implementation with an independently trusted test CA.
+`workflow_bridge.mjs` remains available for differential reference; the Python
+client does not call it.

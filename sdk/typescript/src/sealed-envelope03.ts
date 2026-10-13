@@ -76,6 +76,7 @@ export async function composeSealedOutboundEnvelope03(input: OutboundComposition
   }, now);
   if (!same(signerPoint, authorized.signerPoint)) fail("signer point");
   if (!recipients.some(r => r.role === 1 && same(r.keyId, bound.selectedReaderKeyId))) fail("elected payload reader");
+  if (observed < authorized.validFromMs) fail("authority lifetime start");
   if (expires > authorized.expiresMs || expires > bound.permissionExpiresAtMs) fail("authority deadline");
   // Native WebCrypto rejects forged keys. Metadata is checked before drawing
   // material; generated signature is also verified against the authorized point.

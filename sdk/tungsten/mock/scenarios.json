@@ -1,0 +1,100 @@
+{
+  "version": 1,
+  "seed": 17,
+  "cases": [
+    {
+      "name": "planned route absent",
+      "method": "POST",
+      "path": "/v1/messages",
+      "status": 404
+    },
+    {
+      "name": "sealed gate off",
+      "method": "GET",
+      "path": "/v1/sealed/messages/11111111-2222-4333-8444-555555555555",
+      "headers": {
+        "Authorization": "Bearer synthetic-bearer"
+      },
+      "status": 404
+    },
+    {
+      "name": "workflow gate off",
+      "method": "POST",
+      "path": "/v1/workflow/tools",
+      "body": {
+        "method": "workflow.contact.read",
+        "params": {
+          "request_id": "11111111-2222-4333-8444-555555555555",
+          "context_id": "11111111-2222-4333-8444-555555555555"
+        }
+      },
+      "status": 404
+    },
+    {
+      "name": "missing alpha bearer",
+      "method": "GET",
+      "path": "/v1/alpha/messages/11111111-2222-4333-8444-555555555555",
+      "status": 401
+    },
+    {
+      "name": "alpha synthetic status",
+      "method": "GET",
+      "path": "/v1/alpha/messages/11111111-2222-4333-8444-555555555555",
+      "headers": {
+        "Authorization": "Bearer synthetic-bearer"
+      },
+      "status": 200
+    },
+    {
+      "name": "invalid identifier",
+      "method": "GET",
+      "path": "/v1/alpha/messages/invalid",
+      "headers": {
+        "Authorization": "Bearer synthetic-bearer"
+      },
+      "status": 400
+    },
+    {
+      "name": "owner cookie lacks csrf",
+      "method": "GET",
+      "path": "/v1/enrollment/devices",
+      "headers": {
+        "Cookie": "__Host-zrotext_session=synthetic-session"
+      },
+      "status": 403
+    },
+    {
+      "name": "owner composite auth",
+      "method": "GET",
+      "path": "/v1/enrollment/devices",
+      "headers": {
+        "Cookie": "__Host-zrotext_session=synthetic-session; __Host-zrotext_csrf=synthetic-csrf",
+        "x-zrotext-csrf": "synthetic-csrf",
+        "Origin": "https://owner.example.test"
+      },
+      "status": 200
+    },
+    {
+      "name": "owner mismatched csrf",
+      "method": "GET",
+      "path": "/v1/enrollment/devices",
+      "headers": {
+        "Cookie": "__Host-zrotext_session=synthetic-session; __Host-zrotext_csrf=synthetic-csrf",
+        "x-zrotext-csrf": "wrong",
+        "Origin": "https://owner.example.test"
+      },
+      "status": 403
+    },
+    {
+      "name": "malformed alpha body",
+      "method": "POST",
+      "path": "/v1/alpha/messages",
+      "headers": {
+        "Authorization": "Bearer synthetic-bearer",
+        "Idempotency-Key": "synthetic.invalid"
+      },
+      "body": {},
+      "status": 400
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+package webhook_test
+
+import (
+	"encoding/hex"
+	"os"
+	"strconv"
+	"strings"
+	"testing"
+
+	webhook "github.com/pboachie/zrotext/sdk/native/go"
+)
+
+func TestSharedRawVectorsAndUnsignedClockBoundary(t *testing.T) {
+	data, err := os.ReadFile(os.Getenv("ZROTEXT_WEBHOOK_VECTOR_FILE"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, typedRefusals := 0, 0
+	rows := strings.Split(strings.TrimSpace(string(data)), "\n")
+	for _, row := range rows[1:] {
+		cells := strings.Split(strings.TrimSuffix(row, "\r"), "\t")
+		if len(cells) != 6 {
+			t.Fatal("bad vector")
+		}
+		now, err := strconv.ParseUint(cells[4], 10, 64)
+		if err != nil {
+			if cells[0] != "clock_overflow_negative" || cells[4] != "-9223372036854775808" {
+				t.Fatal("unexpected clock")
+			}
+			typedRefusals++
+			continue
+		}
+		body, err := hex.DecodeString(cells[3])
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = webhook.Verify([]byte("0123456789abcdef0123456789abcdef"), cells[1], cells[2], body, now, 300)
+		actual := "ok"
+		if err != nil {
+			actual = err.Error()
+		}
+		if actual != cells[5] {
+			t.Fatalf("%s: got %s, want %s", cells[0], actual, cells[5])
+		}
+		verified++
+	}
+	if verified != 16 || typedRefusals != 1 {
+		t.Fatal("missing vector coverage")
+	}
+}

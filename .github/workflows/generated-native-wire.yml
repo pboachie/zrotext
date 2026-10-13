@@ -1,0 +1,35 @@
+name: Generated Rust Go wire acceptance
+on:
+  pull_request:
+    paths: ['sdk/tungsten/conformance/native/**', '.github/workflows/generated-native-wire.yml']
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.22'
+          cache: false
+      - name: Check out reviewed foundation and runtime sources
+        shell: bash
+        run: |
+          foundation=$(python3 -c 'import json; print(json.load(open("sdk/tungsten/conformance/native/dependency.json"))["foundation_revision"])')
+          runtime=$(python3 -c 'import json; print(json.load(open("sdk/tungsten/conformance/native/dependency.json"))["runtime_revision"])')
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$RUNNER_TEMP/foundation"
+          git -C "$RUNNER_TEMP/foundation" checkout --detach "$foundation"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/tungsten.git "$RUNNER_TEMP/tungsten"
+          git -C "$RUNNER_TEMP/tungsten" checkout --detach "$runtime"
+      - name: Generate reviewed artifacts
+        run: python3 "$RUNNER_TEMP/foundation/scripts/tungsten_sdk.py" --source "$RUNNER_TEMP/tungsten" --check
+      - name: Install Rust minimum compiler
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Build and exercise native SDKs against synthetic loopback HTTP
+        run: python3 sdk/tungsten/conformance/native/run.py --foundation "$RUNNER_TEMP/foundation" --source "$RUNNER_TEMP/tungsten"

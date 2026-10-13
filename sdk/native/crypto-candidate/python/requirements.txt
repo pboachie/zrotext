@@ -1,0 +1,5 @@
+# PyCA supplies maintained native authenticated encryption and decrypt_into.
+cryptography==50.0.2
+# Locked transitive native binding/parser dependencies for this candidate lane.
+cffi==2.1.1
+pycparser==3.11
