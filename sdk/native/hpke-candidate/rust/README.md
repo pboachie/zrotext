@@ -39,3 +39,11 @@ Reference: https://www.rfc-editor.org/rfc/rfc9180.html sections4-5 and7.
 `VerifyEnvelope` (Go) / `envelope::verify_envelope` (Rust) validate profile 02 outbound/inbound and profile 03 outbound, including canonical layout, signed-storage integers, recipient ordering and P-256 points, signer key-ID binding, and domain-separated low-S ECDSA. Owned tokens produce exact body/wrap transcripts and unsigned-content digests.
 
 This is signature integrity, not authority: correct verified manifests, current signer/recipient authorization, replay state and protected custody remain caller requirements. Profile 01 and profile 03 inbound are refused. No full reader is claimed. The pinned public exporter supplies six recipient rows; native tests cover exact transcripts, every single-byte mutation, truncation, trailing data and input aliasing.
+
+## Manifest provenance
+
+Root enrollment requires the separately compared fingerprint of a generation-one root pin. The native manifest verifier validates profile 02 genesis and exact successors, profile 03 upgrades from a still-fresh verified 02 predecessor, and profile 03 successors. Re-verifying the same semantic unsigned identity accepts an independently valid alternate signature; forks, gaps, downgrades and comparison-clock regression refuse. Tokens own signed bytes and root identity, and validate native points, key IDs, role/subject/scope rules, owner/archive counts, low-S signatures and signed validity windows.
+
+The current implementation supports generation one with the zero genesis anchor. Root transitions and later generations refuse. These tokens prove signed provenance, not the freshness of an external authority source. Atomic durable selection, reader permission, replay/election/grant state, protected custody and a complete decrypting reader are not supplied by this module.
+
+Run the `manifest` executable with `protocol/v1/vectors/sealed-profile03-contract-01.json` on stdin. Both native lanes exercise public signed genesis/successor/current fixtures and all single-byte mutations, root corruption, forks, gaps, downgrade, comparison rollback, wrong expected profile, and truncation/trailing data. No new private fixture material is introduced.

@@ -38,11 +38,13 @@ jobs:
           cargo +1.97.1 clippy --locked --all-targets -- -D warnings
           node "$RUNNER_TEMP/producer/sdk/typescript/test/emit-native-hpke.mjs" | cargo +1.97.1 run --locked --example interop
           python "$RUNNER_TEMP/envelopes/sdk/native/crypto-envelope/java/envelope_rows.py" | cargo +1.97.1 run --locked --example envelope
+          cargo +1.97.1 run --locked --example manifest < ../../../../protocol/v1/vectors/sealed-profile03-contract-01.json
           cargo +1.97.1 package --locked
       - name: Go native recipient
         working-directory: sdk/native/hpke-candidate/go
         run: |
           test -z "$(gofmt -l .)"
           go vet ./...
+          go run ./cmd/manifest < ../../../../protocol/v1/vectors/sealed-profile03-contract-01.json
           python "$RUNNER_TEMP/envelopes/sdk/native/crypto-envelope/java/envelope_rows.py" | go run ./cmd/envelope
           node "$RUNNER_TEMP/producer/sdk/typescript/test/emit-native-hpke.mjs" | go run ./cmd/interop
