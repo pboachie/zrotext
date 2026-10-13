@@ -27,6 +27,14 @@ outbound02=package.compose_outbound02(manifest=manifest,now_ms=10000,message_id=
     content='Native composed02 🌱',signer=package.SoftwareSigner(ec.derive_private_key(5,ec.SECP256R1())),
     recipients=[(k.role,k.id,k.point) for k in s._bound(s._manifests,manifest).keys if k.role in (1,2)],require_hardware=False)
 with tempfile.TemporaryDirectory() as directory:
+    rotation=fixture['rotation']
+    rotated=package.RootCheckpointStore(Path(directory)/'roots.db',decode(rotation['old_root_pin_b64']),
+        decode(rotation['old_root_fingerprint_b64']),approved_roots={2:decode(rotation['new_root_point_b64'])})
+    rotated.accept_manifest(decode(rotation['old_manifest_b64']),0,rotation['now_ms'])
+    rotated.accept_transition(decode(rotation['transition_b64']),decode(rotation['new_manifest_b64']),1,rotation['now_ms'])
+    restored=package.RootCheckpointStore(Path(directory)/'roots.db',decode(rotation['old_root_pin_b64']),
+        decode(rotation['old_root_fingerprint_b64']),approved_roots={2:decode(rotation['new_root_point_b64'])})
+    assert s.manifest_identity(restored.snapshot(rotation['now_ms'])[1])['digest']==decode(rotation['new_semantic_manifest_digest_b64'])
     journal=package.ElectionJournal(Path(directory)/'election.db',decode(f['rootPin']),decode(f['fingerprint']))
     journal.accept_manifest(decode(f['signed02']),0,10000)
     expected=dict(expected_core=decode(f['core']),accepted_record=record(f['accepted']),

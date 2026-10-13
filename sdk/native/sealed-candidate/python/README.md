@@ -24,7 +24,7 @@ local qualification. Missing crypto dependencies fail installation/import;
 unsupported protected capabilities raise `CngUnavailable` or `SealedError`.
 There is no silent software fallback. Python 3.12 is the exercised CI version.
 
-Wheel contents are restricted to the package's ten modules and distribution
+Wheel contents are restricted to the package's eleven modules and distribution
 metadata/license. Source archives add build metadata and this README; neither
 archive includes tests, fixture producers, private receipts, sample scalars or
 repository tooling. Both carry AGPL-3.0-only license metadata and full text.
@@ -133,6 +133,24 @@ predecessor for03 upgrades, and refuses corruption, stale revisions, clock
 regression and unsupported profile downgrades. It stores public signed evidence
 only. Use an access-controlled local directory. Root transitions are currently
 outside this checkpoint adapter's generation-one chain surface.
+
+`RootCheckpointStore` supplies a separate profile-02 rotation-aware format. A
+dual-signed transition and its exact new-root genesis manifest form one atomic
+checkpoint row under revision CAS. Reopen always starts from the independently
+enrolled original root and replays every signature, digest anchor, generation
+increment and version. The caller must supply independently compared successor
+root points in `approved_roots={generation: public_point}` again on every open;
+database bytes never approve their own replacement root. Approvals are captured
+immutably before storage is read. Missing approvals, partial/corrupt pairs,
+clock regressions and foreign database formats refuse without a trust reset.
+
+Existing maintained TypeScript dual-root rotation vectors are verified by both
+implementations. Tests cover restart, concurrent CAS, failed insertion and
+process termination before commit; installed wheel/sdist consumers also restore
+the rotated checkpoint. This does not migrate plain/election checkpoint files,
+renew current permissions or provide independent rollback detection. Profile03
+root/generation transitions remain unsupported by the current reviewed profile,
+and this store refuses profile03 rather than inventing a transition contract.
 
 `ElectionJournal` uses a separate database format to atomically append the exact
 signed03 manifest, accepted binding/election tuple and original signed bundle
