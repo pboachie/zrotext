@@ -11,6 +11,11 @@ import javax.crypto.spec.*;
 /** Candidate-only RFC9180 base-mode, sequence-zero CEK unwrap; no manifest authority. */
 public final class HpkeRecipient {
     private HpkeRecipient() {}
+    /** Trusted application key adapter. This interface alone makes no custody claim. */
+    public interface Recipient {
+        byte[] unwrap(byte[] publicPoint,byte[] enc,byte[] info,byte[] aad,byte[] ciphertext)throws GeneralSecurityException;
+    }
+    static Recipient software(PrivateKey key){return (pk,enc,info,aad,ct)->open(key,pk,enc,info,aad,ct);}
     private static final byte[] EMPTY = new byte[0];
     private static final byte[] KEM = new byte[] {75,69,77,0,16};
     private static final byte[] SUITE = new byte[] {72,80,75,69,0,16,0,1,0,1};
@@ -65,11 +70,20 @@ public final class HpkeRecipient {
         byte[] proof = binding.sign();
         binding.initVerify(recipientPublic); binding.update(challenge);
         if (!binding.verify(proof)) throw new InvalidKeyException("Recipient key binding");
+        KeyAgreement agreement = KeyAgreement.getInstance("ECDH");
+        agreement.init(recipient); agreement.doPhase(ephemeral, true);
+        byte[] shared=agreement.generateSecret();
+        try{return openAgreement(shared,pk,enc,contextInfo,authenticated,encrypted);}
+        finally{Arrays.fill(shared,(byte)0);}
+    }
+    // Native adapters must independently prove public binding before supplying DH.
+    static byte[] openAgreement(byte[] shared,byte[] pk,byte[] enc,byte[] contextInfo,byte[] authenticated,byte[] encrypted)throws GeneralSecurityException{
+        if(shared.length!=32 || contextInfo.length>36864 || authenticated.length>36864 || encrypted.length!=48)
+            throw new GeneralSecurityException("Candidate agreement bounds");
+        point(pk);point(enc);
         byte[][] secrets = new byte[6][];
         try {
-            KeyAgreement agreement = KeyAgreement.getInstance("ECDH");
-            agreement.init(recipient); agreement.doPhase(ephemeral, true);
-            secrets[0] = agreement.generateSecret();
+            secrets[0] = shared.clone();
             if (secrets[0].length != 32) throw new InvalidKeyException("P256 shared secret width");
             secrets[1] = extract(KEM, EMPTY, "eae_prk", secrets[0]);
             secrets[2] = expand(KEM, secrets[1], "shared_secret", join(enc, pk), 32);

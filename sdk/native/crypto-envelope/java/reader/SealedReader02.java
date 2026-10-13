@@ -20,14 +20,22 @@ public final class SealedReader02 {
     private static void active(byte[] record,long now)throws GeneralSecurityException{need(record[148]==1 && number(record,132)<=now && now<number(record,140));}
     public static String open(byte[] input,ManifestChain.Verified manifest,long now,int recipientRole,byte[] recipientId,
             PrivateKey recipient,CurrentSelection current)throws GeneralSecurityException{
-        return openBound(input,manifest,manifest,now,recipientRole,recipientId,recipient,current,false);
+        return openWithRecipient(input,manifest,now,recipientRole,recipientId,HpkeRecipient.software(recipient),current);
     }
     public static String openHistoricalArchive(byte[] input,ManifestChain.Verified historical,ManifestChain.Verified selected,long now,
             byte[] recipientId,PrivateKey recipient,CurrentSelection current)throws GeneralSecurityException{
-        return openBound(input,historical,selected,now,2,recipientId,recipient,current,true);
+        return openHistoricalWithRecipient(input,historical,selected,now,recipientId,HpkeRecipient.software(recipient),current);
+    }
+    public static String openWithRecipient(byte[] input,ManifestChain.Verified manifest,long now,int role,byte[] id,
+            HpkeRecipient.Recipient recipient,CurrentSelection current)throws GeneralSecurityException{
+        return openBound(input,manifest,manifest,now,role,id,recipient,current,false);
+    }
+    public static String openHistoricalWithRecipient(byte[] input,ManifestChain.Verified historical,ManifestChain.Verified selected,long now,
+            byte[] id,HpkeRecipient.Recipient recipient,CurrentSelection current)throws GeneralSecurityException{
+        return openBound(input,historical,selected,now,2,id,recipient,current,true);
     }
     private static String openBound(byte[] input,ManifestChain.Verified manifest,ManifestChain.Verified selectedManifest,long now,int recipientRole,byte[] recipientId,
-            PrivateKey recipient,CurrentSelection current,boolean historical)throws GeneralSecurityException{
+            HpkeRecipient.Recipient recipient,CurrentSelection current,boolean historical)throws GeneralSecurityException{
         need(manifest!=null && manifest.profile()==2 && selectedManifest!=null && selectedManifest.profile()==2 && selectedManifest.descendsFrom(manifest)
             && current!=null && now>=selectedManifest.comparisonMs() && now<selectedManifest.expiresMs());
         byte[] b=input.clone(),id=recipientId.clone();need(b.length>=426 && b.length<=36864 && id.length==32);
@@ -53,7 +61,7 @@ public final class SealedReader02 {
         need(current.isCurrent(selectedManifest.account(),selectedManifest.version(),selectedManifest.digest(),b.clone()));
         byte[] cek=null;
         try{
-            cek=HpkeRecipient.open(recipient,part(selected,33,65),envelope.encapsulated(recipientRole,id),envelope.wrapInfo(recipientRole,id),envelope.wrapAad(recipientRole,id),envelope.wrappedKey(recipientRole,id));
+            cek=recipient.unwrap(part(selected,33,65),envelope.encapsulated(recipientRole,id),envelope.wrapInfo(recipientRole,id),envelope.wrapAad(recipientRole,id),envelope.wrappedKey(recipientRole,id));
             String result=CandidateBody.open(cek,envelope.nonce(),envelope.bodyAad(),envelope.bodyCiphertext());
             need(current.isCurrent(selectedManifest.account(),selectedManifest.version(),selectedManifest.digest(),b.clone()));return result;
         }finally{if(cek!=null)Arrays.fill(cek,(byte)0);}

@@ -17,6 +17,10 @@ public final class ElectedReader03 {
     private static void active(byte[] r,long when)throws GeneralSecurityException{need(r[148]==1 && number(r,132)<=when && when<number(r,140));}
     public static String openSoftware(byte[] input,ManifestChain.Verified manifest,Election03.Proof proof,AuthoritySource source,
             byte[] expectedMessage,String expectedPeer,PrivateKey recipient)throws GeneralSecurityException{
+        return openWithRecipient(input,manifest,proof,source,expectedMessage,expectedPeer,HpkeRecipient.software(recipient));
+    }
+    public static String openWithRecipient(byte[] input,ManifestChain.Verified manifest,Election03.Proof proof,AuthoritySource source,
+            byte[] expectedMessage,String expectedPeer,HpkeRecipient.Recipient recipient)throws GeneralSecurityException{
         byte[] b=input.clone(),message=expectedMessage.clone();String peer=expectedPeer;need(b.length>=557 && b.length<=34213 && message.length==16 && !Arrays.equals(message,new byte[16]));
         AuthoritySnapshot snapshot=source.read();long now=snapshot.nowMs();var authority=Election03.requireCurrent(proof,manifest,snapshot.authenticatedRecord(),now);
         need(b[4]==3 && b[5]==1 && same(part(b,10,16),authority.field("accountId")) && same(part(b,26,16),message) && same(part(b,42,16),authority.field("deviceId")) && same(part(b,58,16),authority.field("lineId")));
@@ -34,7 +38,7 @@ public final class ElectedReader03 {
         }
         need(selected!=null);byte[] cek=null;
         try{
-            cek=HpkeRecipient.open(recipient,part(selected,33,65),envelope.encapsulated(1,elected),envelope.wrapInfo(1,elected),envelope.wrapAad(1,elected),envelope.wrappedKey(1,elected));
+            cek=recipient.unwrap(part(selected,33,65),envelope.encapsulated(1,elected),envelope.wrapInfo(1,elected),envelope.wrapAad(1,elected),envelope.wrappedKey(1,elected));
             String result=CandidateBody.open(cek,envelope.nonce(),envelope.bodyAad(),envelope.bodyCiphertext());
             AuthoritySnapshot after=source.read();need(after.nowMs()>=now && after.nowMs()<expires);Election03.requireCurrent(proof,manifest,after.authenticatedRecord(),after.nowMs());return result;
         }finally{if(cek!=null)Arrays.fill(cek,(byte)0);}
