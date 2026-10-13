@@ -114,6 +114,7 @@ type OwnerTemplateReader struct {
 	closed, busy atomic.Bool
 	mu           sync.Mutex
 	cancel       context.CancelFunc
+	lifetime     time.Time
 	prior        *Manifest
 	now, head    uint64
 	headDigest   [32]byte
@@ -170,6 +171,12 @@ func (w *ownerTemplateWork) shorten(at time.Time) {
 	w.mu.Unlock()
 }
 func (c *OwnerTemplateReader) live(ctx context.Context, w *ownerTemplateWork) error {
+	c.mu.Lock()
+	lifetime := c.lifetime
+	c.mu.Unlock()
+	if !lifetime.IsZero() {
+		w.shorten(lifetime)
+	}
 	if c.closed.Load() || ctx.Err() != nil {
 		return OwnerTemplateError{Code: "closed"}
 	}

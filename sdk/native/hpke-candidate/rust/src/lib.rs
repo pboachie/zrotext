@@ -5,6 +5,7 @@ pub mod cng;
 pub mod compose;
 #[cfg(windows)]
 pub mod compose02;
+pub mod contact;
 pub mod elected_reader;
 pub mod election;
 pub mod envelope;

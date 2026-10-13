@@ -452,6 +452,78 @@ impl HardwareRecipient {
 }
 
 const SIGN_PREFIX: &str = "zrotext-candidate-sign-";
+const CONTACT_PREFIX: &str = "zrotext-candidate-contact-root-";
+#[cfg(test)]
+#[path = "contact_hardware_tests.rs"]
+mod contact_hardware_tests;
+/// Dedicated qualified PCP contact-field capability. No generic domain, manifest,
+/// statement or envelope signing API; deletion remains the caller's responsibility.
+pub struct ContactRootSigner {
+    signer: HardwareSigner,
+}
+impl ContactRootSigner {
+    pub fn probe() -> Result<(), NativeError> {
+        HardwareSigner::probe()
+    }
+    pub fn create<F>(receipt: F) -> Result<Self, NativeError>
+    where
+        F: FnOnce(&str) -> Result<(), NativeError>,
+    {
+        Ok(Self {
+            signer: HardwareSigner::create_prefix(receipt, CONTACT_PREFIX)?,
+        })
+    }
+    pub fn open(alias: &str, point: &[u8]) -> Result<Self, NativeError> {
+        Ok(Self {
+            signer: HardwareSigner::open_prefix(alias, point, CONTACT_PREFIX)?,
+        })
+    }
+    pub fn public_point(&self) -> Result<Vec<u8>, NativeError> {
+        self.signer.public_point()
+    }
+    pub fn alias(&self) -> Result<String, NativeError> {
+        self.signer.alias()
+    }
+    pub fn close(&self) -> Result<(), NativeError> {
+        self.signer.close()
+    }
+    pub fn delete_created(&self) -> Result<(), NativeError> {
+        self.signer.delete_created()
+    }
+    pub(crate) fn sign_contact_field(
+        &self,
+        unsigned: &[u8],
+        expected: &[u8],
+        live: impl Fn() -> bool,
+    ) -> Result<Vec<u8>, NativeError> {
+        use sha2::{Digest, Sha256};
+        let guard = self
+            .signer
+            .state
+            .lock()
+            .map_err(|_| refused("poisoned lock"))?;
+        let state = &guard.0;
+        if !live()
+            || !state.qualified
+            || state.closed
+            || !(332..=2379).contains(&unsigned.len())
+            || &unsigned[..5] != b"ZTCO\x01"
+            || state.public_magic(0x31534345)? != expected
+        {
+            return Err(refused("contact capability"));
+        }
+        if !live() {
+            return Err(refused("contact deadline"));
+        }
+        let digest = Sha256::digest(crate::contact::transcript(
+            crate::contact::FIELD_DOMAIN,
+            unsigned,
+        ));
+        let sig = signer_digest(state, &digest)?;
+        signer_verify(expected, &digest, &sig)?;
+        Ok(sig)
+    }
+}
 /// Qualified Windows signing object. No arbitrary digest or private export API.
 pub struct HardwareSigner {
     state: Mutex<(State, bool)>,
@@ -527,10 +599,16 @@ impl HardwareSigner {
     where
         F: FnOnce(&str) -> Result<(), NativeError>,
     {
+        Self::create_prefix(record_pending, SIGN_PREFIX)
+    }
+    fn create_prefix<F>(record_pending: F, prefix: &str) -> Result<Self, NativeError>
+    where
+        F: FnOnce(&str) -> Result<(), NativeError>,
+    {
         let mut state = State::start_algorithm("ECDSA_P256")?;
         let mut random = [0u8; 16];
         getrandom::fill(&mut random).map_err(|_| refused("CSPRNG"))?;
-        state.name = SIGN_PREFIX.to_owned()
+        state.name = prefix.to_owned()
             + &random
                 .iter()
                 .map(|v| format!("{v:02x}"))
@@ -579,9 +657,12 @@ impl HardwareSigner {
         })
     }
     pub fn open(name: &str, expected: &[u8]) -> Result<Self, NativeError> {
-        if !name.starts_with(SIGN_PREFIX)
-            || name.len() != SIGN_PREFIX.len() + 32
-            || !name[SIGN_PREFIX.len()..]
+        Self::open_prefix(name, expected, SIGN_PREFIX)
+    }
+    fn open_prefix(name: &str, expected: &[u8], prefix: &str) -> Result<Self, NativeError> {
+        if !name.starts_with(prefix)
+            || name.len() != prefix.len() + 32
+            || !name[prefix.len()..]
                 .bytes()
                 .all(|v| v.is_ascii_digit() || (b'a'..=b'f').contains(&v))
             || expected.len() != 65

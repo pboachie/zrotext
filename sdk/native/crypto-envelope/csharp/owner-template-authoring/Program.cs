@@ -1,0 +1,22 @@
+using System.Text.Json;
+using System.Diagnostics;
+using Zrotext.Candidate;
+using var document=JsonDocument.Parse(Console.In.ReadToEnd());var p=document.RootElement;var f=p.GetProperty("Fixture");
+byte[] B(JsonElement o,string key)=>Convert.FromBase64String(o.GetProperty(key).GetString()!);
+long N(string key,long fallback=0)=>p.TryGetProperty(key,out var v)?v.GetInt64():fallback;
+bool Yes(string key)=>p.TryGetProperty(key,out var v) && v.GetBoolean();
+var pin=ManifestChain.RootPin.Enroll(B(f,"rootPin"),B(f,"fingerprint"));var m=ManifestChain.Genesis02(B(f,"manifest"),pin,10000);var o=f.GetProperty("binding");var binding=new OwnerTemplate.Binding(B(o,"account"),B(o,"device"),B(o,"line"),B(o,"interval"),B(o,"session"),o.GetProperty("generation").GetInt64(),o.GetProperty("peer").GetString()!,B(o,"phoneReader"),B(o,"archiveReader"));
+int currents=0,sessions=0,reviewed=0,metadata=0;OwnerTemplate? client=null;using var entered=new ManualResetEventSlim();using var release=new ManualResetEventSlim();
+OwnerTemplate.Current Current(){int at=++currents;if(N("ClientCloseAt")==at)client?.Dispose();if(N("CurrentSleepAt")==at)Thread.Sleep((int)N("SleepMS"));if(N("CurrentFailAt")==at)throw new OwnerTemplate.Failure();var times=p.GetProperty("Now").EnumerateArray().ToArray();return new(binding,m,times[Math.Min(at-1,times.Length-1)].GetInt64(),N("ValidForMS"),!(Yes("OwnerLost") && reviewed>0),true,true);}
+OwnerTemplate.Session Session(){int at=++sessions;return new(p.GetProperty("Origin").GetString()!,p.GetProperty("Cookie").GetString()!,p.GetProperty("CSRF").GetString()!+((N("SessionChangeAt")==at || Yes("CSRFChanged") && reviewed>0)?"-changed":""));}
+OwnerTemplate.DraftState Draft()=>new(1+(reviewed>0 && Yes("EpochChanged")?1:0),1+(reviewed>0 && Yes("RevisionChanged")?1:0),Yes("CustodyLive") && !(reviewed>0 && Yes("CustodyLost")));
+bool Review(OwnerTemplate.DraftReview value){reviewed++;if(Yes("ReviewBlock")){entered.Set();if(!release.Wait(10000))throw new Exception("Review release timeout");}Thread.Sleep((int)N("ReviewSleepMS"));return Yes("Decision");}
+using var author=new OwnerTemplate.Authoring(p.GetProperty("Origin").GetString()!,binding,B(f.GetProperty("scope"),"templateId"),Current,Session,_=>metadata++,Draft,Review,Yes("Enabled"),(int)N("TimeoutMS"),p.GetProperty("Roots").GetString()!);
+client=author.Client;var wire=B(f,"envelope");var scope=new EncryptedTemplate.Scope(wire[..222]);TemplateContent? content=null;try{content=new TemplateContent(p.GetProperty("Template").GetString()!,p.GetProperty("Values").EnumerateObject().ToDictionary(v=>v.Name,v=>v.Value.GetString()!));}catch(TemplateContent.Failure){}
+OwnerTemplate.Ticket? ticket=null;if(Yes("PriorSaved") || Yes("PriorUnknown")){ticket=client.PrepareSave(scope,"00000000-0000-0000-0000-000000000041",0,wire);if(Yes("PriorUnknown"))try{client.Commit(ticket);throw new Exception("Expected unknown");}catch(OwnerTemplate.Failure e){if(!e.Unknown)throw;}}var results=new List<bool>();var watch=Stopwatch.StartNew();
+void Prepare(){try{if(content is null)throw new OwnerTemplate.Failure();var next=author.Prepare("00000000-0000-0000-0000-000000000041",0,scope,content,1,1);ticket=next;results.Add(true);}catch(OwnerTemplate.Failure){results.Add(false);}}
+if(Yes("ReviewBlock")){var worker=Task.Run(Prepare);if(!entered.Wait(10000))throw new Exception("Review entry timeout");try{if(Yes("ForeignReview"))ticket=client.PrepareSave(scope,"00000000-0000-0000-0000-000000000041",0,wire);else{author.Prepare("00000000-0000-0000-0000-000000000041",0,scope,content!,1,1);throw new Exception("Concurrent author accepted");}}catch(OwnerTemplate.Failure e){if(e.Code!="busy")throw;}finally{release.Set();}worker.GetAwaiter().GetResult();}else for(int i=0;i<N("Repeat",1);i++)Prepare();
+double elapsed=watch.Elapsed.TotalSeconds;Thread.Sleep((int)N("DelayMS"));bool ack=false,fresh=false,read=false;
+if(Yes("Commit") && ticket is not null)try{if(Yes("PriorUnknown"))client.RetryUnknown(ticket);else client.Commit(ticket);ack=true;}catch(OwnerTemplate.Failure){}
+if(Yes("ProbeExpired")){try{client.PrepareSave(scope,"00000000-0000-0000-0000-000000000042",0,wire);fresh=true;}catch(OwnerTemplate.Failure){}try{client.ReadLatest();read=true;}catch(OwnerTemplate.Failure){}}
+Thread.Sleep((int)N("SettleMS"));Console.WriteLine(JsonSerializer.Serialize(new{accepted=results,ack,fresh,read,reviewed,metadata,currentCalls=currents,elapsed}));
