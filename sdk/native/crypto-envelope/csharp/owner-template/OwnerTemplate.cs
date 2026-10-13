@@ -28,7 +28,7 @@ public sealed partial class OwnerTemplate:IDisposable {
  private static readonly SemaphoreSlim Admission=new(8,8);
  private readonly object gate=new();private readonly string origin,path;private readonly Binding binding;private readonly byte[] template;private readonly Func<Current> source;private readonly Func<Session> sessions;private readonly int timeout;private readonly OwnerTemplateTransport transport;
  private readonly Action<Review>? review;private Saved? saved;private PendingIdentity? pending;
- private bool closed,busy;private long now,head;private ManifestChain.Verified? prior;private string? headDigest;
+ private bool closed,busy;private long lifetimeDeadline=long.MaxValue;private long now,head;private ManifestChain.Verified? prior;private string? headDigest;
  private sealed class Work(long deadline){internal long Deadline=deadline;internal bool Done,Foreground,Released;internal object? Result;internal Failure? Error;internal Action? Finish;}
  private static long Tick()=>Stopwatch.GetTimestamp();private static long Span(long ms)=>ms*Stopwatch.Frequency/1000;
  public OwnerTemplate(string origin,Binding binding,byte[] template,Func<Current> source,Func<Session> sessions,bool enabled=false,int timeoutMs=10000,string additionalRootsPem="",Action<Review>? review=null){
@@ -40,7 +40,7 @@ public sealed partial class OwnerTemplate:IDisposable {
  private Failure Classify(Exception error){if(error is Failure f && new[]{"invalid_request","pending_write","busy","capacity"}.Contains(f.Code))return f;if(pending is not null)return new Failure("response_unknown",true);return error as Failure??new Failure();}
  private void ReleaseWork(Work w){if(w.Done && w.Foreground && !w.Released){w.Released=true;busy=false;if(closed)saved=null;Admission.Release();Monitor.PulseAll(gate);}}
  private object Execute(Func<Work,object> operation){
-  Work w;lock(gate){if(busy)throw new Failure("busy");if(closed)throw Classify(new Failure("closed"));if(!Admission.Wait(0))throw new Failure("capacity");busy=true;w=new(Tick()+Span(timeout));}
+  Work w;lock(gate){if(busy)throw new Failure("busy");if(closed)throw Classify(new Failure("closed"));if(!Admission.Wait(0))throw new Failure("capacity");busy=true;w=new(Math.Min(lifetimeDeadline,Tick()+Span(timeout)));}
   try{_ = Task.Run(()=>{try{var value=operation(w);lock(gate){w.Result=value;}}catch(Exception error){lock(gate){w.Error=Classify(error);}}finally{lock(gate){w.Done=true;ReleaseWork(w);Monitor.PulseAll(gate);}}});}catch{lock(gate){busy=false;}Admission.Release();throw new Failure("capacity");}
   try{lock(gate){for(;;){Live(w);if(w.Done){if(w.Error is not null)throw w.Error;w.Finish?.Invoke();return w.Result!;}Monitor.Wait(gate,Remaining(w));}}}
   finally{lock(gate){w.Foreground=true;ReleaseWork(w);}}

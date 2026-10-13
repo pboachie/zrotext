@@ -112,10 +112,45 @@ jobs:
           ref: 26e876da9f34372d9cf26511993cf633971e0037
           path: template-producer
           persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 312e1e0ddfeee21a8af6f75d8c268c7e8346838f
+          path: owner-template-fixture
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: c98dc2ffc3ab77b74295b9057807e5b51bc17a76
+          path: template-save-fixture
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 5a25bac026bebee5eba20dc6048ddc1c773c41ed
+          path: template-save-oracle
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: c059e5cfc83ec889cfc183b52767fe10735a02af
+          path: template-opening-fixture
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: c843543f13e3bbd6ac17a260a4b0523f0748324f
+          path: template-opening-oracle
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: b784cb6a23564a6eb7ac16cbf57134d95b8b2313
+          path: template-authoring-fixture
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 059556de2fe314ec0d88833a8d3e4d6ee41a8066
+          path: template-authoring-oracle
+          persist-credentials: false
       - name: Build independent producers
         shell: pwsh
         run: |
-          foreach ($path in @('producer02','producer03','custody-producer','root-producer','original-producer','template-producer')) {
+          foreach ($path in @('producer02','producer03','custody-producer','root-producer','original-producer','template-producer','template-save-oracle','template-opening-oracle','template-authoring-oracle')) {
             npm ci --ignore-scripts --prefix "$path/sdk/typescript"
             if ($LASTEXITCODE) { exit $LASTEXITCODE }
             npm run build --prefix "$path/sdk/typescript"
@@ -128,5 +163,5 @@ jobs:
       - name: Qualify clean installed candidate consumers
         shell: pwsh
         run: |
-          python sdk/native/crypto-envelope/package-managed.py --target ${{ matrix.language }} --out "$env:RUNNER_TEMP/native-artifacts" --producer02 producer02 --producer03 producer03 --custody-producer custody-producer --root-producer root-producer --root-controls root-controls --controls controls --original-producer original-producer --http-fixture http-fixture --current-fixture current-fixture --read-fixture read-fixture --page-fixture page-fixture --owner-fixture owner-fixture --proposal-fixture proposal-fixture --template-fixture template-fixture --template-producer template-producer
+          python sdk/native/crypto-envelope/package-managed.py --target ${{ matrix.language }} --out "$env:RUNNER_TEMP/native-artifacts" --producer02 producer02 --producer03 producer03 --custody-producer custody-producer --root-producer root-producer --root-controls root-controls --controls controls --original-producer original-producer --http-fixture http-fixture --current-fixture current-fixture --read-fixture read-fixture --page-fixture page-fixture --owner-fixture owner-fixture --proposal-fixture proposal-fixture --template-fixture template-fixture --template-producer template-producer --owner-template-fixture owner-template-fixture --template-save-fixture template-save-fixture --template-save-oracle template-save-oracle --template-opening-fixture template-opening-fixture --template-opening-oracle template-opening-oracle --template-authoring-fixture template-authoring-fixture --template-authoring-oracle template-authoring-oracle
           if ($LASTEXITCODE) { exit $LASTEXITCODE }

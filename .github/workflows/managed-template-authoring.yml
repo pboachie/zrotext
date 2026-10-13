@@ -1,0 +1,67 @@
+name: Managed reviewed template authoring interoperability
+on:
+  pull_request:
+    paths:
+      - 'sdk/native/crypto-envelope/**'
+      - 'sdk/native/crypto-candidate/**'
+      - '.github/workflows/managed-template-authoring.yml'
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  managed-template-authoring:
+    strategy:
+      matrix:
+        os: [windows-2025, ubuntu-24.04]
+        language: [java, csharp, ruby]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        if: matrix.language == 'java'
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+        if: matrix.language == 'csharp'
+        with:
+          dotnet-version: '8.0.x'
+      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a
+        if: matrix.language == 'ruby'
+        with:
+          ruby-version: '3.3.9'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: b784cb6a23564a6eb7ac16cbf57134d95b8b2313
+          path: fixture
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 26e876da9f34372d9cf26511993cf633971e0037
+          path: producer
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 059556de2fe314ec0d88833a8d3e4d6ee41a8066
+          path: authoring-oracle
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24.13.0'
+      - name: Build independent maintained template/authoring oracles
+        shell: pwsh
+        run: |
+          foreach ($source in @('producer', 'authoring-oracle')) {
+            npm ci --ignore-scripts --prefix "$source/sdk/typescript"
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            npm run build --prefix "$source/sdk/typescript"
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+      - name: Install synthetic TLS certificate dependency
+        run: python -m pip install cryptography==46.0.5
+      - name: Exercise immutable review and explicit-only preparation
+        run: python sdk/native/crypto-envelope/template-authoring-run.py --language ${{ matrix.language }} --fixture fixture --producer producer --authoring-oracle authoring-oracle
