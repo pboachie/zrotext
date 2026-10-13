@@ -43,5 +43,6 @@ bytes=File.binread(path);bad=path+'.bad'
 [0,4,98,130,161,162,166,174,182,bytes.bytesize-33,bytes.bytesize-1].each do |at|
   copy=bytes.dup;copy.setbyte(at,copy.getbyte(at)^1);File.binwrite(bad,copy);refuse.call { opening.call(bad) }
 end
+binary_tail=bytes+"\x1a".b;File.binwrite(bad,binary_tail);refuse.call { opening.call(bad) };raise 'Refusal truncated binary history' unless File.binread(bad)==binary_tail;checks+=1
 File.delete(bad);refuse.call { reopened.snapshot(scope,10004) }
 puts "Ruby original history #{checks} controls passed"
