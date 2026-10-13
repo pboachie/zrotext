@@ -315,3 +315,57 @@ targeted deletion; an unavailable TPM is reported as a skip, not protected
 acceptance. Once creation is attempted, later qualification failures fail the
 test. Linux and hosted Windows CI results must be read separately from executed
 hardware-provider evidence.
+## Sealed HTTP integration
+
+`SealedHttpClient` connects the candidate journals to binary sealed submission,
+status, cancellation and status-only reconciliation. `prepare02(journal, **inputs)`
+uses `OutboundJournal02` and its caller-owned intent/CAS revision;
+`prepare03(journal, **inputs)` uses the elected profile03 journal. Both commit
+before returning a `PreparedSubmission`. Retain the database and original input
+identity across failures; calling preparation again revalidates authority and
+returns the original ciphertext. Never reset the journal to force a retry.
+
+The client requires an application-owned `authorizer` callback. Each request
+contains `action`, `message_id`, `device_id`, `unsigned_digest` (hex), and
+`now_ms`. Return exactly those bindings plus `expires_ms` only after independently
+checking current permission. A missing, throwing, mismatched or expired decision
+refuses the action. This callback is trusted integration code, **not** an
+authenticated server grant primitive. Production grant verification remains a
+separate prerequisite; cryptographic manifests or database rows cannot supply it.
+
+Preparation first calls the adapter with action `compose` and an empty digest
+(ciphertext does not exist yet), then checks again after persistence with the
+exact digest. Journal cryptographic checks use the supplied trusted clock's
+current value. Submission and metadata operations check before the exchange and
+again after a valid response; the decision must still be current after TLS
+connection setup and before request bytes are sent. A post-response authority
+failure after submit/cancel preserves an unknown effect result.
+
+`submit(prepared)` sends only the stored binary envelope, with no caller
+idempotency header. The default is one attempt and no automatic retries, including
+network loss or explicit rate refusal. Opting into `max_attempts` permits up to
+three attempts with identical bytes; only network
+failure, `rate_limited`, `billing_pending` and `unavailable` can retry. Every retry
+requires a fresh adapter decision. Timeout, redirects, malformed/truncated
+responses and foreign message metadata do not automatically resend. A previous
+unknown attempt stays unknown if a later authority check or admission refusal
+fails. Errors expose only bounded classifications and the unsigned digest.
+
+`status(prepared)`, `cancel(prepared)` and `reconcile(prepared)` never retry.
+Reconciliation is a status read, never a new send. It remains possible after
+intent expiry when independently authorized. Returned metadata is bound to the
+original message and device; cancellation requires a `cancelled` result.
+There is no pagination API in this integration slice.
+
+The HTTPS transport verifies TLS, ignores proxy/cookie state, rejects all
+redirects, bounds response bytes and framing, and caps the whole attempt,
+including TLS setup and DNS wait. At most sixteen daemon workers can remain
+outstanding; a delayed resolver is checked for cancellation before submission.
+Python cannot forcibly terminate an OS resolver. This is component acceptance,
+not live delivery, carrier completion or production device integration.
+
+Installed wheel and sdist consumers execute actual synthetic HTTPS submission,
+exact retry, reconciliation and cancellation outside the checkout. Source tests
+also cover timeout after observed receipt, authority expiry during TLS,
+untrusted TLS, response mismatches, framing failure and protected-profile
+composition through the existing journals. No registry publication is implied.

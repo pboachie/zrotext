@@ -13,7 +13,7 @@ import venv
 import zipfile
 
 ROOT=Path(__file__).resolve().parent
-MODULES={'__init__','sealed_candidate','checkpoint_store','cng_custody','cng_signing','election03','election_journal','compose03','compose02','outbound_journal','root_checkpoint','reply_selection','outbound02_journal'}
+MODULES={'__init__','sealed_candidate','checkpoint_store','cng_custody','cng_signing','election03','election_journal','compose03','compose02','outbound_journal','root_checkpoint','reply_selection','outbound02_journal','sealed_http'}
 PACKAGE='zrotext_native_candidate'
 DIST=PACKAGE+'-0.1.0a1'
 
@@ -66,6 +66,7 @@ def main():
                   (('archive','produce-fixture.mjs'),('election','produce-election03.mjs'),('selection','produce-selected-reply02.mjs'))}
         fixtures['rotation']=json.loads((ROOT.parents[3]/'sdk/typescript/test/vectors/draft02-rotation.json').read_text())
         consumer=temporary/'consumer.py';shutil.copyfile(ROOT/'installed_consumer.py',consumer)
+        http_consumer=temporary/'http_consumer.py';shutil.copyfile(ROOT/'installed_http_consumer.py',http_consumer)
         for index,artifact in enumerate((wheel,sdist)):
             python=environment(temporary/f'consumer-{index}')
             run([python,'-m','pip','install',artifact],cwd=temporary)
@@ -76,6 +77,8 @@ def main():
             assert result['installed'] and accepted=={'verified':True,'openedRecipients':2}
             payload02=json.dumps(dict(fixture=fixtures['archive'],envelope=result['envelope02'],expectedText='Native composed02 🌱'))
             assert json.loads(run(['node',ROOT/'consume-native02.mjs'],cwd=temporary,input=payload02))=={'verified':True,'openedRecipients':2}
+            http_result=json.loads(run([python,'-I',http_consumer],cwd=temporary,input=json.dumps({'envelope':result['envelope02']})))
+            assert http_result==dict(installed=True,https_requests=4,exact_ciphertext_replay=True)
         shutil.copyfile(wheel,args.output/wheel.name);shutil.copyfile(sdist,args.output/sdist.name)
     print(json.dumps({'wheel_and_sdist':'passed','isolated_consumers':2,'installed_crypto_and_durability':'passed'}))
 

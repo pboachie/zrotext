@@ -5,3 +5,4 @@ exclude *.mjs
 exclude requirements.txt
 exclude check_package.py
 exclude installed_consumer.py
+exclude installed_http_consumer.py
