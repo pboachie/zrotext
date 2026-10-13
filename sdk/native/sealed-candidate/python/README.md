@@ -909,6 +909,49 @@ only clears pending metadata when that operation owns the saved record; a
 rejected overlapping prepare cannot clear another unknown template or context
 intent. Deterministic admission barriers exercise both clients across this gap.
 
+## Native reviewed facts authoring
+
+`OwnerContextAuthoring` composes kind-1, initial-revision workflow context
+sealing and `OwnerWorkflowContextClient` persistence. Supply explicit origin-bound
+owner cookie/CSRF, verified current profile-02 authority, draft epoch/revision and
+host lifecycle callbacks. `author(text, epoch=..., draft_revision=...)` captures
+the draft, seals it to the current authorized public reader, and calls
+`consume_review` with immutable plaintext, scope and exact ciphertext digest.
+A normal synchronous callback return permits the first POST; raising declines.
+Unlike template authoring, the maintained facts contract seals before this
+combined review. No POST occurs before review completes.
+
+The host's `custodyLive` draft-lease fact does not establish private-key custody;
+this operation seals to a public point. Hosts must invalidate or close on setup,
+session, draft or lease changes. DOM visibility, browser user activation and
+rendering remain the maintained browser adapter's responsibility. This native
+integration does not impersonate them or obtain consent independently.
+
+`state()` exposes editing/preparing/review/saving/saved/unknown/refused/closed.
+`retry_unknown()` reuses the same ciphertext and request identity, with at most
+three POSTs total; `verify_unknown()` permits at most three explicit checks.
+Neither extends the original bounded deadline. There are no automatic retries
+or redirects. A first definite HTTP refusal differs from a refusal after an
+uncertain attempt. Matching GET bytes alone cannot acknowledge the original
+request: `saved_source()` requires the exact POST receipt plus matching current
+GET bytes and fresh authority fences. Closing removes any saved source while
+retaining uncertain request metadata. An inner millisecond-rounded transport
+deadline can briefly return unknown before the original deadline closes it.
+
+Text follows the maintained TextEncoder contract, including replacement of
+unpaired UTF-16 surrogates, retained BOM/NUL, and separate 32768-code-unit and
+32768-UTF-8-byte bounds. Review callbacks receive the original immutable text.
+Four worker slots remain occupied until blocked host work actually settles;
+closing or timing out suppresses later effects and publication but cannot stop
+an arbitrary host callback. Python strings/provider copies have no guaranteed
+erasure; mutable plaintext buffers are cleared after sealing.
+
+The acceptance suite compares 22 scenarios with actual maintained authoring
+methods using a presentation fixture, exercises actual synthetic owner TLS,
+and independently opens native ciphertext with the maintained reader. Both
+clean wheel and sdist consumers repeat the TLS and decryptor checks. This is
+portable host integration evidence, not browser or live-owner acceptance.
+
 ## Native reviewed template authoring
 
 `OwnerTemplateAuthoring` composes the maintained DOM-free draft-review contract
@@ -1009,7 +1052,7 @@ not exercise a live proposal transaction or imply its independent authority.
 | Sealed composition, metadata, original replies, contact/template/context content and owner template/context persistence | Native primitives and bounded installed clients exist; reviewed integration, broader platform/provider matrix and live service/device gates remain separate. |
 | DOM-free template authoring/opening | Native host callbacks and protected opening exist; browser visibility, user activation and DOM adapters remain retained. |
 | Conversation genesis/activation/refresh public files | Exact portable export/comparison companion exists; native existing-root genesis and reviewed role-5 enrollment exist; other root/recovery and browser custody integration remain separate. |
-| Owner context authoring, disclosure/review and acknowledged-opening UI | Maintained DOM/session/custody lifecycle is retained; no Python DOM equivalence is claimed. Portable opening-capacity transports and host ceremony integrations still require their own review and ownership checks. |
+| Owner context authoring, disclosure/review and acknowledged-opening UI | Native facts authoring composes explicit host review with exact acknowledged persistence. Maintained DOM/session/custody UI remains retained; no Python DOM equivalence is claimed. Portable opening-capacity transports and host ceremony integrations still require their own review and ownership checks. |
 | Root/archive recovery and protected custody | Existing native Windows PCP is separately qualified; browser backup unlock/recovery lifecycle and other native protected providers remain distinct gaps. |
 | Generated clients and legacy entrypoints | Generated schema/runtime/redirect/deadline and registry gates still prevent replacement; legacy entrypoints remain present. |
 
