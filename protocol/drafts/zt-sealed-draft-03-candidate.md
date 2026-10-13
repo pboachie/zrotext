@@ -110,6 +110,26 @@ view kinds are refused. The authorized signer and all readers must be active for
 lifetime. Caller-owned signing keys remain caller-owned; transient secret copies are cleared
 on completion as a best effort, without a JavaScript memory-erasure guarantee.
 
+For outbound composition, the signed message lifetime is the half-open interval
+`[created_or_observed_ms, expires_ms)`. Every selected signer and recipient must
+cover that entire interval: `valid_from_ms <= created_or_observed_ms` and
+`expires_ms <= valid_until_ms`, in addition to active/current authorization at
+the independently trusted current time. Equality at either endpoint is allowed;
+expiry itself is not an authorized effect time. Composition still requires
+`created_or_observed_ms <= trusted_now < expires_ms`, the signed lifetime limit,
+fresh current manifest/election/permission and no trusted-clock regression.
+
+Manifest issuance is a different clock bound. Do not impose
+`issued_ms <= created_or_observed_ms`: manifest freshness already permits bounded
+future issuance, while key validity determines the authorized message lifetime.
+A pre-issuance observation is eligible only when all the checks above pass.
+This clarification is outbound03-only; it does not alter profile02 or inbound
+historical age/authorization rules. The shared policy inputs in
+`protocol/v1/vectors/sealed-profile03-outbound-time-policy.json` distinguish the
+two bounds. Tests must build genuine signed authority/election evidence around
+those inputs; the JSON values themselves are not authority. Cross-language
+alignment remains tracked in #1226 and integrated acceptance in #1054.
+
 The exported `DurableAcceptedElection03` and `CurrentElectionAuthority03` records are trusted
 adapter inputs, not self-authenticating objects. They require independent authenticated durable
 acceptance and current-selection sources, exact signed-evidence hashes, root/generation,
