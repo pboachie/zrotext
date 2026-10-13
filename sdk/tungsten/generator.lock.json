@@ -1,0 +1,7 @@
+{
+  "repository": "https://github.com/pboachie/tungsten.git",
+  "revision": "b5d308db8327ce0a5feede77927176a7b0168e92",
+  "version": "0.1.1",
+  "go_emitter": "emitters/go",
+  "runtime_revision": "b5d308db8327ce0a5feede77927176a7b0168e92"
+}
