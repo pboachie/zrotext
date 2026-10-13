@@ -44,6 +44,7 @@ begin
   refuses { RootJournal.new(path,pin,fp,{}).snapshot(now) };refuses { RootJournal.new(path,pin,fp,{2=>prior.root_point}).snapshot(now) }
   check(store.snapshot(now+1)[1].generation==2);refuses { RootJournal.new(path,pin,fp,{2=>point}).snapshot(now) }
   File.binwrite(copy,File.binread(path)+"\1\2\3".b);refuses { RootJournal.new(copy,pin,fp,{2=>point}).snapshot(now+1) }
+  binary_tail=File.binread(path)+"\x1a".b;File.binwrite(copy,binary_tail);refuses { RootJournal.new(copy,pin,fp,{2=>point}).snapshot(now+1) };check(File.binread(copy)==binary_tail)
   damaged=File.binread(path);damaged.setbyte(130,damaged.getbyte(130)^1);File.binwrite(copy,damaged);refuses { RootJournal.new(copy,pin,fp,{2=>point}).snapshot(now+1) }
   File.binwrite(copy,''.b);refuses { RootJournal.new(copy,pin,fp,{2=>point}).snapshot(now+1) }
   dynamic=File.join(folder,'dynamic.bin');d=->(k) { f.fetch('dynamic.'+k) };native=RootJournal.new(dynamic,d.call('rootPin'),d.call('fingerprint'),{2=>d.call('newPoint')})

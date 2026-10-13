@@ -110,9 +110,9 @@ module ZrotextCandidate
       need(!File.symlink?(path))
       created=false
       begin
-        file=File.open(path,File::RDWR|File::CREAT|File::EXCL,0o600);created=true
+        file=File.open(path,File::RDWR|File::BINARY|File::CREAT|File::EXCL,0o600);created=true
       rescue Errno::EEXIST
-        file=File.open(path,File::RDWR)
+        file=File.open(path,File::RDWR|File::BINARY)
       end
       begin
         file.binmode
