@@ -9,6 +9,7 @@ import tempfile
 from cryptography.hazmat.primitives.asymmetric import ec
 from zrotext_native_candidate import sealed_candidate as s
 from zrotext_native_candidate import enrollment_ceremony as e
+from zrotext_native_candidate.checkpoint_store import CheckpointStore
 
 def material(f):
     d=base64.b64decode;pin=s.enroll_root02(d(f['rootPin']),d(f['fingerprint']));manifest=s.verify_manifest02(d(f['manifest']),pin,f['now'])
@@ -17,19 +18,33 @@ def material(f):
 
 def provision(f,signer,protected,producer):
     binding,manifest,point=material(f);current=dict(binding=binding,manifest=manifest,nowMs=f['now'],ownerSessionLive=True,consentLive=True);events=[];installed=[]
+    temporary=tempfile.TemporaryDirectory(prefix='zrotext-enrollment-cas-');path=Path(temporary.name)/'checkpoint.db';d=base64.b64decode
+    store=CheckpointStore(path,d(f['rootPin']),d(f['fingerprint']));store.accept_manifest(d(f['manifest']),0,f['now'])
     def decide(review):
         assert review['unsigned']==base64.b64decode(f['review']['unsigned']);events.append('review')
     def install(expected,accepted,highwater,bound):
-        assert events==['review'] and expected==s._bound(s._manifests,manifest).trust.digest
-        assert s._bound(s._trusts,highwater)==s._bound(s._manifests,accepted).trust and dict(bound)==binding
+        assert events==['review'] and expected==s.manifest_identity(manifest)['digest'] and dict(bound)==binding
+        evidence=e.enrollment_installation(accepted,highwater)
+        assert dict(evidence['identity'])==s.manifest_identity(accepted)
+        wrong=s.enroll_root02(d(f['rootPin']),d(f['fingerprint']))
+        try:e.enrollment_installation(accepted,wrong)
+        except e.EnrollmentError:pass
+        else:raise AssertionError('mismatched high-water accepted')
+        store.accept_manifest(evidence['manifest'],1,f['now'])
+        try:store.accept_manifest(evidence['manifest'],1,f['now'])
+        except s.SealedError:pass
+        else:raise AssertionError('stale CAS accepted')
         events.append('install');installed.append(accepted)
+        installed.append(evidence['manifest'])
     flow=e.ConversationEnrollment(binding,point,signer=signer,read_current=lambda:current,consume_owner_decision=decide,install_verified=install,require_protected=protected)
     accepted=flow.enroll();assert accepted is installed[0] and events==['review','install']
     # Maintained contract returns verified successor, with no readback or unlock.
     assert current['manifest'] is manifest
-    raw=s._bound(s._manifests,accepted).raw
+    revision,restarted=CheckpointStore(path,d(f['rootPin']),d(f['fingerprint'])).snapshot(f['now'])
+    assert revision==2 and s.manifest_identity(restarted)==s.manifest_identity(accepted)
+    raw=installed[1]
     result=json.loads(subprocess.check_output(['node',str(producer),'--consume'],input=json.dumps(dict(fixture=f,signed=base64.b64encode(raw).decode())),encoding='utf-8'))
-    assert result['verified'];flow.close()
+    assert result['verified'];flow.close();temporary.cleanup()
 
 def check(f,producer):
     provision(f,e.SoftwareEnrollmentRootSigner(ec.derive_private_key(7,ec.SECP256R1())),False,producer)

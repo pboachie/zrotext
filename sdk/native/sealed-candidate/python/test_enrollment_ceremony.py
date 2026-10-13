@@ -114,4 +114,15 @@ class EnrollmentTests(unittest.TestCase):
         with self.assertRaises(e.EnrollmentError):flow.enroll()
         self.assertNotIn('install',events)
 
+    def test_public_installation_snapshot_is_immutable_and_not_forgeable(self):
+        flow,_,_,_=self.setup_flow();captured=[]
+        def install(expected,accepted,highwater,binding):
+            evidence=e.enrollment_installation(accepted,highwater)
+            with self.assertRaises(TypeError):evidence['manifest']=b'changed'
+            with self.assertRaises(TypeError):evidence['identity']['version']=99
+            with self.assertRaises(e.EnrollmentError):e.enrollment_installation(object(),highwater)
+            with self.assertRaises(e.EnrollmentError):e.enrollment_installation(accepted,object())
+            captured.append(evidence)
+        flow._install=install;accepted=flow.enroll();self.assertEqual(dict(captured[0]['identity']),e.s.manifest_identity(accepted))
+
 if __name__=='__main__':unittest.main()

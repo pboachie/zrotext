@@ -1026,7 +1026,14 @@ remain byte-for-byte unchanged, and the added key expires within thirty minutes
 and the existing manifest lifetime.
 
 Normal synchronous review callback completion consumes approval; throwing
-refuses. Awaitables are not accepted as implicit approval. The install adapter
+refuses. Awaitables are not accepted as implicit approval. The public
+`enrollment_installation(accepted, high_water)` helper extracts immutable signed
+manifest bytes and identity from genuinely verified, exactly matching handles.
+It establishes no new trust, owner review or consent. The installed consumer
+uses those public bytes with `CheckpointStore.accept_manifest`, rejects stale CAS
+and mismatched handles, and reverifies the persisted chain after reopening the
+store. This checkpoint test does not supply the application's session/consent
+transaction. The install adapter
 must atomically compare predecessor/high-water and live session/consent. Like the
 maintained API, this operation does **not** perform storage readback: its result
 is a verified accepted successor, never an unlocked signer, persisted-state

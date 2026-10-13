@@ -71,6 +71,17 @@ def _canonical(signature):
 class EnrollmentError(Exception):
     def __init__(self,code,state='refused'):super().__init__('Enrollment '+code);self.code=code;self.state=state
 
+def enrollment_installation(accepted,high_water):
+    """Immutable signed evidence from a genuine matching profile02 handle pair.
+
+    This exports already verified evidence; it proves no review, consent or CAS.
+    """
+    try:
+        manifest=s._bound(s._manifests,accepted);trust=s._bound(s._trusts,high_water)
+        s.require(manifest.profile==2 and manifest.trust==trust,'enrollment installation pair')
+        return _freeze(dict(manifest=manifest.raw,identity=s.manifest_identity(accepted)))
+    except Exception:raise EnrollmentError('invalid_installation') from None
+
 class ConversationEnrollment:
     """Host installation must CAS predecessor/high-water and live session/consent.
 
