@@ -24,7 +24,7 @@ local qualification. Missing crypto dependencies fail installation/import;
 unsupported protected capabilities raise `CngUnavailable` or `SealedError`.
 There is no silent software fallback. Python 3.12 is the exercised CI version.
 
-Wheel contents are restricted to the package's thirteen modules and distribution
+Wheel contents are restricted to an explicit runtime module allowlist and distribution
 metadata/license. Source archives add build metadata and this README; neither
 archive includes tests, fixture producers, private receipts, sample scalars or
 repository tooling. Both carry AGPL-3.0-only license metadata and full text.
@@ -695,3 +695,43 @@ and tests actual protected custody when the Windows platform provider is
 available. Clean wheel and sdist consumers repeat both roles through ordinary
 installed imports. Hardware-unavailable hosted jobs retain explicit skips;
 they are not hardware acceptance.
+
+## Standalone sealed lifecycle metadata
+
+`SealedLifecycleClient(origin, credential, timeout_ms=15000)` supports cold
+`status(message_id)`, `cancel(message_id)` and `list(cursor=None)` observations
+without a locally prepared ciphertext. It uses the existing sealed metadata
+routes, one bearer credential and no content, cookies, redirects, proxy settings
+or retries. Native timeout is a total outward deadline bounded to 1..120000 ms;
+the maintained TypeScript constructor allows a wider timeout input range. The
+native bound is explicit and is not a claim of arbitrary-timeout equivalence.
+Origin input follows the existing strict native HTTPS boundary: no credentials,
+path beyond `/`, query, fragment, backslashes or whitespace. It does not promise
+the browser URL parser's normalization of every otherwise accepted input.
+
+Responses require the maintained exact fields, lowercase UUIDs, known message
+states and JavaScript safe integer limits. Integral JSON floats are accepted
+and normalized to native integers. Pages contain at most 20 rows; a non-null
+cursor requires exactly 20 rows and the final message ID. As in the maintained
+client, this contract does not assert unique row IDs or timestamp ordering.
+No automatic paging is performed. Every raw response is capped at 16384 bytes;
+truncated HTTP framing, malformed UTF-8/JSON, wrong identities and false
+cancellation receipts fail closed.
+
+`SealedLifecycleError` exposes redacted `code`, `status`, `state`, and `attempts`.
+Local invalid inputs/admission failures are `refused` with zero attempts.
+Recognized server rejections are `refused` with one attempt; `unavailable` is
+conservatively `unknown`. Network loss, deadlines, redirects and malformed
+responses are `unknown`, including possible cancellation after lost response.
+Query status after uncertainty; no result here permits resubmission, re-encryption
+or a new caller intent. A metadata state named `unknown` remains a successful
+observation of that state. TLS uses ordinary system trust and hostname checks.
+Unresolved native I/O retains one of 16 bounded admissions until settlement.
+
+The existing `SealedHttpClient` and `PreparedSubmission` reconciliation path
+remain separate: they still validate exact persisted ciphertext and application
+authority. This metadata client neither constructs such a submission nor grants
+cryptographic authority, delivery permission or access to plaintext. It is not
+an owner-cookie transport or a browser ceremony. The same real synthetic TLS
+suite runs against source and clean installed wheel/sdist imports, and 54
+response-validation cases are compared with the maintained TypeScript client.

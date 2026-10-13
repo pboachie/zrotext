@@ -56,3 +56,6 @@ from .workflow_context import (WorkflowContextError,WorkflowContextCancellation,
     seal_workflow_context,open_workflow_context,seal_integration_workflow_context,open_integration_workflow_context)
 __all__ += ['WorkflowContextError','WorkflowContextCancellation','workflow_context_aad','seal_workflow_context',
     'open_workflow_context','seal_integration_workflow_context','open_integration_workflow_context']
+
+from .sealed_lifecycle import SealedLifecycleClient,SealedLifecycleError,SEALED_MESSAGE_STATES
+__all__ += ['SealedLifecycleClient','SealedLifecycleError','SEALED_MESSAGE_STATES']
