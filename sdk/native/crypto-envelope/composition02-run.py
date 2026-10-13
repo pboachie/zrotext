@@ -19,6 +19,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--language', choices=['java','csharp','ruby'], required=True)
     parser.add_argument('--producer', type=Path, required=True)
+    parser.add_argument('--controls', type=Path, required=True)
     parser.add_argument('--jna', type=Path)
     parser.add_argument('--ruby', default='ruby')
     args = parser.parse_args()
@@ -28,6 +29,9 @@ def main():
     if run(['git','-C',producer,'rev-parse','HEAD'],capture_output=True,text=True).stdout.strip() != PIN:
         raise ValueError('Unexpected producer revision')
     run(['git','-C',producer,'diff','--quiet','HEAD','--'])
+    controls=args.controls.resolve()
+    if run(['git','-C',controls,'rev-parse','HEAD'],capture_output=True,text=True).stdout.strip()!='1b7732ec36bf705f78e69a2cea95b792f04dc772':raise ValueError('Unexpected control revision')
+    run(['git','-C',controls,'diff','--quiet','HEAD','--'])
     env = {k:v for k,v in os.environ.items() if k not in ('NODE_OPTIONS','NODE_PATH','JAVA_TOOL_OPTIONS','_JAVA_OPTIONS','JDK_JAVA_OPTIONS','RUBYOPT','RUBYLIB')}
     with tempfile.TemporaryDirectory(prefix='zrotext-managed-compose02-') as folder:
         temp = Path(folder)
@@ -62,22 +66,27 @@ def main():
             bytes.fromhex(point)
             directory=producer/'sdk/native/sealed-candidate/python'
             fixture=json.loads(run(['node',directory/'produce-fixture.mjs','--signer-point',point],capture_output=True,text=True,encoding='utf-8',env=env).stdout)
-            wanted=['manifest','rootPin','fingerprint','device','line']
+            fixture=json.loads(run(['node',controls/'sdk/native/hpke-candidate/root-controls.mjs',producer],input=json.dumps(fixture),capture_output=True,text=True,encoding='utf-8',env=env).stdout)
+            wanted=['transition','newPoint','newManifest','currentRetained','currentRevoked','manifest','rootPin','fingerprint','device','line']
             text=''.join(k+'\t'+base64.b64decode(fixture[k],validate=True).hex()+'\n' for k in wanted)
             output,error=child.communicate(text,timeout=90)
             if child.returncode:
                 raise RuntimeError('Native composition failed: '+error)
             envelopes=[line[9:] for line in output.splitlines() if line.startswith('ENVELOPE ')]
-            if len(envelopes)!=3:
+            if len(envelopes)!=4:
                 raise ValueError('Missing native ciphertext cases')
             for envelope in envelopes:
                 result=json.loads(run(['node',directory/'consume-native02.mjs'],input=json.dumps(dict(fixture=fixture,envelope=envelope,expectedText='Native composed02 🌱')),capture_output=True,text=True,encoding='utf-8',env=env).stdout)
                 if result!={'verified':True,'openedRecipients':2}:
                     raise ValueError('Independent consumer did not accept both recipients')
+            rotated=[line[8:] for line in output.splitlines() if line.startswith('ROTATED ')]
+            if len(rotated)!=1:raise ValueError('Missing rotated-root candidate')
+            result=json.loads(run(['node',controls/'sdk/native/hpke-candidate/consume-rotated02.mjs',producer],input=json.dumps(dict(fixture=fixture,envelope=rotated[0],expectedText='Native composed02 🌱')),capture_output=True,text=True,encoding='utf-8',env=env).stdout)
+            if result!={'verified':True,'openedRecipients':2}:raise ValueError('Rotated candidate consumer refused')
             for line in output.splitlines():
                 if line.startswith('QUALIFIED:'):print(line)
             if receipt.exists():raise ValueError('Owned key cleanup receipt remains')
-            print('Maintained TypeScript verified and opened both recipients for three native profile02 candidates')
+            print('Maintained TypeScript verified and opened both recipients for four native profile02 candidates plus rotated-root journal output')
         finally:
             if child.poll() is None:
                 child.kill();child.wait()

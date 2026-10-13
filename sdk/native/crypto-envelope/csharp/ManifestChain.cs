@@ -47,6 +47,7 @@ public static class ManifestChain {
         internal byte[] Previous=>(byte[])previousBytes.Clone();
         internal readonly int Predecessor;
         internal Verified? Parent{get;}
+        public byte[] EnrolledRootPoint(){var first=this;while(first.Parent is not null)first=first.Parent;return first.RootPoint();}
         public long Generation=>Number(data,Profile==2?21:23);
         public int Profile{get;} public long Version{get;} public long IssuedMs{get;} public long ExpiresMs{get;} public long ComparisonMs{get;}
         internal Verified(object permit,byte[] b,int profile,int predecessor,long version,long issued,long expires,long comparison,byte[] digest,byte[] account,byte[] root,byte[] previous,Verified? parent=null){Need(ReferenceEquals(permit,ConstructionPermit));data=(byte[])b.Clone();Profile=profile;Predecessor=predecessor;Version=version;IssuedMs=issued;ExpiresMs=expires;ComparisonMs=comparison;digestBytes=(byte[])digest.Clone();accountBytes=(byte[])account.Clone();rootBytes=(byte[])root.Clone();previousBytes=(byte[])previous.Clone();Parent=parent;}

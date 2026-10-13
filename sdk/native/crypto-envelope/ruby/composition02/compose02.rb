@@ -30,7 +30,7 @@ module ZrotextCandidate
     ensure
       buffers&.each { |b| b.replace("\x00".b*b.bytesize) }
     end
-    def fresh(manifest:,now_ms:,message:,device:,line:,observed_ms:,expires_ms:,peer:,content:,signer:,recipients:)
+    def authorize(manifest:,now_ms:,message:,device:,line:,observed_ms:,expires_ms:,peer:,content:,signer:,recipients:)
       need(manifest.instance_of?(ManifestChain::Verified) && manifest.profile==2 && signer.instance_of?(ProtectedSigner))
       need([message,device,line].all? { |v| v.instance_of?(String) && v.bytesize==16 })
       message,device,line=[message,device,line].map { |v| v.b.dup }
@@ -39,7 +39,7 @@ module ZrotextCandidate
       current=ManifestChain.continue_chain(manifest.bytes,manifest,2,now_ms)
       need(peer.instance_of?(String) && /\A\+[1-9][0-9]{1,14}\z/.match?(peer));peer=peer.dup
       need(content.instance_of?(String) && content.length.between?(1,32768))
-      text=content.encode('UTF-8').b
+      text=content.encode('UTF-8').b;transferred=false
       begin
         valid=text.force_encoding('UTF-8').valid_encoding?;text.force_encoding('ASCII-8BIT')
         need(valid && text.bytesize.between?(1,32768) && !text.include?("\x00".b) && !text.start_with?("\xef\xbb\xbf".b))
@@ -57,15 +57,100 @@ module ZrotextCandidate
         end
         fields=current.account+message+device+line+[current.version].pack('Q>')+current.digest+signer_id+[observed_ms,expires_ms].pack('Q>2')+[1,peer.bytesize].pack('C2')+peer.b
         prefix="ZTSE\x02\x01\x00\x00".b+[fields.bytesize].pack('n')+fields
-        cek=SecureRandom.random_bytes(32);nonce=SecureRandom.random_bytes(12)
-        body=encrypt(cek,nonce,text,label('ZTSE/body/v2')+prefix)
-        wraps=targets.map { |role,id,point| [role].pack('C')+id+wrap(point,cek,label('ZTSE/wrap/v2')+prefix+[role].pack('C')+id,''.b) }
-        unsigned=prefix+nonce+[body.bytesize].pack('N')+body+[wraps.length].pack('C')+wraps.join.b
-        envelope=unsigned+signer.sign_envelope02(unsigned);SignedEnvelope.verify(envelope,2,public);envelope
+        intent=sha(label('ZTSE/native-outbound02-intent/v1')+prefix+sha(text)+targets.map { |role,id,point| [role].pack('C')+id+point }.join.b)
+        plan={prefix:prefix,text:text,targets:targets,public:public,intent:intent,now:now_ms};transferred=true;plan
       ensure
-        text.replace("\x00".b*text.bytesize);cek&.replace("\x00".b*cek.bytesize)
+        text.replace("\x00".b*text.bytesize) unless transferred
       end
     end
-    private_class_method :need,:label,:sha,:number,:encrypt,:wrap
+    def capture(**inputs)
+      r=inputs.dup
+      [:message,:device,:line,:peer,:content].each { |key| need(r[key].instance_of?(String));r[key]=r[key].dup.freeze }
+      need(r[:recipients].instance_of?(Array))
+      r[:recipients]=r[:recipients].map { |v| need(v.instance_of?(Array) && v.length==2 && v[1].instance_of?(String));[v[0],v[1].b.dup.freeze].freeze }.freeze
+      r.freeze
+    end
+    def compose(r,plan)
+        cek=SecureRandom.random_bytes(32);nonce=SecureRandom.random_bytes(12)
+        body=encrypt(cek,nonce,plan[:text],label('ZTSE/body/v2')+plan[:prefix])
+        wraps=plan[:targets].map { |role,id,point| [role].pack('C')+id+wrap(point,cek,label('ZTSE/wrap/v2')+plan[:prefix]+[role].pack('C')+id,''.b) }
+        unsigned=plan[:prefix]+nonce+[body.bytesize].pack('N')+body+[wraps.length].pack('C')+wraps.join.b
+        envelope=unsigned+r[:signer].sign_envelope02(unsigned);SignedEnvelope.verify(envelope,2,plan[:public]);envelope
+    ensure
+      cek&.replace("\x00".b*cek.bytesize)
+    end
+    def fresh(**inputs)
+      r=capture(**inputs);plan=authorize(**r);compose(r,plan)
+    ensure
+      plan&.fetch(:text)&.replace("\x00".b*plan[:text].bytesize)
+    end
+    def recheck(r,plan,source,floor)
+      need(source.respond_to?(:call));selected,now=source.call
+      need(selected.instance_of?(ManifestChain::Verified) && now.instance_of?(Integer) && now.between?(1,2**63-1))
+      need(now>=floor && now>=r[:now_ms] && r[:observed_ms]>0 && r[:observed_ms]<=now && now<r[:expires_ms])
+      need(selected.profile==2 && selected.generation==r[:manifest].generation && selected.descends_from(r[:manifest]))
+      current=ManifestChain.continue_chain(selected.bytes,selected,2,now);keys=current.key_records
+      signer=keys.find { |k| k.getbyte(0)==5 && k.byteslice(1,32)==plan[:prefix].byteslice(114,32) }
+      need(signer && signer.getbyte(148)==1 && number(signer,132)<=now && now<number(signer,140) && signer.byteslice(130,2).unpack1('n')==1 && signer.byteslice(114,16)==r[:line] && signer.byteslice(33,65)==plan[:public])
+      plan[:targets].each do |role,id,point|
+        key=keys.find { |k| k.getbyte(0)==role && k.byteslice(1,32)==id }
+        need(key && key.getbyte(148)==1 && number(key,132)<=now && now<number(key,140) && (key.byteslice(130,2).unpack1('n')&4)!=0 && key.byteslice(33,65)==point)
+        need(key.byteslice(98,16)==r[:device] && key.byteslice(114,16)==r[:line]) if role==1
+      end
+      now
+    end
+    def read(file,size)
+      value=file.read(size);need(value && value.bytesize==size);value
+    end
+    def compose_or_replay(path,root_pin,fingerprint,current:,**inputs)
+      pin=root_pin.b.dup;fp=fingerprint.b.dup;trust=ManifestChain::RootPin.enroll(pin,fp)
+      r=capture(**inputs);plan=authorize(**r)
+      recheck(r,plan,current,plan[:now]);need(trust.account==r[:manifest].account && trust.point==r[:manifest].enrolled_root_point)
+      header='ZTJ2'.b+pin+fp;identity=plan[:prefix].byteslice(10,64)
+      need(!File.symlink?(path))
+      created=false
+      begin
+        file=File.open(path,File::RDWR|File::CREAT|File::EXCL,0o600);created=true
+      rescue Errno::EEXIST
+        file=File.open(path,File::RDWR)
+      end
+      begin
+        file.binmode
+        locked=false
+        100.times { locked=file.flock(File::LOCK_EX|File::LOCK_NB);break if locked;sleep 0.05 }
+        need(locked)
+        if created
+          clock=[recheck(r,plan,current,plan[:now])].pack('Q>');file.write(header+clock+sha(header+clock));file.flush;file.fsync
+        end
+        need(file.size.between?(header.bytesize+40,10000000));file.rewind;need(read(file,header.bytesize)==header)
+        clock=read(file,8);need(read(file,32)==sha(header+clock));floor=clock.unpack1('Q>');need(floor.between?(1,2**63-1))
+        checkpoint=->(now) do
+          need(now>=floor)
+          if now>floor
+            position=file.pos;clock=[now].pack('Q>');file.seek(header.bytesize);file.write(clock+sha(header+clock));file.flush;file.fsync;file.seek(position);floor=now
+          end
+        end
+        checkpoint.call(recheck(r,plan,current,plan[:now]))
+        count=0;stored=nil
+        while file.pos<file.size
+          count+=1;need(count<=256 && file.size-file.pos>=132)
+          leading=read(file,100);size=leading.byteslice(96,4).unpack1('N');need(size.between?(557,34213) && file.size-file.pos>=size+32)
+          envelope=read(file,size);need(read(file,32)==sha(leading+envelope))
+          next unless leading.byteslice(0,64)==identity
+          need(stored.nil? && leading.byteslice(64,32)==plan[:intent]);SignedEnvelope.verify(envelope,2,plan[:public]);need(envelope.byteslice(0,plan[:prefix].bytesize)==plan[:prefix])
+          ending=plan[:prefix].bytesize+16+envelope.byteslice(plan[:prefix].bytesize+12,4).unpack1('N');need(envelope.getbyte(ending)==plan[:targets].length)
+          plan[:targets].each_with_index { |(role,id,_),i| need(envelope.getbyte(ending+1+146*i)==role && envelope.byteslice(ending+2+146*i,32)==id) }
+          stored=envelope
+        end
+        checkpoint.call(recheck(r,plan,current,floor));return stored if stored
+        need(count<256);envelope=compose(r,plan);checkpoint.call(recheck(r,plan,current,floor));record=identity+plan[:intent]+[envelope.bytesize].pack('N')+envelope
+        file.write(record);file.write(sha(record));file.flush;file.fsync;checkpoint.call(recheck(r,plan,current,floor));envelope
+      ensure
+        file.close
+      end
+    ensure
+      plan&.fetch(:text)&.replace("\x00".b*plan[:text].bytesize)
+    end
+    private_class_method :need,:label,:sha,:number,:capture,:authorize,:recheck,:encrypt,:wrap,:compose,:read
   end
 end

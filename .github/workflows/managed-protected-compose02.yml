@@ -39,6 +39,11 @@ jobs:
           ref: a13ea1e3d6f6db594485c19b36c43fe642e67c7a
           path: producer
           persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 1b7732ec36bf705f78e69a2cea95b792f04dc772
+          path: controls
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: '24.13.0'
@@ -50,4 +55,4 @@ jobs:
           npm run build --prefix producer/sdk/typescript
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Exercise native profile02 signing and independent open
-        run: python sdk/native/crypto-envelope/composition02-run.py --language ${{ matrix.language }} --producer producer
+        run: python sdk/native/crypto-envelope/composition02-run.py --language ${{ matrix.language }} --producer producer --controls controls

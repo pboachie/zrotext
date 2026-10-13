@@ -47,6 +47,9 @@ module ZrotextCandidate
         @digest=digest.freeze;@account=account.freeze;@root=root.freeze;@previous=previous.freeze;@parent=parent;freeze
       end
       private_class_method :new
+      def enrolled_root_point
+        first=self;first=first.parent while first.parent;first.root_point
+      end
       def generation = ManifestChain.number(@bytes,@profile==2 ? 21 : 23)
       def bytes = @bytes.dup
       def digest = @digest.dup

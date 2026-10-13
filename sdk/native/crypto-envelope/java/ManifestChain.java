@@ -49,6 +49,7 @@ public final class ManifestChain {
         }
         public byte[] bytes(){return bytes.clone();} public byte[] digest(){return digest.clone();}
         public byte[] account(){return account.clone();} public byte[] rootPoint(){return root.clone();}
+        public byte[] enrolledRootPoint(){Verified first=this;while(first.parent!=null)first=first.parent;return first.root.clone();}
         public long generation(){return ByteBuffer.wrap(bytes,profile==2?21:23,8).getLong();}
         public int profile(){return profile;} public long version(){return version;}
         public long issuedMs(){return issued;} public long expiresMs(){return expires;} public long comparisonMs(){return comparison;}
