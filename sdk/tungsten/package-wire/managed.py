@@ -6,8 +6,16 @@ from pathlib import Path
 import subprocess
 import threading
 import time
+from urllib.parse import urlsplit, parse_qs
 
 ROOT = Path(__file__).resolve().parents[3]
+FIRST = "11111111-2222-4333-8444-555555555555"
+SECOND = "22222222-3333-4444-8555-666666666666"
+
+
+def message(identity):
+    return dict(message_id=identity, device_id=FIRST, state="queued", created_at_ms=1000,
+                updated_at_ms=1000, events=[], events_truncated=False)
 
 
 def exercise(command, env=None):
@@ -31,7 +39,15 @@ def exercise(command, env=None):
             if mode == "timeout":
                 time.sleep(2.5)
             status, body, headers = 200, b'{"endpoints":[]}', {}
-            if mode == "malformed":
+            if mode.startswith("pages"):
+                before = parse_qs(urlsplit(self.path).query).get("before", [None])[0]
+                body = json.dumps(dict(messages=[message(FIRST if before is None else SECOND)],
+                                       next_cursor=FIRST if before is None else None)).encode()
+                if before is not None and mode == "pages-rate":
+                    status, body, headers = 429, b'{"error":"rate_limited"}', {"Retry-After": "1"}
+                elif before is not None and mode == "pages-schema":
+                    body = b'{"messages":[{}],"next_cursor":null}'
+            elif mode == "malformed":
                 body = b'{'
             elif mode == "schema":
                 body = b'{}'
@@ -80,7 +96,37 @@ def exercise(command, env=None):
         print(name + " passed", flush=True)
         return value
 
+    def pages(name, expected, cursors, mode="pages", before=None, limit=4, auth=True):
+        server.mode, server.received = mode, []
+        input_data = dict(base=base, pages=True, auth=auth, args={} if before is None else {"before": before}, limit=limit)
+        result = subprocess.run(command, input=json.dumps(input_data), text=True, capture_output=True,
+                                env=environment, timeout=20, check=True)
+        assert json.loads(result.stdout) == {"pages": expected}, (name, result.stdout, result.stderr)
+        for secret in ("synthetic-session", "synthetic-csrf", "synthetic-bearer", "ztw_synthetic"):
+            assert secret not in result.stdout + result.stderr, name + " exposed credentials"
+        assert len(server.received) == len(cursors), (name, len(server.received))
+        for request, cursor in zip(server.received, cursors):
+            method, path, raw_headers, body = request
+            url = urlsplit(path)
+            assert method == "GET" and url.path == "/v1/owner/messages" and body == b"", name
+            assert parse_qs(url.query) == ({} if cursor is None else {"before": [cursor]}), (name, path)
+            headers = {key.lower(): value for key, value in raw_headers.items()}
+            assert "__Host-zrotext_session=synthetic-session" in headers["cookie"], name
+            assert "__Host-zrotext_csrf=synthetic-csrf" in headers["cookie"], name
+            assert headers["x-zrotext-csrf"] == "synthetic-csrf" and "authorization" not in headers, name
+        print(name + " passed", flush=True)
+
     try:
+        first = {"ids": [FIRST], "cursor": FIRST}
+        second = {"ids": [SECOND], "cursor": None}
+        pages("typed owner pagination preserves items cursor and auth", [first, second], [None, FIRST])
+        pages("explicit initial cursor is retained", [second], [FIRST], before=FIRST)
+        pages("application page limit makes no speculative request", [first], [None], limit=1)
+        pages("second page rate refusal ends enumeration without retry", [first, {"category": "RATE_LIMITED"}],
+              [None, FIRST], mode="pages-rate")
+        pages("malformed second page ends enumeration without partial success", [first, {"category": "UNEXPECTED_RESPONSE"}],
+              [None, FIRST], mode="pages-schema")
+        pages("pagination missing auth refuses before network", [{"category": "AUTH_FAILED"}], [], auth=False)
         call("owner cookie authentication")
         headers = {k.lower(): v for k, v in server.received[0][2].items()}
         assert "__Host-zrotext_session=synthetic-session" in headers["cookie"]
