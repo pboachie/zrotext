@@ -1,6 +1,7 @@
 """Reject substituted, duplicate and unexpected candidate archive payloads."""
 import importlib.util
 import json
+import runpy
 from pathlib import Path
 import tempfile
 import unittest
@@ -44,8 +45,19 @@ class ArchiveTests(unittest.TestCase):
     def test_closed_runtime_inventory(self):
         for language in ('java', 'csharp', 'ruby'):
             paths = managed.runtime_sources(language)
-            self.assertEqual(len(paths), 14)
-            self.assertEqual(len(set(paths)), 14)
+            self.assertEqual(len(paths), 17)
+            self.assertEqual(len(set(paths)), 17)
+
+    def test_installed_command_rejects_shell_strings_and_invalid_arguments(self):
+        load = runpy.run_path(str(Path(__file__).with_name('installed-command.py')))['load']
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'command.json'
+            path.write_text(json.dumps(['runtime', 'space in path', '--flag']), encoding='utf-8')
+            self.assertEqual(load(path), ['runtime', 'space in path', '--flag'])
+            for invalid in ('runtime --flag', {}, [], [''], [None], ['bad\0argument']):
+                path.write_text(json.dumps(invalid), encoding='utf-8')
+                with self.assertRaises(ValueError):
+                    load(path)
 
     def test_installed_original_commands_require_both_exact_argument_lists(self):
         with tempfile.TemporaryDirectory() as folder:

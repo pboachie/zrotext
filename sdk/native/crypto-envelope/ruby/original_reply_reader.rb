@@ -20,6 +20,7 @@ module ZrotextCandidate
         @reader=OriginalReplyReader.fixed(reader,32);OriginalReplyReader.need(peer.is_a?(String) && /\A\+[1-9][0-9]{1,14}\z/.match?(peer));@peer=peer.dup.freeze;freeze
       end
       def ==(other) = other.instance_of?(Scope) && [:account,:device,:line,:interval,:connector,:grant,:reader,:peer].all? { |k| public_send(k)==other.public_send(k) }
+      def checkpoint_binding = OpenSSL::Digest::SHA256.digest("ZTSE/native/original-checkpoint-scope/v1\x00".b+[@account,@device,@line,@interval,@connector,@grant,@reader].join+[peer.bytesize].pack('C')+peer.b)
     end
     class Selection
       attr_reader :scope,:archive,:readers,:activation
