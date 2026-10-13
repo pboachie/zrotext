@@ -1,0 +1,37 @@
+name: Rust Go candidate body crypto
+on:
+  pull_request:
+    paths: ['sdk/native/crypto-candidate/rust/**', 'sdk/native/crypto-candidate/go/**', 'protocol/v1/vectors/ztse-body-text-01.json', '.github/workflows/native-candidate-rust-go.yml']
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
+      - working-directory: sdk/native/crypto-candidate/rust
+        run: |
+          cargo +1.97.1 fmt --check
+          cargo +1.97.1 clippy --locked --all-targets -- -D warnings
+          cargo +1.97.1 test --locked
+          cargo +1.97.1 package --locked
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.22'
+          cache: false
+      - working-directory: sdk/native/crypto-candidate/go
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test ./...
