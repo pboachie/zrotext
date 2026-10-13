@@ -41,8 +41,10 @@ synthetic local TLS. It checks genuine ciphertext opening, history overlap,
 correlation, canonical encoding, both phone signatures, ciphertext corruption,
 final authority refusal and zero retries. `--hardware` performs three separate
 Windows PCP cases with newly created native public points and no selected private
-scalar: success, final service refusal and corrupted ciphertext. Private receipts
-precede key creation; exact owned deletion and refused reopen are required.
+scalar: success, final service refusal and corrupted ciphertext. A fourth control injects fixture setup failure and requires cleanup after EOF.
+Private receipts precede key creation; exact owned deletion and refused reopen
+are required. The harness closes stdin and waits for native cleanup on exceptions;
+an unresponsive child fails the gate and leaves its private receipt for recovery.
 Hosted CI runs software cases on Linux and Windows and does not claim TPM
 qualification. Local hardware tests require a qualifying Windows provider.
 

@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import queue
 from pathlib import Path
 import secrets
 import ssl
@@ -37,6 +38,27 @@ class Handler(tls.http.server.BaseHTTPRequestHandler):
         self.send_response(200);self.send_header('Content-Type','application/json')
         self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
 
+
+
+def read_public(child):
+    lines=queue.Queue()
+    threading.Thread(target=lambda:lines.put(child.stdout.readline()),daemon=True).start()
+    return json.loads(lines.get(timeout=30))['public']
+
+
+def finish_owned(child):
+    if child is None or child.poll() is not None:return
+    if child.stdin is not None:
+        if not child.stdin.closed:child.stdin.close()
+        child.stdin=None
+    try:
+        stdout,_=child.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        child.terminate()
+        child.wait(timeout=5)
+        raise RuntimeError('Owned child unresponsive; private receipt retained') from None
+    rows=[json.loads(line) for line in stdout.splitlines()]
+    assert rows and rows[-1]=={'owned_key_deleted':True},'Owned child did not confirm cleanup'
 
 
 def make_read(f):
@@ -86,34 +108,37 @@ def main():
                 nonlocal count,f,read,final,event
                 hardware=None
                 if args.hardware and name not in ("signed ciphertext and final fresh proof","final revoked service authority","authenticated envelope_b64 corruption"):return
-                if args.hardware:
-                    hardware=subprocess.Popen([*argv,"--hardware"],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,encoding="utf-8")
-                    point=json.loads(hardware.stdout.readline())["public"]
-                    f=json.loads(subprocess.check_output(["node",str(producer/"sdk/native/sealed-candidate/python/produce-selected-reply02.mjs"),"--reader-point",point],text=True,encoding="utf-8"))
-                    assert "originalScalar" not in f
-                    read,final,event=make_read(f)
-                server.read=copy.deepcopy(read);server.final=copy.deepcopy(final);server.calls=0;server.fail_final=fail_final
-                if baseline==2:server.read['proof']['manifest_chain']=server.read['proof']['manifest_chain'][1:]
-                mutate(server.read,server.final)
-                server.requests=[{'v':1,'method':'read','event_id':event,'accepted_manifest_version':baseline or 1},
-                    {'v':1,'method':'current','accepted_manifest_version':3}]
-                payload=dict(Fixture=f,Origin=f'https://{server.server_address[0]}:{server.server_port}',Roots=roots,Grant=server.grant,Clock=[10000],Baseline=baseline)
-                if hardware:
-                    stdout,stderr=hardware.communicate(json.dumps(payload),timeout=30)
-                    assert hardware.returncode==0,(name,stderr)
-                    rows=[json.loads(line) for line in stdout.splitlines()]
-                    assert rows[-1]=={'owned_key_deleted':True},(name,rows)
-                    actual=rows[0]
-                else:
-                    result=subprocess.run(argv,input=json.dumps(payload),text=True,encoding='utf-8',capture_output=True,check=True,timeout=10)
-                    actual=json.loads(result.stdout)
-                assert actual['ok']==ok and server.calls==calls,(name,actual,server.calls)
-                assert actual['rollback_refused'],(name,actual)
-                if ok:
-                    assert actual['plaintext']==f['text'] and actual['digest']==hashlib.sha256(decode('inbound')).hexdigest(),(name,actual)
-                    assert actual['baseline']==(baseline or 1) and actual['version']==3 and actual['revision']==3,(name,actual)
-                else:assert 'plaintext' not in actual,(name,actual)
-                count+=1
+                try:
+                    if args.hardware:
+                        hardware=subprocess.Popen([*argv,"--hardware"],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,encoding="utf-8")
+                        point=read_public(hardware)
+                        f=json.loads(subprocess.check_output(["node",str(producer/"sdk/native/sealed-candidate/python/produce-selected-reply02.mjs"),"--reader-point",point],text=True,encoding="utf-8",timeout=20))
+                        assert "originalScalar" not in f
+                        read,final,event=make_read(f)
+                    server.read=copy.deepcopy(read);server.final=copy.deepcopy(final);server.calls=0;server.fail_final=fail_final
+                    if baseline==2:server.read['proof']['manifest_chain']=server.read['proof']['manifest_chain'][1:]
+                    mutate(server.read,server.final)
+                    server.requests=[{'v':1,'method':'read','event_id':event,'accepted_manifest_version':baseline or 1},
+                        {'v':1,'method':'current','accepted_manifest_version':3}]
+                    payload=dict(Fixture=f,Origin=f'https://{server.server_address[0]}:{server.server_port}',Roots=roots,Grant=server.grant,Clock=[10000],Baseline=baseline)
+                    if hardware:
+                        stdout,stderr=hardware.communicate(json.dumps(payload),timeout=30)
+                        assert hardware.returncode==0,(name,stderr)
+                        rows=[json.loads(line) for line in stdout.splitlines()]
+                        assert rows[-1]=={'owned_key_deleted':True},(name,rows)
+                        actual=rows[0]
+                    else:
+                        result=subprocess.run(argv,input=json.dumps(payload),text=True,encoding='utf-8',capture_output=True,check=True,timeout=10)
+                        actual=json.loads(result.stdout)
+                    assert actual['ok']==ok and server.calls==calls,(name,actual,server.calls)
+                    assert actual['rollback_refused'],(name,actual)
+                    if ok:
+                        assert actual['plaintext']==f['text'] and actual['digest']==hashlib.sha256(decode('inbound')).hexdigest(),(name,actual)
+                        assert actual['baseline']==(baseline or 1) and actual['version']==3 and actual['revision']==3,(name,actual)
+                    else:assert 'plaintext' not in actual,(name,actual)
+                    count+=1
+                finally:
+                    finish_owned(hardware)
             run('signed ciphertext and final fresh proof',ok=True,calls=2)
             run('explicit retained baseline',ok=True,calls=2,baseline=2)
             run('unknown baseline no network',baseline=4,calls=0)
@@ -134,6 +159,14 @@ def main():
                 run('noncanonical '+key,lambda r,p,key=key:r.update({key:r[key]+'='}))
             run('cached baseline fork',lambda r,p:r['proof']['manifest_chain'][0].update(manifest_b64=f['activation']))
             run('cached middle fork',lambda r,p:r['proof']['manifest_chain'][1].update(manifest_b64=f['successor']))
+            if args.hardware:
+                child=subprocess.Popen([*argv,'--hardware'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,encoding='utf-8')
+                try:
+                    read_public(child)
+                    try:raise RuntimeError('synthetic fixture producer failure')
+                    except RuntimeError:pass
+                finally:finish_owned(child)
+                count+=1
             server.shutdown()
     print(f'{count} authenticated TLS read/final-proof controls passed')
 
