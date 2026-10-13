@@ -735,3 +735,38 @@ cryptographic authority, delivery permission or access to plaintext. It is not
 an owner-cookie transport or a browser ceremony. The same real synthetic TLS
 suite runs against source and clean installed wheel/sdist imports, and 54
 response-validation cases are compared with the maintained TypeScript client.
+
+## Template persistence contract helpers
+
+`template_save_request(scope, request_id, expected_revision, envelope)` creates
+the maintained owner-template save intent without performing I/O. It binds the
+existing encrypted-template scope to the exact captured envelope, requires the
+next revision to equal expected revision plus one (0..127 expected, 1..128 new),
+and checks the bounded authenticated-header and ciphertext-length framing.
+The request ID must be a nonzero lowercase UUID. Integral numeric expected
+revisions are accepted and normalized to integers, matching the maintained API.
+
+The returned `TemplateSaveRequest` has `path`, `headers`, immutable `body`,
+`revision`, and lowercase full-envelope SHA-256 `encrypted_digest`. Generated
+headers and record fields are immutable snapshots. The only headers are content
+type, idempotency key and expected revision. The builder neither seals new
+ciphertext nor checks HPKE authentication/curve validity; pair it with
+`seal_encrypted_template` and retain the exact resulting save intent as needed.
+
+`template_save_receipt(request, body)` checks a strict UTF-8 JSON response of
+at most 256 bytes with the sole field `revision` equal to the request's integer
+revision. It returns `{"revision": n}`. Numeric `1.0`/`1e0`, one leading UTF-8
+BOM and JSON's last-value handling of duplicate member names follow the
+maintained implementation; double BOM, extra fields, wrong revisions and
+malformed input refuse. This is not a canonical JSON or signature verifier.
+`TemplateStoreError` redacts failed inputs. Native receipt inputs use the
+explicit `TemplateSaveRequest` record and a valid 1..128 request revision.
+
+A request is structural persistence metadata, not a private verification token.
+The trusted transport must independently supply current owner authentication,
+CSRF, exact response correlation and permission. These helpers do not create
+that transport, acknowledge sending, provide dispatch authority, or infer a
+browser session. The installed consumers seal genuine native encrypted
+templates, build requests, validate receipts, and have maintained TypeScript
+independently compare the request and decrypt its exact body. Source tests also
+compare 42 accepted/refused request and raw-receipt cases.
