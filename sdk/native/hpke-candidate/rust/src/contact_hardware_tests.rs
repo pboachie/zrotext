@@ -161,6 +161,8 @@ fn contact_hardware_fields() {
     let second =
         verify_manifest(&bytes(&f, "nextManifest"), &root, Some(&first), 2, 10000).unwrap();
     let mut outputs = Vec::new();
+    let mut fields = std::collections::BTreeMap::new();
+    let mut statements_by_name = std::collections::BTreeMap::new();
     for (name, which, m) in [
         ("name", "statement", &first),
         ("notes", "statement", &first),
@@ -219,6 +221,8 @@ fn contact_hardware_fields() {
             &Cancellation::default(),
         )
         .unwrap();
+        fields.insert(name, result.verified().clone());
+        statements_by_name.insert(which, st.clone());
         outputs.push(json!({"bytes":STANDARD.encode(result.signed_bytes()),"statement":which}));
         let reopened = Arc::new(ContactRootSigner::open(&alias, &point).unwrap());
         reopened.close().unwrap();
@@ -234,6 +238,98 @@ fn contact_hardware_fields() {
         Some(json!({"fixture":f,"outputs":outputs})),
     );
     assert_eq!(report, json!({"verified":true,"fields":3}));
+    use crate::contact::mutation::{Input, Proposal, Slot, produce_protected_mutation01};
+    let expected = Expected {
+        account: bytes(&f, "account").try_into().unwrap(),
+        origin: f["origin"].as_str().unwrap().into(),
+        root_fingerprint: bytes(&f, "fingerprint").try_into().unwrap(),
+        contact: bytes(&f, "contact").try_into().unwrap(),
+        routing_digest: bytes(&f, "routing").try_into().unwrap(),
+    };
+    let slot = |name| {
+        let field = &fields[name];
+        Slot {
+            tag: 1,
+            seal_revision: u64::from_be_bytes(field.signed_bytes()[38..46].try_into().unwrap()),
+            digest: field.digest(),
+        }
+    };
+    let mut previous: Option<crate::contact::mutation::Transition> = None;
+    let mut previous_statement: Option<crate::contact::Statement> = None;
+    let mut mutations = serde_json::Map::new();
+    for name in ["create", "update", "clear", "converted"] {
+        let st = &statements_by_name[if ["update", "clear"].contains(&name) {
+            "nextStatement"
+        } else {
+            "statement"
+        }];
+        let b = bytes(&f, name);
+        let number = |at| u64::from_be_bytes(b[at..at + 8].try_into().unwrap());
+        let mut input = Input {
+            operation: b[5],
+            expected_revision: number(38),
+            revision: number(46),
+            legacy_generation: number(214),
+            request_id: b[54..70].try_into().unwrap(),
+            previous_digest: [0; 32],
+            name: Slot {
+                tag: 0,
+                seal_revision: 0,
+                digest: [0; 32],
+            },
+            notes: slot("replacement"),
+        };
+        let replacements = match name {
+            "create" | "converted" => {
+                previous = None;
+                previous_statement = None;
+                input.name = slot("name");
+                input.notes = slot("notes");
+                vec![fields["name"].clone(), fields["notes"].clone()]
+            }
+            "update" => {
+                input.name = slot("name");
+                vec![fields["replacement"].clone()]
+            }
+            _ => vec![],
+        };
+        if let Some(p) = &previous {
+            input.previous_digest = p.mutation().digest()
+        }
+        let expected_legacy = input.legacy_generation;
+        let proposal = Proposal {
+            statement: st.clone(),
+            expected: expected.clone(),
+            input,
+            expected_legacy,
+            previous: previous.clone(),
+            previous_statement: previous_statement.clone(),
+            replacements,
+        };
+        let result =
+            produce_protected_mutation01(owner.key.clone(), &proposal, &Cancellation::default())
+                .unwrap();
+        mutations.insert(name.into(), json!(STANDARD.encode(result.signed_bytes())));
+        let closed = Arc::new(ContactRootSigner::open(&alias, &point).unwrap());
+        closed.close().unwrap();
+        assert!(produce_protected_mutation01(closed, &proposal, &Cancellation::default()).is_err());
+        previous = Some(result.verified().clone());
+        previous_statement = Some(st.clone());
+    }
+    let produced_fields: serde_json::Map<String, Value> = fields
+        .iter()
+        .map(|(name, field)| ((*name).into(), json!(STANDARD.encode(field.signed_bytes()))))
+        .collect();
+    let verified = node(
+        &interop,
+        &[],
+        Some(json!({"fixture":f,"fields":produced_fields,"mutations":mutations})),
+    );
+    assert_eq!(verified["verified"], true);
+    assert_eq!(verified["transitions"], 4);
+    println!(
+        "4 actual protected mutation transitions independently verified; closed mutation provider refused"
+    );
     drop(owner);
     assert!(
         ContactRootSigner::open(&alias, &point).is_err(),

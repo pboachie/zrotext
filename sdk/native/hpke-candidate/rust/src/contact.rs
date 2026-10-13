@@ -11,6 +11,8 @@ use p256::{
 use sha2::{Digest, Sha256};
 
 const STATEMENT_DOMAIN: &str = "ZT/contact-reader/authorization/v1";
+#[path = "contact_mutation.rs"]
+pub mod mutation;
 #[cfg(test)]
 #[path = "contact_tests.rs"]
 mod tests;
@@ -104,6 +106,7 @@ impl Statement {
     }
 }
 /// Verified commitment over opaque bytes, not ciphertext decryption or access authority.
+#[derive(Clone)]
 pub struct Field {
     raw: Vec<u8>,
     digest: [u8; 32],
@@ -352,6 +355,25 @@ fn produce<F>(
 where
     F: FnOnce(&[u8], Instant, &Cancellation) -> Result<Vec<u8>, Error> + Send + 'static,
 {
+    let st = statement.clone();
+    let expected = expected.clone();
+    execute(unsigned, cancel, sign, move |raw| {
+        Ok(Production {
+            field: verify_field01(raw, &st, &expected)?,
+        })
+    })
+}
+fn execute<F, V, T>(
+    unsigned: Vec<u8>,
+    cancel: &Cancellation,
+    sign: F,
+    verify: V,
+) -> Result<T, Error>
+where
+    F: FnOnce(&[u8], Instant, &Cancellation) -> Result<Vec<u8>, Error> + Send + 'static,
+    V: FnOnce(&[u8]) -> Result<T, Error> + Send + 'static,
+    T: Send + 'static,
+{
     need(cancel.live())?;
     OUTSTANDING
         .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
@@ -360,8 +382,6 @@ where
         .map_err(|_| Error::Shape)?;
     let permit = Permit;
     let deadline = Instant::now() + Duration::from_secs(10);
-    let st = statement.clone();
-    let expected = expected.clone();
     let cancellation = cancel.clone();
     let (tx, rx) = mpsc::sync_channel(1);
     std::thread::Builder::new()
@@ -374,9 +394,9 @@ where
                 let sig = sign(&unsigned, deadline, &cancellation)?;
                 live()?;
                 let raw = [unsigned, sig].concat();
-                let field = verify_field01(&raw, &st, &expected)?;
+                let value = verify(&raw)?;
                 live()?;
-                Ok(Production { field })
+                Ok(value)
             })();
             let _ = tx.send(result);
         })
