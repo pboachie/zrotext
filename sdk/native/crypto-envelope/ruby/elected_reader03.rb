@@ -12,6 +12,10 @@ module ZrotextCandidate
     end
     def active(r,when_ms) = need(r.getbyte(148)==1 && number(r,132)<=when_ms && when_ms<number(r,140))
     def open_software(input,manifest,proof,source,expected_message,expected_peer,recipient)
+      open_with_recipient(input,manifest,proof,source,expected_message,expected_peer,HpkeRecipient.software(recipient))
+    end
+    # Trusted callable unwrap adapter; no custody claim follows from this interface.
+    def open_with_recipient(input,manifest,proof,source,expected_message,expected_peer,recipient)
       b=input.b.dup;message=expected_message.b.dup;peer=expected_peer.dup
       need(b.bytesize.between?(557,34213) && message.bytesize==16 && message.bytes.any? { |v| v!=0 })
       record,now=source.call;authority=Election03.require_current(proof,manifest,record,now)
@@ -31,7 +35,7 @@ module ZrotextCandidate
       end
       need(selected);cek=nil
       begin
-        cek=HpkeRecipient.open(recipient,selected.byteslice(33,65),envelope.encapsulated(1,elected),envelope.wrap_info(1,elected),envelope.wrap_aad(1,elected),envelope.wrapped_key(1,elected))
+        cek=recipient.call(selected.byteslice(33,65),envelope.encapsulated(1,elected),envelope.wrap_info(1,elected),envelope.wrap_aad(1,elected),envelope.wrapped_key(1,elected))
         result=Zrotext::CandidateBody.open(content_key:cek,nonce:envelope.nonce,verified_aad:envelope.body_aad,ciphertext:envelope.body_ciphertext)
         after,later=source.call;need(later>=now && later<expires);Election03.require_current(proof,manifest,after,later);result
       ensure
