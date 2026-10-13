@@ -48,4 +48,5 @@ reader comparisons. These tests use explicit synthetic software recipient custod
 the existing protected reader entry point and its independent hardware gate remain
 separate. [Current HTTPS grant proofs](ORIGINAL-CURRENT.md) now integrate with
 this checkpoint. [Verified reads](ORIGINAL-READ.md) also integrate software and
-protected custody; page/consume/status operations remain pending.
+protected custody, and [page discovery](ORIGINAL-PAGE.md) fences metadata.
+Consume/status operations remain pending.

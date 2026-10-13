@@ -137,3 +137,5 @@ Original-reply accepted history and comparison clocks can be persisted with the 
 [Verified original current proof](../ORIGINAL-CURRENT.md) binds HTTPS scope and signed history before durable CAS advancement.
 
 [Verified original HTTPS read](../ORIGINAL-READ.md) authenticates selection and ciphertext, then persists fresh current authority before releasing plaintext.
+
+[Authenticated original pages](../ORIGINAL-PAGE.md) return bounded discovery metadata with exact cursor correlation after durable current-proof verification.

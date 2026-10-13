@@ -48,7 +48,8 @@ an unresponsive child fails the gate and leaves its private receipt for recovery
 Hosted CI runs software cases on Linux and Windows and does not claim TPM
 qualification. Local hardware tests require a qualifying Windows provider.
 
-Page metadata, authenticated consume/status, workflow proposal submission,
+[Page metadata](ORIGINAL-PAGE.md) is available separately. Authenticated
+consume/status, workflow proposal submission,
 profile03 original grants, contact/template parity and installed-archive
 qualification of these new methods remain separate work. No package is published
 by these checks.

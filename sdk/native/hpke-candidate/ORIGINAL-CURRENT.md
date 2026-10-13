@@ -37,7 +37,7 @@ strictly monotonic, including on reopen. This does not add profile03 or root
 transition support to original-grant history.
 
 The returned authority is a verified snapshot. It does not authorize omitting
-fresh checks before/after plaintext release or effects. [Verified read integration](ORIGINAL-READ.md) adds both checks. Page/consume/status
+fresh checks before/after plaintext release or effects. [Verified read integration](ORIGINAL-READ.md) adds both checks. [Page discovery](ORIGINAL-PAGE.md) also fences metadata. Consume/status
 client integration, descriptor/output authorization and installed package
 qualification of this surface remain follow-on work. No live grant or service
 deployment is qualified by these tests.
