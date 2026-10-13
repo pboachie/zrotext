@@ -1,0 +1,51 @@
+name: Tungsten migration comparisons
+on:
+  pull_request:
+    paths:
+      - 'sdk/tungsten/**'
+      - 'sdk/typescript/**'
+      - 'sdk/python/**'
+      - 'protocol/v1/openapi/**'
+      - 'scripts/*tungsten*'
+      - '.github/workflows/tungsten-migration.yml'
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  comparisons:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.13.0'
+      - name: Generate from the locked source
+        shell: bash
+        run: |
+          revision=$(python3 -c 'import json; print(json.load(open("sdk/tungsten/generator.lock.json"))["revision"])')
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/tungsten.git "$RUNNER_TEMP/tungsten"
+          git -C "$RUNNER_TEMP/tungsten" checkout --detach "$revision"
+          python3 scripts/tungsten_sdk.py --source "$RUNNER_TEMP/tungsten" --check
+      - name: Build existing TypeScript client
+        working-directory: sdk/typescript
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+      - name: Build generated TypeScript client
+        working-directory: sdk/tungsten/generated/typescript
+        run: |
+          cp ../../typescript.package-lock.json package-lock.json
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+      - name: Execute TypeScript comparisons
+        run: node --test sdk/tungsten/migration/typescript.test.mjs
+      - name: Install and execute Python comparisons
+        shell: bash
+        run: |
+          python3 -m venv "$RUNNER_TEMP/migration-python"
+          "$RUNNER_TEMP/migration-python/bin/python" -m pip install "$RUNNER_TEMP/tungsten/runtimes/python" ./sdk/tungsten/generated/python
+          "$RUNNER_TEMP/migration-python/bin/python" sdk/tungsten/migration/test_python.py
