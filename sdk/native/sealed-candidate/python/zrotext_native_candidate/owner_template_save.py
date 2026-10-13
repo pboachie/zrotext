@@ -76,7 +76,7 @@ class OwnerTemplateClient(OwnerTemplateReader):
             if self._saved is r:
                 if self._timer:self._timer.cancel();self._timer=None
                 self._saved=None
-            self._pending=None
+                self._pending=None
 
     def _ticket(self,ticket):
         with self._guard:

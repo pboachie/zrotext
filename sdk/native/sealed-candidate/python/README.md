@@ -856,6 +856,55 @@ API does not authorize replacing an uncertain intent after restart. No owner
 login, browser custody fallback, sending authority, live session acceptance or
 remote idempotency implementation is supplied. The cold `OwnerTemplateReader`
 remains available unchanged. Twenty-seven actual maintained TypeScript scenarios
-and nine synthetic TLS groups exercise saves, exact replay, current/session
+and ten synthetic TLS groups exercise saves, exact replay, current/session
 fences, sticky uncertainty, bounds, cancellation and reconciliation; both clean
 installed artifacts repeat the TLS groups.
+
+### Owner workflow context ciphertext persistence
+
+`OwnerWorkflowContextClient(origin, binding, context_id, kind, read_current=...,
+ current_session=..., consume_write_review=..., enabled=True)` supplies the
+maintained context persistence state machine for kinds 1, 2 and 3. It uses the
+same explicit origin-bound native owner session and current profile02 authority
+boundary as the template client. The archive reader is role 2; a workflow
+integration role 3 grant is not promoted to owner persistence authority.
+
+`prepare(request_id, expected_revision, scope, envelope)` captures an exact
+ZTWC01 ciphertext and consumes synchronous trusted host review. Review receives
+request/context/revision/digest, expected revision and read-only scope, and must
+return `None`. Caller callback failures are redacted into typed native errors;
+maintained JavaScript can propagate an untyped host exception, so differential
+controls normalize that host-only error shape explicitly.
+
+`commit(ticket)` makes one POST and then requires a GET of the exact current
+ciphertext after a canonical revision receipt. Only that sequence, with current
+authority checked throughout, returns `requestAcknowledged=True`. This differs
+from the template receipt-only acknowledgement contract. A valid compatible
+newer revision after the receipt returns `head_changed` / `not_current` and
+clears pending intent. A malformed, incompatible or lost GET remains unknown.
+
+The maintained context contract explicitly returns `refused` and clears intent
+for a first POST HTTP 400, 401, 403, 404, 409, 413 or 429. Those same statuses on
+an explicit retry after an unknown attempt remain unknown. This distinction is
+intentional and tested against the maintained implementation. Network failures,
+redirects and malformed receipts retain unknown intent. `retry_unknown(ticket)`
+reuses exact bytes and identity; `verify_unknown(ticket)` can report byte-identical
+current content with `requestAcknowledged=False` but never clears uncertainty.
+POST attempts and verification observations are each capped at three, without
+automatic retries or deadline renewal. `pending()` and `close()` preserve the
+same local uncertainty boundaries as the template client.
+
+This API accepts already-encrypted content. The existing native protected
+workflow-context crypto remains separate, and clean consumers pair native
+sealing with actual maintained TypeScript opening. Browser `owner-context-authoring`
+DOM plaintext review, visibility handling, archive custody leases and setup
+teardown subscriptions are not represented by this transport. No cold context
+read API, browser-custody fallback, live owner login or execution grant is added.
+Tickets/history remain in memory; this does not provide durable restart recovery.
+Twenty-six maintained state-machine scenarios and nine actual synthetic TLS
+groups qualify local candidate behavior, including all three context kinds.
+
+Concurrent prepares recheck ownership after worker admission. Shared cleanup
+only clears pending metadata when that operation owns the saved record; a
+rejected overlapping prepare cannot clear another unknown template or context
+intent. Deterministic admission barriers exercise both clients across this gap.

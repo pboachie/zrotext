@@ -115,6 +115,23 @@ class OwnerTemplateSaveTests(unittest.TestCase):
         self.assertFalse(reader_thread.is_alive());self.assertEqual(len(results),1)
         self.assertFalse(results[0]['matchesPending']);self.assertFalse(results[0]['requestAcknowledged']);self.assertIsNone(self.client.pending())
 
+    def test_rejected_prepare_cannot_clear_another_unknown_intent(self):
+        entered=threading.Event();release=threading.Event();errors=[];paused=None
+        original=self.client._operation
+        def barrier(*args,**kwargs):
+            if threading.current_thread() is paused:entered.set();release.wait(2)
+            return original(*args,**kwargs)
+        self.client._operation=barrier
+        def second():
+            try:self.prepare()
+            except OwnerTemplateError as error:errors.append(error.code)
+        paused=threading.Thread(target=second);paused.start();self.assertTrue(entered.wait(1))
+        ticket=self.prepare();self.respond(b'',status=0);self.assert_unknown(lambda:self.client.commit(ticket))
+        pending=self.client.pending();release.set();paused.join(2)
+        self.assertFalse(paused.is_alive());self.assertEqual(errors,['pending_write']);self.assertEqual(self.client.pending(),pending)
+        self.respond(b'{"revision":1}',headers={'Content-Type':'application/json'});self.client.retry_unknown(ticket)
+        self.assertIsNone(self.client.pending())
+
 if __name__=='__main__':
     import zrotext_native_candidate as n
     assert Path(n.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())
