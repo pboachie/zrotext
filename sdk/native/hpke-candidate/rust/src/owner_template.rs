@@ -1,4 +1,6 @@
 //! Cold opaque owner-template HTTPS loading; no plaintext or save acknowledgement.
+#[path = "owner_template_save.rs"]
+pub mod save;
 use crate::{
     manifest::{Manifest, window},
     reader::{active, key},
@@ -27,6 +29,7 @@ pub enum OwnerError {
     HeadChanged,
     Busy,
     Capacity,
+    AttemptsExhausted,
     Closed,
     Deadline,
 }
@@ -113,6 +116,7 @@ pub struct OwnerTemplateSnapshot {
     scope: EncryptedTemplateScope,
     wire: Vec<u8>,
     digest: [u8; 32],
+    matches_pending: bool,
 }
 impl OwnerTemplateSnapshot {
     pub fn scope(&self) -> EncryptedTemplateScope {
@@ -128,7 +132,7 @@ impl OwnerTemplateSnapshot {
         false
     }
     pub fn matches_pending(&self) -> bool {
-        false
+        self.matches_pending
     }
 }
 struct State {
@@ -269,12 +273,22 @@ impl OwnerCall {
         result
     }
     fn read(&self) -> Result<OwnerTemplateSnapshot, OwnerError> {
+        self.read_expected(None)
+    }
+    fn read_expected(
+        &self,
+        expected: Option<&OwnerSession>,
+    ) -> Result<OwnerTemplateSnapshot, OwnerError> {
         let mut state = self
             .inner
             .state
             .lock()
             .map_err(|_| OwnerError::ReadRefused)?;
         let session = self.credentials()?;
+        if expected.is_some_and(|v| v != &session) {
+            self.inner.closed.store(true, Ordering::Release);
+            return Err(OwnerError::OwnerChanged);
+        }
         self.authorize(&mut state, None, &session)?;
         if self.credentials()? != session {
             self.inner.closed.store(true, Ordering::Release);
@@ -351,6 +365,7 @@ impl OwnerCall {
             scope,
             wire,
             digest,
+            matches_pending: false,
         })
     }
 }

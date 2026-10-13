@@ -93,16 +93,17 @@ type OwnerTemplateOptions struct {
 // OwnerTemplateSnapshot is opaque current ciphertext. It never acknowledges a
 // saved request, decrypts content, or grants approval/send authority.
 type OwnerTemplateSnapshot struct {
-	scope  EncryptedTemplateScope
-	wire   []byte
-	digest [32]byte
+	scope          EncryptedTemplateScope
+	wire           []byte
+	digest         [32]byte
+	matchesPending bool
 }
 
 func (s *OwnerTemplateSnapshot) Scope() EncryptedTemplateScope { return s.scope }
 func (s *OwnerTemplateSnapshot) Envelope() []byte              { return append([]byte(nil), s.wire...) }
 func (s *OwnerTemplateSnapshot) EncryptedDigest() string       { return hex.EncodeToString(s.digest[:]) }
 func (s *OwnerTemplateSnapshot) RequestAcknowledged() bool     { return false }
-func (s *OwnerTemplateSnapshot) MatchesPending() bool          { return false }
+func (s *OwnerTemplateSnapshot) MatchesPending() bool          { return s.matchesPending }
 
 // OwnerTemplateReader is a cold readLatest client. Callbacks must not reenter
 // it. A stalled callback retains admission until it actually settles, even
@@ -255,9 +256,16 @@ func (c *OwnerTemplateReader) authorize(ctx context.Context, w *ownerTemplateWor
 	return nil
 }
 func (c *OwnerTemplateReader) read(ctx context.Context, w *ownerTemplateWork) (*OwnerTemplateSnapshot, error) {
+	return c.readExpected(ctx, w, nil)
+}
+func (c *OwnerTemplateReader) readExpected(ctx context.Context, w *ownerTemplateWork, expected *OwnerSession) (*OwnerTemplateSnapshot, error) {
 	session, e := c.credentials(ctx, w)
 	if e != nil {
 		return nil, e
+	}
+	if expected != nil && session != *expected {
+		c.Close()
+		return nil, OwnerTemplateError{Code: "owner_changed"}
 	}
 	if e = c.authorize(ctx, w, nil, session); e != nil {
 		return nil, e
@@ -325,7 +333,7 @@ func (c *OwnerTemplateReader) read(ctx context.Context, w *ownerTemplateWork) (*
 	}
 	c.head = scope.Revision
 	c.headDigest = digest
-	return &OwnerTemplateSnapshot{scope, raw, digest}, nil
+	return &OwnerTemplateSnapshot{scope: scope, wire: raw, digest: digest}, nil
 }
 func (c *OwnerTemplateReader) ReadLatest(ctx context.Context) (*OwnerTemplateSnapshot, error) {
 	bad := OwnerTemplateError{Code: "read_refused"}
