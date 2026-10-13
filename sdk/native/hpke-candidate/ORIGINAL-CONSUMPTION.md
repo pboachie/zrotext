@@ -3,7 +3,7 @@
 This experimental Rust/Go slice supports **descriptor-null owner review only**.
 It does not propose an action, accept a workflow descriptor, obtain an output
 credential, approve an action or send SMS. Typed proposals and their independent
-output authority remain separate work.
+output grant are available through the separate [proposal API](ORIGINAL-PROPOSAL.md).
 
 Prepare an immutable intent using the current client's `PrepareOwnerReview` /
 `prepare_owner_review`, supplying the event, caller-chosen consumption request ID
@@ -58,6 +58,6 @@ lost-response recovery using status without a second consume. Linux/Windows CI
 runs both native probes. These are source/runtime tests, not live-service or
 installed-package qualification. Go 1.26.9 and Rust 1.97.1 remain required.
 
-Typed workflow proposals/output authorization, contacts/templates and installed
-qualification of these new APIs remain incomplete. No package is published by
+Contacts/templates and installed qualification of these new APIs remain
+incomplete. No package is published by
 these checks.

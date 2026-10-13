@@ -24,8 +24,8 @@ impl std::fmt::Display for HttpError {
 }
 impl std::error::Error for HttpError {}
 
-// No proposal descriptor is accepted here until native workflow validation and
-// independent output credential authorization are integrated.
+// Generic requests never carry output credentials. Typed proposal APIs use a
+// private validated exchange while retaining the same transport policy.
 pub enum Request {
     Current,
     Page {
@@ -109,7 +109,7 @@ impl Request {
         Ok(encoded)
     }
 }
-fn uuid(s: &str) -> bool {
+pub(crate) fn uuid(s: &str) -> bool {
     s.len() == 36
         && s != "00000000-0000-0000-0000-000000000000"
         && s.bytes().enumerate().all(|(i, b)| {
@@ -207,10 +207,43 @@ impl OriginalHttp {
         version: u64,
         request: Request,
     ) -> Result<UntrustedWire, HttpError> {
+        self.exchange_proposal(grant, version, request, None, None)
+    }
+    pub(crate) fn exchange_proposal(
+        &self,
+        grant: &str,
+        version: u64,
+        request: Request,
+        action: Option<&crate::workflow_action::WorkflowAction>,
+        output: Option<&str>,
+    ) -> Result<UntrustedWire, HttpError> {
         if !credential(grant) {
             return Err(HttpError::Unavailable);
         }
-        let body = request.body(version)?;
+        let mut body = request.body(version)?;
+        if let Some(action) = action {
+            if !matches!(
+                &request,
+                Request::OwnerReview {
+                    active_request_id: Some(_),
+                    ..
+                }
+            ) || !action.production()
+                || !output.is_some_and(output_credential)
+            {
+                return Err(HttpError::Unavailable);
+            }
+            let mut value: Value =
+                serde_json::from_slice(&body).map_err(|_| HttpError::Unavailable)?;
+            value["params"]["descriptor"] =
+                serde_json::from_slice(&action.canonical()).map_err(|_| HttpError::Unavailable)?;
+            body = serde_json::to_vec(&value).map_err(|_| HttpError::Unavailable)?;
+            if body.len() > 4096 {
+                return Err(HttpError::Unavailable);
+            }
+        } else if output.is_some() {
+            return Err(HttpError::Unavailable);
+        }
         let bad = if matches!(request, Request::OwnerReview { .. }) {
             HttpError::Unknown
         } else {
@@ -222,16 +255,21 @@ impl OriginalHttp {
         authorization.set_sensitive(true);
         // Set the request timeout too: this reaches the async response body's total
         // deadline; the blocking client's timeout alone bounds individual reads.
-        let mut response = self
+        let mut builder = self
             .client
             .post(self.endpoint.clone())
             .timeout(self.timeout)
             .header(header::AUTHORIZATION, authorization)
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::CACHE_CONTROL, "no-store")
-            .body(body)
-            .send()
-            .map_err(|_| bad)?;
+            .body(body);
+        if let Some(output) = output {
+            let mut header = header::HeaderValue::from_str(&format!("Bearer {output}"))
+                .map_err(|_| HttpError::Unavailable)?;
+            header.set_sensitive(true);
+            builder = builder.header("x-zrotext-output-authorization", header);
+        }
+        let mut response = builder.send().map_err(|_| bad)?;
         if !response.status().is_success()
             || response.content_length().is_some_and(|n| n > 524288)
             || response
@@ -259,4 +297,8 @@ impl OriginalHttp {
             json: envelope.result,
         })
     }
+}
+
+pub(crate) fn output_credential(s: &str) -> bool {
+    s.len() == 47 && s.starts_with("ztw_") && credential(&format!("ztr_{}", &s[4..]))
 }
