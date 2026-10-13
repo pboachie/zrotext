@@ -3,6 +3,32 @@
 Standard library only (`urllib`, `hmac`); no dependencies, not published to PyPI.
 It mirrors the minimal TypeScript client in [`sdk/typescript`](../typescript/README.md).
 
+## Preview artifacts
+
+The `zrotext-client` distribution is a Python 3.11+ preview (`0.1.7rc1`).
+Publication requires a separate maintainer-approved release; no registry
+availability is implied. Its import name remains `zrotext_client`.
+
+From the repository root, build a wheel and source archive without downloading
+build dependencies. Select a new directory below the system temporary directory,
+outside the checkout (Python's `tempfile.gettempdir()` identifies its root):
+
+```sh
+python scripts/package_python.py build --out "$TEMP_PACKAGE"
+python scripts/package_python.py verify "$TEMP_PACKAGE/zrotext_client-0.1.7rc1-py3-none-any.whl"
+python scripts/package_python.py verify "$TEMP_PACKAGE/zrotext_client-0.1.7rc1.tar.gz"
+python -m pip install --no-index --no-deps "$TEMP_PACKAGE/zrotext_client-0.1.7rc1-py3-none-any.whl"
+```
+
+The source archive includes an offline PEP 517 backend and can also be built
+with `python -m pip wheel --no-index --no-deps --no-build-isolation ARCHIVE`.
+Only the existing alpha client and webhook helpers enter the wheel. The workflow
+Node bridge, simulators, sealed experiments and test fixtures are excluded.
+Verification checks every artifact entry against reviewed source, including
+metadata, hashes and the complete AGPL-3.0-only license. It refuses altered,
+unlisted, linked and oversized entries. Both artifacts are reproducible for the
+same source and Python toolchain; no publication command is supplied.
+
 **Scope.** `AlphaClient` covers only the allowlisted synthetic-alpha test plane the
 server actually implements: `POST /v1/alpha/messages`, `GET /v1/alpha/messages/{id}`
 and `POST /v1/alpha/messages/{id}/cancel`
