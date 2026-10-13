@@ -6,6 +6,9 @@ conversion. This is historical integrity over already encrypted fields. It does
 not establish a current contact grant, decrypt fields, write storage, or submit
 a mutation. The caller separately reviews and persists the exact resulting bytes.
 
+The separate [local history adapter](contact-history.md) records accepted
+metadata without converting stored rows into signature provenance.
+
 `verify_mutation01` / `VerifyContactMutation01` require a genuine verified reader
 statement and independently expected account, origin, root fingerprint, contact,
 routing digest and legacy generation. They enforce exact framing, signed integer

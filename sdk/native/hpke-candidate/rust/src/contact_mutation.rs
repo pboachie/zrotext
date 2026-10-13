@@ -1,6 +1,8 @@
 //! Signed historical contact mutations and retained-field transitions.
 //! No current grant, durable history or submission authority is inferred.
 use super::*;
+#[path = "contact_history.rs"]
+pub mod history;
 
 pub(crate) const DOMAIN: &str = "ZT/contact-field/mutation/v1";
 #[derive(Clone, Copy, PartialEq, Eq)]
