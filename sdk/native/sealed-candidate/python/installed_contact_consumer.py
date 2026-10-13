@@ -3,6 +3,7 @@ import base64
 import json
 from pathlib import Path
 import sys
+import tempfile
 import zrotext_native_candidate as n
 from zrotext_native_candidate import sealed_candidate as s
 
@@ -31,6 +32,25 @@ def main():
     changed=n.verify_contact_transition01(initial,mutations['update'],[fields['replacement']])
     final=n.verify_contact_transition01(changed,mutations['clear'],[])
     assert n.contact_transition_identity(final)['digest']==d('finalDigest')
+    with tempfile.TemporaryDirectory() as directory:
+        path=Path(directory)/'contacts.db';root_path=Path(directory)/'root.db'
+        root_store=n.CheckpointStore(root_path,d('rootPin'),d('fingerprint'))
+        root_store.accept_manifest(d('manifest'),0,10000)
+        args=dict(origin=f['origin'],maximum_records=1,root_history_path=root_path)
+        with n.ContactHistory(path,d('rootPin'),d('fingerprint'),create=True,**args) as history:
+            accepted=history.accept(expected=None,transition=initial,statement=old)
+            assert accepted['kind']=='accepted_local_history'
+        root_store.accept_manifest(d('nextManifest'),1,10000)
+        with n.ContactHistory(path,d('rootPin'),d('fingerprint'),**args) as history:
+            restored=history.lookup(d('contact'))
+            changed_result=history.accept(expected=restored['token'],transition=changed,statement=new)
+            final_result=history.accept(expected=changed_result['token'],transition=final,statement=new)
+            assert final_result['metadata']['digest']==d('finalDigest')
+        with n.ContactHistory(path,d('rootPin'),d('fingerprint'),reduction_only=True,**args) as history:
+            restored=history.lookup(d('contact'));assert restored['reason']=='reduction_only'
+            assert history.mark_unavailable(expected=restored['token'])['reason']=='local_stop'
+        with n.ContactHistory(path,d('rootPin'),d('fingerprint'),**args) as history:
+            assert history.lookup(d('contact'))['reason']=='local_stop'
     try:n.verify_contact_transition01(initial,mutations['clear'],[])
     except n.ContactIntegrityError:pass
     else:raise AssertionError('skipped historical revision accepted')

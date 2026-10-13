@@ -555,3 +555,99 @@ HPKE unwrap. It does not add a manifest-issuance lower bound to observation.
 Shared accepted cases self-open natively as well as independently in TypeScript;
 authentically signed out-of-lifetime ciphertext is refused before recipient use.
 Profile02 and inbound envelope checks retain their existing policies.
+
+`ContactHistory` adapts the maintained contact-local-history contract to native
+SQLite. Supply the independently enrolled generation-one root pin/fingerprint,
+canonical origin, immutable capacity (1..256), a contact metadata path, and the
+path of a separately maintained native `CheckpointStore`. `create=True` is an
+explicit new-file operation; ordinary opens never reset, migrate or recreate
+missing history. Root evidence must be a complete profile02 genesis/successor
+chain of at most 64 manifests. Every comparison replays its signatures from the
+external pin and verifies the mutation statement's archive/root records at its
+declared issuance. Profile03 and root-transition histories remain unsupported
+for this contact contract. Current root history is read again after recording;
+a changed/unavailable root returns `recorded_needs_recheck`.
+
+`lookup(contact_id)` returns `accepted_local_history` metadata, or an unavailable
+reason. Its opaque local token is bound to that adapter and exact persisted row;
+it is never a restored cryptographic transition token. `accept(expected=...,
+transition=..., statement=...)` requires genuine native historical acceptance,
+checks exact revision/digest/routing continuity, and atomically compares and
+updates the row and total count under `BEGIN IMMEDIATE`. Repeating an identical
+revision is idempotent; forks, skipped revisions, stale tokens and terminal rows
+are refused without retry. Returned metadata is copied. Stored rows contain only
+bounded metadata (1024-byte header, at most 256 rows of 2048 bytes), never signed
+content, ciphertext or plaintext; SQLite/WAL overhead is outside that logical
+payload bound. The root evidence database is separate and contains public signed
+manifests. Records are not evicted and reductions do not free the count budget.
+
+`mark_unavailable(expected=...)` atomically replaces an exact row with a terminal
+contact identifier. It works at full capacity and maximum revision. An explicit
+`reduction_only=True` open requires the existing matching header but no root
+evidence; it cannot create or positively accept history. Missing or rolled-back
+root evidence leaves a valid local token available for reduction. Malformed
+storage fails closed without clearing it. A storage/lifecycle failure after a
+write attempt returns `write_unknown`; reopen and look up the exact contact to
+reconcile local state. These results never acknowledge a server operation.
+
+Use `close()` or a context manager. The adapter permits one operation, at most
+four live/opening adapters per loaded module, a ten-second checked operation
+deadline, and a thirty-minute lifetime. SQLite lock waits are bounded to five
+seconds; owned connections close when the synchronous operation unwinds. Native
+callers must close on application suspension/cancellation; this package does not
+install browser visibility handlers. Deadlines are checked at bounded operation
+boundaries, not preemptive thread cancellation or a hard disk-I/O deadline.
+
+Accepted root/version/time floors detect observable regressions against retained
+rows. Ordinary SQLite cannot detect restoration of both databases to matching
+older snapshots, replacement with internally valid metadata, or same-root reset
+without an independent durable anchor. Local metadata is not authenticated
+against a malicious filesystem writer. This adapter makes no hardware antirollback,
+current permission, remote head/deletion, field readability or encryption claim;
+it does not requalify retained fields' older statements or custody. Tests use real
+SQLite races/process exits and fresh maintained TypeScript signed transitions;
+both installed wheel and sdist consumers exercise create/update/clear, restart
+and terminal reduction through normal public imports.
+
+`produce_contact_field01` and `produce_contact_transition01` produce the
+maintained historical contact commitments over caller-supplied opaque ciphertext.
+They do not encrypt fields, recover an owner key, install a reader, authorize a
+current owner or send data. Supply a genuine statement, exact independently
+expected account/origin/root fingerprint/contact/routing identity, and a separate
+`OwnerRootSigner`. Mutation production additionally requires the exact genuine
+previous transition and statement, expected legacy generation, and matching
+replacement field tokens. Scope, revision, slot and predecessor checks complete
+before signing. The returned `HistoricalProduction` contains copied immutable
+`signed_bytes`, a genuinely verified historical token, and the explicit
+`produced_historical_integrity` classification.
+
+`OwnerRootSigner.create(record_pending_alias)` and `.open(alias, expected_point)`
+reuse the existing local Windows Platform Crypto Provider qualification: exact
+hardware provider, P-256 shape/on-curve point, export-policy observation, private
+export refusal and real signing verification. It has a separate key namespace
+and accepts only `ZT/contact-field/commitment/v1` and
+`ZT/contact-field/mutation/v1`, with strict unsigned frame checks. The existing
+integration `HardwareSigner` domains remain unchanged and reject this root
+capability. Every producer independently matches the key point to the genuine
+statement before signing and verifies the complete signed result before return.
+There is no software fallback. `SoftwareOwnerRootSigner` requires explicit
+`require_hardware=False` and remains an experimental test capability.
+
+Optional `ContactCancellation` is one-way: call `.cancel()` to revoke an ongoing
+operation. The producer checks a ten-second deadline and admits at most four
+workers per loaded module. Cancellation or expiry stops outward delivery without
+claiming to undo a signature. An unresolved provider operation continues to own
+its admission until it actually settles; late output is discarded. No retry is
+performed. Callers own signer handles and pending-alias receipts throughout this
+period. Native threads cannot forcibly cancel an NCrypt call. Mutable working
+frames are cleared when the worker settles; immutable Python/provider copies and
+caller-owned ciphertext are outside that erasure guarantee.
+
+The independent TypeScript consumer verifies native create/update/clear/conversion
+chains and all field signatures. The protected test builds synthetic enrollment
+frames in TypeScript, signs them using private test plumbing on a fresh TPM root,
+and checks actual native commitments in TypeScript before exact owned-key cleanup.
+That fixture plumbing does not expand the public root signer's domain API.
+Installed wheel/sdist consumers exercise the explicit software candidate and
+independent verification; the separate local TPM test establishes the tested
+Windows provider observation, not remote attestation or browser/device acceptance.

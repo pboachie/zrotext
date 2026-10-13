@@ -43,3 +43,11 @@ __all__ += ['ContactIntegrityError','encode_contact_reader_statement01','parse_c
     'verify_contact_reader_statement01','encode_contact_field01','parse_contact_field01','verify_contact_field01',
     'encode_contact_mutation01','parse_contact_mutation01','verify_contact_mutation01','verify_contact_transition01',
     'contact_statement_identity','contact_field_identity','contact_mutation_identity','contact_transition_identity']
+
+from .contact_history import ContactHistory, ContactHistoryError
+__all__ += ['ContactHistory','ContactHistoryError']
+
+from .contact_producer import (OwnerRootSigner,SoftwareOwnerRootSigner,ContactCancellation,
+    ContactProducerError,HistoricalProduction,produce_contact_field01,produce_contact_transition01)
+__all__ += ['OwnerRootSigner','SoftwareOwnerRootSigner','ContactCancellation','ContactProducerError',
+    'HistoricalProduction','produce_contact_field01','produce_contact_transition01']

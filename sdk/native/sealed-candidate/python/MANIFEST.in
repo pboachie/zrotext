@@ -10,3 +10,4 @@ exclude installed_reply_consumer.py
 exclude installed_template_consumer.py
 exclude installed_contact_consumer.py
 exclude installed_time_consumer.py
+exclude installed_contact_producer_consumer.py
