@@ -151,3 +151,36 @@ Local template content and preview APIs are documented in [TEMPLATE-CONTENT.md](
 [Candidate encrypted templates](../TEMPLATE-CRYPTO.md) add authenticated ZTWT01 sealing and software/protected opening with explicit current-authority callbacks. Storage and owner transport remain separate.
 
 [Current owner-template loading](../OWNER-TEMPLATE.md) returns bounded opaque snapshots under independent owner/session authority. Save request/receipt helpers do not submit effects.
+
+### Explicit current template opening
+
+The candidate opening lifecycle owns a dedicated concrete template client's close
+lifecycle and independently rereads owner/consent/session/current authority before
+GET, before decryption, and before publishing the local preview. Constructor
+binding, origin and template must exactly match that client. The host must call
+close/invalidate when its UI or custody lifetime ends. The caller retains key
+ownership and deletion responsibility.
+
+The protected Windows entrypoint requires the existing qualified PCP recipient;
+public point and liveness are checked before GET, after authenticated decryption,
+and at final publication. The separately named software entrypoint makes no
+protected-custody claim. Closing either the supplied client or opening lifecycle
+suppresses publication. Timed-out callbacks retain admission until they actually
+settle; copied software scalar cleanup runs even when admission is refused.
+
+Returned text and segment estimates are local preview data, with no string-erasure
+guarantee. A matching uncertain save remains uncertain: `MatchesPending` may be
+true while request acknowledgement is always false. Opening performs no POST,
+implicit retries, authoring, send, consent creation or browser replacement.
+
+The shared `test-template-opening.py` runs synthetic TLS controls against exact
+maintained producer/oracle pins, including matching pending repeated reads,
+late authority, provider/client closure, and no plaintext on refusal. The Windows
+`test-template-opening-hardware.py` requires an actually qualified local PCP and
+checks exact owned-key deletion, including setup-failure EOF. Hosted workflow
+jobs run the explicit software gate. Windows jobs also probe PCP capability and
+run protected acceptance when available; unavailable capability is explicitly
+unqualified. Neither software-only nor hosted execution proves installed archive
+acceptance.
+
+Go API: `NewOwnerTemplateOpening`, `OpenLatestProtected`, `OpenLatestSoftware`.
