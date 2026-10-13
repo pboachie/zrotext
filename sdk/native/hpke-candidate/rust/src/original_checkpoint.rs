@@ -1,7 +1,7 @@
 //! Scope-bound accepted reply history and local clock CAS, never live grant authority.
 use crate::{
     journal::JournalError,
-    manifest::{Manifest, enroll_root, verify_manifest},
+    manifest::{Manifest, RootTrust, enroll_root, verify_manifest},
     original_reply::{OriginalScope, valid_scope},
 };
 use rusqlite::{Connection, OpenFlags, TransactionBehavior, params};
@@ -40,7 +40,7 @@ fn need(v: bool) -> Result<()> {
         Err(JournalError::Refused)
     }
 }
-fn scope_hash(s: &OriginalScope) -> Result<[u8; 32]> {
+pub(crate) fn scope_hash(s: &OriginalScope) -> Result<[u8; 32]> {
     need(valid_scope(s))?;
     let mut b = b"ZTSE/native/original-checkpoint-scope/v1\0".to_vec();
     for p in [
@@ -72,18 +72,50 @@ fn capture(history: &[&Manifest]) -> Result<Vec<Saved>> {
         })
         .collect()
 }
+// Server acceptance times are independent from the local durable clock floor.
+// Keep all signed/root/lineage checks; only the private profile02/gen1 history
+// replay adapter does not import a preceding server time as a local clock.
+pub(crate) fn accepted_manifest_at(
+    raw: &[u8],
+    root: &RootTrust,
+    previous: Option<&Manifest>,
+    at: u64,
+) -> Result<Manifest> {
+    let copied = previous.map(|p| Manifest {
+        raw: p.raw.clone(),
+        profile: p.profile,
+        predecessor: p.predecessor,
+        generation: p.generation,
+        version: p.version,
+        issued: p.issued,
+        expires: p.expires,
+        comparison: 0,
+        digest: p.digest,
+        account: p.account,
+        root: p.root,
+        enrolled: p.enrolled,
+        lineage: p.lineage.clone(),
+    });
+    if let Some(p) = previous {
+        need(p.profile == 2 && p.generation == 1)?;
+    }
+    let result = verify_manifest(raw, root, copied.as_ref(), 2, at)?;
+    need(result.generation == 1)?;
+    Ok(result)
+}
 fn verify(rows: &[Saved], pin: &[u8], fingerprint: &[u8], now: u64) -> Result<Vec<Manifest>> {
     need(now > 0 && now <= i64::MAX as u64 && (1..=CAPACITY).contains(&rows.len()))?;
     let root = enroll_root(pin, fingerprint)?;
     let mut history = Vec::new();
     for (i, r) in rows.iter().enumerate() {
-        need(r.version == i as u64 + 1 && r.comparison > 0 && r.comparison <= now)?;
-        let m = verify_manifest(&r.raw, &root, history.last(), 2, r.comparison)?;
+        // Server acceptance time is distinct from the durable local clock.
+        need(r.version == i as u64 + 1 && r.comparison > 0 && r.comparison <= now + 30000)?;
+        let m = accepted_manifest_at(&r.raw, &root, history.last(), r.comparison)?;
         need(m.version == r.version && m.generation == 1)?;
         history.push(m);
     }
     let previous = history.last().ok_or(JournalError::Refused)?;
-    let current = verify_manifest(&previous.raw, &root, Some(previous), 2, now)?;
+    let current = accepted_manifest_at(&previous.raw, &root, Some(previous), now)?;
     *history.last_mut().ok_or(JournalError::Refused)? = current;
     Ok(history)
 }

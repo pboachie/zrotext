@@ -11,6 +11,8 @@ pub mod envelope;
 pub mod journal;
 pub mod manifest;
 pub mod original_checkpoint;
+pub mod original_current;
+pub mod original_http;
 pub mod original_reply;
 #[cfg(windows)]
 pub mod outbound;
@@ -130,3 +132,9 @@ fn open_shared_cek(
 pub fn open_protected_cek() -> Result<Zeroizing<Vec<u8>>, Error> {
     Err(Error::ProtectedUnavailable)
 }
+pub mod original_consumption;
+pub mod original_page;
+pub mod original_read;
+
+pub mod original_proposal;
+pub mod workflow_action;

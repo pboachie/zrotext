@@ -133,3 +133,15 @@ The original-reply selection verifier checks both phone approval and installatio
 This local reader does not implement HTTP read/current/consume/status or persist grant high-water/history. Its callback must come from a trusted independently authenticated grant integration. See `sdk/native/hpke-candidate/ORIGINAL-REPLY.md` in the source repository for the acceptance command and remaining integration boundaries. Existing archive-only readers do not gain role3 authority.
 
 Original-reply accepted history and comparison clocks can be persisted with the experimental [scope-bound checkpoint](../ORIGINAL-CHECKPOINT.md). Independent enrollment, current grant authority and explicit durable acceptance remain required.
+
+[Original-grant HTTPS transport](../ORIGINAL-HTTP.md) returns untrusted wire JSON; authenticated client integration remains required.
+
+[Verified original current proof](../ORIGINAL-CURRENT.md) binds HTTPS scope and signed history before durable CAS advancement.
+
+[Verified original HTTPS read](../ORIGINAL-READ.md) authenticates selection and ciphertext, then persists fresh current authority before releasing plaintext.
+
+[Authenticated original pages](../ORIGINAL-PAGE.md) return bounded discovery metadata with exact cursor correlation after durable current-proof verification.
+
+[Saved owner-review consumption/status](../ORIGINAL-CONSUMPTION.md) correlates caller-persisted descriptor-null intent with fresh proofs and preserves unknown outcomes without retry.
+
+Typed saved original-reply proposal consumption/status is documented in [ORIGINAL-PROPOSAL.md](../ORIGINAL-PROPOSAL.md). This does not approve or send an action.
