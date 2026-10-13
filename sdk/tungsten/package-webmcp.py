@@ -128,13 +128,21 @@ def main():
         application = replace_once(application, "new URL('./server.mjs', import.meta.url)",
                                    "new URL('./node_modules/@elysra/zrotext-webmcp/lib/sdk/tungsten/webmcp/app/server.mjs', import.meta.url)")
         (consumer / "app.test.mjs").write_text(application, encoding="utf-8")
-        run(node, "--test", "adapter.test.mjs", "browser.test.mjs", "app.test.mjs", cwd=consumer, env=env)
+        capability = (CONFIG / "webmcp/app/capability.test.mjs").read_text()
+        capability = replace_once(capability, "from './server.mjs'", "from '@elysra/zrotext-webmcp/app'")
+        capability = replace_once(capability, "new URL('../../../../web/owner/package.json', import.meta.url)",
+                                  "new URL('./package.json', import.meta.url)")
+        (consumer / "capability.test.mjs").write_text(capability, encoding="utf-8")
+        browser_report = stage / "browser-qualification.json"
+        env["ZT_WEBMCP_BROWSER_REPORT"] = str(browser_report)
+        run(node, "--test", "adapter.test.mjs", "browser.test.mjs", "app.test.mjs", "capability.test.mjs", cwd=consumer, env=env)
         output.mkdir(parents=True)
         shutil.copyfile(archive, output / archive.name)
         report = {"name": manifest["name"], "version": manifest["version"],
                   "qualification": "installed native browser and authenticated HTTPS application; synthetic workflow upstream; no publication",
                   "sha256": {archive.name: hashlib.sha256(archive.read_bytes()).hexdigest()},
-                  "catalog_sha256": hashlib.sha256(catalog).hexdigest()}
+                  "catalog_sha256": hashlib.sha256(catalog).hexdigest(),
+                  "browser_capabilities": json.loads(browser_report.read_text())}
         (output / "manifest.json").write_text(json.dumps(report, indent=2) + "\n")
     print("Experimental WebMCP archive and isolated installed acceptance passed; no publication performed")
 

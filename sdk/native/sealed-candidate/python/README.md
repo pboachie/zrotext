@@ -1008,7 +1008,126 @@ not exercise a live proposal transaction or imply its independent authority.
 |---|---|
 | Sealed composition, metadata, original replies, contact/template/context content and owner template/context persistence | Native primitives and bounded installed clients exist; reviewed integration, broader platform/provider matrix and live service/device gates remain separate. |
 | DOM-free template authoring/opening | Native host callbacks and protected opening exist; browser visibility, user activation and DOM adapters remain retained. |
-| Conversation genesis/activation/refresh public files | Exact portable export/comparison companion exists; existing-root signing, one-shot installation/CAS and owner enrollment ceremony integration remain separate. |
+| Conversation genesis/activation/refresh public files | Exact portable export/comparison companion exists; native existing-root genesis and reviewed role-5 enrollment exist; other root/recovery and browser custody integration remain separate. |
 | Owner context authoring, disclosure/review and acknowledged-opening UI | Maintained DOM/session/custody lifecycle is retained; no Python DOM equivalence is claimed. Portable opening-capacity transports and host ceremony integrations still require their own review and ownership checks. |
 | Root/archive recovery and protected custody | Existing native Windows PCP is separately qualified; browser backup unlock/recovery lifecycle and other native protected providers remain distinct gaps. |
 | Generated clients and legacy entrypoints | Generated schema/runtime/redirect/deadline and registry gates still prevent replacement; legacy entrypoints remain present. |
+
+### Reviewed role-5 enrollment
+
+`ConversationEnrollment` implements the maintained existing-root enrollment
+sequence. It captures an exact interval/session/peer/reader binding and target
+public point; reverifies the trusted predecessor and selected role-1/2 reader
+liveness; presents immutable public review; signs a successor adding exactly one
+role-5 key; independently verifies that signature and current authority; then
+invokes the caller-owned installation CAS with predecessor digest, verified
+successor, proposed high-water and captured binding. All existing key records
+remain byte-for-byte unchanged, and the added key expires within thirty minutes
+and the existing manifest lifetime.
+
+Normal synchronous review callback completion consumes approval; throwing
+refuses. Awaitables are not accepted as implicit approval. The public
+`enrollment_installation(accepted, high_water)` helper extracts immutable signed
+manifest bytes and identity from genuinely verified, exactly matching handles.
+It establishes no new trust, owner review or consent. The installed consumer
+uses those public bytes with `CheckpointStore.accept_manifest`, rejects stale CAS
+and mismatched handles, and reverifies the persisted chain after reopening the
+store. This checkpoint test does not supply the application's session/consent
+transaction. The install adapter
+must atomically compare predecessor/high-water and live session/consent. Like the
+maintained API, this operation does **not** perform storage readback: its result
+is a verified accepted successor, never an unlocked signer, persisted-state
+proof or send authority. Installation-admitted failures/timeouts/cancellation
+report `state='unknown'`, cannot be retried automatically, and consume the one-shot
+operation. Unsettled trusted callbacks retain bounded worker capacity. Current
+clock samples anchor a monotonically shortened elapsed deadline before the
+callback starts, so a stale delayed sample cannot extend validity.
+
+The default requires exact locally qualified `EnrollmentRootSigner` custody,
+with the predecessor's independently trusted public root. This capability rejects
+generic signing and genesis transcripts; it can sign only the reviewed role-5
+addition derived from genuine predecessor evidence. Explicit
+`require_protected=False` permits `SoftwareEnrollmentRootSigner` for experiments.
+Closing the ceremony never deletes the application's key. The installed consumer
+uses a private crypto primitive solely to provision a fresh synthetic protected
+predecessor; production enrollment does not gain a generic provisioning API.
+Windows PCP acceptance is reported separately from unavailable-platform skips,
+with exact owned test-key receipts. Browser activation, live consent/CAS server
+integration, remote attestation and other protected providers remain separate.
+
+### Existing-root genesis ceremony
+
+`ConversationGenesis` composes the maintained one-shot genesis sequence: capture
+independently compared root/phone input, check current owner/device/key/line state,
+consume an immutable public review, sign with the exact existing root, verify the
+signature, call the application's installation CAS, then independently verify
+fresh readback. Normal synchronous review callback completion consumes approval;
+throw to decline. Awaitable callbacks are refused rather than treated as consent.
+
+The installation adapter must atomically enforce version zero and the supplied
+session/device/key/line authority. Callback success alone never establishes an
+installed manifest. Installation has an explicit effect-admission boundary;
+exceptions, cancellation or timeouts after that boundary report `state='unknown'`.
+There is no automatic retry. A ceremony is consumed once, including refusal, and
+unsettled callbacks retain bounded worker capacity after caller cancellation.
+Callbacks are trusted host integration, not server authority or DOM activation.
+
+`GenesisRootSigner` is a dedicated Windows Platform Crypto Provider capability
+restricted to canonical four-role generation-one manifest-v2 genesis signing.
+It does not broaden outbound/contact signing authorities. Default protected
+policy refuses software and unqualified providers. `SoftwareGenesisRootSigner`
+requires explicit `require_protected=False` for experiments. The application owns
+key lifetime; closing the ceremony does not delete its key. Hardware qualification
+is local provider evidence, not remote attestation or a browser custody claim.
+Clean wheel/sdist consumers independently verify native signatures with the
+maintained TypeScript reader and report actual protected-provider qualification
+separately from a platform-unavailable skip.
+
+## Session signer setup and one-use confirmation
+
+`ConversationSignerSetup02(binding, consume_setup_decision, read_current,
+record_pending_alias=..., record_deleted_alias=...)` implements the portable
+maintained conversation signer lifecycle. Call `setup()` once, then independently
+enroll its `public_point` / `key_id` through the existing reviewed enrollment
+ceremony. Setup does not install a manifest or unlock any unrelated signer.
+The current callback supplies a genuine verified profile02 manifest, exact
+binding, authenticated monotonic `nowMs`, and independent `ownerSessionLive` and
+`consentLive` facts. A normal synchronous decision callback return consumes
+approval, including `False`; decline by raising. Awaitable callbacks refuse.
+These host facts are not browser gestures, DOM custody, or server authorization.
+
+`prepare_review(text)` returns immutable signed envelope bytes, message ID,
+body, and exact 30-second ZTCS01 proof. It pins the root/generation, monotonic
+manifest high-water and clock. `sign_reviewed(proof, envelope, text,
+consume_confirmation)` consumes each proof identity before the confirmation
+callback, then rechecks current authority before and after its canonical low-S
+confirmation signature. Confirmation never performs HTTP, delivery or automatic
+enrollment. Public arbitrary signing on `ConversationRole5Signer` is refused;
+its dedicated PCP namespace does not widen the existing composer capabilities.
+
+The default creates a fresh hardware-qualified nonexportable Windows Platform
+Crypto Provider key only after setup approval. There is no Software KSP fallback.
+`require_hardware=False` is an explicit experimental software-key alternative;
+it does not claim protected custody. Pending-alias callbacks must durably record
+and fsync their private receipts before key creation. Deleted-alias callbacks
+must record completion only after successful deletion of that exact owned key.
+No alias enumeration or deletion by prefix occurs.
+
+Every operation has a bounded timeout and optional `threading.Event` cancellation.
+`close()` suppresses future output immediately. An unresolved provider or host
+callback retains the instance and one of four worker slots until actual
+settlement; cleanup occurs afterward. `cleanup_pending` / `cleanup_state` expose
+outstanding custody work. `cleanup()` retries an actual deletion or a failed
+completion receipt without deleting twice. `creation_outcome_unknown` means
+creation failed before returning a handle and internal cleanup cannot be
+certified: retain the original private pending receipt for exact-alias operator
+recovery. Automatic cleanup cannot resolve that state and never reports success.
+Process termination cannot promise key deletion; durable receipts remain needed.
+Python strings, immutable copies and provider memory have no erasure guarantee.
+
+The synthetic acceptance fixture drives the actual maintained setup API for
+byte/refusal and callback-order comparisons, and independently verifies native
+confirmation/envelope signatures and both HPKE recipient opens. Windows source
+and isolated wheel/sdist consumers create and delete actual owned PCP keys.
+Absent hardware is an explicit skip after a read-only capability probe; it is not protected acceptance. Other platforms run the software interoperability path without claiming Windows
+custody. Legacy TypeScript and Python entry points remain unchanged.
