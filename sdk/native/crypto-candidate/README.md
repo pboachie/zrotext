@@ -40,7 +40,7 @@ Run from the repository root (use any private temporary build directory):
 
 ```sh
 build=$(mktemp -d)
-python3 sdk/native/crypto-candidate/export_vectors.py "$build/vectors.tsv"
+python3 sdk/native/crypto-candidate/export_vectors.py > "$build/vectors.tsv"
 javac --release 17 -Xlint:all -Werror -d "$build/java" sdk/native/crypto-candidate/java/*.java
 java -cp "$build/java" BodyTest "$build/vectors.tsv"
 dotnet run --project sdk/native/crypto-candidate/csharp/Tests.csproj < "$build/vectors.tsv"

@@ -29,7 +29,7 @@ jobs:
         with:
           dotnet-version: '8.0.x'
       - name: Extract existing synthetic fixture cases
-        run: python3 sdk/native/crypto-candidate/export_vectors.py "$RUNNER_TEMP/body-vectors.tsv"
+        run: python3 sdk/native/crypto-candidate/export_vectors.py > "$RUNNER_TEMP/body-vectors.tsv"
       - name: Verify Java body conformance
         run: |
           javac --release 17 -Xlint:all -Werror -d "$RUNNER_TEMP/body-java" sdk/native/crypto-candidate/java/*.java

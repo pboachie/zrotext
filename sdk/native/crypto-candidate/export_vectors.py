@@ -47,5 +47,5 @@ for case in fixture["authenticatedCases"]:
             damaged[0] += f"_empty_{field}"
             damaged[6:] = ["shape", ""]
             rows.append(damaged)
-Path(sys.argv[1]).write_text("\n".join("\t".join(row) for row in rows) + "\n", encoding="utf-8")
-print(f"Exported {len(rows)} candidate conformance cases")
+print("\n".join("\t".join(row) for row in rows))
+print(f"Exported {len(rows)} candidate conformance cases", file=sys.stderr)
