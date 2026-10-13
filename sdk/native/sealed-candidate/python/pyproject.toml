@@ -20,6 +20,9 @@ classifiers = [
 [project.urls]
 Repository = "https://github.com/pboachie/zrotext"
 
+[project.optional-dependencies]
+workflow = ["zrotext-workflow-candidate==0.1.0a1"]
+
 [tool.setuptools]
 packages = ["zrotext_native_candidate"]
 include-package-data = false

@@ -4,7 +4,8 @@ import { Aes128Gcm, CipherSuite, DhkemP256HkdfSha256, HkdfSha256 } from '../../.
 import { canonicalSignature02, enrollRootPin02, verifyManifest02, advanceManifestTrust02, verifiedManifestIdentity02 } from '../../../typescript/dist/draft02-manifest.js';
 import { prepareInboundEnvelope02 } from '../../../typescript/dist/draft02-envelope-prep.js';
 import { keyId } from '../../../typescript/dist/draft01.js';
-import { verifyArchiveReplySelection02 } from '../../../typescript/dist/original-reply-selection.js';
+import { verifyArchiveReplySelection02, verifyOriginalReplySelection02 } from '../../../typescript/dist/original-reply-selection.js';
+import { openOriginalReply02 } from '../../../typescript/dist/original-reply-reader.js';
 import { openConversationInbound02 } from '../../../typescript/dist/conversation-reader.js';
 globalThis.crypto ??= webcrypto;
 const suite = new CipherSuite({ kem: new DhkemP256HkdfSha256(), kdf: new HkdfSha256(), aead: new Aes128Gcm() });
@@ -29,6 +30,12 @@ async function kem(n) {
   return { pair, point, id: await keyId(16,point) };
 }
 const root=await signing(7), origin=await signing(6), archive=await kem(34), extra=await kem(35);
+const readerFlag=process.argv.indexOf('--reader-point');
+if(readerFlag>=0){
+ const encoded=process.argv[readerFlag+1];if(!/^[0-9a-f]{130}$/.test(encoded??''))throw Error('reader point');
+ extra.point=new Uint8Array(Buffer.from(encoded,'hex'));await suite.kem.deserializePublicKey(extra.point);
+ extra.id=await keyId(16,extra.point);
+}
 const accountId=bytes(161,16),deviceId=bytes(209,16),lineId=bytes(177,16),interval=bytes(42,16),messageId=bytes(49,16);
 const rootPin=join(text('ZTRP'),[2],accountId,integer(1,8),root.point);
 const fingerprint=await sha(join(text('ZTSE/root-pin/v2\0'),rootPin));
@@ -40,9 +47,9 @@ const keys=[[2,archive.id,archive.point,bytes(0,16),bytes(0,16),12],
  [6,await keyId(257,root.point),root.point,bytes(0,16),bytes(0,16),0]];
 async function sign(domain,payload,key=origin.privateKey){return canonicalSignature02(new Uint8Array(await crypto.subtle.sign(
  {name:'ECDSA',hash:'SHA-256'},key,join(text(domain+'\0'),integer(payload.length,4),payload))));}
-async function manifest(version,previous,trust){
+async function manifest(version,previous,trust,records=keys){
  const unsigned=join(text('ZTMA'),[2],accountId,integer(1,8),integer(version,8),integer(start,8),integer(end,8),previous,
-  root.point,[keys.length],...keys.map(([role,id,point,device,line,scope])=>join([role],id,point,device,line,integer(scope,2),integer(start,8),integer(end,8),[1])));
+  root.point,[records.length],...records.map(([role,id,point,device,line,scope,state=1])=>join([role],id,point,device,line,integer(scope,2),integer(start,8),integer(end,8),[state])));
  const raw=join(unsigned,await sign('ZTSE/manifest/v2',unsigned,root.privateKey));
  return {raw,value:await verifyManifest02(raw,trust,now)};
 }
@@ -50,6 +57,9 @@ const predecessor=await manifest(1,bytes(0,32),pin);
 const oldIdentity=verifiedManifestIdentity02(predecessor.value,now);
 const activation=await manifest(2,oldIdentity.digest,await advanceManifestTrust02(pin,predecessor.value));
 const identity=verifiedManifestIdentity02(activation.value,now);
+const successorTrust=await advanceManifestTrust02(await advanceManifestTrust02(pin,predecessor.value),activation.value);
+const successor=await manifest(3,identity.digest,successorTrust);
+const revoked=await manifest(3,identity.digest,successorTrust,keys.map(row=>row[0]===3?[...row,2]:row));
 const disclosure='With your approval, ZROtext transfers encrypted SMS content for this selected phone line and conversation to your paired browser and the explicitly listed customer-controlled readers. Stop closes new capture and transfer; retained encrypted content is deleted separately.';
 const str=s=>join([text(s).length],text(s));
 const selection=join(text('ZTCA'),[2],accountId,deviceId,lineId,integer(1,8),interval,bytes(43,16),bytes(44,16),bytes(45,32),
@@ -69,7 +79,17 @@ const archiveOnly=await prepareInboundEnvelope02({...shared,recipients:recipient
 const opened=await openConversationInbound02(inbound.envelope,{...scope,archivePrivateKey:archive.pair.privateKey,
  historical:activation.value,current:activation.value,nowMs:now,selection:accepted});
 if(opened!==shared.content)throw Error('independent selected archive opening');
-process.stdout.write(JSON.stringify({rootPin:b64(rootPin),fingerprint:b64(fingerprint),predecessor:b64(predecessor.raw),activation:b64(activation.raw),
+const originalScope={account:accountId,device:deviceId,line:lineId,interval,peer:'+12',connector:bytes(46,16),readGrant:bytes(47,16),reader:extra.id};
+const originalSelection=await verifyOriginalReplySelection02(selection,approval,installation,activation.value,now,originalScope);
+if(readerFlag<0){
+ const originalPrivate=await crypto.subtle.importKey('jwk',await crypto.subtle.exportKey('jwk',extra.pair.privateKey),{name:'ECDH',namedCurve:'P-256'},false,['deriveBits']);
+ const originalText=await openOriginalReply02(inbound.envelope,{scope:originalScope,event:messageId,privateKey:originalPrivate,historical:activation.value,
+  selection:originalSelection,readCurrent:async()=>({...originalScope,revision:'1',expiresMs:20000n,nowMs:now,manifest:activation.value})});
+ if(originalText!==shared.content)throw Error('independent original role3 opening');
+}
+process.stdout.write(JSON.stringify({rootPin:b64(rootPin),fingerprint:b64(fingerprint),predecessor:b64(predecessor.raw),activation:b64(activation.raw),successor:b64(successor.raw),revoked:b64(revoked.raw),
  selection:b64(selection),approval:b64(approval),installation:b64(installation),inbound:b64(inbound.envelope),archiveOnly:b64(archiveOnly.envelope),
  archiveScalar:b64(new Uint8Array(await suite.kem.serializePrivateKey(archive.pair.privateKey))),reader:b64(archive.id),
+ ...(readerFlag<0?{originalScalar:b64(new Uint8Array(await suite.kem.serializePrivateKey(extra.pair.privateKey)))}:{}),originalReader:b64(extra.id),
+ connector:b64(originalScope.connector),readGrant:b64(originalScope.readGrant),event:b64(messageId),
  account:b64(accountId),device:b64(deviceId),line:b64(lineId),interval:b64(interval),now:Number(now),text:opened}));

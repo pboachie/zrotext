@@ -137,7 +137,7 @@ class SealedHttpClient:
         self._authority('compose',provisional)
         return dict(inputs,now_ms=self._clock())
 
-    def _exchange(self,method,path,body,authority_until):
+    def _exchange(self,method,path,body,authority_until,*,content_type=SEALED_CONTENT_TYPE,extra_headers=None,max_response=16384):
         if not _WORKERS.acquire(blocking=False):return 'timeout'
         cancelled=threading.Event();result=queue.Queue(maxsize=1);connections=[]
         def worker():
@@ -152,12 +152,13 @@ class SealedHttpClient:
                 if not _integer(now,1) or not authority_until[0]<=now<authority_until[1]:
                     result.put('authority_unavailable');return
                 headers={'Authorization':'Bearer '+self.__credential,'Accept':'application/json'}
-                if body is not None:headers['Content-Type']=SEALED_CONTENT_TYPE
+                if body is not None:headers['Content-Type']=content_type
+                if extra_headers:headers.update(extra_headers)
                 connection.request(method,path,body=body,headers=headers)
                 response=connection.getresponse();response_seen=True
-                raw=response.read(16385)
-                if len(raw)>16384 or response.length not in (None,0) or cancelled.is_set():raise ValueError()
-                result.put((response.status,response.getheader('Retry-After',''),raw))
+                raw=response.read(max_response+1)
+                if len(raw)>max_response or response.length not in (None,0) or cancelled.is_set():raise ValueError()
+                result.put((response.status,response.getheader('Retry-After',''),raw,response.getheader('Content-Type','')))
             except Exception as error:
                 result.put('timeout' if isinstance(error,(TimeoutError,socket.timeout)) else
                            'unexpected_response' if response_seen else 'network')
@@ -191,7 +192,7 @@ class SealedHttpClient:
             status=0;retry_after=''
             if type(result) is str:code=result
             else:
-                status,retry_after,raw=result
+                status,retry_after,raw,_=result
                 try:
                     row=json.loads(raw.decode('utf-8'),parse_constant=lambda _:None)
                     if status==(202 if submit else 200):

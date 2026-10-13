@@ -28,7 +28,7 @@ Wheel contents are restricted to the package's thirteen modules and distribution
 metadata/license. Source archives add build metadata and this README; neither
 archive includes tests, fixture producers, private receipts, sample scalars or
 repository tooling. Both carry AGPL-3.0-only license metadata and full text.
-`check_package.py --output <artifact-directory>` builds both formats in temporary
+`check_package.py --output <artifact-directory> --workflow-source <reviewed-workflow-package>` builds both formats in temporary
 storage, checks exact archive/dependency contents, installs each into a fresh
 virtual environment and exercises real signed evidence, decryption, composition
 and journal replay outside the checkout. Its isolated consumers then pass their
@@ -293,7 +293,7 @@ consumers exercise this path outside the source checkout.
 | Native outbound composition | Native fresh crypto, TPM signing and exact local ciphertext replay implemented; live grant/transport/receiver integration remains separate |
 | Profile-03 body opening | Current elected ciphertext verified/opened, including TPM tests; live backend/admission/grant/audience and receiver composition remain separate |
 | Protected custody | Windows TPM provider with actual key/ECDH/opening/reopen tests; remote attestation, independent antirollback and other OS providers remain unsupported |
-| Integration reader selection | Signed selection verifies exact archive-opening wrap sets; role-3 grant acquisition and live integration remain separate |
+| Integration reader selection | Signed selection and native role-3 opening with initial/final dedicated TLS grant proofs; live deployment integration remains separate |
 | Live authority and delivery | SDK/server/grant/journal/receiver integration and controlled device acceptance remain under #1054/#1004 |
 | Publication / replacement | Neither stable package removal nor registry publication is authorized by these tests |
 
@@ -369,3 +369,56 @@ exact retry, reconciliation and cancellation outside the checkout. Source tests
 also cover timeout after observed receipt, authority expiry during TLS,
 untrusted TLS, response mismatches, framing failure and protected-profile
 composition through the existing journals. No registry publication is implied.
+
+## Original replies and optional workflow integration
+
+`OriginalReplyClient` accepts an independently selected `scope`, locally accepted
+manifest history, recipient custody and a trusted clock. Its dedicated `ztr_`
+credential accesses `/v1/reply-events`; it is never reused as a workflow credential.
+The scope contains account/device/line/interval/connector/read-grant UUID bytes,
+the selected reader ID and peer. Protected custody is required by default.
+Software fixture custody requires explicit `require_protected=False`; unsupported
+providers never silently fall back.
+
+`read_verified(event)` verifies the phone-approved selection, exact original
+role-3 ciphertext identity and signed manifest chain, then checks the current
+grant again after decryption. A changed, expired, foreign or revoked final proof
+prevents plaintext release. The result contains transient plaintext, the original
+event/digest identity, accepted baseline version and final authority. `read(event)`
+returns only the transient text. Mutable CEK/plaintext working buffers are cleared;
+Python/provider copies and returned strings are outside the erasure guarantee.
+
+Current proofs bind the original account, interval, device, line, connector,
+read-grant and reader. Manifest chains are bounded to 32 entries, accepted history
+to 64 snapshots, and currentness to the maintained 30-second observation bound.
+The client rejects forks, gaps, rollback and concurrent operations. Its highwater
+is in memory: applications must supply independently accepted durable history
+when creating a new client. A service response cannot select the local scope or
+custody key. TLS proof verification is component behavior, not evidence that a
+particular deployment has granted permission or completed device acceptance.
+
+`page(cursor=None, limit=20)` returns bounded event metadata with the maintained
+opaque `(accepted_at_ms, event_id)` cursor; metadata is neither a plaintext read
+nor STOP classification. `consume(request)` makes one effect attempt with a
+caller-retained request/event identity. After uncertainty, use `status(request_id)`
+to recover; there is no automatic retry, resend or new consumption identity.
+Invalid post-effect results remain unknown. Owner-review consumption needs no
+workflow package and does not obtain proposal or dispatch authority.
+
+Proposal consumption requires the optional `workflow` extra, whose ordinary
+package coordinate is `zrotext-workflow-candidate==0.1.0a1`, plus a separate trusted
+`output_credential` callback returning a canonical `ztw_` credential. The existing
+native workflow package supplies its exact descriptor schema and canonical digest.
+The output credential is sent only in `x-zrotext-output-authorization` for proposal
+consumption. Missing extras or credentials, foreign account/line descriptors and
+mismatched returned action/digest identities fail closed. The extra is imported
+lazily, so ordinary crypto/read consumers remain usable without it.
+
+CI builds the reviewed workflow package at
+`9c0e969466e2cb8778e03287c7214ba78a50eee1` (#1229), then tests clean installation
+without the extra and co-installation with it. Installed wheel and sdist consumers
+perform actual synthetic TLS selected reading, final current proof, pagination,
+owner-review/proposal consumption and status recovery. The maintained TypeScript
+producer independently opens the same role-3 software fixture; an optional public
+point also tests qualified Windows TPM opening without exporting its private key.
+These checks do not claim #1054 live grant deployment or #1004 device acceptance.
