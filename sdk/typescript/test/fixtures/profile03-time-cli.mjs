@@ -5,6 +5,7 @@ import { fixture, inputFor, keyId, enrollRootPin02, verifyManifest02,
   verifyManifest03From02, verifyAcceptedPayloadProfileElection03, requireCurrentElection03,
   verifyAndOpen, parseOutput, sha } from './profile03-outbound-fixture.mjs';
 import { authorizeOutbound03 } from '../../dist/draft03-manifest.js';
+import { encodeReaderCase } from './profile03-invalid-time-envelope.mjs';
 
 const corpus = JSON.parse(readFileSync(new URL('../../../../protocol/v1/vectors/sealed-profile03-outbound-time-policy.json', import.meta.url)));
 const b64 = value => Buffer.from(value).toString('base64');
@@ -14,7 +15,7 @@ const encodeRecord = record => Object.fromEntries(Object.entries(record).map(([k
 const decodeRecord = record => Object.fromEntries(Object.entries(record).map(([k,v]) =>
   [k, typeof v === 'number' ? (k === 'profile' || k === 'manifestProfile' ? v : BigInt(v)) : bytes(v)]));
 
-async function produce(scenario, signerPoint) {
+async function produce(scenario, signerPoint, readerCase = false) {
   const policy = { ...corpus.defaults, ...scenario }, f = await fixture(policy, signerPoint), input = inputFor(f);
   f.authority.comparedAtMs = BigInt(policy.now_ms);
   const recipients = await Promise.all(f.records.filter(r => r.role <= 3).map(async r => {
@@ -23,7 +24,8 @@ async function produce(scenario, signerPoint) {
   }));
   const signer = f.records.find(r => r.role === 5);
   const signerScalar = signerPoint ? undefined : b64(Buffer.from((await crypto.subtle.exportKey('jwk',signer.k.pair.privateKey)).d,'base64url'));
-  return { name:scenario.name, accept:scenario.accept, policy, rootPin:b64(f.pinBytes), fingerprint:b64(f.fingerprint),
+  return { name:scenario.name, accept:scenario.accept, policy,
+    ...(readerCase ? {envelope:b64(await encodeReaderCase(f,policy))} : {}), rootPin:b64(f.pinBytes), fingerprint:b64(f.fingerprint),
     signed02:b64(f.old.bytes),signed03:b64(f.first.bytes),core:b64(f.core),bundle:b64(f.bundle),
     deviceSigningPoint:b64(f.enrollment.point),ownerApprovalPoint:b64(f.approval.point),
     accepted:encodeRecord(f.accepted),authority:encodeRecord(f.authority),message:b64(input.messageId),
@@ -67,7 +69,10 @@ async function consume(input) {
 }
 
 const args=process.argv.slice(2);
-if (args.length===1 && args[0]==='--consume') {
+if (args.length===1 && args[0]==='--reader-cases') {
+  const output=[];for(const scenario of corpus.cases)output.push(await produce(scenario,undefined,true));
+  process.stdout.write(JSON.stringify({cases:output}));
+} else if (args.length===1 && args[0]==='--consume') {
   let text='';for await(const chunk of process.stdin)text+=chunk;
   process.stdout.write(JSON.stringify(await consume(JSON.parse(text))));
 } else {

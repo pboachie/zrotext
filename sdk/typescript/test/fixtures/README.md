@@ -38,3 +38,14 @@ the shared policy identity, fresh signed authority/election evidence, routing
 and timestamp bytes, signature and all three independent HPKE/AES plaintexts.
 It emits `{verified:true,name,recipients:3}` on success and exits nonzero on
 failure. It performs no HTTP, persistent authority update or device action.
+
+### Negative reader authorization
+
+`node profile03-time-cli.mjs --reader-cases` emits all fourteen fixtures with an
+additional base64 `envelope`. This mode uses only fresh synthetic software keys;
+it cannot accept an external signer point. The test-only encoder deliberately
+bypasses policy authorization, then independently verifies the signature and
+opens all three complete HPKE/AES transcripts even for rejected cases. Readers
+must enforce each fixture's `accept` result after verifying genuine authority.
+This prevents a broken encryption transcript from masquerading as successful
+negative authorization coverage. Never import this encoder into application code.

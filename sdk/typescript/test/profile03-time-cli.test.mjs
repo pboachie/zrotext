@@ -47,3 +47,19 @@ test('shared CLI supports synthetic software fixtures and refuses unsupported se
   for(const args of [['--case','missing'],['--signer-point','00'],['--case'],['--unknown','value']])
     assert.notEqual(spawnSync(process.execPath,[cli,...args],{encoding:'utf8'}).status,0);
 });
+
+test('reader corpus carries complete signed encryption even when authority must refuse',()=>{
+  const fixtures=call(['--reader-cases']).cases;
+  assert.equal(fixtures.length,14);
+  for(const f of fixtures){
+    assert.equal(bytes(f.signerScalar).length,32);
+    const envelope=bytes(f.envelope),view=new DataView(envelope.buffer);
+    assert.equal(view.getBigUint64(146),BigInt(f.observed));
+    assert.equal(view.getBigUint64(154),BigInt(f.expires));
+    if(f.accept)assert.deepEqual(call(['--consume'],{fixture:f,envelope:f.envelope,expectedText:f.bodyText}),
+      {verified:true,name:f.name,recipients:3});
+  }
+  assert.equal(fixtures.filter(f=>f.accept).length,6);
+  // The deliberately policy-unchecked encoder cannot use an external protected signer.
+  assert.notEqual(spawnSync(process.execPath,[cli,'--reader-cases','--signer-point','04'+'11'.repeat(64)],{encoding:'utf8'}).status,0);
+});
