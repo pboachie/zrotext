@@ -21,6 +21,12 @@ and acceptance times, appends only verified successors and advances the clock
 under revision CAS. An alternate valid signature over the same unsigned identity
 does not replace previously stored evidence.
 
+Stored manifest acceptance timestamps may be up to 30000 ms ahead of the local
+comparison, matching the maintained original-reply client's server-clock
+allowance. They do not advance or lower the separate durable local clock floor.
+Every signed historical record is reverified at its acceptance time and the
+current head is independently reverified at the current local comparison.
+
 An optional Go fence or required Rust fence runs under the write lock after
 cryptographic replay. It can recheck independently obtained current authority and
 advance comparison, but cannot lower it. It is a trusted adapter callback, not a
@@ -40,5 +46,5 @@ and signed-history corruption controls. It opens actual maintained TypeScript
 selected role3 ciphertext after restoring history and durably accepting both
 reader comparisons. These tests use explicit synthetic software recipient custody;
 the existing protected reader entry point and its independent hardware gate remain
-separate. Dedicated HTTPS grant proofs, consume/status operations and their
-integration with this checkpoint remain pending.
+separate. [Current HTTPS grant proofs](ORIGINAL-CURRENT.md) now integrate with
+this checkpoint; verified read/page/consume/status operations remain pending.

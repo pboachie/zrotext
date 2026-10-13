@@ -58,6 +58,25 @@ func replyCapture(history []*Manifest) ([]replySaved, error) {
 	}
 	return rows, nil
 }
+
+// Accepted-history timestamps come from authenticated server records, not the
+// local high-water clock. Reverify every signature/root/unsigned predecessor at
+// its own time without importing a prior server time as a local clock floor.
+// Only this profile02 generation-one integration uses this private adapter.
+func replyManifestAt(raw []byte, root *RootTrust, previous *Manifest, at uint64) (*Manifest, error) {
+	if root == nil || root.generation != 1 || root.comparison != 0 {
+		return nil, ErrJournal
+	}
+	if previous != nil {
+		if previous.profile != 2 || previous.generation != 1 {
+			return nil, ErrJournal
+		}
+		copy := *previous
+		copy.comparison = 0
+		previous = &copy
+	}
+	return VerifyManifest(raw, root, previous, 2, at)
+}
 func replyVerify(rows []replySaved, pin, fingerprint []byte, now uint64) ([]*Manifest, error) {
 	if now == 0 || now > 0x7fffffffffffffff || len(rows) < 1 || len(rows) > replyHistoryCapacity {
 		return nil, ErrJournal
@@ -69,10 +88,12 @@ func replyVerify(rows []replySaved, pin, fingerprint []byte, now uint64) ([]*Man
 	history := make([]*Manifest, 0, len(rows))
 	var previous *Manifest
 	for i, r := range rows {
-		if r.version != uint64(i+1) || r.comparison == 0 || r.comparison > now {
+		// Row acceptance is the authenticated server comparison, not the local
+		// durable clock. Match the maintained reply client's bounded clock skew.
+		if r.version != uint64(i+1) || r.comparison == 0 || r.comparison > now+30000 {
 			return nil, ErrJournal
 		}
-		m, e := VerifyManifest(r.raw, root, previous, 2, r.comparison)
+		m, e := replyManifestAt(r.raw, root, previous, r.comparison)
 		if e != nil {
 			return nil, e
 		}
@@ -82,7 +103,7 @@ func replyVerify(rows []replySaved, pin, fingerprint []byte, now uint64) ([]*Man
 		history = append(history, m)
 		previous = m
 	}
-	current, e := VerifyManifest(previous.raw, root, previous, 2, now)
+	current, e := replyManifestAt(previous.raw, root, previous, now)
 	if e != nil {
 		return nil, e
 	}

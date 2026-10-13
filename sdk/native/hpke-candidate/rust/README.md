@@ -133,3 +133,5 @@ This local reader does not implement HTTP read/current/consume/status or persist
 Original-reply accepted history and comparison clocks can be persisted with the experimental [scope-bound checkpoint](../ORIGINAL-CHECKPOINT.md). Independent enrollment, current grant authority and explicit durable acceptance remain required.
 
 [Original-grant HTTPS transport](../ORIGINAL-HTTP.md) returns untrusted wire JSON; authenticated client integration remains required.
+
+[Verified original current proof](../ORIGINAL-CURRENT.md) binds HTTPS scope and signed history before durable CAS advancement.
