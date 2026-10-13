@@ -155,12 +155,33 @@ func NewOriginalHTTP(origin string, timeout time.Duration, additionalRootsPEM []
 	return &OriginalHTTP{endpoint: strings.TrimSuffix(origin, "/") + "/v1/reply-events", client: client, timeout: timeout}, nil
 }
 func (c *OriginalHTTP) Exchange(ctx context.Context, credential string, request OriginalHTTPRequest) (OriginalWire, error) {
+	return c.exchange(ctx, credential, request, nil, "")
+}
+
+// Proposal output authorization is deliberately not accepted by the generic transport API.
+func (c *OriginalHTTP) exchange(ctx context.Context, credential string, request OriginalHTTPRequest, action *WorkflowAction, output string) (OriginalWire, error) {
 	fail := func(unknown bool) (OriginalWire, error) { return OriginalWire{}, OriginalHTTPError{Unknown: unknown} }
 	if c == nil || ctx == nil || !originalCredential(credential) {
 		return fail(false)
 	}
 	body, e := request.body()
 	if e != nil {
+		return fail(false)
+	}
+	if action != nil {
+		if request.Method != "consume" || request.ActiveRequestID == "" || !action.production() || !outputCredential(output) {
+			return fail(false)
+		}
+		var object map[string]any
+		if json.Unmarshal(body, &object) != nil {
+			return fail(false)
+		}
+		object["params"].(map[string]any)["descriptor"] = json.RawMessage(action.canonical)
+		body, e = json.Marshal(object)
+		if e != nil || len(body) > 4096 {
+			return fail(false)
+		}
+	} else if output != "" {
 		return fail(false)
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
@@ -174,6 +195,9 @@ func (c *OriginalHTTP) Exchange(ctx context.Context, credential string, request 
 	}
 	req.GetBody = nil // no replayable body, including transport-level replay.
 	req.Header.Set("Authorization", "Bearer "+credential)
+	if output != "" {
+		req.Header.Set("X-Zrotext-Output-Authorization", "Bearer "+output)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Cache-Control", "no-store")
 	unknown := request.Method == "consume"
@@ -226,3 +250,7 @@ func (c *OriginalHTTP) Exchange(ctx context.Context, credential string, request 
 }
 
 var _ error = OriginalHTTPError{}
+
+func outputCredential(s string) bool {
+	return len(s) == 47 && strings.HasPrefix(s, "ztw_") && originalCredential("ztr_"+s[4:])
+}

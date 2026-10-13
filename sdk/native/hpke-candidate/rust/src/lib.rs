@@ -135,3 +135,6 @@ pub fn open_protected_cek() -> Result<Zeroizing<Vec<u8>>, Error> {
 pub mod original_consumption;
 pub mod original_page;
 pub mod original_read;
+
+pub mod original_proposal;
+pub mod workflow_action;
