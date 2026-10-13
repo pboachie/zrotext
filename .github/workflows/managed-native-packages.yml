@@ -67,10 +67,15 @@ jobs:
           ref: 1b7732ec36bf705f78e69a2cea95b792f04dc772
           path: controls
           persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
+          path: original-producer
+          persist-credentials: false
       - name: Build independent producers
         shell: pwsh
         run: |
-          foreach ($path in @('producer02','producer03','custody-producer','root-producer')) {
+          foreach ($path in @('producer02','producer03','custody-producer','root-producer','original-producer')) {
             npm ci --ignore-scripts --prefix "$path/sdk/typescript"
             if ($LASTEXITCODE) { exit $LASTEXITCODE }
             npm run build --prefix "$path/sdk/typescript"
@@ -81,5 +86,5 @@ jobs:
       - name: Qualify clean installed candidate consumers
         shell: pwsh
         run: |
-          python sdk/native/crypto-envelope/package-managed.py --target ${{ matrix.language }} --out "$env:RUNNER_TEMP/native-artifacts" --producer02 producer02 --producer03 producer03 --custody-producer custody-producer --root-producer root-producer --root-controls root-controls --controls controls
+          python sdk/native/crypto-envelope/package-managed.py --target ${{ matrix.language }} --out "$env:RUNNER_TEMP/native-artifacts" --producer02 producer02 --producer03 producer03 --custody-producer custody-producer --root-producer root-producer --root-controls root-controls --controls controls --original-producer original-producer
           if ($LASTEXITCODE) { exit $LASTEXITCODE }

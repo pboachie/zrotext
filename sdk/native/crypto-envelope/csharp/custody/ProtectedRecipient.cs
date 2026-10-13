@@ -120,6 +120,9 @@ public sealed class ProtectedRecipient:IDisposable {
     public string OpenElected03(byte[] input,ManifestChain.Verified manifest,Election03.Proof proof,ElectedReader03.IAuthoritySource source,byte[] message,string peer){
         lock(gate){Need(qualified && !closed);return ElectedReader03.OpenSoftware(input,manifest,proof,source,message,peer,adapter!);}
     }
+    public string OpenOriginalReply02(byte[] input,byte[] message,ManifestChain.Verified historical,OriginalReplyReader.Selection selection,OriginalReplyReader.Scope scope,Func<OriginalReplyReader.Authority> source){
+        lock(gate){Need(qualified && !closed);return OriginalReplyReader.OpenSoftware(input,message,historical,selection,scope,adapter!,source);}
+    }
     /// <summary>Only this instance's fresh creation may be deleted. Opening an existing alias never grants deletion.</summary>
     public void DeleteCreated(){lock(gate){Need(created && !closed && !key.IsInvalid);Check(Native.NCryptDeleteKey(key,0));key.SetHandleAsInvalid();created=false;qualified=false;Dispose();}}
     public void Dispose(){lock(gate){if(closed)return;closed=true;qualified=false;adapter?.Dispose();key.Dispose();provider.Dispose();}}

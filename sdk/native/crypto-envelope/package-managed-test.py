@@ -1,5 +1,6 @@
 """Reject substituted, duplicate and unexpected candidate archive payloads."""
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -9,6 +10,9 @@ import zipfile
 spec = importlib.util.spec_from_file_location('managed', Path(__file__).with_name('package-managed.py'))
 managed = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(managed)
+runner_spec = importlib.util.spec_from_file_location('original_runner', Path(__file__).with_name('original-reply-run.py'))
+runner = importlib.util.module_from_spec(runner_spec)
+runner_spec.loader.exec_module(runner)
 
 
 class ArchiveTests(unittest.TestCase):
@@ -40,8 +44,22 @@ class ArchiveTests(unittest.TestCase):
     def test_closed_runtime_inventory(self):
         for language in ('java', 'csharp', 'ruby'):
             paths = managed.runtime_sources(language)
-            self.assertEqual(len(paths), 13)
-            self.assertEqual(len(set(paths)), 13)
+            self.assertEqual(len(paths), 14)
+            self.assertEqual(len(set(paths)), 14)
+
+    def test_installed_original_commands_require_both_exact_argument_lists(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'commands.json'
+            commands = {'software': ['runtime', 'software consumer'], 'protected': ['runtime', 'protected consumer']}
+            path.write_text(json.dumps(commands), encoding='utf-8')
+            self.assertEqual(runner.installed_commands(path), (commands['software'], commands['protected']))
+            for invalid in [[], {}, {'software': ['runtime']}, dict(commands, extra=[]),
+                            dict(commands, software='runtime'), dict(commands, software=[]),
+                            dict(commands, protected=[None]), dict(commands, protected=['']),
+                            dict(commands, protected=['bad\0argument'])]:
+                path.write_text(json.dumps(invalid), encoding='utf-8')
+                with self.assertRaises(ValueError):
+                    runner.installed_commands(path)
 
 
 if __name__ == '__main__':
