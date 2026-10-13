@@ -10,6 +10,7 @@ pub mod election;
 pub mod envelope;
 pub mod journal;
 pub mod manifest;
+pub mod original_checkpoint;
 pub mod original_reply;
 #[cfg(windows)]
 pub mod outbound;

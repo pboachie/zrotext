@@ -75,6 +75,75 @@ func request(d map[string]json.RawMessage, signer *hpke.HardwareSigner) (hpke.Co
 	}
 	return hpke.ComposeRequest{Manifest: proof.AcceptedManifest(), Proof: proof, Authority: func() (hpke.ElectionRecord, uint64, error) { return record(d, "authority"), 30000, nil }, Message: b("message"), Observed: 30000, Expires: 40000, Peer: "+12", Content: content, Signer: signer, Recipients: []hpke.ComposeRecipient{{Role: 1, ID: record(d, "accepted").Bytes["selectedReaderKeyId"]}, {Role: 2, ID: archive}}}, nil
 }
+func timeCases(d map[string]json.RawMessage, signer *hpke.HardwareSigner) error {
+	var cases []map[string]json.RawMessage
+	if e := json.Unmarshal(d["cases"], &cases); e != nil {
+		return e
+	}
+	if len(cases) != 14 {
+		return errors.New("shared case count")
+	}
+	public, e := signer.PublicPoint()
+	if e != nil {
+		return e
+	}
+	results := []map[string]any{}
+	for _, c := range cases {
+		if !bytes.Equal(public, decode(c, "signerPoint")) {
+			return errors.New("policy signer binding")
+		}
+		// Verify genuine signed authority before any expected policy refusal.
+		r, e := request(c, signer)
+		if e != nil {
+			return e
+		}
+		var policy struct {
+			Name                   string
+			Accept                 bool
+			Now, Observed, Expires uint64
+			BodyText               string
+			Recipients             []struct {
+				Role  byte
+				KeyId string
+			}
+		}
+		raw, e := json.Marshal(c)
+		if e != nil {
+			return e
+		}
+		if e = json.Unmarshal(raw, &policy); e != nil {
+			return e
+		}
+		r.Authority = func() (hpke.ElectionRecord, uint64, error) { return record(c, "authority"), policy.Now, nil }
+		r.Observed = policy.Observed
+		r.Expires = policy.Expires
+		r.Content = policy.BodyText
+		r.Recipients = nil
+		for _, v := range policy.Recipients {
+			id, e := base64.StdEncoding.Strict().DecodeString(v.KeyId)
+			if e != nil {
+				return e
+			}
+			r.Recipients = append(r.Recipients, hpke.ComposeRecipient{Role: v.Role, ID: id})
+		}
+		out, e := hpke.ComposeProtected03(r)
+		if (e == nil) != policy.Accept {
+			return fmt.Errorf("policy case %s: %v", policy.Name, e)
+		}
+		if e == nil {
+			opened, err := hpke.OpenSoftwareElected03(out, r.Manifest, r.Proof, record(c, "authority"), decode(c, "readerScalar"), hpke.ElectedContext{Message: r.Message, Peer: r.Peer, Now: policy.Now})
+			if err != nil || opened != r.Content {
+				return errors.New("native selected reader self-open")
+			}
+		}
+		var envelope any
+		if e == nil {
+			envelope = base64.StdEncoding.EncodeToString(out)
+		}
+		results = append(results, map[string]any{"name": policy.Name, "envelope": envelope})
+	}
+	return json.NewEncoder(os.Stdout).Encode(map[string]any{"results": results})
+}
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--probe" {
 		if e := hpke.ProbeHardwareSigner(); e != nil {
@@ -173,6 +242,9 @@ func exercise() (result error) {
 	var d map[string]json.RawMessage
 	if e = json.NewDecoder(io.LimitReader(os.Stdin, 1000000)).Decode(&d); e != nil {
 		return e
+	}
+	if _, ok := d["cases"]; ok {
+		return timeCases(d, key)
 	}
 	if _, ok := d["envelope"]; ok {
 		return errors.New("external signer producer expected")

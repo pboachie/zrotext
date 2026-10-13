@@ -58,7 +58,6 @@ pub(crate) fn authorize(r: &ComposeRequest<'_>) -> Result<Plan, Error> {
     need(
         r.message != [0; 16]
             && r.observed > 0
-            && r.observed >= m.issued
             && r.observed <= now
             && r.expires > now
             && r.expires <= i64::MAX as u64

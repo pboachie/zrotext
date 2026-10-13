@@ -36,7 +36,7 @@ func openElected03(input []byte, m *Manifest, p *ElectionProof, current Election
 	}
 	observed := binary.BigEndian.Uint64(b[146:154])
 	expires := binary.BigEndian.Uint64(b[154:162])
-	if observed == 0 || observed > now || observed < m.issued || observed >= m.expires || expires <= now || expires > m.expires || expires > c.Numbers["permissionExpiresAtMs"] {
+	if observed == 0 || observed > now || observed >= m.expires || expires <= now || expires > m.expires || expires > c.Numbers["permissionExpiresAtMs"] {
 		return "", ErrAuthentication
 	}
 	signer := manifestKey(m, 5, b[114:146])

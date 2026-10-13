@@ -112,6 +112,65 @@ mod native {
         need(input.len() <= 1000000, "fixture size")?;
         Ok(serde_json::from_str(&input)?)
     }
+    fn time_cases(d: &serde_json::Value, signer: &HardwareSigner) -> Result<()> {
+        let cases = d["cases"].as_array().ok_or("time cases")?;
+        need(cases.len() == 14, "shared case count")?;
+        let mut results = Vec::new();
+        for case in cases {
+            need(
+                b(case, "signerPoint") == signer.public_point()?,
+                "policy signer binding",
+            )?;
+            // Signed election and manifest verification are outside the expected-refusal branch.
+            let proof = proof(case)?;
+            let now = case["now"].as_u64().ok_or("now")?;
+            let authority = || Ok((record(case, "authority"), now));
+            let mut r = request(case, &proof, signer, &authority);
+            r.observed = case["observed"].as_u64().ok_or("observed")?;
+            r.expires = case["expires"].as_u64().ok_or("expires")?;
+            r.content = case["bodyText"].as_str().ok_or("body text")?;
+            r.recipients = case["recipients"]
+                .as_array()
+                .ok_or("recipients")?
+                .iter()
+                .map(|v| {
+                    Ok(Recipient {
+                        role: u8::try_from(v["role"].as_u64().ok_or("role")?)?,
+                        id: b(v, "keyId").try_into().map_err(|_| "key width")?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let output = compose_protected03(&r);
+            let accept = case["accept"].as_bool().ok_or("accept")?;
+            need(
+                output.is_ok() == accept,
+                case["name"].as_str().ok_or("name")?,
+            )?;
+            if let Ok(ref envelope) = output {
+                let opened = crypto(
+                    zrotext_hpke_candidate::elected_reader::open_software_elected03(
+                        envelope,
+                        r.manifest,
+                        &proof,
+                        &record(case, "authority"),
+                        &b(case, "readerScalar"),
+                        &zrotext_hpke_candidate::elected_reader::ElectedContext {
+                            message: &r.message,
+                            peer: r.peer,
+                            now,
+                        },
+                    ),
+                )?;
+                need(
+                    opened.as_str() == r.content,
+                    "native selected reader self-open",
+                )?;
+            }
+            results.push(serde_json::json!({"name":case["name"], "envelope":output.ok().map(|v|STANDARD.encode(v))}));
+        }
+        println!("{}", serde_json::json!({"results":results}));
+        Ok(())
+    }
     pub fn run() -> Result<()> {
         match std::env::args().nth(1).as_deref() {
             Some("--probe") => {
@@ -171,6 +230,9 @@ mod native {
             );
             std::io::stdout().flush()?;
             let d = read()?;
+            if d.get("cases").is_some() {
+                return time_cases(&d, &key);
+            }
             need(
                 d.get("envelope").is_none() && b(&d, "signerPoint") == public,
                 "external signer producer binding",

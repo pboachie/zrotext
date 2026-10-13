@@ -58,7 +58,7 @@ func authorizeCompose(r ComposeRequest) (*composePlan, error) {
 		return nil, e
 	}
 	m := r.Manifest
-	if len(r.Message) != 16 || bytes.Equal(r.Message, make([]byte, 16)) || r.Observed == 0 || r.Observed < m.issued || r.Observed > now || r.Expires <= now || r.Expires > 0x7fffffffffffffff || r.Expires-r.Observed > 900000 || len(r.Peer) < 3 || len(r.Peer) > 16 || r.Peer[0] != '+' || r.Peer[1] < '1' || r.Peer[1] > '9' {
+	if len(r.Message) != 16 || bytes.Equal(r.Message, make([]byte, 16)) || r.Observed == 0 || r.Observed > now || r.Expires <= now || r.Expires > 0x7fffffffffffffff || r.Expires-r.Observed > 900000 || len(r.Peer) < 3 || len(r.Peer) > 16 || r.Peer[0] != '+' || r.Peer[1] < '1' || r.Peer[1] > '9' {
 		return nil, ErrShape
 	}
 	for _, v := range r.Peer[2:] {

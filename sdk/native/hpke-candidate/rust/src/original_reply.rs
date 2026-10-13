@@ -87,7 +87,7 @@ impl<'a> Cursor<'a> {
 fn number(b: &[u8], at: usize) -> u64 {
     u64::from_be_bytes(b[at..at + 8].try_into().expect("internal checked width"))
 }
-fn valid_scope(s: &OriginalScope) -> bool {
+pub(crate) fn valid_scope(s: &OriginalScope) -> bool {
     let p = s.peer.as_bytes();
     [
         s.account,
