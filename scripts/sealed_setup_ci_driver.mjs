@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Explicit compiled fixtures, never a product launcher or Node root signer.
 import assert from 'node:assert/strict';
-import {CleanupFailure,terminateOwnedTree,runOwnedProcess,ownedProcessFailureObservation} from '../sdk/typescript/test/owned-process-fixture.mjs';
+import {CleanupFailure,terminateOwnedTree,runOwnedProcess,ownedProcessFailureObservation,ownedProcessFailureStdout,ownedProcessFailureCleanup} from '../sdk/typescript/test/owned-process-fixture.mjs';
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {createReadStream} from 'node:fs';
@@ -84,6 +84,42 @@ export function phoneConsumerBuildFailureDiagnostic(stage,error){
     return observation===null?null:'PHONE_CONSUMER_BUILD_FAILURE '+JSON.stringify(observation);
   }catch{return null;}
 }
+const phoneBuildMarkers=new Map([
+  ['> Task :app:buildAndroidOwnerCustodyNative','native-custody'],
+  ['> Task :app:preBuild','pre-build'],
+  ['> Task :app:preDebugBuild','debug-pre-build'],
+  ['> Task :app:kspDebugKotlin','debug-ksp'],
+  ['> Task :app:compileDebugKotlin','debug-kotlin'],
+  ['> Task :app:compileDebugJavaWithJavac','debug-java'],
+  ['> Task :app:kspDebugUnitTestKotlin','unit-test-ksp'],
+  ['> Task :app:compileDebugUnitTestKotlin','unit-test-kotlin'],
+]);
+export function phoneConsumerBuildProgress(output){
+  // Only complete exact public markers qualify; arbitrary text stays private.
+  // This is the last observed marker, never a claim about the currently running task.
+  if(typeof output!=='string'||Buffer.byteLength(output)>MAX_OUTPUT)return 'unknown';
+  let at=0,last='unknown';
+  while(at<output.length){const end=output.indexOf('\n',at);if(end<0)return 'unknown';
+    const line=output.slice(at,end).replace(/\r$/,'');
+    if(line.includes('> Task '))last=phoneBuildMarkers.get(line.replace(/ (?:UP-TO-DATE|FROM-CACHE|NO-SOURCE|SKIPPED|FAILED)$/,''))||'unknown';
+    at=end+1;
+  }return last;
+}
+export function phoneConsumerBuildProgressDiagnostic(stage,error){
+  try{
+    if(stage!=='phone-consumer-build')return null;
+    const observation=ownedProcessFailureObservation(error);if(observation===null)return null;
+    const last_marker=observation.category==='output-bound'?'unknown':phoneConsumerBuildProgress(ownedProcessFailureStdout(error));
+    return 'PHONE_CONSUMER_BUILD_PROGRESS '+JSON.stringify({last_marker});
+  }catch{return null;}
+}
+export function phoneConsumerBuildSettlementDiagnostic(stage,error){
+  try{
+    if(stage!=='phone-consumer-build')return null;
+    const owned_cleanup=ownedProcessFailureCleanup(error);
+    return owned_cleanup==='joined'||owned_cleanup==='unconfirmed'?'PHONE_CONSUMER_BUILD_SETTLEMENT '+JSON.stringify({owned_cleanup}):null;
+  }catch{return null;}
+}
 export async function main(args=process.argv.slice(2)){
   let stage='prerequisites',assets,server,browser,ready,serverExit,exited,unsafeCleanup=false,termination;const parser=new ReadyParser();let output='';
   try{
@@ -109,7 +145,7 @@ export async function main(args=process.argv.slice(2)){
     assert.equal(await executableDigest(serverExecutable),serverSha256,'Server executable changed');assert.equal(await executableDigest(nativeExecutable),nativeSha256,'Native executable changed');
     console.log(JSON.stringify({stage:'PASS-COMPILED-SETUP-FIXTURE',result,driverSource,serverSourceLabel:options['server-source']||driverSource,nativeSourceLabel:options['native-source']||driverSource,serverSourceMode:options['server-executable']?'caller-supplied-source-label':'cargo-json-current-source',nativeSourceMode:options['native-executable']?'caller-supplied-source-label':'cargo-json-current-source',serverSha256,nativeSha256,physicalDevice:false,carrierSms:false}));return 0;
   }catch(error){if(error instanceof CleanupFailure)unsafeCleanup=true;
-    try{const diagnostic=phoneConsumerBuildFailureDiagnostic(stage,error);if(diagnostic!==null)console.error(diagnostic);}catch{}
+    try{for(const diagnostic of [phoneConsumerBuildFailureDiagnostic(stage,error),phoneConsumerBuildProgressDiagnostic(stage,error),phoneConsumerBuildSettlementDiagnostic(stage,error)])if(diagnostic!==null)console.error(diagnostic);}catch{}
     console.error(`Sealed setup fixture failed at ${stage}; private readiness and signing material withheld.`);return unsafeCleanup?2:1;}
   finally{await browser?.close().catch(()=>{});if(ready&&serverExit===undefined)await fixtureControl(ready)('finish').catch(()=>{});if(server&&serverExit===undefined){try{await deadline(exited,15000);}catch{try{await terminateOwnedTree(server,exited);}catch{unsafeCleanup=true;}}}await termination;if(unsafeCleanup){process.exitCode=2;throw new CleanupFailure('Owned processes not confirmed stopped; staging retained');}if(assets){assert.ok(path.dirname(assets)===path.join(repo,'target')&&path.basename(assets)==='sealed-setup-browser-fixture');await rm(assets,{recursive:true,force:true});}}
 }
