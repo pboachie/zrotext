@@ -159,7 +159,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--target", choices=["python", "ruby", "typescript", "java", "csharp"], required=True)
+    parser.add_argument("--target", choices=["python", "ruby", "typescript", "java", "csharp", "go", "rust"], required=True)
     parser.add_argument("--ruby", default="ruby")
     args = parser.parse_args()
     destination = args.out.resolve()
@@ -183,16 +183,24 @@ def main():
             python_package(stage, feed)
         elif args.target == "ruby":
             ruby_package(stage, feed, args.ruby)
+        elif args.target in ("go", "rust"):
+            native = load("native_packages", CONFIG / "package-native.py")
+            getattr(native, args.target + "_package")(stage, feed)
         else:
             managed = load("managed_packages", CONFIG / "package-managed.py")
             getattr(managed, args.target + "_package")(stage, feed)
         shutil.copytree(feed, destination)
     sums = {p.relative_to(destination).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
             for p in sorted(destination.rglob("*")) if p.is_file()}
-    (destination / "manifest.json").write_text(json.dumps({
+    report = {
         "target": args.target, "runtime_revision": lock["runtime_revision"],
         "qualification": "isolated archive consumer; public registry availability unverified",
-        "sha256": sums}, indent=2) + "\n", encoding="utf-8")
+        "sha256": sums}
+    if args.target == "rust":
+        report["distribution"] = ("Candidate-registry qualification only: crate metadata and locks refer "
+                                  "to the temporary registry. Rebuild against released runtime coordinates "
+                                  "before distribution; these are not public-registry-ready crates.")
+    (destination / "manifest.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(args.target + " archives and isolated consumer passed; no publication performed")
 
 

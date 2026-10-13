@@ -1,7 +1,9 @@
 """Reject damaged or incomplete package metadata before consumer qualification."""
 import importlib.util
+import io
 from pathlib import Path
 import tempfile
+import tarfile
 import unittest
 import zipfile
 
@@ -10,6 +12,7 @@ spec = importlib.util.spec_from_file_location("artifacts", Path(__file__).resolv
 artifacts = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(artifacts)
 managed = artifacts.load("managed_packages", artifacts.CONFIG / "package-managed.py")
+native = artifacts.load("native_packages", artifacts.CONFIG / "package-native.py")
 
 
 class PackageTests(unittest.TestCase):
@@ -54,6 +57,44 @@ class PackageTests(unittest.TestCase):
                 archive.writestr("LICENSE", b"wrong")
             with self.assertRaisesRegex(ValueError, "Incorrect archive license"):
                 managed.check_zip_license(archive_path, b"expected", "LICENSE")
+
+    def test_go_replacement_is_rejected_including_block_and_tab_forms(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp) / "project"
+            project.mkdir()
+            for directive in ("replace x => ../x", "replace\tx => ../x", "replace (\n x => ../x\n)"):
+                (project / "go.mod").write_text("module example.invalid/client\n" + directive)
+                with self.assertRaisesRegex(ValueError, "replace directives"):
+                    native.go_archive(project, Path(temp) / "feed")
+
+    def test_workspace_and_path_become_explicit_registry_dependency(self):
+        original = {"package": {"name": "zrotext-api-cli", "version": {"workspace": True}},
+                    "dependencies": {"zrotext-sdk": {"path": "../zrotext-sdk"}}}
+        result = native.standalone_manifest(original, {"package": {"version": "0.1.0"}}, "AGPL-3.0-only")
+        self.assertEqual(result["dependencies"]["zrotext-sdk"], {"version": "=0.1.0", "registry": "candidate"})
+        self.assertEqual(result["package"]["rust-version"], "1.88")
+        self.assertFalse(result["package"]["publish"])
+        self.assertIn("path", original["dependencies"]["zrotext-sdk"])
+        entry = native.index_entry(result, "synthetic-checksum")
+        self.assertIsNone(entry["deps"][0]["registry"])
+
+    def test_unhandled_source_dependency_is_not_silently_packaged(self):
+        original = {"package": {"name": "sdk", "version": "0.1.0"},
+                    "dependencies": {"other": {"path": "../other"}}}
+        with self.assertRaisesRegex(ValueError, "Unresolved source"):
+            native.standalone_manifest(original, {}, "AGPL-3.0-only")
+
+    def test_crate_rejects_source_dependency_even_with_valid_license(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "candidate.crate"
+            with tarfile.open(path, "w:gz") as archive:
+                for name, value in {"LICENSE": b"license", "Cargo.toml":
+                                    b'[dependencies]\nother = {path="../other"}\n'}.items():
+                    info = tarfile.TarInfo("candidate-0.1.0/" + name)
+                    info.size = len(value)
+                    archive.addfile(info, io.BytesIO(value))
+            with self.assertRaisesRegex(ValueError, "source dependency"):
+                native.check_crate(path, "candidate", b"license")
 
 
 if __name__ == "__main__":

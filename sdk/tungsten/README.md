@@ -64,7 +64,7 @@ authorization, or sealed cryptographic acceptance.
 
 ## Validation and package readiness
 
-TypeScript, Python, Java, C#, and Ruby have an archive installation gate:
+All seven languages have an experimental archive installation gate:
 
 ```sh
 python3 sdk/tungsten/package-artifacts.py --source /path/to/tungsten --target python --out /tmp/zrotext-python-packages
@@ -72,6 +72,8 @@ python3 sdk/tungsten/package-artifacts.py --source /path/to/tungsten --target ru
 python3 sdk/tungsten/package-artifacts.py --source /path/to/tungsten --target typescript --out /tmp/zrotext-npm-packages
 python3 sdk/tungsten/package-artifacts.py --source /path/to/tungsten --target java --out /tmp/zrotext-maven-packages
 python3 sdk/tungsten/package-artifacts.py --source /path/to/tungsten --target csharp --out /tmp/zrotext-nuget-packages
+python3 sdk/tungsten/package-artifacts.py --source /path/to/tungsten --target go --out /tmp/zrotext-go-packages
+python3 sdk/tungsten/package-artifacts.py --source /path/to/tungsten --target rust --out /tmp/zrotext-rust-packages
 ```
 
 Use a new output directory outside the checkout. The gate verifies the pinned
@@ -92,10 +94,33 @@ the local feed, and restores/builds/runs a consumer from a separate package cach
 These are package entry-point checks; the separate transport and sealed-profile
 suites remain required. No test invokes a live ZROtext server.
 
+Go uses a temporary file module proxy, a fresh module/build cache, no `replace`,
+and `go mod verify` after compiling/running the consumer. Its checksum database
+is disabled only for that isolated, unpublished candidate feed. This does not
+resolve the missing public runtime module tag tracked by
+[Tungsten #60](https://github.com/pboachie/tungsten/issues/60).
+
+Rust requires toolchain 1.88.0 and uses Cargo itself to package the runtime,
+CLI kit, SDK and CLI. Staging resolves workspace metadata and local dependencies
+into explicit candidate-registry versions. A temporary localhost sparse registry
+serves those archives while ordinary transitive dependencies resolve from
+crates.io. After removing all source staging, a fresh Cargo home compiles/runs an
+SDK consumer and installs/runs the CLI help with its packaged lock file. There
+are no path dependencies, patch tables or source-replacement configuration.
+
+Rust's output is specifically **candidate-registry qualification**, not public
+release archives: Cargo embeds the temporary registry references in its package
+metadata and lock files. Rebuild against released runtime coordinates before
+distribution. Runtime publication remains blocked by Tungsten #62; the generated
+CLI also needs the versioned-dependency/MSRV repair in
+[Tungsten #70](https://github.com/pboachie/tungsten/issues/70). The staging adaptation
+proves crate compilation/installability without treating it as an emitter fix.
+
 These feeds include locally built Tungsten runtimes. They prove archive usability,
 not availability on public registries. Upstream runtime distribution issue
 [Tungsten #62](https://github.com/pboachie/tungsten/issues/62) remains a release
-gate. Rust and Go still require equivalent package consumer checks.
+gate. Native sealed companion packaging remains separate from these generated
+HTTP-client archives.
 No registry publication, legacy-client replacement, or sealed-profile acceptance
 is performed by this command.
 
