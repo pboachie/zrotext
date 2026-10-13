@@ -47,6 +47,21 @@ class PackagePolicy(unittest.TestCase):
             self.assertNotIn("--language", call.args)
         self.assertFalse(any(call.args[0] in ("cargo", "go") for call in calls))
 
+    def test_template_oracles_and_cleanup_use_installed_probes(self):
+        binaries = {name: Path("installed") / name for name in packages.HARNESSES}
+        with patch.object(packages, "run") as run:
+            packages.template_acceptance(binaries, Path("content-producer"), Path("crypto-producer"))
+            packages.template_acceptance(binaries, Path("content-producer"), Path("crypto-producer"), hardware=True)
+        calls = [call.args for call in run.call_args_list]
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(calls[0][2:], ("--producer", Path("content-producer"), "--binary", binaries["template"]))
+        for call in calls[1:]:
+            self.assertEqual(call[2:6], ("--producer", Path("crypto-producer"), "--binary", binaries["template_crypto"]))
+        self.assertEqual(calls[1][6:], ())
+        self.assertEqual(calls[2][6:], ("--hardware",))
+        self.assertEqual(calls[3][6:], ("--hardware", "--fail-setup"))
+        self.assertFalse(any(call[0] in ("cargo", "go") for call in calls))
+
 
 if __name__ == "__main__":
     unittest.main()
