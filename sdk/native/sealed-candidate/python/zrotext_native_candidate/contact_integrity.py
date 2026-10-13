@@ -1,9 +1,8 @@
 """Historical contact commitments only; no installed access or current grant."""
 import copy
 from functools import wraps
-import ipaddress
 import re
-from urllib.parse import urlsplit
+from ada_url import URL as _URL
 from weakref import WeakKeyDictionary
 from . import sealed_candidate as s
 
@@ -42,24 +41,10 @@ def _u64(value):return value.to_bytes(8,'big')
 
 def _origin(value):
     s.require(type(value) is str and 9<=len(value)<=512 and re.fullmatch(r'[\x21-\x7e]+',value) is not None,'contact origin')
-    u=urlsplit(value)
-    s.require(u.scheme=='https' and u.netloc and not u.path and not u.query and not u.fragment and u.username is None and u.password is None,'contact origin shape')
-    host=u.hostname;s.require(host is not None and '\\' not in value and '%' not in host,'contact origin host')
-    if ':' in host:canonical='['+ipaddress.IPv6Address(host).compressed+']'
-    else:
-        # ASCII special-host characters retained by WHATWG URL serialization.
-        allowed=set("abcdefghijklmnopqrstuvwxyz0123456789!\"$&'()*+,-.;=_`{}~")
-        s.require(all(c in allowed for c in host),'contact canonical host')
-        # Python's built-in IDNA is not WHATWG UTS46. Fail closed until that
-        # separate valid-origin compatibility gate has a reviewed implementation.
-        s.require(not any(part.startswith('xn--') for part in host.split('.')),'contact unsupported IDNA origin')
-        # WHATWG numeric hosts must already be canonical four-part IPv4.
-        tail=host.rstrip('.').rsplit('.',1)[-1]
-        if tail.isdigit() or re.fullmatch(r'0x[0-9a-f]*',tail):canonical=str(ipaddress.IPv4Address(host))
-        else:canonical=host
-    port=u.port;s.require(port is None or 0<=port<=65535,'contact port')
-    canonical='https://'+canonical+(':'+str(port) if port is not None and port!=443 else '')
-    s.require(canonical==value,'contact canonical origin');return value
+    u=_URL(value)
+    s.require(u.protocol=='https:' and u.origin==value and not u.username and not u.password and
+              u.pathname=='/' and not u.search and not u.hash,'contact canonical origin')
+    return value
 
 
 def _signature(raw):
