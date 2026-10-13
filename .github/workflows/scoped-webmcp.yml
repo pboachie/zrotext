@@ -30,3 +30,9 @@ jobs:
           npm --prefix sdk/typescript run build
       - name: Verify explicit registration and permission lifecycle
         run: node --test sdk/tungsten/webmcp/adapter.test.mjs
+      - name: Install isolated native browser
+        run: |
+          npm --prefix web/owner ci --ignore-scripts --no-audit --no-fund
+          web/owner/node_modules/.bin/playwright install --with-deps chromium
+      - name: Verify native browser registration and execution
+        run: node --test sdk/tungsten/webmcp/browser.test.mjs

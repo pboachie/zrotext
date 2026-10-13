@@ -48,9 +48,11 @@ registration.close(); // idempotent; affects only this registration
 The adapter does not auto-detect browsers or support the legacy synchronous
 `navigator.modelContext` API. Missing registry support or authorization refuses
 before registering. The current contract is taken from the pinned Tungsten
-WebMCP runtime; actual browser implementations remain experimental. The tests
-use an injected registry: they do **not** demonstrate native browser support,
-installed agent interoperability, a real credential session or SMS delivery.
+WebMCP runtime; actual browser implementations remain experimental. Unit tests
+use an injected registry. The separate browser suite requires native
+`document.modelContext.getTools` and `executeTool`; it never supplies a polyfill
+or falls back to the legacy navigator API. It exercises a synthetic authenticated
+transport boundary, not a real credential session, installed agent, or SMS delivery.
 
 Generated descriptions and schemas cannot expand authority: the adapter uses
 the guarded vocabulary and original exact argument schemas. Mutation tools must
@@ -73,3 +75,29 @@ npm --prefix sdk/typescript ci --ignore-scripts
 npm --prefix sdk/typescript run build
 node --test sdk/tungsten/webmcp/adapter.test.mjs
 ```
+
+Run the native browser suite after the build above:
+
+```sh
+npm --prefix web/owner ci --ignore-scripts
+web/owner/node_modules/.bin/playwright install chromium
+node --test sdk/tungsten/webmcp/browser.test.mjs
+```
+
+This reuses the existing pinned Playwright development dependency. Set
+`ZT_WEBMCP_BROWSER` to an alternate Chromium-family executable to qualify that
+browser. Each run prints its version, launches a disposable headless profile with
+the WebMCP experimental feature flags, and closes it afterward; it never changes
+the user's profile or settings. Unsupported native APIs fail the suite. Registration,
+result serialization, invalid arguments, revocation and execution cancellation are
+checked through native APIs with a synthetic transport. These checks establish
+browser adapter behavior only; stable WebMCP availability and real authenticated
+application integration remain separate acceptance gates.
+
+The native test driver passes JSON-string arguments to Chromium 153/154 and
+object arguments on 155+, following the native execution API transition. Native
+cancellation propagation is asynchronous: the test waits up to two seconds for
+the tool callback's signal after the browser result rejects. Both execution and
+permission-lifetime cancellation must abort the transport. The adapter's deadline
+also bounds calls independently. Cancellation never proves that a dispatched
+operation had no effect.
