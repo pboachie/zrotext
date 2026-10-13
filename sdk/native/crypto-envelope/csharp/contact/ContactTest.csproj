@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net8.0</TargetFramework><OutputType>Exe</OutputType><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><TreatWarningsAsErrors>true</TreatWarningsAsErrors><EnableDefaultCompileItems>false</EnableDefaultCompileItems></PropertyGroup>
+  <ItemGroup><Compile Include="../HpkeRecipient.cs"/><Compile Include="../ManifestChain.cs"/><Compile Include="ContactOrigin.cs"/><Compile Include="ContactField.cs"/><Compile Include="ProtectedContactSigner.cs"/><Compile Include="ProtectedTest.cs"/><Compile Include="Program.cs"/></ItemGroup>
+</Project>
