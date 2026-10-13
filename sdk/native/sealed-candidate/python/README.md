@@ -555,3 +555,56 @@ HPKE unwrap. It does not add a manifest-issuance lower bound to observation.
 Shared accepted cases self-open natively as well as independently in TypeScript;
 authentically signed out-of-lifetime ciphertext is refused before recipient use.
 Profile02 and inbound envelope checks retain their existing policies.
+
+`ContactHistory` adapts the maintained contact-local-history contract to native
+SQLite. Supply the independently enrolled generation-one root pin/fingerprint,
+canonical origin, immutable capacity (1..256), a contact metadata path, and the
+path of a separately maintained native `CheckpointStore`. `create=True` is an
+explicit new-file operation; ordinary opens never reset, migrate or recreate
+missing history. Root evidence must be a complete profile02 genesis/successor
+chain of at most 64 manifests. Every comparison replays its signatures from the
+external pin and verifies the mutation statement's archive/root records at its
+declared issuance. Profile03 and root-transition histories remain unsupported
+for this contact contract. Current root history is read again after recording;
+a changed/unavailable root returns `recorded_needs_recheck`.
+
+`lookup(contact_id)` returns `accepted_local_history` metadata, or an unavailable
+reason. Its opaque local token is bound to that adapter and exact persisted row;
+it is never a restored cryptographic transition token. `accept(expected=...,
+transition=..., statement=...)` requires genuine native historical acceptance,
+checks exact revision/digest/routing continuity, and atomically compares and
+updates the row and total count under `BEGIN IMMEDIATE`. Repeating an identical
+revision is idempotent; forks, skipped revisions, stale tokens and terminal rows
+are refused without retry. Returned metadata is copied. Stored rows contain only
+bounded metadata (1024-byte header, at most 256 rows of 2048 bytes), never signed
+content, ciphertext or plaintext; SQLite/WAL overhead is outside that logical
+payload bound. The root evidence database is separate and contains public signed
+manifests. Records are not evicted and reductions do not free the count budget.
+
+`mark_unavailable(expected=...)` atomically replaces an exact row with a terminal
+contact identifier. It works at full capacity and maximum revision. An explicit
+`reduction_only=True` open requires the existing matching header but no root
+evidence; it cannot create or positively accept history. Missing or rolled-back
+root evidence leaves a valid local token available for reduction. Malformed
+storage fails closed without clearing it. A storage/lifecycle failure after a
+write attempt returns `write_unknown`; reopen and look up the exact contact to
+reconcile local state. These results never acknowledge a server operation.
+
+Use `close()` or a context manager. The adapter permits one operation, at most
+four live/opening adapters per loaded module, a ten-second checked operation
+deadline, and a thirty-minute lifetime. SQLite lock waits are bounded to five
+seconds; owned connections close when the synchronous operation unwinds. Native
+callers must close on application suspension/cancellation; this package does not
+install browser visibility handlers. Deadlines are checked at bounded operation
+boundaries, not preemptive thread cancellation or a hard disk-I/O deadline.
+
+Accepted root/version/time floors detect observable regressions against retained
+rows. Ordinary SQLite cannot detect restoration of both databases to matching
+older snapshots, replacement with internally valid metadata, or same-root reset
+without an independent durable anchor. Local metadata is not authenticated
+against a malicious filesystem writer. This adapter makes no hardware antirollback,
+current permission, remote head/deletion, field readability or encryption claim;
+it does not requalify retained fields' older statements or custody. Tests use real
+SQLite races/process exits and fresh maintained TypeScript signed transitions;
+both installed wheel and sdist consumers exercise create/update/clear, restart
+and terminal reduction through normal public imports.
