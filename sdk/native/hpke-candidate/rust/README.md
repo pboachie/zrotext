@@ -183,3 +183,35 @@ acceptance.
 
 Rust API: `owner_template::save::opening::OwnerTemplateOpening`,
 `open_latest_protected`, `open_latest_software`.
+
+### Reviewed local template authoring
+
+The candidate authoring lifecycle owns a concrete persistence client and one
+copied draft. `prepare` validates exact request/revision/scope and bounded canonical
+content, publishes an immutable local preview to an explicit draft reviewer, and
+accepts only a true decision. It independently rereads draft epoch/revision and
+custody-live host state together with current owner/session/consent authority
+before review, around public-key sealing, and after ciphertext preparation.
+
+Custody-live is a host lease fact, not a private-key capability or hardware
+qualification. Template sealing uses public recipient authority and requires no
+recipient private key. The caller must invalidate on draft input, navigation,
+owner or custody changes. Preview strings do not promise secure erasure.
+
+Preparation performs no HTTP and returns only an instance-bound opaque ticket.
+Persistence requires a separate explicit call on the exposed dedicated client.
+The original shortened authoring deadline bounds that client's ticket, new
+preparation and reads. Timed-out callbacks retain admission until they settle.
+A rejected concurrent/second draft does not erase the earlier reviewed or
+uncertain record. Nonowning operation abort preserves a different client's
+operation record; explicit close/invalidate closes the entire owned lifetime.
+
+Shared `test-template-authoring.py` checks maintained TypeScript draft decisions,
+real synthetic TLS explicit commits, and independent decryption of native
+ciphertext. It covers current/draft/custody changes, original deadline expiry,
+late preparation publication, and foreign reviewed/uncertain ticket races.
+This is a portable host API, not browser DOM integration or installed-package
+qualification. It performs no automatic commit, retry or message send.
+
+Rust: `owner_template::save::authoring::OwnerTemplateAuthoring`,
+`prepare`, `client`, `close`/`invalidate`.
