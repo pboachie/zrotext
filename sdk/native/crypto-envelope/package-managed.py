@@ -23,7 +23,7 @@ RUBY_ID = "zrotext-native-candidate"
 MODULES = ["HpkeRecipient", "SignedEnvelope", "ManifestChain", "Election03",
            "SealedReader02", "ElectedReader03", "OriginalReplyReader", "ProtectedRecipient", "ProtectedSigner",
            "Compose03", "Compose02", "RootJournal", "ElectionJournal", "CandidateBody",
-           "OriginalReplyCheckpoint", "OriginalHttp", "OriginalCurrentClient"]
+           "OriginalReplyCheckpoint", "OriginalHttp", "OriginalCurrentClient", "TemplateContent", "EncryptedTemplate"]
 SPLIT_MODULES = {"OriginalReadClient": "original_read", "OriginalPageClient": "original_page",
                  "OriginalOwnerReviewClient": "original_owner_review", "OriginalProposalClient": "original_proposal"}
 SUITES = {"root-journal": "RootJournalTest", "election-journal": "ElectionJournalTest",
@@ -31,7 +31,8 @@ SUITES = {"root-journal": "RootJournalTest", "election-journal": "ElectionJourna
           "original-reply": "OriginalReplyTest", "original-protected": "OriginalProtectedTest",
           "original-history": "OriginalHistoryTest", "http": "HttpTest", "current-http": "CurrentTest",
           "read-http": "ReadTest", "protected-read-http": "ProtectedReadTest", "page-http": "PageTest",
-          "owner-http": "OwnerReviewTest", "proposal-http": "ProposalTest"}
+          "owner-http": "OwnerReviewTest", "proposal-http": "ProposalTest",
+          "template": "TemplateTest", "template-crypto": "ProtectedTemplateTest"}
 PINS = {"producer02": "a13ea1e3d6f6db594485c19b36c43fe642e67c7a",
         "producer03": "304d512b7a420a3102278f32baed095f3e778989",
         "custody_producer": "a5fb59c2c5bc81e80b5b8d4b836afd51c5304653",
@@ -44,7 +45,9 @@ PINS = {"producer02": "a13ea1e3d6f6db594485c19b36c43fe642e67c7a",
         "read_fixture": "d127e5c86f3b17db371acc608eedcf6419264ba7",
         "page_fixture": "e3ed703a2c5eb0f72fc4138fade0859637dff3d5",
         "owner_fixture": "a0cd1763406b6c0a05f7ea57a897664f39667b75",
-        "proposal_fixture": "a32ef83ad24746a99b3ba8895170b588b718e236"}
+        "proposal_fixture": "a32ef83ad24746a99b3ba8895170b588b718e236",
+        "template_fixture": "5d6d683a78461ccb1782014989cb5e4a3f2927f2",
+        "template_producer": "26e876da9f34372d9cf26511993cf633971e0037"}
 
 
 def run(*args, **kw):
@@ -137,6 +140,7 @@ def java(stage, source, feed, env):
     for suite, test in SUITES.items():
         directory = 'original-reply' if suite == 'original-protected' else 'http' if suite.endswith('-http') else suite
         copy(HERE / 'java' / directory / (test + '.java'), consumer / 'src/main/java' / (test + '.java'))
+    copy(HERE / 'java/template-crypto/TemplateCryptoTest.java', consumer / 'src/main/java/TemplateCryptoTest.java')
     write(consumer / 'pom.xml', header.format('installed-consumer') + '<repositories><repository><id>candidate</id><url>' + feed.as_uri() + '</url></repository></repositories><dependencies>' + dependency.format('io.github.pboachie.zrotext', JAVA_ID, VERSION) + '</dependencies><build>' + plugins + '</build></project>')
     shutil.rmtree(source)
     run(mvn, '--batch-mode', '-Dmaven.repo.local=' + str(stage / 'consumer-cache'), 'compile', 'org.apache.maven.plugins:maven-dependency-plugin:3.8.1:copy-dependencies', cwd=consumer, env=env)
@@ -182,7 +186,8 @@ def csharp(stage, source, feed, env):
         consumer = stage / 'consumer' / suite
         directory = 'read-http' if suite == 'protected-read-http' else suite
         copy(HERE / 'csharp' / directory / 'Program.cs', consumer / 'Program.cs')
-        write(consumer / 'Consumer.csproj', '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>' + properties + '<OutputType>Exe</OutputType><RollForward>Major</RollForward></PropertyGroup><ItemGroup><PackageReference Include="' + CS_ID + '" Version="' + VERSION + '"/></ItemGroup></Project>')
+        constants = '<DefineConstants>$(DefineConstants);ZROTEXT_INSTALLED_CONSUMER</DefineConstants>' if suite == 'template-crypto' else ''
+        write(consumer / 'Consumer.csproj', '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>' + properties + constants + '<OutputType>Exe</OutputType><RollForward>Major</RollForward></PropertyGroup><ItemGroup><PackageReference Include="' + CS_ID + '" Version="' + VERSION + '"/></ItemGroup></Project>')
     shutil.rmtree(source)
     env['NUGET_PACKAGES'] = str(stage / 'consumer-cache')
     commands = {}
@@ -224,7 +229,8 @@ def ruby(stage, source, feed, env):
         name = ('protected.rb' if suite == 'original-protected' else 'current_test.rb' if suite == 'current-http' else 'test.rb' if suite.endswith('journal') or suite in ('original-reply', 'original-history', 'http')
                 else 'custody_test.rb' if suite == 'custody' else 'compose_test.rb')
         name = {'read-http': 'read_test.rb', 'protected-read-http': 'read_test.rb', 'page-http': 'page_test.rb',
-                'owner-http': 'owner_review_test.rb', 'proposal-http': 'proposal_test.rb'}.get(suite, name)
+                'owner-http': 'owner_review_test.rb', 'proposal-http': 'proposal_test.rb',
+                'template': 'test.rb', 'template-crypto': 'test.rb'}.get(suite, name)
         directory = 'original-reply' if suite == 'original-protected' else 'http' if suite.endswith('-http') else suite
         text = (HERE / 'ruby' / directory / name).read_text(encoding='utf-8')
         text, count = re.subn(r"^require_relative '[^']+'$", "require 'zrotext_native_candidate'", text, flags=re.M)
@@ -258,6 +264,12 @@ def acceptance(args, stage, commands, env):
     for suite, command in commands.items():
         command_files[suite] = stage / (suite + '.json')
         write(command_files[suite], json.dumps(command))
+    template_suites = args.template_fixture / 'sdk/native/hpke-candidate'
+    run(sys.executable, template_suites / 'test-template-content.py', '--producer', args.original_producer,
+        '--command-file', command_files['template'], cwd=stage, env=env)
+    template_command = [sys.executable, template_suites / 'test-template-crypto.py', '--producer', args.template_producer,
+                        '--command-file', command_files['template-crypto']]
+    run(*template_command, cwd=stage, env=env)
     run(sys.executable, HERE / 'root-journal-run.py', '--language', args.target, '--producer', args.root_producer, '--controls', args.root_controls, '--command-file', command_files['root-journal'], cwd=stage, env=env)
     run(sys.executable, HERE / 'election-journal-run.py', '--language', args.target, '--producer', args.producer03, '--command-file', command_files['election-journal'], cwd=stage, env=env)
     if args.target == 'java':
@@ -293,6 +305,8 @@ def acceptance(args, stage, commands, env):
             print('UNQUALIFIED: installed protected TLS reads require native PCP')
         else:
             probe.check_returncode()
+            run(*template_command, '--hardware', cwd=stage, env=env)
+            run(*template_command, '--hardware', '--fail-setup', cwd=stage, env=env)
             run(sys.executable, HERE / 'original-read-run.py', '--language', args.target,
                 '--fixture', args.read_fixture, '--producer', args.original_producer,
                 '--command-file', command_files['protected-read-http'], '--hardware', cwd=stage, env=env)

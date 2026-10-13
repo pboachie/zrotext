@@ -102,10 +102,20 @@ jobs:
           ref: a32ef83ad24746a99b3ba8895170b588b718e236
           path: proposal-fixture
           persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 5d6d683a78461ccb1782014989cb5e4a3f2927f2
+          path: template-fixture
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 26e876da9f34372d9cf26511993cf633971e0037
+          path: template-producer
+          persist-credentials: false
       - name: Build independent producers
         shell: pwsh
         run: |
-          foreach ($path in @('producer02','producer03','custody-producer','root-producer','original-producer')) {
+          foreach ($path in @('producer02','producer03','custody-producer','root-producer','original-producer','template-producer')) {
             npm ci --ignore-scripts --prefix "$path/sdk/typescript"
             if ($LASTEXITCODE) { exit $LASTEXITCODE }
             npm run build --prefix "$path/sdk/typescript"
@@ -118,5 +128,5 @@ jobs:
       - name: Qualify clean installed candidate consumers
         shell: pwsh
         run: |
-          python sdk/native/crypto-envelope/package-managed.py --target ${{ matrix.language }} --out "$env:RUNNER_TEMP/native-artifacts" --producer02 producer02 --producer03 producer03 --custody-producer custody-producer --root-producer root-producer --root-controls root-controls --controls controls --original-producer original-producer --http-fixture http-fixture --current-fixture current-fixture --read-fixture read-fixture --page-fixture page-fixture --owner-fixture owner-fixture --proposal-fixture proposal-fixture
+          python sdk/native/crypto-envelope/package-managed.py --target ${{ matrix.language }} --out "$env:RUNNER_TEMP/native-artifacts" --producer02 producer02 --producer03 producer03 --custody-producer custody-producer --root-producer root-producer --root-controls root-controls --controls controls --original-producer original-producer --http-fixture http-fixture --current-fixture current-fixture --read-fixture read-fixture --page-fixture page-fixture --owner-fixture owner-fixture --proposal-fixture proposal-fixture --template-fixture template-fixture --template-producer template-producer
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
