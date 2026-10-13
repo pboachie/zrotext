@@ -17,6 +17,7 @@ let session = null;
 let serverKeys = [];
 let localKey = null;
 let activation = null;
+let activationOpeningRound = 0;
 let pollTimer = null;
 let pollRound = 0;
 
@@ -113,7 +114,8 @@ function renderKeys() {
       : `Active key ${active.fingerprint.slice(0, 12)}… is held by another browser. Approve from there, or revoke it here.`);
   byId("key-create").hidden = Boolean(active);
   byId("key-revoke").hidden = !active;
-  byId("activation-approve").disabled = !held || !activation || !activation.ownerStatement;
+  byId("activation-approve").disabled = !held || !activation || !activation.ownerStatement ||
+    Boolean(activation.v2 && (activation.phase !== "review" || document.hidden));
 }
 
 async function loadKeys() {
@@ -190,6 +192,7 @@ async function loadLinePage(more) {
     use.type = "button";
     use.textContent = "Use this line";
     use.addEventListener("click", () => {
+      if (activation?.v2) invalidateV2(activation);
       byId("activation-line").value = line.line_id;
       say("activation-status", "Line selected. Choose the phone, then request its declaration.");
     });
@@ -232,6 +235,7 @@ function schedulePoll() {
 // A hidden tab cannot act on an activation; polling resumes when it returns.
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
+    if (activation?.v2) invalidateV2(activation);
     stopPolling();
   } else if (activation && pollTimer === null) {
     schedulePoll();
@@ -254,6 +258,7 @@ async function verifiedOwnerStatement(view) {
 }
 
 async function poll() {
+  if (activation?.v2) return pollV2(activation);
   pollTimer = null;
   const current = activation;
   if (!current) return;
@@ -275,6 +280,7 @@ async function poll() {
   if (view.status === "awaiting_owner" && !current.ownerStatement) {
     try {
       const { owner, parsed } = await verifiedOwnerStatement(view);
+      if (activation !== current) return;
       current.ownerStatement = owner;
       say("review-api", String(parsed.androidApiLevel));
       say("review-subscription", String(parsed.selectedSubscriptionId));
@@ -283,6 +289,7 @@ async function poll() {
       renderKeys();
       say("activation-status", "The phone signed its declaration. Check it, then approve.");
     } catch (error) {
+      if (activation !== current) return;
       activation = null;
       say("activation-status", error.message);
       return;
@@ -311,10 +318,20 @@ async function poll() {
 }
 
 async function startActivation(deviceId, lineId) {
+  if (activation?.v2 && ["opening", "opening_unknown", "approving", "approval_unknown"].includes(activation.phase))
+    throw new Error("Check the existing selected SIM request before starting another.");
   stopPolling();
   byId("activation-review").hidden = true;
   signing.uuidBytes(lineId);
-  const opened = await api(`/v1/auth/sms-lines/${lineId}/activations`, "POST", { device_id: deviceId });
+  const round = ++activationOpeningRound;
+  let opened;
+  try {
+    opened = await api(`/v1/auth/sms-lines/${lineId}/activations`, "POST", { device_id: deviceId });
+  } catch (error) {
+    if (round !== activationOpeningRound) return;
+    throw error;
+  }
+  if (round !== activationOpeningRound) return;
   activation = { deviceId, lineId, challengeId: opened.challenge_id, generation: opened.generation,
     ownerStatement: null, startedAt: Date.now() };
   renderKeys();
@@ -323,17 +340,244 @@ async function startActivation(deviceId, lineId) {
 }
 
 async function approveActivation() {
+  if (activation?.v2) return approveV2();
+  const current = activation;
   const active = activeServerKey();
   if (!activation || !activation.ownerStatement || !localKey || !active || localKey.fingerprint !== active.fingerprint)
     throw new Error("This browser does not hold the active SMS approval key.");
   const signature = signing.p1363ToDer(new Uint8Array(await crypto.subtle.sign(
     { name: "ECDSA", hash: "SHA-256" }, localKey.privateKey, activation.ownerStatement)));
+  if (activation !== current) throw new Error("The activation changed. Review the current request first.");
   await api(`/v1/auth/sms-lines/${activation.lineId}/activations/${activation.challengeId}/approve`, "POST",
     { owner_signature_der_b64: signing.base64(signature) });
   byId("activation-approve").disabled = true;
   say("activation-status", "Approved. Waiting for the server to confirm…");
   stopPolling();
   await poll();
+}
+
+// Explicit selected-SIM flow. No v2 failure is retried through legacy routes.
+const v2OpenKeys = ["challenge_id", "account_id", "line_id", "device_id", "generation", "expires_at_ms"];
+const v2ViewKeys = ["challenge_id", "device_id", "generation", "expires_at_ms", "status",
+  "observation_b64url", "device_statement_b64url", "device_signature_der_b64url", "owner_statement_b64url"];
+
+function canonicalUuidV2(value) {
+  if (typeof value !== "string" || value.length !== 36) throw new Error("Invalid activation identity.");
+  signing.uuidBytes(value);
+  return value;
+}
+
+function invalidateV2(current) {
+  current.revision += 1;
+  current.ownerStatement = null;
+  byId("activation-review").hidden = true;
+  stopPolling();
+  renderKeys();
+}
+
+function currentV2(current, revision, key = null) {
+  return activation === current && current.revision === revision && !document.hidden &&
+    session === current.session && byId("activation-mode").value === "v2" &&
+    byId("activation-device").value === current.deviceId && byId("activation-line").value.trim() === current.lineId &&
+    (!key || (localKey === key && activeServerKey()?.fingerprint === key.fingerprint));
+}
+
+function requireCurrentV2(current, revision, key = null) {
+  if (!currentV2(current, revision, key)) throw new Error("The phone, page or approval changed. Review the request again.");
+}
+
+async function apiV2(path, method = "GET", body = undefined, keys = null) {
+  const csrf = csrfToken();
+  if (!csrf) throw new Error("Your sign-in expired. Sign in again.");
+  const response = await fetch(path, {
+    method, credentials: "same-origin", cache: "no-store", redirect: "error",
+    headers: { "x-zrotext-csrf": csrf, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal: typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(requestTimeoutMs) : undefined,
+  });
+  if (!response.ok) throw new ApiRejection(response.status);
+  const expected = method === "GET" ? 200 : keys === v2OpenKeys ? 201 : 204;
+  if (response.status !== expected) throw new Error("Unexpected activation response.");
+  if (response.status === 204) return null;
+  if (response.headers.get("content-type")?.split(";")[0].trim() !== "application/json")
+    throw new Error("Invalid activation response.");
+  return signing.flatV2Response(await response.text(), keys);
+}
+
+function expiryV2(value) {
+  if (typeof value !== "bigint" || value <= 0n || value > (1n << 63n) - 1n)
+    throw new Error("Invalid activation expiry.");
+  return value;
+}
+
+function holdV2(current, phase) {
+  current.phase = phase;
+  current.ownerStatement = null;
+  stopPolling();
+  byId("activation-review").hidden = true;
+  byId("activation-recheck").hidden = false;
+  byId("activation-start").disabled = true;
+  renderKeys();
+  say("activation-status", "Outcome unknown. Check this same request before starting another; it will not be repeated automatically.");
+}
+
+async function startV2(deviceId, lineId) {
+  if (activation?.v2 && ["opening", "opening_unknown", "approving", "approval_unknown"].includes(activation.phase))
+    throw new Error("Check the existing selected SIM request before starting another.");
+  canonicalUuidV2(deviceId); canonicalUuidV2(lineId);
+  canonicalUuidV2(session.account_id); canonicalUuidV2(session.session_id);
+  activationOpeningRound += 1;
+  stopPolling();
+  activation = { v2: true, deviceId, lineId, openingId: crypto.randomUUID(), session,
+    revision: 0, phase: "opening", ownerStatement: null, startedAt: Date.now() };
+  byId("activation-review").hidden = true;
+  await openV2(activation);
+}
+
+async function openV2(current) {
+  const revision = current.revision;
+  requireCurrentV2(current, revision);
+  current.phase = "opening";
+  byId("activation-start").disabled = true;
+  byId("activation-recheck").hidden = true;
+  try {
+    const opened = await apiV2(`/v1/auth/sms-lines/${current.lineId}/activations-v2`, "POST",
+      { device_id: current.deviceId, opening_id: current.openingId }, v2OpenKeys);
+    requireCurrentV2(current, revision);
+    for (const key of ["challenge_id", "account_id", "line_id", "device_id"]) canonicalUuidV2(opened[key]);
+    if (opened.account_id !== current.session.account_id || opened.line_id !== current.lineId || opened.device_id !== current.deviceId)
+      throw new Error("The server returned a different activation.");
+    signing.positiveI64(opened.generation);
+    current.challengeId = opened.challenge_id;
+    current.generation = opened.generation;
+    current.expires = expiryV2(opened.expires_at_ms);
+    current.phase = "awaiting_device";
+    byId("activation-start").disabled = false;
+    say("activation-status", "Waiting for the phone's selected SIM declaration…");
+    await pollV2(current);
+  } catch (error) {
+    if (activation !== current) return;
+    if (error instanceof ApiRejection && error.status >= 400 && error.status < 500) {
+      current.phase = "refused";
+      byId("activation-start").disabled = false;
+      say("activation-status", error.message);
+    } else holdV2(current, "opening_unknown");
+  }
+}
+
+async function verifiedOwnerStatementV2(current, view) {
+  const statement = signing.fromBase64url(view.device_statement_b64url);
+  const der = signing.canonicalDer(signing.fromBase64url(view.device_signature_der_b64url));
+  const parsed = signing.parseDeviceStatementV2(statement);
+  const observation = signing.fromBase64url(view.observation_b64url, 121);
+  const rebuilt = signing.deviceStatementV2({ accountId: current.session.account_id, lineId: current.lineId,
+    deviceId: current.deviceId, challengeId: current.challengeId, generation: current.generation,
+    nonce: parsed.nonce, observation });
+  if (!signing.equalBytes(rebuilt, statement)) throw new Error("The phone's declaration does not match this activation. Do not approve it.");
+  const owner = await signing.ownerApprovalStatementV2(rebuilt, der);
+  if (!signing.equalBytes(owner, signing.fromBase64url(view.owner_statement_b64url)))
+    throw new Error("The approval statement does not match the phone's declaration. Do not approve it.");
+  return { owner, parsed };
+}
+
+async function pollV2(current) {
+  pollTimer = null;
+  const revision = current.revision;
+  if (!currentV2(current, revision) || !current.challengeId ||
+      ["opening", "opening_unknown", "approving"].includes(current.phase)) return;
+  try {
+    const view = await apiV2(`/v1/auth/sms-lines/${current.lineId}/activations-v2/${current.challengeId}`, "GET", undefined, v2ViewKeys);
+    requireCurrentV2(current, revision);
+    if (view.challenge_id !== current.challengeId || view.device_id !== current.deviceId || view.generation !== current.generation ||
+        expiryV2(view.expires_at_ms) !== current.expires || !["awaiting_device", "awaiting_owner", "activated"].includes(view.status))
+      throw new Error("The activation status does not match this request.");
+    if (view.status === "activated") {
+      activation = null; stopPolling();
+      byId("activation-review").hidden = true; byId("activation-recheck").hidden = true;
+      byId("activation-start").disabled = false;
+      say("activation-status", "The server approved the selected SIM declaration. Check the phone to confirm local installation.");
+      renderKeys(); await loadLines().catch(() => {}); return;
+    }
+    if (["approval_unknown", "awaiting_confirmation"].includes(current.phase)) {
+      holdV2(current, "approval_unknown");
+      say("activation-status", "Approval is not yet confirmed. Check this request again; no approval will be repeated.");
+      return;
+    }
+    if (current.expires <= BigInt(Date.now())) throw new Error("The activation expired. Request a fresh declaration.");
+    if (view.status === "awaiting_owner") {
+      const { owner, parsed } = await verifiedOwnerStatementV2(current, view);
+      requireCurrentV2(current, revision);
+      current.ownerStatement = owner; current.phase = "review";
+      say("review-api", String(parsed.androidApiLevel));
+      say("review-subscription", String(parsed.selectedSubscriptionId));
+      say("review-count", String(parsed.activeSubscriptionCount));
+      say("review-kind", parsed.selectedKind === 2 ? "eSIM (phone declaration)" : "Physical SIM (phone declaration)");
+      byId("activation-review").hidden = false;
+      say("activation-status", "Review the phone's selected SIM and complete subscription count, then approve.");
+      renderKeys();
+    } else {
+      current.ownerStatement = null; current.phase = "awaiting_device";
+      byId("activation-review").hidden = true; renderKeys();
+    }
+    schedulePoll();
+  } catch (error) {
+    if (!currentV2(current, revision)) return;
+    invalidateV2(current);
+    if (current.phase === "approval_unknown") holdV2(current, "approval_unknown");
+    else { current.phase = "refused"; byId("activation-start").disabled = false; say("activation-status", error.message); }
+  }
+}
+
+async function freshOwnerV2(current, revision, key) {
+  const fresh = await apiV2("/v1/auth/session");
+  requireCurrentV2(current, revision, key);
+  if (["account_id", "user_id", "session_id"].some((k) => fresh[k] !== current.session[k]))
+    throw new Error("Your sign-in changed. Review a fresh request.");
+  const keys = await api("/v1/auth/sms-line-owner-keys");
+  requireCurrentV2(current, revision, key);
+  if (!Array.isArray(keys) || keys.filter((k) => k.active).length !== 1 || !keys.some((k) => k.active && k.fingerprint === key.fingerprint))
+    throw new Error("The approval key changed. Review a fresh request.");
+}
+
+async function approveV2() {
+  const current = activation, key = localKey;
+  if (current.phase !== "review" || !current.ownerStatement || !key) throw new Error("Review the selected SIM declaration first.");
+  const statement = current.ownerStatement.slice();
+  current.revision += 1;
+  const revision = current.revision;
+  requireCurrentV2(current, revision, key);
+  stopPolling();
+  current.phase = "approving"; renderKeys();
+  let submitting = false;
+  try {
+    await freshOwnerV2(current, revision, key);
+    requireCurrentV2(current, revision, key);
+    if (current.expires <= BigInt(Date.now())) throw new Error("The activation expired.");
+    const signature = signing.p1363ToDer(new Uint8Array(await crypto.subtle.sign(
+      { name: "ECDSA", hash: "SHA-256" }, key.privateKey, statement)));
+    requireCurrentV2(current, revision, key);
+    await freshOwnerV2(current, revision, key);
+    requireCurrentV2(current, revision, key);
+    if (current.expires <= BigInt(Date.now())) throw new Error("The activation expired.");
+    submitting = true;
+    await apiV2(`/v1/auth/sms-lines/${current.lineId}/activations-v2/${current.challengeId}/approve`, "POST",
+      { owner_signature_der_b64url: signing.base64url(signature) });
+    requireCurrentV2(current, revision, key);
+    current.phase = "awaiting_confirmation"; current.ownerStatement = null;
+    renderKeys(); stopPolling(); await pollV2(current);
+  } catch (error) {
+    if (activation !== current) return;
+    if (submitting && !(error instanceof ApiRejection && error.status >= 400 && error.status < 500)) holdV2(current, "approval_unknown");
+    else { invalidateV2(current); current.phase = "refused"; say("activation-status", error.message); }
+  }
+}
+
+async function recheckV2() {
+  const current = activation;
+  if (!current?.v2) return;
+  requireCurrentV2(current, current.revision);
+  if (current.phase === "opening_unknown") await openV2(current);
+  else if (current.phase === "approval_unknown") await pollV2(current);
 }
 
 function guard(statusId, action) {
@@ -374,10 +618,19 @@ async function init() {
     await loadKeys();
   }));
   byId("activation-new-line").addEventListener("click", () => {
+    if (activation?.v2) invalidateV2(activation);
     byId("activation-line").value = crypto.randomUUID();
   });
   byId("activation-form").addEventListener("submit", guard("activation-status", () =>
-    startActivation(byId("activation-device").value, byId("activation-line").value.trim())));
+    byId("activation-mode").value === "v2"
+      ? startV2(byId("activation-device").value, byId("activation-line").value.trim())
+      : startActivation(byId("activation-device").value, byId("activation-line").value.trim())));
+  byId("activation-recheck").addEventListener("click", guard("activation-status", recheckV2));
+  for (const id of ["activation-device", "activation-line", "activation-mode"]) {
+    byId(id).addEventListener("change", () => {
+      if (activation?.v2) invalidateV2(activation);
+    });
+  }
   byId("activation-approve").addEventListener("click", guard("activation-status", approveActivation));
   await Promise.all([
     loadKeys().catch((error) => say("key-status", error.message)),

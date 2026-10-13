@@ -122,8 +122,145 @@
     return concat(ascii(OWNER_DOMAIN), deviceStatement, await sha256(deviceSignatureDer));
   }
 
+  const I64_MAX = (1n << 63n) - 1n;
+  const P256_ORDER = BigInt("0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551");
+  const V2_DEVICE = ascii("ZTSMS/line/device-confirm/v2\0");
+  const V2_OWNER = ascii("ZTSMS/line/owner-approve/v2\0");
+
+  function positiveI64(text) {
+    if (typeof text !== "string" || text.length > 19 || !/^[1-9][0-9]*$/.test(text) ||
+        [...text].some((c) => c < "0" || c > "9")) throw new Error("invalid generation");
+    const value = BigInt(text);
+    if (value > I64_MAX) throw new Error("invalid generation");
+    return value;
+  }
+
+  function fromBase64url(text, length = null) {
+    if (typeof text !== "string" || !text.length || text.length > 1024 ||
+        [...text].some((c) => !/[A-Za-z0-9_-]/.test(c))) throw new Error("invalid base64url");
+    const padded = text.replaceAll("-", "+").replaceAll("_", "/") + "=".repeat((4 - text.length % 4) % 4);
+    const bytes = fromBase64(padded);
+    if (base64url(bytes) !== text || (length !== null && bytes.length !== length))
+      throw new Error("invalid base64url");
+    return bytes;
+  }
+
+  /** Canonical, nonzero, in-range P-256 DER; no low-s-only policy. */
+  function canonicalDer(bytes) {
+    if (!(bytes instanceof Uint8Array) || bytes.length < 8 || bytes.length > 80 ||
+        bytes[0] !== 0x30 || bytes[1] !== bytes.length - 2) throw new Error("invalid signature");
+    let at = 2;
+    for (let part = 0; part < 2; part += 1) {
+      if (bytes[at++] !== 2) throw new Error("invalid signature");
+      const size = bytes[at++];
+      if (!size || size > 33 || at + size > bytes.length || (bytes[at] & 0x80) ||
+          (size > 1 && bytes[at] === 0 && !(bytes[at + 1] & 0x80))) throw new Error("invalid signature");
+      let scalar = 0n;
+      for (const byte of bytes.slice(at, at + size)) scalar = (scalar << 8n) | BigInt(byte);
+      if (scalar === 0n || scalar >= P256_ORDER) throw new Error("invalid signature");
+      at += size;
+    }
+    if (at !== bytes.length) throw new Error("invalid signature");
+    return bytes;
+  }
+
+  function observationV2(bytes) {
+    if (!(bytes instanceof Uint8Array) || bytes.length !== 121) throw new Error("invalid observation");
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const out = {
+      androidApiLevel: view.getUint16(0), activeSubscriptionCount: view.getUint16(2),
+      selectedSubscriptionId: view.getInt32(4), selectedKind: bytes[8],
+      selectedPortIndex: view.getInt32(41), selectedSlotIndex: view.getInt32(45),
+      observerEpoch: view.getBigInt64(65),
+    };
+    if (out.androidApiLevel < 33 || out.activeSubscriptionCount < 1 || out.activeSubscriptionCount > 256 ||
+        out.selectedSubscriptionId < 0 || ![1, 2].includes(out.selectedKind) ||
+        out.selectedPortIndex < 0 || out.selectedSlotIndex < 0 || out.observerEpoch <= 0n)
+      throw new Error("invalid observation");
+    for (const [name, offset] of [["cardToken", 9], ["profileToken", 25], ["monitorId", 49], ["leaseId", 73]]) {
+      out[name] = uuidString(bytes.slice(offset, offset + 16));
+      uuidBytes(out[name]);
+    }
+    return out;
+  }
+
+  function parseDeviceStatementV2(bytes) {
+    const start = V2_DEVICE.length + 2;
+    if (!(bytes instanceof Uint8Array) || bytes.length !== start + 104 + 121 ||
+        !equalBytes(bytes.slice(0, V2_DEVICE.length), V2_DEVICE) ||
+        bytes[V2_DEVICE.length] !== 2 || bytes[V2_DEVICE.length + 1] !== 1)
+      throw new Error("not an SMS v2 device statement");
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const out = {};
+    for (const [name, offset] of [["accountId", 0], ["lineId", 16], ["deviceId", 32], ["challengeId", 56]]) {
+      out[name] = uuidString(bytes.slice(start + offset, start + offset + 16));
+      uuidBytes(out[name]);
+    }
+    out.generation = view.getBigInt64(start + 48);
+    if (out.generation <= 0n) throw new Error("invalid generation");
+    out.nonce = bytes.slice(start + 72, start + 104);
+    out.observation = bytes.slice(start + 104);
+    return Object.assign(out, observationV2(out.observation));
+  }
+
+  function deviceStatementV2({ accountId, lineId, deviceId, challengeId, generation, nonce, observation }) {
+    const integer = positiveI64(generation);
+    for (const id of [accountId, lineId, deviceId, challengeId]) {
+      if (typeof id !== "string" || id.length !== 36) throw new Error("invalid UUID");
+      uuidBytes(id);
+    }
+    if (!(nonce instanceof Uint8Array) || nonce.length !== 32) throw new Error("invalid nonce");
+    observationV2(observation);
+    const encoded = new Uint8Array(8);
+    new DataView(encoded.buffer).setBigInt64(0, integer);
+    return concat(V2_DEVICE, Uint8Array.of(2, 1), uuidBytes(accountId), uuidBytes(lineId), uuidBytes(deviceId),
+      encoded, uuidBytes(challengeId), nonce, observation);
+  }
+
+  async function ownerApprovalStatementV2(statement, der) {
+    parseDeviceStatementV2(statement);
+    canonicalDer(der);
+    return concat(V2_OWNER, statement, await sha256(der));
+  }
+
+  /** Flat closed-response grammar: keep numeric tokens exact before conversion. */
+  function flatV2Response(text, keys = null) {
+    if (typeof text !== "string" || new TextEncoder().encode(text).length > 4096)
+      throw new Error("invalid activation response");
+    let at = 0;
+    const whitespace = () => { while (at < text.length && " \t\r\n".includes(text[at])) at += 1; };
+    const token = /"([^"\u005c\u0000-\u001f]*)"|(true|false|null)|(-?(?:0|[1-9][0-9]*))/y;
+    const read = () => {
+      token.lastIndex = at;
+      const match = token.exec(text);
+      if (!match) throw new Error("invalid activation response");
+      at = token.lastIndex;
+      return match[1] !== undefined ? match[1] : match[2] ? JSON.parse(match[2]) : BigInt(match[3]);
+    };
+    whitespace();
+    if (text[at++] !== "{") throw new Error("invalid activation response");
+    const out = Object.create(null);
+    whitespace();
+    if (text[at] !== "}") while (true) {
+      const key = read();
+      if (typeof key !== "string" || Object.hasOwn(out, key)) throw new Error("invalid activation response");
+      whitespace();
+      if (text[at++] !== ":") throw new Error("invalid activation response");
+      whitespace(); out[key] = read(); whitespace();
+      if (text[at] === "}") break;
+      if (text[at++] !== ",") throw new Error("invalid activation response");
+      whitespace();
+    }
+    at += 1; whitespace();
+    if (at !== text.length || (keys && (Object.keys(out).length !== keys.length || keys.some((k) => !Object.hasOwn(out, k)))))
+      throw new Error("invalid activation response");
+    return out;
+  }
+
   const api = { base64, base64url, fromBase64, sha256, p1363ToDer, registrationStatement,
-    parseDeviceStatement, ownerApprovalStatement, equalBytes, uuidBytes };
+    parseDeviceStatement, ownerApprovalStatement, equalBytes, uuidBytes,
+    positiveI64, fromBase64url, canonicalDer, observationV2, parseDeviceStatementV2,
+    deviceStatementV2, ownerApprovalStatementV2, flatV2Response };
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.ZtSmsLineSigning = api;
 })(typeof globalThis === "object" ? globalThis : this);
