@@ -71,7 +71,7 @@ ciphertext addressed to a fresh nonexportable recipient; both normal completion
 and interrupted fixture setup require exact owned-key deletion. No private
 recipient scalar is supplied. Template content and crypto are included in the
 closed runtime inventory. Separate owner-template modules add authenticated cold
-reads and reviewed save, explicit retry and GET reconciliation. Twenty-one external
+reads and reviewed save, explicit retry and GET reconciliation. Twenty-two external
 consumer suites now include the cold/save state-machine comparisons, exact
 Cookie/CSRF and ciphertext identity, busy/close/deadline fences, lifecycle and
 framing controls. A matching read never silently acknowledges an uncertain write.
@@ -107,3 +107,31 @@ fatal and its exact owned cleanup receipt must be preserved. Inspect `QUALIFIED`
 versus `UNQUALIFIED` output separately from archive and software success. Durable
 journals assume trusted private paths and fail closed on torn writes; they do not
 promise hostile rollback resistance or automatic partial-record repair.
+
+
+Contact consumers add historical profile-02/genesis-root statement and field
+verification plus domain-limited software/protected field production. The runtime
+archives contain 26 Java, 32 C# and 31 Ruby modules. Consumers use only public
+installed APIs. A separate platform-specific origin ZIP accompanies each feed:
+its complete source, Ada 3.3.0 MIT notice, wrapper AGPL license and closed hashed
+inventory are checked before fresh extraction. Callers pass that trusted installed
+asset directory to ContactOrigin; there is no source-checkout library lookup.
+The ZIP records its platform in its name and the outer qualification manifest;
+only the exercised OS and architecture are qualified. Windows x64 was exercised
+locally. Linux workflow qualification and macOS support must be assessed from
+actual results, not inferred from another platform's binary. No public registry
+or universal native asset readiness is claimed.
+
+Pass `--origin-asset <trusted-build-output>` to the package helper after running
+`contact-origin/build.py` outside the checkout with the appropriate C++20 compiler.
+The ZIP is installed separately from the managed runtime coordinate. It retains
+complete corresponding source so this distribution does not depend on a private
+build tree. Software controls compare 991 cases with the maintained independent
+oracle. Protected consumers create their own key and receipt, then an external
+fixture borrows only that alias to sign synthetic enrollment evidence. It closes
+its borrowed handle without deletion. The ordinary installed field capability
+produces three independently verified commitments and rejects cancellation,
+closed handles and wrong scope. EOF during setup must still delete the exact
+owned key. A read-only precreation signing-capability refusal is recorded as
+unqualified; failures after creation remain fatal. Historical integrity is not
+current contact permission, mutation acceptance or durable history.
