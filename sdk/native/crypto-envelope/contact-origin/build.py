@@ -11,6 +11,24 @@ import urllib.request
 
 HERE = Path(__file__).resolve().parent
 REVISION = '9c0370e26b9f9ac1c07c91c5bd7301fc3aaf8794'
+BUILDING = '''# Rebuild the native origin library
+
+Run from this source directory with a C++20 compiler.
+Windows x64 Visual Studio developer prompt:
+
+    cl /nologo /std:c++20 /O2 /EHsc /MT /LD ada.cpp contact_origin.cpp /link /OUT:zrotext_contact_origin.dll
+
+Linux:
+
+    c++ -std=c++20 -O2 -fPIC -fvisibility=hidden -shared ada.cpp contact_origin.cpp -o libzrotext_contact_origin.so
+
+macOS recipe (not locally qualified):
+
+    c++ -std=c++20 -O2 -fPIC -fvisibility=hidden -dynamiclib ada.cpp contact_origin.cpp -o libzrotext_contact_origin.dylib
+
+Retain all source files, this recipe and both parent license files when distributing.
+The source is pinned; byte-identical compiler output is not claimed.
+'''
 FILES = {
     'ada.h': ('https://github.com/ada-url/ada/releases/download/v3.3.0/ada.h', '5f60f2708b7a6ff4ede1baa45b2ad2abc613c2db4483099fce8653b0cb0422ba'),
     'ada.cpp': ('https://github.com/ada-url/ada/releases/download/v3.3.0/ada.cpp', '1e3225743961998510c87c9aa59572ed441cf89d7e192e4b90d0754c2b74b94f'),
@@ -55,6 +73,7 @@ def build(output):
         sources.mkdir()
         for name in (*FILES, 'contact_origin.cpp'):
             shutil.copyfile(stage / name, sources / name)
+        (sources / 'BUILDING.md').write_text(BUILDING, encoding='utf-8')
         shutil.copyfile(root / 'LICENSE', output / 'LICENSE')
         shutil.copyfile(stage / 'LICENSE-MIT', output / 'ADA-LICENSE-MIT')
         manifest = {'ada_version': '3.3.0', 'ada_revision': REVISION,
