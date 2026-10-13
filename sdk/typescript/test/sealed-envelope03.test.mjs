@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { readFileSync } from "node:fs";
 import { canonicalP256Signature, keyId } from "../dist/draft01.js";
 import { enrollRootPin02, verifyManifest02 } from "../dist/draft02-manifest.js";
 import { verifyManifest03From02, verifyManifest03Successor } from "../dist/draft03-manifest.js";
@@ -20,14 +21,19 @@ async function sign(k, label, p) { return canonicalP256Signature(new Uint8Array(
 async function manifest(f, profile, version, previous, records = f.records) {
   records = [...records].sort((a, b) => a.role - b.role || Buffer.compare(a.id, b.id));
   const body = join(enc.encode("ZTMA"), Uint8Array.of(profile), ...(profile === 3 ? [Uint8Array.of(3, version === 2n ? 2 : 3)] : []),
-    account, u64(1n), u64(version), u64(9_000n), u64(2_000_000n), previous, f.root.point, Uint8Array.of(records.length),
+    account, u64(1n), u64(version), u64(f.issued ?? 9_000n), u64(2_000_000n), previous, f.root.point, Uint8Array.of(records.length),
     ...records.map(r => join(Uint8Array.of(r.role), r.id, r.k.point, r.role === 1 || r.role === 4 ? device : zero16,
       [1, 4, 5].includes(r.role) ? line : zero16, u16(r.scope), u64(r.from ?? 9_000n), u64(r.until ?? 2_000_000n), Uint8Array.of(r.state ?? 1))));
   return { bytes: join(body, await sign(f.root, `ZTSE/manifest/v${profile}`, body)), digest: await sha(body) };
 }
-async function fixture() {
-  const f = { root: await key(), records: [], enrollment: await key(), approval: await key() };
-  for (let role = 1; role <= 6; role++) { const k = role === 6 ? f.root : await key(); f.records.push({ role, k, id: await keyId(role <= 3 ? 0x10 : 0x101, k.point), scope: [0, 4, 12, 12, 2, 1, 0][role] }); }
+async function fixture(policy = {}) {
+  const f = { root: await key(), records: [], enrollment: await key(), approval: await key(), issued: policy.issued_ms === undefined ? undefined : BigInt(policy.issued_ms) };
+  for (let role = 1; role <= 6; role++) {
+    const k = role === 6 ? f.root : await key();
+    f.records.push({ role, k, id: await keyId(role <= 3 ? 0x10 : 0x101, k.point), scope: [0, 4, 12, 12, 2, 1, 0][role],
+      from: policy.key_from_ms === undefined ? undefined : BigInt(role === policy.late_role ? policy.late_from_ms : policy.key_from_ms),
+      until: role === 6 || policy.key_until_ms === undefined ? undefined : BigInt(policy.key_until_ms) });
+  }
   const pinBytes = join(enc.encode("ZTRP"), Uint8Array.of(2), account, u64(1n), f.root.point);
   f.fingerprint = await sha(join(enc.encode("ZTSE/root-pin/v2\0"), pinBytes));
   f.pin = await enrollRootPin02(pinBytes, f.fingerprint);
@@ -111,6 +117,17 @@ async function verifyAndOpen(f, result, text) {
     assert.equal(new TextDecoder("utf-8", { fatal: true }).decode(opened), text);
   }
   assert.deepEqual(ceks[0], ceks[1]); assert.deepEqual(ceks[1], ceks[2]); return p;
+}
+
+const timePolicy = JSON.parse(readFileSync(new URL('../../../protocol/v1/vectors/sealed-profile03-outbound-time-policy.json', import.meta.url)));
+for (const scenario of timePolicy.cases) {
+  test(`outbound03 shared time policy: ${scenario.name}`, async () => {
+    const policy = { ...timePolicy.defaults, ...scenario }, f = await fixture(policy), input = inputFor(f);
+    input.observedMs = BigInt(policy.observed_ms); input.nowMs = BigInt(policy.now_ms); input.expiresMs = BigInt(policy.expires_ms);
+    input.currentAuthority.comparedAtMs = input.nowMs;
+    if (policy.accept) await verifyAndOpen(f, await composeSealedOutboundEnvelope03(input), input.content);
+    else await assert.rejects(composeSealedOutboundEnvelope03(input), policy.late_role ? /authority lifetime start/ : undefined);
+  });
 }
 
 test("public composer produces fresh ciphertext after accepted challenge expiry and all explicit readers open it", async () => {
