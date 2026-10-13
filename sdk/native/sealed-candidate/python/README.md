@@ -136,11 +136,38 @@ PyCA, Python immutable intermediate objects and returned text may retain copies;
 this is not an erasure guarantee. Authentication failure precedes text decoding,
 and text refusal does not retain a plaintext-carrying decode exception.
 
+`HardwareSigner` qualifies an ECDSA P-256 key in the same hardware provider,
+including an independently verified signature challenge. It records pending
+aliases before creation, binds reopen to an independent public point and
+canonicalizes signatures to low-S. It uses
+[NCryptSignHash](https://learn.microsoft.com/en-us/windows/win32/api/ncrypt/nf-ncrypt-ncryptsignhash)
+over SHA-256 of the exact profile-03 signature transcript; it cannot act as
+recipient custody. Export rejection alone does not qualify hardware custody.
+
+`compose_outbound03` checks current election, signer/recipient scopes, selected
+device, deadlines and strict text before drawing randomness. It creates fresh
+CEK, nonce and HPKE ephemeral material, authenticates profile-03 wrap/body AAD,
+then verifies the resulting signature against the manifest-authorized point.
+Protected signing is the default; `SoftwareSigner` requires explicit opt-out.
+Independent TypeScript manifest/election verification and HPKE/WebCrypto tests
+consume ciphertext composed with a real TPM signing key.
+
+Use `OutboundJournal.compose_or_replay` before exposing bytes to transport. It
+commits exact ciphertext under the account/message/device/line identity, refuses
+changed intent under that identity, and returns identical stored bytes on retry
+without new encryption or signing. Every call still checks present authority.
+Concurrent writers serialize under SQLite; failed persistence returns no
+candidate. Store files in an access-controlled directory: ciphertext and intent
+hashes remain sensitive metadata. Preserve the journal across unknown transport
+outcomes. Deletion or restoration of an older complete database cannot be
+detected here; this is neither hardware antirollback nor an SMS replay/effect
+decision. It does not authorize transport or replace the production receiver.
+
 ## Remaining work before full native parity
 
 | Surface | Current boundary / required follow-on |
 |---|---|
-| Native outbound composition | Not implemented; needs fresh CSPRNG material, authorized signer custody, exact replay persistence and independent TS consumption |
+| Native outbound composition | Native fresh crypto, TPM signing and exact local ciphertext replay implemented; live grant/transport/receiver integration remains separate |
 | Profile-03 body opening | Current elected ciphertext verified/opened, including TPM tests; live backend/admission/grant/audience and receiver composition remain separate |
 | Protected custody | Windows TPM provider with actual key/ECDH/opening/reopen tests; remote attestation, independent antirollback and other OS providers remain unsupported |
 | Integration reader selection | Unsupported; needs exact phone-approved selection and interval binding, never an archive alias |

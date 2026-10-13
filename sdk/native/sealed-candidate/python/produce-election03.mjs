@@ -32,7 +32,8 @@ async function kem(n) {
   const point = new Uint8Array(await suite.kem.serializePublicKey(pair.publicKey));
   return { pair, point, id: await keyId(16,point) };
 }
-const root=await signing(7), origin=await signing(6), outbound=await signing(5), enrollment=await signing(8), approval=await signing(9);
+const root=await signing(7), origin=await signing(6), enrollment=await signing(8), approval=await signing(9);
+let outbound=await signing(5);
 const archive=await kem(34);
 let device;
 if (process.argv[2] === '--recipient-point') {
@@ -40,6 +41,12 @@ if (process.argv[2] === '--recipient-point') {
   if (!/^04[0-9a-f]{128}$/.test(hex ?? '') || process.argv.length!==4) throw Error('public recipient point');
   const point=new Uint8Array(Buffer.from(hex,'hex'));
   await suite.kem.deserializePublicKey(point); device={point,id:await keyId(16,point)};
+} else if (process.argv[2] === '--signer-point') {
+  const hex=process.argv[3];
+  if (!/^04[0-9a-f]{128}$/.test(hex ?? '') || process.argv.length!==4) throw Error('public signer point');
+  const point=new Uint8Array(Buffer.from(hex,'hex'));
+  await crypto.subtle.importKey('raw',point,{name:'ECDSA',namedCurve:'P-256'},false,['verify']);
+  outbound={point}; device=await kem(17);
 } else {
   if (process.argv.length!==2) throw Error('unsupported fixture arguments');
   device=await kem(17);
@@ -85,11 +92,12 @@ const proof=await verifyAcceptedPayloadProfileElection03({bundle,expectedCore:co
   ownerApprovalPointAtAcceptance:approval.point});
 requireCurrentElection03(proof,currentManifest,authority,present);
 const bodyText='Native elected profile03 ✓';
-const envelope=await composeSealedOutboundEnvelope03({manifest:currentManifest,acceptedElection:proof,currentAuthority:authority,nowMs:present,
+const envelope=outbound.privateKey ? await composeSealedOutboundEnvelope03({manifest:currentManifest,acceptedElection:proof,currentAuthority:authority,nowMs:present,
   messageId,observedMs:present,expiresMs:40000n,peer:text('+12'),content:bodyText,signerPrivateKey:outbound.privateKey,
-  signerPublicPoint:outbound.point,recipients:[{role:1,keyId:device.id},{role:2,keyId:archive.id}]});
+  signerPublicPoint:outbound.point,recipients:[{role:1,keyId:device.id},{role:2,keyId:archive.id}]}) : null;
 const record=obj=>Object.fromEntries(Object.entries(obj).map(([k,v])=>[k,v instanceof Uint8Array?b64(v):typeof v==='bigint'?Number(v):v]));
 process.stdout.write(JSON.stringify({rootPin:b64(rootPin),fingerprint:b64(fingerprint),signed02:b64(old.bytes),signed03:b64(first.bytes),
   core:b64(core),bundle:b64(bundle),deviceSigningPoint:b64(enrollment.point),ownerApprovalPoint:b64(approval.point),
-  accepted:record(accepted),authority:record(authority),envelope:b64(envelope.envelope),message:b64(messageId),bodyText,
+  accepted:record(accepted),authority:record(authority),...(envelope?{envelope:b64(envelope.envelope)}:{}),message:b64(messageId),bodyText,
+  signerPoint:b64(outbound.point),archiveScalar:b64(new Uint8Array(await suite.kem.serializePrivateKey(archive.pair.privateKey))),
   ...(device.pair?{readerScalar:b64(new Uint8Array(await suite.kem.serializePrivateKey(device.pair.privateKey)))}:{})}));

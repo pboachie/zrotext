@@ -49,6 +49,7 @@ class _Api:
             'NCryptImportKey': [H, H, W, P, ctypes.POINTER(H), P, U, U],
             'NCryptSecretAgreement': [H, H, ctypes.POINTER(H), U],
             'NCryptDeriveKey': [H, W, P, P, U, ctypes.POINTER(U), U],
+            'NCryptSignHash': [H, P, P, U, P, U, ctypes.POINTER(U), U],
             'NCryptDeleteKey': [H, U],
             'NCryptFreeObject': [H],
         }
@@ -96,6 +97,10 @@ class HardwareRecipient:
     def __init__(self):
         raise TypeError('Use HardwareRecipient.create or HardwareRecipient.open')
 
+    _algorithm = 'ECDH_P256'
+    _prefix = PREFIX
+    _public_magic = 0x314b4345
+
     @classmethod
     def _start(cls):
         obj = object.__new__(cls)
@@ -104,6 +109,11 @@ class HardwareRecipient:
         obj._key = obj._api.H()
         obj._lock = threading.RLock()
         obj._closed = False
+        try:
+            obj._api.call('NCryptIsAlgSupported', obj._provider, cls._algorithm, 0)
+        except BaseException:
+            obj.close()
+            raise
         return obj
 
     @classmethod
@@ -115,13 +125,13 @@ class HardwareRecipient:
         """
         require(callable(record_pending_alias), 'durable pending-alias callback required')
         obj = cls._start()
-        obj.name = PREFIX + str(uuid.uuid4())
+        obj.name = cls._prefix + str(uuid.uuid4())
         created = False
         try:
             record_pending_alias(obj.name)
             # No overwrite flag, machine-store flag, UI policy or provisioning.
             obj._api.call('NCryptCreatePersistedKey', obj._provider, ctypes.byref(obj._key),
-                          'ECDH_P256', obj.name, 0, SILENT)
+                          cls._algorithm, obj.name, 0, SILENT)
             created = True
             policy = obj._api.U(0)
             obj._api.call('NCryptSetProperty', obj._key, 'Export Policy', ctypes.byref(policy), 4, 0)
@@ -143,9 +153,9 @@ class HardwareRecipient:
 
     @classmethod
     def open(cls, name, independently_expected_public):
-        require(type(name) is str and name.startswith(PREFIX), 'custody alias namespace')
+        require(type(name) is str and name.startswith(cls._prefix), 'custody alias namespace')
         try:
-            valid = str(uuid.UUID(name[len(PREFIX):])) == name[len(PREFIX):]
+            valid = str(uuid.UUID(name[len(cls._prefix):])) == name[len(cls._prefix):]
         except ValueError:
             valid = False
         require(valid, 'custody alias format')
@@ -163,7 +173,7 @@ class HardwareRecipient:
             obj.close()
             raise
 
-    def _qualify(self):
+    def _qualify_policy(self):
         if self._api.property(self._key, 'Export Policy') != 0:
             raise CngUnavailable('key export policy must deny export')
         # Some PCP versions return Length=0 for ECC; the exact public blob below
@@ -178,6 +188,10 @@ class HardwareRecipient:
         if status not in (NTE_PERM, NTE_BAD_TYPE):
             raise CngUnavailable('private export denial not observed', status)
         self.observed_private_export_status = status
+        self.public_point()
+
+    def _qualify(self):
+        self._qualify_policy()
         public = self.public_point()
         peer = ec.generate_private_key(ec.SECP256R1())
         peer_point = peer.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
@@ -197,7 +211,7 @@ class HardwareRecipient:
             data, size = ctypes.create_string_buffer(72), self._api.U()
             self._api.call('NCryptExportKey', self._key, 0, 'ECCPUBLICBLOB', None,
                            data, 72, ctypes.byref(size), SILENT)
-            require(size.value == 72 and struct.unpack('<II', data.raw[:8]) == (0x314b4345, 32), 'CNG ECDH public blob')
+            require(size.value == 72 and struct.unpack('<II', data.raw[:8]) == (self._public_magic, 32), 'CNG ECC public blob')
             public = b'\x04' + data.raw[8:72]
             point(public)
             return public
