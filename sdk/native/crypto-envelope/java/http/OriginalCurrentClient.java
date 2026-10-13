@@ -18,6 +18,7 @@ public final class OriginalCurrentClient {
     private final OriginalReplyCheckpoint checkpoint;
     private final OriginalReplyReader.Scope scope;
     private final ManifestChain.RootPin root;
+    private final byte[] rootBinding;
     private final ReentrantLock lock=new ReentrantLock();
     private long revision,last;
     private boolean failed;
@@ -40,7 +41,7 @@ public final class OriginalCurrentClient {
     public OriginalCurrentClient(OriginalHttp transport,OriginalReplyCheckpoint checkpoint,byte[] pin,byte[] fingerprint,OriginalReplyReader.Scope scope,long now)throws OriginalHttp.Failure{
         try{
             need(transport!=null && checkpoint!=null && scope!=null);positive(now);this.transport=transport;this.checkpoint=checkpoint;this.scope=scope;root=ManifestChain.RootPin.enroll(pin,fingerprint);
-            var saved=checkpoint.snapshot(scope,now);var first=saved.history().get(0);at(first.bytes(),null,first.comparisonMs());revision=saved.revision();last=now;
+            var saved=checkpoint.snapshot(scope,now);var first=saved.history().get(0);at(first.bytes(),null,first.comparisonMs());rootBinding=first.enrolledRootPoint();revision=saved.revision();last=now;
         }catch(Exception error){throw new OriginalHttp.Failure(false);}
     }
     private long sample(LongSupplier clock)throws OriginalHttp.Failure{long now=positive(clock.getAsLong());need(now>=last);last=now;return now;}
@@ -174,6 +175,54 @@ public final class OriginalCurrentClient {
             else{var c=object(r.get("next"),"event_id","accepted_at_ms");next=pageCursor(pageId(c.get("event_id")),integer(c.get("accepted_at_ms")));need(events.size()==limit && next.equals(after));}
             return new Page(events,next,acceptProof(r.get("proof"),saved,latest,clock));
         }catch(Exception error){if(error instanceof InterruptedException)Thread.currentThread().interrupt();throw new OriginalHttp.Failure(false);}
+        finally{if(acquired)lock.unlock();}
+    }
+
+    public static final class OwnerReviewIntent {
+        private final byte[] record;
+        private OwnerReviewIntent(byte[] record){this.record=record.clone();}
+        public byte[] bytes(){return record.clone();}
+    }
+    public static final class OwnerReviewResult {
+        private final byte[] event,consumption,active;private final Verified authority;
+        private OwnerReviewResult(byte[] event,byte[] consumption,byte[] active,Verified authority){this.event=event.clone();this.consumption=consumption.clone();this.active=active==null?null:active.clone();this.authority=authority;}
+        public byte[] event(){return event.clone();}
+        public byte[] consumption(){return consumption.clone();}
+        public byte[] activeRequest(){return active==null?null:active.clone();}
+        public Verified authority(){return authority;}
+    }
+    private static byte[] ownerId(byte[] value)throws OriginalHttp.Failure{need(value!=null && value.length==16);byte[] owned=value.clone();need(!same(owned,new byte[16]));return owned;}
+    private static String ownerUuid(byte[] bytes){String h=HexFormat.of().formatHex(bytes);return h.substring(0,8)+"-"+h.substring(8,12)+"-"+h.substring(12,16)+"-"+h.substring(16,20)+"-"+h.substring(20);}
+    /** No network or persistence. Caller must sync bytes before effect dispatch. */
+    public OwnerReviewIntent prepareOwnerReview(byte[] event,byte[] request,byte[] activeRequest)throws OriginalHttp.Failure{
+        try{
+            event=ownerId(event);request=ownerId(request);byte[] active=activeRequest==null?null:ownerId(activeRequest),raw=new byte[151];
+            System.arraycopy(new byte[]{90,84,79,82,1},0,raw,0,5);System.arraycopy(rootBinding,0,raw,5,65);System.arraycopy(scope.checkpointBinding(),0,raw,70,32);System.arraycopy(event,0,raw,102,16);System.arraycopy(request,0,raw,118,16);
+            if(active!=null){raw[134]=1;System.arraycopy(active,0,raw,135,16);}return restoreOwnerReview(raw);
+        }catch(Exception error){throw new OriginalHttp.Failure(false);}
+    }
+    public OwnerReviewIntent restoreOwnerReview(byte[] input)throws OriginalHttp.Failure{
+        try{
+            byte[] raw=input.clone();need(raw.length==151 && same(Arrays.copyOfRange(raw,0,5),new byte[]{90,84,79,82,1}) && same(Arrays.copyOfRange(raw,5,70),rootBinding) && same(Arrays.copyOfRange(raw,70,102),scope.checkpointBinding()));
+            ownerId(Arrays.copyOfRange(raw,102,118));ownerId(Arrays.copyOfRange(raw,118,134));need((raw[134]==0 || raw[134]==1) && (raw[134]==0)==same(Arrays.copyOfRange(raw,135,151),new byte[16]));return new OwnerReviewIntent(raw);
+        }catch(Exception error){throw new OriginalHttp.Failure(false);}
+    }
+    public OwnerReviewResult consumeOwnerReview(String credential,OwnerReviewIntent intent,LongSupplier clock)throws OriginalHttp.Failure{return ownerReview(credential,intent,clock,true);}
+    /** Status never consumes, and unavailability does not establish prior absence. */
+    public OwnerReviewResult statusOwnerReview(String credential,OwnerReviewIntent intent,LongSupplier clock)throws OriginalHttp.Failure{return ownerReview(credential,intent,clock,false);}
+    private OwnerReviewResult ownerReview(String credential,OwnerReviewIntent intent,LongSupplier clock,boolean effect)throws OriginalHttp.Failure{
+        boolean acquired=false,dispatched=false;
+        try{
+            need(clock!=null);byte[] owned=restoreOwnerReview(intent.bytes()).bytes();need(!lock.isHeldByCurrentThread() && lock.tryLock());acquired=true;
+            var before=currentLocked(credential,clock);byte[] event=Arrays.copyOfRange(owned,102,118),request=Arrays.copyOfRange(owned,118,134),active=owned[134]==1?Arrays.copyOfRange(owned,135,151):null;
+            var req=effect?new OriginalHttp.Request("consume",before.authority().manifest().version(),ownerUuid(event),null,null,null,ownerUuid(request),active==null?null:ownerUuid(active)):new OriginalHttp.Request("status",before.authority().manifest().version(),null,ownerUuid(request),null,null,null,null);
+            var wire=transport.exchange(credential,req);dispatched=effect;
+            var r=object(JsonParser.parseString(wire.untrustedJson()),"event_id","consumption_id","disposition","active_request_id","action");
+            need(string(r.get("event_id")).equals(ownerUuid(event)) && string(r.get("consumption_id")).equals(ownerUuid(request)) && string(r.get("disposition")).equals("owner_review") && r.get("action").isJsonNull());
+            need(active==null?r.get("active_request_id").isJsonNull():string(r.get("active_request_id")).equals(ownerUuid(active)));
+            return new OwnerReviewResult(event,request,active,currentLocked(credential,clock));
+        }catch(OriginalHttp.Failure error){throw new OriginalHttp.Failure(dispatched || error.unknown);}
+        catch(Exception error){if(error instanceof InterruptedException)Thread.currentThread().interrupt();throw new OriginalHttp.Failure(dispatched);}
         finally{if(acquired)lock.unlock();}
     }
 
