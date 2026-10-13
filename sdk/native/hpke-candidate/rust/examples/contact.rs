@@ -1,15 +1,16 @@
-//! Public synthetic interoperability probe; no service or custody effects.
+//! Synthetic interoperability; explicit hardware mode owns and deletes a test key.
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use std::io::{self, Read};
 use zrotext_hpke_candidate::{contact::*, manifest::*};
+mod contact_custody;
 fn decode(v: &Value) -> Result<Vec<u8>, ()> {
     STANDARD.decode(v.as_str().ok_or(())?).map_err(|_| ())
 }
 fn array<const N: usize>(v: &Value) -> Result<[u8; N], ()> {
     decode(v)?.try_into().map_err(|_| ())
 }
-fn run(r: &Value) -> Result<Value, ()> {
+fn run(r: &Value, custody: &contact_custody::Session) -> Result<Value, ()> {
     let mode = r["operation"].as_str().ok_or(())?;
     if mode == "origin" {
         return Ok(json!({"accepted":validate_origin01(r["origin"].as_str().ok_or(())?).is_ok()}));
@@ -64,17 +65,21 @@ fn run(r: &Value) -> Result<Value, ()> {
     if r["cancel"] == true {
         cancel.cancel()
     }
-    let result =
-        produce_software_field01(&scalar, &st, &expected, &input, &cancel).map_err(|_| ())?;
+    let result = if custody.protected() {
+        custody.produce(&st, &expected, &input, &cancel, r["closed"] == true)?
+    } else {
+        produce_software_field01(&scalar, &st, &expected, &input, &cancel).map_err(|_| ())?
+    };
     Ok(json!({"accepted":true,"bytes":STANDARD.encode(result.signed_bytes())}))
 }
 fn main() {
+    let custody = contact_custody::Session::new();
     let mut input = String::new();
     io::stdin().read_to_string(&mut input).expect("stdin");
     let rows: Vec<Value> = serde_json::from_str(&input).expect("public fixture JSON");
     let results: Vec<Value> = rows
         .iter()
-        .map(|r| run(r).unwrap_or_else(|_| json!({"accepted":false})))
+        .map(|r| run(r, &custody).unwrap_or_else(|_| json!({"accepted":false})))
         .collect();
     println!("{}", serde_json::to_string(&results).expect("results"))
 }

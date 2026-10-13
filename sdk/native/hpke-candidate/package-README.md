@@ -7,10 +7,10 @@ These coordinates are experimental and are not published by this gate. They are
 separate from Tungsten's generated HTTP SDK packages.
 
 Run with Python 3.11+, Node, OpenSSL, Cargo/Rust 1.97.1 or Go 1.26.9 on PATH.
-The signed TLS fixture producer additionally requires Python `cryptography`:
+The signed TLS fixture producer additionally requires Python `cryptography==46.0.5` and `ada-url==1.27.0`:
 
 ```sh
-python sdk/native/hpke-candidate/package-native.py --language rust --archive PATH_TO_REVIEWED_PROFILE02_PRODUCER --election PATH_TO_REVIEWED_PROFILE03_PRODUCER --original PATH_TO_REVIEWED_ORIGINAL_PRODUCER --template PATH_TO_REVIEWED_TEMPLATE_PRODUCER --save-oracle PATH_TO_REVIEWED_SAVE_ORACLE --opening-oracle PATH_TO_REVIEWED_OPENING_ORACLE --authoring-oracle PATH_TO_REVIEWED_AUTHORING_ORACLE --output NEW_OUTPUT_DIRECTORY --require-protected
+python sdk/native/hpke-candidate/package-native.py --language rust --archive PATH_TO_REVIEWED_PROFILE02_PRODUCER --election PATH_TO_REVIEWED_PROFILE03_PRODUCER --original PATH_TO_REVIEWED_ORIGINAL_PRODUCER --template PATH_TO_REVIEWED_TEMPLATE_PRODUCER --save-oracle PATH_TO_REVIEWED_SAVE_ORACLE --opening-oracle PATH_TO_REVIEWED_OPENING_ORACLE --authoring-oracle PATH_TO_REVIEWED_AUTHORING_ORACLE --contact PATH_TO_REVIEWED_CONTACT_PRODUCER --output NEW_OUTPUT_DIRECTORY --require-protected
 ```
 
 Use `--language go` for the Go module. The script verifies exact producer commits
@@ -30,7 +30,7 @@ public checksum database. No path, replace, workspace or private-checkout
 dependency is accepted. Consumer dependency/build caches are fresh.
 
 Installed acceptance runs actual journal crash/CAS/restore and authenticated
-root transition controls. Nineteen separately compiled consumer probes also
+root transition controls. Twenty separately compiled consumer probes also
 cover selected original ciphertext, durable history, HTTPS transport, signed
 current proofs, verified reads and page discovery, saved owner-review intent,
 and typed proposal consumption/status. The six actual TLS suites preserve
@@ -72,6 +72,20 @@ oracle opens their ciphertext. Host custody leases are not protected-key
 qualification: authoring seals to public recipients without a private-key
 operation. The report records authoring acceptance separately from protected
 opening. No DOM activation or automatic persistence is inferred.
+
+Historical contact acceptance adds an eighth pinned producer and an external
+consumer for statement verification and field-only production. Its native URL
+dependencies resolve through their ordinary public registries. Software controls
+include canonical origins, historical scope and signed-byte tampering; three
+produced fields are independently verified by the maintained SDK. On a qualified
+Windows provider, the installed consumer creates its own dedicated contact key
+with a durable pending receipt. A separate synthetic fixture signs enrollment
+evidence through an exact borrowed OS handle; no setup-signing primitive is
+exported by the installed SDK. The consumer reopens the dedicated capability,
+refuses cancellation, closed providers, foreign scope and borrowed-key deletion,
+then deletes its exact owned key. Interrupted setup also requires confirmed
+deletion. These checks prove historical field integrity, not current permission,
+contact mutation or durable accepted-history storage.
 
 `--owner-deadline-case-ms` records the declared caller deadline for the
 post-handshake owner-template cases (default 100, allowed 100..2000). Hosted CI
