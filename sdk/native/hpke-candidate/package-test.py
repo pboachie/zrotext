@@ -77,6 +77,18 @@ class PackagePolicy(unittest.TestCase):
         self.assertEqual(calls[1][6:8], ("--save-oracle", Path("save-oracle")))
         self.assertFalse(any(call[0] in ("cargo", "go") for call in calls))
 
+    def test_authoring_uses_installed_probe_and_independent_oracle(self):
+        binaries = {name: Path("installed") / name for name in packages.HARNESSES}
+        with patch.object(packages, "run") as run:
+            packages.template_authoring_acceptance(binaries, Path("template"), Path("authoring-oracle"))
+        self.assertEqual(run.call_count, 1)
+        call = run.call_args.args
+        self.assertEqual(call[1].name, "test-template-authoring.py")
+        self.assertEqual(call[2:], ("--producer", Path("template"), "--authoring-oracle", Path("authoring-oracle"),
+                                  "--binary", binaries["template_authoring"]))
+        self.assertNotIn("--language", call)
+        self.assertNotIn(call[0], ("cargo", "go"))
+
     def test_opening_and_owned_cleanup_use_installed_probe(self):
         binaries = {name: Path("installed") / name for name in packages.HARNESSES}
         with patch.object(packages, "run") as run:

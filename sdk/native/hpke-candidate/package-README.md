@@ -10,7 +10,7 @@ Run with Python 3.11+, Node, OpenSSL, Cargo/Rust 1.97.1 or Go 1.26.9 on PATH.
 The signed TLS fixture producer additionally requires Python `cryptography`:
 
 ```sh
-python sdk/native/hpke-candidate/package-native.py --language rust --archive PATH_TO_REVIEWED_PROFILE02_PRODUCER --election PATH_TO_REVIEWED_PROFILE03_PRODUCER --original PATH_TO_REVIEWED_ORIGINAL_PRODUCER --template PATH_TO_REVIEWED_TEMPLATE_PRODUCER --save-oracle PATH_TO_REVIEWED_SAVE_ORACLE --opening-oracle PATH_TO_REVIEWED_OPENING_ORACLE --output NEW_OUTPUT_DIRECTORY --require-protected
+python sdk/native/hpke-candidate/package-native.py --language rust --archive PATH_TO_REVIEWED_PROFILE02_PRODUCER --election PATH_TO_REVIEWED_PROFILE03_PRODUCER --original PATH_TO_REVIEWED_ORIGINAL_PRODUCER --template PATH_TO_REVIEWED_TEMPLATE_PRODUCER --save-oracle PATH_TO_REVIEWED_SAVE_ORACLE --opening-oracle PATH_TO_REVIEWED_OPENING_ORACLE --authoring-oracle PATH_TO_REVIEWED_AUTHORING_ORACLE --output NEW_OUTPUT_DIRECTORY --require-protected
 ```
 
 Use `--language go` for the Go module. The script verifies exact producer commits
@@ -30,7 +30,7 @@ public checksum database. No path, replace, workspace or private-checkout
 dependency is accepted. Consumer dependency/build caches are fresh.
 
 Installed acceptance runs actual journal crash/CAS/restore and authenticated
-root transition controls. Eighteen separately compiled consumer probes also
+root transition controls. Nineteen separately compiled consumer probes also
 cover selected original ciphertext, durable history, HTTPS transport, signed
 current proofs, verified reads and page discovery, saved owner-review intent,
 and typed proposal consumption/status. The six actual TLS suites preserve
@@ -63,6 +63,15 @@ protected opening, provider/client closure and interrupted-setup cleanup. These
 checks borrow the caller's recipient; lifecycle close never deletes its key.
 The qualification report records opening separately from cold/save and overall
 protected acceptance. No browser ceremony or live owner-service claim follows.
+
+Reviewed authoring adds a seventh pinned oracle and an installed consumer for
+immutable draft review, exact approval, client lifetime limits and preservation
+of another operation's reviewed or uncertain ticket. Preparation sends no HTTP;
+explicit caller commits are exercised separately and the maintained TypeScript
+oracle opens their ciphertext. Host custody leases are not protected-key
+qualification: authoring seals to public recipients without a private-key
+operation. The report records authoring acceptance separately from protected
+opening. No DOM activation or automatic persistence is inferred.
 
 `--owner-deadline-case-ms` records the declared caller deadline for the
 post-handshake owner-template cases (default 100, allowed 100..2000). Hosted CI
