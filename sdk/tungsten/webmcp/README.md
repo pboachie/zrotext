@@ -1,5 +1,10 @@
 # Experimental scoped WebMCP application adapter
 
+The optional [service-backed application](app/README.md) supplies a separate
+authenticated HTTPS session boundary, holds workflow credentials on the server,
+and requires explicit browser registration. It is included in the candidate
+archive; live deployment and grant/device acceptance remain separate gates.
+
 `index.mjs` exports `registerWorkflowTools` and `WebMcpRegistrationError`.
 Importing it never reads browser globals, loads credentials, contacts a server or
 registers tools. Build `sdk/typescript` first; the adapter reuses its existing
@@ -110,8 +115,10 @@ operation had no effect.
 build staging, and installs the archive in an isolated consumer. Install the
 pinned Playwright browser as above before running this command. The package has
 zero runtime dependencies; Playwright is only an acceptance-test dependency.
-The archive contains the license, this guide, reviewed adapter, two compiled
-workflow validators and the digest-checked generated catalog.
+The archive contains the license, guides, reviewed adapter, three compiled
+workflow modules, the optional authenticated application, and the digest-checked
+generated catalog. The server entry point is `zrotext-webmcp-app`; application
+hosts can also import `@elysra/zrotext-webmcp/app`.
 
 After installing the archive, applications import `registerWorkflowTools` from
 `@elysra/zrotext-webmcp` and the JSON catalog from
@@ -121,7 +128,8 @@ trusted authenticated application transport described above. A bundler must
 preserve the adapter's relative validator imports. Importing the package never
 registers tools or supplies credentials.
 
-The installed acceptance runs thirteen adapter cases and five actual native
-browser cases against package files and the packaged catalog. Synthetic authority
-is deliberate: these checks do not establish authenticated application integration,
-production authorization, stable browser support, SMS delivery or publication.
+The installed acceptance runs thirteen adapter cases, five native registry cases,
+and ten authenticated application cases against package files and the packaged
+catalog. Application checks use real HTTPS sessions and native registration with
+a synthetic workflow upstream. They do not establish live grant authorization,
+production deployment, stable browser support, SMS delivery or publication.

@@ -12,7 +12,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "sdk/tungsten"
-UNITS = ("workflow-tools", "workflow-decisions")
+UNITS = ("workflow-tools", "workflow-decisions", "workflow-tool-client")
 
 
 def run(*args, **kwargs):
@@ -57,7 +57,9 @@ def main():
         package = stage / "package"
         package.mkdir()
         files = {}
-        for path in ("sdk/tungsten/webmcp/index.mjs",):
+        for path in ("sdk/tungsten/webmcp/index.mjs", "sdk/tungsten/webmcp/app/server.mjs",
+                     "sdk/tungsten/webmcp/app/app.mjs", "sdk/tungsten/webmcp/app/index.html",
+                     "sdk/tungsten/webmcp/app/README.md", "sdk/tungsten/generated.lock.json"):
             files["lib/" + path] = (ROOT / path).read_bytes().replace(b"\r\n", b"\n")
         for name in UNITS:
             files["lib/sdk/typescript/dist/" + name + ".js"] = (build / "dist" / (name + ".js")).read_bytes()
@@ -68,7 +70,9 @@ def main():
                         description="Experimental opt-in ZROtext browser workflow adapter",
                         license="AGPL-3.0-only", engines={"node": ">=22"},
                         files=["lib", "LICENSE", "README.md"],
+                        bin={"zrotext-webmcp-app": "./lib/sdk/tungsten/webmcp/app/server.mjs"},
                         exports={".": "./lib/sdk/tungsten/webmcp/index.mjs",
+                                 "./app": "./lib/sdk/tungsten/webmcp/app/server.mjs",
                                  "./catalog": "./lib/sdk/tungsten/generated/webmcp/manifest.json"})
         files["package.json"] = (json.dumps(manifest, indent=2) + "\n").encode()
         for name, content in files.items():
@@ -117,11 +121,18 @@ def main():
             "      state.catalog = await (await fetch('/catalog.json')).json();\n"
             "      state.register = () => registerWorkflowTools({")
         (consumer / "browser.test.mjs").write_text(browser, encoding="utf-8")
-        run(node, "--test", "adapter.test.mjs", "browser.test.mjs", cwd=consumer, env=env)
+        application = (CONFIG / "webmcp/app/app.test.mjs").read_text()
+        application = replace_once(application, "from './server.mjs'", "from '@elysra/zrotext-webmcp/app'")
+        application = replace_once(application, "new URL('../../../../web/owner/package.json', import.meta.url)",
+                                   "new URL('./package.json', import.meta.url)")
+        application = replace_once(application, "new URL('./server.mjs', import.meta.url)",
+                                   "new URL('./node_modules/@elysra/zrotext-webmcp/lib/sdk/tungsten/webmcp/app/server.mjs', import.meta.url)")
+        (consumer / "app.test.mjs").write_text(application, encoding="utf-8")
+        run(node, "--test", "adapter.test.mjs", "browser.test.mjs", "app.test.mjs", cwd=consumer, env=env)
         output.mkdir(parents=True)
         shutil.copyfile(archive, output / archive.name)
         report = {"name": manifest["name"], "version": manifest["version"],
-                  "qualification": "installed native browser; synthetic application authority; no publication",
+                  "qualification": "installed native browser and authenticated HTTPS application; synthetic workflow upstream; no publication",
                   "sha256": {archive.name: hashlib.sha256(archive.read_bytes()).hexdigest()},
                   "catalog_sha256": hashlib.sha256(catalog).hexdigest()}
         (output / "manifest.json").write_text(json.dumps(report, indent=2) + "\n")
