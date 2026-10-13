@@ -150,6 +150,8 @@ pub mod original_page;
 pub mod original_read;
 
 pub mod original_proposal;
+pub mod owner_template;
 pub mod template;
 pub mod template_crypto;
+pub mod template_store;
 pub mod workflow_action;

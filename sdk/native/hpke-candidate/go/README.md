@@ -149,3 +149,5 @@ Typed saved original-reply proposal consumption/status is documented in [ORIGINA
 Local template content and preview APIs are documented in [TEMPLATE-CONTENT.md](../TEMPLATE-CONTENT.md); encryption and persistence remain separate.
 
 [Candidate encrypted templates](../TEMPLATE-CRYPTO.md) add authenticated ZTWT01 sealing and software/protected opening with explicit current-authority callbacks. Storage and owner transport remain separate.
+
+[Current owner-template loading](../OWNER-TEMPLATE.md) returns bounded opaque snapshots under independent owner/session authority. Save request/receipt helpers do not submit effects.
