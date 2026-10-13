@@ -22,7 +22,7 @@ jobs:
         with:
           node-version: '24.13.0'
       - name: Test generation policy
-        run: python3 -m unittest discover -s scripts -p 'test_tungsten_sdk.py'
+        run: python3 -m unittest discover -s scripts -p 'test_tungsten*.py'
       - name: Check out the locked generator
         shell: bash
         run: |
@@ -64,6 +64,16 @@ jobs:
         run: python3 sdk/tungsten/check-python.py --source "$RUNNER_TEMP/tungsten"
       - name: Build licensed deterministic source bundles
         run: python3 sdk/tungsten/package-sources.py --out "$RUNNER_TEMP/zrotext-sdk-sources"
+      - name: Build licensed archives and test isolated package consumers
+        run: |
+          python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten" --target python --out "$RUNNER_TEMP/zrotext-sdk-packages/python"
+          python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten" --target ruby --out "$RUNNER_TEMP/zrotext-sdk-packages/ruby"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: experimental-sdk-packages
+          path: ${{ runner.temp }}/zrotext-sdk-packages
+          if-no-files-found: error
+          retention-days: 7
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: experimental-sdk-sources

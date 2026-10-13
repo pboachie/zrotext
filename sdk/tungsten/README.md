@@ -64,6 +64,29 @@ authorization, or sealed cryptographic acceptance.
 
 ## Validation and package readiness
 
+Python and Ruby also have an archive installation gate:
+
+```sh
+python3 sdk/tungsten/package-artifacts.py --source /path/to/tungsten --target python --out /tmp/zrotext-python-packages
+python3 sdk/tungsten/package-artifacts.py --source /path/to/tungsten --target ruby --out /tmp/zrotext-ruby-packages
+```
+
+Use a new output directory outside the checkout. The gate verifies the pinned
+runtime source and generated inventory, adds AGPL SDK and Apache runtime license
+files in staging, builds ordinary wheels or gems, removes staging source, then
+installs into an isolated consumer. Python additionally runs the ten injected
+wire checks from the installed wheel. Ruby loads the packaged client and its
+runtime. The Python build and consumer dependency versions are pinned in
+`python-package-requirements.txt`; its binary dependencies make the feed specific
+to the build platform. Each output has archive hashes and a qualification manifest.
+
+These feeds include locally built Tungsten runtimes. They prove archive usability,
+not availability on PyPI or RubyGems. Upstream runtime distribution issue
+[Tungsten #62](https://github.com/pboachie/tungsten/issues/62) remains a release
+gate. The other five ecosystems still require equivalent package consumer checks.
+No registry publication, legacy-client replacement, or sealed-profile acceptance
+is performed by this command.
+
 CI builds the exact compiler and external emitter, regenerates all ten targets,
 checks digests, compiles TypeScript and exercises synthetic transport failures.
 It also compiles Rust/Go/Java/C#, loads Ruby, and builds/installs Python wheels
