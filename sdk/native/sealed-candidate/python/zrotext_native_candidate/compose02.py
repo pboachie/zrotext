@@ -26,10 +26,10 @@ def capture(value, width, code):
     return bytes(value)
 
 
-def compose_outbound02(*, manifest, now_ms, message_id, device_id, line_id, peer,
+def authorize(*, manifest, now_ms, message_id, device_id, line_id, peer,
                        observed_ms, expires_ms, content, signer, recipients,
                        require_hardware=True, **unsupported):
-    """Fresh profile02 candidate and unsigned-digest retry identity.
+    """Snapshot a validated profile02 composition plan before secret operations.
 
     Recipients are (role, key_id, public_point) tuples. No randomness override is
     accepted. The maintained profile02 composer allows zero message IDs and
@@ -87,6 +87,11 @@ def compose_outbound02(*, manifest, now_ms, message_id, device_id, line_id, peer
     protected = (m.trust.account+message+device+line+m.trust.version.to_bytes(8,'big')+m.trust.digest+signer_id+
                  observed_ms.to_bytes(8,'big')+expires_ms.to_bytes(8,'big')+bytes([1,len(peer)])+peer.encode('ascii'))
     prefix = b'ZTSE\x02\x01\0\0'+len(protected).to_bytes(2,'big')+protected
+    return prefix, text, tuple(sorted(requested)), signer, public
+
+
+def _compose(plan):
+    prefix, text, requested, signer, public = plan
     cek, mutable_text = None, bytearray(text)
     try:
         try:
@@ -110,3 +115,12 @@ def compose_outbound02(*, manifest, now_ms, message_id, device_id, line_id, peer
     finally:
         if cek is not None: cek[:] = bytes(len(cek))
         mutable_text[:] = bytes(len(mutable_text))
+
+
+def compose_outbound02(*, manifest, now_ms, message_id, device_id, line_id, peer,
+                       observed_ms, expires_ms, content, signer, recipients,
+                       require_hardware=True, **unsupported):
+    """Fresh profile02 candidate. No randomness overrides or live grant minted."""
+    return _compose(authorize(manifest=manifest,now_ms=now_ms,message_id=message_id,device_id=device_id,
+        line_id=line_id,peer=peer,observed_ms=observed_ms,expires_ms=expires_ms,content=content,
+        signer=signer,recipients=recipients,require_hardware=require_hardware,**unsupported))

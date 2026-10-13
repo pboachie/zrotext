@@ -22,7 +22,7 @@ custody = package.SoftwareRecipient(ec.derive_private_key(int.from_bytes(decode(
 assert s.open_archive_candidate02(decode(archive['inbound']),manifest,manifest,custody,
     account=decode(archive['account']),device=decode(archive['device']),line=decode(archive['line']),peer='+12',
     reader_id=decode(archive['reader']),now_ms=archive['now']) == archive['text']
-outbound02=package.compose_outbound02(manifest=manifest,now_ms=10000,message_id=bytes([49])*16,
+args02=dict(manifest=manifest,now_ms=10000,message_id=bytes([49])*16,
     device_id=decode(archive['device']),line_id=decode(archive['line']),peer='+12',observed_ms=10000,expires_ms=20000,
     content='Native composed02 🌱',signer=package.SoftwareSigner(ec.derive_private_key(5,ec.SECP256R1())),
     recipients=[(k.role,k.id,k.point) for k in s._bound(s._manifests,manifest).keys if k.role in (1,2)],require_hardware=False)
@@ -37,6 +37,10 @@ selected_custody=package.SoftwareRecipient(ec.derive_private_key(int.from_bytes(
 assert s.open_archive_candidate02(decode(selected['inbound']),activation,activation,selected_custody,
     **scope,peer='+12',reader_id=decode(selected['reader']),now_ms=selected['now'],selection=proof)==selected['text']
 with tempfile.TemporaryDirectory() as directory:
+    journal02=package.OutboundJournal02(Path(directory)/'outbound02.db',decode(archive['rootPin']),decode(archive['fingerprint']))
+    revision,outbound02=journal02.compose_or_replay(intent_id=bytes([53])*16,expected_revision=0,current_manifest=args02['manifest'],**args02)
+    reopened02=package.OutboundJournal02(Path(directory)/'outbound02.db',decode(archive['rootPin']),decode(archive['fingerprint']))
+    assert reopened02.compose_or_replay(intent_id=bytes([53])*16,expected_revision=revision,current_manifest=args02['manifest'],**args02)==(2,outbound02)
     rotation=fixture['rotation']
     rotated=package.RootCheckpointStore(Path(directory)/'roots.db',decode(rotation['old_root_pin_b64']),
         decode(rotation['old_root_fingerprint_b64']),approved_roots={2:decode(rotation['new_root_point_b64'])})

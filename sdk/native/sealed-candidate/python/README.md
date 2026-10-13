@@ -24,7 +24,7 @@ local qualification. Missing crypto dependencies fail installation/import;
 unsupported protected capabilities raise `CngUnavailable` or `SealedError`.
 There is no silent software fallback. Python 3.12 is the exercised CI version.
 
-Wheel contents are restricted to the package's twelve modules and distribution
+Wheel contents are restricted to the package's thirteen modules and distribution
 metadata/license. Source archives add build metadata and this README; neither
 archive includes tests, fixture producers, private receipts, sample scalars or
 repository tooling. Both carry AGPL-3.0-only license metadata and full text.
@@ -228,8 +228,33 @@ candidate observation/expiry times when the maintained composer does. This
 does not authorize sending: admission/current permission remain separate.
 Profile-03 election checks are not silently applied to profile02. Callers must
 retain the returned exact bytes and unsigned digest for profile02 retries;
-the existing `OutboundJournal` API remains specifically profile03. Existing
+`OutboundJournal02` provides this persistence while the existing `OutboundJournal`
+API remains specifically profile03. Existing
 TypeScript and legacy Python entrypoints remain unchanged.
+
+`OutboundJournal02` uses a separate SQLite format pinned to the independently
+compared original root. Supply a nonzero 16-byte caller-owned `intent_id`, the
+original composition inputs, `expected_revision`, and an independently accepted
+`current_manifest` on every `compose_or_replay` call. Both original and current
+manifests must authorize the same signer/recipient points, and the original must
+be on the current chain. Unlike the fresh candidate composer, this journal
+requires a positive observation at or before current time and unexpired intent.
+It never interprets a current manifest as a live backend grant.
+
+The return is `(new_revision, Composition)`. Ciphertext and the comparison-time
+high-water commit together before return. Every successful call advances the
+local revision, including replay. After a conflict or unknown result, read
+`revision()` and retry the same intent and original inputs; never reset the
+database or create a replacement intent to force another composition. Existing
+intent retries return identical signed bytes without fresh randomness or signing.
+A different intent cannot compose the same account/message/device/line identity.
+Current revocation, expiry, lineage or clock failures refuse before replay.
+
+The journal stores an intent digest and encrypted envelope, not body plaintext
+or private keys. WAL/FULL synchronous transactions provide local atomicity;
+whole-database rollback/replacement resistance requires a separate external
+anchor. Root-generation changes and profile03 journals are not implicitly
+migrated. This is neither a carrier-effect journal nor delivery permission.
 
 ## Remaining work before full native parity
 

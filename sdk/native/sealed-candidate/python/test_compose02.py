@@ -12,6 +12,7 @@ from unittest.mock import patch
 from cryptography.hazmat.primitives.asymmetric import ec
 from zrotext_native_candidate import compose02 as c, sealed_candidate as s
 from zrotext_native_candidate import SoftwareSigner, HardwareSigner, CngUnavailable, probe_platform
+from zrotext_native_candidate.outbound02_journal import OutboundJournal02
 
 
 def produce(public=None):
@@ -89,6 +90,17 @@ class Compose02Tests(unittest.TestCase):
         try:
             fixture=produce(key.public_point())
             self.assertEqual(consume(fixture,c.compose_outbound02(**inputs(fixture,key))),dict(verified=True,openedRecipients=2))
+            with tempfile.TemporaryDirectory() as directory:
+                path=Path(directory)/'protected-outbound02.db'
+                store=OutboundJournal02(path,decode(fixture['rootPin']),decode(fixture['fingerprint']))
+                args=inputs(fixture,key)
+                revision,first=store.compose_or_replay(intent_id=bytes([53])*16,expected_revision=0,current_manifest=args['manifest'],**args)
+                self.assertEqual(consume(fixture,first),dict(verified=True,openedRecipients=2))
+                restored=OutboundJournal02(path,decode(fixture['rootPin']),decode(fixture['fingerprint']))
+                with patch.object(HardwareSigner,'sign') as sign,patch.object(c.os,'urandom') as draw:
+                    self.assertEqual(restored.compose_or_replay(intent_id=bytes([53])*16,expected_revision=revision,
+                        current_manifest=args['manifest'],**args),(2,first))
+                    sign.assert_not_called();draw.assert_not_called()
         finally:
             key.delete()
             with receipt.open('w',encoding='utf-8') as f:json.dump({'state':'deleted'},f);f.flush();os.fsync(f.fileno())
