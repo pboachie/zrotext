@@ -3,6 +3,8 @@ on:
   pull_request:
     paths:
       - 'sdk/tungsten/**'
+      - 'sdk/mcp/**'
+      - 'sdk/typescript/**'
       - 'protocol/v1/openapi/**'
       - 'scripts/*tungsten*'
       - '.github/workflows/tungsten-sdk.yml'
@@ -77,6 +79,14 @@ jobs:
         with:
           name: experimental-sdk-packages
           path: ${{ runner.temp }}/zrotext-sdk-packages
+          if-no-files-found: error
+          retention-days: 7
+      - name: Build guarded MCP archive and exercise installed stdio
+        run: python3 sdk/tungsten/package-mcp.py --out "$RUNNER_TEMP/zrotext-guarded-mcp"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: experimental-guarded-mcp
+          path: ${{ runner.temp }}/zrotext-guarded-mcp
           if-no-files-found: error
           retention-days: 7
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

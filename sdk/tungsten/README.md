@@ -159,6 +159,12 @@ HTTP-client archives.
 No registry publication, legacy-client replacement, or sealed-profile acceptance
 is performed by this command.
 
+The guarded local MCP adapter has a separate distributable archive gate:
+`python3 sdk/tungsten/package-mcp.py --out /tmp/zrotext-guarded-mcp`.
+It packages the maintained workflow guard with the verified generated catalog,
+not the raw generated MCP server. The isolated installed stdio/HTTPS tests and
+operator setup are documented in [mcp/README.md](mcp/README.md).
+
 CI builds the exact compiler and external emitter, regenerates all ten targets,
 checks digests, compiles TypeScript and exercises synthetic transport failures.
 It also compiles Rust/Go/Java/C#, loads Ruby, and builds/installs Python wheels
