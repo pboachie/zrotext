@@ -18,6 +18,9 @@ dependencies from crates.io. No path, workspace or dependency override is used.
 Exact metadata source checks reject other dependency sources. The output
 contains the archive, consumer lock and qualification metadata. No registry
 publication occurs; these existing coordinates remain experimental.
+The consumer lock records a temporary qualification registry and is not a
+portable application lockfile. The crate itself declares ordinary public
+crates.io `hmac 0.12` and `sha2 0.10` dependencies, with no Tungsten runtime.
 
 Installed tests run the three existing native test groups and 16 shared raw-byte
 signature/replay cases. The seventeenth shared case is a negative signed clock;

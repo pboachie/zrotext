@@ -13,6 +13,7 @@ entries: runtime source, go.mod, README and AGPL license. It removes the staged
 library source before resolving a fresh consumer through an ordinary local
 module proxy. The module has no third-party dependencies. No `replace`, private
 checkout, workspace or preexisting module/build cache is used.
+No Tungsten runtime or unpublished transitive module is required.
 
 The installed consumer runs three existing native test groups and 16 shared
 raw-byte signature/replay vectors. The negative signed-clock corpus case is

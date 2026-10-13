@@ -193,6 +193,11 @@ def main():
         artifact = (rust if args.language == "rust" else go)(stage, args.output, env)
         report = {"experimental": True, "published": False, "language": args.language,
                   "license": "AGPL-3.0-only", "version": VERSION, "artifact": artifact.name,
+                  "runtime_requirement": "Rust 1.88.0" if args.language == "rust" else "Go 1.22",
+                  "tested_toolchain": "Rust/Cargo 1.88.0" if args.language == "rust" else "Go 1.22.12",
+                  "public_registry_dependencies": {"crates.io": {"hmac": "0.12", "sha2": "0.10"}} if args.language == "rust" else {},
+                  "tungsten_runtime_dependency": False,
+                  "consumer_lock_scope": "qualification-only; temporary candidate registry" if args.language == "rust" else "module content checksums",
                   "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
                   "shared_vector_revision": VECTOR_REVISION, "native_vector_cases": 16,
                   "unsigned_clock_boundary_refusals": 1, "native_test_groups": 3,
