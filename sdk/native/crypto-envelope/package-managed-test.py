@@ -40,8 +40,8 @@ class ArchiveTests(unittest.TestCase):
     def test_closed_runtime_inventory(self):
         for language in ('java', 'csharp', 'ruby'):
             paths = managed.runtime_sources(language)
-            self.assertEqual(len(paths), 13)
-            self.assertEqual(len(set(paths)), 13)
+            self.assertEqual(len(paths), 14)
+            self.assertEqual(len(set(paths)), 14)
 
 
 if __name__ == '__main__':

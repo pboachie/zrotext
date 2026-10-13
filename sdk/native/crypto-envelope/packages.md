@@ -14,7 +14,10 @@ Ruby consumers use `require 'zrotext_native_candidate'`.
 The closed package inventory includes body AEAD, HPKE, canonical signed envelopes,
 manifest lineage, elected profile03 proofs/readers, software readers, native
 protected recipients/signers, profile02/03 composition and retry journals, root
-selection, and election selection. Existing authority adapters remain mandatory.
+selection, election selection, and selected original-reply verification/opening.
+See [the original-reply boundary and source acceptance](original-replies.md);
+installed original-reply acceptance remains a separate gate. Existing authority
+adapters remain mandatory.
 This inventory does not imply full client/API parity, protected key portability,
 production authorization, or registry release readiness. Protected custody uses
 Windows PCP and requires actual native qualification; Java supports 64-bit Windows.

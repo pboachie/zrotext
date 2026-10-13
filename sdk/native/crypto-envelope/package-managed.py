@@ -21,7 +21,7 @@ JAVA_ID = "zrotext-native-candidate"
 CS_ID = "Zrotext.Native.Candidate"
 RUBY_ID = "zrotext-native-candidate"
 MODULES = ["HpkeRecipient", "SignedEnvelope", "ManifestChain", "Election03",
-           "SealedReader02", "ElectedReader03", "ProtectedRecipient", "ProtectedSigner",
+           "SealedReader02", "ElectedReader03", "OriginalReplyReader", "ProtectedRecipient", "ProtectedSigner",
            "Compose03", "Compose02", "RootJournal", "ElectionJournal", "CandidateBody"]
 SUITES = {"root-journal": "RootJournalTest", "election-journal": "ElectionJournalTest",
           "custody": "CustodyTest", "composition": "ComposeTest", "composition02": "Compose02Test"}
