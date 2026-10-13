@@ -5,5 +5,5 @@
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
-  <ItemGroup><Compile Remove="envelope-tests/**/*.cs" /><Compile Remove="manifest-tests/**/*.cs" /></ItemGroup>
+  <ItemGroup><Compile Remove="envelope-tests/**/*.cs" /><Compile Remove="manifest-tests/**/*.cs" /><Compile Remove="reader-tests/**/*.cs" /><Compile Remove="SealedReader02.cs" /></ItemGroup>
 </Project>

@@ -1,0 +1,48 @@
+# Candidate profile02 native readers
+
+`SealedReader02` composes the managed manifest, envelope, HPKE and strict body
+modules into software recipient decryption. Java, C#, and Ruby open actual signed
+TypeScript inbound and outbound envelopes. No JavaScript runs in the native reader.
+
+Pass a freshly verified profile02 manifest, positive trusted comparison time,
+recipient role and key ID, native private key handle, and a trusted application
+current-selection callback. The callback receives owned copies of the manifest
+account/version/digest and complete signature-verified envelope. It must enforce
+the application's independently authenticated current selection and intended
+account, device, line, peer and message context. Returning true is an application
+trust decision, not a permission minted by this module. It is called before HPKE
+and again before returning plaintext. Changes after the final check require the
+application's own transaction/lifetime handling; this API supplies no atomic
+storage transaction or replay receipt.
+
+The reader binds envelope version/digest/account to the supplied manifest,
+signer role and line/device, and all recipient roles, points and scopes. Signer
+and recipient keys must be active at both observation and comparison times.
+Observation must be positive, within the manifest lifetime, and not in the future.
+Outbound expiry must still be valid and within the manifest lifetime. Native
+HPKE and body AEAD authenticate before strict UTF-8 plaintext is returned.
+Working CEK and byte buffers are cleared best effort; immutable text and crypto
+provider internals cannot be guaranteed erased. Caller key handles stay caller-owned.
+
+This bounded reader requires the envelope's manifest to be the application's
+current selection. Historical manifests followed by a newer selected manifest
+are not supported here. Profile03 election proofs, root rotation, replay/age
+policy, durable selection, radio authority and protected hardware custody remain
+separate gates. No software key is classified as nonexportable; there is no
+protected-key fallback path. Java's existing native handle binding requires
+signing capability as well as ECDH, so ECDH-only providers refuse.
+
+The three unchanged body implementations are reused from PR1123 at their original
+`sdk/native/crypto-candidate` paths. The fixture producer is independently pinned
+to `a5fb59c2c5bc81e80b5b8d4b836afd51c5304653`, originally maintained for the Python
+candidate reader. Its synthetic recipient material is temporary test input.
+`backdated-fixture.mjs` uses that producer's public synthetic signer scalar to
+sign an invalid earlier observation. Tests first prove this negative's signature
+is valid, then prove authority refusal before the current-selection callback or
+HPKE. Modified unsigned bytes alone are not the backdating regression test.
+
+The dedicated workflow builds the pinned producer, adapts its JSON through the
+negative-case generator and TSV exporter, then runs all native reader tests.
+Other controls cover current-selection refusal/revocation, wrong role/key ID,
+expiry, clock regression, changed context bytes and signatures. Fixtures are not
+published or committed. These checks qualify candidate code, not release readiness.
