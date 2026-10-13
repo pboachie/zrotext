@@ -73,7 +73,7 @@ impl ElectionRecord {
     pub(crate) fn n(&self, name: &str) -> u64 {
         self.numbers[name]
     }
-    fn capture(&self, current: bool) -> Result<Self, Error> {
+    pub(crate) fn capture(&self, current: bool) -> Result<Self, Error> {
         let (uuids, times, digests) = if current { (CU, CT, CD) } else { (AU, AT, AD) };
         need(self.bytes.len() == uuids.len() + digests.len() && self.numbers.len() == times.len())?;
         for (names, size) in [(uuids, 16), (digests, 32)] {

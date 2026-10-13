@@ -19,7 +19,7 @@ jobs:
           node-version: '24.13.0'
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: '1.22'
+          go-version: '1.26.9'
           cache: false
       - name: Prepare independent reviewed producer
         run: |
@@ -53,12 +53,14 @@ jobs:
           cargo +1.97.1 run --locked --example manifest < ../../../../protocol/v1/vectors/sealed-profile03-contract-01.json
           node "$RUNNER_TEMP/archive/sdk/native/sealed-candidate/python/produce-fixture.mjs" | node ../reader-controls.mjs | cargo +1.97.1 run --locked --example reader
           node "$RUNNER_TEMP/election/sdk/native/sealed-candidate/python/produce-election03.mjs" | cargo +1.97.1 run --locked --example election
+          node "$RUNNER_TEMP/election/sdk/native/sealed-candidate/python/produce-election03.mjs" | cargo +1.97.1 run --locked --example journal
           cargo +1.97.1 package --locked
       - name: Go native recipient
         working-directory: sdk/native/hpke-candidate/go
         run: |
           test -z "$(gofmt -l .)"
           go vet ./...
+          node "$RUNNER_TEMP/election/sdk/native/sealed-candidate/python/produce-election03.mjs" | go run ./cmd/journal
           node "$RUNNER_TEMP/election/sdk/native/sealed-candidate/python/produce-election03.mjs" | go run ./cmd/election
           node "$RUNNER_TEMP/archive/sdk/native/sealed-candidate/python/produce-fixture.mjs" | node ../reader-controls.mjs | go run ./cmd/reader
           go run ./cmd/manifest < ../../../../protocol/v1/vectors/sealed-profile03-contract-01.json
@@ -77,7 +79,7 @@ jobs:
           node-version: '24.13.0'
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: '1.22'
+          go-version: '1.26.9'
           cache: false
       - run: rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
       - name: Prepare exact public-point-only producer

@@ -4,6 +4,7 @@ pub mod cng;
 pub mod elected_reader;
 pub mod election;
 pub mod envelope;
+pub mod journal;
 pub mod manifest;
 pub mod reader;
 use aes_gcm::{
