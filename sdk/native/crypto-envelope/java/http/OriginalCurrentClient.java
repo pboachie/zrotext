@@ -1,6 +1,7 @@
 package org.zrotext.candidate;
 import com.google.gson.*;
 import java.security.*;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.LongSupplier;
@@ -221,6 +222,85 @@ public final class OriginalCurrentClient {
             need(string(r.get("event_id")).equals(ownerUuid(event)) && string(r.get("consumption_id")).equals(ownerUuid(request)) && string(r.get("disposition")).equals("owner_review") && r.get("action").isJsonNull());
             need(active==null?r.get("active_request_id").isJsonNull():string(r.get("active_request_id")).equals(ownerUuid(active)));
             return new OwnerReviewResult(event,request,active,currentLocked(credential,clock));
+        }catch(OriginalHttp.Failure error){throw new OriginalHttp.Failure(dispatched || error.unknown);}
+        catch(Exception error){if(error instanceof InterruptedException)Thread.currentThread().interrupt();throw new OriginalHttp.Failure(dispatched);}
+        finally{if(acquired)lock.unlock();}
+    }
+
+
+    /** Immutable canonical binding only; a digest grants no permission. */
+    public static final class WorkflowAction {
+        private static final List<String> NAMES=List.of("account_id","action_id","authority_generation","commitment","content_digest","content_ref","content_version","expires_at","line_id","not_before","purpose_id","recipient_id","revision","routine_id","timezone","window_id");
+        private static final Set<String> NUMBERS=Set.of("authority_generation","content_version","expires_at","not_before","revision");
+        private final String canonical;private final JsonObject fields;
+        private WorkflowAction(String canonical,JsonObject fields){this.canonical=canonical;this.fields=fields.deepCopy();}
+        private static String quote(String value){
+            StringBuilder out=new StringBuilder("\"");
+            for(int i=0;i<value.length();i++){char c=value.charAt(i);switch(c){
+                case '"'->out.append("\\\"");case '\\'->out.append("\\\\");case '\b'->out.append("\\b");case '\t'->out.append("\\t");case '\n'->out.append("\\n");case '\f'->out.append("\\f");case '\r'->out.append("\\r");
+                default->{if(c<32 || c==127)out.append(String.format(Locale.ROOT,"\\u%04x",(int)c));else out.append(c);}
+            }}return out.append('"').toString();
+        }
+        public static WorkflowAction parse(String raw)throws OriginalHttp.Failure{
+            try{
+                need(raw!=null && raw.length()<=4096);var in=new com.google.gson.stream.JsonReader(new java.io.StringReader(raw));in.setStrictness(Strictness.STRICT);
+                need(in.peek()==com.google.gson.stream.JsonToken.BEGIN_OBJECT);in.beginObject();var fields=new JsonObject();var names=new HashSet<String>();
+                while(in.hasNext()){
+                    String name=in.nextName();need(NAMES.contains(name) && names.add(name));
+                    if(NUMBERS.contains(name)){
+                        need(in.peek()==com.google.gson.stream.JsonToken.NUMBER);double n=Double.parseDouble(in.nextString());need(Double.isFinite(n) && n==Math.rint(n) && n>=(name.equals("not_before")?0:1) && n<=9007199254740991L);fields.addProperty(name,(long)n);
+                    }else{need(in.peek()==com.google.gson.stream.JsonToken.STRING);String value=in.nextString();need(value.length()>=1 && value.length()<=128 && value.chars().allMatch(c->c<=127));fields.addProperty(name,value);}
+                }
+                in.endObject();need(in.peek()==com.google.gson.stream.JsonToken.END_DOCUMENT && names.size()==16);in.close();
+                need(fields.get("content_digest").getAsString().matches("[0-9a-f]{64}") && fields.get("not_before").getAsLong()<fields.get("expires_at").getAsLong() && Set.of("informational","sensitive").contains(fields.get("commitment").getAsString()));
+                var out=new StringBuilder("{");for(String name:NAMES){if(out.length()>1)out.append(',');out.append(quote(name)).append(':').append(NUMBERS.contains(name)?fields.get(name).getAsString():quote(fields.get(name).getAsString()));}out.append('}');
+                return new WorkflowAction(out.toString(),fields);
+            }catch(Exception error){throw new OriginalHttp.Failure(false);}
+        }
+        public String canonical(){return canonical;}
+        public String digest(){try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(canonical.getBytes(StandardCharsets.US_ASCII)));}catch(GeneralSecurityException error){throw new IllegalStateException(error);}}
+        private String text(String name){return fields.get(name).getAsString();}
+        private long revision(){return fields.get("revision").getAsLong();}
+        private void production()throws OriginalHttp.Failure{for(String name:List.of("account_id","action_id","line_id","recipient_id","purpose_id","content_ref","routine_id"))pageId(fields.get(name));need(revision()<=128);}
+    }
+    public static final class ProposalIntent {
+        private final byte[] record;private final WorkflowAction descriptor;
+        private ProposalIntent(byte[] record,WorkflowAction descriptor){this.record=record.clone();this.descriptor=descriptor;}
+        public byte[] bytes(){return record.clone();}
+        public WorkflowAction descriptor(){return descriptor;}
+    }
+    public static final class ProposalResult {
+        private final byte[] event,consumption,active;private final Verified authority;private final WorkflowAction action;
+        private ProposalResult(byte[] event,byte[] consumption,byte[] active,Verified authority,WorkflowAction action){this.event=event.clone();this.consumption=consumption.clone();this.active=active.clone();this.authority=authority;this.action=action;}
+        public byte[] event(){return event.clone();}public byte[] consumption(){return consumption.clone();}public byte[] activeRequest(){return active.clone();}public Verified authority(){return authority;}
+        /** Null denotes the correlated owner-review fallback. */
+        public WorkflowAction action(){return action;}
+    }
+    /** No persistence or network; sync the returned bytes before an effect. */
+    public ProposalIntent prepareProposal(byte[] event,byte[] request,byte[] active,WorkflowAction descriptor)throws OriginalHttp.Failure{
+        try{descriptor.production();byte[] prefix=prepareOwnerReview(event,request,ownerId(active)).bytes(),json=descriptor.canonical().getBytes(StandardCharsets.US_ASCII),raw=Arrays.copyOf(prefix,151+json.length);raw[3]=80;System.arraycopy(json,0,raw,151,json.length);return restoreProposal(raw);}catch(Exception error){throw new OriginalHttp.Failure(false);}
+    }
+    public ProposalIntent restoreProposal(byte[] input)throws OriginalHttp.Failure{
+        try{
+            byte[] raw=input.clone();need(raw.length>151 && raw.length<=4096 && same(Arrays.copyOfRange(raw,0,5),new byte[]{90,84,79,80,1}) && raw[134]==1);byte[] prefix=Arrays.copyOf(raw,151);prefix[3]=82;restoreOwnerReview(prefix);
+            byte[] json=Arrays.copyOfRange(raw,151,raw.length);var descriptor=WorkflowAction.parse(new String(json,StandardCharsets.UTF_8));descriptor.production();need(same(json,descriptor.canonical().getBytes(StandardCharsets.US_ASCII)) && descriptor.text("account_id").equals(ownerUuid(scope.proofFields()[0])) && descriptor.text("line_id").equals(ownerUuid(scope.proofFields()[2])));return new ProposalIntent(raw,descriptor);
+        }catch(Exception error){throw new OriginalHttp.Failure(false);}
+    }
+    public ProposalResult consumeProposal(String credential,String output,ProposalIntent intent,LongSupplier clock)throws OriginalHttp.Failure{return proposal(credential,output,intent,clock,true);}
+    public ProposalResult statusProposal(String credential,ProposalIntent intent,LongSupplier clock)throws OriginalHttp.Failure{return proposal(credential,null,intent,clock,false);}
+    private ProposalResult proposal(String credential,String output,ProposalIntent intent,LongSupplier clock,boolean effect)throws OriginalHttp.Failure{
+        boolean acquired=false,dispatched=false;
+        try{
+            need(clock!=null);var owned=restoreProposal(intent.bytes());var descriptor=owned.descriptor();byte[] raw=owned.bytes();if(effect)OriginalHttp.outputCredential(output);
+            need(!lock.isHeldByCurrentThread() && lock.tryLock());acquired=true;var before=currentLocked(credential,clock);
+            byte[] event=Arrays.copyOfRange(raw,102,118),request=Arrays.copyOfRange(raw,118,134),active=Arrays.copyOfRange(raw,135,151);
+            var req=effect?new OriginalHttp.Request("consume",before.authority().manifest().version(),ownerUuid(event),null,null,null,ownerUuid(request),ownerUuid(active)):new OriginalHttp.Request("status",before.authority().manifest().version(),null,ownerUuid(request),null,null,null,null);
+            var wire=effect?transport.exchangeProposal(credential,output,req,descriptor.canonical()):transport.exchange(credential,req);dispatched=effect;
+            var r=object(JsonParser.parseString(wire.untrustedJson()),"event_id","consumption_id","disposition","active_request_id","action");need(string(r.get("event_id")).equals(ownerUuid(event)) && string(r.get("consumption_id")).equals(ownerUuid(request)) && string(r.get("active_request_id")).equals(ownerUuid(active)));
+            WorkflowAction action=null;
+            if(string(r.get("disposition")).equals("owner_review"))need(r.get("action").isJsonNull());
+            else{need(string(r.get("disposition")).equals("proposal"));var a=object(r.get("action"),"account_id","action_id","revision","binding_digest");need(string(a.get("account_id")).equals(descriptor.text("account_id")) && string(a.get("action_id")).equals(descriptor.text("action_id")) && integer(a.get("revision"))==descriptor.revision() && string(a.get("binding_digest")).equals(descriptor.digest()));action=descriptor;}
+            return new ProposalResult(event,request,active,currentLocked(credential,clock),action);
         }catch(OriginalHttp.Failure error){throw new OriginalHttp.Failure(dispatched || error.unknown);}
         catch(Exception error){if(error instanceof InterruptedException)Thread.currentThread().interrupt();throw new OriginalHttp.Failure(dispatched);}
         finally{if(acquired)lock.unlock();}

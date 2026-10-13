@@ -93,13 +93,25 @@ class OriginalHTTP
     raise Failure.new, cause: nil
   end
 
-  # Owner-review consume only: no output credential or automatic descriptor.
-  def exchange(credential:, **request)
+  # Generic exchange remains descriptor-null; typed consume has separate output authorization.
+  def self.output_credential!(value)
+    raise Failure unless value.is_a?(String) && /\Aztw_[A-Za-z0-9_-]{43}\z/.match?(value)
+    raw=Base64.urlsafe_decode64(value[4..]+'=');raise Failure unless raw.bytesize==32 && Base64.urlsafe_encode64(raw,padding:false)==value[4..];value
+  end
+  def exchange(credential:, **request) = exchange_core(credential,nil,nil,request)
+  def exchange_proposal(credential:,output_credential:,descriptor:,**request) = exchange_core(credential,output_credential,descriptor,request)
+  private
+  def exchange_core(credential,output,descriptor,request)
     attempted = false
     raise Failure unless credential.is_a?(String) && /\Aztr_[A-Za-z0-9_-]{43}\z/.match?(credential)
     decoded = Base64.urlsafe_decode64(credential[4..] + '=')
     raise Failure unless decoded.bytesize == 32 && Base64.urlsafe_encode64(decoded, padding: false) == credential[4..]
     body = self.class.body(**request)
+    if output || descriptor
+      self.class.output_credential!(output);raise Failure unless request[:method]=='consume' && request[:active_request_id] && descriptor
+      value=JSON.parse(body);action=JSON.parse(descriptor,object_class:UniqueObject,max_nesting:4);raise Failure unless action.is_a?(Hash);value['params']['descriptor']=action;body=JSON.generate(value)
+    end
+    raise Failure if body.bytesize>4096
     http = Net::HTTP.new(@uri.host, @uri.port, nil) # Explicitly ignore environment proxies.
     http.use_ssl = true
     http.min_version = OpenSSL::SSL::TLS1_2_VERSION
@@ -112,6 +124,7 @@ class OriginalHTTP
     message['Authorization'] = 'Bearer ' + credential
     message['Content-Type'] = 'application/json'
     message['Cache-Control'] = 'no-store'
+    message['X-Zrotext-Output-Authorization']='Bearer '+output if output
     message.body = body
     raw = +''
     started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
