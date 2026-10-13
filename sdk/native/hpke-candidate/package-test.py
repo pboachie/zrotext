@@ -102,6 +102,23 @@ class PackagePolicy(unittest.TestCase):
         self.assertNotIn("--language", call)
         self.assertNotIn(call[0], ("cargo", "go"))
 
+    def test_context_roles_and_owned_cleanup_use_installed_probe(self):
+        binaries = {name: Path("installed") / name for name in packages.HARNESSES}
+        with patch.object(packages, "run") as run:
+            packages.context_acceptance(binaries, Path("context"))
+            packages.context_acceptance(binaries, Path("context"), hardware=True)
+        calls = [call.args for call in run.call_args_list]
+        self.assertEqual(len(calls), 6)
+        expected = (("2", ()), ("3", ()), ("2", ("--hardware",)),
+                    ("2", ("--hardware", "--fail-setup")), ("3", ("--hardware",)),
+                    ("3", ("--hardware", "--fail-setup")))
+        for call, (role, flags) in zip(calls, expected):
+            self.assertEqual(call[1].name, "test-workflow-context.py")
+            self.assertEqual(call[2:], ("--producer", Path("context"), "--binary",
+                                       binaries["workflow_context"], "--role", role, *flags))
+            self.assertNotIn("--allow-unqualified", call)
+            self.assertNotIn(call[0], ("cargo", "go"))
+
     def test_opening_and_owned_cleanup_use_installed_probe(self):
         binaries = {name: Path("installed") / name for name in packages.HARNESSES}
         with patch.object(packages, "run") as run:

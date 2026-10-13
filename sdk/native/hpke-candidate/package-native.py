@@ -33,10 +33,11 @@ PRODUCERS = {
     "opening_oracle": "c843543f13e3bbd6ac17a260a4b0523f0748324f",
     "authoring_oracle": "059556de2fe314ec0d88833a8d3e4d6ee41a8066",
     "contact": "ccf28fe445ba959aa01d99fed6bd9ee3188b749c",
+    "context": "7e61c5b2461c82a5fbd05e62d06d14e34a0424d6",
 }
 HARNESSES = ("journal", "root", "cng", "compose", "compose02", "original", "reply_checkpoint",
              "reply_http", "reply_current", "reply_read", "reply_page", "reply_consumption", "reply_proposal",
-             "template", "template_crypto", "owner_template", "template_save", "template_opening", "template_authoring", "contact", "contact_mutation", "contact_history")
+             "template", "template_crypto", "owner_template", "template_save", "template_opening", "template_authoring", "contact", "contact_mutation", "contact_history", "workflow_context")
 ORIGINAL_TLS = ("http", "current", "read", "page", "consumption", "proposal")
 
 
@@ -139,6 +140,7 @@ def rust_package(stage, output):
         shutil.copytree(ROOT / "rust/examples/opening_custody", consumer / "src/bin/opening_custody")
         shutil.copytree(ROOT / "rust/examples/contact_custody", consumer / "src/bin/contact_custody")
         shutil.copytree(ROOT / "rust/examples/contact_mutation_custody", consumer / "src/bin/contact_mutation_custody")
+        shutil.copytree(ROOT / "rust/examples/context_custody", consumer / "src/bin/context_custody")
         (consumer / "Cargo.toml").write_text('''[package]
 name = "native-installed-consumer"
 version = "0.0.0"
@@ -297,7 +299,19 @@ def contact_acceptance(binaries, contact, hardware=False):
             "--binary", binaries["contact_history"], env=safe_env())
 
 
-def acceptance(binaries, archive, election, original, template, save_oracle, opening_oracle, authoring_oracle, contact, deadline_case_ms):
+def context_acceptance(binaries, context, hardware=False):
+    """Explicit owner/integration roles through ordinary installed public APIs."""
+    for role in (2, 3):
+        flags = ["--hardware"] if hardware else []
+        run(sys.executable, ROOT / "test-workflow-context.py", "--producer", context,
+            "--binary", binaries["workflow_context"], "--role", str(role), *flags, env=safe_env())
+        if hardware:
+            run(sys.executable, ROOT / "test-workflow-context.py", "--producer", context,
+                "--binary", binaries["workflow_context"], "--role", str(role),
+                "--hardware", "--fail-setup", env=safe_env())
+
+
+def acceptance(binaries, archive, election, original, template, save_oracle, opening_oracle, authoring_oracle, contact, context, deadline_case_ms):
     env = safe_env()
     fixture = run("node", election / "sdk/native/sealed-candidate/python/produce-election03.mjs", env=env, capture_output=True, text=True).stdout
     run(binaries["journal"], input=fixture, text=True)
@@ -305,6 +319,7 @@ def acceptance(binaries, archive, election, original, template, save_oracle, ope
     fixture = run("node", ROOT / "root-controls.mjs", archive, input=fixture, env=env, capture_output=True, text=True).stdout
     run(binaries["root"], input=fixture, text=True)
     contact_acceptance(binaries, contact)
+    context_acceptance(binaries, context)
     template_acceptance(binaries, original, template)
     owner_template_acceptance(binaries, template, save_oracle, deadline_case_ms)
     template_opening_acceptance(binaries, template, opening_oracle, deadline_case_ms)
@@ -324,6 +339,7 @@ def acceptance(binaries, archive, election, original, template, save_oracle, ope
             template_acceptance(binaries, original, template, hardware=True)
             template_opening_acceptance(binaries, template, opening_oracle, deadline_case_ms, hardware=True)
             contact_acceptance(binaries, contact, hardware=True)
+            context_acceptance(binaries, context, hardware=True)
         qualified = all(results)
     return qualified
 
@@ -339,6 +355,7 @@ def main():
     parser.add_argument("--opening-oracle", type=Path, required=True)
     parser.add_argument("--authoring-oracle", type=Path, required=True)
     parser.add_argument("--contact", type=Path, required=True)
+    parser.add_argument("--context", type=Path, required=True)
     parser.add_argument("--owner-deadline-case-ms", type=int, default=100,
                         help="Declared caller deadline for post-handshake owner-template fixture cases (100..2000)")
     parser.add_argument("--output", type=Path, required=True)
@@ -357,7 +374,7 @@ def main():
         package = rust_package if args.language == "rust" else go_package
         for binaries, artifact in package(Path(directory), args.output):
             qualified = acceptance(binaries, args.archive, args.election, args.original, args.template,
-                                   args.save_oracle, args.opening_oracle, args.authoring_oracle, args.contact, args.owner_deadline_case_ms)
+                                   args.save_oracle, args.opening_oracle, args.authoring_oracle, args.contact, args.context, args.owner_deadline_case_ms)
             report = {"experimental": True, "published": False, "language": args.language,
                       "version": VERSION, "archive": artifact.name, "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
                       "license": "AGPL-3.0-only", "producer_revisions": PRODUCERS,
@@ -384,6 +401,10 @@ def main():
                       "contact_history_acceptance": {"local_metadata": True, "signed_root_recheck": True,
                                                      "session_cas": True, "restart_and_crash": True,
                                                      "current_permission": False, "external_rollback_protection": False},
+                      "workflow_context_acceptance": {"reader_roles": [2, 3], "software_interop": True,
+                                                       "protected_opening": qualified,
+                                                       "current_authority_recheck": True,
+                                                       "persistence": False, "service_acceptance": False},
                       "protected_acceptance": qualified}
             (args.output / "qualification.json").write_text(json.dumps(report, indent=2) + "\n")
             print(json.dumps(report))
