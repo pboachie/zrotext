@@ -4,7 +4,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.*;
 import java.util.*;
 import java.util.concurrent.*;
-/** Cold opaque current template loading. No decryption, save acknowledgement or send authority. */
+/** Opaque template loading and explicit reviewed persistence. No decryption or send authority. */
 public final class OwnerTemplate implements AutoCloseable {
  public static final class Failure extends Exception {
   private static final long serialVersionUID=1L;public final String code;public final boolean unknown;
@@ -24,27 +24,34 @@ public final class OwnerTemplate implements AutoCloseable {
  public interface CurrentSource{Current current()throws Exception;}
  public interface SessionSource{Session current()throws Exception;}
  public static final class Snapshot {
-  private final EncryptedTemplate.Scope scope;private final byte[] wire;private final String digest;
-  private Snapshot(EncryptedTemplate.Scope scope,byte[] wire,String digest){this.scope=scope;this.wire=wire.clone();this.digest=digest;}
-  public EncryptedTemplate.Scope scope(){return scope;}public byte[] envelope(){return wire.clone();}public String encryptedDigest(){return digest;}public boolean requestAcknowledged(){return false;}public boolean matchesPending(){return false;}
+  private final EncryptedTemplate.Scope scope;private final byte[] wire;private final String digest;private final boolean matches;
+  private Snapshot(EncryptedTemplate.Scope scope,byte[] wire,String digest){this(scope,wire,digest,false);}
+  private Snapshot(EncryptedTemplate.Scope scope,byte[] wire,String digest,boolean matches){this.scope=scope;this.wire=wire.clone();this.digest=digest;this.matches=matches;}
+  public EncryptedTemplate.Scope scope(){return scope;}public byte[] envelope(){return wire.clone();}public String encryptedDigest(){return digest;}public boolean requestAcknowledged(){return false;}public boolean matchesPending(){return matches;}
  }
  private static final Semaphore ADMISSION=new Semaphore(8);
  private static final ExecutorService WORKERS=Executors.newFixedThreadPool(8,r->{var t=new Thread(r,"zrotext-owner-template");t.setDaemon(true);return t;});
  private final Object lock=new Object();private final String origin,path;private final Binding binding;private final byte[] template;private final CurrentSource source;private final SessionSource sessions;private final long timeout;private final OwnerTemplateTransport transport;
+ private final Reviewer review;private Saved saved;private Pending pending;
  private boolean closed,busy;private long now,head;private ManifestChain.Verified prior;private String headDigest;
- private static final class Work {long deadline;boolean done;Snapshot result;Failure error;Work(long deadline){this.deadline=deadline;}}
- public OwnerTemplate(String origin,Binding binding,byte[] template,CurrentSource source,SessionSource sessions,boolean enabled,long timeoutMs,String additionalRootsPem)throws Failure{
+ private static final class Work {long deadline;boolean done,foreground,released;Object result;Failure error;Runnable finish;Work(long deadline){this.deadline=deadline;}}
+ public OwnerTemplate(String origin,Binding binding,byte[] template,CurrentSource source,SessionSource sessions,boolean enabled,long timeoutMs,String additionalRootsPem)throws Failure{this(origin,binding,template,source,sessions,enabled,timeoutMs,additionalRootsPem,null);}
+ public OwnerTemplate(String origin,Binding binding,byte[] template,CurrentSource source,SessionSource sessions,boolean enabled,long timeoutMs,String additionalRootsPem,Reviewer review)throws Failure{
   try{var u=new java.net.URI(origin);need(u.getScheme().equals("https") && u.getHost()!=null && u.getHost().equals(u.getHost().toLowerCase(Locale.ROOT)) && u.getRawPath().isEmpty() && u.getRawUserInfo()==null && u.getQuery()==null && u.getFragment()==null);need(binding!=null && source!=null && sessions!=null && timeoutMs>=1 && timeoutMs<=10000);
-   this.origin=origin;this.binding=binding;this.template=bytes(template,16);this.source=source;this.sessions=sessions;timeout=timeoutMs;closed=!enabled;path="/v1/owner/workflow/templates/"+TemplateStore.uuid(this.template);transport=new OwnerTemplateTransport(origin,timeoutMs,additionalRootsPem);
+   this.review=review;this.origin=origin;this.binding=binding;this.template=bytes(template,16);this.source=source;this.sessions=sessions;timeout=timeoutMs;closed=!enabled;path="/v1/owner/workflow/templates/"+TemplateStore.uuid(this.template);transport=new OwnerTemplateTransport(origin,timeoutMs,additionalRootsPem);
   }catch(Exception error){throw new Failure("invalid_request");}
  }
- @Override public void close(){synchronized(lock){closed=true;lock.notifyAll();}transport.close();}
- private void live(Work w)throws Failure{synchronized(lock){if(closed)throw new Failure("closed");if(System.nanoTime()>=w.deadline){closed=true;lock.notifyAll();transport.close();throw new Failure("deadline");}}}
+ @Override public void close(){synchronized(lock){closed=true;if(!busy)saved=null;lock.notifyAll();}transport.close();}
+ private void live(Work w)throws Failure{synchronized(lock){if(closed)throw classify(new Failure("closed"));if(System.nanoTime()>=w.deadline){closed=true;lock.notifyAll();transport.close();throw classify(new Failure("deadline"));}}}
  private long remaining(Work w)throws Failure{live(w);synchronized(lock){return Math.max(1,TimeUnit.NANOSECONDS.toMillis(w.deadline-System.nanoTime()));}}
- public Snapshot readLatest()throws Failure{
-  final Work w;synchronized(lock){if(closed)throw new Failure("closed");if(busy)throw new Failure("busy");if(!ADMISSION.tryAcquire())throw new Failure("capacity");busy=true;w=new Work(System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(timeout));}
-  try{WORKERS.execute(()->{try{var result=read(w);synchronized(lock){w.result=result;}}catch(Exception error){synchronized(lock){w.error=error instanceof Failure f?f:new Failure("read_refused");}}finally{synchronized(lock){w.done=true;busy=false;lock.notifyAll();}ADMISSION.release();}});}catch(RuntimeException error){synchronized(lock){busy=false;}ADMISSION.release();throw new Failure("capacity");}
-  synchronized(lock){for(;;){live(w);if(w.done){if(w.error!=null)throw w.error;return w.result;}try{TimeUnit.NANOSECONDS.timedWait(lock,Math.max(1,w.deadline-System.nanoTime()));}catch(InterruptedException error){Thread.currentThread().interrupt();close();throw new Failure("closed");}}}
+ private interface Operation{Object run(Work work)throws Exception;}
+ private Failure classify(Exception error){if(error instanceof Failure f && Set.of("invalid_request","pending_write","busy","capacity").contains(f.code))return f;if(pending!=null)return new Failure("response_unknown",true);return error instanceof Failure f?f:new Failure("read_refused");}
+ private void releaseWork(Work w){if(w.done && w.foreground && !w.released){w.released=true;busy=false;if(closed)saved=null;ADMISSION.release();lock.notifyAll();}}
+ private Object execute(Operation op)throws Failure{
+  final Work w;synchronized(lock){if(busy)throw new Failure("busy");if(closed)throw classify(new Failure("closed"));if(!ADMISSION.tryAcquire())throw new Failure("capacity");busy=true;w=new Work(System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(timeout));}
+  try{WORKERS.execute(()->{try{var result=op.run(w);synchronized(lock){w.result=result;}}catch(Exception error){synchronized(lock){w.error=classify(error);}}finally{synchronized(lock){w.done=true;releaseWork(w);lock.notifyAll();}}});}catch(RuntimeException error){synchronized(lock){busy=false;}ADMISSION.release();throw new Failure("capacity");}
+  try{synchronized(lock){for(;;){live(w);if(w.done){if(w.error!=null)throw w.error;if(w.finish!=null)w.finish.run();return w.result;}try{TimeUnit.NANOSECONDS.timedWait(lock,Math.max(1,w.deadline-System.nanoTime()));}catch(InterruptedException error){Thread.currentThread().interrupt();close();throw classify(new Failure("closed"));}}}}
+  finally{synchronized(lock){w.foreground=true;releaseWork(w);}}
  }
  private Session credentials(Work w)throws Exception{
   live(w);var s=sessions.current();live(w);need(s!=null && origin.equals(s.origin()) && s.cookie()!=null && s.cookie().length()>=1 && s.cookie().length()<=4096 && s.cookie().contains("=") && s.cookie().matches("[ -~]+") && s.csrf()!=null && s.csrf().length()>=1 && s.csrf().length()<=256 && s.csrf().matches("[!-~]+"));return s;
@@ -59,9 +66,51 @@ public final class OwnerTemplate implements AutoCloseable {
    long duration=Math.min(a.validForMs(),expiry-a.nowMs());need(duration>0);synchronized(lock){w.deadline=Math.min(w.deadline,start+TimeUnit.MILLISECONDS.toNanos(duration));lock.notifyAll();}need(credentials(w).equals(session));live(w);prior=m;now=a.nowMs();
   }catch(Exception error){close();throw new Failure("owner_changed");}
  }
- private Snapshot read(Work w)throws Exception{
-  var session=credentials(w);authorize(w,null,session);if(!credentials(w).equals(session)){close();throw new Failure("owner_changed");}
+ private Snapshot read(Work w,Session expected)throws Exception{
+  var session=credentials(w);if(expected!=null && !session.equals(expected)){close();throw new Failure("owner_changed");}authorize(w,null,session);if(!credentials(w).equals(session)){close();throw new Failure("owner_changed");}
   byte[] wire;try{wire=transport.get(path,session,remaining(w));}catch(Failure error){if(error.code.equals("owner_changed"))close();throw error;}
   live(w);var scope=TemplateStore.parse(wire);long revision=TemplateStore.number(scope.aad(),94);need(revision>=head);authorize(w,scope,session);HpkeRecipient.point(TemplateStore.part(wire,222,65));String digest=TemplateStore.hex(MessageDigest.getInstance("SHA-256").digest(wire));authorize(w,scope,session);need(revision!=head || digest.equals(headDigest));live(w);head=revision;headDigest=digest;return new Snapshot(scope,wire,digest);
  }
+ public record Review(String requestId,int expectedRevision,EncryptedTemplate.Scope scope,String encryptedDigest){}
+ public record Pending(String requestId,String templateId,int revision,String encryptedDigest){}
+ public record Acknowledgement(Pending identity){public String state(){return "acknowledged_saved_revision";}}
+ public interface Reviewer{void consume(Review review)throws Exception;}
+ public static final class Ticket{private Ticket(){}}
+ private static final class Saved{
+  final Ticket ticket=new Ticket();final TemplateStore.SaveRequest request;final String requestId;final EncryptedTemplate.Scope scope;final Session session;long deadline;int attempts,verifies;boolean unknown;
+  Saved(TemplateStore.SaveRequest request,String requestId,EncryptedTemplate.Scope scope,Session session,long deadline){this.request=request;this.requestId=requestId;this.scope=scope;this.session=session;this.deadline=deadline;}
+ }
+ public Pending pending(){synchronized(lock){return pending;}}
+ private Pending identity(Saved r){return new Pending(r.requestId,TemplateStore.uuid(TemplateStore.part(r.scope.aad(),70,16)),r.request.revision(),r.request.encryptedDigest());}
+ private void forget(Saved r){if(saved==r){saved=null;pending=null;}}
+ private void savedDeadline(Saved r,Work w)throws Failure{synchronized(lock){w.deadline=Math.min(w.deadline,r.deadline);r.deadline=w.deadline;lock.notifyAll();}live(w);}
+ private Saved ticket(Ticket t,Work w)throws Failure{var r=saved;if(r==null || t==null || r.ticket!=t)throw new Failure("invalid_request");savedDeadline(r,w);return r;}
+ public Ticket prepareSave(EncryptedTemplate.Scope scope,String requestId,int expectedRevision,byte[] envelope)throws Failure{
+  need(envelope!=null && envelope.length>=308 && envelope.length<=33075 && scope!=null);byte[] wire=envelope.clone();
+  return (Ticket)execute(w->{if(saved!=null || pending!=null)throw new Failure("pending_write");need(review!=null);Saved owned=null;
+   try{var request=new TemplateStore.SaveRequest(scope,requestId,expectedRevision,wire);TemplateStore.parse(wire);var session=credentials(w);owned=new Saved(request,requestId,scope,session,w.deadline);saved=owned;
+    authorize(w,scope,session);savedDeadline(owned,w);HpkeRecipient.point(TemplateStore.part(wire,222,65));review.consume(new Review(requestId,expectedRevision,scope,request.encryptedDigest()));authorize(w,scope,session);savedDeadline(owned,w);return owned.ticket;
+   }catch(Exception error){if(owned!=null)synchronized(lock){forget(owned);}throw error instanceof Failure f?f:new Failure("invalid_request");}
+  });
+ }
+ public Acknowledgement commit(Ticket ticket)throws Failure{return postSaved(ticket,false);}
+ public Acknowledgement retryUnknown(Ticket ticket)throws Failure{return postSaved(ticket,true);}
+ private Acknowledgement postSaved(Ticket t,boolean retry)throws Failure{
+  return (Acknowledgement)execute(w->{var r=ticket(t,w);if(retry?!r.unknown:r.attempts!=0)throw new Failure("invalid_request");if(r.attempts>=3)throw new Failure("attempts_exhausted",r.unknown);
+   authorize(w,r.scope,r.session);savedDeadline(r,w);synchronized(lock){r.attempts++;r.unknown=true;pending=identity(r);}
+   if(!credentials(w).equals(r.session)){close();throw new Failure("owner_changed");}
+   byte[] body;try{body=transport.post(r.request,r.session,remaining(w));}catch(Failure error){if(error.code.equals("owner_changed"))close();throw error;}r.request.receipt(body);
+   authorize(w,r.scope,r.session);savedDeadline(r,w);int revision=r.request.revision();String digest=r.request.encryptedDigest();if(revision==head && !digest.equals(headDigest))throw new Failure("response_unknown",true);
+   var ack=new Acknowledgement(identity(r));w.finish=()->{if(revision>=head){head=revision;headDigest=digest;}forget(r);};return ack;
+  });
+ }
+ public Snapshot readLatest()throws Failure{return latestSaved(null,false);}
+ public Snapshot verifyUnknown(Ticket ticket)throws Failure{return latestSaved(ticket,true);}
+ private Snapshot latestSaved(Ticket t,boolean verify)throws Failure{
+  return (Snapshot)execute(w->{var r=verify?ticket(t,w):saved;if(verify && !r.unknown)throw new Failure("invalid_request");
+   if(r!=null){savedDeadline(r,w);if(r.unknown){if(r.verifies>=3)throw new Failure("attempts_exhausted",true);r.verifies++;}}
+   var snapshot=read(w,r==null?null:r.session);if(r!=null){savedDeadline(r,w);snapshot=new Snapshot(snapshot.scope(),snapshot.envelope(),snapshot.encryptedDigest(),Arrays.equals(snapshot.envelope(),r.request.body()));}return snapshot;
+  });
+ }
+
 }

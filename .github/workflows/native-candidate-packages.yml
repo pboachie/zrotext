@@ -38,6 +38,7 @@ jobs:
             election = '304d512b7a420a3102278f32baed095f3e778989'
             original = '72124e1a3ff28e782f870eeddbdc33cacf8ca3b4'
             template = '26e876da9f34372d9cf26511993cf633971e0037'
+            save_oracle = '5a25bac026bebee5eba20dc6048ddc1c773c41ed'
           }
           foreach ($name in $producers.Keys) {
             git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/$name"
@@ -56,7 +57,9 @@ jobs:
         run: |
           python sdk/native/hpke-candidate/package-test.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python sdk/native/hpke-candidate/package-native.py --language '${{ matrix.language }}' --archive "$env:RUNNER_TEMP/archive" --election "$env:RUNNER_TEMP/election" --original "$env:RUNNER_TEMP/original" --template "$env:RUNNER_TEMP/template" --output "$env:RUNNER_TEMP/native-package"
+          # Explicit caller budget lets post-handshake cases reach their intended
+          # phase on cold hosted TLS; the 100ms pre-dispatch refusal is retained.
+          python sdk/native/hpke-candidate/package-native.py --language '${{ matrix.language }}' --archive "$env:RUNNER_TEMP/archive" --election "$env:RUNNER_TEMP/election" --original "$env:RUNNER_TEMP/original" --template "$env:RUNNER_TEMP/template" --save-oracle "$env:RUNNER_TEMP/save_oracle" --owner-deadline-case-ms 1000 --output "$env:RUNNER_TEMP/native-package"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       # A hosted runner without qualified PCP can prove archive/software checks,
       # but its qualification.json explicitly leaves protected acceptance false.
