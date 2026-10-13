@@ -35,6 +35,8 @@ jobs:
           git -C "$RUNNER_TEMP/tungsten" checkout --detach "$revision"
       - name: Generate and verify all targets
         run: python3 scripts/tungsten_sdk.py --source "$RUNNER_TEMP/tungsten" --check
+      - name: Verify synthetic local mock scenarios
+        run: python3 scripts/tungsten_sdk.py --source "$RUNNER_TEMP/tungsten" --mock-check
       - name: Install the locked TypeScript build graph
         working-directory: sdk/tungsten/generated/typescript
         run: |

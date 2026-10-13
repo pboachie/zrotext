@@ -18,6 +18,14 @@ spec.loader.exec_module(packages)
 
 
 class GenerationPolicyTests(unittest.TestCase):
+    def test_mock_checks_cannot_combine_with_serve_or_regeneration(self):
+        for other in ("--mock", "--check"):
+            with self.subTest(other=other), patch.object(sdk, "verify_source") as verify:
+                with self.assertRaises(SystemExit) as result:
+                    sdk.main(["--source", "unused", "--mock-check", other])
+                self.assertEqual(result.exception.code, 2)
+                verify.assert_not_called()
+
     def test_callable_surface_excludes_planned_routes(self):
         config = json.loads((sdk.CONFIG / "tungsten.yml").read_text())
         public = next(i for i in config["inputs"] if i["namespace"] == "public")

@@ -240,3 +240,11 @@ emits SHA256SUMS. It refuses modified generated files and packages only the
 reviewed inventory, excluding installed dependencies and build caches. CI makes
 these experimental source bundles available as a seven-day artifact. They are
 not registry release packages or an approval to publish them.
+
+
+Public local mock fixtures and an automated scenario command are documented in
+[mock/README.md](mock/README.md). Run
+`python scripts/tungsten_sdk.py --source <clean-pinned-tungsten> --mock-check`
+to verify seeded IR responses, gates, authentication shapes, workflow mapping,
+pagination and synthetic failure/replay behavior. These checks cannot establish
+real token authority, cryptography, transaction durability or device acceptance.
