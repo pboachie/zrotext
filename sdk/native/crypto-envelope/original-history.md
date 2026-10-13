@@ -33,6 +33,10 @@ Checksums detect corruption, not hostile rewriting or restoration of an older
 whole file. Transactions are bounded to 256 and the file to 16 MB. There is no
 automatic compaction or trust reset.
 
+An I/O or flush error can leave a complete committed transaction even when the
+caller did not receive success. Reopen and inspect the revision before deciding
+what to retry; never infer that an exception rolled the write back.
+
 A torn append makes the store unavailable on reopen. The implementation never
 silently drops a partial tail and rolls comparison time back. This differs from
 the Rust/Go SQLite checkpoint's transaction rollback behavior; neither behavior
