@@ -17,6 +17,10 @@ func must(e error) {
 	}
 }
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--limits" {
+		limits()
+		return
+	}
 	var in struct {
 		CurrentBlockAt                                        int
 		Ops                                                   []string

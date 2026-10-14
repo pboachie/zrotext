@@ -1,3 +1,4 @@
+mod owner_context_limits;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use std::{
@@ -17,6 +18,10 @@ fn b(v: &Value) -> Vec<u8> {
     STANDARD.decode(v.as_str().unwrap()).unwrap()
 }
 fn main() {
+    if std::env::args().len() == 2 && std::env::args().nth(1).as_deref() == Some("--limits") {
+        owner_context_limits::run();
+        return;
+    }
     let input: Value = serde_json::from_reader(std::io::stdin()).unwrap();
     let f = &input["Fixture"];
     let root = enroll_root(&b(&f["rootPin"]), &b(&f["fingerprint"])).unwrap();
