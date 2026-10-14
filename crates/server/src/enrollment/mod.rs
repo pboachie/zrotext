@@ -527,7 +527,7 @@ pub async fn prove_pairing_key(
         return Ok(false);
     };
     let expected: Vec<u8> = row.get(3);
-    if !bool::from(digest.as_slice().ct_eq(&expected)) {
+    if digest.len() != expected.len() || !bool::from(digest.as_slice().ct_eq(&expected)) {
         return Ok(false);
     }
     let account_id: Uuid = row.get(0);
@@ -670,6 +670,8 @@ pub async fn approve_pairing(
     let expected_fingerprint = fingerprint_string(&fingerprint);
     if comparison_code.len() != 8
         || key_fingerprint.len() != 64
+        || comparison_code.len() != expected_code.len()
+        || key_fingerprint.len() != expected_fingerprint.len()
         || !bool::from(comparison_code.as_bytes().ct_eq(expected_code.as_bytes()))
         || !bool::from(
             key_fingerprint

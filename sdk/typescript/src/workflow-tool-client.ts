@@ -21,7 +21,7 @@ export interface WorkflowToolOptions {
   /** Trusted transport seam. It receives the credential; never expose it as a model tool. */
   fetchImpl?: typeof fetch;
 }
-async function json(response: Response): Promise<unknown> {
+async function json(response: Response, signal: AbortSignal): Promise<unknown> {
   if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/iu.test(response.headers.get('content-type') ?? '')) {
     await response.body?.cancel().catch(() => {});
     throw new Error();
@@ -30,7 +30,10 @@ async function json(response: Response): Promise<unknown> {
   if (!reader) throw new Error();
   let size = 0;
   const chunks: Uint8Array[] = [];
+  const stop = () => { void reader.cancel().catch(() => {}); };
+  signal.addEventListener('abort', stop, { once: true });
   try {
+    if (signal.aborted) throw new Error();
     while (true) {
       const next = await reader.read();
       if (next.done) break;
@@ -39,6 +42,7 @@ async function json(response: Response): Promise<unknown> {
       chunks.push(next.value);
     }
   } finally {
+    signal.removeEventListener('abort', stop);
     await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
@@ -68,13 +72,19 @@ export class WorkflowToolClient {
       this.#timeout = timeout;
     } catch { throw new WorkflowToolError('invalid_configuration', 'refused', 0); }
   }
-  async #request(body: string | undefined, maxAttempts: number): Promise<{ value: unknown; attempts: number }> {
+  async #request(body: string | undefined, maxAttempts: number, signal?: AbortSignal): Promise<{ value: unknown; attempts: number }> {
     if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 3) throw new WorkflowToolError('invalid_request', 'refused', 0);
+    if (signal !== undefined && !(signal instanceof AbortSignal)) throw new WorkflowToolError('invalid_request', 'refused', 0);
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      // Earlier attempts can only have been explicit rate-limit refusals.
+      if (signal?.aborted) throw new WorkflowToolError('unavailable', 'refused', attempt - 1);
       const controller = new AbortController();
       let timer: ReturnType<typeof setTimeout> | undefined;
+      let stop: (() => void) | undefined;
       const deadline = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => { controller.abort(); reject(new Error()); }, this.#timeout);
+        stop = () => { controller.abort(); reject(new Error()); };
+        signal?.addEventListener('abort', stop, { once: true });
+        timer = setTimeout(stop, this.#timeout);
       });
       try {
         const value = await Promise.race([deadline, (async () => {
@@ -86,7 +96,11 @@ export class WorkflowToolClient {
             await response.body?.cancel().catch(() => {});
             throw new Error();
           }
-          const parsed = await json(response);
+          if (controller.signal.aborted) {
+            await response.body?.cancel().catch(() => {});
+            throw new Error();
+          }
+          const parsed = await json(response, controller.signal);
           if (response.status === 200) return parsed;
           const record = parsed as { error?: { code?: string } };
           if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || Object.keys(parsed).join(',') !== 'error' ||
@@ -94,28 +108,32 @@ export class WorkflowToolClient {
             typeof record.error.code !== 'string' || statuses[record.error.code] !== response.status) throw new Error();
           throw new WorkflowToolError(record.error.code, record.error.code === 'unavailable' ? 'unknown' : 'refused', attempt);
         })()]);
+        if (signal?.aborted) throw new Error();
         return { value, attempts: attempt };
       } catch (error) {
         // Only an explicit admission rate refusal may be retried automatically.
         // Network/timeouts/malformed replies may follow a committed effect; stop.
         if (error instanceof WorkflowToolError) {
-          if (error.code === 'rate_limited' && attempt < maxAttempts) continue;
+          if (error.code === 'rate_limited' && attempt < maxAttempts && !signal?.aborted) continue;
           throw error;
         }
         throw new WorkflowToolError('response_unknown', 'unknown', attempt);
-      } finally { if (timer !== undefined) clearTimeout(timer); }
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+        if (stop !== undefined) signal?.removeEventListener('abort', stop);
+      }
     }
     throw new WorkflowToolError('response_unknown', 'unknown', maxAttempts);
   }
-  async readiness(): Promise<WorkflowReadiness> {
-    const { value } = await this.#request(undefined, 1);
+  async readiness(signal?: AbortSignal): Promise<WorkflowReadiness> {
+    const { value } = await this.#request(undefined, 1, signal);
     try { validateWorkflowReadiness(value); return value; }
     catch { throw new WorkflowToolError('response_unknown', 'unknown', 1); }
   }
-  async cancel(requestId: string, key: unknown): Promise<WorkflowResponse> {
-    return this.call('workflow.action.cancel', { request_id: requestId, key });
+  async cancel(requestId: string, key: unknown, signal?: AbortSignal): Promise<WorkflowResponse> {
+    return this.call('workflow.action.cancel', { request_id: requestId, key }, 1, signal);
   }
-  async call(method: WorkflowMethod, params: unknown, maxAttempts = 1): Promise<WorkflowResponse> {
+  async call(method: WorkflowMethod, params: unknown, maxAttempts = 1, signal?: AbortSignal): Promise<WorkflowResponse> {
     let body: string;
     let snapshot: Record<string, any>;
     let proposalDigest: string | undefined;
@@ -126,7 +144,7 @@ export class WorkflowToolClient {
       if (new TextEncoder().encode(body).byteLength > MAX_REQUEST) throw new Error();
       if (method === 'workflow.action.propose') proposalDigest = await workflowActionDigest(snapshot.descriptor);
     } catch { throw new WorkflowToolError('invalid_request', 'refused', 0); }
-    const { value, attempts } = await this.#request(body, maxAttempts);
+    const { value, attempts } = await this.#request(body, maxAttempts, signal);
     try {
       validateWorkflowResponse(method, value);
       const result = value.result;

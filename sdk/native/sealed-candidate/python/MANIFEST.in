@@ -1,0 +1,35 @@
+include LICENSE README.md pyproject.toml MANIFEST.in
+recursive-include zrotext_native_candidate *.py
+exclude test_*.py
+exclude *.mjs
+exclude requirements.txt
+exclude check_package.py
+exclude installed_consumer.py
+exclude installed_http_consumer.py
+exclude installed_reply_consumer.py
+exclude installed_template_consumer.py
+exclude installed_contact_consumer.py
+exclude installed_time_consumer.py
+exclude installed_contact_producer_consumer.py
+exclude installed_context_consumer.py
+exclude installed_lifecycle_consumer.py
+exclude installed_template_store_consumer.py
+exclude installed_owner_template_consumer.py
+exclude installed_owner_template_save_consumer.py
+exclude installed_owner_context_consumer.py
+exclude installed_context_authoring_consumer.py
+
+exclude installed_template_authoring_consumer.py
+
+exclude installed_template_opening_consumer.py
+
+exclude installed_conversation_proposals_consumer.py
+exclude installed_enrollment_consumer.py
+exclude installed_genesis_ceremony_consumer.py
+exclude installed_conversation_signer_consumer.py
+
+exclude installed_opening_capacity_consumer.py
+
+exclude installed_conversation_custody_consumer.py
+
+exclude installed_root_bundle_consumer.py

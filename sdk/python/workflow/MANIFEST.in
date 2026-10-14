@@ -1,0 +1,4 @@
+include LICENSE README.md pyproject.toml MANIFEST.in
+recursive-include zrotext_workflow *.py *.json
+exclude check_package.py
+exclude __init__.py
