@@ -1,0 +1,55 @@
+name: Installed Python workflow candidate
+on:
+  pull_request:
+    paths:
+      - 'sdk/python/**'
+      - 'sdk/typescript/**'
+      - '.github/workflows/sdk-python-workflow-package.yml'
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  workflow-package:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+        python: ['3.11', '3.12']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24.13.0'
+      - name: Check out reviewed alpha package for co-installation acceptance
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: dc4eac37d43f77b414cbc6d610c2a2754d4640a7
+          path: alpha-source
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install independent TypeScript fixture dependencies
+        working-directory: sdk/typescript
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Build independent TypeScript fixtures
+        working-directory: sdk/typescript
+        run: npm run build
+      - name: Verify retained source imports and native workflow behavior
+        run: python -m unittest discover -s sdk/python/tests -t sdk/python
+      - name: Verify executable schema and digest parity
+        run: node --test sdk/typescript/test/workflow-native-parity.test.mjs
+      - name: Build wheel and sdist and test isolated installed HTTPS clients
+        run: python sdk/python/workflow/check_package.py --output workflow-python-artifacts --alpha-source alpha-source/sdk/python
+      - name: Preserve tested candidate archives
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: workflow-python-${{ matrix.os }}-${{ matrix.python }}
+          path: workflow-python-artifacts/*
+          if-no-files-found: error
+          retention-days: 7

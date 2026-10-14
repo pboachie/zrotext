@@ -1,0 +1,77 @@
+name: Managed contact mutation and transition interoperability
+on:
+  pull_request:
+    paths:
+      - 'sdk/native/crypto-envelope/**'
+      - 'sdk/native/crypto-candidate/**'
+      - '.github/workflows/managed-contact-mutation.yml'
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  managed-contact-mutation:
+    strategy:
+      matrix:
+        os: [windows-2025, ubuntu-24.04]
+        language: [java, csharp, ruby]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        if: matrix.language == 'java'
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+        if: matrix.language == 'csharp'
+        with:
+          dotnet-version: '8.0.x'
+      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a
+        if: matrix.language == 'ruby'
+        with:
+          ruby-version: '3.3.9'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 0381f71dc8a67d25562d5a6e23ac4ed50faeed4e
+          path: fixture
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ccf28fe445ba959aa01d99fed6bd9ee3188b749c
+          path: producer
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24.13.0'
+      - name: Build independent maintained contact oracle
+        shell: pwsh
+        run: |
+          npm ci --ignore-scripts --prefix producer/sdk/typescript
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run build --prefix producer/sdk/typescript
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Build licensed origin asset on Linux
+        if: runner.os == 'Linux'
+        run: python sdk/native/crypto-envelope/contact-origin/build.py --out "$RUNNER_TEMP/contact-origin"
+      - name: Build licensed origin asset on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw 'C++ compiler unavailable' }
+          $batch = Join-Path $env:RUNNER_TEMP 'contact-origin-build.cmd'
+          @"
+          @call "$vs/VC/Auxiliary/Build/vcvars64.bat"
+          @if errorlevel 1 exit /b 1
+          @python sdk/native/crypto-envelope/contact-origin/build.py --out "$env:RUNNER_TEMP/contact-origin"
+          "@ | Set-Content -LiteralPath $batch
+          & cmd /c $batch
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Exercise genuine software mutation and transition corpus
+        shell: pwsh
+        run: python sdk/native/crypto-envelope/contact-mutation-run.py --language ${{ matrix.language }} --fixture fixture --producer producer --origin-asset "$env:RUNNER_TEMP/contact-origin"
