@@ -88,8 +88,15 @@ class ContextAuthoringTests(unittest.TestCase):
             thread.join(.5);self.assertFalse(thread.is_alive());self.assertEqual(states[0]['phase'],'closed');self.assertEqual(self.calls,[])
             release.set();time.sleep(.03);self.assertEqual(self.calls,[])
     def test_original_deadline_not_refreshed_by_reconciliation(self):
-        self.client=self.make(timeout_ms=120);self.respond(503,b'');self.assertEqual(self.author()['phase'],'unknown');time.sleep(.15)
-        self.assertEqual(self.client.retry_unknown()['phase'],'closed');self.assertEqual(len(self.calls),1);self.assertIsNone(self.client.saved_source())
+        # Leave TLS/crypto setup room, then reconcile inside the original window.
+        # A refreshed deadline would still be live at the final assertion.
+        self.client=self.make(timeout_ms=2000);self.respond(503,b'');started=time.monotonic()
+        self.assertEqual(self.author()['phase'],'unknown');pending=self.client.state()['pending']
+        time.sleep(max(0,started+1.1-time.monotonic()));self.respond()
+        self.assertEqual(self.client.verify_unknown()['phase'],'unknown');self.assertEqual(self.client.state()['pending'],pending)
+        time.sleep(max(0,started+2.1-time.monotonic()))
+        self.assertEqual(self.client.state()['phase'],'closed')
+        self.assertEqual(self.client.retry_unknown()['phase'],'closed');self.assertEqual([v[0] for v in self.calls],['POST','GET']);self.assertIsNone(self.client.saved_source())
     def test_real_post_timeout_keeps_uncertain_identity_and_does_not_retry(self):
         self.client=self.make(timeout_ms=100);self.respond(body=b'{"revision":1}',delay=.25,content='application/json')
         start=time.monotonic();state=self.author();self.assertLess(time.monotonic()-start,.5)
