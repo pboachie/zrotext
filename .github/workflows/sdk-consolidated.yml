@@ -151,10 +151,6 @@ jobs:
         with:
           go-version: '1.26.9'
           cache: false
-      - name: "Native candidate installed archives [rust]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/$name"
       - name: "Native candidate installed archives: Checkout pinned context_oracle"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -207,10 +203,6 @@ jobs:
           # phase on cold hosted TLS; the 100ms pre-dispatch refusal is retained.
           python sdk/native/hpke-candidate/package-native.py --language 'rust' --archive "$env:RUNNER_TEMP/archive" --election "$env:RUNNER_TEMP/election" --original "$env:RUNNER_TEMP/original" --template "$env:RUNNER_TEMP/template" --save-oracle "$env:RUNNER_TEMP/save_oracle" --opening-oracle "$env:RUNNER_TEMP/opening_oracle" --authoring-oracle "$env:RUNNER_TEMP/authoring_oracle" --contact "$env:RUNNER_TEMP/contact" --context "$env:RUNNER_TEMP/context" --owner-deadline-case-ms 1000 --output "$env:RUNNER_TEMP/native-package" --context-oracle pin-context_oracle
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native candidate installed archives [go]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/$name"
       - name: "Native candidate installed archives: Checkout pinned context_oracle"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -261,12 +253,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           # Explicit caller budget lets post-handshake cases reach their intended
           # phase on cold hosted TLS; the 100ms pre-dispatch refusal is retained.
-          python sdk/native/hpke-candidate/package-native.py --language 'go' --archive "$env:RUNNER_TEMP/archive" --election "$env:RUNNER_TEMP/election" --original "$env:RUNNER_TEMP/original" --template "$env:RUNNER_TEMP/template" --save-oracle "$env:RUNNER_TEMP/save_oracle" --opening-oracle "$env:RUNNER_TEMP/opening_oracle" --authoring-oracle "$env:RUNNER_TEMP/authoring_oracle" --contact "$env:RUNNER_TEMP/contact" --context "$env:RUNNER_TEMP/context" --owner-deadline-case-ms 1000 --output "$env:RUNNER_TEMP/native-package" --context-oracle pin-context_oracle
+          python sdk/native/hpke-candidate/package-native.py --language 'go' --archive "$env:RUNNER_TEMP/native-go-archive" --election "$env:RUNNER_TEMP/native-go-election" --original "$env:RUNNER_TEMP/native-go-original" --template "$env:RUNNER_TEMP/native-go-template" --save-oracle "$env:RUNNER_TEMP/native-go-save_oracle" --opening-oracle "$env:RUNNER_TEMP/native-go-opening_oracle" --authoring-oracle "$env:RUNNER_TEMP/native-go-authoring_oracle" --contact "$env:RUNNER_TEMP/native-go-contact" --context "$env:RUNNER_TEMP/native-go-context" --owner-deadline-case-ms 1000 --output "$env:RUNNER_TEMP/native-package-2" --context-oracle pin-context_oracle
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native webhook installed archives [rust]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/vectors"
       - name: "Native webhook installed archives [rust]"
         run: |
           rustup toolchain install 1.88.0 --profile minimal
@@ -284,31 +272,23 @@ jobs:
         run: |
           python sdk/native/package-webhooks-native.py --language 'rust' --vectors "$env:RUNNER_TEMP/vectors" --output "$env:RUNNER_TEMP/webhook-package"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native webhook installed archives [go]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/vectors"
       - name: "Native webhook installed archives [go]"
         run: |
           rustup toolchain install 1.88.0 --profile minimal
       - name: "Native webhook installed archives [go]: Fetch exact shared raw-byte vectors"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/vectors"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/vectors-2"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/vectors" checkout --detach da72e1ecbde5f5c81febf1562f9f33b3ea03101a
+          git -C "$env:RUNNER_TEMP/vectors-2" checkout --detach da72e1ecbde5f5c81febf1562f9f33b3ea03101a
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native webhook installed archives [go]: Verify bounded archive through fresh installed consumer"
         env:
           RUSTUP_TOOLCHAIN: '1.88.0'
         shell: pwsh
         run: |
-          python sdk/native/package-webhooks-native.py --language 'go' --vectors "$env:RUNNER_TEMP/vectors" --output "$env:RUNNER_TEMP/webhook-package"
+          python sdk/native/package-webhooks-native.py --language 'go' --vectors "$env:RUNNER_TEMP/vectors-2" --output "$env:RUNNER_TEMP/webhook-package-2"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native outbound03 time policy [rust]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/time-policy"
       - name: "Native outbound03 time policy [rust]"
         run: |
           rustup toolchain install 1.97.1 --profile minimal
@@ -337,37 +317,33 @@ jobs:
         run: |
           python sdk/native/hpke-candidate/run-time-reader.py --language 'rust' --producer "$env:RUNNER_TEMP/time-policy"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native outbound03 time policy [go]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/time-policy"
       - name: "Native outbound03 time policy [go]"
         run: |
           rustup toolchain install 1.97.1 --profile minimal
       - name: "Native outbound03 time policy [go]: Build pinned shared signed-policy producer"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/time-policy"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/time-policy-2"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/time-policy" checkout --detach 3cda99572eafb0dbc2504f88e228f5481234e33f
+          git -C "$env:RUNNER_TEMP/time-policy-2" checkout --detach 3cda99572eafb0dbc2504f88e228f5481234e33f
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/time-policy/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/time-policy-2/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/time-policy/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/time-policy-2/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native outbound03 time policy [go]: Conditional actual protected policy qualification"
         env:
           RUSTUP_TOOLCHAIN: '1.97.1'
         shell: pwsh
         run: |
-          python sdk/native/hpke-candidate/run-time-policy.py --language 'go' --producer "$env:RUNNER_TEMP/time-policy"
+          python sdk/native/hpke-candidate/run-time-policy.py --language 'go' --producer "$env:RUNNER_TEMP/time-policy-2"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native outbound03 time policy [go]: Authenticated reader lifetime acceptance and refusal"
         env:
           RUSTUP_TOOLCHAIN: '1.97.1'
         shell: pwsh
         run: |
-          python sdk/native/hpke-candidate/run-time-reader.py --language 'go' --producer "$env:RUNNER_TEMP/time-policy"
+          python sdk/native/hpke-candidate/run-time-reader.py --language 'go' --producer "$env:RUNNER_TEMP/time-policy-2"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   py-packages:
     runs-on: ubuntu-24.04
@@ -530,10 +506,6 @@ jobs:
       - name: "Local Tungsten workflow adapter"
         run: |
           node --test sdk/tungsten/mcp/adapter.test.mjs
-      - name: "Tungsten migration comparisons: Clear clone destinations before this entry"
-        shell: bash
-        run: |
-          rm -rf "$RUNNER_TEMP/tungsten"
       - name: "Tungsten migration comparisons: Generate from the locked source"
         shell: bash
         run: |
@@ -561,10 +533,6 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/migration-python"
           "$RUNNER_TEMP/migration-python/bin/python" -m pip install "$RUNNER_TEMP/tungsten/runtimes/python" ./sdk/tungsten/generated/python
           "$RUNNER_TEMP/migration-python/bin/python" sdk/tungsten/migration/test_python.py
-      - name: "Tungsten SDK generation: Clear clone destinations before this entry"
-        shell: bash
-        run: |
-          rm -rf "$RUNNER_TEMP/tungsten" "$RUNNER_TEMP/zrotext-guarded-mcp" "$RUNNER_TEMP/zrotext-sdk-packages/csharp" "$RUNNER_TEMP/zrotext-sdk-packages/go" "$RUNNER_TEMP/zrotext-sdk-packages/java" "$RUNNER_TEMP/zrotext-sdk-packages/python" "$RUNNER_TEMP/zrotext-sdk-packages/ruby" "$RUNNER_TEMP/zrotext-sdk-packages/rust" "$RUNNER_TEMP/zrotext-sdk-packages/typescript" "$RUNNER_TEMP/zrotext-sdk-sources" "$RUNNER_TEMP/zrotext-webmcp"
       - name: "Tungsten SDK generation: Test generation policy"
         run: |
           python3 -m unittest discover -s scripts -p 'test_tungsten*.py'
@@ -572,14 +540,14 @@ jobs:
         shell: bash
         run: |
           revision=$(python3 -c 'import json; print(json.load(open("sdk/tungsten/generator.lock.json"))["revision"])')
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/tungsten.git "$RUNNER_TEMP/tungsten"
-          git -C "$RUNNER_TEMP/tungsten" checkout --detach "$revision"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/tungsten.git "$RUNNER_TEMP/tungsten-2"
+          git -C "$RUNNER_TEMP/tungsten-2" checkout --detach "$revision"
       - name: "Tungsten SDK generation: Generate and verify all targets"
         run: |
-          python3 scripts/tungsten_sdk.py --source "$RUNNER_TEMP/tungsten" --check
+          python3 scripts/tungsten_sdk.py --source "$RUNNER_TEMP/tungsten-2" --check
       - name: "Tungsten SDK generation: Verify synthetic local mock scenarios"
         run: |
-          python3 scripts/tungsten_sdk.py --source "$RUNNER_TEMP/tungsten" --mock-check
+          python3 scripts/tungsten_sdk.py --source "$RUNNER_TEMP/tungsten-2" --mock-check
       - name: "Tungsten SDK generation: Install the locked TypeScript build graph"
         working-directory: sdk/tungsten/generated/typescript
         run: |
@@ -595,27 +563,27 @@ jobs:
           rustup toolchain install 1.88.0 --profile minimal
       - name: "Tungsten SDK generation: Compile Rust SDK and CLI and Go against pinned runtime source"
         run: |
-          python3 sdk/tungsten/check-rust-go.py --source "$RUNNER_TEMP/tungsten"
+          python3 sdk/tungsten/check-rust-go.py --source "$RUNNER_TEMP/tungsten-2"
       - name: "Tungsten SDK generation: Compile Java and C# and load Ruby against pinned runtime source"
         run: |
-          python3 sdk/tungsten/check-managed.py --source "$RUNNER_TEMP/tungsten" --target java
-          python3 sdk/tungsten/check-managed.py --source "$RUNNER_TEMP/tungsten" --target csharp
-          python3 sdk/tungsten/check-managed.py --source "$RUNNER_TEMP/tungsten" --target ruby
+          python3 sdk/tungsten/check-managed.py --source "$RUNNER_TEMP/tungsten-2" --target java
+          python3 sdk/tungsten/check-managed.py --source "$RUNNER_TEMP/tungsten-2" --target csharp
+          python3 sdk/tungsten/check-managed.py --source "$RUNNER_TEMP/tungsten-2" --target ruby
       - name: "Tungsten SDK generation: Build and install generated Python wheels in an isolated consumer"
         run: |
-          python3 sdk/tungsten/check-python.py --source "$RUNNER_TEMP/tungsten"
+          python3 sdk/tungsten/check-python.py --source "$RUNNER_TEMP/tungsten-2"
       - name: "Tungsten SDK generation: Build licensed deterministic source bundles"
         run: |
           python3 sdk/tungsten/package-sources.py --out "$RUNNER_TEMP/zrotext-sdk-sources"
       - name: "Tungsten SDK generation: Build licensed archives and test isolated package consumers"
         run: |
-          python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten" --target python --out "$RUNNER_TEMP/zrotext-sdk-packages/python"
-          python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten" --target ruby --out "$RUNNER_TEMP/zrotext-sdk-packages/ruby"
-          python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten" --target typescript --out "$RUNNER_TEMP/zrotext-sdk-packages/typescript"
-          python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten" --target java --out "$RUNNER_TEMP/zrotext-sdk-packages/java"
-          python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten" --target csharp --out "$RUNNER_TEMP/zrotext-sdk-packages/csharp"
-          python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten" --target go --out "$RUNNER_TEMP/zrotext-sdk-packages/go"
-          python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten" --target rust --out "$RUNNER_TEMP/zrotext-sdk-packages/rust"
+          python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten-2" --target python --out "$RUNNER_TEMP/zrotext-sdk-packages-7/python"
+          python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten-2" --target ruby --out "$RUNNER_TEMP/zrotext-sdk-packages-7/ruby"
+          python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten-2" --target typescript --out "$RUNNER_TEMP/zrotext-sdk-packages-7/typescript"
+          python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten-2" --target java --out "$RUNNER_TEMP/zrotext-sdk-packages-7/java"
+          python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten-2" --target csharp --out "$RUNNER_TEMP/zrotext-sdk-packages-7/csharp"
+          python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten-2" --target go --out "$RUNNER_TEMP/zrotext-sdk-packages-7/go"
+          python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten-2" --target rust --out "$RUNNER_TEMP/zrotext-sdk-packages-7/rust"
       - name: "Tungsten SDK generation: Preserve artifacts"
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -1945,10 +1913,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: "Managed contact statement and field interoperability [java]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$RUNNER_TEMP/contact-origin", "$env:RUNNER_TEMP/contact-origin"
       - name: "Managed contact statement and field interoperability: Checkout pinned fixtures"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -1970,9 +1934,11 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: "Managed contact statement and field interoperability [java]: Build licensed origin asset on Linux"
         if: runner.os == 'Linux'
+        if: runner.os == 'Linux'
         run: |
-          python sdk/native/crypto-envelope/contact-origin/build.py --out "$RUNNER_TEMP/contact-origin"
+          python sdk/native/crypto-envelope/contact-origin/build.py --out "$RUNNER_TEMP/contact-origin-field-java"
       - name: "Managed contact statement and field interoperability [java]: Build licensed origin asset on Windows"
+        if: runner.os == 'Windows'
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -1983,22 +1949,18 @@ jobs:
           @"
           @call "$vs/VC/Auxiliary/Build/vcvars64.bat"
           @if errorlevel 1 exit /b 1
-          @python sdk/native/crypto-envelope/contact-origin/build.py --out "$env:RUNNER_TEMP/contact-origin"
+          @python sdk/native/crypto-envelope/contact-origin/build.py --out "$env:RUNNER_TEMP/contact-origin-field-java"
           "@ | Set-Content -LiteralPath $batch
           & cmd /c $batch
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: "Managed contact statement and field interoperability [java]: Exercise software contact signatures and relocated parser"
         shell: pwsh
         run: |
-          python sdk/native/crypto-envelope/contact-field-run.py --language java --fixture fixture --producer producer --origin-asset "$env:RUNNER_TEMP/contact-origin"
+          python sdk/native/crypto-envelope/contact-field-run.py --language java --fixture fixture --producer producer --origin-asset "$env:RUNNER_TEMP/contact-origin-field-java"
       - name: "Managed contact statement and field interoperability [csharp]: Toolchain for csharp"
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
         with:
           dotnet-version: '8.0.x'
-      - name: "Managed contact statement and field interoperability [csharp]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$RUNNER_TEMP/contact-origin", "$env:RUNNER_TEMP/contact-origin"
       - name: "Managed contact statement and field interoperability: Checkout pinned fixtures"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -2020,9 +1982,11 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: "Managed contact statement and field interoperability [csharp]: Build licensed origin asset on Linux"
         if: runner.os == 'Linux'
+        if: runner.os == 'Linux'
         run: |
-          python sdk/native/crypto-envelope/contact-origin/build.py --out "$RUNNER_TEMP/contact-origin"
+          python sdk/native/crypto-envelope/contact-origin/build.py --out "$RUNNER_TEMP/contact-origin-field-csharp"
       - name: "Managed contact statement and field interoperability [csharp]: Build licensed origin asset on Windows"
+        if: runner.os == 'Windows'
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -2033,22 +1997,18 @@ jobs:
           @"
           @call "$vs/VC/Auxiliary/Build/vcvars64.bat"
           @if errorlevel 1 exit /b 1
-          @python sdk/native/crypto-envelope/contact-origin/build.py --out "$env:RUNNER_TEMP/contact-origin"
+          @python sdk/native/crypto-envelope/contact-origin/build.py --out "$env:RUNNER_TEMP/contact-origin-field-csharp"
           "@ | Set-Content -LiteralPath $batch
           & cmd /c $batch
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: "Managed contact statement and field interoperability [csharp]: Exercise software contact signatures and relocated parser"
         shell: pwsh
         run: |
-          python sdk/native/crypto-envelope/contact-field-run.py --language csharp --fixture fixture --producer producer --origin-asset "$env:RUNNER_TEMP/contact-origin"
+          python sdk/native/crypto-envelope/contact-field-run.py --language csharp --fixture fixture --producer producer --origin-asset "$env:RUNNER_TEMP/contact-origin-field-csharp"
       - name: "Managed contact statement and field interoperability [ruby]: Toolchain for ruby"
         uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a
         with:
           ruby-version: '3.3.9'
-      - name: "Managed contact statement and field interoperability [ruby]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$RUNNER_TEMP/contact-origin", "$env:RUNNER_TEMP/contact-origin"
       - name: "Managed contact statement and field interoperability: Checkout pinned fixtures"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -2070,9 +2030,11 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: "Managed contact statement and field interoperability [ruby]: Build licensed origin asset on Linux"
         if: runner.os == 'Linux'
+        if: runner.os == 'Linux'
         run: |
-          python sdk/native/crypto-envelope/contact-origin/build.py --out "$RUNNER_TEMP/contact-origin"
+          python sdk/native/crypto-envelope/contact-origin/build.py --out "$RUNNER_TEMP/contact-origin-field-ruby"
       - name: "Managed contact statement and field interoperability [ruby]: Build licensed origin asset on Windows"
+        if: runner.os == 'Windows'
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -2083,14 +2045,14 @@ jobs:
           @"
           @call "$vs/VC/Auxiliary/Build/vcvars64.bat"
           @if errorlevel 1 exit /b 1
-          @python sdk/native/crypto-envelope/contact-origin/build.py --out "$env:RUNNER_TEMP/contact-origin"
+          @python sdk/native/crypto-envelope/contact-origin/build.py --out "$env:RUNNER_TEMP/contact-origin-field-ruby"
           "@ | Set-Content -LiteralPath $batch
           & cmd /c $batch
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: "Managed contact statement and field interoperability [ruby]: Exercise software contact signatures and relocated parser"
         shell: pwsh
         run: |
-          python sdk/native/crypto-envelope/contact-field-run.py --language ruby --fixture fixture --producer producer --origin-asset "$env:RUNNER_TEMP/contact-origin"
+          python sdk/native/crypto-envelope/contact-field-run.py --language ruby --fixture fixture --producer producer --origin-asset "$env:RUNNER_TEMP/contact-origin-field-ruby"
       - name: "Managed accepted election journals [java]: Toolchain for java"
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
         with:
@@ -2157,10 +2119,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: "Managed native candidate packages [java]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$RUNNER_TEMP/contact-origin", "$env:RUNNER_TEMP/contact-origin", "$env:RUNNER_TEMP/native-artifacts"
       - name: "Managed native candidate packages: Checkout pinned mutation_fixture"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -2333,9 +2291,11 @@ jobs:
           python -m pip install cryptography==46.0.5 ada-url==1.27.0
       - name: "Managed native candidate packages [java]: Build licensed origin asset on Linux"
         if: runner.os == 'Linux'
+        if: runner.os == 'Linux'
         run: |
-          python sdk/native/crypto-envelope/contact-origin/build.py --out "$RUNNER_TEMP/contact-origin"
+          python sdk/native/crypto-envelope/contact-origin/build.py --out "$RUNNER_TEMP/contact-origin-package-java"
       - name: "Managed native candidate packages [java]: Build licensed origin asset on Windows"
+        if: runner.os == 'Windows'
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -2346,23 +2306,19 @@ jobs:
           @"
           @call "$vs/VC/Auxiliary/Build/vcvars64.bat"
           @if errorlevel 1 exit /b 1
-          @python sdk/native/crypto-envelope/contact-origin/build.py --out "$env:RUNNER_TEMP/contact-origin"
+          @python sdk/native/crypto-envelope/contact-origin/build.py --out "$env:RUNNER_TEMP/contact-origin-package-java"
           "@ | Set-Content -LiteralPath $batch
           & cmd /c $batch
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: "Managed native candidate packages [java]: Qualify clean installed candidate consumers"
         shell: pwsh
         run: |
-          python sdk/native/crypto-envelope/package-managed.py --target java --out "$env:RUNNER_TEMP/native-artifacts" --producer02 producer02 --producer03 producer03 --custody-producer custody-producer --root-producer root-producer --root-controls root-controls --controls controls --original-producer original-producer --http-fixture http-fixture --current-fixture current-fixture --read-fixture read-fixture --page-fixture page-fixture --owner-fixture owner-fixture --proposal-fixture proposal-fixture --template-fixture template-fixture --template-producer template-producer --owner-template-fixture owner-template-fixture --template-save-fixture template-save-fixture --template-save-oracle template-save-oracle --template-opening-fixture template-opening-fixture --template-opening-oracle template-opening-oracle --template-authoring-fixture template-authoring-fixture --template-authoring-oracle template-authoring-oracle --contact-fixture contact-fixture --contact-producer contact-producer --origin-asset "$env:RUNNER_TEMP/contact-origin" --mutation-fixture pin-mutation_fixture
+          python sdk/native/crypto-envelope/package-managed.py --target java --out "$env:RUNNER_TEMP/native-artifacts" --producer02 producer02 --producer03 producer03 --custody-producer custody-producer --root-producer root-producer --root-controls root-controls --controls controls --original-producer original-producer --http-fixture http-fixture --current-fixture current-fixture --read-fixture read-fixture --page-fixture page-fixture --owner-fixture owner-fixture --proposal-fixture proposal-fixture --template-fixture template-fixture --template-producer template-producer --owner-template-fixture owner-template-fixture --template-save-fixture template-save-fixture --template-save-oracle template-save-oracle --template-opening-fixture template-opening-fixture --template-opening-oracle template-opening-oracle --template-authoring-fixture template-authoring-fixture --template-authoring-oracle template-authoring-oracle --contact-fixture contact-fixture --contact-producer contact-producer --origin-asset "$env:RUNNER_TEMP/contact-origin-package-java" --mutation-fixture pin-mutation_fixture
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: "Managed native candidate packages [csharp]: Toolchain for csharp"
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
         with:
           dotnet-version: '8.0.x'
-      - name: "Managed native candidate packages [csharp]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$RUNNER_TEMP/contact-origin", "$env:RUNNER_TEMP/contact-origin", "$env:RUNNER_TEMP/native-artifacts"
       - name: "Managed native candidate packages: Checkout pinned mutation_fixture"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -2535,9 +2491,11 @@ jobs:
           python -m pip install cryptography==46.0.5 ada-url==1.27.0
       - name: "Managed native candidate packages [csharp]: Build licensed origin asset on Linux"
         if: runner.os == 'Linux'
+        if: runner.os == 'Linux'
         run: |
-          python sdk/native/crypto-envelope/contact-origin/build.py --out "$RUNNER_TEMP/contact-origin"
+          python sdk/native/crypto-envelope/contact-origin/build.py --out "$RUNNER_TEMP/contact-origin-package-csharp"
       - name: "Managed native candidate packages [csharp]: Build licensed origin asset on Windows"
+        if: runner.os == 'Windows'
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -2548,23 +2506,19 @@ jobs:
           @"
           @call "$vs/VC/Auxiliary/Build/vcvars64.bat"
           @if errorlevel 1 exit /b 1
-          @python sdk/native/crypto-envelope/contact-origin/build.py --out "$env:RUNNER_TEMP/contact-origin"
+          @python sdk/native/crypto-envelope/contact-origin/build.py --out "$env:RUNNER_TEMP/contact-origin-package-csharp"
           "@ | Set-Content -LiteralPath $batch
           & cmd /c $batch
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: "Managed native candidate packages [csharp]: Qualify clean installed candidate consumers"
         shell: pwsh
         run: |
-          python sdk/native/crypto-envelope/package-managed.py --target csharp --out "$env:RUNNER_TEMP/native-artifacts" --producer02 producer02 --producer03 producer03 --custody-producer custody-producer --root-producer root-producer --root-controls root-controls --controls controls --original-producer original-producer --http-fixture http-fixture --current-fixture current-fixture --read-fixture read-fixture --page-fixture page-fixture --owner-fixture owner-fixture --proposal-fixture proposal-fixture --template-fixture template-fixture --template-producer template-producer --owner-template-fixture owner-template-fixture --template-save-fixture template-save-fixture --template-save-oracle template-save-oracle --template-opening-fixture template-opening-fixture --template-opening-oracle template-opening-oracle --template-authoring-fixture template-authoring-fixture --template-authoring-oracle template-authoring-oracle --contact-fixture contact-fixture --contact-producer contact-producer --origin-asset "$env:RUNNER_TEMP/contact-origin" --mutation-fixture pin-mutation_fixture
+          python sdk/native/crypto-envelope/package-managed.py --target csharp --out "$env:RUNNER_TEMP/native-artifacts-2" --producer02 producer02 --producer03 producer03 --custody-producer custody-producer --root-producer root-producer --root-controls root-controls --controls controls --original-producer original-producer --http-fixture http-fixture --current-fixture current-fixture --read-fixture read-fixture --page-fixture page-fixture --owner-fixture owner-fixture --proposal-fixture proposal-fixture --template-fixture template-fixture --template-producer template-producer --owner-template-fixture owner-template-fixture --template-save-fixture template-save-fixture --template-save-oracle template-save-oracle --template-opening-fixture template-opening-fixture --template-opening-oracle template-opening-oracle --template-authoring-fixture template-authoring-fixture --template-authoring-oracle template-authoring-oracle --contact-fixture contact-fixture --contact-producer contact-producer --origin-asset "$env:RUNNER_TEMP/contact-origin-package-csharp" --mutation-fixture pin-mutation_fixture
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: "Managed native candidate packages [ruby]: Toolchain for ruby"
         uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a
         with:
           ruby-version: '3.3.9'
-      - name: "Managed native candidate packages [ruby]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$RUNNER_TEMP/contact-origin", "$env:RUNNER_TEMP/contact-origin", "$env:RUNNER_TEMP/native-artifacts"
       - name: "Managed native candidate packages: Checkout pinned mutation_fixture"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -2737,9 +2691,11 @@ jobs:
           python -m pip install cryptography==46.0.5 ada-url==1.27.0
       - name: "Managed native candidate packages [ruby]: Build licensed origin asset on Linux"
         if: runner.os == 'Linux'
+        if: runner.os == 'Linux'
         run: |
-          python sdk/native/crypto-envelope/contact-origin/build.py --out "$RUNNER_TEMP/contact-origin"
+          python sdk/native/crypto-envelope/contact-origin/build.py --out "$RUNNER_TEMP/contact-origin-package-ruby"
       - name: "Managed native candidate packages [ruby]: Build licensed origin asset on Windows"
+        if: runner.os == 'Windows'
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -2750,14 +2706,14 @@ jobs:
           @"
           @call "$vs/VC/Auxiliary/Build/vcvars64.bat"
           @if errorlevel 1 exit /b 1
-          @python sdk/native/crypto-envelope/contact-origin/build.py --out "$env:RUNNER_TEMP/contact-origin"
+          @python sdk/native/crypto-envelope/contact-origin/build.py --out "$env:RUNNER_TEMP/contact-origin-package-ruby"
           "@ | Set-Content -LiteralPath $batch
           & cmd /c $batch
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: "Managed native candidate packages [ruby]: Qualify clean installed candidate consumers"
         shell: pwsh
         run: |
-          python sdk/native/crypto-envelope/package-managed.py --target ruby --out "$env:RUNNER_TEMP/native-artifacts" --producer02 producer02 --producer03 producer03 --custody-producer custody-producer --root-producer root-producer --root-controls root-controls --controls controls --original-producer original-producer --http-fixture http-fixture --current-fixture current-fixture --read-fixture read-fixture --page-fixture page-fixture --owner-fixture owner-fixture --proposal-fixture proposal-fixture --template-fixture template-fixture --template-producer template-producer --owner-template-fixture owner-template-fixture --template-save-fixture template-save-fixture --template-save-oracle template-save-oracle --template-opening-fixture template-opening-fixture --template-opening-oracle template-opening-oracle --template-authoring-fixture template-authoring-fixture --template-authoring-oracle template-authoring-oracle --contact-fixture contact-fixture --contact-producer contact-producer --origin-asset "$env:RUNNER_TEMP/contact-origin" --mutation-fixture pin-mutation_fixture
+          python sdk/native/crypto-envelope/package-managed.py --target ruby --out "$env:RUNNER_TEMP/native-artifacts-3" --producer02 producer02 --producer03 producer03 --custody-producer custody-producer --root-producer root-producer --root-controls root-controls --controls controls --original-producer original-producer --http-fixture http-fixture --current-fixture current-fixture --read-fixture read-fixture --page-fixture page-fixture --owner-fixture owner-fixture --proposal-fixture proposal-fixture --template-fixture template-fixture --template-producer template-producer --owner-template-fixture owner-template-fixture --template-save-fixture template-save-fixture --template-save-oracle template-save-oracle --template-opening-fixture template-opening-fixture --template-opening-oracle template-opening-oracle --template-authoring-fixture template-authoring-fixture --template-authoring-oracle template-authoring-oracle --contact-fixture contact-fixture --contact-producer contact-producer --origin-asset "$env:RUNNER_TEMP/contact-origin-package-ruby" --mutation-fixture pin-mutation_fixture
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: "Managed cold owner template interoperability [java]: Toolchain for java"
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
@@ -3005,10 +2961,6 @@ jobs:
       - name: "Managed root transition journals [ruby]: Exercise root transitions, durable selection and native restored reads"
         run: |
           python sdk/native/crypto-envelope/root-journal-run.py --language ruby --producer producer --controls controls
-      - name: "Managed SDK synthetic wire contracts: Clear clone destinations before this entry"
-        shell: bash
-        run: |
-          rm -rf "$RUNNER_TEMP/tungsten"
       - name: "Managed SDK synthetic wire contracts: Check out exact runtime and generator source"
         shell: bash
         run: |
@@ -3105,10 +3057,6 @@ jobs:
         with:
           go-version: '1.26.9'
           cache: false
-      - name: "Native original reply checkpoint [rust]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/selected"
       - name: "Native original reply checkpoint [rust]"
         run: |
           rustup toolchain install 1.97.1 --profile minimal
@@ -3130,35 +3078,27 @@ jobs:
         run: |
           python sdk/native/hpke-candidate/run-reply-checkpoint.py --language 'rust' --producer "$env:RUNNER_TEMP/selected"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native original reply checkpoint [go]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/selected"
       - name: "Native original reply checkpoint [go]"
         run: |
           rustup toolchain install 1.97.1 --profile minimal
       - name: "Native original reply checkpoint [go]: Prepare pinned independent selected-ciphertext producer"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected-2"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/selected" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
+          git -C "$env:RUNNER_TEMP/selected-2" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/selected/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/selected-2/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/selected/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/selected-2/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native original reply checkpoint [go]: Durable accepted history, crash recovery and restored reader"
         env:
           RUSTUP_TOOLCHAIN: '1.97.1'
         shell: pwsh
         run: |
-          python sdk/native/hpke-candidate/run-reply-checkpoint.py --language 'go' --producer "$env:RUNNER_TEMP/selected"
+          python sdk/native/hpke-candidate/run-reply-checkpoint.py --language 'go' --producer "$env:RUNNER_TEMP/selected-2"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native original owner-review consumption [rust]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/selected"
       - name: "Native original owner-review consumption [rust]"
         run: |
           python -m pip install cryptography==46.0.4
@@ -3168,13 +3108,13 @@ jobs:
       - name: "Native original owner-review consumption [rust]: Prepare pinned signed fixture producer"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected-3"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/selected" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
+          git -C "$env:RUNNER_TEMP/selected-3" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/selected/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/selected-3/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/selected/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/selected-3/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native original owner-review consumption [rust]: Build native saved owner-review probe"
         env:
@@ -3200,12 +3140,8 @@ jobs:
             $probe = 'sdk/native/hpke-candidate/rust/target/debug/examples/reply_consumption'
             if ($IsWindows) { $probe += '.exe' }
           }
-          python sdk/native/hpke-candidate/test-original-consumption.py --binary $probe --producer "$env:RUNNER_TEMP/selected"
+          python sdk/native/hpke-candidate/test-original-consumption.py --binary $probe --producer "$env:RUNNER_TEMP/selected-3"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native original owner-review consumption [go]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/selected"
       - name: "Native original owner-review consumption [go]"
         run: |
           python -m pip install cryptography==46.0.4
@@ -3215,13 +3151,13 @@ jobs:
       - name: "Native original owner-review consumption [go]: Prepare pinned signed fixture producer"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected-4"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/selected" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
+          git -C "$env:RUNNER_TEMP/selected-4" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/selected/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/selected-4/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/selected/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/selected-4/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native original owner-review consumption [go]: Build native saved owner-review probe"
         env:
@@ -3247,12 +3183,8 @@ jobs:
             $probe = 'sdk/native/hpke-candidate/rust/target/debug/examples/reply_consumption'
             if ($IsWindows) { $probe += '.exe' }
           }
-          python sdk/native/hpke-candidate/test-original-consumption.py --binary $probe --producer "$env:RUNNER_TEMP/selected"
+          python sdk/native/hpke-candidate/test-original-consumption.py --binary $probe --producer "$env:RUNNER_TEMP/selected-4"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native authenticated original current proof [rust]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/selected"
       - name: "Native authenticated original current proof [rust]"
         run: |
           python -m pip install cryptography==46.0.4
@@ -3262,13 +3194,13 @@ jobs:
       - name: "Native authenticated original current proof [rust]: Prepare pinned signed fixture producer"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected-5"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/selected" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
+          git -C "$env:RUNNER_TEMP/selected-5" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/selected/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/selected-5/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/selected/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/selected-5/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native authenticated original current proof [rust]: Build native current proof probe"
         env:
@@ -3294,12 +3226,8 @@ jobs:
             $probe = 'sdk/native/hpke-candidate/rust/target/debug/examples/reply_current'
             if ($IsWindows) { $probe += '.exe' }
           }
-          python sdk/native/hpke-candidate/test-original-current.py --binary $probe --producer "$env:RUNNER_TEMP/selected"
+          python sdk/native/hpke-candidate/test-original-current.py --binary $probe --producer "$env:RUNNER_TEMP/selected-5"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native authenticated original current proof [go]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/selected"
       - name: "Native authenticated original current proof [go]"
         run: |
           python -m pip install cryptography==46.0.4
@@ -3309,13 +3237,13 @@ jobs:
       - name: "Native authenticated original current proof [go]: Prepare pinned signed fixture producer"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected-6"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/selected" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
+          git -C "$env:RUNNER_TEMP/selected-6" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/selected/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/selected-6/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/selected/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/selected-6/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native authenticated original current proof [go]: Build native current proof probe"
         env:
@@ -3341,7 +3269,7 @@ jobs:
             $probe = 'sdk/native/hpke-candidate/rust/target/debug/examples/reply_current'
             if ($IsWindows) { $probe += '.exe' }
           }
-          python sdk/native/hpke-candidate/test-original-current.py --binary $probe --producer "$env:RUNNER_TEMP/selected"
+          python sdk/native/hpke-candidate/test-original-current.py --binary $probe --producer "$env:RUNNER_TEMP/selected-6"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native original grant HTTPS transport [rust]"
         run: |
@@ -3407,10 +3335,6 @@ jobs:
           }
           python sdk/native/hpke-candidate/test-original-http.py --binary $probe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native authenticated original page discovery [rust]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/selected"
       - name: "Native authenticated original page discovery [rust]"
         run: |
           python -m pip install cryptography==46.0.4
@@ -3420,13 +3344,13 @@ jobs:
       - name: "Native authenticated original page discovery [rust]: Prepare pinned signed fixture producer"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected-7"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/selected" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
+          git -C "$env:RUNNER_TEMP/selected-7" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/selected/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/selected-7/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/selected/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/selected-7/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native authenticated original page discovery [rust]: Build native page discovery probe"
         env:
@@ -3452,12 +3376,8 @@ jobs:
             $probe = 'sdk/native/hpke-candidate/rust/target/debug/examples/reply_page'
             if ($IsWindows) { $probe += '.exe' }
           }
-          python sdk/native/hpke-candidate/test-original-page.py --binary $probe --producer "$env:RUNNER_TEMP/selected"
+          python sdk/native/hpke-candidate/test-original-page.py --binary $probe --producer "$env:RUNNER_TEMP/selected-7"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native authenticated original page discovery [go]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/selected"
       - name: "Native authenticated original page discovery [go]"
         run: |
           python -m pip install cryptography==46.0.4
@@ -3467,13 +3387,13 @@ jobs:
       - name: "Native authenticated original page discovery [go]: Prepare pinned signed fixture producer"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected-8"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/selected" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
+          git -C "$env:RUNNER_TEMP/selected-8" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/selected/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/selected-8/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/selected/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/selected-8/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native authenticated original page discovery [go]: Build native page discovery probe"
         env:
@@ -3499,12 +3419,8 @@ jobs:
             $probe = 'sdk/native/hpke-candidate/rust/target/debug/examples/reply_page'
             if ($IsWindows) { $probe += '.exe' }
           }
-          python sdk/native/hpke-candidate/test-original-page.py --binary $probe --producer "$env:RUNNER_TEMP/selected"
+          python sdk/native/hpke-candidate/test-original-page.py --binary $probe --producer "$env:RUNNER_TEMP/selected-8"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native original typed proposals [rust]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/selected"
       - name: "Native original typed proposals [rust]"
         run: |
           python -m pip install cryptography==46.0.4
@@ -3514,13 +3430,13 @@ jobs:
       - name: "Native original typed proposals [rust]: Prepare pinned signed fixture producer"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected-9"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/selected" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
+          git -C "$env:RUNNER_TEMP/selected-9" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/selected/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/selected-9/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/selected/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/selected-9/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native original typed proposals [rust]: Build native saved typed proposal probe"
         env:
@@ -3546,12 +3462,8 @@ jobs:
             $probe = 'sdk/native/hpke-candidate/rust/target/debug/examples/reply_proposal'
             if ($IsWindows) { $probe += '.exe' }
           }
-          python sdk/native/hpke-candidate/test-original-proposal.py --binary $probe --producer "$env:RUNNER_TEMP/selected"
+          python sdk/native/hpke-candidate/test-original-proposal.py --binary $probe --producer "$env:RUNNER_TEMP/selected-9"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native original typed proposals [go]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/selected"
       - name: "Native original typed proposals [go]"
         run: |
           python -m pip install cryptography==46.0.4
@@ -3561,13 +3473,13 @@ jobs:
       - name: "Native original typed proposals [go]: Prepare pinned signed fixture producer"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected-10"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/selected" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
+          git -C "$env:RUNNER_TEMP/selected-10" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/selected/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/selected-10/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/selected/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/selected-10/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native original typed proposals [go]: Build native saved typed proposal probe"
         env:
@@ -3593,12 +3505,8 @@ jobs:
             $probe = 'sdk/native/hpke-candidate/rust/target/debug/examples/reply_proposal'
             if ($IsWindows) { $probe += '.exe' }
           }
-          python sdk/native/hpke-candidate/test-original-proposal.py --binary $probe --producer "$env:RUNNER_TEMP/selected"
+          python sdk/native/hpke-candidate/test-original-proposal.py --binary $probe --producer "$env:RUNNER_TEMP/selected-10"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native verified original HTTPS read [rust]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/selected"
       - name: "Native verified original HTTPS read [rust]"
         run: |
           python -m pip install cryptography==46.0.4
@@ -3608,13 +3516,13 @@ jobs:
       - name: "Native verified original HTTPS read [rust]: Prepare pinned signed fixture producer"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected-11"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/selected" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
+          git -C "$env:RUNNER_TEMP/selected-11" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/selected/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/selected-11/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/selected/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/selected-11/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native verified original HTTPS read [rust]: Build native verified read probe"
         env:
@@ -3640,12 +3548,8 @@ jobs:
             $probe = 'sdk/native/hpke-candidate/rust/target/debug/examples/reply_read'
             if ($IsWindows) { $probe += '.exe' }
           }
-          python sdk/native/hpke-candidate/test-original-read.py --binary $probe --producer "$env:RUNNER_TEMP/selected"
+          python sdk/native/hpke-candidate/test-original-read.py --binary $probe --producer "$env:RUNNER_TEMP/selected-11"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native verified original HTTPS read [go]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/selected"
       - name: "Native verified original HTTPS read [go]"
         run: |
           python -m pip install cryptography==46.0.4
@@ -3655,13 +3559,13 @@ jobs:
       - name: "Native verified original HTTPS read [go]: Prepare pinned signed fixture producer"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected-12"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/selected" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
+          git -C "$env:RUNNER_TEMP/selected-12" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/selected/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/selected-12/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/selected/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/selected-12/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native verified original HTTPS read [go]: Build native verified read probe"
         env:
@@ -3687,57 +3591,49 @@ jobs:
             $probe = 'sdk/native/hpke-candidate/rust/target/debug/examples/reply_read'
             if ($IsWindows) { $probe += '.exe' }
           }
-          python sdk/native/hpke-candidate/test-original-read.py --binary $probe --producer "$env:RUNNER_TEMP/selected"
+          python sdk/native/hpke-candidate/test-original-read.py --binary $probe --producer "$env:RUNNER_TEMP/selected-12"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native selected original reply [rust]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/selected"
       - name: "Native selected original reply [rust]"
         run: |
           rustup toolchain install 1.97.1 --profile minimal
       - name: "Native selected original reply [rust]: Prepare pinned independent selected-ciphertext producer"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected-13"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/selected" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
+          git -C "$env:RUNNER_TEMP/selected-13" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/selected/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/selected-13/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/selected/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/selected-13/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native selected original reply [rust]: Native software controls and conditional protected acceptance"
         env:
           RUSTUP_TOOLCHAIN: '1.97.1'
         shell: pwsh
         run: |
-          python sdk/native/hpke-candidate/run-original.py --language 'rust' --producer "$env:RUNNER_TEMP/selected"
+          python sdk/native/hpke-candidate/run-original.py --language 'rust' --producer "$env:RUNNER_TEMP/selected-13"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native selected original reply [go]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/selected"
       - name: "Native selected original reply [go]"
         run: |
           rustup toolchain install 1.97.1 --profile minimal
       - name: "Native selected original reply [go]: Prepare pinned independent selected-ciphertext producer"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected-14"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/selected" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
+          git -C "$env:RUNNER_TEMP/selected-14" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/selected/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/selected-14/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/selected/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/selected-14/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native selected original reply [go]: Native software controls and conditional protected acceptance"
         env:
           RUSTUP_TOOLCHAIN: '1.97.1'
         shell: pwsh
         run: |
-          python sdk/native/hpke-candidate/run-original.py --language 'go' --producer "$env:RUNNER_TEMP/selected"
+          python sdk/native/hpke-candidate/run-original.py --language 'go' --producer "$env:RUNNER_TEMP/selected-14"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   native-template:
     strategy:
@@ -3760,10 +3656,6 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: '24.13.0'
-      - name: "Native reviewed template authoring [rust]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/authoring-oracle", "$env:RUNNER_TEMP/selected"
       - name: "Native reviewed template authoring [rust]"
         run: |
           rustup toolchain install 1.97.1 --profile minimal
@@ -3822,34 +3714,30 @@ jobs:
           }
           python sdk/native/hpke-candidate/test-template-authoring.py --binary $probe --producer "$env:RUNNER_TEMP/selected" --authoring-oracle "$env:RUNNER_TEMP/authoring-oracle"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native reviewed template authoring [go]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/authoring-oracle", "$env:RUNNER_TEMP/selected"
       - name: "Native reviewed template authoring [go]"
         run: |
           rustup toolchain install 1.97.1 --profile minimal
       - name: "Native reviewed template authoring [go]: Prepare pinned maintained template oracle"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected-2"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/selected" checkout --detach 26e876da9f34372d9cf26511993cf633971e0037
+          git -C "$env:RUNNER_TEMP/selected-2" checkout --detach 26e876da9f34372d9cf26511993cf633971e0037
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/selected/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/selected-2/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/selected/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/selected-2/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native reviewed template authoring [go]: Prepare pinned maintained authoring oracle"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/authoring-oracle"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/authoring-oracle-2"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/authoring-oracle" checkout --detach 059556de2fe314ec0d88833a8d3e4d6ee41a8066
+          git -C "$env:RUNNER_TEMP/authoring-oracle-2" checkout --detach 059556de2fe314ec0d88833a8d3e4d6ee41a8066
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/authoring-oracle/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/authoring-oracle-2/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/authoring-oracle/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/authoring-oracle-2/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native reviewed template authoring [go]"
         run: |
@@ -3882,25 +3770,21 @@ jobs:
             $probe = 'sdk/native/hpke-candidate/rust/target/debug/examples/template_authoring'
             if ($IsWindows) { $probe += '.exe' }
           }
-          python sdk/native/hpke-candidate/test-template-authoring.py --binary $probe --producer "$env:RUNNER_TEMP/selected" --authoring-oracle "$env:RUNNER_TEMP/authoring-oracle"
+          python sdk/native/hpke-candidate/test-template-authoring.py --binary $probe --producer "$env:RUNNER_TEMP/selected-2" --authoring-oracle "$env:RUNNER_TEMP/authoring-oracle-2"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native template content [rust]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/selected"
       - name: "Native template content [rust]"
         run: |
           rustup toolchain install 1.97.1 --profile minimal
       - name: "Native template content [rust]: Prepare pinned maintained template oracle"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected-3"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/selected" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
+          git -C "$env:RUNNER_TEMP/selected-3" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/selected/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/selected-3/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/selected/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/selected-3/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native template content [rust]: Build native template probe"
         env:
@@ -3926,25 +3810,21 @@ jobs:
             $probe = 'sdk/native/hpke-candidate/rust/target/debug/examples/template'
             if ($IsWindows) { $probe += '.exe' }
           }
-          python sdk/native/hpke-candidate/test-template-content.py --binary $probe --producer "$env:RUNNER_TEMP/selected"
+          python sdk/native/hpke-candidate/test-template-content.py --binary $probe --producer "$env:RUNNER_TEMP/selected-3"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native template content [go]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/selected"
       - name: "Native template content [go]"
         run: |
           rustup toolchain install 1.97.1 --profile minimal
       - name: "Native template content [go]: Prepare pinned maintained template oracle"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected-4"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/selected" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
+          git -C "$env:RUNNER_TEMP/selected-4" checkout --detach 72124e1a3ff28e782f870eeddbdc33cacf8ca3b4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/selected/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/selected-4/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/selected/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/selected-4/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native template content [go]: Build native template probe"
         env:
@@ -3970,25 +3850,21 @@ jobs:
             $probe = 'sdk/native/hpke-candidate/rust/target/debug/examples/template'
             if ($IsWindows) { $probe += '.exe' }
           }
-          python sdk/native/hpke-candidate/test-template-content.py --binary $probe --producer "$env:RUNNER_TEMP/selected"
+          python sdk/native/hpke-candidate/test-template-content.py --binary $probe --producer "$env:RUNNER_TEMP/selected-4"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native encrypted templates [rust]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/selected"
       - name: "Native encrypted templates [rust]"
         run: |
           rustup toolchain install 1.97.1 --profile minimal
       - name: "Native encrypted templates [rust]: Prepare pinned maintained template oracle"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected-5"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/selected" checkout --detach 26e876da9f34372d9cf26511993cf633971e0037
+          git -C "$env:RUNNER_TEMP/selected-5" checkout --detach 26e876da9f34372d9cf26511993cf633971e0037
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/selected/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/selected-5/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/selected/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/selected-5/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native encrypted templates [rust]: Build native template probe"
         env:
@@ -4018,25 +3894,21 @@ jobs:
             $probe = 'sdk/native/hpke-candidate/rust/target/debug/examples/template_crypto'
             if ($IsWindows) { $probe += '.exe' }
           }
-          python sdk/native/hpke-candidate/test-template-crypto.py --binary $probe --producer "$env:RUNNER_TEMP/selected"
+          python sdk/native/hpke-candidate/test-template-crypto.py --binary $probe --producer "$env:RUNNER_TEMP/selected-5"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native encrypted templates [go]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/selected"
       - name: "Native encrypted templates [go]"
         run: |
           rustup toolchain install 1.97.1 --profile minimal
       - name: "Native encrypted templates [go]: Prepare pinned maintained template oracle"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected-6"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/selected" checkout --detach 26e876da9f34372d9cf26511993cf633971e0037
+          git -C "$env:RUNNER_TEMP/selected-6" checkout --detach 26e876da9f34372d9cf26511993cf633971e0037
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/selected/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/selected-6/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/selected/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/selected-6/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native encrypted templates [go]: Build native template probe"
         env:
@@ -4066,25 +3938,21 @@ jobs:
             $probe = 'sdk/native/hpke-candidate/rust/target/debug/examples/template_crypto'
             if ($IsWindows) { $probe += '.exe' }
           }
-          python sdk/native/hpke-candidate/test-template-crypto.py --binary $probe --producer "$env:RUNNER_TEMP/selected"
+          python sdk/native/hpke-candidate/test-template-crypto.py --binary $probe --producer "$env:RUNNER_TEMP/selected-6"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native explicit template opening [rust]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/opening-oracle", "$env:RUNNER_TEMP/selected"
       - name: "Native explicit template opening [rust]"
         run: |
           rustup toolchain install 1.97.1 --profile minimal
       - name: "Native explicit template opening [rust]: Prepare pinned maintained template oracle"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected-7"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/selected" checkout --detach 26e876da9f34372d9cf26511993cf633971e0037
+          git -C "$env:RUNNER_TEMP/selected-7" checkout --detach 26e876da9f34372d9cf26511993cf633971e0037
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/selected/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/selected-7/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/selected/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/selected-7/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native explicit template opening [rust]: Prepare pinned maintained opening oracle"
         shell: pwsh
@@ -4128,7 +3996,7 @@ jobs:
             $probe = 'sdk/native/hpke-candidate/rust/target/debug/examples/template_opening'
             if ($IsWindows) { $probe += '.exe' }
           }
-          python sdk/native/hpke-candidate/test-template-opening.py --binary $probe --producer "$env:RUNNER_TEMP/selected" --opening-oracle "$env:RUNNER_TEMP/opening-oracle" --deadline-case-ms 1000
+          python sdk/native/hpke-candidate/test-template-opening.py --binary $probe --producer "$env:RUNNER_TEMP/selected-7" --opening-oracle "$env:RUNNER_TEMP/opening-oracle" --deadline-case-ms 1000
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native explicit template opening [rust]: Windows protected capability and acceptance"
         if: runner.os == 'Windows'
@@ -4140,34 +4008,30 @@ jobs:
           }
           python sdk/native/hpke-candidate/test-template-opening-hardware.py --binary $probe --producer "$env:RUNNER_TEMP/opening-oracle" --allow-unqualified
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native explicit template opening [go]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/opening-oracle", "$env:RUNNER_TEMP/selected"
       - name: "Native explicit template opening [go]"
         run: |
           rustup toolchain install 1.97.1 --profile minimal
       - name: "Native explicit template opening [go]: Prepare pinned maintained template oracle"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected-8"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/selected" checkout --detach 26e876da9f34372d9cf26511993cf633971e0037
+          git -C "$env:RUNNER_TEMP/selected-8" checkout --detach 26e876da9f34372d9cf26511993cf633971e0037
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/selected/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/selected-8/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/selected/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/selected-8/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native explicit template opening [go]: Prepare pinned maintained opening oracle"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/opening-oracle"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/opening-oracle-2"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/opening-oracle" checkout --detach c843543f13e3bbd6ac17a260a4b0523f0748324f
+          git -C "$env:RUNNER_TEMP/opening-oracle-2" checkout --detach c843543f13e3bbd6ac17a260a4b0523f0748324f
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/opening-oracle/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/opening-oracle-2/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/opening-oracle/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/opening-oracle-2/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native explicit template opening [go]"
         run: |
@@ -4200,7 +4064,7 @@ jobs:
             $probe = 'sdk/native/hpke-candidate/rust/target/debug/examples/template_opening'
             if ($IsWindows) { $probe += '.exe' }
           }
-          python sdk/native/hpke-candidate/test-template-opening.py --binary $probe --producer "$env:RUNNER_TEMP/selected" --opening-oracle "$env:RUNNER_TEMP/opening-oracle" --deadline-case-ms 1000
+          python sdk/native/hpke-candidate/test-template-opening.py --binary $probe --producer "$env:RUNNER_TEMP/selected-8" --opening-oracle "$env:RUNNER_TEMP/opening-oracle-2" --deadline-case-ms 1000
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native explicit template opening [go]: Windows protected capability and acceptance"
         if: runner.os == 'Windows'
@@ -4210,25 +4074,21 @@ jobs:
           if ('go' -eq 'rust') {
             $probe = 'sdk/native/hpke-candidate/rust/target/debug/examples/template_opening.exe'
           }
-          python sdk/native/hpke-candidate/test-template-opening-hardware.py --binary $probe --producer "$env:RUNNER_TEMP/opening-oracle" --allow-unqualified
+          python sdk/native/hpke-candidate/test-template-opening-hardware.py --binary $probe --producer "$env:RUNNER_TEMP/opening-oracle-2" --allow-unqualified
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native reviewed template saves [rust]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/save-oracle", "$env:RUNNER_TEMP/selected"
       - name: "Native reviewed template saves [rust]"
         run: |
           rustup toolchain install 1.97.1 --profile minimal
       - name: "Native reviewed template saves [rust]: Prepare pinned maintained template oracle"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected-9"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/selected" checkout --detach 26e876da9f34372d9cf26511993cf633971e0037
+          git -C "$env:RUNNER_TEMP/selected-9" checkout --detach 26e876da9f34372d9cf26511993cf633971e0037
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/selected/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/selected-9/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/selected/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/selected-9/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native reviewed template saves [rust]: Prepare pinned maintained save oracle"
         shell: pwsh
@@ -4272,36 +4132,32 @@ jobs:
             $probe = 'sdk/native/hpke-candidate/rust/target/debug/examples/template_save'
             if ($IsWindows) { $probe += '.exe' }
           }
-          python sdk/native/hpke-candidate/test-template-save.py --binary $probe --producer "$env:RUNNER_TEMP/selected" --save-oracle "$env:RUNNER_TEMP/save-oracle" --deadline-case-ms 1000
+          python sdk/native/hpke-candidate/test-template-save.py --binary $probe --producer "$env:RUNNER_TEMP/selected-9" --save-oracle "$env:RUNNER_TEMP/save-oracle" --deadline-case-ms 1000
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native reviewed template saves [go]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/save-oracle", "$env:RUNNER_TEMP/selected"
       - name: "Native reviewed template saves [go]"
         run: |
           rustup toolchain install 1.97.1 --profile minimal
       - name: "Native reviewed template saves [go]: Prepare pinned maintained template oracle"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected-10"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/selected" checkout --detach 26e876da9f34372d9cf26511993cf633971e0037
+          git -C "$env:RUNNER_TEMP/selected-10" checkout --detach 26e876da9f34372d9cf26511993cf633971e0037
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/selected/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/selected-10/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/selected/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/selected-10/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native reviewed template saves [go]: Prepare pinned maintained save oracle"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/save-oracle"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/save-oracle-2"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/save-oracle" checkout --detach 5a25bac026bebee5eba20dc6048ddc1c773c41ed
+          git -C "$env:RUNNER_TEMP/save-oracle-2" checkout --detach 5a25bac026bebee5eba20dc6048ddc1c773c41ed
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/save-oracle/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/save-oracle-2/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/save-oracle/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/save-oracle-2/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native reviewed template saves [go]"
         run: |
@@ -4334,7 +4190,7 @@ jobs:
             $probe = 'sdk/native/hpke-candidate/rust/target/debug/examples/template_save'
             if ($IsWindows) { $probe += '.exe' }
           }
-          python sdk/native/hpke-candidate/test-template-save.py --binary $probe --producer "$env:RUNNER_TEMP/selected" --save-oracle "$env:RUNNER_TEMP/save-oracle" --deadline-case-ms 1000
+          python sdk/native/hpke-candidate/test-template-save.py --binary $probe --producer "$env:RUNNER_TEMP/selected-10" --save-oracle "$env:RUNNER_TEMP/save-oracle-2" --deadline-case-ms 1000
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   native-misc:
     runs-on: ubuntu-24.04
@@ -4379,10 +4235,6 @@ jobs:
           test -z "$(gofmt -l .)"
           go vet ./...
           go test ./...
-      - name: "Native historical contact fields [rust]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/contact-source"
       - name: "Native historical contact fields [rust]"
         run: |
           rustup toolchain install 1.97.1 --profile minimal
@@ -4461,23 +4313,19 @@ jobs:
           }
           python sdk/native/hpke-candidate/test-contact-history.py --producer "$env:RUNNER_TEMP/contact-source" --binary $probe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native historical contact fields [go]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/contact-source"
       - name: "Native historical contact fields [go]"
         run: |
           rustup toolchain install 1.97.1 --profile minimal
       - name: "Native historical contact fields [go]: Prepare independent signed contact oracle"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/contact-source"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/contact-source-2"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/contact-source" checkout --detach ccf28fe445ba959aa01d99fed6bd9ee3188b749c
+          git -C "$env:RUNNER_TEMP/contact-source-2" checkout --detach ccf28fe445ba959aa01d99fed6bd9ee3188b749c
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/contact-source/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/contact-source-2/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/contact-source/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/contact-source-2/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native historical contact fields [go]: Run native software contracts"
         env:
@@ -4501,7 +4349,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Pop-Location
           }
-          python sdk/native/hpke-candidate/test-contact-field.py --producer "$env:RUNNER_TEMP/contact-source" --binary $probe
+          python sdk/native/hpke-candidate/test-contact-field.py --producer "$env:RUNNER_TEMP/contact-source-2" --binary $probe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native historical contact fields [go]: Run signed mutation and transition contracts"
         env:
@@ -4521,7 +4369,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Pop-Location
           }
-          python sdk/native/hpke-candidate/test-contact-mutation.py --producer "$env:RUNNER_TEMP/contact-source" --binary $probe
+          python sdk/native/hpke-candidate/test-contact-mutation.py --producer "$env:RUNNER_TEMP/contact-source-2" --binary $probe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native historical contact fields [go]: Run durable local contact history contracts"
         env:
@@ -4541,12 +4389,8 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Pop-Location
           }
-          python sdk/native/hpke-candidate/test-contact-history.py --producer "$env:RUNNER_TEMP/contact-source" --binary $probe
+          python sdk/native/hpke-candidate/test-contact-history.py --producer "$env:RUNNER_TEMP/contact-source-2" --binary $probe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native HPKE recipient interop: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$RUNNER_TEMP/archive", "$RUNNER_TEMP/election", "$RUNNER_TEMP/envelopes", "$RUNNER_TEMP/producer", "$env:RUNNER_TEMP/archive", "$env:RUNNER_TEMP/compose02", "$env:RUNNER_TEMP/election"
       - name: "Native HPKE recipient interop: Prepare independent reviewed producer"
         run: |
           git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$RUNNER_TEMP/producer"
@@ -4602,24 +4446,24 @@ jobs:
       - name: "Native HPKE recipient interop: Prepare exact public-point-only producer"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/archive"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/archive-2"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/archive" checkout --detach 93a65d737dfb0de603c732241c667f90771f60dd
+          git -C "$env:RUNNER_TEMP/archive-2" checkout --detach 93a65d737dfb0de603c732241c667f90771f60dd
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/archive/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/archive-2/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/archive/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/archive-2/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native HPKE recipient interop: Prepare exact elected public-point producer"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/election"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/election-2"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/election" checkout --detach 304d512b7a420a3102278f32baed095f3e778989
+          git -C "$env:RUNNER_TEMP/election-2" checkout --detach 304d512b7a420a3102278f32baed095f3e778989
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/election/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/election-2/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/election/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/election-2/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native HPKE recipient interop: Prepare exact profile02 signing producer"
         shell: pwsh
@@ -4641,17 +4485,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo clippy --manifest-path sdk/native/hpke-candidate/rust/Cargo.toml --locked --all-targets -- -D warnings
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python sdk/native/hpke-candidate/run-cng.py --producer "$env:RUNNER_TEMP/archive" --language rust
+          python sdk/native/hpke-candidate/run-cng.py --producer "$env:RUNNER_TEMP/archive-2" --language rust
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python sdk/native/hpke-candidate/run-cng.py --producer "$env:RUNNER_TEMP/archive" --language go
+          python sdk/native/hpke-candidate/run-cng.py --producer "$env:RUNNER_TEMP/archive-2" --language go
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python sdk/native/hpke-candidate/run-cng.py --producer "$env:RUNNER_TEMP/election" --language rust --profile 3
+          python sdk/native/hpke-candidate/run-cng.py --producer "$env:RUNNER_TEMP/election-2" --language rust --profile 3
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python sdk/native/hpke-candidate/run-cng.py --producer "$env:RUNNER_TEMP/election" --language go --profile 3
+          python sdk/native/hpke-candidate/run-cng.py --producer "$env:RUNNER_TEMP/election-2" --language go --profile 3
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python sdk/native/hpke-candidate/run-compose.py --producer "$env:RUNNER_TEMP/election" --language rust
+          python sdk/native/hpke-candidate/run-compose.py --producer "$env:RUNNER_TEMP/election-2" --language rust
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python sdk/native/hpke-candidate/run-compose.py --producer "$env:RUNNER_TEMP/election" --language go
+          python sdk/native/hpke-candidate/run-compose.py --producer "$env:RUNNER_TEMP/election-2" --language go
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python sdk/native/hpke-candidate/run-compose02.py --producer "$env:RUNNER_TEMP/compose02" --language rust
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -4692,14 +4536,11 @@ jobs:
           test -z "$(gofmt -l .)"
           go vet ./...
           go test ./...
-      - name: "Installed native webhook companions: Clear clone destinations before this entry"
-        run: |
-          rm -rf "$RUNNER_TEMP/webhooks/csharp" "$RUNNER_TEMP/webhooks/java" "$RUNNER_TEMP/webhooks/ruby"
       - name: "Installed native webhook companions: Build licensed archives and test installed webhook verification"
         run: |
-          python3 sdk/native/package-webhooks.py --target java --out "$RUNNER_TEMP/webhooks/java"
-          python3 sdk/native/package-webhooks.py --target csharp --out "$RUNNER_TEMP/webhooks/csharp"
-          python3 sdk/native/package-webhooks.py --target ruby --out "$RUNNER_TEMP/webhooks/ruby"
+          python3 sdk/native/package-webhooks.py --target java --out "$RUNNER_TEMP/webhooks-3/java"
+          python3 sdk/native/package-webhooks.py --target csharp --out "$RUNNER_TEMP/webhooks-3/csharp"
+          python3 sdk/native/package-webhooks.py --target ruby --out "$RUNNER_TEMP/webhooks-3/ruby"
       - name: "Installed native webhook companions: Preserve artifacts"
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -4707,10 +4548,6 @@ jobs:
           path: ${{ runner.temp }}/webhooks
           if-no-files-found: error
           retention-days: 7
-      - name: "Generated Rust CLI acceptance: Clear clone destinations before this entry"
-        shell: bash
-        run: |
-          rm -rf "$RUNNER_TEMP/foundation" "$RUNNER_TEMP/tungsten"
       - name: "Generated Rust CLI acceptance: Check out reviewed foundation and runtime sources"
         shell: bash
         run: |
@@ -4729,32 +4566,24 @@ jobs:
       - name: "Generated Rust CLI acceptance: Build and exercise CLI against synthetic loopback HTTP"
         run: |
           python3 sdk/tungsten/cli-acceptance/run.py --foundation "$RUNNER_TEMP/foundation" --source "$RUNNER_TEMP/tungsten"
-      - name: "Generated Rust Go wire acceptance: Clear clone destinations before this entry"
-        shell: bash
-        run: |
-          rm -rf "$RUNNER_TEMP/foundation" "$RUNNER_TEMP/tungsten"
       - name: "Generated Rust Go wire acceptance: Check out reviewed foundation and runtime sources"
         shell: bash
         run: |
           foundation=$(python3 -c 'import json; print(json.load(open("sdk/tungsten/conformance/native/dependency.json"))["foundation_revision"])')
           runtime=$(python3 -c 'import json; print(json.load(open("sdk/tungsten/conformance/native/dependency.json"))["runtime_revision"])')
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$RUNNER_TEMP/foundation"
-          git -C "$RUNNER_TEMP/foundation" checkout --detach "$foundation"
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/tungsten.git "$RUNNER_TEMP/tungsten"
-          git -C "$RUNNER_TEMP/tungsten" checkout --detach "$runtime"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$RUNNER_TEMP/foundation-2"
+          git -C "$RUNNER_TEMP/foundation-2" checkout --detach "$foundation"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/tungsten.git "$RUNNER_TEMP/tungsten-2"
+          git -C "$RUNNER_TEMP/tungsten-2" checkout --detach "$runtime"
       - name: "Generated Rust Go wire acceptance: Generate reviewed artifacts"
         run: |
-          python3 "$RUNNER_TEMP/foundation/scripts/tungsten_sdk.py" --source "$RUNNER_TEMP/tungsten" --check
+          python3 "$RUNNER_TEMP/foundation-2/scripts/tungsten_sdk.py" --source "$RUNNER_TEMP/tungsten-2" --check
       - name: "Generated Rust Go wire acceptance: Install Rust minimum compiler"
         run: |
           rustup toolchain install 1.88.0 --profile minimal
       - name: "Generated Rust Go wire acceptance: Build and exercise native SDKs against synthetic loopback HTTP"
         run: |
-          python3 sdk/tungsten/conformance/native/run.py --foundation "$RUNNER_TEMP/foundation" --source "$RUNNER_TEMP/tungsten"
-      - name: "Native current owner templates [rust]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/selected"
+          python3 sdk/tungsten/conformance/native/run.py --foundation "$RUNNER_TEMP/foundation-2" --source "$RUNNER_TEMP/tungsten-2"
       - name: "Native current owner templates [rust]"
         run: |
           rustup toolchain install 1.97.1 --profile minimal
@@ -4802,23 +4631,19 @@ jobs:
           }
           python sdk/native/hpke-candidate/test-owner-template.py --binary $probe --producer "$env:RUNNER_TEMP/selected"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native current owner templates [go]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/selected"
       - name: "Native current owner templates [go]"
         run: |
           rustup toolchain install 1.97.1 --profile minimal
       - name: "Native current owner templates [go]: Prepare pinned maintained template oracle"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected-2"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/selected" checkout --detach 26e876da9f34372d9cf26511993cf633971e0037
+          git -C "$env:RUNNER_TEMP/selected-2" checkout --detach 26e876da9f34372d9cf26511993cf633971e0037
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/selected/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/selected-2/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/selected/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/selected-2/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native current owner templates [go]"
         run: |
@@ -4851,7 +4676,7 @@ jobs:
             $probe = 'sdk/native/hpke-candidate/rust/target/debug/examples/owner_template'
             if ($IsWindows) { $probe += '.exe' }
           }
-          python sdk/native/hpke-candidate/test-owner-template.py --binary $probe --producer "$env:RUNNER_TEMP/selected"
+          python sdk/native/hpke-candidate/test-owner-template.py --binary $probe --producer "$env:RUNNER_TEMP/selected-2"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   webmcp:
     runs-on: ubuntu-24.04
@@ -4903,10 +4728,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: "Managed contact mutation and transition interoperability [java]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$RUNNER_TEMP/contact-origin", "$env:RUNNER_TEMP/contact-origin"
       - name: "Managed contact mutation and transition interoperability: Checkout pinned fixtures"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -4928,9 +4749,11 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: "Managed contact mutation and transition interoperability [java]: Build licensed origin asset on Linux"
         if: runner.os == 'Linux'
+        if: runner.os == 'Linux'
         run: |
-          python sdk/native/crypto-envelope/contact-origin/build.py --out "$RUNNER_TEMP/contact-origin"
+          python sdk/native/crypto-envelope/contact-origin/build.py --out "$RUNNER_TEMP/contact-origin-mutation-java"
       - name: "Managed contact mutation and transition interoperability [java]: Build licensed origin asset on Windows"
+        if: runner.os == 'Windows'
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -4941,22 +4764,18 @@ jobs:
           @"
           @call "$vs/VC/Auxiliary/Build/vcvars64.bat"
           @if errorlevel 1 exit /b 1
-          @python sdk/native/crypto-envelope/contact-origin/build.py --out "$env:RUNNER_TEMP/contact-origin"
+          @python sdk/native/crypto-envelope/contact-origin/build.py --out "$env:RUNNER_TEMP/contact-origin-mutation-java"
           "@ | Set-Content -LiteralPath $batch
           & cmd /c $batch
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: "Managed contact mutation and transition interoperability [java]: Exercise genuine software mutation and transition corpus"
         shell: pwsh
         run: |
-          python sdk/native/crypto-envelope/contact-mutation-run.py --language java --fixture fixture --producer producer --origin-asset "$env:RUNNER_TEMP/contact-origin"
+          python sdk/native/crypto-envelope/contact-mutation-run.py --language java --fixture fixture --producer producer --origin-asset "$env:RUNNER_TEMP/contact-origin-mutation-java"
       - name: "Managed contact mutation and transition interoperability [csharp]: Toolchain for csharp"
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
         with:
           dotnet-version: '8.0.x'
-      - name: "Managed contact mutation and transition interoperability [csharp]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$RUNNER_TEMP/contact-origin", "$env:RUNNER_TEMP/contact-origin"
       - name: "Managed contact mutation and transition interoperability: Checkout pinned fixtures"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -4978,9 +4797,11 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: "Managed contact mutation and transition interoperability [csharp]: Build licensed origin asset on Linux"
         if: runner.os == 'Linux'
+        if: runner.os == 'Linux'
         run: |
-          python sdk/native/crypto-envelope/contact-origin/build.py --out "$RUNNER_TEMP/contact-origin"
+          python sdk/native/crypto-envelope/contact-origin/build.py --out "$RUNNER_TEMP/contact-origin-mutation-csharp"
       - name: "Managed contact mutation and transition interoperability [csharp]: Build licensed origin asset on Windows"
+        if: runner.os == 'Windows'
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -4991,22 +4812,18 @@ jobs:
           @"
           @call "$vs/VC/Auxiliary/Build/vcvars64.bat"
           @if errorlevel 1 exit /b 1
-          @python sdk/native/crypto-envelope/contact-origin/build.py --out "$env:RUNNER_TEMP/contact-origin"
+          @python sdk/native/crypto-envelope/contact-origin/build.py --out "$env:RUNNER_TEMP/contact-origin-mutation-csharp"
           "@ | Set-Content -LiteralPath $batch
           & cmd /c $batch
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: "Managed contact mutation and transition interoperability [csharp]: Exercise genuine software mutation and transition corpus"
         shell: pwsh
         run: |
-          python sdk/native/crypto-envelope/contact-mutation-run.py --language csharp --fixture fixture --producer producer --origin-asset "$env:RUNNER_TEMP/contact-origin"
+          python sdk/native/crypto-envelope/contact-mutation-run.py --language csharp --fixture fixture --producer producer --origin-asset "$env:RUNNER_TEMP/contact-origin-mutation-csharp"
       - name: "Managed contact mutation and transition interoperability [ruby]: Toolchain for ruby"
         uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a
         with:
           ruby-version: '3.3.9'
-      - name: "Managed contact mutation and transition interoperability [ruby]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$RUNNER_TEMP/contact-origin", "$env:RUNNER_TEMP/contact-origin"
       - name: "Managed contact mutation and transition interoperability: Checkout pinned fixtures"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -5028,9 +4845,11 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: "Managed contact mutation and transition interoperability [ruby]: Build licensed origin asset on Linux"
         if: runner.os == 'Linux'
+        if: runner.os == 'Linux'
         run: |
-          python sdk/native/crypto-envelope/contact-origin/build.py --out "$RUNNER_TEMP/contact-origin"
+          python sdk/native/crypto-envelope/contact-origin/build.py --out "$RUNNER_TEMP/contact-origin-mutation-ruby"
       - name: "Managed contact mutation and transition interoperability [ruby]: Build licensed origin asset on Windows"
+        if: runner.os == 'Windows'
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -5041,18 +4860,14 @@ jobs:
           @"
           @call "$vs/VC/Auxiliary/Build/vcvars64.bat"
           @if errorlevel 1 exit /b 1
-          @python sdk/native/crypto-envelope/contact-origin/build.py --out "$env:RUNNER_TEMP/contact-origin"
+          @python sdk/native/crypto-envelope/contact-origin/build.py --out "$env:RUNNER_TEMP/contact-origin-mutation-ruby"
           "@ | Set-Content -LiteralPath $batch
           & cmd /c $batch
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: "Managed contact mutation and transition interoperability [ruby]: Exercise genuine software mutation and transition corpus"
         shell: pwsh
         run: |
-          python sdk/native/crypto-envelope/contact-mutation-run.py --language ruby --fixture fixture --producer producer --origin-asset "$env:RUNNER_TEMP/contact-origin"
-      - name: "Native owner context persistence [rust]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/selected"
+          python sdk/native/crypto-envelope/contact-mutation-run.py --language ruby --fixture fixture --producer producer --origin-asset "$env:RUNNER_TEMP/contact-origin-mutation-ruby"
       - name: "Native owner context persistence [rust]"
         run: |
           rustup toolchain install 1.97.1 --profile minimal
@@ -5100,23 +4915,19 @@ jobs:
           }
           python sdk/native/hpke-candidate/test-owner-context.py --binary $probe --producer "$env:RUNNER_TEMP/selected" --deadline-case-ms 1000
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native owner context persistence [go]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/selected"
       - name: "Native owner context persistence [go]"
         run: |
           rustup toolchain install 1.97.1 --profile minimal
       - name: "Native owner context persistence [go]: Prepare pinned maintained context oracle"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected-2"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/selected" checkout --detach 8982ee9e96be15801a424708afa603ef708a8a5b
+          git -C "$env:RUNNER_TEMP/selected-2" checkout --detach 8982ee9e96be15801a424708afa603ef708a8a5b
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/selected/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/selected-2/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/selected/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/selected-2/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native owner context persistence [go]"
         run: |
@@ -5149,25 +4960,21 @@ jobs:
             $probe = 'sdk/native/hpke-candidate/rust/target/debug/examples/owner_context'
             if ($IsWindows) { $probe += '.exe' }
           }
-          python sdk/native/hpke-candidate/test-owner-context.py --binary $probe --producer "$env:RUNNER_TEMP/selected" --deadline-case-ms 1000
+          python sdk/native/hpke-candidate/test-owner-context.py --binary $probe --producer "$env:RUNNER_TEMP/selected-2" --deadline-case-ms 1000
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native workflow context [rust]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/selected"
       - name: "Native workflow context [rust]"
         run: |
           rustup toolchain install 1.97.1 --profile minimal
       - name: "Native workflow context [rust]: Prepare pinned maintained context oracle"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected-3"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/selected" checkout --detach 7e61c5b2461c82a5fbd05e62d06d14e34a0424d6
+          git -C "$env:RUNNER_TEMP/selected-3" checkout --detach 7e61c5b2461c82a5fbd05e62d06d14e34a0424d6
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/selected/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/selected-3/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/selected/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/selected-3/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native workflow context [rust]: Build native context probe"
         env:
@@ -5198,27 +5005,23 @@ jobs:
             if ($IsWindows) { $probe += '.exe' }
           }
           foreach ($role in @(2,3)) {
-            python sdk/native/hpke-candidate/test-workflow-context.py --binary $probe --producer "$env:RUNNER_TEMP/selected" --role $role
+            python sdk/native/hpke-candidate/test-workflow-context.py --binary $probe --producer "$env:RUNNER_TEMP/selected-3" --role $role
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native workflow context [go]: Clear clone destinations before this entry"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/selected"
       - name: "Native workflow context [go]"
         run: |
           rustup toolchain install 1.97.1 --profile minimal
       - name: "Native workflow context [go]: Prepare pinned maintained context oracle"
         shell: pwsh
         run: |
-          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected"
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/selected-4"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/selected" checkout --detach 7e61c5b2461c82a5fbd05e62d06d14e34a0424d6
+          git -C "$env:RUNNER_TEMP/selected-4" checkout --detach 7e61c5b2461c82a5fbd05e62d06d14e34a0424d6
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/selected/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          npm ci --prefix "$env:RUNNER_TEMP/selected-4/sdk/typescript" --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/selected/sdk/typescript"
+          npm run build --prefix "$env:RUNNER_TEMP/selected-4/sdk/typescript"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native workflow context [go]: Build native context probe"
         env:
@@ -5249,7 +5052,7 @@ jobs:
             if ($IsWindows) { $probe += '.exe' }
           }
           foreach ($role in @(2,3)) {
-            python sdk/native/hpke-candidate/test-workflow-context.py --binary $probe --producer "$env:RUNNER_TEMP/selected" --role $role
+            python sdk/native/hpke-candidate/test-workflow-context.py --binary $probe --producer "$env:RUNNER_TEMP/selected-4" --role $role
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
