@@ -5,9 +5,9 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Buffers.Binary;
 namespace Zrotext.Candidate;
-// Private native setup signing is test-only. Runtime capability remains field-only.
+// Private native setup signing is test-only. Runtime capability remains limited to typed contact fields and mutations.
 internal static class ContactProtectedTest {
-    internal static object Run(JsonElement input,string directory,string receipt){
+    internal static object Run(JsonElement input,string directory,string receipt,bool mutationMode=false){
         var f=JsonNode.Parse(input.GetRawText())!.AsObject();var parser=new ContactOrigin(directory);
         byte[] D(string name)=>Convert.FromBase64String(f[name]!.GetValue<string>());
         void Set(string name,byte[] bytes)=>f[name]=Convert.ToBase64String(bytes);
@@ -51,7 +51,7 @@ internal static class ContactProtectedTest {
             bool timedOut=false;var elapsed=System.Diagnostics.Stopwatch.StartNew();
             lock(gate){var caller=new Thread(()=>{try{ContactField.ProduceProtected(key,st,expected,unsignedField);}catch(CryptographicException){timedOut=true;}});caller.Start();if(!caller.Join(12000)||!timedOut||elapsed.Elapsed.TotalSeconds<9.5||elapsed.Elapsed.TotalSeconds>12||admission.CurrentCount!=3)throw new Exception("Provider deadline/retained admission failed");}
             if(!SpinWait.SpinUntil(()=>admission.CurrentCount==4,2000))throw new Exception("Timed out worker did not settle");controls++;
-            return new{fixture=f,outputs,controls};
+            var result=new Dictionary<string,object>{{"fixture",f},{"outputs",outputs},{"controls",controls}};if(mutationMode)result["mutation"]=ContactMutationProtectedTest.Run(key,f,JsonSerializer.SerializeToElement(outputs),parser);return result;
         }finally{
             borrowed?.Dispose();if(key is not null){key.DeleteCreated();if(point is not null){try{using var reopened=ProtectedContactSigner.Open(alias,point);throw new Exception("Deleted key reopened");}catch(CryptographicException){}}Write(alias,"owned_key_deleted");}
         }
