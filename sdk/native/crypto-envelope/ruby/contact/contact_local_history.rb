@@ -90,7 +90,7 @@ module ZrotextCandidate
       ContactLocalHistory.need(maximum_records.between?(1,CAPACITY))
       @trust=ManifestChain::RootPin.enroll(pin.dup,fingerprint.dup)
       @path=File.expand_path(path);@maximum=maximum_records;@reduction=reduction
-      @account=account.dup.freeze;@origin=origin.dup.freeze
+      @account=account.dup;@origin=origin.dup.freeze
       @header="ZTLH1".b+pin.dup+fingerprint.dup+account.dup+[origin_bytes.bytesize].pack('n')+origin_bytes+[maximum_records].pack('N')
       @closed=false;@expiry=Process.clock_gettime(Process::CLOCK_MONOTONIC)+LIFETIME_SECONDS
       ContactLocalHistory.instance_variable_get(:@permits).synchronize do
@@ -108,7 +108,7 @@ module ZrotextCandidate
       result=new(path,pin,fingerprint,account,origin,maximum_records,false)
       begin
         saved=result.send(:capture,history);result.send(:verify_history,saved)
-        ContactLocalHistory.need(saved.all?{|row| row[:comparison]<=now || row[:comparison]-now<=30000},'corrupt')
+        ContactLocalHistory.need(now>0 && saved.all?{|row| row[:comparison]<=now || row[:comparison]-now<=30000},'corrupt')
         begin
           File.open(result.send(:history_path),File::RDWR|File::CREAT|File::EXCL|File::BINARY,0600) do |file|
             file.flock(File::LOCK_EX);file.write(result.instance_variable_get(:@header))
@@ -209,7 +209,7 @@ module ZrotextCandidate
 
     def close
       return if @closed
-      @closed=true;@header.replace(" ".b*@header.bytesize);@account=" ".b*16;release_permit
+      @closed=true;@header.replace(" ".b*@header.bytesize);@account.replace(" ".b*16);release_permit
     end
     private
     def release_permit

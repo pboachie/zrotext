@@ -49,8 +49,10 @@ public sealed class ContactHistory:IDisposable {
     ContactHistory(string path,byte[] pin,byte[] fingerprint,byte[] expectedAccount,string origin,int maximumRecords,bool reduction){
         Need(pin is not null && pin.Length==94 && fingerprint is not null && fingerprint.Length==32);
         Need(expectedAccount is not null && expectedAccount.Length==16 && !Zero(expectedAccount));
-        byte[] originBytes=origin is null?Array.Empty<byte>():Encoding.ASCII.GetBytes(origin);
+        Need(origin is not null && origin.StartsWith("https://"));
+        byte[] originBytes=Encoding.ASCII.GetBytes(origin);
         Need(originBytes.Length>=1 && originBytes.Length<=OriginMax && originBytes.All(b=>b>32&&b<127));
+        Need(Encoding.ASCII.GetString(originBytes)==origin);
         Need(maximumRecords>=1 && maximumRecords<=Capacity);
         trust=ManifestChain.RootPin.Enroll((byte[])pin.Clone(),(byte[])fingerprint.Clone());
         this.path=Path.GetFullPath(path);maximum=maximumRecords;this.reduction=reduction;
@@ -219,6 +221,7 @@ public sealed class ContactHistory:IDisposable {
     public static ContactHistory Create(string path,byte[] pin,byte[] fingerprint,byte[] account,string origin,int maximumRecords,IReadOnlyList<ManifestChain.Verified> history,long now){
         var result=new ContactHistory(path,pin,fingerprint,account,origin,maximumRecords,false);
         try{
+            Need(now>0 && history.All(m=>m.ComparisonMs<=now || m.ComparisonMs-now<=30000),"corrupt");
             Need(!File.Exists(result.path));
             var saved=result.Capture(history);result.VerifyHistory(saved);
             using(var file=new FileStream(result.path,FileMode.CreateNew,FileAccess.ReadWrite,FileShare.None)){
