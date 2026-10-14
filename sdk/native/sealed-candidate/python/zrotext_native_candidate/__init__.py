@@ -93,3 +93,6 @@ __all__ += ['OwnerOpeningCapacityClient','OpeningCapacityError']
 
 from .conversation_custody import ConversationCustody02,ConversationCustodyError
 __all__ += ['ConversationCustody02','ConversationCustodyError']
+
+from .root_bundle import ComparedRootBundle,RootBundleError,verify_published_root_bundle
+__all__ += ['ComparedRootBundle','RootBundleError','verify_published_root_bundle']
