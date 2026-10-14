@@ -59,7 +59,7 @@ class CheckpointStore:
         finally:
             db.close()
 
-    def _load(self, db):
+    def _load(self, db, history=None):
         identity = db.execute('SELECT root, fingerprint FROM identity WHERE id=1').fetchone()
         sealed.require(identity == (self._pin, self._fingerprint), 'checkpoint root binding')
         trust = sealed.enroll_root02(self._pin, self._fingerprint)
@@ -81,6 +81,8 @@ class CheckpointStore:
                 sealed.require(current is not None, 'original02 predecessor required')
                 next_token = sealed.verify_manifest03(raw, current, comparison)
             current, revision, last_time = next_token, rev, comparison
+            if history is not None:
+                history[sealed.manifest_identity(current)["digest"]] = current
         return current, trust, revision, last_time
 
     def snapshot(self, comparison_ms):
@@ -95,6 +97,24 @@ class CheckpointStore:
                 sealed.window(m.issued, m.expires, now)
             db.commit()
             return revision, current
+
+    def history(self, digest, comparison_ms):
+        """Reverify retained signed provenance, then check historical lifetime.
+
+        This is not a current-authority observation or whole-file rollback guard.
+        The caller must separately compare the live checkpoint and manifest.
+        """
+        digest, now = sealed.capture(digest, 32), sealed.integer(comparison_ms)
+        with self._connection() as db:
+            db.execute('BEGIN')
+            history = {}
+            self._load(db, history)
+            token = history.get(digest)
+            sealed.require(token is not None, 'historical checkpoint missing')
+            value = sealed._bound(sealed._manifests, token)
+            sealed.window(value.issued, value.expires, now)
+            db.commit()
+            return token
 
     def accept_manifest(self, raw, expected_revision, comparison_ms):
         """One exact successor, verified and committed under a SQLite write lock."""
