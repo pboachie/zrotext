@@ -1,0 +1,41 @@
+name: Managed candidate envelope integrity
+on:
+  pull_request:
+    paths:
+      - 'sdk/native/crypto-envelope/java/**'
+      - 'sdk/native/crypto-envelope/csharp/**'
+      - 'sdk/native/crypto-envelope/ruby/**'
+      - 'protocol/v1/vectors/**'
+      - '.github/workflows/managed-envelope.yml'
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  managed-envelope:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '8.0.x'
+      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1
+        with:
+          ruby-version: '3.3.9'
+      - name: Export existing signed public fixtures
+        run: python3 sdk/native/crypto-envelope/java/envelope_rows.py > "$RUNNER_TEMP/envelopes.tsv"
+      - name: Java signed envelope verification
+        run: |
+          javac --release 17 -Xlint:all -Werror -d "$RUNNER_TEMP/envelope-classes" sdk/native/crypto-envelope/java/*.java
+          java -cp "$RUNNER_TEMP/envelope-classes" org.zrotext.candidate.EnvelopeTest < "$RUNNER_TEMP/envelopes.tsv"
+      - name: C# signed envelope verification
+        run: dotnet run --project sdk/native/crypto-envelope/csharp/envelope-tests/EnvelopeTest.csproj < "$RUNNER_TEMP/envelopes.tsv"
+      - name: Ruby signed envelope verification
+        run: ruby sdk/native/crypto-envelope/ruby/envelope_test.rb < "$RUNNER_TEMP/envelopes.tsv"
