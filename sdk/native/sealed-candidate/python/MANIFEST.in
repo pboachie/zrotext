@@ -29,3 +29,5 @@ exclude installed_genesis_ceremony_consumer.py
 exclude installed_conversation_signer_consumer.py
 
 exclude installed_opening_capacity_consumer.py
+
+exclude installed_conversation_custody_consumer.py

@@ -47,6 +47,10 @@ func scope(v map[string]any) h.WorkflowContextScope {
 type opener func(h.ContextAuthoritySource, h.WorkflowContextScope, h.WorkflowContextRole, []byte, []byte, byte) ([]byte, error)
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--limits" {
+		limits()
+		return
+	}
 	open, cleanup := selectReader()
 	defer cleanup()
 	var input struct {
