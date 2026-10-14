@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 require_relative '../custody/protected_recipient'
 require_relative 'contact_field'
+require_relative 'contact_mutation'
 
 module ZrotextCandidate
   # Locally qualified native signing; not election or transport authority.
@@ -9,13 +10,20 @@ module ZrotextCandidate
     def call(*) = raise(ArgumentError,'Signing custody cannot unwrap recipient secrets')
     private
     def sign_field(input,live)
+      sign_contact(input,live,false)
+    end
+    def sign_mutation(input,live)
+      sign_contact(input,live,true)
+    end
+    def sign_contact(input,live,mutation)
       @lock.synchronize do
         need(@qualified && !@closed)
-        unsigned=ContactField.unsigned(input)
-        transcript=ContactField.domain('ZT/contact-field/commitment/v1')+[unsigned.bytesize].pack('N')+unsigned
+        unsigned=mutation ? ContactMutation.unsigned(input) : ContactField.unsigned(input)
+        label=mutation ? 'ZT/contact-field/mutation/v1' : 'ZT/contact-field/commitment/v1'
+        transcript=ContactField.domain(label)+[unsigned.bytesize].pack('N')+unsigned
         begin
           live.call;signature=sign_digest(OpenSSL::Digest::SHA256.digest(transcript))
-          ManifestChain.signature(public_raw,signature,'ZT/contact-field/commitment/v1',unsigned)
+          ManifestChain.signature(public_raw,signature,label,unsigned)
           signature
         ensure
           unsigned.replace("\x00".b*unsigned.bytesize)

@@ -96,7 +96,7 @@ fn authority(m: &Manifest, s: &EncryptedTemplateScope, now: u64) -> Result<Vec<u
     };
     Ok(reader[33..98].to_vec())
 }
-fn seal(point: &[u8], plain: &[u8], info: &[u8], aad: &[u8]) -> Result<Vec<u8>, Error> {
+pub(crate) fn seal(point: &[u8], plain: &[u8], info: &[u8], aad: &[u8]) -> Result<Vec<u8>, Error> {
     let peer = PublicKey::from_sec1_bytes(point).map_err(|_| Error::Shape)?;
     let mut entropy = Zeroizing::new([0u8; 32]);
     getrandom::fill(entropy.as_mut()).map_err(|_| Error::ProtectedUnavailable)?;

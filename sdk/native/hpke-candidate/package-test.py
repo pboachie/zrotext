@@ -83,11 +83,10 @@ class PackagePolicy(unittest.TestCase):
             packages.contact_acceptance(binaries, Path("contact"))
             packages.contact_acceptance(binaries, Path("contact"), hardware=True)
         calls = [call.args for call in run.call_args_list]
-        self.assertEqual([call[1].name for call in calls], ["test-contact-field.py", "test-contact-mutation.py", "test-contact-hardware.py", "test-contact-hardware.py"])
-        for i, call in enumerate(calls):
-            name = "contact_mutation" if i % 2 else "contact"
+        self.assertEqual([call[1].name for call in calls], ["test-contact-field.py", "test-contact-mutation.py", "test-contact-history.py", "test-contact-hardware.py", "test-contact-hardware.py"])
+        for i, (call, name) in enumerate(zip(calls, ("contact", "contact_mutation", "contact_history", "contact", "contact_mutation"))):
             self.assertEqual(call[2:6], ("--producer", Path("contact"), "--binary", binaries[name]))
-            self.assertEqual(call[6:], ("--mutation",) if i == 3 else ())
+            self.assertEqual(call[6:], ("--mutation",) if i == 4 else ())
             self.assertNotIn("--allow-unqualified", call)
             self.assertNotIn(call[0], ("cargo", "go"))
 

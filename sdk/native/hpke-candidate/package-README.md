@@ -30,7 +30,7 @@ public checksum database. No path, replace, workspace or private-checkout
 dependency is accepted. Consumer dependency/build caches are fresh.
 
 Installed acceptance runs actual journal crash/CAS/restore and authenticated
-root transition controls. Twenty-one separately compiled consumer probes also
+root transition controls. Twenty-two separately compiled consumer probes also
 cover selected original ciphertext, durable history, HTTPS transport, signed
 current proofs, verified reads and page discovery, saved owner-review intent,
 and typed proposal consumption/status. The six actual TLS suites preserve
@@ -93,8 +93,13 @@ custody APIs; the maintained SDK independently verifies the resulting transition
 Each mutation also refuses cancelled, closed-provider and foreign-scope calls.
 Successful and interrupted fixture setup require exact owned-key deletion.
 The report tracks historical mutation integrity and protected production
-separately. Current permission and durable accepted-history storage remain
-outside these checks.
+separately. A further installed contact-history probe exercises bounded durable
+metadata, independently signed root-history rechecks, exact session-bound CAS,
+terminal local reduction, process restart and an interrupted SQLite writer.
+It also checks post-commit reconciliation when root history changes during a
+write. The report records local history separately from current permission;
+metadata never recreates verified field or transition tokens. Whole-database
+rollback protection requires an external checkpoint and is not claimed.
 
 `--owner-deadline-case-ms` records the declared caller deadline for the
 post-handshake owner-template cases (default 100, allowed 100..2000). Hosted CI

@@ -7,7 +7,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.*;
 import java.util.*;
 
-/** Locally qualified Windows PCP signer for historical contact fields only. */
+/** Locally qualified Windows PCP signer for historical contact fields and mutations only. */
 public final class ProtectedContactSigner implements AutoCloseable {
     private static final String PROVIDER="Microsoft Platform Crypto Provider",PREFIX="zrotext-managed-java-contact-p256-";
     private static final int SILENT=0x40;
@@ -57,8 +57,14 @@ public final class ProtectedContactSigner implements AutoCloseable {
         byte[] challenge=new byte[32];new SecureRandom().nextBytes(challenge);byte[] signature=signDigest(challenge);var verifier=Signature.getInstance("NONEwithECDSAinP1363Format");verifier.initVerify(HpkeRecipient.point(publicRaw()));verifier.update(challenge);need(verifier.verify(signature));qualified=true;
     }
     synchronized byte[] signField(byte[] input,ContactField.Check live)throws GeneralSecurityException{
-        need(qualified && !closed);byte[] unsigned=ContactField.unsigned(input);
-        byte[] domain="ZT/contact-field/commitment/v1\0".getBytes(StandardCharsets.US_ASCII),transcript=ByteBuffer.allocate(domain.length+4+unsigned.length).put(domain).putInt(unsigned.length).put(unsigned).array();
+        return signContact(input,live,false);
+    }
+    synchronized byte[] signMutation(byte[] input,ContactField.Check live)throws GeneralSecurityException{
+        return signContact(input,live,true);
+    }
+    private byte[] signContact(byte[] input,ContactField.Check live,boolean mutation)throws GeneralSecurityException{
+        need(qualified && !closed);byte[] unsigned=mutation?ContactField.Mutation.unsigned(input):ContactField.unsigned(input);
+        byte[] domain=(mutation?"ZT/contact-field/mutation/v1\0":"ZT/contact-field/commitment/v1\0").getBytes(StandardCharsets.US_ASCII),transcript=ByteBuffer.allocate(domain.length+4+unsigned.length).put(domain).putInt(unsigned.length).put(unsigned).array();
         try{live.run();byte[] signature=signDigest(MessageDigest.getInstance("SHA-256").digest(transcript));var verifier=Signature.getInstance("SHA256withECDSAinP1363Format");verifier.initVerify(HpkeRecipient.point(publicRaw()));verifier.update(transcript);need(verifier.verify(signature));return signature;}
         finally{Arrays.fill(unsigned,(byte)0);Arrays.fill(transcript,(byte)0);}
     }
