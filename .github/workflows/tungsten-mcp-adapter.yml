@@ -1,0 +1,21 @@
+name: Local Tungsten workflow adapter
+on:
+  pull_request:
+    paths: ['sdk/tungsten/mcp/**', 'sdk/mcp/**', 'sdk/typescript/**', '.github/workflows/tungsten-mcp-adapter.yml']
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  adapter:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.13.0'
+      - working-directory: sdk/typescript
+        run: npm ci --ignore-scripts --no-audit --no-fund && npm run build
+      - run: node --test sdk/tungsten/mcp/adapter.test.mjs
