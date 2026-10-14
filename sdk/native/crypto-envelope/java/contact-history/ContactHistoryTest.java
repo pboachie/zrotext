@@ -46,9 +46,10 @@ public final class ContactHistoryTest {
         var fork=ContactField.Mutation.produceSoftware(rootKey,s2,expected,forkUnsigned,0,create,s1,List.of(forkField),new AtomicBoolean());
         if(args.length>3 && args[3].equals("--partial")){try(var file=FileChannel.open(path,StandardOpenOption.WRITE,StandardOpenOption.APPEND)){file.write(ByteBuffer.wrap(new byte[]{0,0}));file.force(true);Runtime.getRuntime().halt(19);}return;}
         if(args.length>3 && args[3].equals("--seed")){var j=ContactHistory.create(path,pin,fingerprint,account,origin,8,List.of(first),10000);j.accept(null,List.of(first),create,s1);System.out.println("Seeded revision one");return;}
-        if(args.length>3 && args[3].equals("--advance")){var j=ContactHistory.open(path,pin,fingerprint,account,origin,8,false);var holder=j.lookup(contact).token();try{j.accept(holder,List.of(first,second),update,s2);System.out.println("CAS won");}catch(GeneralSecurityException e){System.exit(3);}return;}
+        if(args.length>3 && args[3].equals("--advance")){var j=ContactHistory.open(path,pin,fingerprint,account,origin,8,false);var holder=j.lookup(contact).token();try{j.accept(holder,List.of(first,second),update,s2);System.out.println("CAS won");}catch(GeneralSecurityException e){System.err.println(e.getMessage());System.exit(3);}return;}
         if(args.length>3 && args[3].equals("--compete")){var j=ContactHistory.open(path,pin,fingerprint,account,origin,8,false);var holder=j.lookup(contact).token();
-            try{j.accept(holder,List.of(first,second),fork,s2);System.out.println("unexpected fork win");}catch(GeneralSecurityException e){System.exit(3);}return;}
+            try{j.accept(holder,List.of(first,second),fork,s2);System.out.println("unexpected fork win");}catch(GeneralSecurityException e){System.err.println(e.getMessage());System.exit(3);}return;}
+        if(args.length>3 && args[3].equals("--digest")){System.out.println(ContactHistory.fileDigest(path));return;}
         if(args.length>3 && args[3].equals("--verify")){var j=ContactHistory.open(path,pin,fingerprint,account,origin,8,false);if(j.lookup(contact).metadata().revision()!=2)throw new AssertionError("Child CAS state");System.out.println("Restart CAS verified");return;}
         if(args.length>3 && args[3].equals("--refused")){refuse(()->ContactHistory.open(path,pin,fingerprint,account,origin,8,false));System.out.println("Interrupted append refused");return;}
         refuse(()->ContactHistory.open(path,pin,fingerprint,account,origin,8,false));
@@ -60,6 +61,9 @@ public final class ContactHistoryTest {
         refuse(()->ContactHistory.open(path,pin,fingerprint,wrongAccount,origin,8,false));
         if(!j.lookup(contact).reason().equals("unobserved"))throw new AssertionError("Unobserved");checks++;
         refuse(()->j.accept(null,List.of(first),update,s2));
+        var fresh=ContactHistory.create(path.resolveSibling("cold.dat"),pin,fingerprint,account,origin,8,List.of(first,second),10000);
+        refuse(()->fresh.accept(null,List.of(first,second),update,s2));
+        fresh.close();java.nio.file.Files.delete(path.resolveSibling("cold.dat"));
         var saved=j.accept(null,List.of(first),create,s1);
         if(!saved.accepted() || saved.metadata().revision()!=1)throw new AssertionError("Cold create");
         var holder=saved.token();

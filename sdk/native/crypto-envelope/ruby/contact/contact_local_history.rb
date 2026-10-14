@@ -86,7 +86,7 @@ module ZrotextCandidate
       ContactLocalHistory.need(pin.instance_of?(String) && pin.bytesize==94 && fingerprint.instance_of?(String) && fingerprint.bytesize==32)
       ContactLocalHistory.need(account.instance_of?(String) && account.bytesize==16 && account.bytes.any?{|b|b!=0})
       origin_bytes=origin.b.dup
-      ContactLocalHistory.need(origin_bytes.bytesize.between?(1,ORIGIN_MAX) && origin_bytes.bytes.all?{|b|b>32&&b<127})
+      ContactLocalHistory.need(origin.start_with?('https://') && origin_bytes.bytesize.between?(1,ORIGIN_MAX) && origin_bytes.bytes.all?{|b|b>32&&b<127})
       ContactLocalHistory.need(maximum_records.between?(1,CAPACITY))
       @trust=ManifestChain::RootPin.enroll(pin.dup,fingerprint.dup)
       @path=File.expand_path(path);@maximum=maximum_records;@reduction=reduction
@@ -100,14 +100,22 @@ module ZrotextCandidate
     end
     private_class_method :new
 
+    def self.file_digest(path)
+      Digest::SHA256.file(path).hexdigest
+    end
+
     def self.create(path,pin,fingerprint,account,origin,maximum_records,history,now)
       result=new(path,pin,fingerprint,account,origin,maximum_records,false)
       begin
-        ContactLocalHistory.need(!File.exist?(result.send(:history_path)),'refused')
         saved=result.send(:capture,history);result.send(:verify_history,saved)
-        File.open(result.send(:history_path),'wb',0600) do |file|
-          file.flock(File::LOCK_EX);file.write(result.instance_variable_get(:@header))
-          result.send(:append,file,{history:saved,rows:{}})
+        ContactLocalHistory.need(saved.all?{|row| row[:comparison]<=now || row[:comparison]-now<=30000},'corrupt')
+        begin
+          File.open(result.send(:history_path),File::RDWR|File::CREAT|File::EXCL|File::BINARY,0600) do |file|
+            file.flock(File::LOCK_EX);file.write(result.instance_variable_get(:@header))
+            result.send(:append,file,{history:saved,rows:{}})
+          end
+        rescue SystemCallError
+          raise Refused,'Contact local history: refused'
         end
       rescue Exception
         result.send(:release_permit);raise
@@ -140,6 +148,7 @@ module ZrotextCandidate
     def accept(expected,history,transition,statement)
       ContactLocalHistory.need(!@reduction,'reduction_only')
       ContactLocalHistory.need(transition.is_a?(ContactMutation::Transition) && statement.is_a?(ContactField::Statement))
+      ContactLocalHistory.need(transition.mutation.statement.bytes==statement.bytes,'invalid statement')
       s=statement.identity
       ContactLocalHistory.need(s[:account]==@account && s[:origin]==@origin,'root_mismatch')
       mutation=transition.mutation.bytes;unsigned=mutation.byteslice(0,304)
@@ -200,14 +209,11 @@ module ZrotextCandidate
 
     def close
       return if @closed
-      @closed=true;release_permit
+      @closed=true;@header.replace(" ".b*@header.bytesize);@account=" ".b*16;release_permit
     end
     private
     def release_permit
       ContactLocalHistory.instance_variable_get(:@permits).synchronize{ContactLocalHistory.instance_variable_set(:@outstanding,ContactLocalHistory.instance_variable_get(:@outstanding)-1)}
-    end
-    def real_now
-      (Time.now.to_f*1000).to_i
     end
     def live
       ContactLocalHistory.need(!@closed && Process.clock_gettime(Process::CLOCK_MONOTONIC)<@expiry,'closed')
@@ -256,7 +262,7 @@ module ZrotextCandidate
       state=nil;verified=nil
       while file.pos<file.size
         ContactLocalHistory.need(file.size-file.pos>=4,'corrupt');length=file.read(4).unpack1('N')
-        ContactLocalHistory.need(length>=12+364 && length<=20+HISTORY_LIMIT*(12+9751)+CAPACITY*230 && file.size-file.pos>=length+32,'corrupt')
+        ContactLocalHistory.need(length>=12+364 && length<=20+HISTORY_LIMIT*(12+9751)+CAPACITY*419 && file.size-file.pos>=length+32,'corrupt')
         body=file.read(length);ContactLocalHistory.need(file.read(32)==self.class.send(:sha,@header+[length].pack('N')+body),'corrupt')
         io=StringIO.new(body);count=io.read(4).unpack1('N')
         ContactLocalHistory.need(count.between?(1,HISTORY_LIMIT),'corrupt')

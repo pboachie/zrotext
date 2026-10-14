@@ -61,6 +61,8 @@ when '--compete'
   rescue ZrotextCandidate::ContactLocalHistory::Refused
     exit 3
   end
+when '--digest'
+  puts ContactLocalHistory.file_digest(path)
 when '--verify'
   j=ContactLocalHistory.open(path,pin,fingerprint,account,origin,8)
   raise AssertionError,'Child CAS state' unless j.lookup(contact).metadata.revision==2
@@ -78,6 +80,9 @@ else
   ZrotextCandidate.refuse{ContactLocalHistory.open(path,pin,fingerprint,wrong_account,origin,8)}
   raise AssertionError,'Unobserved' unless j.lookup(contact).reason=='unobserved'
   ZrotextCandidate.refuse{j.accept(nil,[first],update,s2)}
+  cold=ContactLocalHistory.create(path+'.cold',pin,fingerprint,account,origin,8,[first,second],10000)
+  ZrotextCandidate.refuse{cold.accept(nil,[first,second],update,s2)}
+  cold.close;File.delete(path+'.cold')
   saved=j.accept(nil,[first],create,s1)
   raise AssertionError,'Cold create' unless saved.accepted? && saved.metadata.revision==1
   holder=saved.token

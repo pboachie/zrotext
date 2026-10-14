@@ -14,6 +14,7 @@ public sealed class ContactHistory:IDisposable {
     static byte[] BE32(int v){Span<byte> b=stackalloc byte[4];BinaryPrimitives.WriteInt32BigEndian(b,v);return b.ToArray();}
     static byte[] BE64(long v){Span<byte> b=stackalloc byte[8];BinaryPrimitives.WriteInt64BigEndian(b,v);return b.ToArray();}
     static long ReadBE64(BinaryReader reader)=>BinaryPrimitives.ReadInt64BigEndian(reader.ReadBytes(8));
+    static int ReadBE32(BinaryReader reader)=>BinaryPrimitives.ReadInt32BigEndian(reader.ReadBytes(4));
     static byte[] Sha(byte[] b)=>SHA256.HashData(b);
     static long Number(byte[] b,int at){long v=BinaryPrimitives.ReadInt64BigEndian(b.AsSpan(at,8));Need(v>0,"corrupt");return v;}
     string Hex(byte[] b)=>Convert.ToHexString(b).ToLowerInvariant();
@@ -99,19 +100,19 @@ public sealed class ContactHistory:IDisposable {
 
     byte[] EncodeState(State value){
         using var memory=new MemoryStream();using var writer=new BinaryWriter(memory);
-        writer.Write(value.History.Count);
-        foreach(var m in value.History){WriteInt64BE(writer,m.Comparison);writer.Write(m.Bytes.Length);writer.Write(m.Bytes);}
-        writer.Write(value.Rows.Count);
+        writer.Write(BE32(value.History.Count));
+        foreach(var m in value.History){WriteInt64BE(writer,m.Comparison);writer.Write(BE32(m.Bytes.Length));writer.Write(m.Bytes);}
+        writer.Write(BE32(value.Rows.Count));
         foreach(var row in value.Rows)writer.Write(RowBytes(row));
         writer.Flush();return memory.ToArray();
     }
     State Decode(byte[] body,List<ManifestChain.Verified> history,List<Saved> saved){
         using var reader=Reader(body);
-        int historyCount=reader.ReadInt32();Need(historyCount>=1 && historyCount<=HistoryLimit && historyCount==history.Count,"corrupt");
-        for(int i=0;i<historyCount;i++){long when=ReadBE64(reader);int length=reader.ReadInt32();
+        int historyCount=ReadBE32(reader);Need(historyCount>=1 && historyCount<=HistoryLimit && historyCount==history.Count,"corrupt");
+        for(int i=0;i<historyCount;i++){long when=ReadBE64(reader);int length=ReadBE32(reader);
             Need(when>0 && length>=364 && length<=9751,"corrupt");byte[] raw=reader.ReadBytes(length);
             Need(when==saved[i].Comparison && Same(raw,history[i].Bytes()),"corrupt");}
-        int count=reader.ReadInt32();Need(count>=0 && count<=Capacity,"corrupt");
+        int count=ReadBE32(reader);Need(count>=0 && count<=Capacity,"corrupt");
         var rows=new List<Row>();var seen=new HashSet<string>();
         for(int i=0;i<count;i++){
             byte[] contactId=reader.ReadBytes(16);Need(contactId.Length==16 && !Zero(contactId) && seen.Add(Hex(contactId)),"corrupt");
@@ -173,12 +174,12 @@ public sealed class ContactHistory:IDisposable {
         State? state=null;List<ManifestChain.Verified>? history=null;
         while(file.Position<file.Length){
             Need(file.Length-file.Position>=4,"corrupt");int count=BinaryPrimitives.ReadInt32BigEndian(ReadFull(file,4));
-            Need(count>=12+364 && count<=20+HistoryLimit*(12+9751)+Capacity*230 && file.Length-file.Position>=count+32,"corrupt");
+            Need(count>=12+364 && count<=20+HistoryLimit*(12+9751)+Capacity*419 && file.Length-file.Position>=count+32,"corrupt");
             byte[] body=ReadFull(file,count);Need(Same(ReadFull(file,32),Sha(Join(header,BE32(count),body))),"corrupt");
             var saved=new List<Saved>();
             using(var reader=Reader(body)){
-                int historyCount=reader.ReadInt32();Need(historyCount>=1 && historyCount<=HistoryLimit,"corrupt");
-                for(int i=0;i<historyCount;i++){long when=ReadBE64(reader);int size=reader.ReadInt32();
+                int historyCount=ReadBE32(reader);Need(historyCount>=1 && historyCount<=HistoryLimit,"corrupt");
+                for(int i=0;i<historyCount;i++){long when=ReadBE64(reader);int size=ReadBE32(reader);
                     Need(when>0 && size>=364 && size<=9751,"corrupt");saved.Add(new Saved(when,reader.ReadBytes(size)));}
             }
             history=VerifyHistory(saved);
@@ -199,13 +200,21 @@ public sealed class ContactHistory:IDisposable {
 
     object Access(Action action){
         Need(!closed && Environment.TickCount64<expiry,"closed");
-        using var file=new FileStream(path,FileMode.Open,FileAccess.ReadWrite,FileShare.None);
-        var (state,history)=Load(file);
-        return action(file,state,history);
+        FileStream? file=null;
+        for(int attempt=0;attempt<100 && file is null;attempt++){
+            try{file=new FileStream(path,FileMode.Open,FileAccess.ReadWrite,FileShare.None);}
+            catch(IOException){Thread.Sleep(50);}
+        }
+        Need(file is not null,"storage unavailable");
+        using var stream=file!;
+        var (state,history)=Load(stream);
+        return action(stream,state,history);
     }
 
     Token TokenOf(Row r)=>new(this,RowBytes(r));
     byte[] ExpectedRow(Token t){Need(t is not null && ReferenceEquals(t.Owner,this),"invalid local token");return (byte[])t.Row.Clone();}
+
+    public static string FileDigest(string path)=>Convert.ToHexString(Sha(File.ReadAllBytes(path))).ToLowerInvariant();
 
     public static ContactHistory Create(string path,byte[] pin,byte[] fingerprint,byte[] account,string origin,int maximumRecords,IReadOnlyList<ManifestChain.Verified> history,long now){
         var result=new ContactHistory(path,pin,fingerprint,account,origin,maximumRecords,false);
@@ -306,6 +315,6 @@ public sealed class ContactHistory:IDisposable {
     }
 
     public void Dispose(){
-        if(closed)return;closed=true;Permits.Release();
+        if(closed)return;closed=true;Array.Clear(header);Array.Clear(account);Permits.Release();
     }
 }

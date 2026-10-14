@@ -55,9 +55,11 @@ public final class ContactHistory {
 
     private ContactHistory(Path path,byte[] pin,byte[] fingerprint,byte[] expectedAccount,String origin,int maximumRecords,boolean reduction,ManifestChain.RootPin enrolled)throws GeneralSecurityException{
         need(pin!=null && pin.length==94 && fingerprint!=null && fingerprint.length==32 && expectedAccount!=null && expectedAccount.length==16 && !zero(expectedAccount));
-        byte[] originBytes=origin==null?null:origin.getBytes(StandardCharsets.US_ASCII);
-        need(originBytes!=null && originBytes.length>=1 && originBytes.length<=ORIGIN_MAX && maximumRecords>=1 && maximumRecords<=CAPACITY);
+        need(origin!=null && origin.startsWith("https://"));
+        byte[] originBytes=origin.getBytes(StandardCharsets.US_ASCII);
+        need(originBytes.length>=1 && originBytes.length<=ORIGIN_MAX && maximumRecords>=1 && maximumRecords<=CAPACITY);
         for(byte v:originBytes)need(v>32 && v<127);
+        need(new String(originBytes,StandardCharsets.US_ASCII).equals(origin));
         byte[] count=ByteBuffer.allocate(4).putInt(maximumRecords).array();
         this.path=path.toAbsolutePath();this.maximum=maximumRecords;this.reduction=reduction;this.expiry=System.currentTimeMillis()+LIFETIME_MS;this.closed=false;
         this.trust=enrolled;this.account=expectedAccount.clone();this.origin=origin;
@@ -180,7 +182,7 @@ public final class ContactHistory {
         State state=null;List<ManifestChain.Verified> history=null;
         while(file.position()<file.size()){
             need(file.size()-file.position()>=4,"corrupt");byte[] length=readFull(file,4);int count=ByteBuffer.wrap(length).getInt();
-            need(count>=12+364 && count<=20+HISTORY_LIMIT*(12+9751)+CAPACITY*230 && file.size()-file.position()>=count+32,"corrupt");
+            need(count>=12+364 && count<=20+HISTORY_LIMIT*(12+9751)+CAPACITY*419 && file.size()-file.position()>=count+32,"corrupt");
             byte[] body=readFull(file,count);need(same(readFull(file,32),sha(join(header,length,body))),"corrupt");
             var saved=new ArrayList<Saved>();
             try(var in=new DataInputStream(new ByteArrayInputStream(body))){
@@ -225,25 +227,16 @@ public final class ContactHistory {
         return new Token(this,rowBytes(r));
     }
     private Row expected(Token t)throws GeneralSecurityException{
+        // Tokens carry opaque full-row bytes; the CAS comparison uses them verbatim.
         need(t!=null && t.owner==this,"invalid local token");
         need(!closed && System.currentTimeMillis()<expiry,"closed");
-        try(var in=new DataInputStream(new ByteArrayInputStream(t.row))){
-            int historyCount=in.readInt();need(historyCount==0,"invalid local token");
-            for(int i=0;i<historyCount;i++){in.readLong();int size=in.readInt();need(in.skip(size)==size,"invalid local token");}
-            int count=in.readInt();need(count==1,"invalid local token");
-            byte[] contactId=read(in,16);int state=in.read();
-            if(state==2)return new Row(contactId,false,null);
-            need(state==1,"invalid local token");
-            long revision=in.readLong();byte[] digest=fixed(read(in,32),32),request=fixed(read(in,16),16),routing=fixed(read(in,32),32);
-            Slot name=slot(in,revision),notes=slot(in,revision);
-            byte[] statement=fixed(read(in,32),32),manifest=fixed(read(in,32),32),reader=fixed(read(in,32),32),writer=fixed(read(in,32),32);
-            long manifestVersion=in.readLong(),readerGeneration=in.readLong(),comparisonMs=in.readLong();
-            byte[] stampDigest=read(in,32);long stampVersion=in.readLong(),stampTime=in.readLong();byte[] anchor=read(in,32);
-            Metadata m=new Metadata(contactId,revision,digest,request,routing,name,notes,statement,manifestVersion,manifest,reader,readerGeneration,writer,comparisonMs,
-                new Stamp(stampVersion,stampDigest,anchor,stampTime));
-            return new Row(contactId,true,m);
-        }catch(IOException failure){throw new GeneralSecurityException("Contact local history: invalid local token");}
+        // Row bytes carry the state framing: [historyCount=0][rowCount=1][contactId][state]...
+        need(t.row.length>=25,"invalid local token");
+        return new Row(Arrays.copyOfRange(t.row,8,24),t.row[24]==1,null);
     }
+
+    /** SHA-256 of the persisted file, for cross-language interchange checks. */
+    public static String fileDigest(java.nio.file.Path path)throws java.io.IOException{try{return HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(java.nio.file.Files.readAllBytes(path)));}catch(java.security.NoSuchAlgorithmException failure){throw new java.io.IOException(failure);}}
 
     /** Creates the file with the complete verified generation-one history and no rows. Missing state never initializes on open. */
     public static ContactHistory create(Path path,byte[] pin,byte[] fingerprint,byte[] account,String origin,int maximumRecords,List<ManifestChain.Verified> history,long now)throws IOException,GeneralSecurityException{
@@ -253,6 +246,7 @@ public final class ContactHistory {
         ManifestChain.RootPin enrolled=ManifestChain.RootPin.enroll(pin.clone(),fingerprint.clone());
         var result=new ContactHistory(path,pin,fingerprint,account,origin,maximumRecords,false,enrolled);
         var saved=capture(history);result.verifyHistory(saved);
+        need(now>0 && saved.stream().allMatch(m->m.comparison()<=now || m.comparison()-now<=30000),"corrupt");
         try(var file=FileChannel.open(result.path,StandardOpenOption.CREATE_NEW,StandardOpenOption.READ,StandardOpenOption.WRITE,LinkOption.NOFOLLOW_LINKS);var lock=file.lock()){
             need(lock.isValid());writeFull(file,result.header);result.append(file,new State(saved,List.of()));
         }
@@ -357,5 +351,5 @@ public final class ContactHistory {
         });
     }
 
-    public void close(){if(closed)return;closed=true;PERMITS.release();}
+    public void close(){if(closed)return;closed=true;java.util.Arrays.fill(header,(byte)0);java.util.Arrays.fill(account,(byte)0);PERMITS.release();}
 }

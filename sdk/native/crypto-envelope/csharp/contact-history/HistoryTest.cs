@@ -53,6 +53,8 @@ public static class HistoryTest {
                 try{racer.Accept(racerToken!,new[]{first,second},fork,s2);Console.WriteLine("unexpected fork win");}
                 catch(InvalidOperationException){Environment.Exit(3);}
                 return 0;}
+            case "--digest":{
+                Console.WriteLine(ContactHistory.FileDigest(path));return 0;}
             case "--verify":{
                 using var j=ContactHistory.Open(path,pin,fingerprint,account,origin,8);
                 if(j.Lookup(contact).Metadata!.Revision!=2)throw new InvalidOperationException("Child CAS state");
@@ -70,6 +72,9 @@ public static class HistoryTest {
                 Refuse(()=>ContactHistory.Open(path,pin,fingerprint,wrongAccount,origin,8));
                 if(j.Lookup(contact).Reason!="unobserved")throw new InvalidOperationException("Unobserved");
                 Refuse(()=>j.Accept(null,new[]{first},update,s2));
+                using(var fresh=ContactHistory.Create(path+".cold",pin,fingerprint,account,origin,8,new[]{first,second},10000))
+                    Refuse(()=>fresh.Accept(null,new[]{first,second},update,s2));
+                File.Delete(path+".cold");
                 var saved=j.Accept(null,new[]{first},create,s1);
                 if(!saved.Accepted || saved.Metadata!.Revision!=1)throw new InvalidOperationException("Cold create");
                 var holder=saved.TokenField!;

@@ -4865,6 +4865,13 @@ jobs:
           & cmd /c $batch
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: "Managed contact local history [java]: Exercise restart, CAS, replay, fork and terminal controls"
+      - name: "Managed contact local history: Cross-language interchange digest comparison"
+        shell: pwsh
+        if: runner.os == 'Windows'
+        run: |
+          python sdk/native/crypto-envelope/contact-history-run.py --language all --interchange --producer producer --origin-asset "$env:RUNNER_TEMP/contact-origin-mutation-java"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
         shell: pwsh
         if: runner.os == 'Windows'
         run: |
