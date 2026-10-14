@@ -10,7 +10,7 @@ Run with Python 3.11+, Node, OpenSSL, Cargo/Rust 1.97.1 or Go 1.26.9 on PATH.
 The signed TLS fixture producer additionally requires Python `cryptography==46.0.5` and `ada-url==1.27.0`:
 
 ```sh
-python sdk/native/hpke-candidate/package-native.py --language rust --archive PATH_TO_REVIEWED_PROFILE02_PRODUCER --election PATH_TO_REVIEWED_PROFILE03_PRODUCER --original PATH_TO_REVIEWED_ORIGINAL_PRODUCER --template PATH_TO_REVIEWED_TEMPLATE_PRODUCER --save-oracle PATH_TO_REVIEWED_SAVE_ORACLE --opening-oracle PATH_TO_REVIEWED_OPENING_ORACLE --authoring-oracle PATH_TO_REVIEWED_AUTHORING_ORACLE --contact PATH_TO_REVIEWED_CONTACT_PRODUCER --output NEW_OUTPUT_DIRECTORY --require-protected
+python sdk/native/hpke-candidate/package-native.py --language rust --archive PATH_TO_REVIEWED_PROFILE02_PRODUCER --election PATH_TO_REVIEWED_PROFILE03_PRODUCER --original PATH_TO_REVIEWED_ORIGINAL_PRODUCER --template PATH_TO_REVIEWED_TEMPLATE_PRODUCER --save-oracle PATH_TO_REVIEWED_SAVE_ORACLE --opening-oracle PATH_TO_REVIEWED_OPENING_ORACLE --authoring-oracle PATH_TO_REVIEWED_AUTHORING_ORACLE --contact PATH_TO_REVIEWED_CONTACT_PRODUCER --context PATH_TO_REVIEWED_CONTEXT_PRODUCER --output NEW_OUTPUT_DIRECTORY --require-protected
 ```
 
 Use `--language go` for the Go module. The script verifies exact producer commits
@@ -30,7 +30,7 @@ public checksum database. No path, replace, workspace or private-checkout
 dependency is accepted. Consumer dependency/build caches are fresh.
 
 Installed acceptance runs actual journal crash/CAS/restore and authenticated
-root transition controls. Twenty-two separately compiled consumer probes also
+root transition controls. Twenty-three separately compiled consumer probes also
 cover selected original ciphertext, durable history, HTTPS transport, signed
 current proofs, verified reads and page discovery, saved owner-review intent,
 and typed proposal consumption/status. The six actual TLS suites preserve
@@ -100,6 +100,18 @@ It also checks post-commit reconciliation when root history changes during a
 write. The report records local history separately from current permission;
 metadata never recreates verified field or transition tokens. Whole-database
 rollback protection requires an external checkpoint and is not claimed.
+
+Workflow-context qualification adds a ninth pinned producer. Its installed
+consumer selects owner role 2 and integration role 3 explicitly and checks
+opaque ZTWC01 bytes, exact scope/domain binding, fresh encapsulation, size limits,
+tampering and current-authority rechecks. The maintained SDK independently opens
+software-produced ciphertext. Qualified protected opening exercises both roles
+and requires exact owned-key deletion on success and interrupted setup. These
+installed APIs also run actual ten-second deadline and cancellation controls:
+four unresolved authority callbacks retain their slots, a fifth is refused
+without invoking its callback, and admission returns after settlement. These
+checks do not establish context persistence, a live integration grant or deployed
+service acceptance; the report records those boundaries separately.
 
 `--owner-deadline-case-ms` records the declared caller deadline for the
 post-handshake owner-template cases (default 100, allowed 100..2000). Hosted CI

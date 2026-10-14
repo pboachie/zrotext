@@ -90,3 +90,6 @@ __all__ += ['ConversationSignerSetup02','ConversationSignerError','ConversationR
 
 from .opening_capacity import OwnerOpeningCapacityClient,OpeningCapacityError
 __all__ += ['OwnerOpeningCapacityClient','OpeningCapacityError']
+
+from .conversation_custody import ConversationCustody02,ConversationCustodyError
+__all__ += ['ConversationCustody02','ConversationCustodyError']

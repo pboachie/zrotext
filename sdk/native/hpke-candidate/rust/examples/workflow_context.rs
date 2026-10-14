@@ -1,4 +1,5 @@
 mod context_custody;
+mod context_limits;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use zrotext_hpke_candidate::{
@@ -28,6 +29,10 @@ fn scope(v: &Value) -> WorkflowContextScope {
     }
 }
 fn main() {
+    if std::env::args().len() == 2 && std::env::args().nth(1).as_deref() == Some("--limits") {
+        context_limits::run();
+        return;
+    }
     let session = context_custody::Session::new();
     let input: Value = serde_json::from_reader(std::io::stdin()).unwrap();
     let f = &input["Fixture"];
