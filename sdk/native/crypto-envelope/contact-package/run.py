@@ -79,7 +79,7 @@ def main():
                 if args.mutation_fixture:
                     assert rows[6]['accepted'] and rows[6]['value']['refusals'] == 12
                     proof = dict(fixture=fixture, fields=rows[6]['value']['fields'], mutations=rows[6]['value']['mutations'])
-                    value = json.loads(subprocess.check_output(['node', str(args.producer / 'sdk/native/sealed-candidate/python/contact-producer-interop.mjs'), '--consume'], input=json.dumps(proof), text=True, encoding='utf-8', timeout=60))
+                    value = json.loads(subprocess.check_output(['node', str(args.producer / 'sdk/native/sealed-candidate/python/contact-producer-interop.mjs')], input=json.dumps(proof), text=True, encoding='utf-8', timeout=60))
                     assert value['verified'] is True and value['fields'] == 3 and value['transitions'] == 4
                     assert len(base64.b64decode(value['finalDigest'], validate=True)) == 32
             assert json.loads(out.splitlines()[-1]) == dict(owned_key_deleted=True)
