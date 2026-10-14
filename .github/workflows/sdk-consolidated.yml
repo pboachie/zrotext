@@ -3420,6 +3420,70 @@ jobs:
           }
           python sdk/native/hpke-candidate/test-owner-context.py --binary $probe --producer "$env:RUNNER_TEMP/selected" --deadline-case-ms 1000
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: "Native owner facts authoring [rust]: Prepare pinned maintained authoring oracle"
+        shell: pwsh
+        run: |
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/authoring-rust"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C "$env:RUNNER_TEMP/authoring-rust" checkout --detach 8982ee9e96be15801a424708afa603ef708a8a5b
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm ci --prefix "$env:RUNNER_TEMP/authoring-rust/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build --prefix "$env:RUNNER_TEMP/authoring-rust/sdk/typescript"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: "Native owner facts authoring [rust]"
+        run: |
+          python -m pip install cryptography==46.0.4
+      - name: "Native owner facts authoring [rust]: Build native authoring probe"
+        env:
+          RUSTUP_TOOLCHAIN: '1.97.1'
+        shell: pwsh
+        run: |
+          cargo test --locked --manifest-path sdk/native/hpke-candidate/rust/Cargo.toml --lib
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo build --locked --manifest-path sdk/native/hpke-candidate/rust/Cargo.toml --example context_authoring
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: "Native owner facts authoring [rust]: Actual authoring TLS and maintained state-machine differential"
+        shell: pwsh
+        run: |
+          $probe = 'sdk/native/hpke-candidate/rust/target/debug/examples/context_authoring'
+          if ($IsWindows) { $probe += '.exe' }
+          python sdk/native/hpke-candidate/test-context-authoring.py --binary $probe --producer "$env:RUNNER_TEMP/authoring-rust"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: "Native owner facts authoring [go]: Prepare pinned maintained authoring oracle"
+        shell: pwsh
+        run: |
+          git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/authoring-go"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C "$env:RUNNER_TEMP/authoring-go" checkout --detach 8982ee9e96be15801a424708afa603ef708a8a5b
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm ci --prefix "$env:RUNNER_TEMP/authoring-go/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build --prefix "$env:RUNNER_TEMP/authoring-go/sdk/typescript"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: "Native owner facts authoring [go]"
+        run: |
+          python -m pip install cryptography==46.0.4
+      - name: "Native owner facts authoring [go]: Build native authoring probe"
+        env:
+          RUSTUP_TOOLCHAIN: '1.97.1'
+        shell: pwsh
+        run: |
+          Push-Location sdk/native/hpke-candidate/go
+          $probe = "$env:RUNNER_TEMP/authoring-go-probe"
+          if ($IsWindows) { $probe += '.exe' }
+          go test ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go build -o $probe ./cmd/context-authoring
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+      - name: "Native owner facts authoring [go]: Actual authoring TLS and maintained state-machine differential"
+        shell: pwsh
+        run: |
+          $probe = "$env:RUNNER_TEMP/authoring-go-probe"
+          if ($IsWindows) { $probe += '.exe' }
+          python sdk/native/hpke-candidate/test-context-authoring.py --binary $probe --producer "$env:RUNNER_TEMP/authoring-go"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native workflow context [rust]"
         run: |
           rustup toolchain install 1.97.1 --profile minimal

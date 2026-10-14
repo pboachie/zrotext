@@ -1,3 +1,5 @@
+#[path = "context_authoring.rs"]
+pub mod authoring;
 use super::*;
 use crate::workflow_context::WorkflowContextScope;
 use zeroize::Zeroizing;
@@ -107,6 +109,7 @@ pub struct ContextReceipt {
     pub pending: ContextPending,
     pub request_acknowledged: bool,
 }
+#[derive(Clone)]
 pub struct ContextWriteReview {
     pub request_id: String,
     pub expected_revision: u8,

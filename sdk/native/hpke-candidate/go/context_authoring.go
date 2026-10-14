@@ -114,7 +114,17 @@ func (a *OwnerContextAuthoring) State() ContextAuthoringState {
 	return v
 }
 func (a *OwnerContextAuthoring) SavedSource() *AcknowledgedContextSource {
-	if a.live() != nil {
+	// A closed authoring keeps its terminal phase label; only deadline expiry
+	// re-closes here. This mirrors the maintained savedSource contract.
+	a.mu.Lock()
+	closed := a.closed
+	expired := !a.end.IsZero() && !time.Now().Before(a.end)
+	a.mu.Unlock()
+	if closed {
+		return nil
+	}
+	if expired {
+		a.Close()
 		return nil
 	}
 	a.mu.Lock()
@@ -155,9 +165,15 @@ func (a *OwnerContextAuthoring) Close() {
 func (a *OwnerContextAuthoring) Invalidate() { a.Close() }
 func (a *OwnerContextAuthoring) live() error {
 	a.mu.Lock()
-	bad := a.closed || (!a.end.IsZero() && !time.Now().Before(a.end))
+	closed := a.closed
+	expired := !a.end.IsZero() && !time.Now().Before(a.end)
 	a.mu.Unlock()
-	if bad {
+	if closed {
+		// A terminal label (refused/unknown/closed) is already settled;
+		// a liveness probe reports it without re-closing.
+		return ErrAuthentication
+	}
+	if expired {
 		a.Close()
 		return ErrAuthentication
 	}
@@ -361,21 +377,35 @@ func (a *OwnerContextAuthoring) outcome() {
 	if p != nil {
 		a.pending = p
 	}
-	closed := a.closed
-	pending := a.pending != nil
-	if closed {
+	if a.closed {
 		a.phase = "closed"
-	} else if pending {
-		a.phase = "unknown"
-	} else {
-		a.phase = "refused"
-	}
-	a.mu.Unlock()
-	if !closed && !pending {
-		a.Close()
-		a.mu.Lock()
-		a.phase = "refused"
 		a.mu.Unlock()
+		return
+	}
+	if a.pending != nil {
+		a.phase = "unknown"
+		a.mu.Unlock()
+		return
+	}
+	// Flip the terminal label with the closed flag in one critical section so
+	// a concurrent foreground read never observes a half-settled refusal.
+	a.client = nil
+	a.ticket = nil
+	a.credentials = nil
+	timer := a.timer
+	a.timer = nil
+	cancel := a.cancel
+	a.closed = true
+	a.phase = "refused"
+	a.mu.Unlock()
+	if timer != nil {
+		timer.Stop()
+	}
+	if cancel != nil {
+		cancel()
+	}
+	if c != nil {
+		c.Close()
 	}
 }
 func (a *OwnerContextAuthoring) operation(ctx context.Context, phase string, run func() error) ContextAuthoringState {
@@ -390,7 +420,10 @@ func (a *OwnerContextAuthoring) operation(ctx context.Context, phase string, run
 	select {
 	case contextAuthors <- struct{}{}:
 	default:
+		// A capacity-refused operation is an outcome, not a silent no-op:
+		// pending identity stays unknown; without pending the editor closes refused.
 		a.mu.Unlock()
+		a.outcome()
 		return a.State()
 	}
 	a.busy = true
@@ -402,8 +435,9 @@ func (a *OwnerContextAuthoring) operation(ctx context.Context, phase string, run
 	}
 	a.mu.Unlock()
 	done := make(chan struct{})
+	released := make(chan struct{})
 	go func() {
-		defer close(done)
+		defer close(released)
 		if e := run(); e != nil {
 			a.outcome()
 		}
@@ -413,13 +447,19 @@ func (a *OwnerContextAuthoring) operation(ctx context.Context, phase string, run
 		}
 		a.mu.Unlock()
 		<-contextAuthors
+		a.mu.Lock()
+		a.busy = false
+		a.mu.Unlock()
+		close(done)
 	}()
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
-	defer func() { go func() { <-done; a.mu.Lock(); a.busy = false; a.mu.Unlock() }() }()
 	for {
 		select {
 		case <-done:
+			// The result path waits for the deterministic busy release so an
+			// immediately following reconciliation observes admission reset.
+			<-released
 			return a.State()
 		case <-ctx.Done():
 			a.Close()
