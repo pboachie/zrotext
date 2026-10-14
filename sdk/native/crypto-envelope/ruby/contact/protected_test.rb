@@ -4,6 +4,7 @@
 require 'json'
 require 'base64'
 require_relative 'protected_contact_signer'
+require_relative 'mutation_protected_test'
 include ZrotextCandidate
 f=JSON.parse(STDIN.read);parser=ContactOrigin.new(ARGV.fetch(0));receipt=ARGV.fetch(1)
 d=->(key){Base64.strict_decode64(f.fetch(key))};b64=->(bytes){Base64.strict_encode64(bytes)}
@@ -77,7 +78,9 @@ begin
   raise 'timed out worker did not settle' unless ContactField.instance_variable_get(:@outstanding)==0
   raise 'expired provider signed late' unless signatures==0
   controls+=1
-  puts JSON.generate({fixture:f,outputs:outputs,controls:controls})
+  result={fixture:f,outputs:outputs,controls:controls}
+  result[:mutation]=MutationProtectedTest.run(f,outputs,parser,key) if ARGV[2]=='--mutation'
+  puts JSON.generate(result)
 ensure
   borrowed&.close
   if key

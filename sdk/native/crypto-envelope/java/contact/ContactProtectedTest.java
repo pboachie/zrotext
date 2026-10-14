@@ -25,6 +25,9 @@ final class ContactProtectedTest {
         byte[] digest=sha(join(domain(label),ByteBuffer.allocate(4).putInt(unsigned.length).array(),unsigned));return join(unsigned,(byte[])method.invoke(key,(Object)digest));
     }
     static JsonObject run(JsonObject input,Path asset,Path receipt)throws Exception{
+        return run(input,asset,receipt,false);
+    }
+    static JsonObject run(JsonObject input,Path asset,Path receipt,boolean mutation)throws Exception{
         JsonObject f=input.deepCopy();var parser=new ContactOrigin(asset);ProtectedContactSigner key=null,borrowed=null;String alias=null;byte[] point=null;int controls=0;
         try{
             key=ProtectedContactSigner.create(name->write(receipt,name,"pending"));alias=key.alias();point=key.publicPoint();
@@ -58,7 +61,7 @@ final class ContactProtectedTest {
             AtomicBoolean timedOut=new AtomicBoolean();long began=System.nanoTime();
             synchronized(held){Thread caller=new Thread(()->{try{ContactField.produceProtected(held,st,expected,u,new AtomicBoolean());}catch(GeneralSecurityException failure){timedOut.set(true);}});caller.start();caller.join(12000);double seconds=(System.nanoTime()-began)/1_000_000_000.0;if(caller.isAlive() || !timedOut.get() || seconds<9.5 || seconds>12 || admission.availablePermits()!=3)throw new IllegalStateException("Provider deadline/retained admission failed");}
             end=System.nanoTime()+2_000_000_000L;while(admission.availablePermits()!=4 && System.nanoTime()<end)Thread.sleep(10);if(admission.availablePermits()!=4)throw new IllegalStateException("Timed out worker did not settle");controls++;
-            JsonObject result=new JsonObject();result.add("fixture",f);result.add("outputs",outputs);result.addProperty("controls",controls);return result;
+            JsonObject result=new JsonObject();result.add("fixture",f);result.add("outputs",outputs);result.addProperty("controls",controls);if(mutation)result.add("mutation",ContactMutationProtectedTest.run(key,f,outputs,parser));return result;
         }finally{
             if(borrowed!=null)borrowed.close();if(key!=null){key.deleteCreated();if(point!=null){try(var reopened=ProtectedContactSigner.open(alias,point)){reopened.publicPoint();throw new IllegalStateException("Deleted key reopened");}catch(GeneralSecurityException expectedFailure){/* expected */}}write(receipt,alias,"owned_key_deleted");}
         }

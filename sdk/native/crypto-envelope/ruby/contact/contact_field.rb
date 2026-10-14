@@ -92,10 +92,10 @@ module ZrotextCandidate
       need(key.instance_of?(ProtectedContactSigner) && statement.instance_of?(Statement))
       produce(statement,expected,input,cancelled){|captured,live|need(key.public_point==statement.identity[:root]);live.call;key.send(:sign_field,captured,live)}
     end
-    def produce(statement,expected,input,cancelled,&signer)
-      captured=unsigned(input);transferred=false
+    def produce(statement,expected,input,cancelled,prepared:false,check:nil,finish:nil,&signer)
+      captured=prepared ? input.b.dup : unsigned(input);transferred=false
       begin
-        bound(captured,statement,expected);need(cancelled.instance_of?(Cancellation))
+        check ? check.call(captured) : bound(captured,statement,expected);need(cancelled.instance_of?(Cancellation))
         stopped=Cancellation.instance_method(:cancelled?).bind(cancelled)
         need(!stopped.call)
         admitted=@admission.synchronize do
@@ -108,7 +108,7 @@ module ZrotextCandidate
             signature=signed=nil
             begin
               live.call;signature=signer.call(captured,live);live.call;signed=captured+signature
-              result=verify(signed,statement,contact:expected.contact,routing:expected.routing);live.call;queue<<[true,result]
+              result=finish ? finish.call(signed) : verify(signed,statement,contact:expected.contact,routing:expected.routing);live.call;queue<<[true,result]
             rescue StandardError
               queue<<[false,nil]
             ensure
