@@ -10,7 +10,7 @@ Run with Python 3.11+, Node, OpenSSL, Cargo/Rust 1.97.1 or Go 1.26.9 on PATH.
 The signed TLS fixture producer additionally requires Python `cryptography==46.0.5` and `ada-url==1.27.0`:
 
 ```sh
-python sdk/native/hpke-candidate/package-native.py --language rust --archive PATH_TO_REVIEWED_PROFILE02_PRODUCER --election PATH_TO_REVIEWED_PROFILE03_PRODUCER --original PATH_TO_REVIEWED_ORIGINAL_PRODUCER --template PATH_TO_REVIEWED_TEMPLATE_PRODUCER --save-oracle PATH_TO_REVIEWED_SAVE_ORACLE --opening-oracle PATH_TO_REVIEWED_OPENING_ORACLE --authoring-oracle PATH_TO_REVIEWED_AUTHORING_ORACLE --contact PATH_TO_REVIEWED_CONTACT_PRODUCER --context PATH_TO_REVIEWED_CONTEXT_PRODUCER --output NEW_OUTPUT_DIRECTORY --require-protected
+python sdk/native/hpke-candidate/package-native.py --language rust --archive PATH_TO_REVIEWED_PROFILE02_PRODUCER --election PATH_TO_REVIEWED_PROFILE03_PRODUCER --original PATH_TO_REVIEWED_ORIGINAL_PRODUCER --template PATH_TO_REVIEWED_TEMPLATE_PRODUCER --save-oracle PATH_TO_REVIEWED_SAVE_ORACLE --opening-oracle PATH_TO_REVIEWED_OPENING_ORACLE --authoring-oracle PATH_TO_REVIEWED_AUTHORING_ORACLE --contact PATH_TO_REVIEWED_CONTACT_PRODUCER --context PATH_TO_REVIEWED_CONTEXT_PRODUCER --context-oracle PATH_TO_REVIEWED_CONTEXT_ORACLE --output NEW_OUTPUT_DIRECTORY --require-protected
 ```
 
 Use `--language go` for the Go module. The script verifies exact producer commits
@@ -30,7 +30,7 @@ public checksum database. No path, replace, workspace or private-checkout
 dependency is accepted. Consumer dependency/build caches are fresh.
 
 Installed acceptance runs actual journal crash/CAS/restore and authenticated
-root transition controls. Twenty-three separately compiled consumer probes also
+root transition controls. Twenty-four separately compiled consumer probes also
 cover selected original ciphertext, durable history, HTTPS transport, signed
 current proofs, verified reads and page discovery, saved owner-review intent,
 and typed proposal consumption/status. The six actual TLS suites preserve
@@ -112,6 +112,18 @@ four unresolved authority callbacks retain their slots, a fifth is refused
 without invoking its callback, and admission returns after settlement. These
 checks do not establish context persistence, a live integration grant or deployed
 service acceptance; the report records those boundaries separately.
+
+Owner-context persistence adds a tenth pinned maintained oracle and a separate
+installed public consumer. Explicit prepare/review, POST commit, caller-owned
+retry and GET reconciliation preserve exact ciphertext, request identity and CAS
+revision. Equal GET bytes retain uncertainty until the request is acknowledged;
+compatible newer content is classified separately after acknowledgement. Closure
+and idle expiry preserve pending metadata and unknown outcomes. Real synthetic TLS
+checks cover authentication, redirects, malformed/truncated/trickled responses,
+current authority and all three context kinds. External blocked-callback controls
+exercise the ten-second deadline, eight retained slots, ninth-call refusal and
+recovery after actual settlement. The report distinguishes this candidate
+persistence lifecycle from deployed owner-service acceptance.
 
 `--owner-deadline-case-ms` records the declared caller deadline for the
 post-handshake owner-template cases (default 100, allowed 100..2000). Hosted CI

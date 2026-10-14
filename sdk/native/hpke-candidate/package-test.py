@@ -121,6 +121,20 @@ class PackagePolicy(unittest.TestCase):
             self.assertNotIn("--allow-unqualified", call)
             self.assertNotIn(call[0], ("cargo", "go"))
 
+    def test_owner_context_uses_current_oracle_and_installed_limits(self):
+        binaries = {name: Path("installed") / name for name in packages.HARNESSES}
+        with patch.object(packages, "run") as run:
+            packages.owner_context_acceptance(binaries, Path("context-oracle"), 1000)
+        calls = [call.args for call in run.call_args_list]
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][1].name, "test-owner-context-limits.py")
+        self.assertEqual(calls[0][2:], ("--binary", binaries["owner_context"]))
+        self.assertEqual(calls[1][1].name, "test-owner-context.py")
+        self.assertEqual(calls[1][2:], ("--producer", Path("context-oracle"),
+                                     "--deadline-case-ms", "1000", "--binary", binaries["owner_context"]))
+        self.assertEqual(packages.PRODUCERS["context_oracle"], "8982ee9e96be15801a424708afa603ef708a8a5b")
+        self.assertFalse(any(call[0] in ("cargo", "go") for call in calls))
+
     def test_opening_and_owned_cleanup_use_installed_probe(self):
         binaries = {name: Path("installed") / name for name in packages.HARNESSES}
         with patch.object(packages, "run") as run:

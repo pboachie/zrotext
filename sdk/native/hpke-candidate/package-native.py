@@ -34,10 +34,11 @@ PRODUCERS = {
     "authoring_oracle": "059556de2fe314ec0d88833a8d3e4d6ee41a8066",
     "contact": "ccf28fe445ba959aa01d99fed6bd9ee3188b749c",
     "context": "7e61c5b2461c82a5fbd05e62d06d14e34a0424d6",
+    "context_oracle": "8982ee9e96be15801a424708afa603ef708a8a5b",
 }
 HARNESSES = ("journal", "root", "cng", "compose", "compose02", "original", "reply_checkpoint",
              "reply_http", "reply_current", "reply_read", "reply_page", "reply_consumption", "reply_proposal",
-             "template", "template_crypto", "owner_template", "template_save", "template_opening", "template_authoring", "contact", "contact_mutation", "contact_history", "workflow_context")
+             "template", "template_crypto", "owner_template", "template_save", "template_opening", "template_authoring", "contact", "contact_mutation", "contact_history", "workflow_context", "owner_context")
 ORIGINAL_TLS = ("http", "current", "read", "page", "consumption", "proposal")
 
 
@@ -142,6 +143,7 @@ def rust_package(stage, output):
         shutil.copytree(ROOT / "rust/examples/contact_mutation_custody", consumer / "src/bin/contact_mutation_custody")
         shutil.copytree(ROOT / "rust/examples/context_custody", consumer / "src/bin/context_custody")
         shutil.copytree(ROOT / "rust/examples/context_limits", consumer / "src/bin/context_limits")
+        shutil.copytree(ROOT / "rust/examples/owner_context_limits", consumer / "src/bin/owner_context_limits")
         (consumer / "Cargo.toml").write_text('''[package]
 name = "native-installed-consumer"
 version = "0.0.0"
@@ -315,7 +317,14 @@ def context_acceptance(binaries, context, hardware=False):
                 "--hardware", "--fail-setup", env=safe_env())
 
 
-def acceptance(binaries, archive, election, original, template, save_oracle, opening_oracle, authoring_oracle, contact, context, deadline_case_ms):
+def owner_context_acceptance(binaries, context_oracle, deadline_case_ms):
+    run(sys.executable, ROOT / "test-owner-context-limits.py",
+        "--binary", binaries["owner_context"], env=safe_env())
+    run(sys.executable, ROOT / "test-owner-context.py", "--producer", context_oracle,
+        "--deadline-case-ms", str(deadline_case_ms), "--binary", binaries["owner_context"], env=safe_env())
+
+
+def acceptance(binaries, archive, election, original, template, save_oracle, opening_oracle, authoring_oracle, contact, context, context_oracle, deadline_case_ms):
     env = safe_env()
     fixture = run("node", election / "sdk/native/sealed-candidate/python/produce-election03.mjs", env=env, capture_output=True, text=True).stdout
     run(binaries["journal"], input=fixture, text=True)
@@ -326,6 +335,7 @@ def acceptance(binaries, archive, election, original, template, save_oracle, ope
     context_acceptance(binaries, context)
     template_acceptance(binaries, original, template)
     owner_template_acceptance(binaries, template, save_oracle, deadline_case_ms)
+    owner_context_acceptance(binaries, context_oracle, deadline_case_ms)
     template_opening_acceptance(binaries, template, opening_oracle, deadline_case_ms)
     template_authoring_acceptance(binaries, template, authoring_oracle)
     original_acceptance(binaries, original)
@@ -360,6 +370,7 @@ def main():
     parser.add_argument("--authoring-oracle", type=Path, required=True)
     parser.add_argument("--contact", type=Path, required=True)
     parser.add_argument("--context", type=Path, required=True)
+    parser.add_argument("--context-oracle", type=Path, required=True)
     parser.add_argument("--owner-deadline-case-ms", type=int, default=100,
                         help="Declared caller deadline for post-handshake owner-template fixture cases (100..2000)")
     parser.add_argument("--output", type=Path, required=True)
@@ -378,7 +389,7 @@ def main():
         package = rust_package if args.language == "rust" else go_package
         for binaries, artifact in package(Path(directory), args.output):
             qualified = acceptance(binaries, args.archive, args.election, args.original, args.template,
-                                   args.save_oracle, args.opening_oracle, args.authoring_oracle, args.contact, args.context, args.owner_deadline_case_ms)
+                                   args.save_oracle, args.opening_oracle, args.authoring_oracle, args.contact, args.context, args.context_oracle, args.owner_deadline_case_ms)
             report = {"experimental": True, "published": False, "language": args.language,
                       "version": VERSION, "archive": artifact.name, "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
                       "license": "AGPL-3.0-only", "producer_revisions": PRODUCERS,
@@ -410,6 +421,11 @@ def main():
                                                        "current_authority_recheck": True,
                                                        "retained_admission_and_deadline": True,
                                                        "persistence": False, "service_acceptance": False},
+                      "owner_context_acceptance": {"reviewed_ciphertext_persistence": True,
+                                                   "maintained_differential": True,
+                                                   "retained_admission_and_deadline": True,
+                                                   "deadline_case_ms": args.owner_deadline_case_ms,
+                                                   "service_acceptance": False},
                       "protected_acceptance": qualified}
             (args.output / "qualification.json").write_text(json.dumps(report, indent=2) + "\n")
             print(json.dumps(report))
