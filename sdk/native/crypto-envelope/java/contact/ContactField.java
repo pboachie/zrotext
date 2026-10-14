@@ -34,6 +34,11 @@ public final class ContactField {
             this.bytes=bytes.clone();this.account=account.clone();this.fingerprint=fingerprint.clone();this.manifest=manifest.clone();this.reader=reader.clone();this.point=point.clone();this.root=root.clone();this.writer=writer.clone();this.origin=origin;this.version=version;readerGeneration=generation;digest=sha(bytes);
         }
         public byte[] bytes(){return bytes.clone();}public byte[] digest(){return digest.clone();}
+        byte[] accountField(){return account.clone();}byte[] fingerprintField(){return fingerprint.clone();}byte[] manifestField(){return manifest.clone();}
+        byte[] readerField(){return reader.clone();}byte[] pointField(){return point.clone();}byte[] rootField(){return root.clone();}byte[] writerField(){return writer.clone();}
+        String originField(){return origin;}long versionField(){return version;}long readerGenerationField(){return readerGeneration;}
+        long issuedField(){return ByteBuffer.wrap(bytes,issuedAt(),8).getLong();}
+        private int issuedAt(){int n=Short.toUnsignedInt(ByteBuffer.wrap(bytes,38,2).getShort());return 225+n;}
     }
     public static Statement verifyStatement(byte[] input,ManifestChain.Verified accepted,byte[] expectedAccount,String expectedOrigin,byte[] expectedFingerprint,ContactOrigin parser)throws GeneralSecurityException{
         need(input!=null && input.length>=314 && input.length<=817 && accepted!=null && accepted.profile()==2 && accepted.generation()==1);
