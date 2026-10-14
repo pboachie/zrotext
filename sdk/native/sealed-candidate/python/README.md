@@ -1246,3 +1246,16 @@ child/provider/callback settlement. No generic signing, DOM impersonation, serve
 grant, live send or registry release is implied. Existing browser adapters remain.
 Published encrypted root-bundle verification and encrypted archive recovery/lease
 formats are separate remaining parity gaps; existing PCP access is not recovery.
+
+`verify_published_root_bundle` verifies the maintained public root custody bundle
+against an independently intended pin, compared fingerprint and canonical HTTPS
+origin. It captures bounded byte inputs, validates exact public framing, digests
+and the canonical domain-separated signature, and returns frozen public bytes
+and enrolled root evidence. The enrollment interval is structurally checked; it
+is not a current-time authorization check. A valid signature does not authenticate
+the encrypted backup's AEAD, recover/import a key, grant consent, persist a pin,
+or establish current manifest authority. Encrypted archive recovery is separate.
+Native inputs are ordinary bytes/bytearray and a dict; unrelated dict metadata
+is ignored as in the maintained verifier. Existing browser and legacy APIs stay
+available. Shared vectors plus 41 actual maintained differential cases execute
+from source and both isolated installed archive consumers.
