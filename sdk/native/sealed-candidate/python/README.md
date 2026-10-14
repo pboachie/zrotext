@@ -1205,3 +1205,44 @@ remain explicit caller responsibilities. This companion does not implement offer
 reservations or DOM consumers and does not activate a deployed opening service.
 Synthetic maintained-client comparisons and actual TLS consumers run against both
 clean wheel and sdist installations; live owner sessions are not exercised.
+
+
+### Scope-bound conversation custody candidate
+
+`ConversationCustody02` composes genuine native signer setup, reviewed role-5
+enrollment, caller-owned installation CAS and independent installed-manifest
+readback. `setup()` performs no network request and succeeds only after the
+current verified manifest contains the exact accepted successor. A successful
+installation callback alone cannot unlock signing. Setup failures after installation
+begins report `ConversationCustodyError.state == "unknown"`; no automatic retry
+or trust reset follows.
+
+`authority()` returns an immutable exact conversation scope. `prepare(scope, body)`
+returns an opaque weakly retained ticket; `sign_reviewed(ticket, scope, body)`
+consumes it once and returns the exact envelope, ZTCS confirmation and signature
+as base64 strings after fresh checks. Normal setup/owner/confirmation callback
+return consumes consent; raise to decline, and do not return awaitables. At most
+1024 live review tickets are admitted; discarding a ticket releases its retained
+review. Account, session, interval, line, device, peer, generation, archive reader
+and current manifest remain bound. Root, manifest and clock regression, revoked
+keys, expired authority and changed scope fail closed. Initial signed lifetime
+is monotonic and cannot be renewed by later operations.
+
+`open_sealed(envelope, scope)` verifies accepted historical provenance, current
+archive authority and any independently phone-approved multiwrap selection before
+opening. It rechecks the same scope and genuine custody before publishing text.
+An optional exact `CheckpointStore` compares current persisted evidence and can
+recover older signed manifests through `history(digest, comparison_ms)`. That
+accessor replays the complete independently pinned chain; it does not establish
+fresh permission or prevent restoration of an older whole database.
+
+Root and archive custodians are borrowed, never deleted by this facade. The
+fresh role-5 signer is owned and requires durable pending/deletion receipts.
+Protected custody is required by default; `require_protected=False` explicitly
+permits software experiments. Close cancels publication and disposes owned signer
+custody after unresolved work settles; `cleanup_state` and `cleanup()` retain
+exact-alias recovery requirements. Four parent worker slots remain held through
+child/provider/callback settlement. No generic signing, DOM impersonation, server
+grant, live send or registry release is implied. Existing browser adapters remain.
+Published encrypted root-bundle verification and encrypted archive recovery/lease
+formats are separate remaining parity gaps; existing PCP access is not recovery.
