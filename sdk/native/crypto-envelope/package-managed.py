@@ -29,7 +29,7 @@ MODULES = ["HpkeRecipient", "SignedEnvelope", "ManifestChain", "Election03",
            "OwnerTemplate", "TemplateStore", "OwnerTemplateOpening", "ContactOrigin", "ContactField", "ProtectedContactSigner"]
 TARGET_MODULES = {"java": ["OwnerTemplateTransport"],
                   "csharp": ["OwnerTemplateTransport", "OwnerTemplateSave", "OwnerTemplateAuthoring"],
-                  "ruby": ["OwnerTemplateSave", "OwnerTemplateAuthoring"]}
+                  "ruby": ["OwnerTemplateSave", "OwnerTemplateAuthoring", "ContactMutation"]}
 SPLIT_MODULES = {"OriginalReadClient": "original_read", "OriginalPageClient": "original_page",
                  "OriginalOwnerReviewClient": "original_owner_review", "OriginalProposalClient": "original_proposal"}
 SUITES = {"root-journal": "RootJournalTest", "election-journal": "ElectionJournalTest",
@@ -40,7 +40,7 @@ SUITES = {"root-journal": "RootJournalTest", "election-journal": "ElectionJourna
           "owner-http": "OwnerReviewTest", "proposal-http": "ProposalTest",
           "template": "TemplateTest", "template-crypto": "ProtectedTemplateTest",
           "owner-template": "OwnerTemplateTest", "owner-template-save": "OwnerTemplateSaveTest",
-          "owner-template-opening": "ProtectedOpeningTest", "owner-template-authoring": "OwnerTemplateAuthoringTest", "contact": "ContactPackageTest"}
+          "owner-template-opening": "ProtectedOpeningTest", "owner-template-authoring": "OwnerTemplateAuthoringTest", "contact": "ContactPackageTest", "contact-mutation": "ContactMutationTest"}
 PINS = {"producer02": "a13ea1e3d6f6db594485c19b36c43fe642e67c7a",
         "producer03": "304d512b7a420a3102278f32baed095f3e778989",
         "custody_producer": "a5fb59c2c5bc81e80b5b8d4b836afd51c5304653",
@@ -64,7 +64,8 @@ PINS = {"producer02": "a13ea1e3d6f6db594485c19b36c43fe642e67c7a",
         "template_authoring_fixture": "b784cb6a23564a6eb7ac16cbf57134d95b8b2313",
         "template_authoring_oracle": "059556de2fe314ec0d88833a8d3e4d6ee41a8066",
         "contact_fixture": "62a00c790ef7537b92f196e9de44a94debbb088f",
-        "contact_producer": "ccf28fe445ba959aa01d99fed6bd9ee3188b749c"}
+        "contact_producer": "ccf28fe445ba959aa01d99fed6bd9ee3188b749c",
+        "mutation_fixture": "0381f71dc8a67d25562d5a6e23ac4ed50faeed4e"}
 
 
 def run(*args, **kw):
@@ -158,8 +159,9 @@ def java(stage, source, feed, env):
         directory = 'original-reply' if suite == 'original-protected' else 'http' if suite.endswith('-http') else suite
         if suite == 'owner-template-save':
             directory = 'owner-template'
-        selected = HERE / 'contact-package/java' if suite == 'contact' else HERE / 'java' / directory
+        selected = HERE / 'contact-package/java' if suite in ('contact', 'contact-mutation') else HERE / 'java' / directory
         copy(selected / (test + '.java'), consumer / 'src/main/java' / (test + '.java'))
+    copy(HERE / 'contact-package/java/ContactMutationPackageTest.java', consumer / 'src/main/java/ContactMutationPackageTest.java')
     copy(HERE / 'java/template-crypto/TemplateCryptoTest.java', consumer / 'src/main/java/TemplateCryptoTest.java')
     copy(HERE / 'java/owner-template/OwnerTemplateLifecycleTest.java', consumer / 'src/main/java/OwnerTemplateLifecycleTest.java')
     copy(HERE / 'java/owner-template-opening/OwnerTemplateOpeningTest.java', consumer / 'src/main/java/OwnerTemplateOpeningTest.java')
@@ -180,7 +182,7 @@ def java(stage, source, feed, env):
         if hashlib.sha256((consumer / 'target/dependency' / jar).read_bytes()).hexdigest() != expected_hash:
             raise ValueError('Resolved JSON dependency checksum mismatch')
     classpath = os.pathsep.join(map(str, [consumer / 'target/classes', *dependencies]))
-    return {suite: [tool('java'), '-cp', classpath, ('org.zrotext.consumer.' if suite == 'contact' else 'org.zrotext.candidate.') + test] for suite, test in SUITES.items()}, env
+    return {suite: [tool('java'), '-cp', classpath, ('org.zrotext.consumer.' if suite in ('contact', 'contact-mutation') else 'org.zrotext.candidate.') + test] for suite, test in SUITES.items()}, env
 
 
 def csharp(stage, source, feed, env):
@@ -207,8 +209,10 @@ def csharp(stage, source, feed, env):
     for suite in SUITES:
         consumer = stage / 'consumer' / suite
         directory = 'read-http' if suite == 'protected-read-http' else suite
-        selected = HERE / 'contact-package/csharp' if suite == 'contact' else HERE / 'csharp' / directory
-        copy(selected / 'Program.cs', consumer / 'Program.cs')
+        selected = HERE / 'contact-package/csharp' if suite in ('contact', 'contact-mutation') else HERE / 'csharp' / directory
+        copy(selected / ('MutationProgram.cs' if suite == 'contact-mutation' else 'Program.cs'), consumer / 'Program.cs')
+        if suite == 'contact':
+            copy(selected / 'ContactMutationPackageTest.cs', consumer / 'ContactMutationPackageTest.cs')
         if suite == 'owner-template':
             copy(HERE / 'csharp/owner-template/LifecycleTest.cs', consumer / 'LifecycleTest.cs')
         constants = '<DefineConstants>$(DefineConstants);ZROTEXT_INSTALLED_CONSUMER</DefineConstants>' if suite == 'template-crypto' else ''
@@ -257,13 +261,13 @@ def ruby(stage, source, feed, env):
                 'owner-http': 'owner_review_test.rb', 'proposal-http': 'proposal_test.rb',
                 'template': 'test.rb', 'template-crypto': 'test.rb',
                 'owner-template': 'test.rb', 'owner-template-save': 'save_test.rb',
-                'owner-template-opening': 'opening_test.rb', 'owner-template-authoring': 'authoring_test.rb', 'contact': 'test.rb'}.get(suite, name)
+                'owner-template-opening': 'opening_test.rb', 'owner-template-authoring': 'authoring_test.rb', 'contact': 'test.rb', 'contact-mutation': 'mutation_test.rb'}.get(suite, name)
         directory = 'original-reply' if suite == 'original-protected' else 'http' if suite.endswith('-http') else suite
         if suite in ('owner-template-save', 'owner-template-opening', 'owner-template-authoring'):
             directory = 'owner-template'
-        selected = HERE / 'contact-package/ruby' if suite == 'contact' else HERE / 'ruby' / directory
+        selected = HERE / 'contact-package/ruby' if suite in ('contact', 'contact-mutation') else HERE / 'ruby' / directory
         text = (selected / name).read_text(encoding='utf-8')
-        text, count = re.subn(r"^require_relative '[^']+'$", "require 'zrotext_native_candidate'", text, flags=re.M)
+        text, count = (text, 1) if suite in ('contact', 'contact-mutation') else re.subn(r"^require_relative '[^']+'$", "require 'zrotext_native_candidate'", text, flags=re.M)
         if not count and suite != 'contact':
             raise ValueError('Review changed Ruby consumer imports')
         consumer = stage / 'consumer' / suite / name
@@ -271,6 +275,8 @@ def ruby(stage, source, feed, env):
         guard = "\nexpected=Gem.loaded_specs.fetch('zrotext-native-candidate').full_gem_path\n$LOADED_FEATURES.grep(/zrotext_native_candidate/).each { |f| raise 'outside installed gem' unless File.realpath(f).start_with?(File.realpath(expected)+File::SEPARATOR) }\n"
         text = text.replace("require 'zrotext_native_candidate'", "require 'zrotext_native_candidate'" + guard, 1)
         write(consumer, text)
+        if suite == 'contact':
+            copy(HERE / 'contact-package/ruby/mutation_helper.rb', consumer.parent / 'mutation_helper.rb')
         if suite == 'owner-template':
             copy(HERE / 'ruby/owner-template/lifecycle_test.rb', consumer.parent / 'lifecycle_test.rb')
         commands[suite] = [executable, str(consumer)]
@@ -362,6 +368,9 @@ def acceptance(args, stage, commands, env):
     run(sys.executable, HERE / 'contact-package/run.py', '--command-file', command_files['contact'],
         '--fixture', args.contact_fixture, '--producer', args.contact_producer, '--origin-asset', args.installed_origin,
         cwd=stage, env=env)
+    run(sys.executable, HERE / 'contact-package/run.py', '--command-file', command_files['contact-mutation'],
+        '--fixture', args.contact_fixture, '--producer', args.contact_producer, '--origin-asset', args.installed_origin,
+        '--mutation-fixture', args.mutation_fixture, cwd=stage, env=env)
     template_suites = args.template_fixture / 'sdk/native/hpke-candidate'
     run(sys.executable, template_suites / 'test-template-content.py', '--producer', args.original_producer,
         '--command-file', command_files['template'], cwd=stage, env=env)
@@ -417,7 +426,7 @@ def acceptance(args, stage, commands, env):
                 contact_probe.check_returncode()
                 run(sys.executable, HERE / 'contact-package/run.py', '--command-file', command_files['contact'],
                     '--fixture', args.contact_fixture, '--producer', args.contact_producer, '--origin-asset', args.installed_origin,
-                    '--hardware', cwd=stage, env=env)
+                    '--mutation-fixture', args.mutation_fixture, '--hardware', cwd=stage, env=env)
                 contact_qualified = True
             opening_qualified = True
             run(sys.executable, HERE / 'original-read-run.py', '--language', args.target,
@@ -452,6 +461,7 @@ def main():
         shutil.copytree(feed, output)
     report = {'target': args.target, 'scope': 'Installed candidate consumers; native qualification requires QUALIFIED output; no publication or full SDK parity',
               'fixture_revisions': PINS,
+              'contact_mutation_acceptance': {'software': True, 'protected': contact_qualified},
               'contact_acceptance': {'software': True, 'protected': contact_qualified, 'origin_asset': origin_report,
                                      'current_permission': False, 'published': False},
               'owner_template_acceptance': {'cold_tls': True, 'save_tls': True, 'maintained_differential': True,

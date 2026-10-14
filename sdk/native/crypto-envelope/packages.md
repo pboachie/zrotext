@@ -111,7 +111,7 @@ promise hostile rollback resistance or automatic partial-record repair.
 
 Contact consumers add historical profile-02/genesis-root statement and field
 verification plus domain-limited software/protected field production. The runtime
-archives contain 26 Java, 32 C# and 31 Ruby modules. Consumers use only public
+archives contain 26 Java, 32 C# and 32 Ruby modules. Consumers use only public
 installed APIs. A separate platform-specific origin ZIP accompanies each feed:
 its complete source, Ada 3.3.0 MIT notice, wrapper AGPL license and closed hashed
 inventory are checked before fresh extraction. Callers pass that trusted installed
@@ -134,4 +134,14 @@ produces three independently verified commitments and rejects cancellation,
 closed handles and wrong scope. EOF during setup must still delete the exact
 owned key. A read-only precreation signing-capability refusal is recorded as
 unqualified; failures after creation remain fatal. Historical integrity is not
-current contact permission, mutation acceptance or durable history.
+current contact permission or durable history.
+
+Installed mutation consumers additionally exercise 1536 signed mutation and transition
+controls and independently verify four produced transitions. The separate
+`--mutation-fixture` checkout is pinned in the helper and workflow. Protected
+consumers use the same exact-owned synthetic enrollment lifecycle, then produce
+four transitions through the public mutation-only signing capability and reject
+twelve closed, cancelled or foreign-scope attempts. Worker-lock/admission controls
+remain source tests; installed probes do not reflect into private runtime state.
+The archives retain all inherited acceptance suites and the relocated origin asset
+boundary. Mutation integrity does not establish current permission or persistence.

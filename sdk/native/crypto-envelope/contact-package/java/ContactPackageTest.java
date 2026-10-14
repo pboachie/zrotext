@@ -10,7 +10,7 @@ import java.util.*;
 public final class ContactPackageTest {
     private ContactPackageTest(){}
     private static byte[] d(JsonObject f,String key){return Base64.getDecoder().decode(f.get(key).getAsString());}
-    private static PublicKey point(byte[] value)throws Exception{var parameters=AlgorithmParameters.getInstance("EC");parameters.init(new java.security.spec.ECGenParameterSpec("secp256r1"));var curve=parameters.getParameterSpec(java.security.spec.ECParameterSpec.class);return KeyFactory.getInstance("EC").generatePublic(new java.security.spec.ECPublicKeySpec(new java.security.spec.ECPoint(new BigInteger(1,Arrays.copyOfRange(value,1,33)),new BigInteger(1,Arrays.copyOfRange(value,33,65))),curve));}
+    static PublicKey point(byte[] value)throws Exception{var parameters=AlgorithmParameters.getInstance("EC");parameters.init(new java.security.spec.ECGenParameterSpec("secp256r1"));var curve=parameters.getParameterSpec(java.security.spec.ECParameterSpec.class);return KeyFactory.getInstance("EC").generatePublic(new java.security.spec.ECPublicKeySpec(new java.security.spec.ECPoint(new BigInteger(1,Arrays.copyOfRange(value,1,33)),new BigInteger(1,Arrays.copyOfRange(value,33,65))),curve));}
     public static void main(String[] args)throws Exception{
         if(args.length>1 && args[1].equals("--probe")){try{ProtectedContactSigner.probe();}catch(GeneralSecurityException unavailable){System.exit(77);}return;}
         Session session=args.length>1 && args[1].equals("--hardware")?new Session(Path.of(args[2])):null;
@@ -36,6 +36,7 @@ public final class ContactPackageTest {
             }else throw new IllegalArgumentException("Unknown probe mode");
             result.addProperty("accepted",true);result.addProperty("bytes",Base64.getEncoder().encodeToString(verified.bytes()));
         }catch(Exception error){result=new JsonObject();result.addProperty("accepted",false);}results.add(result);}
+        if(session!=null && requests.size()>6 && requests.get(6).getAsJsonObject().get("operation").getAsString().equals("mutation-chain")){var last=new JsonObject();last.addProperty("accepted",true);last.add("value",ContactMutationPackageTest.run(session.key,requests.get(6).getAsJsonObject().getAsJsonObject("fixture"),results,parser));results.set(6,last);}
         System.out.println(results);
         }finally{if(session!=null)session.close();}
     }

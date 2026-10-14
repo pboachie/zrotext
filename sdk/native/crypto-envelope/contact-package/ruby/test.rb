@@ -2,6 +2,7 @@
 require 'json'
 require 'base64'
 require 'zrotext_native_candidate'
+require_relative 'mutation_helper'
 include ZrotextCandidate
 if ARGV[1]=='--probe'
   begin ProtectedContactSigner.probe;rescue ArgumentError;exit 77 end
@@ -15,7 +16,8 @@ if ARGV[1]=='--hardware'
   puts JSON.generate({alias:alias_name,public:Base64.strict_encode64(point)});STDOUT.flush
 end
 parser=ContactOrigin.new(ARGV.fetch(0))
-results=JSON.parse(STDIN.read).map do |request|
+requests=JSON.parse(STDIN.read)
+results=requests.map do |request|
   begin
     operation=request.fetch('operation')
     next({accepted:parser.accepts?(request.fetch('origin'))}) if operation=='origin'
@@ -54,6 +56,9 @@ results=JSON.parse(STDIN.read).map do |request|
   rescue StandardError
     {accepted:false}
   end
+end
+if key && requests.length>6
+  results[6]={accepted:true,value:MutationPackageTest.run(requests[6].fetch('fixture'),results,parser,key)}
 end
 puts JSON.generate(results)
 

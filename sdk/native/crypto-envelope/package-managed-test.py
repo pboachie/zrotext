@@ -47,7 +47,7 @@ class ArchiveTests(unittest.TestCase):
     def test_closed_runtime_inventory(self):
         for language in ('java', 'csharp', 'ruby'):
             paths = managed.runtime_sources(language)
-            expected = {'java': 26, 'csharp': 32, 'ruby': 31}[language]
+            expected = {'java': 26, 'csharp': 32, 'ruby': 32}[language]
             self.assertEqual(len(paths), expected)
             self.assertEqual(len(set(paths)), expected)
 
