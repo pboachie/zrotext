@@ -1,4 +1,6 @@
 //! Cold opaque owner-template HTTPS loading; no plaintext or save acknowledgement.
+#[path = "owner_context.rs"]
+pub mod context;
 #[path = "owner_template_save.rs"]
 pub mod save;
 use crate::{
