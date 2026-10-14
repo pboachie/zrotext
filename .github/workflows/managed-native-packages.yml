@@ -157,6 +157,11 @@ jobs:
           ref: ccf28fe445ba959aa01d99fed6bd9ee3188b749c
           path: contact-producer
           persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          ref: 0381f71dc8a67d25562d5a6e23ac4ed50faeed4e
+          path: mutation-fixture
       - name: Build independent producers
         shell: pwsh
         run: |
@@ -191,5 +196,5 @@ jobs:
       - name: Qualify clean installed candidate consumers
         shell: pwsh
         run: |
-          python sdk/native/crypto-envelope/package-managed.py --target ${{ matrix.language }} --out "$env:RUNNER_TEMP/native-artifacts" --producer02 producer02 --producer03 producer03 --custody-producer custody-producer --root-producer root-producer --root-controls root-controls --controls controls --original-producer original-producer --http-fixture http-fixture --current-fixture current-fixture --read-fixture read-fixture --page-fixture page-fixture --owner-fixture owner-fixture --proposal-fixture proposal-fixture --template-fixture template-fixture --template-producer template-producer --owner-template-fixture owner-template-fixture --template-save-fixture template-save-fixture --template-save-oracle template-save-oracle --template-opening-fixture template-opening-fixture --template-opening-oracle template-opening-oracle --template-authoring-fixture template-authoring-fixture --template-authoring-oracle template-authoring-oracle --contact-fixture contact-fixture --contact-producer contact-producer --origin-asset "$env:RUNNER_TEMP/contact-origin"
+          python sdk/native/crypto-envelope/package-managed.py --target ${{ matrix.language }} --out "$env:RUNNER_TEMP/native-artifacts" --producer02 producer02 --producer03 producer03 --custody-producer custody-producer --root-producer root-producer --root-controls root-controls --controls controls --original-producer original-producer --http-fixture http-fixture --current-fixture current-fixture --read-fixture read-fixture --page-fixture page-fixture --owner-fixture owner-fixture --proposal-fixture proposal-fixture --template-fixture template-fixture --template-producer template-producer --owner-template-fixture owner-template-fixture --template-save-fixture template-save-fixture --template-save-oracle template-save-oracle --template-opening-fixture template-opening-fixture --template-opening-oracle template-opening-oracle --template-authoring-fixture template-authoring-fixture --template-authoring-oracle template-authoring-oracle --contact-fixture contact-fixture --contact-producer contact-producer --mutation-fixture mutation-fixture --origin-asset "$env:RUNNER_TEMP/contact-origin"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }

@@ -32,9 +32,11 @@ foreach(var request in input.RootElement.EnumerateArray()){
         results.Add(new{accepted=true,bytes=Convert.ToBase64String(verified.Bytes())});
     }catch{results.Add(new{accepted=false});}
 }
+if(session is not null && input.RootElement.GetArrayLength()>6){var f=System.Text.Json.Nodes.JsonNode.Parse(input.RootElement[6].GetProperty("fixture").GetRawText())!.AsObject();using var output=JsonDocument.Parse(JsonSerializer.Serialize(results));results[6]=new{accepted=true,value=Zrotext.Consumer.ContactMutationPackageTest.Run(session.Key,f,output.RootElement,parser)};}
 Console.WriteLine(JsonSerializer.Serialize(results));
 
 sealed class ContactSession:IDisposable{
+    internal ProtectedContactSigner Key=>key!;
     private ProtectedContactSigner? key;private readonly string receipt;private byte[]? point;private string alias="";
     private void Record(string state){using var file=new FileStream(receipt,FileMode.Create,FileAccess.Write,FileShare.None);file.Write(JsonSerializer.SerializeToUtf8Bytes(new{alias,state}));file.Flush(true);}
     public ContactSession(string receipt){this.receipt=receipt;try{key=ProtectedContactSigner.Create(value=>{alias=value;Record("pending");});point=key.PublicPoint();Console.WriteLine(JsonSerializer.Serialize(new{alias,@public=Convert.ToBase64String(point)}));Console.Out.Flush();}catch{if(key is not null)Dispose();throw;}}
