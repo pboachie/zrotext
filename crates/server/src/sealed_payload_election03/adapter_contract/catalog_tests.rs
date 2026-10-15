@@ -56,10 +56,9 @@ async fn candidate_inventory_covers_exact_numbered_schema_relations_columns_fk_a
     zrotext_migrator::apply(&mut db, &directory, false)
         .await
         .unwrap();
-    let corpus: serde_json::Value = serde_json::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../protocol/v1/vectors/profile03-writer-inventory-candidate.json"
-    )))
+    let corpus: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../protocol/v1/vectors/profile03-writer-inventory-candidate.json"
+    ))
     .unwrap();
     let version: i64 = db
         .query_one("SELECT max(version) FROM public.schema_migrations", &[])

@@ -60,10 +60,9 @@ fn hex(bytes: &[u8]) -> String {
 
 #[test]
 fn independent_canonical_vectors_pin_exact_bytes_domains_and_fence_integer() {
-    let vector: serde_json::Value = serde_json::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../protocol/v1/vectors/profile03-authority-adapter-canonical.json"
-    )))
+    let vector: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../protocol/v1/vectors/profile03-authority-adapter-canonical.json"
+    ))
     .unwrap();
     for (name, canonical) in [
         ("owner_session", owner().canonical().unwrap()),
