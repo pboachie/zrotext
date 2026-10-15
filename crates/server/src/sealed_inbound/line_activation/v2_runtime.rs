@@ -758,4 +758,6 @@ pub(crate) async fn cleanup_sealed<C: GenericClient + Sync>(tx: &C, limit: i64) 
 #[cfg(test)]
 pub(crate) mod db_tests;
 #[cfg(test)]
+mod schema_roles_tests;
+#[cfg(test)]
 mod tests;

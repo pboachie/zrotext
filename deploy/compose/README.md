@@ -55,10 +55,14 @@ always sets `DISPATCH_ENABLED=false` for both API services, regardless of the
 value in `.env`.
 
 The line-activation schema check validates each guard function's saved search
-path against its installation schema. The runtime role keeps its separate
+path against its installation schema. It accepts exactly the schema alone
+(which implicitly searches `pg_catalog` first) or `pg_catalog` followed by that
+same schema. The runtime role keeps its separate
 `pg_catalog, public` connection search path; it does not need to match the
-migrator's `public` session setting. Modified function configurations, bodies
-and trigger definitions still fail the installed-schema check.
+migrator's `public` session setting. Extra schemas, a catalog-last path, other
+function settings, modified bodies and changed trigger definitions still fail
+the installed-schema check. Validation does not rewrite installed functions or
+their ownership, privileges, or migration ledger.
 
 ## Owner registration
 
