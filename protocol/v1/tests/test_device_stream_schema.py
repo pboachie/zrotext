@@ -63,6 +63,25 @@ class DeviceStreamSchemaTest(unittest.TestCase):
             self.assertTrue(self.validator.is_valid({**radio, "evidence": evidence}))
         self.assertFalse(self.validator.is_valid({**radio, "evidence": "grant_timeout"}))
 
+    def test_line_readiness_fails_closed_and_carries_no_line_identity_beyond_the_id(self):
+        frame = next(frame for frame in self.frames if frame["type"] == "line_readiness")
+        ack = next(frame for frame in self.frames if frame["type"] == "line_readiness_ack")
+        for kind in ("inactive", "binding_not_active", "continuity_pending",
+                      "card_changed", "offline_past_threshold", "ready"):
+            self.assertTrue(self.validator.is_valid({**frame, "kind": kind}))
+        # A missing observation may only report offline: readiness cannot be invented.
+        self.assertTrue(self.validator.is_valid({**frame, "kind": "offline_past_threshold",
+                                                  "since_observation_ms": None}))
+        self.assertFalse(self.validator.is_valid({**frame, "kind": "ready",
+                                                   "since_observation_ms": None}))
+        for field in ("sim_slot", "iccid", "imsi", "subscription_id", "phone_number"):
+            self.assertNotIn(field, self.schema["$defs"]["line_readiness"]["properties"])
+            self.assertFalse(self.validator.is_valid({**frame, field: 1}))
+        for digest in ("A" * 42, "A" * 44, "A" * 43 + "=", "A" * 42 + "+"):
+            self.assertFalse(self.validator.is_valid({**frame, "digest": digest}))
+        self.assertFalse(self.validator.is_valid({**ack, "suppression_cleared": True}))
+        self.assertFalse(self.validator.is_valid({**ack, "mode": "fallback"}))
+
     def test_line_opt_out_has_only_stop_actions_and_no_body_or_clear_ack(self):
         frame = next(frame for frame in self.frames if frame["type"] == "line_opt_out")
         ack = next(frame for frame in self.frames if frame["type"] == "line_opt_out_ack")

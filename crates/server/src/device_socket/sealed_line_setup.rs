@@ -274,7 +274,14 @@ mod tests {
         )
         .await
         .unwrap();
-        let pushed = frame(&mut socket, "sealed_line_challenge").await;
+        // The owner-side open wakes the socket: the challenge must arrive
+        // within the active poll bound, not the 30-second idle cadence.
+        let pushed = tokio::time::timeout(
+            Duration::from_secs(10),
+            frame(&mut socket, "sealed_line_challenge"),
+        )
+        .await
+        .expect("opening the exchange wakes the device socket");
         assert_eq!(pushed["challenge_id"], challenge.id.to_string());
         assert_eq!(pushed["connection_epoch"], epoch);
         let observation = SimObservation {
@@ -294,8 +301,7 @@ mod tests {
             true
         );
         // A real phone keeps its 45-second read deadline alive with heartbeats
-        // while the owner completes the out-of-band approval; the activation
-        // is otherwise only guaranteed on the next (30-second) idle poll.
+        // while the owner completes the out-of-band approval.
         write(&mut socket, serde_json::json!({"v":1,"type":"heartbeat"})).await;
         let view = sealed_exchange::view(
             &mut c.owner.f.connect().await,
@@ -316,10 +322,14 @@ mod tests {
         )
         .await
         .unwrap();
-        // Keep the read deadline alive across the idle poll that delivers the
-        // activation, exactly as a phone sending two heartbeats a minute.
-        write(&mut socket, serde_json::json!({"v":1,"type":"heartbeat"})).await;
-        let ack = frame(&mut socket, "sealed_line_activated").await;
+        // The approval wakes the socket: the activation must arrive within
+        // the active poll bound, not the 30-second idle cadence.
+        let ack = tokio::time::timeout(
+            Duration::from_secs(10),
+            frame(&mut socket, "sealed_line_activated"),
+        )
+        .await
+        .expect("approving the exchange wakes the device socket");
         assert_eq!(frame(&mut socket, "sealed_line_activated").await, ack);
         let mut receipt = ack.clone();
         receipt["type"] = "sealed_line_installed".into();

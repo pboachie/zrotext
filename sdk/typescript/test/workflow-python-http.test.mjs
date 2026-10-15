@@ -17,7 +17,8 @@ const id = n => `10000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const credential = `ztw_${Buffer.alloc(32, 7).toString('base64url')}`;
 const revoked = `ztw_${Buffer.alloc(32, 8).toString('base64url')}`;
 const diagnostic = 'synthetic-private-diagnostic';
-const python = process.platform === 'win32' ? 'python' : 'python3';
+const installed = process.env.ZT_WORKFLOW_INSTALLED_PYTHON;
+const python = installed ?? (process.platform === 'win32' ? 'python' : 'python3');
 const pythonPath = fileURLToPath(new URL('../../python/', import.meta.url));
 const descriptor = { account_id: id(1), action_id: id(2), revision: 1, line_id: id(3), recipient_id: id(4),
   purpose_id: '00000000-0000-0000-0000-000000000001', content_ref: id(5), content_digest: 'ab'.repeat(32),
@@ -50,7 +51,7 @@ after(async () => {
 
 function invoke(origin, operation, trusted = true) {
   const script = `import json,sys
-from workflow_client import WorkflowClient,WorkflowError
+${installed ? 'from zrotext_workflow import WorkflowClient,WorkflowError\nimport zrotext_workflow\nfrom pathlib import Path\nassert Path(zrotext_workflow.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())' : 'from workflow_client import WorkflowClient,WorkflowError'}
 r=json.load(sys.stdin)
 c=WorkflowClient(r['origin'],r['credential'],r['timeout'])
 try:
@@ -67,9 +68,10 @@ except WorkflowError as error:
   return new Promise((resolveResult, reject) => {
     const env = { ...process.env, PYTHONPATH: pythonPath };
     delete env.NODE_EXTRA_CA_CERTS;
-    if (trusted) env.NODE_EXTRA_CA_CERTS = join(directory, 'ca.pem');
-    const child = spawn(python, ['-B', '-c', script], { env, stdio: ['pipe', 'pipe', 'pipe'] });
-    const timer = setTimeout(() => { child.kill(); reject(new Error('bounded Python bridge deadline')); }, 20000);
+    delete env.SSL_CERT_FILE;
+    if (trusted) env.SSL_CERT_FILE = join(directory, 'ca.pem');
+    const child = spawn(python, [...(installed ? ['-I'] : []), '-B', '-c', script], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const timer = setTimeout(() => { child.kill(); reject(new Error('bounded Python client deadline')); }, 20000);
     let stdout = '', stderr = '';
     child.stdout.on('data', bytes => { stdout += bytes; if (stdout.length > 196608) child.kill(); });
     child.stderr.on('data', bytes => { stderr += bytes; if (stderr.length > 65536) child.kill(); });

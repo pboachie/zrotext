@@ -263,7 +263,7 @@ export function authorizeOutbound03(accepted: VerifiedManifest03, claims: Readon
   generation: bigint; version: bigint; digest: Uint8Array; signerKeyId: Uint8Array;
   wraps: readonly Readonly<{ role: number; keyId: Uint8Array }>[];
 }>, nowMs: bigint): Readonly<{
-  signerPoint: Uint8Array; expiresMs: bigint;
+  signerPoint: Uint8Array; validFromMs: bigint; expiresMs: bigint;
   recipients: readonly Readonly<{ role: 1 | 2 | 3; keyId: Uint8Array; point: Uint8Array }>[];
 }> {
   comparison(nowMs);
@@ -282,6 +282,7 @@ export function authorizeOutbound03(accepted: VerifiedManifest03, claims: Readon
   if (!Array.isArray(requested) || typeof count !== "number" || !Number.isInteger(count) || count < 2 || count > 8) fail("outbound reader count");
   let devices = 0, archives = 0, integrations = 0;
   let expiresMs = value.expiresMs < signer.untilMs ? value.expiresMs : signer.untilMs;
+  let validFromMs = signer.fromMs;
   const seen = new Set<string>();
   const recipients: { role: 1 | 2 | 3; keyId: Uint8Array; point: Uint8Array }[] = [];
   for (let i = 0; i < count; i++) {
@@ -299,8 +300,9 @@ export function authorizeOutbound03(accepted: VerifiedManifest03, claims: Readon
     } else if (role === 2) archives++;
     else integrations++;
     if (key.untilMs < expiresMs) expiresMs = key.untilMs;
+    if (key.fromMs > validFromMs) validFromMs = key.fromMs;
     recipients.push({ role, keyId: copy(id), point: copy(key.point) });
   }
   if (devices !== 1 || archives !== 1 || integrations > 6) fail("outbound reader set");
-  return { signerPoint: copy(signer.point), expiresMs, recipients };
+  return { signerPoint: copy(signer.point), validFromMs, expiresMs, recipients };
 }

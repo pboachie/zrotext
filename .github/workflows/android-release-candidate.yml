@@ -81,7 +81,7 @@ jobs:
       # Keep signing keys and signed candidates in an approved private channel;
       # nothing signed is ever produced or attached here.
       - name: Store unsigned candidate for manual review
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ steps.artifact.outputs.name }}
           path: ${{ steps.release_paths.outputs.unsigned }}/

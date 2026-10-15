@@ -227,9 +227,23 @@ and production readiness remain separate acceptance work.
 Local billing records follow existing export, erasure and retention controls;
 this change stores no card details, invoices, hosted session URLs or new ledger.
 
-The [portal scenario ledger](STRIPE-TEST-PORTAL-SCENARIOS.md) records which
-issue #676 TEST scenarios have local test evidence, which are gaps and which
-need a deliberate Stripe TEST run.
+### Portal scenario coverage and remaining gaps
+
+Issue #676 has synthetic Rust and owner-web tests for configured portal
+capabilities, exact hosted destinations, tenant-scoped customer/session access,
+shared retry budgets, stale responses, offline handoffs and free/self-hosted
+configuration. These behavior tests remain in the public source tree.
+
+Restricted-account billing status, portal and export access still need focused
+coverage. The selected Stripe TEST portal's card-update, invoice-access and
+cancellation capabilities, and a real cancellation return, still require
+deliberate acceptance runs. Synthetic provider fixtures do not establish those
+results or hosted-launch readiness.
+
+Detailed operational scenario accounting is maintained separately in private
+acceptance tooling against explicitly identified public source commits. A
+passing source-coverage record applies only to its recorded commit and does not
+establish live Stripe behavior or coverage of later revisions.
 
 API references: [configuration retrieval](https://docs.stripe.com/api/customer_portal/configurations/retrieve)
 and [explicit session configuration](https://docs.stripe.com/api/customer_portal/sessions/create).

@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><TreatWarningsAsErrors>true</TreatWarningsAsErrors><EnableDefaultCompileItems>false</EnableDefaultCompileItems></PropertyGroup>
+  <ItemGroup><Compile Include="Program.cs" /><Compile Include="../ManifestChain.cs" /><Compile Include="../SignedEnvelope.cs" /><Compile Include="../HpkeRecipient.cs" /><Compile Include="../SealedReader02.cs" /><Compile Include="../../../crypto-candidate/csharp/CandidateBody.cs" /></ItemGroup>
+</Project>

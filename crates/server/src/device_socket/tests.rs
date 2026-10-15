@@ -175,10 +175,19 @@ fn stream_schema_examples_match_serde_frames() {
         "../../../../protocol/v1/device-stream.examples.json"
     ))
     .unwrap();
-    assert_eq!(examples.len(), 28);
-    let client_examples: Vec<_> = examples[..11]
+    assert_eq!(examples.len(), 30);
+    // The default-off line_readiness frames are protocol halves only
+    // (ADR 0004 step 4); the server enum does not parse them yet, so they
+    // are skipped here until the runtime half lands.
+    let client_examples: Vec<_> = examples[..13]
         .iter()
-        .chain(examples[22..].iter().filter(|frame| {
+        .filter(|frame| {
+            !matches!(
+                frame["type"].as_str(),
+                Some("line_readiness" | "line_readiness_ack")
+            )
+        })
+        .chain(examples[24..].iter().filter(|frame| {
             matches!(
                 frame["type"].as_str(),
                 Some("sealed_line_proof" | "sealed_line_installed")
@@ -295,8 +304,8 @@ fn stream_schema_examples_match_serde_frames() {
             device_signature_sha256: "Ag".into(),
         },
     ];
-    assert_eq!(server_frames.len(), examples[11..22].len());
-    for (actual, documented) in server_frames.into_iter().zip(&examples[11..22]) {
+    assert_eq!(server_frames.len(), examples[13..24].len());
+    for (actual, documented) in server_frames.into_iter().zip(&examples[13..24]) {
         let variant = match &actual {
             ServerFrame::Challenge { .. } => "challenge",
             ServerFrame::Session { .. } => "session",

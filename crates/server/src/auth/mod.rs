@@ -334,7 +334,7 @@ impl SessionPrincipal {
             return Err(AuthError::Forbidden);
         }
         let actual = hasher.digest(b"csrf-v1", csrf_cookie);
-        if bool::from(actual.ct_eq(&self.csrf_hash)) {
+        if actual.len() == self.csrf_hash.len() && bool::from(actual.ct_eq(&self.csrf_hash)) {
             Ok(())
         } else {
             Err(AuthError::Forbidden)

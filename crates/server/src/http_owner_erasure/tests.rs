@@ -436,6 +436,12 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "097_owner_android_proposals.sql",
         include_str!("../../../../deploy/compose/migrations/097_owner_android_proposals.sql"),
     ),
+    (
+        "098_line_labels_and_not_ready_policy.sql",
+        include_str!(
+            "../../../../deploy/compose/migrations/098_line_labels_and_not_ready_policy.sql"
+        ),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in
