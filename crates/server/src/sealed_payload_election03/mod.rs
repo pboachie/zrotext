@@ -2,6 +2,8 @@
 //! Historical cryptographic proof relative to explicit authenticated adapter
 //! inputs. This does not prove a commit, sessions/MFA, allocation or permission.
 
+pub mod adapter_contract;
+
 use crate::sealed_manifest;
 use crate::sealed_manifest03::{
     Check, MAX, VerifiedCheckpoint02, VerifiedManifest03, framed, number, sha, signature, time,
