@@ -4342,79 +4342,6 @@ jobs:
           go run ./cmd/manifest < ../../../../protocol/v1/vectors/sealed-profile03-contract-01.json
           python "$RUNNER_TEMP/envelopes/sdk/native/crypto-envelope/java/envelope_rows.py" | go run ./cmd/envelope
           node "$RUNNER_TEMP/producer/sdk/typescript/test/emit-native-hpke.mjs" | go run ./cmd/interop
-      - name: "Native HPKE recipient interop"
-        run: |
-          rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
-      - name: "Native HPKE recipient interop: Prepare exact public-point-only producer"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/archive-2"
-          git init -q "$env:RUNNER_TEMP/archive-2"
-          git -C "$env:RUNNER_TEMP/archive-2" remote add origin https://github.com/pboachie/zrotext.git
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/archive-2" fetch -q --no-tags origin 93a65d737dfb0de603c732241c667f90771f60dd
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/archive-2" checkout --detach 93a65d737dfb0de603c732241c667f90771f60dd
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/archive-2/sdk/typescript" --ignore-scripts --no-audit --no-fund
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/archive-2/sdk/typescript"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native HPKE recipient interop: Prepare exact elected public-point producer"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/election-2"
-          git init -q "$env:RUNNER_TEMP/election-2"
-          git -C "$env:RUNNER_TEMP/election-2" remote add origin https://github.com/pboachie/zrotext.git
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/election-2" fetch -q --no-tags origin 304d512b7a420a3102278f32baed095f3e778989
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/election-2" checkout --detach 304d512b7a420a3102278f32baed095f3e778989
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/election-2/sdk/typescript" --ignore-scripts --no-audit --no-fund
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/election-2/sdk/typescript"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native HPKE recipient interop: Prepare exact profile02 signing producer"
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/compose02"
-          git init -q "$env:RUNNER_TEMP/compose02"
-          git -C "$env:RUNNER_TEMP/compose02" remote add origin https://github.com/pboachie/zrotext.git
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/compose02" fetch -q --no-tags origin a13ea1e3d6f6db594485c19b36c43fe642e67c7a
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C "$env:RUNNER_TEMP/compose02" checkout --detach a13ea1e3d6f6db594485c19b36c43fe642e67c7a
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm ci --prefix "$env:RUNNER_TEMP/compose02/sdk/typescript" --ignore-scripts --no-audit --no-fund
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build --prefix "$env:RUNNER_TEMP/compose02/sdk/typescript"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: "Native HPKE recipient interop: Native Windows build and conditional protected qualification"
-        env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
-        shell: pwsh
-        run: |
-          cargo fmt --manifest-path sdk/native/hpke-candidate/rust/Cargo.toml --check
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo clippy --manifest-path sdk/native/hpke-candidate/rust/Cargo.toml --locked --all-targets -- -D warnings
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python sdk/native/hpke-candidate/run-cng.py --producer "$env:RUNNER_TEMP/archive-2" --language rust
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python sdk/native/hpke-candidate/run-cng.py --producer "$env:RUNNER_TEMP/archive-2" --language go
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python sdk/native/hpke-candidate/run-cng.py --producer "$env:RUNNER_TEMP/election-2" --language rust --profile 3
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python sdk/native/hpke-candidate/run-cng.py --producer "$env:RUNNER_TEMP/election-2" --language go --profile 3
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python sdk/native/hpke-candidate/run-compose.py --producer "$env:RUNNER_TEMP/election-2" --language rust
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python sdk/native/hpke-candidate/run-compose.py --producer "$env:RUNNER_TEMP/election-2" --language go
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python sdk/native/hpke-candidate/run-compose02.py --producer "$env:RUNNER_TEMP/compose02" --language rust
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python sdk/native/hpke-candidate/run-compose02.py --producer "$env:RUNNER_TEMP/compose02" --language go
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native webhook companions"
         run: |
           rustup toolchain install 1.88.0 --profile minimal --component clippy --component rustfmt
@@ -4603,6 +4530,93 @@ jobs:
             if ($IsWindows) { $probe += '.exe' }
           }
           python sdk/native/hpke-candidate/test-owner-template.py --binary $probe --producer "$env:RUNNER_TEMP/selected-2"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  native-misc-windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24.13.0'
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.26.9'
+          cache: false
+      - name: "Native HPKE recipient interop"
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
+      - name: "Native HPKE recipient interop: Prepare exact public-point-only producer"
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/archive-2"
+          git init -q "$env:RUNNER_TEMP/archive-2"
+          git -C "$env:RUNNER_TEMP/archive-2" remote add origin https://github.com/pboachie/zrotext.git
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C "$env:RUNNER_TEMP/archive-2" fetch -q --no-tags origin 93a65d737dfb0de603c732241c667f90771f60dd
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C "$env:RUNNER_TEMP/archive-2" checkout --detach 93a65d737dfb0de603c732241c667f90771f60dd
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm ci --prefix "$env:RUNNER_TEMP/archive-2/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build --prefix "$env:RUNNER_TEMP/archive-2/sdk/typescript"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: "Native HPKE recipient interop: Prepare exact elected public-point producer"
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/election-2"
+          git init -q "$env:RUNNER_TEMP/election-2"
+          git -C "$env:RUNNER_TEMP/election-2" remote add origin https://github.com/pboachie/zrotext.git
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C "$env:RUNNER_TEMP/election-2" fetch -q --no-tags origin 304d512b7a420a3102278f32baed095f3e778989
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C "$env:RUNNER_TEMP/election-2" checkout --detach 304d512b7a420a3102278f32baed095f3e778989
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm ci --prefix "$env:RUNNER_TEMP/election-2/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build --prefix "$env:RUNNER_TEMP/election-2/sdk/typescript"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: "Native HPKE recipient interop: Prepare exact profile02 signing producer"
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/compose02"
+          git init -q "$env:RUNNER_TEMP/compose02"
+          git -C "$env:RUNNER_TEMP/compose02" remote add origin https://github.com/pboachie/zrotext.git
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C "$env:RUNNER_TEMP/compose02" fetch -q --no-tags origin a13ea1e3d6f6db594485c19b36c43fe642e67c7a
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C "$env:RUNNER_TEMP/compose02" checkout --detach a13ea1e3d6f6db594485c19b36c43fe642e67c7a
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm ci --prefix "$env:RUNNER_TEMP/compose02/sdk/typescript" --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build --prefix "$env:RUNNER_TEMP/compose02/sdk/typescript"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: "Native HPKE recipient interop: Native Windows build and conditional protected qualification"
+        env:
+          RUSTUP_TOOLCHAIN: '1.97.1'
+        shell: pwsh
+        run: |
+          cargo fmt --manifest-path sdk/native/hpke-candidate/rust/Cargo.toml --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo clippy --manifest-path sdk/native/hpke-candidate/rust/Cargo.toml --locked --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python sdk/native/hpke-candidate/run-cng.py --producer "$env:RUNNER_TEMP/archive-2" --language rust
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python sdk/native/hpke-candidate/run-cng.py --producer "$env:RUNNER_TEMP/archive-2" --language go
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python sdk/native/hpke-candidate/run-cng.py --producer "$env:RUNNER_TEMP/election-2" --language rust --profile 3
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python sdk/native/hpke-candidate/run-cng.py --producer "$env:RUNNER_TEMP/election-2" --language go --profile 3
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python sdk/native/hpke-candidate/run-compose.py --producer "$env:RUNNER_TEMP/election-2" --language rust
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python sdk/native/hpke-candidate/run-compose.py --producer "$env:RUNNER_TEMP/election-2" --language go
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python sdk/native/hpke-candidate/run-compose02.py --producer "$env:RUNNER_TEMP/compose02" --language rust
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python sdk/native/hpke-candidate/run-compose02.py --producer "$env:RUNNER_TEMP/compose02" --language go
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   webmcp:
     runs-on: ubuntu-24.04
