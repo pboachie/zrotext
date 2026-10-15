@@ -54,6 +54,12 @@ migrator; `MIGRATIONS_DIR` in `.env.example` is for a local binary. Compose
 always sets `DISPATCH_ENABLED=false` for both API services, regardless of the
 value in `.env`.
 
+The line-activation schema check validates each guard function's saved search
+path against its installation schema. The runtime role keeps its separate
+`pg_catalog, public` connection search path; it does not need to match the
+migrator's `public` session setting. Modified function configurations, bodies
+and trigger definitions still fail the installed-schema check.
+
 ## Owner registration
 
 Compose passes `REGISTRATION_MODE`, allowlists, and the optional enrollment
