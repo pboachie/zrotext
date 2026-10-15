@@ -113,7 +113,10 @@ def main():
             def run(mode='success', method='current', expected='untrusted', calls=1, **changes):
                 nonlocal count
                 server.mode, server.calls = mode, []
-                payload = dict(Origin=origin, Roots=roots, Grant=grant, Method=method, Invalid='', Timeout=300)
+                # Ordinary responses include cold runtime/TLS startup on CI.
+                # Keep the trickle control's short total deadline independent.
+                timeout = 300 if mode == 'trickle' else 4000
+                payload = dict(Origin=origin, Roots=roots, Grant=grant, Method=method, Invalid='', Timeout=timeout)
                 payload.update(changes)
                 env = {k:v for k,v in os.environ.items() if not k.upper().endswith('_PROXY') and k.upper() != 'NO_PROXY'}
                 # A broken proxy must have no influence on this explicit direct transport.
