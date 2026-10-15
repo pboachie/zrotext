@@ -11,7 +11,7 @@ import {createHash} from 'node:crypto';
 import {packageOutput,confinedOutput} from '../../../scripts/package_conversation_browser.mjs';
 import {mkdtemp,writeFile,rm,readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {parseOptions,selectExecutable,ReadyParser,serverPassed,SERVER_TEST,capture,executableDigest,joinOwnedAcceptance,createBrowserPackage,assertPhoneConsumerOutput,phoneConsumerBuildFailureDiagnostic,phoneConsumerBuildProgress,phoneConsumerBuildProgressDiagnostic,phoneConsumerBuildSettlementDiagnostic} from '../../../scripts/sealed_setup_ci_driver.mjs';
+import {parseOptions,selectExecutable,ReadyParser,serverPassed,SERVER_TEST,capture,executableDigest,joinOwnedAcceptance,createBrowserPackage,assertPhoneConsumerOutput,phoneConsumerBuildFailureDiagnostic,phoneConsumerBuildProgress,phoneConsumerBuildProgressDiagnostic,phoneConsumerBuildSettlementDiagnostic,consumerProcessFailureDiagnostic} from '../../../scripts/sealed_setup_ci_driver.mjs';
 const id='11111111-1111-4111-8111-111111111111',root=path.resolve('fixture-root'),manifest=path.join(root,'crates/server/Cargo.toml'),exe=path.join(root,'target/fixture.exe');
 function ready(){const paired=Buffer.alloc(65);paired[0]=4;return {version:1,synthetic:true,port:4444,controlToken:'07'.repeat(32),origin:'https://owner.example.test:4443',baseline:{accountId:id,userId:id,sessionId:id,deviceId:id,lineId:id,nextGeneration:'1',pairedPoint:paired.toString('hex'),pairedFingerprintHex:createHash('sha256').update(paired).digest('hex'),rootFactor:'fixture-factor'.padEnd(26,'x'),lineFactor:'fixture-factor'.padEnd(26,'y'),cookies:[{name:'__Host-zrotext_session',value:'fixture-session'},{name:'__Host-zrotext_csrf',value:'fixture-csrf'}],lease:{connectionEpoch:'1',deploymentEpoch:'1',siteId:'fixture-site',instanceId:'fixture-instance'}}};}
 const record=prefix=>prefix+JSON.stringify(ready())+'\n';
@@ -103,6 +103,11 @@ test('phone build diagnostic exposes only a known five-field observation at the 
   await withSyntheticProcess(t,{start:child=>{child.stdout.emit('data',Buffer.from(canary));child.stderr.emit('data',Buffer.from(canary));child.emit('close',3);}},async()=>{
     const error=await ownedRejection(),value=observation(error,'exit-failure',3,Buffer.byteLength(canary),Buffer.byteLength(canary));
     error.message=canary;error.stack=canary;error.code=canary;error.signal=canary;
+    for(const stage of ['compiled-browser-native-consumption','phone-consumer-admission']){
+      const diagnostic=consumerProcessFailureDiagnostic(stage,error);
+      assert.equal(diagnostic,'SETUP_CONSUMER_PROCESS_FAILURE '+JSON.stringify({stage,observation:value,owned_cleanup:null}));assert.equal(diagnostic.includes(canary),false);
+    }
+    for(const stage of ['phone-consumer-build',canary,null,new Proxy({},{get(){assert.fail('Do not inspect an unknown stage');}})])assert.equal(consumerProcessFailureDiagnostic(stage,error),null);
     const line=phoneConsumerBuildFailureDiagnostic('phone-consumer-build',error);assert.equal(line,'PHONE_CONSUMER_BUILD_FAILURE '+JSON.stringify(value));assert.equal(line.includes(canary),false);
     assert.equal(phoneConsumerBuildProgressDiagnostic('phone-consumer-build',error),'PHONE_CONSUMER_BUILD_PROGRESS {"last_marker":"unknown"}');
     assert.equal(phoneConsumerBuildSettlementDiagnostic('phone-consumer-build',error),null,'Exit close did not run owned cleanup');
@@ -110,6 +115,7 @@ test('phone build diagnostic exposes only a known five-field observation at the 
     assert.equal(phoneConsumerBuildProgressDiagnostic('compiled-browser-native-consumption',error),null);
     assert.equal(phoneConsumerBuildSettlementDiagnostic('compiled-browser-native-consumption',error),null);
     for(const foreign of [null,undefined,7,'private',Error(canary),new Proxy({},{get(){assert.fail('Do not inspect a foreign error');}})]){
+      for(const stage of ['compiled-browser-native-consumption','phone-consumer-admission'])assert.equal(consumerProcessFailureDiagnostic(stage,foreign),null);
       assert.equal(ownedProcessFailureObservation(foreign),null);assert.equal(ownedProcessFailureStdout(foreign),null);assert.equal(ownedProcessFailureCleanup(foreign),null);
       assert.equal(phoneConsumerBuildFailureDiagnostic('phone-consumer-build',foreign),null);assert.equal(phoneConsumerBuildProgressDiagnostic('phone-consumer-build',foreign),null);assert.equal(phoneConsumerBuildSettlementDiagnostic('phone-consumer-build',foreign),null);
     }

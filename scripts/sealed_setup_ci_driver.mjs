@@ -77,6 +77,13 @@ export function assertPhoneConsumerOutput(output){
   assert.ok(output.includes('BUILD SUCCESSFUL'),'Actual Android root consumer required');
   assert.match(output,/^\s*COMPOSED_PHONE_ROOT_ADMISSION_PASS\s*$/m,'Non-skipped same-instance phone admission required');
 }
+export function consumerProcessFailureDiagnostic(stage,error){
+  try{
+    if(stage!=='compiled-browser-native-consumption'&&stage!=='phone-consumer-admission')return null;
+    const observation=ownedProcessFailureObservation(error);
+    return observation===null?null:'SETUP_CONSUMER_PROCESS_FAILURE '+JSON.stringify({stage,observation,owned_cleanup:ownedProcessFailureCleanup(error)});
+  }catch{return null;}
+}
 export function phoneConsumerBuildFailureDiagnostic(stage,error){
   try{
     if(stage!=='phone-consumer-build')return null;
@@ -139,15 +146,16 @@ export async function main(args=process.argv.slice(2)){
     server.stdout.on('data',chunk=>collect(chunk,true));server.stderr.on('data',chunk=>collect(chunk,false));ready=await deadline(readiness,60000);assert.equal(ready.origin,origin);
     stage='compiled-browser-native-consumption';const require=createRequire(import.meta.url);const {chromium}=require(require.resolve('playwright',{paths:[options.tools]}));browser=await chromium.launch({headless:true,args:[`--host-resolver-rules=MAP owner.example.test ${(await lookup('localhost',{family:4})).address}`,'--no-proxy-server']});
     const acceptance=runCompiledSetupAcceptance({browser,ready,nativeExecutable,tls,consumePublishedRoot:async fixture=>{
+      stage='phone-consumer-admission';
       assert.ok(Buffer.byteLength(JSON.stringify(fixture))<=2048);
       const result=await runOwnedProcess('cmd.exe',['/d','/c','gradlew.bat',':app:testDebugUnitTest','--tests','org.zrotext.gateway.PublishedRootProvisioningTest','-PcomposedRootFixture=true','--rerun','--no-daemon','--max-workers=1'],{cwd:path.join(repo,'android'),env:{...process.env,ZT_COMPOSED_ROOT_FIXTURE:JSON.stringify(fixture)},timeoutMs:180000,maximum:MAX_OUTPUT});
-      assertPhoneConsumerOutput(result);
+      assertPhoneConsumerOutput(result);stage='compiled-browser-native-consumption';
     }});const result=await joinOwnedAcceptance(acceptance,{cancel:async()=>{await Promise.all([browser.close(),stopServer()]);browser=null;}});await browser.close();browser=null;
     stage='server-terminal';assert.equal(await deadline(exited,20000),0);assert.ok(serverPassed(output),'Compiled fixture assertions must pass');assert.deepEqual(new ReadyParser().feed(Buffer.from(output)),ready);
     assert.equal(await executableDigest(serverExecutable),serverSha256,'Server executable changed');assert.equal(await executableDigest(nativeExecutable),nativeSha256,'Native executable changed');
     console.log(JSON.stringify({stage:'PASS-COMPILED-SETUP-FIXTURE',result,driverSource,serverSourceLabel:options['server-source']||driverSource,nativeSourceLabel:options['native-source']||driverSource,serverSourceMode:options['server-executable']?'caller-supplied-source-label':'cargo-json-current-source',nativeSourceMode:options['native-executable']?'caller-supplied-source-label':'cargo-json-current-source',serverSha256,nativeSha256,physicalDevice:false,carrierSms:false}));return 0;
   }catch(error){if(error instanceof CleanupFailure)unsafeCleanup=true;
-    try{for(const diagnostic of [phoneConsumerBuildFailureDiagnostic(stage,error),phoneConsumerBuildProgressDiagnostic(stage,error),phoneConsumerBuildSettlementDiagnostic(stage,error)])if(diagnostic!==null)console.error(diagnostic);}catch{}
+    try{for(const diagnostic of [consumerProcessFailureDiagnostic(stage,error),phoneConsumerBuildFailureDiagnostic(stage,error),phoneConsumerBuildProgressDiagnostic(stage,error),phoneConsumerBuildSettlementDiagnostic(stage,error)])if(diagnostic!==null)console.error(diagnostic);}catch{}
     console.error(`Sealed setup fixture failed at ${stage}; private readiness and signing material withheld.`);return unsafeCleanup?2:1;}
   finally{await browser?.close().catch(()=>{});if(ready&&serverExit===undefined)await fixtureControl(ready)('finish').catch(()=>{});if(server&&serverExit===undefined){try{await deadline(exited,15000);}catch{try{await terminateOwnedTree(server,exited);}catch{unsafeCleanup=true;}}}await termination;if(unsafeCleanup){process.exitCode=2;throw new CleanupFailure('Owned processes not confirmed stopped; staging retained');}if(assets){assert.ok(path.dirname(assets)===path.join(repo,'target')&&path.basename(assets)==='sealed-setup-browser-fixture');await rm(assets,{recursive:true,force:true});}}
 }
