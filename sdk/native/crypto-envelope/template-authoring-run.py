@@ -12,7 +12,7 @@ import tempfile
 import urllib.request
 
 HERE = Path(__file__).resolve().parent
-PIN = 'b784cb6a23564a6eb7ac16cbf57134d95b8b2313'
+PIN = 'afb5ece31c7efa5e78e843fa6ace25815263cb23'
 
 
 def run(*args, **kw):

@@ -1332,7 +1332,7 @@ jobs:
       - name: "Managed reviewed template authoring interoperability: Checkout pinned fixtures"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: b784cb6a23564a6eb7ac16cbf57134d95b8b2313
+          ref: afb5ece31c7efa5e78e843fa6ace25815263cb23
           path: fixture
           persist-credentials: false
       - name: "Managed reviewed template authoring interoperability: Checkout pinned fixtures"
@@ -1369,7 +1369,7 @@ jobs:
       - name: "Managed reviewed template authoring interoperability: Checkout pinned fixtures"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: b784cb6a23564a6eb7ac16cbf57134d95b8b2313
+          ref: afb5ece31c7efa5e78e843fa6ace25815263cb23
           path: fixture
           persist-credentials: false
       - name: "Managed reviewed template authoring interoperability: Checkout pinned fixtures"
@@ -1406,7 +1406,7 @@ jobs:
       - name: "Managed reviewed template authoring interoperability: Checkout pinned fixtures"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: b784cb6a23564a6eb7ac16cbf57134d95b8b2313
+          ref: afb5ece31c7efa5e78e843fa6ace25815263cb23
           path: fixture
           persist-credentials: false
       - name: "Managed reviewed template authoring interoperability: Checkout pinned fixtures"
@@ -2089,7 +2089,7 @@ jobs:
       - name: "Managed native candidate packages: Checkout pinned fixtures"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: b784cb6a23564a6eb7ac16cbf57134d95b8b2313
+          ref: afb5ece31c7efa5e78e843fa6ace25815263cb23
           path: template-authoring-fixture
           persist-credentials: false
       - name: "Managed native candidate packages: Checkout pinned fixtures"
@@ -2280,7 +2280,7 @@ jobs:
       - name: "Managed native candidate packages: Checkout pinned fixtures"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: b784cb6a23564a6eb7ac16cbf57134d95b8b2313
+          ref: afb5ece31c7efa5e78e843fa6ace25815263cb23
           path: template-authoring-fixture
           persist-credentials: false
       - name: "Managed native candidate packages: Checkout pinned fixtures"
@@ -2471,7 +2471,7 @@ jobs:
       - name: "Managed native candidate packages: Checkout pinned fixtures"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: b784cb6a23564a6eb7ac16cbf57134d95b8b2313
+          ref: afb5ece31c7efa5e78e843fa6ace25815263cb23
           path: template-authoring-fixture
           persist-credentials: false
       - name: "Managed native candidate packages: Checkout pinned fixtures"
