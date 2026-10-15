@@ -39,6 +39,7 @@ fn state(c: &SmsCase) -> DeviceSocketState {
         inbound_pilot_enabled: false,
         line_opt_out_enabled: false,
         sms_line_activation_enabled: true,
+        line_readiness_enabled: false,
         mms_spike_policy: Arc::new(MmsSpikePolicy::disabled()),
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),

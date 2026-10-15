@@ -48,6 +48,7 @@ mod mms_spike_policy;
 pub use mms_spike_policy::MmsSpikePolicy;
 mod conversation;
 mod line_activation_v2;
+mod line_readiness;
 mod preconditions;
 mod sealed_line_setup;
 mod sealed_session;
@@ -270,6 +271,10 @@ pub struct DeviceSocketState {
     pub sealed_dispatch_enabled: bool,
     pub inbound_pilot_enabled: bool,
     pub line_opt_out_enabled: bool,
+    /// Dormant per-line readiness observations; off unless explicitly
+    /// configured (ADR 0004 step 4). An observation is recorded telemetry,
+    /// never authority.
+    pub line_readiness_enabled: bool,
     /// Dormant SMS line activation frames; off unless explicitly configured.
     pub sms_line_activation_enabled: bool,
     /// Founder gating for the outbound MMS spike grant; disabled unless the
@@ -434,6 +439,23 @@ enum ClientFrame {
         selected_subscription_id: i32,
         signature_der: String,
     },
+    /// ADR 0004 step 4: one per-line readiness observation when
+    /// `LINE_READINESS_ENABLED=true`. The digest binds the phone's canonical
+    /// preimage; the hub re-derives it from these fields in
+    /// [`line_readiness`] and records the latest accepted observation.
+    #[serde(rename = "line_readiness")]
+    LineReadiness {
+        v: u8,
+        connection_epoch: i64,
+        line_id: Uuid,
+        binding_generation: i64,
+        kind: line_readiness::LineReadinessKind,
+        /// Age of the freshest authenticated observation backing the result,
+        /// or null when none exists — which can only report offline.
+        since_observation_ms: Option<i64>,
+        observed_at_ms: i64,
+        digest: String,
+    },
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -584,6 +606,14 @@ enum ServerFrame {
         v: u8,
         event_id: Uuid,
         created: bool,
+    },
+    /// The hub's answer to a `line_readiness` frame: whether the observation
+    /// was recorded. An unaccepted observation changes nothing server-side.
+    #[serde(rename = "line_readiness_ack")]
+    LineReadinessAck {
+        v: u8,
+        line_id: Uuid,
+        accepted: bool,
     },
     #[serde(rename = "sms_line_challenge")]
     SmsLineChallenge {
@@ -1582,6 +1612,58 @@ async fn run_socket(
                             v: 1, event_id, created,
                         }).await { break; }
                     }
+                    Some(ClientFrame::LineReadiness {
+                        v: 1, connection_epoch, line_id, binding_generation, kind,
+                        since_observation_ms, observed_at_ms, digest,
+                    }) => {
+                        if !state.line_readiness_enabled || connection_epoch != session.connection_epoch {
+                            close_with_code = Some(close_code::POLICY);
+                            break;
+                        }
+                        let observation = match line_readiness::Observation::parse(
+                            line_id, binding_generation, kind, since_observation_ms,
+                            observed_at_ms, &digest,
+                        ) {
+                            Ok(observation) => observation,
+                            Err(_) => {
+                                // The frame contradicts itself or its digest:
+                                // malformed evidence, never a routing fact.
+                                close_with_code = Some(EVIDENCE_REJECTED);
+                                break;
+                            }
+                        };
+                        let Ok(mut client) = runtime_db::connect_device(&state.database_url).await else {
+                            close_with_code = Some(RETRY_LATER);
+                            break;
+                        };
+                        let inbound_session = InboundSession {
+                            account_id: session.account_id,
+                            device_id: session.device_id,
+                            site_id: &state.site_id,
+                            instance_id: &state.instance_id,
+                            connection_epoch: session.connection_epoch,
+                            deployment_epoch: state.deployment_epoch,
+                        };
+                        match line_readiness::ingest(&mut client, inbound_session, &observation).await {
+                            Ok(accepted) => {
+                                drop(client);
+                                if !send_frame(&mut socket, ServerFrame::LineReadinessAck {
+                                    v: 1, line_id, accepted,
+                                }).await { break; }
+                            }
+                            Err(line_readiness::LineReadinessError::Database(error))
+                                if line_readiness::is_contention(&error) =>
+                            {
+                                // Contention with erasure or another writer of
+                                // the same row: keep the session and let the
+                                // next observation cycle retry.
+                            }
+                            Err(_) => {
+                                close_with_code = Some(RETRY_LATER);
+                                break;
+                            }
+                        }
+                    }
                     Some(ClientFrame::LineActivationV2(frame)) => {
                         if line_protocol!=line_activation_v2::LineProtocol::Complete {
                             close_with_code=Some(close_code::POLICY);break;
@@ -2378,6 +2460,8 @@ mod line_opt_out_wire_tests;
 mod virtual_inbound_tests;
 #[cfg(test)]
 mod virtual_line_opt_out_tests;
+#[cfg(test)]
+mod virtual_line_readiness_tests;
 #[cfg(test)]
 mod sms_line_cadence_tests {
     use super::*;

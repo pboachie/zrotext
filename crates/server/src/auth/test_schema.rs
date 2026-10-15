@@ -489,6 +489,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
             "../../../../deploy/compose/migrations/098_line_labels_and_not_ready_policy.sql"
         ),
     ),
+    (
+        "099_line_readiness_observations.sql",
+        include_str!("../../../../deploy/compose/migrations/099_line_readiness_observations.sql"),
+    ),
 ];
 
 async fn apply_selected(

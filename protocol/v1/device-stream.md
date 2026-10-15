@@ -129,13 +129,18 @@ observation exists (which can only report `offline_past_threshold`, so a
 missing observation fails closed). The digest binds the exact local preimage
 (domain `ZT/line/readiness/v1`) covering line identity, kind, freshness and
 observation time; the hub recomputes routing facts from the frame fields
-within the authenticated session, never from the digest alone. Readiness
+within the authenticated session, never from the digest alone, and verifies
+the digest against the reported fields before anything is recorded. Readiness
 never names a SIM slot, subscription identifier, ICCID, IMSI or phone
 number, and a `ready` observation still proves nothing about carrier
 delivery — the hub's routing decision independently applies activation,
 consent, suppression, quota and policy fences. The hub answers with
 `line_readiness_ack` carrying the line and whether the observation was
-accepted; an unaccepted observation changes nothing server-side. See
+accepted; an unaccepted observation changes nothing server-side. An accepted
+observation is recorded as the line's latest report — one bounded row per
+line, latest phone clock wins, never authority — against the line's current
+binding generation for this device, and account erasure clears it with the
+rest of the account's data. See
 [ADR 0004](../../docs/adr/0004-owner-named-lines-proposal.md).
 
 Default-off `mms_spike_ready` and `mms_spike_grant` frames carry the
