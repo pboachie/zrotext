@@ -1772,7 +1772,9 @@ jobs:
       matrix:
         os: [ubuntu-24.04, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # The Windows leg reaches its wire checks after more than thirty minutes.
+    # Leave room for the pinned generator build and unchanged final controls.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -2743,15 +2745,19 @@ jobs:
           git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/tungsten.git "$RUNNER_TEMP/tungsten"
           git -C "$RUNNER_TEMP/tungsten" checkout --detach "$revision"
       - name: "Managed SDK synthetic wire contracts: Reproduce reviewed generated sources"
+        shell: bash
         run: |
           python3 scripts/tungsten_sdk.py --source "$RUNNER_TEMP/tungsten" --check
       - name: "Managed SDK synthetic wire contracts: Java wire contracts"
+        shell: bash
         run: |
           python3 sdk/tungsten/conformance/managed/run.py --source "$RUNNER_TEMP/tungsten" --target java
       - name: "Managed SDK synthetic wire contracts: C# wire contracts"
+        shell: bash
         run: |
           python3 sdk/tungsten/conformance/managed/run.py --source "$RUNNER_TEMP/tungsten" --target csharp
       - name: "Managed SDK synthetic wire contracts: Ruby wire contracts"
+        shell: bash
         run: |
           python3 sdk/tungsten/conformance/managed/run.py --source "$RUNNER_TEMP/tungsten" --target ruby
       - name: "Managed outbound03 signed time policy: Checkout pinned fixtures"
