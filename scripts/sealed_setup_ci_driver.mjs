@@ -128,7 +128,9 @@ export async function main(args=process.argv.slice(2)){
     const tls=await tlsInput(),serverExecutable=await compiled(options,'server'),nativeExecutable=await compiled(options,'native');
     const serverSha256=await executableDigest(serverExecutable),nativeSha256=await executableDigest(nativeExecutable);
     stage='browser-package';assets=await createBrowserPackage();await capture(process.execPath,[path.join(repo,'scripts/package_conversation_browser.mjs'),'--owned-setup-fixture'],{timeoutMs:30000});
-    stage='phone-consumer-build';await runOwnedProcess('cmd.exe',['/d','/c','gradlew.bat',':app:compileDebugUnitTestKotlin','--no-daemon','--max-workers=1'],{cwd:path.join(repo,'android'),timeoutMs:600000,maximum:MAX_OUTPUT});
+    // Cold Windows builds include all four native custody ABIs before Kotlin.
+    // Bound compilation separately from the unchanged acceptance/cleanup deadlines.
+    stage='phone-consumer-build';await runOwnedProcess('cmd.exe',['/d','/c','gradlew.bat',':app:compileDebugUnitTestKotlin','--no-daemon','--max-workers=1'],{cwd:path.join(repo,'android'),timeoutMs:1200000,maximum:MAX_OUTPUT});
     const origin=`https://owner.example.test:${await reservePort()}`;stage='server-readiness';let resolveReady,rejectReady;const readiness=new Promise((resolve,reject)=>{resolveReady=resolve;rejectReady=reject;});
     server=spawn(serverExecutable,['--exact',SERVER_TEST,'--ignored','--nocapture','--test-threads=1'],{cwd:repo,windowsHide:true,shell:false,detached:process.platform!=='win32',stdio:['ignore','pipe','pipe'],env:{...process.env,ZT_OWNER_SETUP_FIXTURE_ORIGIN:origin,ZT_OWNER_SETUP_BROWSER_ASSETS:assets}});
     exited=new Promise(resolve=>server.once('close',code=>{serverExit=code;if(!ready)rejectReady(Error('Fixture exited before readiness'));resolve(code);}));server.once('error',()=>rejectReady(Error('Fixture launch failed')));
