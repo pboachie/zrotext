@@ -32,11 +32,13 @@ async fn mandatory_try_fence_refuses_legacy_writers_without_tuple_cycles_or_cros
     let namespace = format!("zt_fence_{nonce}");
     let role = format!("zt_fence_r_{nonce}");
     let password = Uuid::new_v4().simple().to_string();
+    let verifier = postgres_protocol::password::scram_sha_256(password.as_bytes());
+    assert!(verifier.starts_with("SCRAM-SHA-256$") && verifier != password);
     // Identifiers/password are generated hex. No ambient application object is
     // changed. A failure retains the unique fixture; cleanup never kills peers.
     owner.batch_execute(&format!(
         "CREATE SCHEMA {namespace};
-         CREATE ROLE {role} LOGIN PASSWORD '{password}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOINHERIT;
+         CREATE ROLE {role} LOGIN PASSWORD '{verifier}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOINHERIT;
          SET search_path TO pg_catalog, {namespace};
          CREATE TABLE {namespace}.selection(account uuid PRIMARY KEY, epoch bigint NOT NULL);
          CREATE TABLE {namespace}.current_elections(account uuid PRIMARY KEY REFERENCES {namespace}.selection(account), profile smallint NOT NULL, evidence bytea NOT NULL);
