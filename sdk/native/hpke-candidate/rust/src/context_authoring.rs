@@ -39,8 +39,7 @@ pub struct ContextAuthoringReview {
 }
 pub type AuthoringCurrentSource =
     Arc<dyn Fn() -> Result<ContextAuthoringCurrent, OwnerError> + Send + Sync>;
-pub type AuthoringSessionSource =
-    Arc<dyn Fn() -> Result<OwnerSession, OwnerError> + Send + Sync>;
+pub type AuthoringSessionSource = Arc<dyn Fn() -> Result<OwnerSession, OwnerError> + Send + Sync>;
 pub type AuthoringDraftSource =
     Arc<dyn Fn() -> Result<ContextDraftState, OwnerError> + Send + Sync>;
 pub type AuthoringReviewer =
@@ -469,9 +468,10 @@ impl OwnerContextAuthoring {
             let mut g = self.core.guard.lock().unwrap();
             g.phase = "review";
         }
-        let same = scope.as_ref().zip(v.scope.aad().ok()).is_some_and(
-            |(mine, theirs)| mine.aad().ok() == Some(theirs),
-        );
+        let same = scope
+            .as_ref()
+            .zip(v.scope.aad().ok())
+            .is_some_and(|(mine, theirs)| mine.aad().ok() == Some(theirs));
         if v.request_id != request
             || v.expected_revision != 0
             || v.scope.revision != 1
@@ -763,8 +763,14 @@ fn author_run(core: &Arc<Core>, text: &str, epoch: u64, revision: u64) -> Result
         manifest_digest: m.digest,
     };
     let wire = Zeroizing::new(
-        seal_workflow_context(&m, &scope, WorkflowContextRole::Owner, authority.now, text.as_bytes())
-            .map_err(|_| OwnerError::ReadRefused)?,
+        seal_workflow_context(
+            &m,
+            &scope,
+            WorkflowContextRole::Owner,
+            authority.now,
+            text.as_bytes(),
+        )
+        .map_err(|_| OwnerError::ReadRefused)?,
     );
     authoring.draft()?;
     let mut id = [0u8; 16];
@@ -810,7 +816,9 @@ fn author_run(core: &Arc<Core>, text: &str, epoch: u64, revision: u64) -> Result
         .unwrap()
         .clone()
         .ok_or(OwnerError::OwnerChanged)?;
-    let ticket = client.prepare(&request, 0, scope, wire.as_slice()).map_err(refused)?;
+    let ticket = client
+        .prepare(&request, 0, scope, wire.as_slice())
+        .map_err(refused)?;
     drop(client);
     authoring.draft()?;
     *core.ticket.lock().unwrap() = Some(ticket.clone());
