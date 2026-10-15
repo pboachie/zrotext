@@ -33,7 +33,11 @@ async fn guard<C: GenericClient + Sync>(
     kind: i16,
     sql: &str,
 ) -> Result<()> {
-    let row=db.query_opt("SELECT p.prosrc FROM pg_trigger t JOIN pg_proc p ON p.oid=t.tgfoid JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_language l ON l.oid=p.prolang WHERE c.oid=to_regclass($1) AND t.tgname=$2 AND NOT t.tgisinternal AND t.tgenabled='O' AND t.tgtype=$3 AND t.tgnargs=0 AND t.tgattr=''::int2vector AND t.tgqual IS NULL AND p.proname=$4 AND p.pronamespace=c.relnamespace AND p.prorettype='trigger'::regtype AND p.pronargs=0 AND NOT p.prosecdef AND NOT p.proisstrict AND p.provolatile='v' AND l.lanname='plpgsql' AND p.proconfig=ARRAY['search_path='||current_setting('search_path')]",&[&table,&trigger,&kind,&function]).await?.ok_or_else(invalid)?;
+    // SET search_path FROM CURRENT in the migrations captures the installation
+    // schema. The runtime connection can safely put pg_catalog first without
+    // changing that immutable function configuration. regnamespace quotes schema
+    // identifiers exactly as SET search_path stores them, including test schemas.
+    let row=db.query_opt("SELECT p.prosrc FROM pg_trigger t JOIN pg_proc p ON p.oid=t.tgfoid JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_language l ON l.oid=p.prolang WHERE c.oid=to_regclass($1) AND t.tgname=$2 AND NOT t.tgisinternal AND t.tgenabled='O' AND t.tgtype=$3 AND t.tgnargs=0 AND t.tgattr=''::int2vector AND t.tgqual IS NULL AND p.proname=$4 AND p.pronamespace=c.relnamespace AND p.prorettype='trigger'::regtype AND p.pronargs=0 AND NOT p.prosecdef AND NOT p.proisstrict AND p.provolatile='v' AND l.lanname='plpgsql' AND p.proconfig=ARRAY['search_path='||c.relnamespace::regnamespace::text]",&[&table,&trigger,&kind,&function]).await?.ok_or_else(invalid)?;
     if row.get::<_, String>(0) != body(sql, function)? {
         return Err(invalid());
     }

@@ -550,6 +550,80 @@ async fn schema_refuses_same_count_constraint_target_default_and_trigger_drift()
 }
 
 #[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; production migrations in a unique disposable schema"]
+async fn schema_guard_uses_installed_function_path_and_rejects_drift() {
+    let raw = std::env::var("ZT_AUTH_TEST_DATABASE_URL").expect("ZT_AUTH_TEST_DATABASE_URL");
+    let (mut db, connection) = tokio_postgres::connect(&raw, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        connection.await.expect("fixture connection completion");
+    });
+    // A quoted identifier also checks that the expected configuration uses the
+    // installed schema's SQL spelling rather than its unquoted catalog name.
+    let name = format!("guard schema {}", Uuid::new_v4().simple());
+    let quoted = format!("\"{name}\"");
+    db.batch_execute(&format!(
+        "CREATE SCHEMA {quoted}; SET search_path TO {quoted}"
+    ))
+    .await
+    .unwrap();
+    auth::test_schema::apply(&db).await;
+    schema::require_installed(&db).await.unwrap();
+    let installed = db.query("SELECT p.proowner, p.proacl::text, p.prosecdef, p.proconfig FROM pg_proc p WHERE p.pronamespace=$1::text::regnamespace ORDER BY p.proname", &[&quoted]).await.unwrap();
+    // Match the stock runtime role's pg_catalog-first policy without rewriting
+    // the installed functions, their owner, ACLs or SECURITY INVOKER behavior.
+    db.batch_execute(&format!("SET search_path TO pg_catalog, {quoted}"))
+        .await
+        .unwrap();
+    schema::require_lease(&db).await.unwrap();
+    schema::require_installed(&db).await.unwrap();
+    let after = db.query("SELECT p.proowner, p.proacl::text, p.prosecdef, p.proconfig FROM pg_proc p WHERE p.pronamespace=$1::text::regnamespace ORDER BY p.proname", &[&quoted]).await.unwrap();
+    for (before, after) in installed.iter().zip(&after) {
+        assert_eq!(before.get::<_, u32>(0), after.get::<_, u32>(0));
+        assert_eq!(
+            before.get::<_, Option<String>>(1),
+            after.get::<_, Option<String>>(1)
+        );
+        assert_eq!(before.get::<_, bool>(2), after.get::<_, bool>(2));
+        assert_eq!(
+            before.get::<_, Option<Vec<String>>>(3),
+            after.get::<_, Option<Vec<String>>>(3)
+        );
+    }
+    for mutation in [
+        "ALTER FUNCTION device_session_line_activation_version_guard() SET search_path FROM CURRENT",
+        "ALTER FUNCTION device_session_line_activation_version_guard() RESET search_path",
+        "ALTER FUNCTION device_session_line_activation_version_guard() SET statement_timeout='1s'",
+        "ALTER FUNCTION device_session_line_activation_version_guard() SECURITY DEFINER",
+        "ALTER FUNCTION device_session_line_activation_version_guard() IMMUTABLE",
+        "ALTER FUNCTION device_session_line_activation_version_guard() STRICT",
+        "ALTER TABLE device_sessions DISABLE TRIGGER device_session_line_activation_version_before_update",
+        "ALTER FUNCTION line_activation_v2_pending_guard() SET search_path FROM CURRENT",
+        "ALTER FUNCTION line_activation_v2_pending_guard() SECURITY DEFINER",
+    ] {
+        let tx = db.transaction().await.unwrap();
+        tx.batch_execute(mutation).await.unwrap();
+        assert!(
+            unavailable(schema::require_installed(&tx).await),
+            "{mutation}"
+        );
+        tx.rollback().await.unwrap();
+        schema::require_installed(&db).await.unwrap();
+    }
+    let tx = db.transaction().await.unwrap();
+    tx.batch_execute(&format!("CREATE OR REPLACE FUNCTION {quoted}.device_session_line_activation_version_guard() RETURNS trigger LANGUAGE plpgsql SET search_path TO {quoted} AS $$ BEGIN RETURN NEW; END; $$"))
+        .await
+        .unwrap();
+    assert!(unavailable(schema::require_lease(&tx).await));
+    tx.rollback().await.unwrap();
+    schema::require_installed(&db).await.unwrap();
+    db.batch_execute(&format!("DROP SCHEMA {quoted} CASCADE"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; observed lock wait and actual clock expiry"]
 async fn proof_wait_cannot_spend_a_challenge_that_expires_behind_the_binding_lock() {
     let c = SmsCase::new().await;
