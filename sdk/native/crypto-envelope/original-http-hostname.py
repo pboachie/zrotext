@@ -46,7 +46,7 @@ def main():
         (folder / 'cert.pem').write_bytes(cert.public_bytes(serialization.Encoding.PEM))
         (folder / 'key.pem').write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
         with shared.Server(('localhost', 0), shared.Handler) as server:
-            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); context.load_cert_chain(folder / 'cert.pem', folder / 'key.pem')
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.minimum_version=ssl.TLSVersion.TLSv1_2; context.load_cert_chain(folder / 'cert.pem', folder / 'key.pem')
             server.socket = context.wrap_socket(server.socket, server_side=True)
             server.mode = 'success'; server.calls = []
             threading.Thread(target=server.serve_forever, daemon=True).start()

@@ -15,7 +15,7 @@ def main():
  with tempfile.TemporaryDirectory(prefix='zrotext-authoring-') as tmp:
   folder=Path(tmp);roots=save.cold.tls.certificates(folder)
   with save.cold.tls.Server((socket.gethostbyname('localhost'),0),save.Handler) as server:
-   ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);ctx.load_cert_chain(folder/'cert.pem',folder/'key.pem');server.socket=ctx.wrap_socket(server.socket,server_side=True)
+   ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);ctx.minimum_version=ssl.TLSVersion.TLSv1_2;ctx.load_cert_chain(folder/'cert.pem',folder/'key.pem');server.socket=ctx.wrap_socket(server.socket,server_side=True)
    threading.Thread(target=server.serve_forever,daemon=True).start();origin='https://'+server.server_address[0]+':'+str(server.server_address[1])
    def run(expected=True,oracle=None,**changes):
     nonlocal count
@@ -33,7 +33,10 @@ def main():
     if oracle is not None:cases.append(oracle);native.append(dict(accepted=expected,reviewed=r['reviewed'],metadata=r['metadata'],posts=0))
     count+=1;return r
    try:
-    run(oracle={});run(Commit=True);run(Commit=True,Repeat=2);run(Commit=True,ReviewBlock=True);run(Commit=True,ProbeExpired=True,ValidForMS=100,DelayMS=150)
+    run(oracle={});run(Commit=True);run(Commit=True,Repeat=2);run(Commit=True,ReviewBlock=True)
+    # A cold managed runtime must first finish preparing the ticket. Then wait
+    # past its authority lifetime and require every later operation to refuse.
+    run(Commit=True,ProbeExpired=True,ValidForMS=2000,DelayMS=2100)
     run(False,PriorSaved=True,Commit=True);run(False,PriorUnknown=True,Commit=True)
     run(False,ForeignReview=True,ReviewBlock=True,Decision=False,Commit=True)
     run(False,ForeignReview=True,ReviewBlock=True,Decision=True,Commit=True)

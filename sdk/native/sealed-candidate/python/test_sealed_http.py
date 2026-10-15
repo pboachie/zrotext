@@ -64,7 +64,7 @@ class SealedHttpTests(unittest.TestCase):
         ca.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
         private.write_bytes(key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption()))
         self.server=ThreadingHTTPServer(('localhost',0),Handler)
-        context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.load_cert_chain(ca,private)
+        context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.minimum_version=ssl.TLSVersion.TLSv1_2;context.load_cert_chain(ca,private)
         self.server.socket=context.wrap_socket(self.server.socket,server_side=True)
         thread=threading.Thread(target=self.server.serve_forever,daemon=True);thread.start()
         self.addCleanup(self.server.server_close);self.addCleanup(self.server.shutdown)

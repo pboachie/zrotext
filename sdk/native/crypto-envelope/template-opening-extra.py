@@ -25,7 +25,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='zrotext-opening-extra-') as directory:
         folder = Path(directory); roots = cold.tls.certificates(folder)
         with cold.tls.Server((socket.gethostbyname('localhost'), 0), cold.Handler) as server:
-            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); context.load_cert_chain(folder / 'cert.pem', folder / 'key.pem')
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.minimum_version=ssl.TLSVersion.TLSv1_2; context.load_cert_chain(folder / 'cert.pem', folder / 'key.pem')
             server.socket = context.wrap_socket(server.socket, server_side=True)
             threading.Thread(target=server.serve_forever, daemon=True).start()
             try:

@@ -46,7 +46,7 @@ class OwnerTemplateTests(unittest.TestCase):
                         if key not in ('Content-Type','extra-length'):self.send_header(key,value)
                     self.end_headers();self.wfile.write(body)
                 except (OSError,ssl.SSLError):pass
-        self.server=ThreadingHTTPServer(('localhost',0),Handler);context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        self.server=ThreadingHTTPServer(('localhost',0),Handler);context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.minimum_version=ssl.TLSVersion.TLSv1_2
         folder=Path(self.temp.name);context.load_cert_chain(folder/'ca.pem',folder/'key.pem');self.server.socket=context.wrap_socket(self.server.socket,server_side=True)
         threading.Thread(target=self.server.serve_forever,daemon=True).start();self.addCleanup(self.server.server_close);self.addCleanup(self.server.shutdown)
         self.origin='https://'+socket.gethostbyname('localhost')+':'+str(self.server.server_port)

@@ -47,7 +47,7 @@ def main():
         private.write_bytes(key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption()))
         os.environ['SSL_CERT_FILE']=str(ca)
         server=ThreadingHTTPServer(('localhost',0),Handler)
-        context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.load_cert_chain(ca,private)
+        context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.minimum_version=ssl.TLSVersion.TLSv1_2;context.load_cert_chain(ca,private)
         server.socket=context.wrap_socket(server.socket,server_side=True)
         threading.Thread(target=server.serve_forever,daemon=True).start()
         try:

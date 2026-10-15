@@ -65,7 +65,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='zrotext-page-tls-') as directory:
         folder=Path(directory);roots=tls.certificates(folder)
         with tls.Server(('localhost',0),Handler) as server:
-            context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.load_cert_chain(folder/'cert.pem',folder/'key.pem')
+            context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.minimum_version=ssl.TLSVersion.TLSv1_2;context.load_cert_chain(folder/'cert.pem',folder/'key.pem')
             server.socket=context.wrap_socket(server.socket,server_side=True)
             threading.Thread(target=server.serve_forever,daemon=True).start()
             server.grant='ztr_'+base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip('=')
