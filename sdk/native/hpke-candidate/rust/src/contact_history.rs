@@ -112,6 +112,7 @@ fn connection(path: &Path) -> Result<Connection> {
     )?;
     c.busy_timeout(Duration::from_secs(5))?;
     c.pragma_update(None, "trusted_schema", "OFF")?;
+    c.pragma_update(None, "synchronous", "FULL")?;
     Ok(c)
 }
 impl Drop for History {
@@ -146,9 +147,14 @@ impl History {
     fn operation<T>(&self, run: impl FnOnce(&mut State, Instant) -> Result<T>) -> Result<T> {
         let mut s = self.state.try_lock().map_err(|_| Refused)?;
         let until = Instant::now() + Duration::from_secs(10);
-        let out = self
-            .live(until)
-            .and_then(|()| run(s.as_mut().ok_or(Refused)?, until));
+        let out = self.live(until).and_then(|()| {
+            let state = s.as_mut().ok_or(Refused)?;
+            // A short-lived external writer may checkpoint and unlink the WAL
+            // while this handle is idle, which would leave an already-open
+            // connection pinned to the unlinked pre-checkpoint snapshot.
+            state.db = connection(&self.path)?;
+            run(state, until)
+        });
         if self.closed.load(Ordering::SeqCst) {
             s.take();
             self.release();
