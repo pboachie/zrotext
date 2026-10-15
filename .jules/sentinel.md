@@ -1,0 +1,4 @@
+## 2024-05-24 - [Fix DoS Vulnerability in `ct_eq` Constant-Time Comparisons]
+**Vulnerability:** Found multiple missing length verification checks prior to invoking the `ct_eq` function on byte slices. Specifically, in `sealed_root_ceremony/mod.rs`, `enrollment/mod.rs`, and `auth/mfa.rs`.
+**Learning:** In Rust, the `subtle` crate's `ct_eq` function will panic (abort) if called on slices of unequal lengths. This could be exploited by an attacker submitting payloads of varying lengths to induce panics in the application, leading to a Denial of Service (DoS) vulnerability.
+**Prevention:** To prevent DoS vulnerabilities during constant-time comparisons, explicitly verify that both slices share the same length (e.g., `a.len() == b.len() && bool::from(a.ct_eq(b))`) prior to invoking `ct_eq`. Always check lengths first before engaging in constant-time equivalency operations.

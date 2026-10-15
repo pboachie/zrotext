@@ -295,6 +295,7 @@ async fn complete(
     if row.get::<_, Uuid>(1) != principal.user_id
         || row.get::<_, Uuid>(2) != principal.session_id
         || origin != configured_origin
+        || nonce_digest.len() != 32
         || !bool::from(
             nonce_digest
                 .as_slice()
