@@ -16,7 +16,7 @@ public final class PageTest {
         Path folder=Files.createTempDirectory("zrotext-managed-current-"),path=folder.resolve("history.dat");
         try {
             var checkpoint=OriginalReplyCheckpoint.create(path,b.apply("rootPin"),b.apply("fingerprint"),scope,List.of(prior,active),10000);
-            var transport=new OriginalHttp(input.get("Origin").getAsString(),1000,input.get("Roots").getAsString());
+            var transport=new OriginalHttp(input.get("Origin").getAsString(),4000,input.get("Roots").getAsString());
             var client=new OriginalCurrentClient(transport,checkpoint,b.apply("rootPin"),b.apply("fingerprint"),scope,10000);
             int[] index={0};JsonArray times=input.getAsJsonArray("Clock");
             LongSupplier clock=()->{

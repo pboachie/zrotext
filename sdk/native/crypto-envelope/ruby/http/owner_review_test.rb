@@ -6,7 +6,7 @@ root=ManifestChain::RootPin.enroll(b.call('rootPin'),b.call('fingerprint'));prio
 scope=OriginalReplyReader::Scope.new(b.call('account'),b.call('device'),b.call('line'),b.call('interval'),b.call('connector'),b.call('readGrant'),b.call('originalReader'),'+12')
 path=File.join(input.fetch('Directory'),'reply.db')
 checkpoint=input.fetch('Resume') ? OriginalReplyCheckpoint.open(path,b.call('rootPin'),b.call('fingerprint'),scope) : OriginalReplyCheckpoint.create(path,b.call('rootPin'),b.call('fingerprint'),scope,[prior,active],10000)
-transport=OriginalHTTP.new(origin:input.fetch('Origin'),timeout_ms:1000,additional_roots_pem:input.fetch('Roots'))
+transport=OriginalHTTP.new(origin:input.fetch('Origin'),timeout_ms:4000,additional_roots_pem:input.fetch('Roots'))
 client=OriginalCurrentClient.new(transport:transport,checkpoint:checkpoint,pin:b.call('rootPin'),fingerprint:b.call('fingerprint'),scope:scope,now:10000)
 file=File.join(input.fetch('Directory'),'intent.bin');result={ok:false,unknown:false}
 begin

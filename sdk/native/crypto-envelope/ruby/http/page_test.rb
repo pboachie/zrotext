@@ -9,7 +9,7 @@ scope=OriginalReplyReader::Scope.new(b.call('account'),b.call('device'),b.call('
 Dir.mktmpdir('zrotext-managed-current-') do |folder|
   path=File.join(folder,'history.dat')
   checkpoint=OriginalReplyCheckpoint.create(path,b.call('rootPin'),b.call('fingerprint'),scope,[prior,active],10000)
-  transport=OriginalHTTP.new(origin:input.fetch('Origin'),timeout_ms:1000,additional_roots_pem:input.fetch('Roots'))
+  transport=OriginalHTTP.new(origin:input.fetch('Origin'),timeout_ms:4000,additional_roots_pem:input.fetch('Roots'))
   client=OriginalCurrentClient.new(transport:transport,checkpoint:checkpoint,pin:b.call('rootPin'),fingerprint:b.call('fingerprint'),scope:scope,now:10000)
   index=0
   clock=lambda do

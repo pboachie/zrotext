@@ -19,7 +19,7 @@ string folder=Path.Combine(Path.GetTempPath(),"zrotext-managed-current-"+Guid.Ne
 try
 {
     var checkpoint=OriginalReplyCheckpoint.Create(path,B("rootPin"),B("fingerprint"),scope,new[]{prior,active},10000);
-    using var transport=new OriginalHttp(p.GetProperty("Origin").GetString()!,1000,p.GetProperty("Roots").GetString()!);
+    using var transport=new OriginalHttp(p.GetProperty("Origin").GetString()!,4000,p.GetProperty("Roots").GetString()!);
     var client=new OriginalCurrentClient(transport,checkpoint,B("rootPin"),B("fingerprint"),scope,10000);
     int index=0;var times=p.GetProperty("Clock").EnumerateArray().Select(t=>t.GetInt64()).ToArray();
     long Clock()

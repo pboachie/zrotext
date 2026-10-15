@@ -5,7 +5,7 @@ var root=ManifestChain.RootPin.Enroll(B("rootPin"),B("fingerprint"));var prior=M
 var scope=new OriginalReplyReader.Scope(B("account"),B("device"),B("line"),B("interval"),B("connector"),B("readGrant"),B("originalReader"),"+12");
 string path=Path.Combine(p.GetProperty("Directory").GetString()!,"reply.db"),file=Path.Combine(p.GetProperty("Directory").GetString()!,"intent.bin");
 var checkpoint=p.GetProperty("Resume").GetBoolean()?OriginalReplyCheckpoint.Open(path,B("rootPin"),B("fingerprint"),scope):OriginalReplyCheckpoint.Create(path,B("rootPin"),B("fingerprint"),scope,new[]{prior,active},10000);
-using var transport=new OriginalHttp(p.GetProperty("Origin").GetString()!,1000,p.GetProperty("Roots").GetString()!);var client=new OriginalCurrentClient(transport,checkpoint,B("rootPin"),B("fingerprint"),scope,10000);
+using var transport=new OriginalHttp(p.GetProperty("Origin").GetString()!,4000,p.GetProperty("Roots").GetString()!);var client=new OriginalCurrentClient(transport,checkpoint,B("rootPin"),B("fingerprint"),scope,10000);
 var result=new Dictionary<string,object?>{{"ok",false},{"unknown",false}};
 try {
     if(!p.GetProperty("Resume").GetBoolean()) {

@@ -14,7 +14,7 @@ public final class ProposalTest {
         var scope=new OriginalReplyReader.Scope(b.apply("account"),b.apply("device"),b.apply("line"),b.apply("interval"),b.apply("connector"),b.apply("readGrant"),b.apply("originalReader"),"+12");
         var path=Path.of(input.get("Directory").getAsString(),"reply.db");var file=path.resolveSibling("intent.bin");
         var checkpoint=input.get("Resume").getAsBoolean()?OriginalReplyCheckpoint.open(path,b.apply("rootPin"),b.apply("fingerprint"),scope):OriginalReplyCheckpoint.create(path,b.apply("rootPin"),b.apply("fingerprint"),scope,List.of(prior,active),10000);
-        var transport=new OriginalHttp(input.get("Origin").getAsString(),1000,input.get("Roots").getAsString());var client=new OriginalCurrentClient(transport,checkpoint,b.apply("rootPin"),b.apply("fingerprint"),scope,10000);var result=new JsonObject();result.addProperty("ok",false);result.addProperty("unknown",false);
+        var transport=new OriginalHttp(input.get("Origin").getAsString(),4000,input.get("Roots").getAsString());var client=new OriginalCurrentClient(transport,checkpoint,b.apply("rootPin"),b.apply("fingerprint"),scope,10000);var result=new JsonObject();result.addProperty("ok",false);result.addProperty("unknown",false);
         try {
             if(!input.get("Resume").getAsBoolean()){
                 byte[] request=new byte[16],selected=new byte[16];request[15]=(byte)(input.get("Invalid").getAsBoolean()?0:1);selected[15]=2;

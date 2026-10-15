@@ -56,6 +56,9 @@ The fixture creates ephemeral keys and credentials only in temporary storage.
 Ordinary responses have a four-second budget for cold managed runtimes on shared
 runners. The slow-streaming control retains its separate 300 ms total deadline
 and requires refusal within 800 ms; product transport limits are unchanged.
+The current, read, page, owner-review and proposal test drivers also allow four
+seconds for normal transport work. Their signed-proof clocks, expiry fences,
+request counts and unknown-outcome assertions remain independent and unchanged.
 Two additional controls use a trusted CA with an incorrect server hostname and
 require refusal before any application request for current and consume.
 A third control requires empty user information in an origin to fail preflight,
