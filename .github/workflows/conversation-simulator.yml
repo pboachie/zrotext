@@ -134,7 +134,9 @@ jobs:
   conversation-postgresql:
     needs: [conversation-workspace]
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # The full library suite exceeds forty minutes on a shared runner.
+    # Keep job scheduling slack separate from each test's fixed deadlines.
+    timeout-minutes: 60
     services:
       postgres:
         image: docker.io/library/postgres:18.6-bookworm@sha256:afc7e2d441324c0388fa80c3d24f733b4194a4eb7f47dd8ee2b08eb1a24a647c
