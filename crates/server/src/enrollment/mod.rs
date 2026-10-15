@@ -527,7 +527,8 @@ pub async fn prove_pairing_key(
         return Ok(false);
     };
     let expected: Vec<u8> = row.get(3);
-    if digest.as_slice().len() != expected.len() || !bool::from(digest.as_slice().ct_eq(&expected)) {
+    if digest.as_slice().len() != expected.len() || !bool::from(digest.as_slice().ct_eq(&expected))
+    {
         return Ok(false);
     }
     let account_id: Uuid = row.get(0);

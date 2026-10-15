@@ -182,7 +182,8 @@ fn accepted_step(
             continue;
         }
         let generated = totp.generate(step as u64 * 30).to_string();
-        if generated.len() == code.len() && bool::from(generated.as_bytes().ct_eq(code.as_bytes())) {
+        if generated.len() == code.len() && bool::from(generated.as_bytes().ct_eq(code.as_bytes()))
+        {
             return Ok(Some(step));
         }
     }
