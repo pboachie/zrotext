@@ -90,6 +90,9 @@ struct Config {
     mfa_enrollment_enabled: bool,
     root_custody_enabled: bool,
     sms_line_activation_enabled: bool,
+    /// Dormant per-line readiness observations (ADR 0004 step 4); off unless
+    /// explicitly configured.
+    line_readiness_enabled: bool,
     collaboration_drafts_enabled: bool,
     mms_spike_policy: Arc<device_socket::MmsSpikePolicy>,
     sealed_admission_enabled: bool,
@@ -364,6 +367,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mfa_enrollment_enabled = optional_bool("MFA_ENROLLMENT_ENABLED")?;
     let root_custody_enabled = optional_bool("ROOT_CUSTODY_ENABLED")?;
     let sms_line_activation_enabled = optional_bool("SMS_LINE_ACTIVATION_ENABLED")?;
+    let line_readiness_enabled = optional_bool("LINE_READINESS_ENABLED")?;
     let collaboration_drafts_enabled = optional_bool("COLLABORATION_DRAFTS_ENABLED")?;
     // Sealed v1 message admission. Disabled by default; off leaves the
     // route unmounted so no sealed code path runs.
@@ -447,6 +451,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         mfa_enrollment_enabled,
         root_custody_enabled,
         sms_line_activation_enabled,
+        line_readiness_enabled,
         collaboration_drafts_enabled,
         mms_spike_policy,
         sealed_admission_enabled,
@@ -900,6 +905,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             inbound_pilot_enabled,
             line_opt_out_enabled,
             sms_line_activation_enabled: config.sms_line_activation_enabled,
+            line_readiness_enabled: config.line_readiness_enabled,
             mms_spike_policy: config.mms_spike_policy.clone(),
             draining: config.draining.clone(),
             drain_notify: config.drain_notify.clone(),
@@ -1082,6 +1088,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         || inbound_pilot_enabled
         || line_opt_out_enabled
         || config.sms_line_activation_enabled
+        || config.line_readiness_enabled
         || config.sealed_admission_enabled
         || config.sealed_webhook_delivery_enabled
         || config.sealed_dispatch_enabled
@@ -1900,6 +1907,7 @@ mod tests {
             mfa_enrollment_enabled: false,
             root_custody_enabled: false,
             sms_line_activation_enabled: false,
+            line_readiness_enabled: false,
             collaboration_drafts_enabled: false,
             mms_spike_policy: Arc::new(device_socket::MmsSpikePolicy::disabled()),
             sealed_admission_enabled: false,
@@ -2116,6 +2124,7 @@ mod tests {
             mfa_enrollment_enabled: false,
             root_custody_enabled: false,
             sms_line_activation_enabled: false,
+            line_readiness_enabled: false,
             collaboration_drafts_enabled: false,
             mms_spike_policy: Arc::new(device_socket::MmsSpikePolicy::disabled()),
             sealed_admission_enabled: false,

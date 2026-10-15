@@ -48,6 +48,7 @@ mod mms_spike_policy;
 pub use mms_spike_policy::MmsSpikePolicy;
 mod conversation;
 mod line_activation_v2;
+mod line_readiness;
 mod preconditions;
 mod sealed_line_setup;
 mod sealed_session;
@@ -94,9 +95,12 @@ const SMS_LINE_IDLE_POLL_SECONDS: u64 = 30;
 const SMS_LINE_RETIRE_INTERVAL: Duration = Duration::from_secs(60);
 const MAX_SMS_LINE_ACKS_PER_CONNECTION: usize = 64;
 /// Process-wide wake for sockets idling between activation polls; the owner
-/// side calls wake_sms_line_challenges after opening a challenge. Other hub
-/// instances are covered by the idle poll.
+/// side calls wake_sms_line_activation after opening or approving a challenge.
+/// Other hub instances are covered by the idle poll.
 static SMS_LINE_CHALLENGE_WAKE: LazyLock<Notify> = LazyLock::new(Notify::new);
+/// Latches wakes raised while a socket loop is executing another select
+/// branch: notify_waiters alone cannot reach a dropped notified() future.
+static SMS_LINE_WAKE_PENDING: AtomicBool = AtomicBool::new(false);
 
 /// Poll spacing for the activation loop: fast while the previous poll pushed
 /// a frame (an exchange is open), slow while the device has nothing pending.
@@ -113,7 +117,13 @@ fn sms_line_poll_delay(pushed: bool) -> Duration {
 /// poll. Called by the activation exchange layer; writes from other hub
 /// instances are covered by the idle poll.
 pub fn wake_sms_line_activation() {
+    SMS_LINE_WAKE_PENDING.store(true, Ordering::Release);
     SMS_LINE_CHALLENGE_WAKE.notify_waiters();
+}
+/// Consumes a wake that may have been raised while this loop was busy; every
+/// loop iteration checks before parking so a wake is never dropped.
+fn take_sms_line_wake() -> bool {
+    SMS_LINE_WAKE_PENDING.swap(false, Ordering::AcqRel)
 }
 static DEVICE_SOCKET_ADMISSION: LazyLock<SocketAdmission> = LazyLock::new(|| {
     SocketAdmission::new(
@@ -261,6 +271,10 @@ pub struct DeviceSocketState {
     pub sealed_dispatch_enabled: bool,
     pub inbound_pilot_enabled: bool,
     pub line_opt_out_enabled: bool,
+    /// Dormant per-line readiness observations; off unless explicitly
+    /// configured (ADR 0004 step 4). An observation is recorded telemetry,
+    /// never authority.
+    pub line_readiness_enabled: bool,
     /// Dormant SMS line activation frames; off unless explicitly configured.
     pub sms_line_activation_enabled: bool,
     /// Founder gating for the outbound MMS spike grant; disabled unless the
@@ -425,6 +439,23 @@ enum ClientFrame {
         selected_subscription_id: i32,
         signature_der: String,
     },
+    /// ADR 0004 step 4: one per-line readiness observation when
+    /// `LINE_READINESS_ENABLED=true`. The digest binds the phone's canonical
+    /// preimage; the hub re-derives it from these fields in
+    /// [`line_readiness`] and records the latest accepted observation.
+    #[serde(rename = "line_readiness")]
+    LineReadiness {
+        v: u8,
+        connection_epoch: i64,
+        line_id: Uuid,
+        binding_generation: i64,
+        kind: line_readiness::LineReadinessKind,
+        /// Age of the freshest authenticated observation backing the result,
+        /// or null when none exists — which can only report offline.
+        since_observation_ms: Option<i64>,
+        observed_at_ms: i64,
+        digest: String,
+    },
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -575,6 +606,14 @@ enum ServerFrame {
         v: u8,
         event_id: Uuid,
         created: bool,
+    },
+    /// The hub's answer to a `line_readiness` frame: whether the observation
+    /// was recorded. An unaccepted observation changes nothing server-side.
+    #[serde(rename = "line_readiness_ack")]
+    LineReadinessAck {
+        v: u8,
+        line_id: Uuid,
+        accepted: bool,
     },
     #[serde(rename = "sms_line_challenge")]
     SmsLineChallenge {
@@ -1222,6 +1261,10 @@ async fn run_socket(
     let mut close_with_code = None;
     let mut conversation_session = None;
     loop {
+        if take_sms_line_wake() {
+            sms_line_next_poll = tokio::time::Instant::now();
+            sealed_line_next_poll = tokio::time::Instant::now();
+        }
         tokio::select! {
             message = receive_frame(&mut socket, &mut frame_budget) => {
                 match message {
@@ -1569,6 +1612,58 @@ async fn run_socket(
                             v: 1, event_id, created,
                         }).await { break; }
                     }
+                    Some(ClientFrame::LineReadiness {
+                        v: 1, connection_epoch, line_id, binding_generation, kind,
+                        since_observation_ms, observed_at_ms, digest,
+                    }) => {
+                        if !state.line_readiness_enabled || connection_epoch != session.connection_epoch {
+                            close_with_code = Some(close_code::POLICY);
+                            break;
+                        }
+                        let observation = match line_readiness::Observation::parse(
+                            line_id, binding_generation, kind, since_observation_ms,
+                            observed_at_ms, &digest,
+                        ) {
+                            Ok(observation) => observation,
+                            Err(_) => {
+                                // The frame contradicts itself or its digest:
+                                // malformed evidence, never a routing fact.
+                                close_with_code = Some(EVIDENCE_REJECTED);
+                                break;
+                            }
+                        };
+                        let Ok(mut client) = runtime_db::connect_device(&state.database_url).await else {
+                            close_with_code = Some(RETRY_LATER);
+                            break;
+                        };
+                        let inbound_session = InboundSession {
+                            account_id: session.account_id,
+                            device_id: session.device_id,
+                            site_id: &state.site_id,
+                            instance_id: &state.instance_id,
+                            connection_epoch: session.connection_epoch,
+                            deployment_epoch: state.deployment_epoch,
+                        };
+                        match line_readiness::ingest(&mut client, inbound_session, &observation).await {
+                            Ok(accepted) => {
+                                drop(client);
+                                if !send_frame(&mut socket, ServerFrame::LineReadinessAck {
+                                    v: 1, line_id, accepted,
+                                }).await { break; }
+                            }
+                            Err(line_readiness::LineReadinessError::Database(error))
+                                if line_readiness::is_contention(&error) =>
+                            {
+                                // Contention with erasure or another writer of
+                                // the same row: keep the session and let the
+                                // next observation cycle retry.
+                            }
+                            Err(_) => {
+                                close_with_code = Some(RETRY_LATER);
+                                break;
+                            }
+                        }
+                    }
                     Some(ClientFrame::LineActivationV2(frame)) => {
                         if line_protocol!=line_activation_v2::LineProtocol::Complete {
                             close_with_code=Some(close_code::POLICY);break;
@@ -1812,11 +1907,13 @@ async fn run_socket(
                     }
                 }
             },
-            // The owner just opened a challenge: poll now instead of waiting
-            // for the idle cadence.
+            // The owner just opened or approved a challenge: poll now instead
+            // of waiting for the idle cadence.
             _ = SMS_LINE_CHALLENGE_WAKE.notified(), if state.sms_line_activation_enabled || sealed_setup_enabled => {
-                sms_line_next_poll = tokio::time::Instant::now();
-                sealed_line_next_poll = tokio::time::Instant::now();
+                if take_sms_line_wake() {
+                    sms_line_next_poll = tokio::time::Instant::now();
+                    sealed_line_next_poll = tokio::time::Instant::now();
+                }
             },
             _ = state.drain_notify.notified() => {
                 close_reason = "site_drain";
@@ -2364,6 +2461,8 @@ mod virtual_inbound_tests;
 #[cfg(test)]
 mod virtual_line_opt_out_tests;
 #[cfg(test)]
+mod virtual_line_readiness_tests;
+#[cfg(test)]
 mod sms_line_cadence_tests {
     use super::*;
 
@@ -2388,6 +2487,20 @@ mod sms_line_cadence_tests {
             .await
             .expect("waiting socket was not woken")
             .expect("wake sender dropped");
+    }
+
+    #[test]
+    fn a_wake_raised_while_every_socket_loop_is_busy_is_still_observed() {
+        // notify_waiters alone cannot reach a notified() future that is not
+        // parked: a wake raised while a loop is executing another select
+        // branch would be dropped. The pending flag preserves it for the next
+        // loop iteration.
+        wake_sms_line_activation();
+        assert!(
+            take_sms_line_wake(),
+            "a wake raised while the socket loop was busy must still be observed"
+        );
+        assert!(!take_sms_line_wake());
     }
 }
 

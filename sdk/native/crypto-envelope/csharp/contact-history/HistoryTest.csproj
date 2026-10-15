@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net8.0</TargetFramework><OutputType>Exe</OutputType><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><TreatWarningsAsErrors>false</TreatWarningsAsErrors><NoWarn>$(NoWarn);CS8602;CS8603;CS8618;CS8632;CS8601;CS8619;CS8625;CS8604;CS8762</NoWarn><EnableDefaultCompileItems>false</EnableDefaultCompileItems><RollForward>Major</RollForward></PropertyGroup>
+  <ItemGroup><Compile Include="../HpkeRecipient.cs"/><Compile Include="../ManifestChain.cs"/><Compile Include="../contact/ContactOrigin.cs"/><Compile Include="../contact/ContactField.cs"/><Compile Include="../contact/ProtectedContactSigner.cs"/><Compile Include="ContactHistory.cs"/><Compile Include="HistoryTest.cs"/></ItemGroup>
+</Project>

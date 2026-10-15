@@ -282,3 +282,73 @@ fn genuine_signature_cannot_override_manifest_roles_deadlines_or_old_domains() {
         );
     }
 }
+
+fn observed_envelope(f: &Fixture, m: &VerifiedManifest03, kind: u8, observed: u64) -> Vec<u8> {
+    let mut bytes = envelope(f, m, kind, 17, b"+12");
+    bytes[146..154].copy_from_slice(&observed.to_be_bytes());
+    let end = bytes.len() - 64;
+    let signer = if kind == 1 { 4 } else { 3 };
+    let signature = sign(&f.keys[signer], b"ZTSE/sign/v3\0", &bytes[..end]);
+    bytes[end..].copy_from_slice(&signature);
+    bytes
+}
+
+#[test]
+fn outbound_lifetime_rejects_each_late_selected_key_despite_valid_current_signature() {
+    for late_role in [1, 2, 3, 5] {
+        let mut f = Fixture::new();
+        for record in &mut f.records {
+            if record[0] != 6 && record[0] != late_role {
+                record[132..140].copy_from_slice(&(NOW - 2000).to_be_bytes());
+            }
+        }
+        let (_, _, m) = f.pair();
+        let bytes = observed_envelope(&f, &m, 1, NOW - 1500);
+        let result = verify(&bytes, &m, &expected(&f, 1, b"+12", &readers(&f, 1)), NOW);
+        assert_eq!(
+            result.err(),
+            Some("envelope authority deadline"),
+            "role {late_role}"
+        );
+    }
+}
+
+#[test]
+fn outbound_lifetime_allows_preissuance_and_ignores_unselected_event_key() {
+    let mut f = Fixture::new();
+    for record in &mut f.records {
+        if [1, 2, 3, 5].contains(&record[0]) {
+            record[132..140].copy_from_slice(&(NOW - 2000).to_be_bytes());
+        }
+    }
+    let (_, _, m) = f.pair();
+    // The signed manifest and unselected role-4 key start at NOW - 1000.
+    // Only selected key intervals bound the outbound observation.
+    for observed in [NOW - 2000, NOW - 1500, NOW] {
+        let bytes = observed_envelope(&f, &m, 1, observed);
+        verify(&bytes, &m, &expected(&f, 1, b"+12", &readers(&f, 1)), NOW).unwrap();
+    }
+}
+
+#[test]
+fn outbound_lifetime_end_is_inclusive_for_each_selected_key() {
+    for role in [1, 2, 3, 5] {
+        for until in [NOW + 499, NOW + 500] {
+            let mut f = Fixture::new();
+            f.records.iter_mut().find(|r| r[0] == role).unwrap()[140..148]
+                .copy_from_slice(&until.to_be_bytes());
+            let (_, _, m) = f.pair();
+            let bytes = envelope(&f, &m, 1, 17, b"+12");
+            let result = verify(&bytes, &m, &expected(&f, 1, b"+12", &readers(&f, 1)), NOW);
+            assert_eq!(result.is_ok(), until == NOW + 500, "role {role}");
+        }
+    }
+}
+
+#[test]
+fn outbound_lifetime_change_preserves_inbound_current_time_authorization() {
+    let f = Fixture::new();
+    let (_, _, m) = f.pair();
+    let bytes = observed_envelope(&f, &m, 2, NOW - 1500);
+    verify(&bytes, &m, &expected(&f, 2, b"+12", &readers(&f, 2)), NOW).unwrap();
+}

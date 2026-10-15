@@ -790,21 +790,30 @@ async fn approval_rechecks_owner_membership_device_revocation_and_owner_expiry_a
             .unwrap();
         }
         let mut blocker = c.connect().await;
-        let tx = blocker.transaction().await.unwrap();
-        match case {
-            "membership_revoked" => {
-                // The memberships owner-revocation check makes this state
-                // unreachable in production; dropping it before the approval
-                // starts (never under lock contention) lets this disposable
-                // fixture still prove that a lapsed owner membership fails
-                // the LIVE recheck. The identity trigger permits revoked_at
-                // because it only guards identity and role.
-                tx.execute(
+        if case == "membership_revoked" {
+            // This check forbids owner revocation; the isolated schema drops
+            // it only to exercise the LIVE membership refusal.
+            // Commit this disposable fixture change before taking the row
+            // barrier: ALTER TABLE holds a table lock until commit and must
+            // not satisfy the approval's observed row-lock wait.
+            let setup = blocker.transaction().await.unwrap();
+            setup
+                .execute(
                     "ALTER TABLE memberships DROP CONSTRAINT memberships_owner_not_revoked",
                     &[],
                 )
                 .await
                 .unwrap();
+            setup.commit().await.unwrap();
+        }
+        let blocker_pid: i32 = blocker
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        let tx = blocker.transaction().await.unwrap();
+        match case {
+            "membership_revoked" => {
                 tx.query_one(
                     "SELECT user_id FROM memberships WHERE account_id=$1 AND user_id=$2 FOR UPDATE",
                     &[&c.principal.tenant.account_id(), &c.principal.user_id],
@@ -846,8 +855,8 @@ async fn approval_rechecks_owner_membership_device_revocation_and_owner_expiry_a
             loop {
                 if c.db
                     .query_one(
-                        "SELECT EXISTS(SELECT 1 FROM pg_locks WHERE pid=$1 AND NOT granted)",
-                        &[&pid],
+                        "SELECT EXISTS(SELECT 1 FROM pg_locks waiting JOIN pg_locks held ON held.locktype=waiting.locktype AND held.transactionid=waiting.transactionid WHERE waiting.pid=$1 AND waiting.locktype='transactionid' AND waiting.mode='ShareLock' AND NOT waiting.granted AND held.pid=$2 AND held.granted AND held.mode='ExclusiveLock') AND $2=ANY(pg_blocking_pids($1))",
+                        &[&pid, &blocker_pid],
                     )
                     .await
                     .unwrap()

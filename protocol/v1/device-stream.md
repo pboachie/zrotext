@@ -119,6 +119,30 @@ metadata without an outbound attempt when `LINE_OPT_OUT_ENABLED=true`. It
 requires a current active line binding and never clears suppression or sends
 an SMS. See [the line-bound opt-out contract](line-opt-out-contract.md).
 
+A distinct, default-off `line_readiness` frame carries one phone-side
+readiness observation per line when `LINE_READINESS_ENABLED=true`. It reports
+an observation, never authority: `kind` is one of `inactive`,
+`binding_not_active`, `continuity_pending`, `card_changed`,
+`offline_past_threshold` or `ready`; `since_observation_ms` is the age of the
+freshest authenticated observation backing the result, or JSON null when no
+observation exists (which can only report `offline_past_threshold`, so a
+missing observation fails closed). The digest binds the exact local preimage
+(domain `ZT/line/readiness/v1`) covering line identity, kind, freshness and
+observation time; the hub recomputes routing facts from the frame fields
+within the authenticated session, never from the digest alone, and verifies
+the digest against the reported fields before anything is recorded. Readiness
+never names a SIM slot, subscription identifier, ICCID, IMSI or phone
+number, and a `ready` observation still proves nothing about carrier
+delivery — the hub's routing decision independently applies activation,
+consent, suppression, quota and policy fences. The hub answers with
+`line_readiness_ack` carrying the line and whether the observation was
+accepted; an unaccepted observation changes nothing server-side. An accepted
+observation is recorded as the line's latest report — one bounded row per
+line, latest phone clock wins, never authority — against the line's current
+binding generation for this device, and account erasure clears it with the
+rest of the account's data. See
+[ADR 0004](../../docs/adr/0004-owner-named-lines-proposal.md).
+
 Default-off `mms_spike_ready` and `mms_spike_grant` frames carry the
 founder-gated one-attempt MMS spike ([issue #438](https://github.com/pboachie/zrotext/issues/438))
 when `MMS_SPIKE_GRANT_ENABLED=true` names one device and an allowlisted

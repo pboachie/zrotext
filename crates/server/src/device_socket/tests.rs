@@ -116,6 +116,7 @@ async fn handshake_closes_with_retry_code_when_database_is_down() {
         inbound_pilot_enabled: false,
         line_opt_out_enabled: false,
         sms_line_activation_enabled: false,
+        line_readiness_enabled: false,
         mms_spike_policy: std::sync::Arc::new(super::mms_spike_policy::MmsSpikePolicy::disabled()),
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
@@ -175,17 +176,20 @@ fn stream_schema_examples_match_serde_frames() {
         "../../../../protocol/v1/device-stream.examples.json"
     ))
     .unwrap();
-    assert_eq!(examples.len(), 28);
-    let client_examples: Vec<_> = examples[..11]
+    assert_eq!(examples.len(), 30);
+    // The documented order interleaves the `line_readiness` request/response
+    // pair before the SMS line proof, so the client set is named by index.
+    let client_examples: Vec<_> = examples[0..11]
         .iter()
-        .chain(examples[22..].iter().filter(|frame| {
+        .chain(std::iter::once(&examples[12]))
+        .chain(examples[24..].iter().filter(|frame| {
             matches!(
                 frame["type"].as_str(),
                 Some("sealed_line_proof" | "sealed_line_installed")
             )
         }))
         .collect();
-    assert_eq!(client_examples.len(), 13);
+    assert_eq!(client_examples.len(), 14);
     for frame in client_examples {
         let parsed: ClientFrame = serde_json::from_value(frame.clone()).unwrap();
         assert_eq!(frame["v"], 1);
@@ -204,6 +208,7 @@ fn stream_schema_examples_match_serde_frames() {
             ClientFrame::RadioEvent { .. } => "radio_event",
             ClientFrame::InboundEvent { .. } => "inbound_event",
             ClientFrame::LineOptOut { .. } => "line_opt_out",
+            ClientFrame::LineReadiness { .. } => "line_readiness",
             ClientFrame::SmsLineProof { .. } => "sms_line_proof",
             ClientFrame::SealedLineProof { .. } => "sealed_line_proof",
             ClientFrame::SealedLineInstalled { .. } => "sealed_line_installed",
@@ -212,7 +217,13 @@ fn stream_schema_examples_match_serde_frames() {
         assert_eq!(frame["type"], variant);
     }
     let id = Uuid::parse_str("00000000-0000-4000-8000-000000000001").unwrap();
+    let line = Uuid::parse_str("00000000-0000-4000-8000-000000000021").unwrap();
     let server_frames = [
+        ServerFrame::LineReadinessAck {
+            v: 1,
+            line_id: line,
+            accepted: true,
+        },
         ServerFrame::Challenge {
             v: 1,
             challenge_id: id,
@@ -295,8 +306,13 @@ fn stream_schema_examples_match_serde_frames() {
             device_signature_sha256: "Ag".into(),
         },
     ];
-    assert_eq!(server_frames.len(), examples[11..22].len());
-    for (actual, documented) in server_frames.into_iter().zip(&examples[11..22]) {
+    // The `line_readiness_ack` example sits before the SMS line proof, so the
+    // documented server block is index 11 followed by 13..=23.
+    assert_eq!(server_frames.len(), 12);
+    let documented: Vec<_> = std::iter::once(&examples[11])
+        .chain(examples[13..24].iter())
+        .collect();
+    for (actual, documented) in server_frames.into_iter().zip(documented) {
         let variant = match &actual {
             ServerFrame::Challenge { .. } => "challenge",
             ServerFrame::Session { .. } => "session",
@@ -307,6 +323,7 @@ fn stream_schema_examples_match_serde_frames() {
             ServerFrame::RadioEventAck { .. } => "radio_event_ack",
             ServerFrame::InboundEventAck { .. } => "inbound_event_ack",
             ServerFrame::LineOptOutAck { .. } => "line_opt_out_ack",
+            ServerFrame::LineReadinessAck { .. } => "line_readiness_ack",
             ServerFrame::SmsLineChallenge { .. } => "sms_line_challenge",
             ServerFrame::SmsLineProofAck { .. } => "sms_line_proof_ack",
             ServerFrame::SmsLineActivated { .. } => "sms_line_activated",
@@ -365,6 +382,7 @@ async fn sealed_subprotocol_requires_both_gates_and_an_explicit_client_offer() {
             inbound_pilot_enabled: false,
             line_opt_out_enabled: false,
             sms_line_activation_enabled: false,
+            line_readiness_enabled: false,
             mms_spike_policy: Arc::new(mms_spike_policy::MmsSpikePolicy::disabled()),
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),
@@ -635,6 +653,7 @@ async fn lost_intent_ack_across_hubs_needs_no_radio_proof_before_regrant() {
         inbound_pilot_enabled: false,
         line_opt_out_enabled: false,
         sms_line_activation_enabled: false,
+        line_readiness_enabled: false,
         mms_spike_policy: std::sync::Arc::new(super::mms_spike_policy::MmsSpikePolicy::disabled()),
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
@@ -881,6 +900,7 @@ async fn writer_claim_replay_epoch_and_revocation() {
         inbound_pilot_enabled: false,
         line_opt_out_enabled: false,
         sms_line_activation_enabled: false,
+        line_readiness_enabled: false,
         mms_spike_policy: std::sync::Arc::new(super::mms_spike_policy::MmsSpikePolicy::disabled()),
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),

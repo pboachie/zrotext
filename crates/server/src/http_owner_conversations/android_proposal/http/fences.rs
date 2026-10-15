@@ -15,7 +15,7 @@ async fn expiry(c: &GenuineCase, deadline: i64) {
 async fn observed_wait<F: Future>(c: &GenuineCase, blocker: i32, pending: Pin<&mut F>) -> i32 {
     let barrier = async {
         loop {
-            if let Some(row)=c.f.db.query_opt("SELECT DISTINCT pid FROM pg_locks WHERE NOT granted AND $1=ANY(pg_blocking_pids(pid))",
+            if let Some(row)=c.f.db.query_opt("SELECT DISTINCT pid FROM pg_locks WHERE NOT granted AND $1=ANY(pg_blocking_pids(pid)) LIMIT 1",
                 &[&blocker]).await.unwrap() {
                 break row.get::<_,i32>(0);
             }

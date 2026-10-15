@@ -17,6 +17,7 @@ mod status;
 pub use status::message_status;
 mod usage_projection;
 pub use usage_projection::{USAGE_PAGE_MAX, UsageHistoryPage, UsagePeriodView, usage_history};
+pub mod line_policy;
 pub mod sealed;
 
 /// See [`DeliveryStore::synthetic_grant_may_be_due`]. Public so plan tests

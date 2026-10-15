@@ -436,6 +436,16 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "097_owner_android_proposals.sql",
         include_str!("../../../../deploy/compose/migrations/097_owner_android_proposals.sql"),
     ),
+    (
+        "098_line_labels_and_not_ready_policy.sql",
+        include_str!(
+            "../../../../deploy/compose/migrations/098_line_labels_and_not_ready_policy.sql"
+        ),
+    ),
+    (
+        "099_line_readiness_observations.sql",
+        include_str!("../../../../deploy/compose/migrations/099_line_readiness_observations.sql"),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in
@@ -1143,6 +1153,7 @@ async fn erasure_deletes_every_account_row_and_ends_the_session() {
         ("api_keys", 1),
         ("device_sessions", 1),
         ("device_preconditions", 1),
+        ("line_readiness_observations", 0),
         ("devices", 1),
         ("billing_payment_holds", 1),
         ("billing_risk_events", 1),
@@ -1217,6 +1228,7 @@ async fn erasure_deletes_every_account_row_and_ends_the_session() {
         "billing_device_caps",
         "billing_device_cap_audit",
         "device_preconditions",
+        "line_readiness_observations",
         "sealed_manifest_authorities",
         "sealed_root_challenges",
         "email_verifications",
