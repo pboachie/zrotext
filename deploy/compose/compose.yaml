@@ -311,7 +311,7 @@ services:
       - "127.0.0.1:8081:8080"
     networks: [private]
   edge:
-    image: public.ecr.aws/docker/library/caddy:2.11.4-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b
+    image: caddy:2.11.4-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b
     profiles: [edge]
     depends_on:
       app:
