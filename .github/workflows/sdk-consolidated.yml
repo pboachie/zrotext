@@ -186,6 +186,8 @@ jobs:
             Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP/$name"
             git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$env:RUNNER_TEMP/$name"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            git -C "$env:RUNNER_TEMP/$name" fetch --no-tags origin $producers[$name]
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             git -C "$env:RUNNER_TEMP/$name" checkout --detach $producers[$name]
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             npm ci --prefix "$env:RUNNER_TEMP/$name/sdk/typescript" --ignore-scripts --no-audit --no-fund
@@ -539,6 +541,7 @@ jobs:
           revision=$(python3 -c 'import json; print(json.load(open("sdk/tungsten/generator.lock.json"))["revision"])')
           rm -rf "$RUNNER_TEMP/tungsten"
           git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/tungsten.git "$RUNNER_TEMP/tungsten"
+          git -C "$RUNNER_TEMP/tungsten" fetch --no-tags origin "$revision"
           git -C "$RUNNER_TEMP/tungsten" checkout --detach "$revision"
           python3 scripts/tungsten_sdk.py --source "$RUNNER_TEMP/tungsten" --check
       - name: "Tungsten migration comparisons: Build existing TypeScript client"
@@ -570,6 +573,7 @@ jobs:
           revision=$(python3 -c 'import json; print(json.load(open("sdk/tungsten/generator.lock.json"))["revision"])')
           rm -rf "$RUNNER_TEMP/tungsten-2"
           git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/tungsten.git "$RUNNER_TEMP/tungsten-2"
+          git -C "$RUNNER_TEMP/tungsten-2" fetch --no-tags origin "$revision"
           git -C "$RUNNER_TEMP/tungsten-2" checkout --detach "$revision"
       - name: "Tungsten SDK generation: Generate and verify all targets"
         run: |
@@ -2743,6 +2747,7 @@ jobs:
           revision=$(python3 -c 'import json; print(json.load(open("sdk/tungsten/generator.lock.json"))["revision"])')
           rm -rf "$RUNNER_TEMP/tungsten"
           git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/tungsten.git "$RUNNER_TEMP/tungsten"
+          git -C "$RUNNER_TEMP/tungsten" fetch --no-tags origin "$revision"
           git -C "$RUNNER_TEMP/tungsten" checkout --detach "$revision"
       - name: "Managed SDK synthetic wire contracts: Reproduce reviewed generated sources"
         shell: bash
@@ -4402,9 +4407,11 @@ jobs:
           runtime=$(python3 -c 'import json; print(json.load(open("sdk/tungsten/cli-acceptance/dependency.json"))["runtime_revision"])')
           rm -rf "$RUNNER_TEMP/foundation"
           git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$RUNNER_TEMP/foundation"
+          git -C "$RUNNER_TEMP/foundation" fetch --no-tags origin "$foundation"
           git -C "$RUNNER_TEMP/foundation" checkout --detach "$foundation"
           rm -rf "$RUNNER_TEMP/tungsten"
           git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/tungsten.git "$RUNNER_TEMP/tungsten"
+          git -C "$RUNNER_TEMP/tungsten" fetch --no-tags origin "$runtime"
           git -C "$RUNNER_TEMP/tungsten" checkout --detach "$runtime"
       - name: "Generated Rust CLI acceptance: Generate reviewed artifacts"
         run: |
@@ -4422,9 +4429,11 @@ jobs:
           runtime=$(python3 -c 'import json; print(json.load(open("sdk/tungsten/conformance/native/dependency.json"))["runtime_revision"])')
           rm -rf "$RUNNER_TEMP/foundation-2"
           git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/zrotext.git "$RUNNER_TEMP/foundation-2"
+          git -C "$RUNNER_TEMP/foundation-2" fetch --no-tags origin "$foundation"
           git -C "$RUNNER_TEMP/foundation-2" checkout --detach "$foundation"
           rm -rf "$RUNNER_TEMP/tungsten-2"
           git clone -c core.autocrlf=false --no-checkout https://github.com/pboachie/tungsten.git "$RUNNER_TEMP/tungsten-2"
+          git -C "$RUNNER_TEMP/tungsten-2" fetch --no-tags origin "$runtime"
           git -C "$RUNNER_TEMP/tungsten-2" checkout --detach "$runtime"
       - name: "Generated Rust Go wire acceptance: Generate reviewed artifacts"
         run: |
