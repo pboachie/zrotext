@@ -96,6 +96,7 @@ async fn dormant_clock_gates_and_replacement_cleanup_preserve_live_session() {
         inbound_pilot_enabled: false,
         line_opt_out_enabled: false,
         sms_line_activation_enabled: false,
+        line_readiness_enabled: false,
         mms_spike_policy: Arc::new(super::super::mms_spike_policy::MmsSpikePolicy::disabled()),
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),

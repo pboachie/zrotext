@@ -155,6 +155,7 @@ async fn authenticated_inbound_replay_retries_one_webhook_delivery() {
         inbound_pilot_enabled: true,
         line_opt_out_enabled: false,
         sms_line_activation_enabled: false,
+        line_readiness_enabled: false,
         mms_spike_policy: Arc::new(MmsSpikePolicy::disabled()),
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
@@ -459,6 +460,7 @@ impl HandshakeFixture {
             inbound_pilot_enabled: false,
             line_opt_out_enabled: false,
             sms_line_activation_enabled: false,
+            line_readiness_enabled: false,
             mms_spike_policy: Arc::new(MmsSpikePolicy::disabled()),
             draining: Arc::new(AtomicBool::new(false)),
             drain_notify: Arc::new(Notify::new()),
@@ -924,6 +926,7 @@ async fn mms_spike_grant_is_solicited_one_use_and_stop_gated() {
         inbound_pilot_enabled: false,
         line_opt_out_enabled: false,
         sms_line_activation_enabled: false,
+        line_readiness_enabled: false,
         mms_spike_policy: Arc::new(policy),
         draining: Arc::new(AtomicBool::new(false)),
         drain_notify: Arc::new(Notify::new()),
@@ -1225,6 +1228,7 @@ async fn mms_spike_grant_fails_closed_when_the_stop_tables_are_unreadable() {
         inbound_pilot_enabled: false,
         line_opt_out_enabled: false,
         sms_line_activation_enabled: false,
+        line_readiness_enabled: false,
         mms_spike_policy: Arc::new(
             MmsSpikePolicy::parse(Some("true"), Some(&device_id.to_string()), Some(&recipient))
                 .unwrap(),

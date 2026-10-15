@@ -395,6 +395,12 @@ pub(crate) const DELETE_PLAN: &[(&str, &str)] = &[
         "device_preconditions",
         "DELETE FROM device_preconditions WHERE account_id=$1",
     ),
+    // Per-line readiness observations are also device-reported telemetry;
+    // they go before the devices and lines they describe.
+    (
+        "line_readiness_observations",
+        "DELETE FROM line_readiness_observations WHERE account_id=$1",
+    ),
     ("devices", "DELETE FROM devices WHERE account_id=$1"),
     // Sealed state. The immutable trust history (reservations, role claims,
     // root enrollments, public receipts) is a blocked table above; these

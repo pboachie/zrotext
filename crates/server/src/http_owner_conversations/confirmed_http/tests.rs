@@ -487,6 +487,7 @@ fn test_router(url: String) -> Router {
         inbound_pilot_enabled: false,
         line_opt_out_enabled: false,
         sms_line_activation_enabled: false,
+        line_readiness_enabled: false,
         mms_spike_policy: Arc::new(
             crate::device_socket::MmsSpikePolicy::parse(None, None, None).unwrap(),
         ),
