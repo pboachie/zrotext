@@ -64,14 +64,30 @@ async fn real_migrator_and_runtime_roles_accept_only_equivalent_guard_paths() {
     let migrator = format!("zt_guard_m_{suffix}");
     let runtime = format!("zt_guard_r_{suffix}");
     let password = Uuid::new_v4().simple().to_string();
+    // Send only a salted SCRAM verifier in DDL; the raw secret stays in the
+    // connection configuration, never SQL text, logs or activity displays.
+    let verifier = postgres_protocol::password::scram_sha_256(password.as_bytes());
+    assert!(verifier.starts_with("SCRAM-SHA-256$") && verifier != password);
     for role in [&migrator, &runtime] {
         admin
             .batch_execute(&format!(
-                "CREATE ROLE {role} LOGIN PASSWORD '{password}'
+                "CREATE ROLE {role} LOGIN PASSWORD '{verifier}'
                  NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOINHERIT"
             ))
             .await
             .unwrap();
+        let stored: String = admin
+            .query_one(
+                "SELECT rolpassword FROM pg_authid WHERE rolname=$1",
+                &[role],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert!(
+            stored.starts_with("SCRAM-SHA-256$") && stored != password,
+            "fixture credential must be stored as a SCRAM verifier"
+        );
     }
     admin
         .batch_execute(&format!("CREATE DATABASE {name} OWNER {migrator}"))
