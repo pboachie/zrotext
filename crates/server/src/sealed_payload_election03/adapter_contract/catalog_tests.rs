@@ -18,14 +18,15 @@ fn digest_json(raw: Option<String>) -> String {
 
 async fn catalog<C: GenericClient + Sync>(db: &C) -> Vec<Row> {
     db.query(
-        "SELECT c.relname,
+        r#"SELECT c.relname,
          (SELECT json_agg(json_build_array(a.attname,format_type(a.atttypid,a.atttypmod),a.attnotnull) ORDER BY a.attnum)::text
           FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped),
-         (SELECT json_agg(json_build_array(p.relname,pg_get_constraintdef(k.oid)) ORDER BY p.relname,pg_get_constraintdef(k.oid))::text
+         (SELECT json_agg(json_build_array(p.relname,pg_get_constraintdef(k.oid)) ORDER BY p.relname COLLATE "C",pg_get_constraintdef(k.oid) COLLATE "C")::text
           FROM pg_constraint k JOIN pg_class p ON p.oid=k.confrelid WHERE k.conrelid=c.oid AND k.contype='f'),
-         (SELECT json_agg(json_build_array(t.tgname,p.proname,pg_get_triggerdef(t.oid),t.tgenabled::text) ORDER BY t.tgname,p.proname,pg_get_triggerdef(t.oid))::text
+         (SELECT json_agg(json_build_array(t.tgname,p.proname,pg_get_triggerdef(t.oid),t.tgenabled::text) ORDER BY t.tgname COLLATE "C",p.proname COLLATE "C",pg_get_triggerdef(t.oid) COLLATE "C")::text
           FROM pg_trigger t JOIN pg_proc p ON p.oid=t.tgfoid WHERE t.tgrelid=c.oid AND NOT t.tgisinternal)
-         FROM pg_class c WHERE c.relnamespace='public'::regnamespace AND c.relkind IN ('r','p') ORDER BY c.relname",
+         FROM pg_class c WHERE c.relnamespace='public'::regnamespace AND c.relkind IN ('r','p') ORDER BY c.relname COLLATE "C"
+        "#,
         &[],
     ).await.unwrap()
 }
