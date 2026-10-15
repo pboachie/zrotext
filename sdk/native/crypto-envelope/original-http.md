@@ -43,16 +43,19 @@ standard JSON and HTTP libraries.
 
 Run `original-http-run.py --language java|csharp|ruby --fixture CHECKOUT`, where
 `CHECKOUT` is the clean shared native transport fixture commit
-`6307413ae33fa4623483ca5adf306045b3efffb1`. Java needs a JDK supporting release 17,
+`2ea14d9c9451bfa9160995ac830dbdfa4160e952`. Java needs a JDK supporting release 17,
 C# needs .NET 8, and Ruby uses 3.3.9. The Python fixture requires cryptography.
 Use `--ruby PATH` to select a portable interpreter.
 
-The same 45 local TLS controls exercise each compiled/interpreted companion:
+The same 47 local TLS controls exercise each compiled/interpreted companion:
 all five closed methods, authentication confinement, ignored proxy configuration,
 untrusted TLS roots, invalid input before dispatch, one observed request on
 connection loss, redirects, wrong response identity, malformed/duplicate/extra
 JSON, invalid UTF-8, oversize/truncated bodies and a slow streaming deadline.
 The fixture creates ephemeral keys and credentials only in temporary storage.
+Ordinary responses have a four-second budget for cold managed runtimes on shared
+runners. The slow-streaming control retains its separate 300 ms total deadline
+and requires refusal within 800 ms; product transport limits are unchanged.
 Two additional controls use a trusted CA with an incorrect server hostname and
 require refusal before any application request for current and consume.
 A third control requires empty user information in an origin to fail preflight,

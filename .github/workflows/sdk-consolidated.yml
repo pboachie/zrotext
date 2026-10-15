@@ -945,7 +945,7 @@ jobs:
       - name: "Managed original-grant HTTPS transport: Checkout pinned fixtures"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 6307413ae33fa4623483ca5adf306045b3efffb1
+          ref: 2ea14d9c9451bfa9160995ac830dbdfa4160e952
           path: fixture
           persist-credentials: false
       - name: "Managed original-grant HTTPS transport [java]: Install synthetic TLS certificate dependency"
@@ -957,7 +957,7 @@ jobs:
       - name: "Managed original-grant HTTPS transport: Checkout pinned fixtures"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 6307413ae33fa4623483ca5adf306045b3efffb1
+          ref: 2ea14d9c9451bfa9160995ac830dbdfa4160e952
           path: fixture
           persist-credentials: false
       - name: "Managed original-grant HTTPS transport [csharp]: Install synthetic TLS certificate dependency"
@@ -969,7 +969,7 @@ jobs:
       - name: "Managed original-grant HTTPS transport: Checkout pinned fixtures"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 6307413ae33fa4623483ca5adf306045b3efffb1
+          ref: 2ea14d9c9451bfa9160995ac830dbdfa4160e952
           path: fixture
           persist-credentials: false
       - name: "Managed original-grant HTTPS transport [ruby]: Install synthetic TLS certificate dependency"
@@ -2011,7 +2011,7 @@ jobs:
       - name: "Managed native candidate packages: Checkout pinned fixtures"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 6307413ae33fa4623483ca5adf306045b3efffb1
+          ref: 2ea14d9c9451bfa9160995ac830dbdfa4160e952
           path: http-fixture
           persist-credentials: false
       - name: "Managed native candidate packages: Checkout pinned fixtures"
@@ -2202,7 +2202,7 @@ jobs:
       - name: "Managed native candidate packages: Checkout pinned fixtures"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 6307413ae33fa4623483ca5adf306045b3efffb1
+          ref: 2ea14d9c9451bfa9160995ac830dbdfa4160e952
           path: http-fixture
           persist-credentials: false
       - name: "Managed native candidate packages: Checkout pinned fixtures"
@@ -2393,7 +2393,7 @@ jobs:
       - name: "Managed native candidate packages: Checkout pinned fixtures"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 6307413ae33fa4623483ca5adf306045b3efffb1
+          ref: 2ea14d9c9451bfa9160995ac830dbdfa4160e952
           path: http-fixture
           persist-credentials: false
       - name: "Managed native candidate packages: Checkout pinned fixtures"
