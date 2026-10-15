@@ -66,6 +66,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if s.mode == 'drop':
             self.close_connection = True
             return
+        if s.mode == 'delayed-success':
+            time.sleep(.5)
         body = json.dumps({'kind':method, 'result':{'untrusted':True}}).encode()
         if s.mode == 'malformed': body = b'not JSON'
         if s.mode == 'wrong-kind': body = b'{"kind":"other","result":{}}'
@@ -146,6 +148,9 @@ def main():
                 assert grant not in result.stdout and grant not in result.stderr
                 count += 1
             for method in ('current','page','read','consume','status'): run(method=method)
+            # Valid bounded latency must not be confused with the short trickle
+            # deadline. The former 300 ms normal budget fails these controls.
+            for method in ('current', 'consume'): run(mode='delayed-success', method=method)
             for mode in ('redirect','unavailable','drop','malformed','wrong-kind','duplicate','extra','invalid-utf8','oversize','truncated','wrong-type','trickle'):
                 run(mode=mode, expected='unavailable')
                 run(mode=mode, method='consume', expected='unknown')
