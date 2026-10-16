@@ -54,7 +54,8 @@ async function overview(width) {
 }
 async function hierarchyAndFit(page) {
   const order = await page.evaluate(() => ["message-summary", "approved-devices", "message-activity"].map(id => document.getElementById(id).getBoundingClientRect().top));
-  assert.ok(order[0] < order[1] && order[1] < order[2], "authoritative overview precedes hardware and activity");
+  assert.ok(order[1] < order[0], "phone status precedes the detailed summary controls");
+  assert.equal(await page.locator("#message-activity").isVisible(), false, "full activity lives in its own destination");
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
   assert.equal(await page.locator("#message-summary button:visible, #message-summary select:visible, #approved-devices button:visible, #message-activity button:visible, #message-activity summary:visible").evaluateAll(nodes => nodes.some(node => {
     const box = node.getBoundingClientRect(); return box.left < -1 || box.right > innerWidth + 1 || box.height < 44;
@@ -70,7 +71,7 @@ for (const width of [320, 390, 1440]) {
       await hierarchyAndFit(page);
       assert.equal(await page.locator("#summary-submitted").textContent(), "19");
       assert.match(await page.locator("#fleet-summary").textContent(), /loaded pages only/);
-      assert.match(await page.locator("#message-list").textContent(), /unknown/i);
+      assert.match(await page.locator("#overview-recent-list").textContent(), /unknown/i);
       assert.doesNotMatch(await page.locator("#message-list").textContent(), /synthetic-content-must-not-render|synthetic-recipient-must-not-render/);
       if (screenshots) await page.screenshot({ path: path.join(screenshots, `overview-${width}.png`), fullPage: true });
       await page.addStyleTag({ content: "html { font-size: 200% !important; }" });
@@ -79,6 +80,10 @@ for (const width of [320, 390, 1440]) {
       await select.focus();
       await page.keyboard.press("Enter");
       assert.equal(await page.locator("#device-detail-name").textContent(), "Synthetic gateway Beta");
+      if (width < 960) {
+        assert.equal(await page.locator("#phone-inspector").evaluate(node => node.open), true);
+        await page.locator("#phone-inspector-close").click();
+      }
       assert.equal(await select.evaluate(node => node === document.activeElement), true);
     } finally { await page.close(); }
   });
@@ -88,15 +93,13 @@ test("combined refresh preserves selected hardware, keyboard focus, pending inpu
   try {
     const select = page.getByRole("button", { name: "View details for Synthetic gateway Beta", exact: true });
     await select.click();
-    await page.locator("#display-name").fill("Pending synthetic pairing name");
     await select.focus();
     state.devices = [device(other, "Renamed synthetic gateway"), device(gateway, "Synthetic gateway Alpha")];
     state.summaryValue = 20;
     await page.evaluate(() => { document.getElementById("refresh-devices").click(); document.getElementById("refresh-summary").click(); });
     await page.waitForFunction(() => document.getElementById("device-detail-name").textContent === "Renamed synthetic gateway" && document.getElementById("summary-submitted").textContent === "20");
-    assert.equal(await page.locator("#display-name").inputValue(), "Pending synthetic pairing name");
     assert.equal(await page.evaluate(() => document.activeElement.getAttribute("aria-pressed")), "true");
-    assert.match(await page.locator("#message-list").textContent(), /unknown/i);
+    assert.match(await page.locator("#overview-recent-list").textContent(), /unknown/i);
     state.summaryStatus = 500;
     await page.locator("#refresh-summary").click();
     await page.waitForFunction(() => document.getElementById("message-summary").getAttribute("data-stale") === "true");

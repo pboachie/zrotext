@@ -18,6 +18,8 @@ use thiserror::Error;
 use tokio_postgres::Client;
 use uuid::Uuid;
 
+pub mod binding;
+
 const PAIRING_LIFETIME_SECS: i32 = 300;
 /// A stateless socket challenge stays verifiable this long after issuance.
 const SOCKET_CHALLENGE_LIFETIME_MS: u64 = 60_000;
@@ -747,8 +749,8 @@ pub async fn approve_pairing(
     )
     .await?;
     tx.execute(
-        "INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint) VALUES($1,$2,$3,$4)",
-        &[&device_id, &principal.tenant.account_id(), &sec1, &fingerprint],
+        "INSERT INTO device_keys(device_id,account_id,signing_key_sec1,fingerprint,source_pairing_id) VALUES($1,$2,$3,$4,$5)",
+        &[&device_id, &principal.tenant.account_id(), &sec1, &fingerprint, &pairing_id],
     ).await?;
     tx.execute(
         "UPDATE pairing_requests SET approved_at=now(),device_id=$2 WHERE id=$1",

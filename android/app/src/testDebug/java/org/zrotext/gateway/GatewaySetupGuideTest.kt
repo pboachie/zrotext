@@ -27,15 +27,15 @@ class GatewaySetupGuideTest {
 
     @Test fun guideNavigationAndBackDoNotAuthorizeAnything() {
         setup()
-        compose.onNodeWithText("SMS access is optional for pairing and connection tests. Pairing can proceed without selecting a SIM; current connection controls require a selected SIM.").assertExists()
-        compose.onNodeWithText("1. Review access").performScrollTo().performClick()
+        compose.onNodeWithText("Continue setup").assertExists()
+        compose.onNodeWithText("Review Android access").performScrollTo().performClick()
         compose.onNodeWithText("Review access").assertExists()
-        compose.onNodeWithText("Next: choose SIM").performScrollTo().performClick()
+        compose.onNodeWithText("Back to SIM selection").performScrollTo().performClick()
         compose.onNodeWithText("Choose a SIM").assertExists()
-        compose.onNodeWithText("Next: pairing").performScrollTo().performClick()
-        compose.onNodeWithText("Device pairing").assertExists()
+        compose.onNodeWithText("Next: connection").performScrollTo().performClick()
+        compose.onNodeWithText("Connect this phone").assertExists()
         compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
-        compose.onNodeWithText("1. Review access").assertExists()
+        compose.onNodeWithText("Review Android access").assertExists()
         compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
         compose.onNodeWithText("Gateway home").assertExists()
         noAction()
@@ -43,10 +43,9 @@ class GatewaySetupGuideTest {
 
     @Test fun pairingCanBeReachedWithoutSmsGrantOrSimSelection() {
         setup()
-        compose.onNodeWithText("1. Review access").performScrollTo().performClick()
-        compose.onNodeWithText("Go to pairing without SMS access").performScrollTo().performClick()
+        compose.onNodeWithText("Continue setup").performScrollTo().performClick()
         compose.onNodeWithText("One-use pairing token").assertDoesNotExist()
-        compose.onNodeWithText("Pairing status: Scan the current pairing QR, or use the existing manual pairing fields.").assertExists()
+        compose.onNodeWithText("Pairing status: Ready to scan").assertExists()
         compose.onNodeWithText("Use existing manual pairing").performScrollTo().performClick()
         compose.onNodeWithText("One-use pairing token").assertExists()
         noAction()
@@ -54,7 +53,7 @@ class GatewaySetupGuideTest {
 
     @Test fun recreationKeepsGuideStepButDoesNotPersistPairingSecret() {
         setup()
-        compose.onNodeWithText("3. Pair this phone").performScrollTo().performClick()
+        compose.onNodeWithText("Continue setup").performScrollTo().performClick()
         compose.onNodeWithText("Use existing manual pairing").performScrollTo().performClick()
         compose.onNodeWithText("One-use pairing token").performScrollTo().performTextInput("synthetic-token")
         compose.activityRule.scenario.recreate()
@@ -69,14 +68,14 @@ class GatewaySetupGuideTest {
 
     @Test fun connectionShortcutOnlyOpensExistingControls() {
         setup()
-        compose.onNodeWithText("Open connection controls").performScrollTo().performClick()
+        compose.onNodeWithText("Advanced connection controls").performScrollTo().performClick()
         compose.onNodeWithText("Authenticated device heartbeat").assertExists()
         noAction()
     }
 
     @Test fun decliningAccessLeavesTheAccessStepAndChoiceAvailable() {
         setup()
-        compose.onNodeWithText("1. Review access").performScrollTo().performClick()
+        compose.onNodeWithText("Review Android access").performScrollTo().performClick()
         compose.onNodeWithText("Choose SIM permissions").performScrollTo().performClick()
         compose.onNodeWithText(GatewayPermissionPurpose.SIM.disclosure).assertExists()
         compose.onNodeWithText("Not now").performScrollTo().performClick()

@@ -27,6 +27,11 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.semantics.Role
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.ui.window.DialogProperties
 import java.util.concurrent.atomic.AtomicBoolean
@@ -92,6 +97,20 @@ class MainActivity : ComponentActivity() {
     private var pairingId by mutableStateOf("")
     private var pairingToken by mutableStateOf("")
     private var pairingStatus by mutableStateOf("Not paired")
+    private var pairingLocator by mutableStateOf<PairingLocator?>(null)
+    private var setupRecovery by mutableStateOf(GatewaySetupRecovery.NEW)
+    private var bindingCurrent by mutableStateOf(false)
+    private var bindingCheckedAt = 0L
+    private var bindingReadFailures = 0
+    private var bindingEpoch = 0L
+    private var bindingForeground = false
+    private var bindingSetupVisible = false
+    private val bindingWorker = Executors.newSingleThreadExecutor()
+    private val bindingHandler = Handler(Looper.getMainLooper())
+    private val bindingBusy = AtomicBoolean(false)
+    private val bindingPoll = Runnable { checkSavedPairing() }
+    private var hostedSelected by mutableStateOf(false)
+    private var setupRebootResume by mutableStateOf(false)
     private var pairingManual by mutableStateOf(false)
     private var pairingUnknown by mutableStateOf(false)
     private var pairingCanUseManual by mutableStateOf(false)
@@ -198,6 +217,13 @@ class MainActivity : ComponentActivity() {
         // A public outcome marker survives process loss; no ticket or key is persisted.
         pairingUnknown = pairingStorageUncertain.get() || getSharedPreferences("pairing-outcome", MODE_PRIVATE).getBoolean("unresolved", false)
         if (pairingUnknown) pairingStatus = "Pairing outcome unknown. Reconcile the original ticket in the browser."
+        pairingLocator = PairingLocatorStore.read(this)
+        val configuredHosted = runCatching { AndroidPairingQrPayload.canonicalOrigin(BuildConfig.ZROTEXT_HOSTED_ORIGIN) }.getOrNull()
+        pairingOrigin = getSharedPreferences("trusted-service", MODE_PRIVATE).getString("origin", null)
+            ?.let { runCatching { AndroidPairingQrPayload.canonicalOrigin(it) }.getOrNull() }
+            ?: pairingLocator?.origin ?: configuredHosted.orEmpty()
+        hostedSelected = configuredHosted != null && pairingOrigin == configuredHosted
+        if (pairingLocator != null) setupRecovery = GatewaySetupRecovery.CHECKING
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(GatewayColors.background.toArgb()),
             navigationBarStyle = SystemBarStyle.dark(GatewayColors.background.toArgb())
@@ -268,7 +294,17 @@ class MainActivity : ComponentActivity() {
 
                 GatewayCompanion(initialPage = GatewayPage.entries.firstOrNull {
                     it.name == intent.getStringExtra("gateway_screen")
-                } ?: GatewayPage.HOME, onPageChanged = ::summaryPageChanged) { page, navigate ->
+                } ?: GatewayPage.HOME, onPageChanged = { page ->
+                    summaryPageChanged(page)
+                    bindingSetupVisible = page == GatewayPage.SETUP
+                    if (bindingSetupVisible) requestPairingCheck()
+                    else {
+                        bindingEpoch++
+                        bindingCurrent = false
+                        setupRebootResume = false
+                        bindingHandler.removeCallbacks(bindingPoll)
+                    }
+                }) { page, navigate ->
                     if (page == GatewayPage.HOME) {
                         GatewayHome(
                             AuthenticatedGatewayStatus.value, GatewayStatus.value,
@@ -280,6 +316,7 @@ class MainActivity : ComponentActivity() {
                             summaryStatus = summaryStatus,
                             onSetup = { navigate(GatewayPage.SETUP) },
                             onConnection = { navigate(GatewayPage.CONNECTION) },
+                            recovery = setupRecovery,
                             onPause = {
                                 clearSummaryReader(clearKey = true)
                                 startService(Intent(this@MainActivity, GatewayService::class.java)
@@ -290,12 +327,13 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                     if (page == GatewayPage.SETUP) {
-                        GatewayButton(onClick = { ownerCustodyOpen = true }, modifier = Modifier.fillMaxWidth()) {
-                            Text("Set up or recover owner custody on Android")
-                        }
                         GatewaySetupGuide(
                             selectedSim = sims.firstOrNull { it.first == selectedSim }?.second ?: "Not selected",
                             pairingStatus = pairingStatus,
+                            recovery = setupRecovery,
+                            onCheck = { requestPairingCheck() },
+                            onOwnerCustody = { ownerCustodyOpen = true },
+                            onReplace = { discardTerminalPairing() },
                             onConnection = { navigate(GatewayPage.CONNECTION) },
                             initialStep = GatewaySetupStep.entries.firstOrNull {
                                 it.name == intent.getStringExtra("gateway_setup_step")
@@ -312,7 +350,11 @@ class MainActivity : ComponentActivity() {
                                 GatewayPrivacyLinks()
                             },
                             simContent = {
-                                Text("Selected SIM: ${selectedSim?.toString() ?: "none"}")
+                                Text("Selected SIM: ${sims.firstOrNull { it.first == selectedSim }?.second ?: "Not selected"}")
+                                if (sims.isEmpty()) {
+                                    Text("No active SIM is visible. Review phone-state access or check the installed SIM, then return here.")
+                                    GatewayButton(onClick = { permissionDisclosure = GatewayPermissionPurpose.SIM }) { Text("Review SIM access") }
+                                }
                                 sims.forEach { (id, label) ->
                                     GatewayButton(onClick = {
                                         selectSimForPreparation(id)
@@ -323,8 +365,15 @@ class MainActivity : ComponentActivity() {
                                 }
                             },
                             pairingContent = {
-                                OutlinedTextField(value = pairingOrigin, onValueChange = { pairingOrigin = it },
-                                    label = { Text("HTTPS server origin") })
+                                val configuredHosted = runCatching { AndroidPairingQrPayload.canonicalOrigin(BuildConfig.ZROTEXT_HOSTED_ORIGIN) }.getOrNull()
+                                if (configuredHosted != null) {
+                                    OutlinedButton(onClick = { selectTrustedService(configuredHosted); hostedSelected = pairingOrigin == configuredHosted },
+                                        modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Use hosted service") }
+                                    TextButton(onClick = { hostedSelected = false }, modifier = Modifier.sizeIn(minHeight = 48.dp)) { Text("Use a self-hosted service") }
+                                }
+                                if (hostedSelected) Text("Trusted service: $pairingOrigin")
+                                else OutlinedTextField(value = pairingOrigin, onValueChange = { selectTrustedService(it) },
+                                    label = { Text("HTTPS server origin") }, modifier = Modifier.fillMaxWidth())
                                 if (!pairingUnknown) AndroidPairingQrScannerPane(
                                     knownOrigin = { pairingOrigin },
                                     claimAndProve = { origin, id, token ->
@@ -339,7 +388,14 @@ class MainActivity : ComponentActivity() {
                                                     .putString("operation", operation)))
                                                 pairingOperationId = operation
                                             }
-                                            PairingClient(DeviceSigningKeyStore(applicationContext)).claimAndProve(origin, id, token)
+                                            PairingClient(DeviceSigningKeyStore(applicationContext)) { trustedOrigin, ticketId, fingerprint ->
+                                                val locator = PairingLocator(trustedOrigin, ticketId, fingerprint)
+                                                check(PairingLocatorStore.save(applicationContext, locator)) { "Could not save pairing progress" }
+                                                bindingHandler.post {
+                                                    pairingLocator = locator
+                                                    bindingCurrent = false
+                                                }
+                                            }.claimAndProve(origin, id, token)
                                         } finally { pairingTransportInFlight.set(false) }
                                     },
                                     onVerified = { result ->
@@ -354,19 +410,32 @@ class MainActivity : ComponentActivity() {
                                             signingSecurity = result.keySecurity.name +
                                                 if (result.strongBoxFallbackOnCreation == true) " (StrongBox unavailable; fallback used)" else ""
                                             pairingStatus = "Key proof accepted; compare and approve in the browser"
-                                        } else pairingUnknown = true
+                                            pairingUnknown = false
+                                            setupRecovery = GatewaySetupRecovery.COMPARE
+                                            checkSavedPairing()
+                                        } else { pairingUnknown = true; checkSavedPairing() }
                                     },
                                     onManual = { pairingManual = true },
                                     // The integrated labeled region below owns scanner announcements.
                                     renderStatus = false,
-                                    onUnknown = { pairingUnknown = true; pairingStatus = "Pairing outcome unknown. Reconcile the original ticket in the browser before starting again." },
+                                    manualMode = pairingManual,
+                                    onUnknown = {
+                                        pairingUnknown = true
+                                        setupRecovery = GatewaySetupRecovery.CHECKING
+                                        pairingStatus = "Checking the saved pairing before any retry."
+                                        checkSavedPairing()
+                                    },
                                     onState = { state ->
                                         if (pairingScannerGeneration != state.generation) {
                                             pairingId = ""; pairingToken = ""
                                             pairingScannerGeneration = state.generation
                                         }
                                         pairingCanUseManual = state.canUseManual
-                                        pairingStatus = state.status
+                                        pairingStatus = when {
+                                            state.phase == AndroidPairingQrScanner.Phase.REVIEW -> "Review the selected service before pairing."
+                                            state.status == "Scan the current pairing QR, or use the existing manual pairing fields." -> "Ready to scan"
+                                            else -> state.status
+                                        }
                                         if (!state.canUseManual) { pairingId = ""; pairingToken = "" }
                                         if (state.phase != AndroidPairingQrScanner.Phase.VERIFIED) {
                                             comparisonCode = ""; signingFingerprint = ""; signingSecurity = ""
@@ -374,30 +443,21 @@ class MainActivity : ComponentActivity() {
                                         if (state.phase == AndroidPairingQrScanner.Phase.UNKNOWN) pairingUnknown = true
                                     },
                                     onScannerReady = { next ->
-                                        if (next == null) {
-                                            pairingId = ""; pairingToken = ""; comparisonCode = ""; signingFingerprint = ""; signingSecurity = ""
-                                        }
+                                        if (next == null) { pairingId = ""; pairingToken = ""; pairingManual = false }
                                         if (next == null && pairingScanner?.snapshot()?.phase in setOf(
                                                 AndroidPairingQrScanner.Phase.CLAIMING, AndroidPairingQrScanner.Phase.UNKNOWN)) pairingUnknown = true
                                         pairingScanner = next
                                     }
                                 )
                                 if (pairingUnknown) {
-                                    Text("Check or cancel the original ticket in the browser, then create a fresh one-use ticket. No claim will be retried automatically.")
-                                    Button(onClick = {
-                                        val reconciled = synchronized(pairingTransportInFlight) {
-                                            !pairingTransportInFlight.get() && commitPairingOutcome(getSharedPreferences("pairing-outcome", MODE_PRIVATE)
-                                                .edit().putBoolean("unresolved", false).remove("operation"))
-                                        }
-                                        if (reconciled) {
-                                            pairingStorageUncertain.set(false)
-                                            pairingOperationId = null
-                                            pairingId = ""; pairingToken = ""; pairingManual = false
-                                            comparisonCode = ""; signingFingerprint = ""; signingSecurity = ""
-                                            pairingUnknown = false
-                                            pairingStatus = "Use the fresh ticket from your browser."
-                                        }
-                                    }) { Text("I reconciled the original ticket; use a fresh ticket") }
+                                    Text("Your last pairing is saved. Check its status before replacing it; no claim will be retried automatically.")
+                                    GatewayButton(onClick = { requestPairingCheck() }) { Text("Check saved pairing") }
+                                    if (pairingLocator == null) {
+                                        Text("The original ticket predates saved progress. Enter its public ID from the dashboard to check it without making another claim.")
+                                        OutlinedTextField(value = pairingId, onValueChange = { pairingId = it.take(36) },
+                                            label = { Text("Original pairing ID") }, modifier = Modifier.fillMaxWidth())
+                                        GatewayButton(onClick = { recoverOriginalPairingLocator() }) { Text("Find saved pairing") }
+                                    }
                                 }
                                 if (pairingManual && !pairingUnknown) {
                                     Text("Manual fallback: use the current one-use ticket from this server. Claiming sends the phone key proof; browser comparison and approval remain separate.")
@@ -407,16 +467,48 @@ class MainActivity : ComponentActivity() {
                                         label = { Text("One-use pairing token") }, visualTransformation = PasswordVisualTransformation())
                                     Button(onClick = { beginPairing() }, enabled = pairingCanUseManual,
                                         modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)) { Text("Claim pairing and prove key") }
+                                    TextButton(onClick = {
+                                        pairingId = ""; pairingToken = ""; pairingManual = false; pairingScanner?.cancel()
+                                    }, modifier = Modifier.sizeIn(minHeight = 48.dp)) { Text("Use scanner instead") }
                                 }
+                                GatewayStatusText("Pairing status", pairingStatus)
+                            },
+                            comparisonContent = {
                                 GatewayStatusText("Pairing status", pairingStatus)
                                 if (comparisonCode.isNotEmpty()) {
                                     Text("Comparison code: $comparisonCode")
                                     Text("Key fingerprint: $signingFingerprint")
-                                    Text("Key protection: $signingSecurity")
-                                    Text("Approve only when the browser shows the same code and fingerprint. This screen does not authorize SMS or establish a device session.")
+                                    Text("Approval does not start a connection or authorize SMS.", style = MaterialTheme.typography.bodySmall)
                                 }
+                            },
+                            connectionContent = {
+                                GatewayStatusText("Authenticated connection status", AuthenticatedGatewayStatus.value)
+                                Text("Selected SIM: ${sims.firstOrNull { it.first == selectedSim }?.second ?: "Not selected"}")
+                                if (!bindingCurrent) Text("Check the saved pairing before starting. Your existing key must confirm that this phone is still approved.")
+                                Row(Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp).toggleable(
+                                    value = setupRebootResume, role = Role.Checkbox, onValueChange = { setupRebootResume = it })) {
+                                    Checkbox(checked = setupRebootResume, onCheckedChange = null)
+                                    Text("Resume this connection after reboot")
+                                }
+                                GatewayButton(onClick = {
+                                    if (!bindingCurrent || SystemClock.elapsedRealtime() - bindingCheckedAt !in 0..30_000L) {
+                                        AuthenticatedGatewayStatus.value = "Check saved pairing before starting"; checkSavedPairing()
+                                    } else startHeartbeat(setupRebootResume)
+                                    setupRebootResume = false
+                                }, modifier = Modifier.fillMaxWidth()) { Text("Start connection") }
+                                Text("This starts an authenticated heartbeat only. Keep the dashboard open to review the phone and SIM. SMS and line activation still require their separate checks.")
+                                Text("Reboot resume is optional and heartbeat-only. Pause clears it. A force-stop requires opening the app and choosing Start connection again.", style = MaterialTheme.typography.bodySmall)
                             }
                         )
+                    }
+                    if (page == GatewayPage.ACTIVITY) {
+                        GatewaySectionTitle("Phone activity")
+                        GatewayStatusText("Connection", AuthenticatedGatewayStatus.value)
+                        Text("Heartbeats this session: ${AuthenticatedGatewayStatus.heartbeats}", style = MaterialTheme.typography.bodySmall)
+                        Text("Message activity is available in your owner dashboard. This phone currently shows connection status only.")
+                        OutlinedButton(onClick = { navigate(GatewayPage.CONNECTION) },
+                            modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Connection details") }
+                        Text("Connection status does not confirm message delivery.", style = MaterialTheme.typography.bodySmall)
                     }
                     if (page == GatewayPage.CONNECTION) {
                         GatewaySectionTitle("Conversation content")
@@ -427,6 +519,7 @@ class MainActivity : ComponentActivity() {
                             conversationEntryStatus = ""
                         }) { Text("Open conversation review") }
                         GatewaySectionTitle("Authenticated device heartbeat")
+                        if (signingSecurity.isNotEmpty()) Text("Phone key protection: $signingSecurity", style = MaterialTheme.typography.bodySmall)
                         Text("After owner approval, enter the approved device UUID and trusted WSS origin. The heartbeat button only proves the phone's Keystore key and exchanges heartbeats.")
                         GatewayStatusText("Authenticated connection status", AuthenticatedGatewayStatus.value)
                         Text("Heartbeat acknowledgments this session: ${AuthenticatedGatewayStatus.heartbeats}")
@@ -579,6 +672,8 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         completeSelectionForeground = true
         summaryResumed = true
+        bindingForeground = true
+        bindingHandler.post(bindingPoll)
         if (summaryHome) summaryState.resume()
         updateSummaryView()
         refreshSims()
@@ -586,6 +681,11 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
+        bindingForeground = false
+        bindingEpoch++
+        bindingCurrent = false
+        setupRebootResume = false
+        bindingHandler.removeCallbacks(bindingPoll)
         completeSelectionForeground = false
         completeSelectionCoordinator?.stop()
         if (pairingScanner?.snapshot()?.phase in setOf(AndroidPairingQrScanner.Phase.CLAIMING, AndroidPairingQrScanner.Phase.UNKNOWN)) pairingUnknown = true
@@ -608,6 +708,8 @@ class MainActivity : ComponentActivity() {
         conversationWorker.shutdownNow()
         clearSummaryReader(clearKey = true)
         summaryWorker.shutdownNow()
+        bindingHandler.removeCallbacks(bindingPoll)
+        bindingWorker.shutdownNow()
         super.onDestroy()
     }
 
@@ -1293,6 +1395,122 @@ class MainActivity : ComponentActivity() {
         val committed = runCatching { editor.commit() }.getOrDefault(false)
         if (!committed) pairingStorageUncertain.set(true)
         return committed
+    }
+
+    private fun selectTrustedService(value: String) {
+        val previous = pairingLocator
+        if (previous != null && value != previous.origin) {
+            pairingStatus = "Check the saved pairing on ${previous.origin} before changing service."
+            return
+        }
+        pairingOrigin = value
+        bindingCurrent = false
+        runCatching { AndroidPairingQrPayload.canonicalOrigin(value) }.getOrNull()?.let { canonical ->
+            getSharedPreferences("trusted-service", MODE_PRIVATE).edit().putString("origin", canonical).apply()
+        }
+    }
+
+    private fun requestPairingCheck() {
+        bindingReadFailures = 0
+        checkSavedPairing()
+    }
+
+    private fun recoverOriginalPairingLocator() {
+        if (pairingTransportInFlight.get() || pairingLocator != null) return
+        val keys = DeviceSigningKeyStore(applicationContext)
+        val fingerprint = when (val identity = keys.observeExistingIdentity()) {
+            is ExistingSigningIdentity.Present -> identity.fingerprint
+            ExistingSigningIdentity.Missing -> {
+                setupRecovery = GatewaySetupRecovery.KEYS_LOST
+                pairingStatus = setupRecovery.title
+                return
+            }
+            ExistingSigningIdentity.Unavailable -> {
+                pairingStatus = "Could not check the phone key yet. Keep the original ticket and try Find saved pairing again; no key was replaced."
+                return
+            }
+        }
+        val locator = runCatching { PairingLocator(pairingOrigin, java.util.UUID.fromString(pairingId), fingerprint) }.getOrNull()
+        if (locator == null || !PairingLocatorStore.save(this, locator)) {
+            pairingStatus = "Check the trusted service and original pairing ID. No new claim was sent."
+            return
+        }
+        pairingLocator = locator
+        pairingId = ""
+        setupRecovery = GatewaySetupRecovery.CHECKING
+        requestPairingCheck()
+    }
+
+    /** Terminal replacement is explicit. An unresolved request never becomes permission to retry. */
+    private fun discardTerminalPairing(): Boolean {
+        if (setupRecovery !in setOf(GatewaySetupRecovery.EXPIRED, GatewaySetupRecovery.CANCELLED,
+                GatewaySetupRecovery.PROOF_REQUIRED, GatewaySetupRecovery.KEYS_LOST) || pairingTransportInFlight.get()) return false
+        if (!commitPairingOutcome(getSharedPreferences("pairing-outcome", MODE_PRIVATE)
+                .edit().putBoolean("unresolved", false).remove("operation")) || !PairingLocatorStore.clear(this)) return false
+        bindingEpoch++
+        pairingLocator = null
+        pairingOperationId = null
+        pairingStorageUncertain.set(false)
+        pairingUnknown = false
+        bindingCurrent = false
+        approvedDeviceId = ""; deviceStreamEndpoint = ""
+        pairingId = ""; pairingToken = ""; comparisonCode = ""; signingFingerprint = ""; signingSecurity = ""
+        pairingManual = false
+        setupRecovery = GatewaySetupRecovery.NEW
+        pairingStatus = "Scan the replacement ticket from your owner dashboard."
+        return true
+    }
+
+    /** Only status is retried. No claim, approval, key creation, SIM choice or service start occurs here. */
+    private fun checkSavedPairing() {
+        bindingHandler.removeCallbacks(bindingPoll)
+        val locator = pairingLocator ?: return
+        if (!bindingForeground || !bindingSetupVisible || isDestroyed || pairingOrigin != locator.origin) return
+        if (pairingTransportInFlight.get() || !bindingBusy.compareAndSet(false, true)) {
+            bindingHandler.postDelayed(bindingPoll, 5_000L)
+            return
+        }
+        val epoch = bindingEpoch
+        val keys = DeviceSigningKeyStore(applicationContext)
+        bindingWorker.execute {
+            val observation = observePairingRecovery(locator, keys::observeExistingIdentity) { PairingBindingClient(keys).read(locator) }
+            val result = observation.binding
+            bindingBusy.set(false)
+            bindingHandler.post {
+                if (!bindingForeground || !bindingSetupVisible || isDestroyed || bindingEpoch != epoch || pairingLocator != locator || pairingOrigin != locator.origin) return@post
+                bindingCurrent = false
+                if (observation.recovery == GatewaySetupRecovery.KEYS_LOST) {
+                    setupRecovery = GatewaySetupRecovery.KEYS_LOST
+                    pairingStatus = setupRecovery.title
+                } else if (result == null) {
+                    bindingReadFailures++
+                    setupRecovery = GatewaySetupRecovery.UNAVAILABLE
+                    pairingStatus = "Last result unconfirmed. Check the saved ticket; no approval is repeated."
+                } else {
+                    bindingReadFailures = 0
+                    setupRecovery = GatewaySetupRecovery.from(result.status)
+                    pairingStatus = setupRecovery.title
+                    comparisonCode = result.comparisonCode.orEmpty()
+                    signingFingerprint = locator.fingerprint
+                    if (result.status == PairingBindingStatus.APPROVED) {
+                        // These public values are installed only after fresh possession proof.
+                        approvedDeviceId = checkNotNull(result.deviceId).toString()
+                        deviceStreamEndpoint = locator.streamEndpoint
+                        bindingCurrent = true
+                        bindingCheckedAt = SystemClock.elapsedRealtime()
+                    }
+                    pairingUnknown = result.status !in setOf(PairingBindingStatus.PENDING, PairingBindingStatus.APPROVED)
+                    if (result.status in setOf(PairingBindingStatus.PENDING, PairingBindingStatus.APPROVED)) {
+                        synchronized(pairingTransportInFlight) {
+                            if (!pairingTransportInFlight.get() && commitPairingOutcome(getSharedPreferences("pairing-outcome", MODE_PRIVATE)
+                                    .edit().putBoolean("unresolved", false).remove("operation"))) pairingStorageUncertain.set(false)
+                        }
+                    }
+                }
+                if (bindingReadFailures < 6 && setupRecovery in setOf(GatewaySetupRecovery.COMPARE, GatewaySetupRecovery.APPROVED,
+                        GatewaySetupRecovery.UNAVAILABLE, GatewaySetupRecovery.CHECKING)) bindingHandler.postDelayed(bindingPoll, 5_000L)
+            }
+        }
     }
     private fun beginPairing() {
         val origin = pairingOrigin

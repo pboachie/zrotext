@@ -50,6 +50,10 @@ impl Plan {
     pub fn device_limit(&self) -> u64 {
         self.device_limit
     }
+
+    pub(crate) fn grace_seconds(&self) -> u64 {
+        self.grace_seconds
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

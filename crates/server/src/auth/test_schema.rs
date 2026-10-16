@@ -493,6 +493,40 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "099_line_readiness_observations.sql",
         include_str!("../../../../deploy/compose/migrations/099_line_readiness_observations.sql"),
     ),
+    (
+        "100_payload_profile_account_anchors.sql",
+        include_str!(
+            "../../../../deploy/compose/migrations/100_payload_profile_account_anchors.sql"
+        ),
+    ),
+    (
+        "101_parent_account_mirrors.sql",
+        include_str!("../../../../deploy/compose/migrations/101_parent_account_mirrors.sql"),
+    ),
+    (
+        "102_review_workspace_persistence.sql",
+        include_str!("../../../../deploy/compose/migrations/102_review_workspace_persistence.sql"),
+    ),
+    (
+        "103_user_membership_freshness.sql",
+        include_str!("../../../../deploy/compose/migrations/103_user_membership_freshness.sql"),
+    ),
+    (
+        "104_review_root_access.sql",
+        include_str!("../../../../deploy/compose/migrations/104_review_root_access.sql"),
+    ),
+    (
+        "105_device_pairing_bindings.sql",
+        include_str!("../../../../deploy/compose/migrations/105_device_pairing_bindings.sql"),
+    ),
+    (
+        "106_hosted_runtime.sql",
+        include_str!("../../../../deploy/compose/migrations/106_hosted_runtime.sql"),
+    ),
+    (
+        "107_registration_browser_intents.sql",
+        include_str!("../../../../deploy/compose/migrations/107_registration_browser_intents.sql"),
+    ),
 ];
 
 async fn apply_selected(

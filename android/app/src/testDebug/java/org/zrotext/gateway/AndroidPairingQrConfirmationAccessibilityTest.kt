@@ -5,10 +5,6 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.SemanticsActions
-import androidx.compose.ui.semantics.SemanticsNode
-import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
@@ -29,8 +25,6 @@ import java.util.concurrent.atomic.AtomicInteger
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class AndroidPairingQrConfirmationAccessibilityTest {
     @get:Rule val compose = createAndroidComposeRule<MainActivity>()
-    private val approval = "I recognize this server and approve sending this pairing claim."
-    private val checkbox = SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Checkbox)
     private var origin = "https://owner.invalid"
     private var callback: ((AndroidPairingQrScanResult) -> Unit)? = null
     private var scanner: AndroidPairingQrScanner? = null
@@ -79,82 +73,42 @@ class AndroidPairingQrConfirmationAccessibilityTest {
         compose.runOnIdle { assertEquals(AndroidPairingQrScanner.Phase.REVIEW, checkNotNull(scanner).snapshot().phase) }
     }
 
-    private fun confirmation() = compose.onNode(hasText(approval) and checkbox and isToggleable())
-
     private fun noEffects() {
-        assertEquals(0, claims.get())
-        assertEquals(0, verified.get())
-        assertEquals(0, unknown.get())
+        assertEquals(0, claims.get()); assertEquals(0, verified.get()); assertEquals(0, unknown.get())
     }
 
-    private fun assertNoChildClick(node: SemanticsNode) {
-        node.children.forEach {
-            assertFalse("Child must not duplicate the parent toggle", it.config.contains(SemanticsActions.OnClick))
-            assertNoChildClick(it)
-        }
-    }
-
-    @Test fun reviewHasOneNamedToggleAndEachClickChangesConfirmationOnce() {
+    @Test fun reviewHasOneNamedDecisionWithoutDuplicateCheckbox() {
         mount(); review()
-        compose.onAllNodes(hasText(approval) and checkbox and isToggleable()).assertCountEquals(1)
-        compose.onAllNodes(checkbox and hasClickAction(), useUnmergedTree = true).assertCountEquals(1)
-        compose.onAllNodes(isToggleable(), useUnmergedTree = true).assertCountEquals(1)
-        val action = compose.onNode(checkbox and hasClickAction(), useUnmergedTree = true).fetchSemanticsNode()
-        assertNoChildClick(action)
-        confirmation().performScrollTo().assertHeightIsAtLeast(48.dp).assertIsOff()
-        compose.onNodeWithText("Claim this pairing ticket").assertIsNotEnabled()
-        confirmation().performClick().assertIsOn()
-        compose.onNodeWithText("Claim this pairing ticket").assertIsEnabled()
+        compose.onAllNodes(isToggleable(), useUnmergedTree = true).assertCountEquals(0)
+        compose.onNodeWithText("Use this trusted server and pair").performScrollTo()
+            .assertHeightIsAtLeast(48.dp).assertIsEnabled()
         noEffects()
-        confirmation().performClick().assertIsOff()
-        compose.onNodeWithText("Claim this pairing ticket").assertIsNotEnabled()
-        noEffects()
-    }
-
-    @Test fun namedConfirmationStillRequiresSeparateOneUseClaimAction() {
-        mount(); review()
-        confirmation().performScrollTo().performClick().assertIsOn()
-        noEffects()
-        click("Claim this pairing ticket")
+        click("Use this trusted server and pair")
         compose.waitUntil(5000) { claims.get() == 1 && unknown.get() == 1 }
-        compose.onNodeWithText("Claim this pairing ticket").assertDoesNotExist()
+        compose.onNodeWithText("Use this trusted server and pair").assertDoesNotExist()
         compose.onNodeWithText("Scan pairing QR").assertIsNotEnabled()
         assertEquals(1, claims.get())
-        assertEquals(0, verified.get())
     }
 
-    @Test fun freshScanAndLifecycleResumeRequireFreshUncheckedConfirmation() {
+    @Test fun cancelledReviewCanBeScannedAgainWithoutSendingAClaim() {
+        mount(); review(); click("Clear scanned pairing")
+        compose.onNodeWithText("Use this trusted server and pair").assertDoesNotExist()
+        review(); noEffects()
+    }
+
+    @Test fun leavingReviewClearsTicketAndResumeNeverClaimsAutomatically() {
         mount(); review()
-        confirmation().performScrollTo().performClick().assertIsOn()
-        click("Clear scanned pairing")
-        confirmation().assertDoesNotExist()
-        review()
-        confirmation().assertIsOff()
-        compose.onNodeWithText("Claim this pairing ticket").assertIsNotEnabled()
-        confirmation().performScrollTo().performClick().assertIsOn()
         compose.activityRule.scenario.moveToState(Lifecycle.State.STARTED)
         compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
-        confirmation().assertDoesNotExist()
-        review()
-        confirmation().assertIsOff()
-        compose.onNodeWithText("Claim this pairing ticket").assertIsNotEnabled()
-        noEffects()
+        compose.onNodeWithText("Use this trusted server and pair").assertDoesNotExist()
+        review(); noEffects()
     }
 
-    @Test fun changedIndependentOriginRefusesClaimEvenAfterNamedConfirmation() {
+    @Test fun changedIndependentOriginRefusesEvenPreviouslyVisibleDecision() {
         mount(); review()
-        confirmation().performScrollTo().performClick().assertIsOn()
-        val displayedClaim = compose.onNodeWithText("Claim this pairing ticket")
-            .fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
-        // Exercise the already displayed action; the coordinator must resample its origin.
-        compose.runOnIdle { origin = "https://other.invalid"; assertTrue(displayedClaim()) }
+        compose.runOnIdle { origin = "https://different.invalid" }
+        click("Use this trusted server and pair")
+        noEffects()
         compose.runOnIdle { assertEquals(AndroidPairingQrScanner.Phase.IDLE, checkNotNull(scanner).snapshot().phase) }
-        noEffects()
-        // The pane samples the coordinator every second; advance virtual time, not the production timer.
-        compose.mainClock.advanceTimeBy(1_000)
-        compose.waitForIdle()
-        confirmation().assertDoesNotExist()
-        compose.onNodeWithText("Claim this pairing ticket").assertDoesNotExist()
-        noEffects()
     }
 }

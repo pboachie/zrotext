@@ -56,6 +56,7 @@ async function owner(width, hold = false) {
   await page.goto("https://example.test/owner/devices");
   await page.waitForFunction(() => document.getElementById("summary-device").options.length === 3);
   if (!hold) await page.waitForFunction(() => document.getElementById("summary-submitted").textContent === "0");
+  await page.locator("#summary-options > summary").click();
   return { page, state };
 }
 for (const width of [320, 390, 1440]) {
@@ -91,6 +92,7 @@ test("loading, unavailable and historical offline observations never become a fa
     state.status = 200; state.value = 7;
     await page.locator("#refresh-summary").click();
     await page.waitForFunction(() => document.getElementById("summary-submitted").textContent === "7");
+    if (!await page.locator(".fleet-help").evaluate(node => node.open)) await page.locator(".fleet-help > summary").click();
     await page.locator("#auto-refresh").uncheck();
     await page.clock.fastForward(31000);
     assert.equal(await page.locator("#summary-submitted").textContent(), "7 (stale)");
@@ -107,7 +109,6 @@ test("loading, unavailable and historical offline observations never become a fa
 test("selected-device changes fence late responses and preserve pending input", async () => {
   const { page, state } = await owner(1440);
   try {
-    await page.locator("#display-name").fill("Pending synthetic name");
     state.heldDevice = first; state.value = 9;
     await page.locator("#summary-device").selectOption(first);
     await page.waitForFunction(() => document.getElementById("summary-submitted").textContent === "Loading…");
@@ -117,7 +118,6 @@ test("selected-device changes fence late responses and preserve pending input", 
     state.heldDevice = null; state.releaseDevice();
     await page.waitForFunction(() => document.getElementById("summary-submitted").textContent === "3");
     assert.equal(state.requests.at(-1).device, second);
-    assert.equal(await page.locator("#display-name").inputValue(), "Pending synthetic name");
     await page.locator("#logout").click();
     await page.waitForFunction(() => document.getElementById("owner-content").hidden);
     assert.equal(await page.locator("#owner-content").isVisible(), false);

@@ -609,6 +609,7 @@ fn worker_connect_failure(
             ConnectError::Capacity => "capacity",
             ConnectError::Timeout => "connect_timeout",
             ConnectError::Database(_) => "pg_connect",
+            ConnectError::Identity => "runtime_identity",
             ConnectError::Transport(zrotext_postgres_connection::ConnectError::Configuration(
                 _,
             )) => "transport_config",

@@ -32,6 +32,8 @@ function message(id, deviceId, state) {
 async function matrix(width, options = {}) {
   const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
   await page.clock.install({ time: observed });
+  let requestHeld;
+  const heldRequest = new Promise(resolve => { requestHeld = resolve; });
   const state = {
     devices: options.devices === undefined ? [
       snapshotDevice(leased, "Synthetic leased gateway"),
@@ -62,7 +64,7 @@ async function matrix(width, options = {}) {
     state.requests.push({ method: request.method(), path: url.pathname });
     if (url.pathname === "/owner/events") return route.abort();
     if (url.pathname.startsWith("/owner/")) {
-      const asset = url.pathname.slice(7), file = asset.includes(".") ? asset : asset + ".html";
+      const asset = url.pathname.slice(7), file = asset === "activity" ? "devices.html" : asset.includes(".") ? asset : asset + ".html";
       if (!/^[a-z-]+\.(html|css|js)$/.test(file)) return route.fulfill({ status: 404 });
       return route.fulfill({ body: await fs.readFile(path.join(root, file)),
         contentType: file.endsWith(".js") ? "text/javascript" : file.endsWith(".css") ? "text/css" : "text/html" });
@@ -70,7 +72,7 @@ async function matrix(width, options = {}) {
     if (url.pathname === "/v1/auth/session") return route.fulfill({ json: { role: "owner" } });
     if (url.pathname.startsWith("/v1/billing/")) return route.fulfill({ status: 404 });
     if (url.pathname === "/v1/enrollment/devices") {
-      if (state.hold) await new Promise(resolve => { state.release = resolve; });
+      if (state.hold) await new Promise(resolve => { state.release = resolve; requestHeld(); });
       return route.fulfill({ status: state.status, json: { devices: state.devices, next_cursor: null } });
     }
     if (url.pathname === "/v1/owner/message-summary") return route.fulfill({ status: state.summaryStatus, json: {
@@ -83,8 +85,14 @@ async function matrix(width, options = {}) {
       url.pathname === "/v1/auth/sessions" ? { sessions: [] } :
         { messages: [], events: [], deliveries: [], endpoints: [], keys: [], holds: [], next_cursor: null } });
   });
-  await page.goto("https://example.test/owner/devices");
+  await page.goto("https://example.test/owner/" + (options.destination || "devices"));
   await page.waitForFunction(() => document.getElementById("owner-nav-status").textContent.includes("Owner controls"));
+  if (options.hold) {
+    let deadline;
+    try {
+      await Promise.race([heldRequest, new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error("Expected held fleet request")), 10000); })]);
+    } finally { clearTimeout(deadline); }
+  }
   return { page, state };
 }
 
@@ -121,7 +129,7 @@ test("fleet rows render every readiness branch distinctly without connected word
 });
 
 test("writer activity states never present unknown or unconfirmed work as delivered", async () => {
-  const { page } = await matrix(1440);
+  const { page } = await matrix(1440, { destination: "activity" });
   try {
     await page.waitForFunction(() => document.querySelectorAll("#message-list li").length === 5);
     assert.equal(await page.locator("#message-list").isVisible(), true);
@@ -174,6 +182,7 @@ test("loading, empty, failed refresh and paused automatic refresh each keep thei
     assert.match(await held.page.locator("#fleet-summary").textContent(), /may be stale/);
     assert.equal(await held.page.locator("#device-list li").count(), 1);
     // Turning automatic refresh off pauses polling entirely.
+    await held.page.locator(".fleet-help > summary").click();
     await held.page.locator("#auto-refresh").uncheck();
     const polls = held.state.requests.filter(r => r.path === "/v1/enrollment/devices").length;
     await held.page.clock.fastForward(60000);

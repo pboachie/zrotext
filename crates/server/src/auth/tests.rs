@@ -518,6 +518,15 @@ async fn postgres_expired_unverified_signup_releases_its_email() {
         .await
     ));
     assert_eq!(prune_expired_pending_owners(&mut client).await.unwrap(), 0);
+    let anchor = client
+        .query_one(
+            "SELECT state,selection_epoch FROM payload_profile_account_anchors WHERE account_id=$1",
+            &[&first.account_id],
+        )
+        .await
+        .unwrap();
+    assert_eq!(anchor.get::<_, String>(0), "deleted");
+    assert_eq!(anchor.get::<_, i64>(1), 1);
     let principal = authenticate_session(&client, &hasher, &session.token)
         .await
         .unwrap();
@@ -642,6 +651,15 @@ async fn postgres_prune_removes_only_expired_unverified_owners() {
     age_signup(&client, verified.user_id).await;
     assert_eq!(prune_expired_pending_owners(&mut client).await.unwrap(), 1);
     assert_eq!(prune_expired_pending_owners(&mut client).await.unwrap(), 0);
+    let anchor = client
+        .query_one(
+            "SELECT state,selection_epoch FROM payload_profile_account_anchors WHERE account_id=$1",
+            &[&stale.account_id],
+        )
+        .await
+        .unwrap();
+    assert_eq!(anchor.get::<_, String>(0), "deleted");
+    assert_eq!(anchor.get::<_, i64>(1), 1);
     let users = "SELECT count(*) FROM users WHERE id=$1";
     assert_eq!(count(&client, users, stale.user_id).await, 0);
     assert_eq!(count(&client, users, fresh.user_id).await, 1);

@@ -1,0 +1,30 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+:root { color-scheme: light dark; font: 1rem/1.55 system-ui, sans-serif; color: #172436; background: #f3f6fa; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+main { max-width: 48rem; margin: 2rem auto; padding: 1.5rem; }
+h1 { font-size: 2rem; line-height: 1.2; }
+h2 { font-size: 1.3rem; }
+form, section { margin: 1.5rem 0; padding: 1.3rem; border: 1px solid #b4c1d2; border-radius: .6rem; background: #fff; }
+[hidden] { display: none !important; }
+label { display: block; margin: .8rem 0 .3rem; font-weight: 600; }
+input:not([type=checkbox]), textarea { width: 100%; padding: .7rem; border: 1px solid #63748b; border-radius: .3rem; font: inherit; background: #fff; color: #172436; }
+textarea, #fingerprint, #bundle, dd { overflow-wrap: anywhere; }
+textarea { font-family: ui-monospace, monospace; font-size: .85rem; }
+button { margin: 1rem 0 0; padding: .8rem 1rem; border: 2px solid #1248a0; border-radius: .3rem; background: #1248a0; color: #fff; font: inherit; font-weight: 600; cursor: pointer; min-height: 3rem; }
+button:disabled { color: #4a5666; border-color: #b4c1d2; background: #e4e9f0; cursor: default; }
+:focus-visible { outline: 3px solid #a94f00; outline-offset: 3px; }
+.choice { display: flex; gap: .7rem; align-items: start; font-weight: 400; }
+.choice input { width: 1.3rem; height: 1.3rem; flex-shrink: 0; }
+#status { padding: 1rem; border-left: .3rem solid #1248a0; background: #e3edff; }
+dt { font-weight: 600; } dd { margin: 0 0 .7rem; }
+.scope { color: #46566b; }
+@media (max-width: 36rem) { main { margin: 0; padding: 1rem; } form, section { padding: 1rem; } button { width: 100%; } }
+@media (prefers-color-scheme: dark) {
+  :root { color: #eef3fb; background: #111923; }
+  form, section { background: #1b2939; border-color: #6a7b91; }
+  input:not([type=checkbox]), textarea { color: #eef3fb; background: #101b29; border-color: #8c9cb0; }
+  #status { background: #193354; border-color: #8ab8ff; }
+  .scope { color: #bccbdc; }
+  :focus-visible { outline-color: #ffba70; }
+}

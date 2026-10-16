@@ -2,7 +2,7 @@ use super::*;
 
 // Keep the admission fixtures on the complete, reviewed schema. SQL is
 // embedded at build time so tests never execute files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 99] = [
+const TEST_MIGRATIONS: [(&str, &str); 107] = [
     (
         "001_foundation.sql",
         include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -408,6 +408,38 @@ const TEST_MIGRATIONS: [(&str, &str); 99] = [
     (
         "099_line_readiness_observations.sql",
         include_str!("../../../deploy/compose/migrations/099_line_readiness_observations.sql"),
+    ),
+    (
+        "100_payload_profile_account_anchors.sql",
+        include_str!("../../../deploy/compose/migrations/100_payload_profile_account_anchors.sql"),
+    ),
+    (
+        "101_parent_account_mirrors.sql",
+        include_str!("../../../deploy/compose/migrations/101_parent_account_mirrors.sql"),
+    ),
+    (
+        "102_review_workspace_persistence.sql",
+        include_str!("../../../deploy/compose/migrations/102_review_workspace_persistence.sql"),
+    ),
+    (
+        "103_user_membership_freshness.sql",
+        include_str!("../../../deploy/compose/migrations/103_user_membership_freshness.sql"),
+    ),
+    (
+        "104_review_root_access.sql",
+        include_str!("../../../deploy/compose/migrations/104_review_root_access.sql"),
+    ),
+    (
+        "105_device_pairing_bindings.sql",
+        include_str!("../../../deploy/compose/migrations/105_device_pairing_bindings.sql"),
+    ),
+    (
+        "106_hosted_runtime.sql",
+        include_str!("../../../deploy/compose/migrations/106_hosted_runtime.sql"),
+    ),
+    (
+        "107_registration_browser_intents.sql",
+        include_str!("../../../deploy/compose/migrations/107_registration_browser_intents.sql"),
     ),
 ];
 
@@ -3208,6 +3240,22 @@ async fn billed_admission_guard_share_locks_every_row_it_reads() {
         .execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
         .await
         .unwrap();
+    client
+        .batch_execute("SET zrotext.hosted_namespace='forged'; SET zrotext.hosted_revision='1'")
+        .await
+        .unwrap();
+    let tx = client.transaction().await.unwrap();
+    let (required, bound) = lock_billing_account(&tx, account, true).await.unwrap();
+    assert!(
+        required,
+        "a forged setting in an unscoped database cannot skip legacy metering"
+    );
+    assert_eq!(bound, Some(false));
+    assert!(matches!(
+        reserve_outbound(&tx, account, Uuid::new_v4(), None, bound).await,
+        Err(StoreError::QuotaNotConfigured)
+    ));
+    tx.rollback().await.unwrap();
     for statement in [
         "INSERT INTO billing_customers(account_id,stripe_customer_id) VALUES($1,'cus_guardlock')",
         "INSERT INTO billing_reconciliations(stripe_subscription_id,account_id,stripe_customer_id, \

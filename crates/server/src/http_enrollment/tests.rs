@@ -44,12 +44,13 @@ pub(super) async fn json_response(response: Response) -> Value {
     serde_json::from_slice(&body).unwrap()
 }
 
-async fn apply_migrations(admin: &Client) {
+pub(super) async fn apply_migrations(admin: &Client) {
     for sql in [
         include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
         include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
         include_str!("../../../../deploy/compose/migrations/003_delivery.sql"),
         include_str!("../../../../deploy/compose/migrations/004_enrollment.sql"),
+        include_str!("../../../../deploy/compose/migrations/105_device_pairing_bindings.sql"),
         include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
         include_str!("../../../../deploy/compose/migrations/006_usage_metering.sql"),
         include_str!("../../../../deploy/compose/migrations/007_inbound_webhook_foundation.sql"),

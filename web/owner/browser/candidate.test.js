@@ -139,6 +139,7 @@ test("keyboard-selected unknown device observations and failed refresh remain ex
     assert.match(await page.locator("#device-detail-preconditions").textContent(), /not reported|unknown|Unknown/);
     assert.match(await page.locator("#device-detail-content").textContent(), /Remote Pause is unavailable/);
     assert.equal(await page.locator("#device-detail-content").getByRole("button", { name: /Pause|Send/ }).count(), 0);
+    await page.locator("#phone-inspector-close").click();
     state.status = 503;
     await page.locator("#refresh-devices").click();
     await page.waitForFunction(() => document.getElementById("device-status").textContent.includes("Could not"));

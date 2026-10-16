@@ -1,0 +1,23 @@
+{
+  "status": "synthetic-http-cookie-candidate-not-mounted",
+  "version": 1,
+  "synthetic_key_byte": 7,
+  "synthetic_browser_nonce_byte": 8,
+  "realm": "10000000-0000-4000-8000-000000000001",
+  "origin": "https://review.invalid",
+  "browser_payload_length": 153,
+  "browser_mac_hex": "089671a31008dd7846f24842968215bbad12fbdb3b7c10e41fb5d928a39f4c6c",
+  "browser_digest_hex": "e657ad9f4db1237ff6a7ca4d5ca177515526841112fe922d2e5adc637310b699",
+  "initial_preparation_payload_length": 585,
+  "initial_preparation_sha256_hex": "873bd48e81d5a4ffd1a5925d698b7dc935af7518cbc014879057c128f1677914",
+  "initial_preparation_mac_hex": "59434b6f236c29ef872bfe6fe6d12186e3140de52ea0f9a125d1b06a9bb1a960",
+  "request_digest_hex": "f899527ec7e28587864f3c9094a2453d630a67e4ad08b6225ddf2dd37988fb49",
+  "broker_bearer_digest_hex": "53459cc53dc7f8645f6ec56d71edb2556487f2c094953902e90e13b70b3eccbd",
+  "broker_csrf_digest_hex": "a7b3c7677277eae0b923afb27b3cb4a0bf2e1c72e8784f03af0f9b85b27d5e88",
+  "owner_bearer_digest_hex": "9901c86fe2e635f5b10a181424c38609ff1c29080c479a44220e6f82f5b87621",
+  "owner_csrf_digest_hex": "055b8012527fa44b6539a95a9e0fde8e2a8a9661301d892369525f47557687f6",
+  "locator_digest_hex": "593cfd02ad320c1a154afe8b8ce1dd311af35b546883f4a0fb08808cd3b8bb9e",
+  "locator_selector_payload_length": 257,
+  "locator_selector_sha256_hex": "420bb87563d473e5cfd93c9a33313197b5399d11c601401108c268e8b08e3739",
+  "locator_selector_mac_hex": "218cded9b8ec9d761572c8f5223cd819169480261b557b5eb62adb40576edd55"
+}

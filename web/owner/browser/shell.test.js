@@ -24,7 +24,7 @@ async function pageFor(name, width, { role = "owner", billing = true, textScale 
     if (url.pathname === "/owner/events") return route.abort();
     if (url.pathname.startsWith("/owner/")) {
       const asset = url.pathname.slice(7);
-      const file = asset.includes(".") ? asset : asset + ".html";
+      const file = ["phones", "activity", "integrations", "security", "setup"].includes(asset) ? "devices.html" : asset.includes(".") ? asset : asset + ".html";
       const allowed = /^[a-z-]+\.(html|css|js)$/.test(file);
       if (!allowed) return route.fulfill({ status: 404 });
       const body = await fs.readFile(path.join(root, file));
@@ -32,7 +32,8 @@ async function pageFor(name, width, { role = "owner", billing = true, textScale 
       return route.fulfill({ status: 200, contentType: type, body });
     }
     let body = {};
-    if (url.pathname === "/v1/auth/session") body = { role, account_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", user_id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" };
+    if (url.pathname === "/v1/auth/session") body = { role, account_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", session_id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", user_id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" };
+    else if (url.pathname === "/v1/account/setup") body = { schema_version: 1, account_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", session_id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", observed_at_ms: Date.now(), sms_line_activation_available: true, pairings: [], line_activations: [], devices: [], truncated: false };
     else if (url.pathname === "/v1/billing/status") return route.fulfill({ status: billing ? 200 : 404, json: { mode: "test" } });
     else if (url.pathname === "/v1/billing/device-capacity") body = { limit: null, active: 0, over_limit: false, enrollment_blocked: false };
     else if (url.pathname === "/v1/auth/mfa") body = { enabled: false, pending: false };
@@ -67,7 +68,7 @@ for (const width of [320, 390, 1440]) {
         assert.equal(await page.locator("body").evaluate(e => getComputedStyle(e).backgroundColor), "rgb(11, 15, 12)");
         assert.equal(await page.locator(".owner-brand svg").count(), 1);
         assert.equal(await page.locator(".owner-nav [aria-current=page]").count(), 1);
-        assert.equal(await page.locator(".owner-rail").evaluate(e => getComputedStyle(e).position), width > 960 ? "fixed" : "static");
+        assert.equal(await page.locator(".owner-rail").evaluate(e => getComputedStyle(e).position), width > 960 ? "fixed" : "relative");
         const accessibility = await page.evaluate(() => {
           function luminance(value) {
             const channels = value.match(/\d+/g).slice(0, 3).map(Number).map(c => {
@@ -97,16 +98,17 @@ for (const width of [320, 390, 1440]) {
 test("overview precedes fleet and activity while keyboard navigation reaches security and credentials", async () => {
   const { page } = await pageFor("devices", 1440);
   try {
-    assert.deepEqual(await page.locator("#owner-content > section").evaluateAll(nodes => nodes.slice(0, 3).map(node => node.id)), ["message-summary", "approved-devices", "message-activity"]);
+    assert.equal(await page.locator("#message-summary").isVisible(), true);
+    assert.equal(await page.locator("#message-activity").isVisible(), false);
     await page.keyboard.press("Tab");
     assert.equal(await page.locator(".skip-link").evaluate(e => e === document.activeElement), true);
     assert.equal(await page.locator(".skip-link").evaluate(e => getComputedStyle(e).outlineStyle), "solid");
     await page.keyboard.press("Enter");
     assert.equal(await page.locator("#owner-main").evaluate(e => e === document.activeElement), true);
-    await page.getByRole("link", { name: "Connection details", exact: true }).click();
-    assert.ok(page.url().endsWith("#connection-details"));
-    await page.getByRole("link", { name: "Security & sessions", exact: true }).first().click();
-    assert.ok(page.url().endsWith("#account-security"));
+    await page.getByRole("link", { name: "Integrations", exact: true }).click();
+    assert.ok(page.url().endsWith("/owner/integrations"));
+    await page.getByRole("link", { name: "Settings", exact: true }).first().click();
+    assert.ok(page.url().endsWith("/owner/security"));
     await page.locator("#current-password").focus();
     assert.equal(await page.locator("#current-password").evaluate(e => getComputedStyle(e).outlineStyle), "solid");
   } finally { await page.close(); }
@@ -115,10 +117,11 @@ test("observer navigation has no owner destinations and disabled billing stays h
   for (const name of ["observer", "devices"]) {
     const { page } = await pageFor(name, 390, { role: "observer", billing: false });
     try {
+      await page.locator(".owner-menu > summary").click();
       assert.equal(await page.locator(".owner-nav a[href='/billing']:visible").count(), 0);
       assert.equal(await page.locator(".owner-nav a[href='/owner/seats']:visible").count(), 0);
       assert.equal(await page.locator(".owner-nav a[href='/owner/sms-lines']:visible").count(), 0);
-      assert.ok(await page.locator(".owner-nav a[href='/owner/observer']:visible").count());
+      assert.ok(await page.locator("#owner-observer-link:visible, .owner-nav a[href='/owner/observer']:visible").count());
     } finally { await page.close(); }
   }
   const { page } = await pageFor("devices", 390, { billing: false });
@@ -128,7 +131,7 @@ test("pairing retains CSRF and cancellation, and pagehide clears credential fiel
   const { page, requests } = await pageFor("devices", 390);
   try {
     await page.evaluate(() => { document.cookie = "__Host-zrotext_csrf=ztc_synthetic; Secure; Path=/"; });
-    await page.getByRole("link", { name: "Pair a phone", exact: true }).click();
+    await page.getByRole("link", { name: "Add phone", exact: true }).first().click();
     await page.locator("#display-name").fill("Synthetic gateway");
     await page.locator("#create-form button").click();
     await page.waitForFunction(() => document.getElementById("pair-token").textContent === "SYNTHETIC_ONLY");
@@ -153,6 +156,7 @@ test("pairing retains CSRF and cancellation, and pagehide clears credential fiel
 test("sign-out closes owner navigation and does not retain credentials", async () => {
   const { page, requests } = await pageFor("devices", 390);
   try {
+    await page.locator(".owner-menu > summary").click();
     assert.ok(await page.locator(".owner-nav [data-owner-only]:visible").count());
     await page.locator("#logout").click();
     await page.waitForFunction(() => document.getElementById("owner-nav-status").textContent.startsWith("Sign in"));
