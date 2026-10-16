@@ -133,4 +133,20 @@ cargo test --locked --workspace -- --ignored --skip real_stripe_ --test-threads=
 
 The `real_stripe_` exclusion is deliberate: those two ignored tests contact Stripe TEST and need separate explicit setup. The ordinary command plus the PostgreSQL command run the same Rust test sets as CI. Stop the container with Ctrl+C when finished.
 
+With `--features conversation-simulator-tests`, the selected
+`http_enrollment::setup_browser_fixture::ordinary_pairing_browser_android_fixture`
+drives its composed owner, pairing and binding HTTP routes automatically. It
+checks proof, exact comparison, approval recovery and revocation against the
+disposable database. This is HTTP regression coverage, not browser, Android
+Keystore, TLS or carrier acceptance.
+
+For a separately selected browser/Android consumer, set the test-only
+`ZT_PAIRING_SETUP_CONSUMER=external` before running that exact ignored test with
+`--nocapture`. This mode emits private rendezvous readiness and waits for the
+selected consumer; keep that output outside the public repository. Only
+`snapshot` and `finish` are accepted fixture controls. The same 600-second outer
+deadline covers consumer execution and server completion. An unknown mode or
+failed external consumer never falls back to automatic success. Leave the mode
+unset for bulk test runs; it is not an application or Compose setting.
+
 The public repository contains application code and public development documentation. Keep production credentials, customer data, billing operations, and private marketing material out of it.

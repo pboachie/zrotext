@@ -59,6 +59,9 @@ def runtime_reads(source: str, relative_path: str) -> set[str]:
         "crates/server/src/http_owner_conversations/sealed_line_setup/server_browser_fixture.rs": {
             "ZT_OWNER_SETUP_BROWSER_ASSETS", "ZT_OWNER_SETUP_FIXTURE_ORIGIN",
         },
+        "crates/server/src/http_enrollment/setup_browser_fixture.rs": {
+            "ZT_PAIRING_SETUP_CONSUMER",
+        },
         "crates/owner-cli/src/windows/setup_interop.rs": {"TEMP", "ZT_OWNER_SETUP_INTEROP_REQUEST_HEX", "ZT_OWNER_SETUP_INTEROP_CHILD"},
         "crates/owner-cli/src/windows/line_key_registration/tests.rs": {"TEMP", "ZT_LINE_REGISTRATION_NATIVE_CASE"},
         "crates/owner-cli/src/windows/archive_init/tests.rs": {"TEMP", "ZT_ARCHIVE_INIT_NATIVE_CASE"},

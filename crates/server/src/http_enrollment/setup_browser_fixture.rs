@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Explicit test-only real HTTP composition for the browser/Android handoff.
 //! No enrollment, phone key or owner decision is pre-created by this fixture.
+//! Bulk tests drive real HTTP composition. Explicit external mode retains the
+//! selected browser/Android rendezvous; only that mode prints private readiness.
 
 use super::*;
 use crate::{
@@ -11,6 +13,9 @@ use serde_json::json;
 use std::io::Write;
 use subtle::ConstantTimeEq;
 use tokio::sync::{Mutex, Notify};
+
+mod consumer;
+mod lifecycle;
 
 const ORIGIN: &str = "https://localhost:8443";
 
@@ -76,12 +81,14 @@ async fn control(
     }
 }
 
-/// The external consumer owns a localhost-only TLS frontend and an isolated
+/// In external mode the consumer owns a localhost-only TLS frontend and an isolated
 /// Android test device. Readiness includes synthetic cookies and must remain
 /// in private fixture output. This test has no provider, socket or SMS worker.
 #[tokio::test]
-#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL, selected HTTPS localhost frontend and explicit browser/Android fixture consumer"]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; full-schema HTTP regression or explicitly selected external browser/Android consumer"]
 async fn ordinary_pairing_browser_android_fixture() {
+    let external = external_mode(std::env::var_os("ZT_PAIRING_SETUP_CONSUMER").as_deref())
+        .expect("test consumer mode must be absent or exactly external");
     let root_url = std::env::var("ZT_AUTH_TEST_DATABASE_URL")
         .expect("select an isolated disposable PostgreSQL fixture");
     let (mut db, connection) = tokio_postgres::connect(&root_url, NoTls).await.unwrap();
@@ -155,25 +162,32 @@ async fn ordinary_pairing_browser_android_fixture() {
         .await
         .unwrap();
     let port = listener.local_addr().unwrap().port();
-    let mut server = tokio::spawn(async move {
+    let server = tokio::spawn(async move {
         axum::serve(listener, app)
             .with_graceful_shutdown(async move { done.notified().await })
             .await
             .unwrap();
     });
-    println!(
-        "ZT_PAIRING_SETUP_READY {}",
-        json!({"version":1,"synthetic":true,"port":port,"origin":ORIGIN,"controlToken":token,
+    if external {
+        println!(
+            "ZT_PAIRING_SETUP_READY {}",
+            json!({"version":1,"synthetic":true,"port":port,"origin":ORIGIN,"controlToken":token,
             "accountId":signup.account_id,"cookies":[
                 {"name":"__Host-zrotext_session","value":signed_in.token},
                 {"name":"__Host-zrotext_csrf","value":signed_in.csrf_token}]}),
-    );
-    std::io::stdout().flush().unwrap();
-    let result = tokio::time::timeout(std::time::Duration::from_secs(600), &mut server).await;
-    if result.is_err() {
-        server.abort();
-        let _ = server.await;
+        );
+        std::io::stdout().flush().unwrap();
     }
+    let consumer = (!external).then(|| {
+        tokio::spawn(consumer::run(
+            port,
+            signup.account_id,
+            signed_in.token,
+            signed_in.csrf_token,
+            token,
+        ))
+    });
+    let result = lifecycle::drive(server, consumer, std::time::Duration::from_secs(600)).await;
     let db = fixture
         .db
         .lock()
@@ -184,9 +198,29 @@ async fn ordinary_pairing_browser_android_fixture() {
     db.batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await
         .unwrap();
-    result
-        .expect("browser/Android consumer did not finish")
-        .expect("fixture server failed");
+    result.expect("pairing fixture consumer/server failed");
+    if !external {
+        println!(
+            "PASS pairing HTTP composition and recovery; browser/Android/TLS acceptance separate"
+        );
+    }
+}
+
+fn external_mode(value: Option<&std::ffi::OsStr>) -> Result<bool, &'static str> {
+    match value {
+        None => Ok(false),
+        Some(value) if value == "external" => Ok(true),
+        Some(_) => Err("unknown pairing test consumer mode"),
+    }
+}
+
+#[test]
+fn external_consumer_mode_is_explicit_and_never_falls_back() {
+    assert_eq!(external_mode(None), Ok(false));
+    assert_eq!(external_mode(Some("external".as_ref())), Ok(true));
+    for invalid in ["", "auto", "External", "external ", "false"] {
+        assert!(external_mode(Some(invalid.as_ref())).is_err());
+    }
 }
 
 #[test]

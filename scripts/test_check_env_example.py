@@ -9,6 +9,16 @@ except ImportError:
 
 
 class RuntimeReadsTest(unittest.TestCase):
+    def test_pairing_consumer_mode_is_excluded_only_in_its_feature_test_fixture(self):
+        source = 'std::env::var_os("ZT_PAIRING_SETUP_CONSUMER"); required("RUNTIME_SETTING")'
+        fixture = "crates/server/src/http_enrollment/setup_browser_fixture.rs"
+        self.assertEqual(env.runtime_reads(source, fixture), {"RUNTIME_SETTING"})
+        for runtime in ["crates/server/src/main.rs", "crates/server/src/http_enrollment/mod.rs"]:
+            self.assertEqual(env.runtime_reads(source, runtime),
+                             {"ZT_PAIRING_SETUP_CONSUMER", "RUNTIME_SETTING"})
+        module = Path(env.ROOT, "crates/server/src/http_enrollment/mod.rs").read_text(encoding="utf-8")
+        self.assertRegex(module, r'#\[cfg\(all\(test, feature = "conversation-simulator-tests"\)\)\]\s*mod setup_browser_fixture;')
+
     def test_registered_control_urls_are_fixture_inputs_only_at_their_exact_test_path(self):
         flags = {"ZT_REGISTERED_OWNER_EMPTY_DATABASE_URL", "ZT_REGISTERED_OWNER_MFA_DATABASE_URL"}
         source = ";".join(f'std::env::var("{flag}")' for flag in flags)
