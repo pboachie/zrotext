@@ -87,6 +87,26 @@ async fn checkout_recovery_refuses_unstarted_known_terminal_unbound_expired_chan
         )
         .await
         .unwrap();
+    f.admin
+        .execute(
+            "UPDATE hosted_billing_customers SET checkout_id='cs_fixture'",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        r.router()
+            .oneshot(f.request("/checkout/recover", "POST"))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::CONFLICT
+    );
+    f.admin
+        .execute("UPDATE hosted_billing_customers SET checkout_id=NULL", &[])
+        .await
+        .unwrap();
+
     for when in [started - 23 * 60 * 60 - 5, started + 60] {
         f.admin
             .execute(
