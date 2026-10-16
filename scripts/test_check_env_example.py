@@ -9,6 +9,16 @@ except ImportError:
 
 
 class RuntimeReadsTest(unittest.TestCase):
+    def test_registered_control_urls_are_fixture_inputs_only_at_their_exact_test_path(self):
+        flags = {"ZT_REGISTERED_OWNER_EMPTY_DATABASE_URL", "ZT_REGISTERED_OWNER_MFA_DATABASE_URL"}
+        source = ";".join(f'std::env::var("{flag}")' for flag in flags)
+        path = "crates/server/src/sealed_root_ceremony/tests/registered_databases.rs"
+        self.assertEqual(env.runtime_reads(source, path), set())
+        for runtime in ["crates/server/src/main.rs", "crates/server/src/sealed_root_ceremony/mod.rs"]:
+            self.assertEqual(env.runtime_reads(source, runtime), flags)
+        module = Path(env.ROOT, "crates/server/src/sealed_root_ceremony/mod.rs").read_text(encoding="utf-8")
+        self.assertRegex(module, r'#\[cfg\(test\)\]\s*pub\(crate\) mod tests;')
+
     def test_connection_diagnostic_is_excluded_only_in_its_test_module(self):
         flags = {"ZT_RUNTIME_DB_TEST_DIAGNOSTIC"}
         source = 'std::env::var("ZT_RUNTIME_DB_TEST_DIAGNOSTIC")'

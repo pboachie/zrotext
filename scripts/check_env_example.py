@@ -49,6 +49,9 @@ def runtime_reads(source: str, relative_path: str) -> set[str]:
     """Exclude fixture markers only in their isolated cfg(test) source modules."""
     reads = set(READ.findall(source))
     fixture_reads = {
+        "crates/server/src/sealed_root_ceremony/tests/registered_databases.rs": {
+            "ZT_REGISTERED_OWNER_EMPTY_DATABASE_URL", "ZT_REGISTERED_OWNER_MFA_DATABASE_URL",
+        },
         "crates/server/src/workflow_runtime/database_tests/guided_setup.rs": {"ZT_GUIDED_VERIFY_TEST"},
         "crates/server/src/runtime_db/test_diagnostic.rs": {
             "ZT_RUNTIME_DB_TEST_DIAGNOSTIC",
