@@ -534,7 +534,7 @@ async fn event(
         .insert(eid.into(), value.clone());
     let body = serde_json::to_vec(&value).unwrap();
     let now = f.now().await;
-    let mut mac = Hmac::<Sha256>::new_from_slice(b"whsec_fixture_synthetic").unwrap();
+    let mut mac = Hmac::<Sha256>::new_from_slice(super::webhook_secret().as_bytes()).unwrap();
     mac.update(now.to_string().as_bytes());
     mac.update(b".");
     mac.update(&body);

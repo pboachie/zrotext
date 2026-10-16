@@ -214,7 +214,9 @@ impl Fixture {
             .await
             .unwrap();
         let app_password = Uuid::new_v4().to_string();
-        admin.batch_execute(&format!("CREATE ROLE {role} LOGIN PASSWORD '{app_password}'; GRANT USAGE ON SCHEMA {schema} TO {role}; GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA {schema} TO {role}; REVOKE ALL ON hosted_runtime_secrets,hosted_runtime_sessions,hosted_billing_resolutions FROM {role}; GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA {schema} TO {role}; GRANT EXECUTE ON FUNCTION hosted_runtime_role_safe(),hosted_runtime_challenge(uuid,bigint),hosted_runtime_bind(uuid,bigint,bytea),hosted_runtime_verified(uuid,bigint) TO {role}")).await.unwrap();
+        let verifier = postgres_protocol::password::scram_sha_256(app_password.as_bytes());
+        let verifier = postgres_protocol::escape::escape_literal(&verifier);
+        admin.batch_execute(&format!("CREATE ROLE {role} LOGIN PASSWORD {verifier}; GRANT USAGE ON SCHEMA {schema} TO {role}; GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA {schema} TO {role}; REVOKE ALL ON hosted_runtime_secrets,hosted_runtime_sessions,hosted_billing_resolutions FROM {role}; GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA {schema} TO {role}; GRANT EXECUTE ON FUNCTION hosted_runtime_role_safe(),hosted_runtime_challenge(uuid,bigint),hosted_runtime_bind(uuid,bigint,bytea),hosted_runtime_verified(uuid,bigint) TO {role}")).await.unwrap();
         let namespace = Uuid::from_bytes([1; 16]);
         admin.batch_execute(&format!("REVOKE ALL ON payload_profile_account_anchors FROM {role}; GRANT SELECT,UPDATE(account_id) ON payload_profile_account_anchors TO {role}; GRANT EXECUTE ON FUNCTION payload_profile_account_fence_key(uuid) TO {role}")).await.unwrap();
         admin.execute("INSERT INTO hosted_billing_namespaces(namespace_id,mode,provider_account,policy_revision,enabled,old_binary_fenced) VALUES($1,$2,'acct_fixture',1,true,true)",&[&namespace,&mode_name(mode)]).await.unwrap();

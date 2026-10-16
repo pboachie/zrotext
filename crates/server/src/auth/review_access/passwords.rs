@@ -161,7 +161,7 @@ mod tests {
     #[tokio::test]
     async fn review_phc_policy_bounds_actual_work_before_verification() {
         assert!(bounded_phc(DUMMY_PHC));
-        let actual = super::super::super::password_work::hash("synthetic-review-password")
+        let actual = super::super::super::password_work::hash(&crate::test_keys::password(178))
             .await
             .unwrap();
         assert!(bounded_phc(&actual));

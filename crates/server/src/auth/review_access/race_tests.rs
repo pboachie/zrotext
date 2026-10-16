@@ -33,17 +33,12 @@ async fn cancel_pending_real_password_work_refuses_old_final_and_duplicate_hash(
     let counter = crate::auth::tests::PASSWORD_VERIFICATIONS.with(Arc::clone);
     let before = counter.load(std::sync::atomic::Ordering::SeqCst);
     {
-        let pending = f.access.login(&prep, "synthetic-review-password");
+        let pending = f.access.login(&prep, f.password.as_str());
         tokio::pin!(pending);
         tokio::select! {result=&mut pending=>panic!("operation ended before interleaving: {}",result.is_ok()),
         ()=observed_worker(&counter,before)=>{}}
         assert!(!f.owner.query_one("SELECT EXISTS(SELECT FROM pg_catalog.pg_stat_activity WHERE datname=pg_catalog.current_database() AND usename=$1 AND xact_start IS NOT NULL)",&[&f.runtime_role]).await.unwrap().get::<_,bool>(0));
-        assert!(
-            f.access
-                .login(&prep, "synthetic-review-password")
-                .await
-                .is_err()
-        );
+        assert!(f.access.login(&prep, f.password.as_str()).await.is_err());
         assert_eq!(
             counter.load(std::sync::atomic::Ordering::SeqCst),
             before + 1
@@ -82,13 +77,13 @@ async fn owned_verifier_and_config_revision_change_during_work_leave_unknown_wit
     for change_verifier in [true, false] {
         let f = Fixture::create().await;
         let prep = f.prepared("pilot").await;
-        let verifier = crate::auth::password_work::hash("different synthetic password")
+        let verifier = crate::auth::password_work::hash(&crate::test_keys::password(179))
             .await
             .unwrap();
         let counter = crate::auth::tests::PASSWORD_VERIFICATIONS.with(Arc::clone);
         let before = counter.load(std::sync::atomic::Ordering::SeqCst);
         {
-            let pending = f.access.login(&prep, "synthetic-review-password");
+            let pending = f.access.login(&prep, f.password.as_str());
             tokio::pin!(pending);
             tokio::select! {result=&mut pending=>panic!("operation ended before interleaving: {}",result.is_ok()),
             ()=observed_worker(&counter,before)=>{}}
@@ -142,12 +137,7 @@ async fn occupied_prospective_account_or_user_is_never_attached_or_removed() {
         } else {
             f.owner.execute("INSERT INTO public.users(id,email,password_hash) VALUES($1,'unrelated@review.invalid','!')",&[&prep.identities.user]).await.unwrap();
         }
-        assert!(
-            f.access
-                .login(&prep, "synthetic-review-password")
-                .await
-                .is_err()
-        );
+        assert!(f.access.login(&prep, f.password.as_str()).await.is_err());
         assert_eq!(f.count("accounts").await, i64::from(account_occupied));
         assert_eq!(f.count("users").await, i64::from(!account_occupied));
         for table in [
@@ -166,10 +156,7 @@ async fn occupied_prospective_account_or_user_is_never_attached_or_removed() {
 
 async fn login_owner(f: &Fixture) -> (Browser, Preparation, Credentials) {
     let (browser, prep) = f.prepared_with_browser("pilot").await;
-    f.access
-        .login(&prep, "synthetic-review-password")
-        .await
-        .unwrap();
+    f.access.login(&prep, f.password.as_str()).await.unwrap();
     let c = f
         .access
         .credentials(
@@ -376,13 +363,7 @@ async fn expired_original_root_challenge_preserves_history_and_never_consumes_or
     .unwrap();
     assert!(
         f.access
-            .complete_root(
-                &browser,
-                &c,
-                &prep,
-                &completion,
-                "synthetic-review-password"
-            )
+            .complete_root(&browser, &c, &prep, &completion, f.password.as_str())
             .await
             .is_err()
     );

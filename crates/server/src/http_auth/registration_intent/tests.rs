@@ -96,7 +96,7 @@ fn exact_origin_and_unique_independent_cookie_header_proof_are_required() {
 async fn invalid_header_proof_rejects_an_unread_body_without_database_access() {
     let state = AuthHttpState::new(
         "postgres://unused".to_owned(),
-        Arc::new(TokenHasher::new(vec![7; 32]).unwrap()),
+        Arc::new(TokenHasher::new(crate::test_keys::key(180)).unwrap()),
         ORIGIN.to_owned(),
         Arc::new(super::super::DisabledVerificationDispatcher),
     )
@@ -163,7 +163,7 @@ fn app(f: &Fixture) -> axum::Router {
     super::super::router(
         AuthHttpState::new(
             f.dsn.clone(),
-            Arc::new(TokenHasher::new(vec![7; 32]).unwrap()),
+            Arc::new(TokenHasher::new(crate::test_keys::key(180)).unwrap()),
             ORIGIN.to_owned(),
             Arc::new(NoNetworkMail),
         )
@@ -179,7 +179,8 @@ fn registration_request(email: &str) -> Request<Body> {
         .header(header::ORIGIN, ORIGIN)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(
-            serde_json::json!({"email":email,"password":"synthetic-password"}).to_string(),
+            serde_json::json!({"email":email,"password":crate::test_keys::password(180)})
+                .to_string(),
         ))
         .unwrap()
 }
@@ -305,7 +306,7 @@ async fn opaque_declines_collisions_and_resends_have_equal_empty_results_and_ind
     let closed = super::super::router(
         AuthHttpState::new(
             "postgres://unused".to_owned(),
-            Arc::new(TokenHasher::new(vec![7; 32]).unwrap()),
+            Arc::new(TokenHasher::new(crate::test_keys::key(180)).unwrap()),
             ORIGIN.to_owned(),
             Arc::new(NoNetworkMail),
         )
@@ -371,7 +372,7 @@ async fn an_existing_other_account_session_is_preserved_and_refuses_intent_consu
         &mut f.db,
         &f.hasher,
         &other.verification_token,
-        "synthetic-password",
+        &crate::test_keys::password(180),
     )
     .await
     .unwrap();
@@ -380,7 +381,7 @@ async fn an_existing_other_account_session_is_preserved_and_refuses_intent_consu
             .await
             .unwrap()
             .get(0);
-    let session = auth::login(&f.db, &f.hasher, &email, "synthetic-password")
+    let session = auth::login(&f.db, &f.hasher, &email, &crate::test_keys::password(180))
         .await
         .unwrap();
     let (target, credentials) = f.signup().await;

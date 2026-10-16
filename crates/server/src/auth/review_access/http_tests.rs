@@ -158,7 +158,7 @@ async fn original_http_workspace_and_genuine_root_custody_complete_without_ordin
         .await;
     let mut body = login.clone();
     body["alias"] = json!("pilot");
-    body["password"] = json!("synthetic-review-password");
+    body["password"] = json!(f.password.as_str());
     browser.post("/v1/review/login/bootstrap", body).await;
     let (_, headers, _) = browser
         .request("/v1/review/login/status", login.clone())
@@ -351,9 +351,10 @@ async fn original_http_workspace_and_genuine_root_custody_complete_without_ordin
     let mut wrong_domain = completion.clone();
     wrong_domain["enrollment_signature_b64"] =
         json!(STANDARD.encode(sign(&key, b"synthetic separate signature domain")));
+    let wrong_password = crate::test_keys::password(179);
     for (candidate, password) in [
-        (&completion, "incorrect synthetic password"),
-        (&wrong_domain, "synthetic-review-password"),
+        (&completion, wrong_password.as_str()),
+        (&wrong_domain, f.password.as_str()),
     ] {
         let mut operation = candidate.clone();
         operation["kind"] = json!("root_complete");
@@ -416,7 +417,7 @@ async fn original_http_workspace_and_genuine_root_custody_complete_without_ordin
         .as_object_mut()
         .unwrap()
         .extend(completion.as_object().unwrap().clone());
-    complete["password"] = json!("synthetic-review-password");
+    complete["password"] = json!(f.password.as_str());
     let counter = crate::auth::tests::PASSWORD_VERIFICATIONS.with(Arc::clone);
     let before = counter.load(std::sync::atomic::Ordering::SeqCst);
     let (first, second) = tokio::join!(

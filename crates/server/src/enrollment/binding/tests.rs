@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
-use p256::ecdsa::{SigningKey, signature::Signer};
+use p256::{
+    ecdsa::{SigningKey, signature::Signer},
+    elliptic_curve::Generate,
+};
 
 #[test]
 fn binding_transcript_matches_shared_network_order_vector() {
@@ -24,9 +27,9 @@ fn binding_transcript_matches_shared_network_order_vector() {
 
 #[test]
 fn binding_proof_cannot_be_replayed_as_enrollment_or_other_scope() {
-    let key = SigningKey::from_bytes((&[7; 32]).into()).unwrap();
+    let key = SigningKey::generate_from_rng(&mut rand::rng());
     let fp: [u8; 32] = Sha256::digest(key.verifying_key().to_sec1_point(false).as_bytes()).into();
-    let hasher = EnrollmentHasher::new(vec![1; 32]).unwrap();
+    let hasher = EnrollmentHasher::new(crate::test_keys::key(182)).unwrap();
     let mut c = BindingChallenge {
         account_id: Uuid::from_bytes([1; 16]),
         pairing_id: Uuid::from_bytes([2; 16]),

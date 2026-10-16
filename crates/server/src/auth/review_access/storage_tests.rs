@@ -34,6 +34,7 @@ struct Fixture {
     owner_role: String,
     runtime_role: String,
     access: Arc<ReviewAccess>,
+    password: String,
 }
 impl Fixture {
     async fn create() -> Self {
@@ -72,7 +73,7 @@ impl Fixture {
         let applied = zrotext_migrator::apply(&mut owner, &directory, false)
             .await
             .unwrap();
-        assert_eq!(applied.last().unwrap().version, 104);
+        assert_eq!(applied.last().unwrap().version, 107);
         let realm = Uuid::new_v4();
         let database_identity = Uuid::new_v4();
         let principal = Uuid::new_v4();
@@ -88,7 +89,8 @@ impl Fixture {
         owner.execute("INSERT INTO public.review_realm_installation(realm_id,database_id,origin,deployment_digest,service_digest,auth_key_digest,enrollment_key_digest,reauthentication_key_digest,grant_key_digest,mfa_key_digest) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
             &[&realm,&database_identity,&scope.origin,&&[21u8;32][..],&&[22u8;32][..],&&scope.key[..],&&[24u8;32][..],&&[25u8;32][..],&&[26u8;32][..],&&[27u8;32][..]]).await.unwrap();
         owner.execute("UPDATE public.review_realm_installation SET active_config_digest=$1,active_config_revision=1",&[&&scope.config[..]]).await.unwrap();
-        let verifier = super::super::super::password_work::hash("synthetic-review-password")
+        let password = crate::test_keys::password(178);
+        let verifier = super::super::super::password_work::hash(&password)
             .await
             .unwrap();
         owner.execute("INSERT INTO public.review_brokers(id,realm_id,credential_id,credential_revision,password_verifier) VALUES($1,$2,$3,1,$4)",
@@ -147,6 +149,7 @@ impl Fixture {
             owner_role,
             runtime_role,
             access,
+            password,
         }
     }
     async fn count(&self, table: &str) -> i64 {
@@ -188,6 +191,7 @@ impl Fixture {
             owner_role,
             runtime_role,
             access,
+            password: _,
         } = self;
         drop(access);
         close(owner, owner_driver).await;
@@ -237,7 +241,7 @@ async fn actual_password_claim_commits_only_original_workspace_and_cascades_eras
     let counter = crate::auth::tests::PASSWORD_VERIFICATIONS.with(Arc::clone);
     let before = counter.load(std::sync::atomic::Ordering::SeqCst);
     assert!(matches!(
-        f.access.login(&unknown, "synthetic-review-password").await,
+        f.access.login(&unknown, f.password.as_str()).await,
         Err(AccessError::Rejected)
     ));
     assert_eq!(
@@ -251,11 +255,7 @@ async fn actual_password_claim_commits_only_original_workspace_and_cascades_eras
     assert!(prep.identities.credential.is_nil());
     assert_eq!(prep.identities.revision, 0);
     let before = counter.load(std::sync::atomic::Ordering::SeqCst);
-    let result = f
-        .access
-        .login(&prep, "synthetic-review-password")
-        .await
-        .unwrap();
+    let result = f.access.login(&prep, f.password.as_str()).await.unwrap();
     assert_eq!(
         counter.load(std::sync::atomic::Ordering::SeqCst),
         before + 1
@@ -285,12 +285,7 @@ async fn actual_password_claim_commits_only_original_workspace_and_cascades_eras
     assert!(row.get::<_, bool>(1));
     assert!(!row.get::<_, bool>(2));
     let before = counter.load(std::sync::atomic::Ordering::SeqCst);
-    assert!(
-        f.access
-            .login(&prep, "synthetic-review-password")
-            .await
-            .is_err()
-    );
+    assert!(f.access.login(&prep, f.password.as_str()).await.is_err());
     assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), before);
     assert_eq!(f.count("accounts").await, 1);
     let guard=f.owner.query_one("SELECT state,active_broker_generation,active_owner_generation,locator_pending FROM public.review_access_preparations WHERE browser_digest=$1",&[&&prep.browser[..]]).await.unwrap();
@@ -555,10 +550,7 @@ async fn review_checkout_excludes_owned_operator_overloads_before_any_clock_read
         .await
         .unwrap();
     access.transition(&prep, "confirm").await.unwrap();
-    access
-        .login(&prep, "synthetic-review-password")
-        .await
-        .unwrap();
+    access.login(&prep, f.password.as_str()).await.unwrap();
     let c = access
         .credentials(
             prep.identities.broker_session,

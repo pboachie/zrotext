@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
-use tokio_postgres::{Config, NoTls};
+use postgres_protocol::escape::{escape_identifier, escape_literal};
+use tokio_postgres::{Config, NoTls, types::ToSql};
+use uuid::Uuid;
 
-const ACCOUNT: &str = "10000000-0000-4000-8000-000000000001";
-const USER: &str = "10000000-0000-4000-8000-000000000002";
-const OTHER_ACCOUNT: &str = "10000000-0000-4000-8000-000000000003";
-const OTHER_USER: &str = "10000000-0000-4000-8000-000000000004";
+const ACCOUNT: Uuid = Uuid::from_u128(0x10000000000040008000000000000000 + 1);
+const USER: Uuid = Uuid::from_u128(0x10000000000040008000000000000000 + 2);
+const OTHER_ACCOUNT: Uuid = Uuid::from_u128(0x10000000000040008000000000000000 + 3);
+const OTHER_USER: Uuid = Uuid::from_u128(0x10000000000040008000000000000000 + 4);
 
 async fn connect(config: &Config) -> (Client, tokio::task::JoinHandle<()>) {
     let (db, driver) = config.connect(NoTls).await.unwrap();
@@ -50,10 +52,14 @@ impl Fixture {
             (&runtime_role, &runtime_password),
         ] {
             let verifier = postgres_protocol::password::scram_sha_256(password.as_bytes());
-            admin.batch_execute(&format!("CREATE ROLE {role} LOGIN PASSWORD '{verifier}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS")).await.unwrap();
+            admin.batch_execute(&format!("CREATE ROLE {} LOGIN PASSWORD {} NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS", escape_identifier(role), escape_literal(&verifier))).await.unwrap();
         }
         admin
-            .batch_execute(&format!("CREATE DATABASE {database} OWNER {owner_role}"))
+            .batch_execute(&format!(
+                "CREATE DATABASE {} OWNER {}",
+                escape_identifier(&database),
+                escape_identifier(&owner_role)
+            ))
             .await
             .unwrap();
         config
@@ -83,7 +89,8 @@ impl Fixture {
         );
         // These are the narrow relationship DML grants needed by this fixture.
         // The complete stock provisioner/pollution repair is tested separately.
-        owner.batch_execute(&format!("GRANT USAGE ON SCHEMA public TO {runtime_role}; GRANT SELECT,INSERT,UPDATE,DELETE ON public.accounts,public.users,public.memberships TO {runtime_role}; GRANT SELECT,UPDATE(account_id) ON public.payload_profile_account_anchors TO {runtime_role}; REVOKE ALL ON FUNCTION public.user_membership_freshness_guard() FROM {runtime_role}")).await.unwrap();
+        let runtime_identifier = escape_identifier(&runtime_role);
+        owner.batch_execute(&format!("GRANT USAGE ON SCHEMA public TO {runtime_identifier}; GRANT SELECT,INSERT,UPDATE,DELETE ON public.accounts,public.users,public.memberships TO {runtime_identifier}; GRANT SELECT,UPDATE(account_id) ON public.payload_profile_account_anchors TO {runtime_identifier}; REVOKE ALL ON FUNCTION public.user_membership_freshness_guard() FROM {runtime_identifier}")).await.unwrap();
         config.user(&runtime_role).password(runtime_password);
         let (db, driver) = connect(&config).await;
         let limited: bool = db.query_one("SELECT NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole AND NOT rolreplication AND NOT rolbypassrls AND NOT EXISTS(SELECT FROM pg_auth_members WHERE member=r.oid) FROM pg_roles r WHERE rolname=current_user", &[]).await.unwrap().get(0);
@@ -106,20 +113,30 @@ impl Fixture {
         }
     }
 
-    async fn parents(&self, account: &str, user: &str) {
-        self.db.batch_execute(&format!("INSERT INTO users(id,email,password_hash) VALUES('{user}','{user}@review.invalid','!'); INSERT INTO accounts(id) VALUES('{account}')")).await.unwrap();
+    async fn parents(&self, account: Uuid, user: Uuid) {
+        let email = format!("{user}@review.invalid");
+        self.db.batch_execute("BEGIN").await.unwrap();
+        self.db
+            .execute(
+                "INSERT INTO users(id,email,password_hash) VALUES($1,$2,'!')",
+                &[&user, &email],
+            )
+            .await
+            .unwrap();
+        self.db
+            .execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
+            .await
+            .unwrap();
+        self.db.batch_execute("COMMIT").await.unwrap();
     }
 
     async fn joined(&self) {
         self.parents(ACCOUNT, USER).await;
-        self.db
-            .batch_execute(&membership(ACCOUNT, USER))
-            .await
-            .unwrap();
+        membership(&self.db, ACCOUNT, USER).await.unwrap();
     }
 
     async fn tombstone(&self) {
-        let row = self.db.query_one(&format!("SELECT state,selection_epoch FROM payload_profile_account_anchors WHERE account_id='{ACCOUNT}'"), &[]).await.unwrap();
+        let row = self.db.query_one("SELECT state,selection_epoch FROM payload_profile_account_anchors WHERE account_id=$1", &[&ACCOUNT]).await.unwrap();
         assert_eq!(row.get::<_, String>(0), "deleted");
         assert_eq!(row.get::<_, i64>(1), 1);
     }
@@ -128,9 +145,9 @@ impl Fixture {
         close(self.db, self.driver).await;
         close(self.owner, self.owner_driver).await;
         for sql in [
-            format!("DROP DATABASE {}", self.database),
-            format!("DROP ROLE {}", self.runtime_role),
-            format!("DROP ROLE {}", self.owner_role),
+            format!("DROP DATABASE {}", escape_identifier(&self.database)),
+            format!("DROP ROLE {}", escape_identifier(&self.runtime_role)),
+            format!("DROP ROLE {}", escape_identifier(&self.owner_role)),
         ] {
             self.admin.batch_execute(&sql).await.unwrap();
         }
@@ -138,13 +155,21 @@ impl Fixture {
     }
 }
 
-fn membership(account: &str, user: &str) -> String {
-    format!("INSERT INTO memberships(account_id,user_id,role) VALUES('{account}','{user}','owner')")
+async fn membership(db: &Client, account: Uuid, user: Uuid) -> Result<u64, tokio_postgres::Error> {
+    db.execute(
+        "INSERT INTO memberships(account_id,user_id,role) VALUES($1,$2,'owner')",
+        &[&account, &user],
+    )
+    .await
+}
+
+async fn rejects_with_params(db: &Client, sql: &str, params: &[&(dyn ToSql + Sync)], code: &str) {
+    let error = db.execute(sql, params).await.unwrap_err();
+    assert_eq!(error.code().map(|c| c.code()), Some(code), "{error}");
 }
 
 async fn rejects(db: &Client, sql: &str, code: &str) {
-    let error = db.batch_execute(sql).await.unwrap_err();
-    assert_eq!(error.code().map(|c| c.code()), Some(code), "{error}");
+    rejects_with_params(db, sql, &[], code).await;
 }
 
 #[tokio::test]
@@ -155,24 +180,29 @@ async fn membership_writes_invalidate_old_user_snapshots_without_a_runtime_helpe
             let f = Fixture::create().await;
             f.parents(ACCOUNT, USER).await;
             if remove {
-                f.db.batch_execute(&membership(ACCOUNT, USER))
-                    .await
-                    .unwrap();
+                membership(&f.db, ACCOUNT, USER).await.unwrap();
             }
             let (old, old_driver) = connect(&f.config).await;
-            old.batch_execute(&format!("BEGIN ISOLATION LEVEL {mode}; SELECT count(*) FROM memberships WHERE user_id='{USER}'")).await.unwrap();
+            old.batch_execute(&format!("BEGIN ISOLATION LEVEL {mode}"))
+                .await
+                .unwrap();
+            old.query(
+                "SELECT count(*) FROM memberships WHERE user_id=$1",
+                &[&USER],
+            )
+            .await
+            .unwrap();
             if remove {
-                f.db.batch_execute(&format!("DELETE FROM memberships WHERE user_id='{USER}'"))
+                f.db.execute("DELETE FROM memberships WHERE user_id=$1", &[&USER])
                     .await
                     .unwrap();
             } else {
-                f.db.batch_execute(&membership(ACCOUNT, USER))
-                    .await
-                    .unwrap();
+                membership(&f.db, ACCOUNT, USER).await.unwrap();
             }
-            rejects(
+            rejects_with_params(
                 &old,
-                &format!("UPDATE users SET password_hash='changed' WHERE id='{USER}'"),
+                "UPDATE users SET password_hash='changed' WHERE id=$1",
+                &[&USER],
                 "40001",
             )
             .await;
@@ -209,21 +239,63 @@ async fn member_user_guards_preserve_bootstrap_revocation_and_both_parent_cascad
         let f = Fixture::create().await;
         f.joined().await;
         f.parents(OTHER_ACCOUNT, OTHER_USER).await;
-        f.db.batch_execute(&format!("INSERT INTO memberships(account_id,user_id,role) VALUES('{ACCOUNT}','{OTHER_USER}','observer'); UPDATE memberships SET revoked_at=clock_timestamp() WHERE user_id='{OTHER_USER}'; DELETE FROM users WHERE id='{OTHER_USER}'; DELETE FROM accounts WHERE id='{OTHER_ACCOUNT}'")).await.unwrap();
-        let sql = match order {
-            "user" => format!(
-                "DELETE FROM users WHERE id='{USER}'; DELETE FROM accounts WHERE id='{ACCOUNT}'"
-            ),
-            "account" => format!(
-                "DELETE FROM accounts WHERE id='{ACCOUNT}'; UPDATE users SET password_hash='orphan' WHERE id='{USER}'; DELETE FROM users WHERE id='{USER}'"
-            ),
-            _ => format!(
-                "DELETE FROM memberships WHERE account_id='{ACCOUNT}'; DELETE FROM users WHERE id='{USER}'; DELETE FROM accounts WHERE id='{ACCOUNT}'"
-            ),
-        };
-        f.db.batch_execute(&format!("BEGIN; {sql}; COMMIT"))
+        f.db.batch_execute("BEGIN").await.unwrap();
+        f.db.execute(
+            "INSERT INTO memberships(account_id,user_id,role) VALUES($1,$2,'observer')",
+            &[&ACCOUNT, &OTHER_USER],
+        )
+        .await
+        .unwrap();
+        f.db.execute(
+            "UPDATE memberships SET revoked_at=clock_timestamp() WHERE user_id=$1",
+            &[&OTHER_USER],
+        )
+        .await
+        .unwrap();
+        f.db.execute("DELETE FROM users WHERE id=$1", &[&OTHER_USER])
             .await
             .unwrap();
+        f.db.execute("DELETE FROM accounts WHERE id=$1", &[&OTHER_ACCOUNT])
+            .await
+            .unwrap();
+        f.db.batch_execute("COMMIT").await.unwrap();
+        f.db.batch_execute("BEGIN").await.unwrap();
+        match order {
+            "user" => {
+                f.db.execute("DELETE FROM users WHERE id=$1", &[&USER])
+                    .await
+                    .unwrap();
+                f.db.execute("DELETE FROM accounts WHERE id=$1", &[&ACCOUNT])
+                    .await
+                    .unwrap();
+            }
+            "account" => {
+                f.db.execute("DELETE FROM accounts WHERE id=$1", &[&ACCOUNT])
+                    .await
+                    .unwrap();
+                f.db.execute(
+                    "UPDATE users SET password_hash='orphan' WHERE id=$1",
+                    &[&USER],
+                )
+                .await
+                .unwrap();
+                f.db.execute("DELETE FROM users WHERE id=$1", &[&USER])
+                    .await
+                    .unwrap();
+            }
+            _ => {
+                f.db.execute("DELETE FROM memberships WHERE account_id=$1", &[&ACCOUNT])
+                    .await
+                    .unwrap();
+                f.db.execute("DELETE FROM users WHERE id=$1", &[&USER])
+                    .await
+                    .unwrap();
+                f.db.execute("DELETE FROM accounts WHERE id=$1", &[&ACCOUNT])
+                    .await
+                    .unwrap();
+            }
+        }
+        f.db.batch_execute("COMMIT").await.unwrap();
         assert_eq!(
             f.db.query_one("SELECT count(*) FROM memberships", &[])
                 .await
@@ -242,41 +314,54 @@ async fn actual_anchor_epoch_missing_anchor_and_held_locks_refuse_atomically() {
     let f = Fixture::create().await;
     f.joined().await;
     f.parents(OTHER_ACCOUNT, OTHER_USER).await;
-    f.db.batch_execute(&membership(OTHER_ACCOUNT, OTHER_USER))
+    membership(&f.db, OTHER_ACCOUNT, OTHER_USER).await.unwrap();
+    let (old, old_driver) = connect(&f.config).await;
+    old.batch_execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
         .await
         .unwrap();
-    let (old, old_driver) = connect(&f.config).await;
-    old.batch_execute(&format!("BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT selection_epoch FROM payload_profile_account_anchors WHERE account_id='{ACCOUNT}'")).await.unwrap();
+    old.query(
+        "SELECT selection_epoch FROM payload_profile_account_anchors WHERE account_id=$1",
+        &[&ACCOUNT],
+    )
+    .await
+    .unwrap();
     // Disposable owner instrumentation models a future actual epoch UPDATE.
     // No runtime advance API, trigger bypass or production policy is installed.
-    f.owner.batch_execute(&format!("BEGIN; ALTER TABLE payload_profile_account_anchors DISABLE TRIGGER payload_profile_anchor_before_change; UPDATE payload_profile_account_anchors SET selection_epoch=1 WHERE account_id='{ACCOUNT}'; ALTER TABLE payload_profile_account_anchors ENABLE TRIGGER payload_profile_anchor_before_change; COMMIT")).await.unwrap();
-    rejects(
+    f.owner.batch_execute("BEGIN; ALTER TABLE payload_profile_account_anchors DISABLE TRIGGER payload_profile_anchor_before_change").await.unwrap();
+    f.owner
+        .execute(
+            "UPDATE payload_profile_account_anchors SET selection_epoch=1 WHERE account_id=$1",
+            &[&ACCOUNT],
+        )
+        .await
+        .unwrap();
+    f.owner.batch_execute("ALTER TABLE payload_profile_account_anchors ENABLE TRIGGER payload_profile_anchor_before_change; COMMIT").await.unwrap();
+    rejects_with_params(
         &old,
-        &format!("UPDATE users SET password_hash='changed' WHERE id='{USER}'"),
+        "UPDATE users SET password_hash='changed' WHERE id=$1",
+        &[&USER],
         "40001",
     )
     .await;
     old.batch_execute("ROLLBACK").await.unwrap();
     close(old, old_driver).await;
     for lock in [
-        format!(
-            "SELECT account_id FROM payload_profile_account_anchors WHERE account_id='{ACCOUNT}' FOR UPDATE NOWAIT"
-        ),
-        format!("SELECT pg_advisory_xact_lock(payload_profile_account_fence_key('{ACCOUNT}'))"),
+        "SELECT account_id FROM payload_profile_account_anchors WHERE account_id=$1 FOR UPDATE NOWAIT",
+        "SELECT pg_advisory_xact_lock(payload_profile_account_fence_key($1))",
     ] {
-        f.owner
-            .batch_execute(&format!("BEGIN; {lock}"))
-            .await
-            .unwrap();
-        rejects(
+        f.owner.batch_execute("BEGIN").await.unwrap();
+        f.owner.query(lock, &[&ACCOUNT]).await.unwrap();
+        rejects_with_params(
             &f.db,
-            &format!("UPDATE users SET password_hash='changed' WHERE id='{USER}'"),
+            "UPDATE users SET password_hash='changed' WHERE id=$1",
+            &[&USER],
             "55P03",
         )
         .await;
-        f.db.batch_execute(&format!(
-            "UPDATE users SET password_hash='unrelated' WHERE id='{OTHER_USER}'"
-        ))
+        f.db.execute(
+            "UPDATE users SET password_hash='unrelated' WHERE id=$1",
+            &[&OTHER_USER],
+        )
         .await
         .unwrap();
         f.owner.batch_execute("ROLLBACK").await.unwrap();
@@ -285,15 +370,15 @@ async fn actual_anchor_epoch_missing_anchor_and_held_locks_refuse_atomically() {
     // The same owner transaction observes its deliberate corruption. Each
     // savepoint rolls back only the attempted guarded operation before restore.
     for operation in [
-        format!("UPDATE users SET password_hash='changed' WHERE id='{USER}'"),
-        format!("DELETE FROM users WHERE id='{USER}'"),
-        format!("DELETE FROM memberships WHERE user_id='{USER}'"),
+        "UPDATE users SET password_hash='changed' WHERE id=$1",
+        "DELETE FROM users WHERE id=$1",
+        "DELETE FROM memberships WHERE user_id=$1",
     ] {
         f.owner
             .batch_execute("SAVEPOINT missing_anchor")
             .await
             .unwrap();
-        rejects(&f.owner, &operation, "23514").await;
+        rejects_with_params(&f.owner, operation, &[&USER], "23514").await;
         f.owner
             .batch_execute("ROLLBACK TO SAVEPOINT missing_anchor")
             .await
@@ -301,23 +386,31 @@ async fn actual_anchor_epoch_missing_anchor_and_held_locks_refuse_atomically() {
     }
     f.owner.batch_execute("ROLLBACK").await.unwrap();
     for column in ["state", "selection_epoch"] {
-        f.owner.batch_execute(&format!("BEGIN; ALTER TABLE payload_profile_account_anchors ALTER COLUMN {column} DROP NOT NULL; ALTER TABLE payload_profile_account_anchors DISABLE TRIGGER payload_profile_anchor_before_change; UPDATE payload_profile_account_anchors SET {column}=NULL WHERE account_id='{ACCOUNT}'")).await.unwrap();
-        rejects(
+        let column = escape_identifier(column);
+        f.owner.batch_execute(&format!("BEGIN; ALTER TABLE payload_profile_account_anchors ALTER COLUMN {column} DROP NOT NULL; ALTER TABLE payload_profile_account_anchors DISABLE TRIGGER payload_profile_anchor_before_change")).await.unwrap();
+        f.owner
+            .execute(
+                &format!(
+                    "UPDATE payload_profile_account_anchors SET {column}=NULL WHERE account_id=$1"
+                ),
+                &[&ACCOUNT],
+            )
+            .await
+            .unwrap();
+        rejects_with_params(
             &f.owner,
-            &format!("UPDATE users SET password_hash='changed' WHERE id='{USER}'"),
+            "UPDATE users SET password_hash='changed' WHERE id=$1",
+            &[&USER],
             "23514",
         )
         .await;
         f.owner.batch_execute("ROLLBACK").await.unwrap();
     }
     assert_eq!(
-        f.db.query_one(
-            &format!("SELECT password_hash FROM users WHERE id='{USER}'"),
-            &[]
-        )
-        .await
-        .unwrap()
-        .get::<_, String>(0),
+        f.db.query_one("SELECT password_hash FROM users WHERE id=$1", &[&USER])
+            .await
+            .unwrap()
+            .get::<_, String>(0),
         "!"
     );
     f.finish().await;
@@ -329,13 +422,16 @@ async fn membership_tuple_contention_null_identity_and_atomic_rollback_are_bound
     let f = Fixture::create().await;
     f.parents(ACCOUNT, USER).await;
     let (other, other_driver) = connect(&f.config).await;
+    other.batch_execute("BEGIN").await.unwrap();
     other
-        .batch_execute(&format!(
-            "BEGIN; SELECT id FROM users WHERE id='{USER}' FOR UPDATE NOWAIT"
-        ))
+        .query(
+            "SELECT id FROM users WHERE id=$1 FOR UPDATE NOWAIT",
+            &[&USER],
+        )
         .await
         .unwrap();
-    rejects(&f.db, &membership(ACCOUNT, USER), "55P03").await;
+    let error = membership(&f.db, ACCOUNT, USER).await.unwrap_err();
+    assert_eq!(error.code().map(|c| c.code()), Some("55P03"));
     other.batch_execute("ROLLBACK").await.unwrap();
     close(other, other_driver).await;
     assert_eq!(
@@ -345,23 +441,24 @@ async fn membership_tuple_contention_null_identity_and_atomic_rollback_are_bound
             .get::<_, i64>(0),
         0
     );
-    for sql in [
-        format!("INSERT INTO memberships(account_id,user_id,role) VALUES(NULL,'{USER}','owner')"),
-        format!(
-            "INSERT INTO memberships(account_id,user_id,role) VALUES('{ACCOUNT}',NULL,'owner')"
-        ),
-        format!("UPDATE users SET id=NULL WHERE id='{USER}'"),
-        format!("UPDATE users SET id=gen_random_uuid() WHERE id='{USER}'"),
-    ] {
-        rejects(&f.db, &sql, "23514").await;
+    for (account, user) in [(None, Some(USER)), (Some(ACCOUNT), None)] {
+        rejects_with_params(
+            &f.db,
+            "INSERT INTO memberships(account_id,user_id,role) VALUES($1,$2,'owner')",
+            &[&account, &user],
+            "23514",
+        )
+        .await;
     }
-    f.db.batch_execute(&membership(ACCOUNT, USER))
-        .await
-        .unwrap();
+    for sql in [
+        "UPDATE users SET id=NULL WHERE id=$1",
+        "UPDATE users SET id=gen_random_uuid() WHERE id=$1",
+    ] {
+        rejects_with_params(&f.db, sql, &[&USER], "23514").await;
+    }
+    membership(&f.db, ACCOUNT, USER).await.unwrap();
     f.parents(OTHER_ACCOUNT, OTHER_USER).await;
-    f.db.batch_execute(&membership(OTHER_ACCOUNT, OTHER_USER))
-        .await
-        .unwrap();
+    membership(&f.db, OTHER_ACCOUNT, OTHER_USER).await.unwrap();
     for sql in [
         "UPDATE memberships SET account_id=gen_random_uuid()",
         "UPDATE memberships SET user_id=gen_random_uuid()",
@@ -384,9 +481,10 @@ async fn membership_tuple_contention_null_identity_and_atomic_rollback_are_bound
     f.db.batch_execute("BEGIN; UPDATE users SET password_hash='mustrollback'")
         .await
         .unwrap();
-    rejects(
+    rejects_with_params(
         &f.db,
-        &format!("UPDATE memberships SET user_id='{OTHER_USER}' WHERE user_id='{USER}'"),
+        "UPDATE memberships SET user_id=$1 WHERE user_id=$2",
+        &[&OTHER_USER, &USER],
         "23514",
     )
     .await;

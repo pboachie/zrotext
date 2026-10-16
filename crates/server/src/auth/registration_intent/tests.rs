@@ -42,7 +42,7 @@ impl Fixture {
             admin,
             config,
             schema,
-            hasher: TokenHasher::new(vec![7; 32]).unwrap(),
+            hasher: TokenHasher::new(crate::test_keys::key(180)).unwrap(),
             dsn: uri.to_string(),
         }
     }
@@ -52,7 +52,7 @@ impl Fixture {
             &mut self.db,
             &self.hasher,
             &format!("{}@example.test", Uuid::new_v4().simple()),
-            "synthetic-password",
+            &crate::test_keys::password(180),
             Some(&credentials),
         )
         .await
@@ -238,7 +238,7 @@ async fn opaque_signup_collision_invalidates_old_generation_without_binding_anot
             &mut f.db,
             &f.hasher,
             &email,
-            "different-synthetic-password",
+            &crate::test_keys::password(181),
             Some(&decoy)
         )
         .await
@@ -298,7 +298,7 @@ async fn exhausted_attempts_fail_closed_while_password_bound_fallback_still_work
             &mut f.db,
             &f.hasher,
             &signup.verification_token,
-            "other-password"
+            &crate::test_keys::password(181)
         )
         .await
         .unwrap()
@@ -308,7 +308,7 @@ async fn exhausted_attempts_fail_closed_while_password_bound_fallback_still_work
             &mut f.db,
             &f.hasher,
             &signup.verification_token,
-            "synthetic-password"
+            &crate::test_keys::password(180)
         )
         .await
         .unwrap()

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
+use postgres_protocol::escape::{escape_identifier, escape_literal};
 use tokio_postgres::{Config, NoTls};
+use uuid::Uuid;
 
 const BROKER: &str = "10000000-0000-4000-8000-000000000003";
 const SESSION: &str = "10000000-0000-4000-8000-000000000004";
@@ -44,9 +46,13 @@ impl Fixture {
         let role = format!("zt_review_owner_{suffix}");
         let database = format!("zt_review_{suffix}");
         let verifier = postgres_protocol::password::scram_sha_256(password.as_bytes());
-        admin.batch_execute(&format!("CREATE ROLE {role} LOGIN PASSWORD '{verifier}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION")).await.unwrap();
+        admin.batch_execute(&format!("CREATE ROLE {} LOGIN PASSWORD {} NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION", escape_identifier(&role), escape_literal(&verifier))).await.unwrap();
         admin
-            .batch_execute(&format!("CREATE DATABASE {database} OWNER {role}"))
+            .batch_execute(&format!(
+                "CREATE DATABASE {} OWNER {}",
+                escape_identifier(&database),
+                escape_identifier(&role)
+            ))
             .await
             .unwrap();
         config.dbname(&database).user(&role).password(password);
@@ -97,11 +103,14 @@ impl Fixture {
     async fn finish(self) {
         close(self.db, self.driver).await;
         self.admin
-            .batch_execute(&format!("DROP DATABASE {}", self.database))
+            .batch_execute(&format!(
+                "DROP DATABASE {}",
+                escape_identifier(&self.database)
+            ))
             .await
             .unwrap();
         self.admin
-            .batch_execute(&format!("DROP ROLE {}", self.role))
+            .batch_execute(&format!("DROP ROLE {}", escape_identifier(&self.role)))
             .await
             .unwrap();
         close(self.admin, self.admin_driver).await;
@@ -427,7 +436,22 @@ async fn review_capture_before_candidate_fence_does_not_skip_newly_provisioned_a
     gate.batch_execute("ROLLBACK").await.unwrap();
     close(race, race_driver).await;
     close(gate, gate_driver).await;
-    f.db.batch_execute(&original).await.unwrap();
+    // Restore only the fixed function from the compiled canonical migration.
+    // Catalog-returned SQL is comparison evidence, never an executable input.
+    const ANCHORS: &str =
+        include_str!("../../../deploy/compose/migrations/100_payload_profile_account_anchors.sql");
+    let start = ANCHORS
+        .find("CREATE FUNCTION %1$I.payload_profile_account_fence_key(account uuid)")
+        .unwrap();
+    let (definition, _) = ANCHORS[start..]
+        .split_once("$ddl$, installation);")
+        .unwrap();
+    let restoration = definition.trim().replacen(
+        "CREATE FUNCTION %1$I.",
+        "CREATE OR REPLACE FUNCTION public.",
+        1,
+    );
+    f.db.batch_execute(&restoration).await.unwrap();
     let restored: String = f.db.query_one(metadata_sql, &[]).await.unwrap().get(0);
     assert_eq!(
         metadata, restored,
@@ -621,14 +645,21 @@ async fn review_bounded_slots_refuse_eviction_and_reuse_only_genuinely_cleaned_s
     assert_eq!(count(&f.db, "review_workspaces").await, 128);
     let row =
         f.db.query_one(
-            "SELECT account_id::text,user_id::text FROM review_workspaces ORDER BY slot LIMIT 1",
+            "SELECT account_id,user_id FROM review_workspaces ORDER BY slot LIMIT 1",
             &[],
         )
         .await
         .unwrap();
-    let removed_account: String = row.get(0);
-    let removed_user: String = row.get(1);
-    f.db.batch_execute(&format!("DELETE FROM accounts WHERE id='{removed_account}'; DELETE FROM users WHERE id='{removed_user}'")).await.unwrap();
+    let removed_account: Uuid = row.get(0);
+    let removed_user: Uuid = row.get(1);
+    f.db.batch_execute("BEGIN").await.unwrap();
+    f.db.execute("DELETE FROM accounts WHERE id=$1", &[&removed_account])
+        .await
+        .unwrap();
+    f.db.execute("DELETE FROM users WHERE id=$1", &[&removed_user])
+        .await
+        .unwrap();
+    f.db.batch_execute("COMMIT").await.unwrap();
     f.db.batch_execute(&provision()).await.unwrap();
     assert_eq!(count(&f.db, "review_workspaces").await, 128);
     assert_eq!(

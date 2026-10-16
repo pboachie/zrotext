@@ -8,10 +8,7 @@ use super::*;
 async fn finite_cleanup_preserves_live_context_workspace_locator_and_unverified_owner() {
     let mut f = Fixture::create().await;
     let (browser, prep) = f.prepared_with_browser("pilot").await;
-    f.access
-        .login(&prep, "synthetic-review-password")
-        .await
-        .unwrap();
+    f.access.login(&prep, f.password.as_str()).await.unwrap();
     let runtime = f.access.connect().await.unwrap();
     assert!(
         runtime

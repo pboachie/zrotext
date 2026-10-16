@@ -4,7 +4,16 @@ use super::*;
 mod fixture;
 mod integration;
 mod invoice;
+mod isolation;
 mod recovery;
+
+fn webhook_secret() -> String {
+    let key = crate::test_keys::key(183);
+    format!(
+        "whsec_{}",
+        key.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    )
+}
 
 fn options(mode: Mode) -> Options {
     Options {
@@ -13,7 +22,7 @@ fn options(mode: Mode) -> Options {
         plan: Plan::new("price_fixture", 10, 2, 7 * 24 * 3600).unwrap(),
         read_key: format!("rk_{}_fixture_read", mode_name(mode)),
         session_key: format!("rk_{}_fixture_session", mode_name(mode)),
-        webhook_secret: "whsec_fixture_synthetic".into(),
+        webhook_secret: webhook_secret(),
         webhook_endpoint: "we_fixture".into(),
         portal_configuration: "bpc_fixture".into(),
         runtime_key: [7; 32],
