@@ -15,6 +15,8 @@ pub struct DeploymentIdentity {
     pub realm_id: Uuid,
     pub database_id: Uuid,
     pub canonical_origin: String,
+    /// Deployment/service identity commitment, not the software artifact hash.
+    /// A genuine candidate binary can be identical across isolated deployments.
     pub deployment_fingerprint: [u8; 32],
     /// Auth token, enrollment token, reauthentication, grant and MFA keys,
     /// respectively. Fixed slots avoid accepting an incomplete key inventory.
