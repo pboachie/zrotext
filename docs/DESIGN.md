@@ -41,6 +41,13 @@ Sealed dashboard rules: fetch metadata and ciphertext; decrypt locally; render m
 
 ## Android companion screens
 
+The accepted [owner workspace and coordinated setup design](design/owner-workspace.md)
+defines the replacement navigation, compact observation surfaces, hosted account
+journey and recovery behavior. Its [versioned contract](../protocol/v1/setup-journey-contract.json)
+and acceptance layers govern implementation changes. The descriptions below
+record the existing companion behavior until the corresponding replacement is
+implemented and verified; artwork or contract approval does not prove rollout.
+
 The native gateway opens on **Home**, showing actual authenticated-service status, two detail-entry metrics, the selected SIM and lifecycle-scoped local battery/charging observations. **Connections** counts authenticated links on this phone; test sockets and session heartbeat acknowledgments remain separate observations. **Messages** shows device-scoped messages submitted today, with pending and awaiting-receipt counts available on demand. No sample queue, usage or SMS-readiness metrics are displayed.
 
 **Setup** contains purpose-specific permission disclosures, SIM selection and device pairing. **Connection** contains authenticated heartbeat controls and the explicit reboot-resume choice. **Tools** contains transport diagnostics and controlled inbound metadata, one-shot SMS and debug-only MMS pilots. Changing screens does not request permissions or start a session; Back returns to Home. Home fits an ordinary portrait viewport at default text size; setup and diagnostics remain available on demand. Enlarged type, short landscape windows, keyboards and long warnings retain readable scrolling. Pause stops connections but does not revoke Android SMS receiving access or stop permission-enabled local SMS processing.
