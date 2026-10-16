@@ -1,0 +1,195 @@
+{
+  "purpose": "Synthetic independent ZTRI01 codec/signature vectors only; no accepted manifest, encrypted envelope, owner session, current authority or production acceptance is attested by these raw fields. Real composer cryptographic integration is tested separately.",
+  "cases": [
+    {
+      "name": "ceiling-1",
+      "fields": {
+        "accountId": "01010101010101010101010101010101",
+        "deviceId": "02020202020202020202020202020202",
+        "lineId": "03030303030303030303030303030303",
+        "bindingId": "04040404040404040404040404040404",
+        "ownerUserId": "05050505050505050505050505050505",
+        "ownerSessionId": "06060606060606060606060606060606",
+        "intervalId": "07070707070707070707070707070707",
+        "messageId": "08080808080808080808080808080808",
+        "bindingGeneration": "7",
+        "vaultGeneration": "1",
+        "manifestVersion": "2",
+        "accountSelectionEpoch": "9",
+        "observedMs": "30000",
+        "messageExpiresMs": "930000",
+        "reviewIssuedMs": "30000",
+        "reviewExpiresMs": "60000",
+        "selectedReaderKeyId": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+        "rootFingerprint": "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c",
+        "manifestDigest": "0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d",
+        "electionCommitment": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e",
+        "electionBundleSha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+        "ownerSessionDigest": "1010101010101010101010101010101010101010101010101010101010101010",
+        "originDigest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "signerKeyId": "1212121212121212121212121212121212121212121212121212121212121212",
+        "envelopeDigest": "1313131313131313131313131313131313131313131313131313131313131313",
+        "unsignedDigest": "1414141414141414141414141414141414141414141414141414141414141414",
+        "bodyDigest": "1515151515151515151515151515151515151515151515151515151515151515",
+        "peer": "2b3132",
+        "recipients": [
+          {
+            "role": 1,
+            "keyId": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+          },
+          {
+            "role": 2,
+            "keyId": "1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e"
+          }
+        ],
+        "smsCeiling": 1
+      },
+      "intent_hex": "5a5452490103030001010101010101010101010101010101020202020202020202020202020202020303030303030303030303030303030304040404040404040404040404040404050505050505050505050505050505050606060606060606060606060606060607070707070707070707070707070707080808080808080808080808080808080000000000000007000000000000000100000000000000020000000000000009000000000000753000000000000e30d00000000000007530000000000000ea600b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f101010101010101010101010101010101010101010101010101010101010101011111111111111111111111111111111111111111111111111111111111111111212121212121212121212121212121212121212121212121212121212121212131313131313131313131313131313131313131313131313131313131313131314141414141414141414141414141414141414141414141414141414141414141515151515151515151515151515151515151515151515151515151515151515032b313202010b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b021e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e01",
+      "intent_sha256": "100c8f1b430e30b03805065a552f075d5a8d2e99ef6c2e103b9b04c31fec14b2",
+      "transcript_sha256": "6ed1c6253bd7e01eec25906f66c6c765c7bdb62b8b73bb2f5be864de5ecac575",
+      "signer_point_hex": "04e38ef25e42b34acdc8ecfe8db696222d797b8a6f1947e929057ee19cd952c8acf4f7c103f29308a0b1d6cbcd7e6243529fa9c396c0dfc4a4bdd7efdeff3d62c4",
+      "signature_hex": "f0df1540ab71b4503b5227a90629f1c1be94bf379ae6c88eb26224d437926a3438c74da28d95de605ee5045045d252111b0c4983f4a034416ba7d7c0058c5b3c"
+    },
+    {
+      "name": "ceiling-6",
+      "fields": {
+        "accountId": "01010101010101010101010101010101",
+        "deviceId": "02020202020202020202020202020202",
+        "lineId": "03030303030303030303030303030303",
+        "bindingId": "04040404040404040404040404040404",
+        "ownerUserId": "05050505050505050505050505050505",
+        "ownerSessionId": "06060606060606060606060606060606",
+        "intervalId": "07070707070707070707070707070707",
+        "messageId": "08080808080808080808080808080808",
+        "bindingGeneration": "7",
+        "vaultGeneration": "1",
+        "manifestVersion": "2",
+        "accountSelectionEpoch": "9",
+        "observedMs": "30000",
+        "messageExpiresMs": "930000",
+        "reviewIssuedMs": "30000",
+        "reviewExpiresMs": "60000",
+        "selectedReaderKeyId": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+        "rootFingerprint": "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c",
+        "manifestDigest": "0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d",
+        "electionCommitment": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e",
+        "electionBundleSha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+        "ownerSessionDigest": "1010101010101010101010101010101010101010101010101010101010101010",
+        "originDigest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "signerKeyId": "1212121212121212121212121212121212121212121212121212121212121212",
+        "envelopeDigest": "1313131313131313131313131313131313131313131313131313131313131313",
+        "unsignedDigest": "1414141414141414141414141414141414141414141414141414141414141414",
+        "bodyDigest": "1515151515151515151515151515151515151515151515151515151515151515",
+        "peer": "2b3132",
+        "recipients": [
+          {
+            "role": 1,
+            "keyId": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+          },
+          {
+            "role": 2,
+            "keyId": "1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e"
+          }
+        ],
+        "smsCeiling": 6
+      },
+      "intent_hex": "5a5452490103030001010101010101010101010101010101020202020202020202020202020202020303030303030303030303030303030304040404040404040404040404040404050505050505050505050505050505050606060606060606060606060606060607070707070707070707070707070707080808080808080808080808080808080000000000000007000000000000000100000000000000020000000000000009000000000000753000000000000e30d00000000000007530000000000000ea600b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f101010101010101010101010101010101010101010101010101010101010101011111111111111111111111111111111111111111111111111111111111111111212121212121212121212121212121212121212121212121212121212121212131313131313131313131313131313131313131313131313131313131313131314141414141414141414141414141414141414141414141414141414141414141515151515151515151515151515151515151515151515151515151515151515032b313202010b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b021e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e06",
+      "intent_sha256": "ebb0f61e22556811d674d9525a93e97e24f4b9a027925b67427ead71e68f47ce",
+      "transcript_sha256": "a387679f166eb47660b2cdb64b415d0799b013bc901419a4ce8c8afbf7291e38",
+      "signer_point_hex": "04e38ef25e42b34acdc8ecfe8db696222d797b8a6f1947e929057ee19cd952c8acf4f7c103f29308a0b1d6cbcd7e6243529fa9c396c0dfc4a4bdd7efdeff3d62c4",
+      "signature_hex": "f8b35f51007d80890090b8016f95c02ad7039f52f92aaad77a8222d9b99c78f60c93f9ae10963e395c5134ffd2057315462da539b3c6116ca7ca872c7ccb81f9"
+    }
+  ],
+  "timing_cases": [
+    {
+      "name": "review30s-message900s",
+      "observed": "30000",
+      "issued": "30000",
+      "now": "30000",
+      "review_expiry": "60000",
+      "message_expiry": "930000",
+      "accept": true
+    },
+    {
+      "name": "lastreviewmillisecond",
+      "observed": "30000",
+      "issued": "30000",
+      "now": "59999",
+      "review_expiry": "60000",
+      "message_expiry": "930000",
+      "accept": true
+    },
+    {
+      "name": "review-expired",
+      "observed": "30000",
+      "issued": "30000",
+      "now": "60000",
+      "review_expiry": "60000",
+      "message_expiry": "930000",
+      "accept": false
+    },
+    {
+      "name": "future-review",
+      "observed": "30000",
+      "issued": "30001",
+      "now": "30000",
+      "review_expiry": "60000",
+      "message_expiry": "930000",
+      "accept": false
+    },
+    {
+      "name": "observation-after-review",
+      "observed": "30001",
+      "issued": "30000",
+      "now": "30001",
+      "review_expiry": "60000",
+      "message_expiry": "930000",
+      "accept": false
+    },
+    {
+      "name": "review30001ms",
+      "observed": "30000",
+      "issued": "30000",
+      "now": "30000",
+      "review_expiry": "60001",
+      "message_expiry": "930000",
+      "accept": false
+    },
+    {
+      "name": "message900001ms",
+      "observed": "30000",
+      "issued": "30000",
+      "now": "30000",
+      "review_expiry": "60000",
+      "message_expiry": "930001",
+      "accept": false
+    },
+    {
+      "name": "review-after-message",
+      "observed": "30000",
+      "issued": "30000",
+      "now": "30000",
+      "review_expiry": "60000",
+      "message_expiry": "59999",
+      "accept": false
+    },
+    {
+      "name": "maximum-signed-time",
+      "observed": "9223372036854775806",
+      "issued": "9223372036854775806",
+      "now": "9223372036854775806",
+      "review_expiry": "9223372036854775807",
+      "message_expiry": "9223372036854775807",
+      "accept": true
+    },
+    {
+      "name": "unsigned-time-overflow",
+      "observed": "9223372036854775807",
+      "issued": "9223372036854775807",
+      "now": "9223372036854775807",
+      "review_expiry": "9223372036854775808",
+      "message_expiry": "9223372036854775808",
+      "accept": false
+    }
+  ]
+}
