@@ -31,6 +31,7 @@ WEB_FILES = (
     "web/owner/devices.js",
     "web/owner/owner-shell.js",
     "web/owner/owner-workspace.js",
+    "web/owner/pairing-code.js",
     "web/owner/hosted.html",
     "web/owner/hosted.js",
     "web/owner/hosted-onboarding.js",
