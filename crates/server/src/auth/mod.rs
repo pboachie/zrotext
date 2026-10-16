@@ -41,6 +41,7 @@ pub mod mfa;
 mod owner_reduction;
 pub(crate) use owner_reduction::OwnerReductionFence;
 mod password_work;
+pub mod review_realm;
 #[cfg(test)]
 mod roles_tests;
 pub mod seats;
