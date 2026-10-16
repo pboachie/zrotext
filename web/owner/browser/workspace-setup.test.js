@@ -70,7 +70,8 @@ async function fixture(destination = "setup?new=1", width = 1440, changes = {}) 
       billing: state.mode, checkout_available: state.catalog && (state.mode === "test" || state.runtime && state.mode === "live"), plan_catalog_available: state.catalog });
     if (url.pathname === "/v1/auth/session") {
       if (state.sessionUnavailable) return route.abort();
-      return state.signedIn ? json({ role: "owner", account_id: account, session_id: state.session, user_id: account }) : json({}, 401);
+      if (state.sessionBarrier) await state.sessionBarrier;
+      return state.signedIn ? json(state.sessionDto || { role: "owner", account_id: account, session_id: state.session, user_id: account }) : json({}, 401);
     }
     if (url.pathname === "/v1/auth/login") {
       state.signedIn = true;
@@ -575,6 +576,69 @@ for (const loss of ["cookie", "session"]) test(`LIVE ${loss} loss exposes usable
     assert.equal(count("/v1/billing/checkout"), 0);
     assert.equal(count("/v1/billing/checkout/recover"), 0);
   } finally { await page.close(); }
+});
+
+test("LIVE observer replacement opens fixed role recovery and preserves the new session without billing reads", async () => {
+  const { page, state } = await fixture("hosted", 390, { mode: "live", runtime: true, billing: "active" });
+  try {
+    await page.waitForFunction(() => document.body.dataset.hostedPhase === "subscription_observed" && !document.getElementById("hosted-refresh").disabled);
+    state.sessionDto = { role: "observer", account_id: account, session_id: "abababab-abab-4bab-8bab-abababababab", workspacePath: "https://untrusted.example.test" };
+    state.csrfToken = rotatedCsrfProof;
+    await page.context().addCookies([{ name: "__Host-zrotext_csrf", value: state.csrfToken, url: "https://example.test", secure: true, sameSite: "Strict" }]);
+    const before = state.requests.length;
+    await page.locator("#hosted-refresh").click();
+    await page.waitForFunction(() => document.body.dataset.hostedPhase === "existing_session" && !document.getElementById("hosted-refresh").disabled);
+    assert.equal(await page.locator("#hosted-existing-session").isVisible(), true);
+    for (const id of ["hosted-billing", "hosted-phone", "hosted-login-form"]) assert.equal(await page.locator("#" + id).isVisible(), false, id);
+    for (const link of [page.getByRole("link", { name: "Open current workspace" }), page.getByRole("link", { name: "Open workspace", exact: true })]) assert.equal(await link.getAttribute("href"), "/owner/observer");
+    assert.deepEqual(state.requests.slice(before).map(r => [r.path, r.method]), [["/v1/auth/session", "GET"]]);
+    assert.equal(state.requests.filter(r => r.method === "POST").length, 0);
+    assert.equal((await page.context().cookies()).find(c => c.name === "__Host-zrotext_csrf").value, rotatedCsrfProof);
+  } finally { await page.close(); }
+});
+
+test("LIVE malformed observer identities and unknown roles cannot open role recovery", async () => {
+  for (const dto of [
+    { role: "observer", account_id: "invalid", session_id: session },
+    { role: "observer", account_id: account, session_id: [session] },
+    { role: "unrecognized", account_id: account, session_id: session },
+  ]) {
+    const { page, state } = await fixture("hosted", 390, { mode: "live", runtime: true, billing: "active" });
+    try {
+      await page.waitForFunction(() => document.body.dataset.hostedPhase === "subscription_observed" && !document.getElementById("hosted-refresh").disabled);
+      state.sessionDto = dto; const before = state.requests.length;
+      await page.locator("#hosted-refresh").click();
+      await page.waitForFunction(() => document.body.dataset.hostedPhase === "unavailable" && !document.getElementById("hosted-refresh").disabled);
+      assert.equal(await page.locator("#hosted-existing-session").isVisible(), false);
+      assert.equal(await page.getByRole("link", { name: "Open workspace", exact: true }).getAttribute("href"), "/owner/devices");
+      assert.deepEqual(state.requests.slice(before).map(r => [r.path, r.method]), [["/v1/auth/session", "GET"]]);
+      assert.equal(state.requests.filter(r => r.method === "POST").length, 0);
+    } finally { await page.close(); }
+  }
+});
+
+test("LIVE changed cookie during a held observer read refuses role recovery", async () => {
+  let release;
+  const { page, state } = await fixture("hosted", 390, { mode: "live", runtime: true, billing: "active" });
+  try {
+    await page.waitForFunction(() => document.body.dataset.hostedPhase === "subscription_observed" && !document.getElementById("hosted-refresh").disabled);
+    state.sessionDto = { role: "observer", account_id: account, session_id: session };
+    state.sessionBarrier = new Promise(resolve => { release = resolve; });
+    const before = state.requests.length;
+    const observed = page.waitForRequest(request => new URL(request.url()).pathname === "/v1/auth/session");
+    await page.locator("#hosted-refresh").click();
+    await observed;
+    state.csrfToken = rotatedCsrfProof;
+    await page.context().addCookies([{ name: "__Host-zrotext_csrf", value: state.csrfToken, url: "https://example.test", secure: true, sameSite: "Strict" }]);
+    release();
+    await page.waitForFunction(() => document.body.dataset.hostedPhase === "unavailable" && !document.getElementById("hosted-refresh").disabled);
+    assert.match(await page.locator("#hosted-status").textContent(), /session changed/);
+    assert.equal(await page.locator("#hosted-existing-session").isVisible(), false);
+    assert.equal(await page.getByRole("link", { name: "Open workspace", exact: true }).getAttribute("href"), "/owner/devices");
+    assert.deepEqual(state.requests.slice(before).map(r => [r.path, r.method]), [["/v1/auth/session", "GET"]]);
+    assert.equal(state.requests.filter(r => r.method === "POST").length, 0);
+    assert.equal((await page.context().cookies()).find(c => c.name === "__Host-zrotext_csrf").value, rotatedCsrfProof);
+  } finally { if (release) release(); await page.close(); }
 });
 
 test("LIVE transient network failure retains billing recovery and resumes without sign-in", async () => {

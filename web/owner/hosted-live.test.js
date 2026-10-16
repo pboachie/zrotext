@@ -25,7 +25,8 @@ function fixture(mode = "live", options = {}) {
       state.calls.push({ path, ...init });
       if (path === "/v1/auth/session") {
         if (state.sessionUnavailable) throw new Error("synthetic network failure");
-        return response({ role: "owner", account_id: expected.account, session_id: expected.id }, state.sessionStatus || 200);
+        if (state.sessionBarrier) await state.sessionBarrier;
+        return response(state.sessionDto || { role: "owner", account_id: expected.account, session_id: expected.id }, state.sessionStatus || 200);
       }
       if (path === "/v1/service/availability") return response({ schema_version: 1, deployment: "hosted", registration: "open",
         billing: state.mode, checkout_available: true, plan_catalog_available: true });
@@ -108,6 +109,53 @@ test("transient session network failure retains billing recovery without sign-in
   assert.equal(controller.view().recoverBilling, true);
   assert.equal(controller.view().billingMode, "live");
   assert.equal(state.calls.filter(c => c.method === "POST").length, 0);
+});
+test("an observed observer replacement leaves LIVE billing for its fixed workspace without further billing reads", async () => {
+  let cookie = "__Host-zrotext_csrf=proof-a";
+  const { controller, state } = fixture("live", { cookie: () => cookie });
+  Object.assign(state.status.entitlement, { phase: "active", valid_until_ms: now + 30000, outbound_limit: 19, device_cap: 1 });
+  await controller.refresh(); assert.equal(controller.view().phase, "subscription_observed");
+  cookie = "__Host-zrotext_csrf=proof-b";
+  state.sessionDto = { role: "observer", account_id: expected.account, session_id: expected.account, workspacePath: "https://untrusted.example.test" };
+  const before = state.calls.length;
+  await assert.rejects(controller.refresh(), /signed in as an observer/);
+  assert.equal(controller.view().phase, "existing_session");
+  assert.equal(controller.view().workspacePath, "/owner/observer");
+  for (const key of ["billingMode", "recoverBilling", "checkoutAvailable", "resumeAvailable", "recoverAvailable", "portalAvailable", "phoneSetupAvailable"]) assert.equal(controller.view()[key], undefined, key);
+  assert.deepEqual(state.calls.slice(before).map(c => [c.path, c.method]), [["/v1/auth/session", "GET"]]);
+  assert.equal(state.calls.filter(c => c.method === "POST").length, 0);
+  assert.equal(cookie, "__Host-zrotext_csrf=proof-b");
+});
+test("malformed observer identities and unknown roles cannot select observer recovery", async () => {
+  for (const dto of [
+    { role: "observer", account_id: "invalid", session_id: expected.id },
+    { role: "observer", account_id: expected.account, session_id: "invalid" },
+    { role: "observer", account_id: [expected.account], session_id: expected.id },
+    { role: "observer", account_id: expected.account, session_id: [expected.id] },
+    { role: "unrecognized", account_id: expected.account, session_id: expected.id },
+  ]) {
+    const { controller, state } = fixture(); await controller.refresh();
+    state.sessionDto = dto; const before = state.calls.length;
+    await assert.rejects(controller.refresh(), /owner account/);
+    assert.notEqual(controller.view().phase, "existing_session");
+    assert.equal(controller.view().workspacePath, undefined);
+    assert.deepEqual(state.calls.slice(before).map(c => [c.path, c.method]), [["/v1/auth/session", "GET"]]);
+    assert.equal(state.calls.filter(c => c.method === "POST").length, 0);
+  }
+});
+test("a changed CSRF during an observer session read refuses the stale role observation", async () => {
+  let cookie = "__Host-zrotext_csrf=proof-a", release;
+  const { controller, state } = fixture("live", { cookie: () => cookie }); await controller.refresh();
+  state.sessionDto = { role: "observer", account_id: expected.account, session_id: expected.id };
+  state.sessionBarrier = new Promise(resolve => { release = resolve; });
+  const before = state.calls.length, pending = controller.refresh(); await new Promise(setImmediate);
+  cookie = "__Host-zrotext_csrf=proof-b"; release();
+  await assert.rejects(pending, /session changed/);
+  assert.notEqual(controller.view().phase, "existing_session");
+  assert.equal(controller.view().workspacePath, undefined);
+  assert.deepEqual(state.calls.slice(before).map(c => [c.path, c.method]), [["/v1/auth/session", "GET"]]);
+  assert.equal(state.calls.filter(c => c.method === "POST").length, 0);
+  assert.equal(cookie, "__Host-zrotext_csrf=proof-b");
 });
 test("risk, dirty, expired and zero-capacity observations retain progress without enabling phone setup", () => {
   for (const change of [

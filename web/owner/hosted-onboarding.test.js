@@ -115,8 +115,10 @@ test("invalid accepted MFA responses cannot reuse a previous owner session", asy
 test("observer sessions cannot request billing or checkout", async () => {
   const f = fixture({ "/v1/auth/session": () => response({ ...owner, role: "observer" }) });
   f.controller.select("hosted");
-  await assert.rejects(f.controller.refresh(), /owner account/);
+  await assert.rejects(f.controller.refresh(), /signed in as an observer/);
   assert.equal(f.calls.length, 1);
+  assert.equal(f.controller.view().phase, "existing_session");
+  assert.equal(f.controller.view().workspacePath, "/owner/observer");
   assert.equal(f.controller.view().checkoutAvailable, undefined);
 });
 

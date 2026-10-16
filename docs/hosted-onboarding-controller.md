@@ -136,6 +136,9 @@ payment hold or any nonterminal subscription blocks a second checkout.
 Missing sign-in proof or an expired session returns to the explicit sign-in form;
 a transient network failure preserves billing recovery without replaying sign-in
 or checkout. Signing in again re-reads the existing subscription and phone progress.
+A stable, valid observer session replaces billing controls with its fixed observer
+workspace link. A changed cookie, malformed identity or unknown role cannot select
+that recovery path; the controller preserves the current browser session.
 Runtime account/session envelopes and timestamps must remain current. Active or
 grace service also needs fresh positive limits and no dirty/risk hold. Legacy
 TEST active, grace and invoice-current projections remain labelled TEST.

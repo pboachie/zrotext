@@ -107,6 +107,7 @@
     const cookie = options.cookie || (() => root.document.cookie);
     const randomUUID = options.randomUUID || (() => root.crypto.randomUUID());
     const now = options.now || (() => Date.now());
+    const observedObserver = Symbol("observed observer session");
     let epoch = 0;
     let busy = false;
     let selection = null;
@@ -212,9 +213,16 @@
       }
       const result = await request("/v1/auth/session");
       if (csrfToken() !== csrf) throw new Error("Your account session changed. Refresh before continuing.");
-      if (!result || result.role !== "owner" || !uuid.test(result.account_id) || !uuid.test(result.session_id)) {
+      if (!result || typeof result.account_id !== "string" || typeof result.session_id !== "string" ||
+          !uuid.test(result.account_id) || !uuid.test(result.session_id)) {
         throw new Error("Sign in with an owner account to continue.");
       }
+      if (result.role === "observer") {
+        const error = new Error("This browser is signed in as an observer. Open its workspace to continue.");
+        error[observedObserver] = true;
+        throw error;
+      }
+      if (result.role !== "owner") throw new Error("Sign in with an owner account to continue.");
       return { account: result.account_id, id: result.session_id, csrf };
     }
 
@@ -244,9 +252,13 @@
           clear();
           const authentication = error.status === 401 || error.status === 403;
           const billingMode = previous.billingMode || guard.billingMode;
-          publish({ phase: authentication ? "sign_in" : "unavailable", hosting: "hosted",
-            recoverBilling: !authentication && typeof billingMode === "string",
-            billingMode, message: error.message });
+          if (error[observedObserver] === true) {
+            publish({ phase: "existing_session", hosting: "hosted", workspacePath: "/owner/observer", message: error.message });
+          } else {
+            publish({ phase: authentication ? "sign_in" : "unavailable", hosting: "hosted",
+              recoverBilling: !authentication && typeof billingMode === "string",
+              billingMode, message: error.message });
+          }
         }
         throw error;
       } finally {
