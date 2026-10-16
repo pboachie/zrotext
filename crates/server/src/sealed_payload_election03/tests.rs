@@ -138,6 +138,20 @@ fn exact_public_election_signatures_and_historical_current_boundary() {
         }
         assert!(require_current(&proof, &first, &c, NOW + 60_000).is_err());
     }
+    // A plausible storage record can echo a forged bundle's exact hash. That
+    // is still not a valid received device/owner signature or authorization.
+    let mut forged_bundle = bundle.clone();
+    forged_bundle[500] ^= 1;
+    let mut forged_record = a.clone();
+    forged_record.election_bundle_sha256 = sha(&forged_bundle);
+    assert!(
+        verify_accepted(&AcceptedProofInput03 {
+            bundle: &forged_bundle,
+            accepted: &forged_record,
+            ..input
+        })
+        .is_err()
+    );
     for at in [0, 56, 136, 288, 352, 400, 432, 464, 496, 500, 564, 627] {
         let mut changed = bundle.clone();
         changed[at] ^= 1;
