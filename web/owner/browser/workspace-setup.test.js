@@ -66,9 +66,9 @@ async function fixture(destination = "setup?new=1", width = 1440, changes = {}) 
     if (url.pathname === "/v1/auth/logout") { state.signedIn = false; return route.fulfill({ status: 204 }); }
     if (url.pathname === "/v1/account/setup" && state.progressUnavailable) return json({}, 503);
     if (url.pathname === "/v1/account/setup") return json({ schema_version: 1, account_id: account, session_id: state.session, observed_at_ms: Date.now(),
-      sms_line_activation_available: true, pairings: state.pair ? [{ pairing_id: pairing, created_at_ms: Date.now() - 1000,
+      sms_line_activation_available: true, pairings: [...(state.pair ? [{ pairing_id: pairing, created_at_ms: Date.now() - 1000,
         display_name: "Synthetic gateway", status: state.approved ? "approved" : "awaiting_approval", expires_at_ms: Date.now() + 300000,
-        approved_device_id: state.approved ? device : null, comparison_code: state.approved ? null : "12345678", key_fingerprint: state.approved ? null : proof }] : [],
+        approved_device_id: state.approved ? device : null, comparison_code: state.approved ? null : "12345678", key_fingerprint: state.approved ? null : proof }] : []), ...(state.extraPairings || [])],
       line_activations: state.lineStarted ? [{ line_id: line, challenge_id: pairing, opening_id: opening, device_id: device, generation: "1",
         expires_at_ms: state.expires, same_session: state.session === session, status: state.linePhase === "activated" ? "approved" : state.session === session ? "awaiting_owner" : "session_changed" }] : [], devices: state.approved ? [{ device_id: device, pairing_id: pairing, revoked: false, key_fingerprint: proof,
         setup_line_id: line, setup_opening_id: opening, line_activation_version: state.connected ? 2 : null }] : [], truncated: false });
@@ -396,5 +396,25 @@ test("UX-NAV-01 UX-OVERVIEW-01 six primary destinations and a bounded desktop in
     assert.equal(state.requests.filter(r => r.path === "/v1/owner/messages").length, messages);
     await page.goBack(); await page.waitForURL("**/owner/devices");
     assert.equal(await page.locator(".owner-nav [aria-current=page]").textContent(), "Overview");
+  } finally { await page.close(); }
+});
+
+
+test("SETUP-RESUME-01 a specific approved phone does not switch to a different pending pairing, while new-phone still reconciles it", async () => {
+  requires("SETUP-RESUME-01", "SETUP-UNKNOWN-01");
+  const other = "11111111-1111-4111-8111-111111111111";
+  const { page, count } = await fixture("setup?pairing=" + pairing, 390, { pair: true, approved: true, extraPairings: [{
+    pairing_id: other, display_name: "Other pending phone", created_at_ms: Date.now() - 1000,
+    status: "pending_claim", expires_at_ms: Date.now() + 300000, approved_device_id: null, comparison_code: null, key_fingerprint: null
+  }] });
+  try {
+    await page.waitForFunction(() => document.body.dataset.setupStage === "connect");
+    assert.match(await page.locator("#setup-resume-status").textContent(), /Phone approval is saved/);
+    assert.equal(count("/v1/enrollment/pairings"), 0);
+    assert.equal(count(`/v1/enrollment/pairings/${other}`, "GET"), 0);
+    await page.goto("https://example.test/owner/setup?new=1");
+    await page.waitForFunction(() => document.getElementById("pair-status").textContent.includes("This pairing is saved"));
+    assert.equal(await page.locator("#create-form button").isDisabled(), true);
+    assert.equal(count("/v1/enrollment/pairings"), 0);
   } finally { await page.close(); }
 });

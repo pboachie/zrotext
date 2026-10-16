@@ -1956,12 +1956,12 @@ byId("revoke-other-sessions-form").addEventListener("submit", async (event) => {
 byId("create-form").addEventListener("submit", exclusive(async (event) => {
   event.preventDefault();
   agePairing();
-  if (globalThis.ZtOwnerWorkspace && !globalThis.ZtOwnerWorkspace.canCreate()) { message("pair-status", "Check saved progress before creating a pairing. Your previous setup may already have completed."); return; }
   if (pairingApproval) { await reconcilePairingApproval(); return; }
   if (activePairingId) {
     message("pair-status", "Finish or cancel the current pairing before creating another.");
     return;
   }
+  if (globalThis.ZtOwnerWorkspace && !globalThis.ZtOwnerWorkspace.canCreate()) { message("pair-status", "Check saved progress before creating a pairing. Your previous setup may already have completed."); return; }
   if (globalThis.ZtOwnerWorkspace) { try { await globalThis.ZtOwnerWorkspace.assertCurrent(); } catch (error) { message("pair-status", error.message); return; } }
   clearPairing();
   message("approved-result", "");

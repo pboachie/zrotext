@@ -10,6 +10,7 @@
     "/owner/setup": ["setup", "Add a phone", "Scan, compare, connect and approve the selected SIM. Completed steps stay saved."]
   });
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const unresolvedPairing = (pairing, observed) => ["pending_claim", "awaiting_proof", "awaiting_approval"].includes(pairing.status) && pairing.expires_at_ms > observed;
   function validateSetup(value, session) {
     if (!value || value.schema_version !== 1 || value.account_id !== session.account_id ||
         value.session_id !== session.session_id || !Number.isSafeInteger(value.observed_at_ms) ||
@@ -92,8 +93,11 @@
       if (after.account_id !== before.account_id || after.session_id !== before.session_id) throw new Error("Your account changed. Sign in and check progress again.");
       snapshot = progress;
       body.dataset.progressState = "ready";
-      byId("create-form").querySelector("button[type=submit]").disabled = progress.truncated;
-      const pending = progress.pairings.find(p => ["pending_claim", "awaiting_proof", "awaiting_approval"].includes(p.status) && p.expires_at_ms > progress.observed_at_ms);
+      const unresolved = progress.pairings.filter(p => unresolvedPairing(p, progress.observed_at_ms));
+      byId("create-form").querySelector("button[type=submit]").disabled = progress.truncated || unresolved.length > 0;
+      // A specific resume locator must never switch the owner to another phone.
+      // An explicit additional-phone request still reconciles any unresolved attempt.
+      const pending = unresolved.find(p => adding || !requestedPairing || p.pairing_id === requestedPairing);
       const approved = progress.pairings.find(p => p.status === "approved" && p.approved_device_id && (!requestedPairing || p.pairing_id === requestedPairing));
       if (!deviceId && pending) {
         message(pending.status === "awaiting_approval" ? "Phone proof received. Compare both values to continue." : "Your phone pairing is saved. Continue on the phone, or replace the saved attempt if you cannot scan it.");
@@ -107,7 +111,7 @@
       const retainedDevice = progress.devices.find(d => !d.revoked && (!requestedPairing || d.pairing_id === requestedPairing));
       deviceId ||= adding ? null : approved?.approved_device_id || retainedDevice?.device_id || null;
       if (!deviceId) {
-        message(progress.truncated ? "Some older setup records are outside this view. Check your phone overview before adding another phone." : "No unfinished phone setup found. Add a phone when you are ready.");
+        message(progress.truncated ? "Some older setup records are outside this view. Check your phone overview before adding another phone." : unresolved.length ? "The requested phone setup is unavailable. Resolve the other unfinished pairing from Phones & lines before adding a phone." : "No unfinished phone setup found. Add a phone when you are ready.");
         const retired = progress.pairings.find(p => ["expired", "cancelled", "proof_rejected"].includes(p.status) && (!requestedPairing || p.pairing_id === requestedPairing));
         if (retired && selected[0] === "setup") globalThis.ZtOwnerPairing?.retire(retired.pairing_id);
         stage("pair"); return;
@@ -148,7 +152,7 @@
     }
   }
   globalThis.ZtOwnerWorkspace = Object.freeze({ stage, refresh, approvedDevice(id) { if (uuid.test(id)) { deviceId = id; stage("connect"); refresh(); } }, snapshot: () => snapshot,
-    canCreate: () => snapshot !== null && !snapshot.truncated,
+    canCreate: () => snapshot !== null && !snapshot.truncated && !snapshot.pairings.some(p => unresolvedPairing(p, snapshot.observed_at_ms)),
     async assertCurrent() {
       const saved = snapshot;
       if (!saved) throw new Error("Check setup progress before continuing.");
