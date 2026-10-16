@@ -5,6 +5,7 @@ use tokio_postgres::{Config, NoTls};
 const BROKER: &str = "10000000-0000-4000-8000-000000000003";
 const SESSION: &str = "10000000-0000-4000-8000-000000000004";
 const EVENT: &str = "10000000-0000-4000-8000-000000000005";
+const CREDENTIAL: &str = "10000000-0000-4000-8000-000000000009";
 const ATTEMPT: &str = "10000000-0000-4000-8000-000000000006";
 const ACCOUNT: &str = "10000000-0000-4000-8000-000000000007";
 const USER: &str = "10000000-0000-4000-8000-000000000008";
@@ -65,7 +66,7 @@ impl Fixture {
         let directory =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
         let applied = apply(&mut db, &directory, false).await.unwrap();
-        assert_eq!(applied.last().unwrap().version, 103);
+        assert_eq!(applied.last().unwrap().version, 104);
         let ledger: String = db.query_one("SELECT json_agg(json_build_array(version,checksum_sha256,applied_at::text) ORDER BY version)::text FROM schema_migrations", &[]).await.unwrap().get(0);
         assert!(apply(&mut db, &directory, false).await.unwrap().is_empty());
         let replay: String = db.query_one("SELECT json_agg(json_build_array(version,checksum_sha256,applied_at::text) ORDER BY version)::text FROM schema_migrations", &[]).await.unwrap().get(0);
@@ -77,8 +78,8 @@ impl Fixture {
               VALUES('10000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000002','https://review.invalid',
                 decode(repeat('01',32),'hex'),decode(repeat('02',32),'hex'),decode(repeat('03',32),'hex'),
                 decode(repeat('04',32),'hex'),decode(repeat('05',32),'hex'),decode(repeat('06',32),'hex'),decode(repeat('07',32),'hex'));
-            INSERT INTO review_brokers(id,realm_id,credential_revision,password_verifier)
-              VALUES('{BROKER}','10000000-0000-4000-8000-000000000001',1,'fixture-only');
+            INSERT INTO review_brokers(id,realm_id,credential_id,credential_revision,password_verifier)
+              VALUES('{BROKER}','10000000-0000-4000-8000-000000000001','{CREDENTIAL}',1,'fixture-only');
             SELECT review_workspace_broker_session_create('{BROKER}','{SESSION}','{EVENT}',1,
                 decode(repeat('08',32),'hex'),decode(repeat('09',32),'hex'),'https://review.invalid');
         "#)).await.unwrap();
@@ -664,8 +665,15 @@ async fn review_quoted_component_namespace_ignores_wrong_path_and_temp_shadows()
         f.db.batch_execute(sql).await.unwrap();
         f.db.batch_execute("COMMIT").await.unwrap();
     }
-    f.db.batch_execute(&format!("INSERT INTO {namespace}.review_realm_installation SELECT * FROM public.review_realm_installation;
-        INSERT INTO {namespace}.review_brokers SELECT * FROM public.review_brokers;
+    // Copy the exact original 102 component shapes. Public has later additive
+    // marker/configuration and broker-credential columns, not part of this
+    // independently qualified 102-only namespace.
+    f.db.batch_execute(&format!("INSERT INTO {namespace}.review_realm_installation(singleton,realm_id,database_id,origin,deployment_digest,service_digest,
+            auth_key_digest,enrollment_key_digest,reauthentication_key_digest,grant_key_digest,mfa_key_digest)
+        SELECT singleton,realm_id,database_id,origin,deployment_digest,service_digest,
+            auth_key_digest,enrollment_key_digest,reauthentication_key_digest,grant_key_digest,mfa_key_digest FROM public.review_realm_installation;
+        INSERT INTO {namespace}.review_brokers(id,realm_id,credential_revision,password_verifier,disabled_ms)
+        SELECT id,realm_id,credential_revision,password_verifier,disabled_ms FROM public.review_brokers;
         SET search_path TO public;
         CREATE TEMP TABLE accounts(id uuid);
         CREATE TEMP TABLE users(id uuid);
