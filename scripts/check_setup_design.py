@@ -116,6 +116,15 @@ def validate(contract: object) -> None:
         raise ValueError("binding proof transcript changed")
     if binding.get("recovery_key_policy") != "existing_key_only":
         raise ValueError("recovery cannot create a device key")
+    terminal = binding.get("preclaim_terminal_observation", {})
+    if terminal != {
+        "http_status": 409,
+        "codes": ["pairing_cancelled", "pairing_expired"],
+        "required_facts": ["active_account", "unclaimed", "unapproved", "cancelled_or_expired"],
+        "grants_binding": False,
+        "missing_row": "unknown",
+    }:
+        raise ValueError("pre-claim terminal observations cannot infer missing state or grant binding")
     if binding.get("origin_authority") != "independently_selected_canonical_https_origin":
         raise ValueError("scanned or returned addresses cannot establish trust")
     if binding.get("stream_path") != "/v1/device-stream":

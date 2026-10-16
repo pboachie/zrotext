@@ -93,6 +93,13 @@ stream address from its independently selected canonical origin. It never uses
 an arbitrary returned or scanned address as trust. A status query cannot create
 a missing key, replay enrollment proof, approve a phone or start a service.
 
+If the first claim never attached a key, a fresh key proof cannot discover a
+binding. The trusted server may report only a coarse terminal result for an
+actual active-account ticket that is unclaimed, unapproved and expired or
+cancelled. This closed observation grants no device identity or comparison
+values. Missing rows, claimed-key mismatches and revoked or missing device
+identities remain unknown; they cannot authorize ticket replacement.
+
 ### SIM, access and connection
 
 The phone explicitly selects an active SIM. Enumerate supported choices without

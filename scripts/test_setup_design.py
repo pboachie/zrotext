@@ -59,6 +59,13 @@ class SetupDesignContractTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 validate(candidate)
 
+    def test_unclaimed_terminal_observation_cannot_grant_binding_or_infer_missing_rows(self):
+        for field, value in (("grants_binding", True), ("missing_row", "expired"), ("required_facts", ["unclaimed"])):
+            candidate = copy.deepcopy(self.contract)
+            candidate["binding"]["preclaim_terminal_observation"][field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "pre-claim"):
+                validate(candidate)
+
     def test_source_checks_cannot_replace_runtime_acceptance_layers(self):
         candidate = copy.deepcopy(self.contract)
         candidate["acceptance_layers"] = ["contract_and_source_checks"]

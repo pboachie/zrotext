@@ -31,6 +31,13 @@
     "stream_path": "/v1/device-stream",
     "origin_authority": "independently_selected_canonical_https_origin",
     "recovery_key_policy": "existing_key_only",
+    "preclaim_terminal_observation": {
+      "http_status": 409,
+      "codes": ["pairing_cancelled", "pairing_expired"],
+      "required_facts": ["active_account", "unclaimed", "unapproved", "cancelled_or_expired"],
+      "grants_binding": false,
+      "missing_row": "unknown"
+    },
     "persistent_progress": ["canonical_origin", "pairing_id", "key_fingerprint"],
     "never_persist": ["pairing_token", "comparison_code", "private_key", "permission_consent", "line_approval", "active_binding_authority"]
   },
