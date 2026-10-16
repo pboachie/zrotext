@@ -35,6 +35,7 @@ pub mod inbound;
 pub mod ingress;
 pub mod maintenance;
 pub mod owner_ui;
+pub(crate) mod payload_profile_anchor;
 pub mod provider_config;
 pub mod provider_sms;
 pub mod readiness;

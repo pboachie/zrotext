@@ -46,7 +46,9 @@ def remove_owned_container(name, owner):
                    capture_output=True, timeout=60)
 
 
-class RuntimeRoleTest(unittest.TestCase):
+class RuntimeRoleFixture:
+    migration_limit = None
+
     @classmethod
     def setUpClass(cls):
         ensure_local_docker()
@@ -72,6 +74,8 @@ class RuntimeRoleTest(unittest.TestCase):
             raise RuntimeError("disposable database startup timed out")
         cls.sql("CREATE TABLE schema_migrations(version integer);")
         for migration in sorted((COMPOSE / "migrations").glob("*.sql")):
+            if cls.migration_limit is not None and int(migration.name[:3]) > cls.migration_limit:
+                continue
             if migration.name == "034_delivery_sweep_index.sql":
                 # The migrator prepares this index in autocommit mode before
                 # applying the numbered validation file in a transaction.
@@ -163,6 +167,7 @@ class RuntimeRoleTest(unittest.TestCase):
     def provision(self, **kwargs):
         return self.sql((COMPOSE / "runtime-role.sql").read_text(encoding="utf-8"), **kwargs)
 
+class RuntimeRoleTest(RuntimeRoleFixture, unittest.TestCase):
     def test_provision_upgrade_and_defenses(self):
         # Existing schema/volume migration path, then repeat without resetting DB.
         self.provision()
@@ -208,6 +213,34 @@ class RuntimeRoleTest(unittest.TestCase):
         self.sql("TRUNCATE future_fixture;", runtime=True, success=False)
         self.sql("DROP TABLE future_fixture;")
         self.sql((COMPOSE / "verify_runtime_role.sql").read_text(encoding="utf-8"), runtime=True)
+
+
+class RuntimeRoleAnchorUpgradeTest(RuntimeRoleFixture, unittest.TestCase):
+    migration_limit = 99
+
+    def test_existing_defaults_and_provisioner_reruns_preserve_anchor_authority(self):
+        self.provision()
+        self.sql("INSERT INTO public.accounts(id) VALUES ('01010101-0101-0101-0101-010101010101');")
+        migration = COMPOSE / "migrations" / "100_payload_profile_account_anchors.sql"
+        self.sql("BEGIN;\n" + migration.read_text(encoding="utf-8") + "\nCOMMIT;")
+        # The migration must override pre-existing DML/EXECUTE defaults itself.
+        self.sql((COMPOSE / "verify_runtime_role.sql").read_text(encoding="utf-8"), runtime=True)
+        self.provision()
+        self.provision()
+        self.sql((COMPOSE / "verify_runtime_role.sql").read_text(encoding="utf-8"), runtime=True)
+        # Relation REVOKE alone leaves column ACLs intact. Deliberately pollute
+        # both PUBLIC and direct role grants, then require the whole provisioner
+        # to close them again without changing the immutable anchor identity.
+        self.sql("GRANT UPDATE(state,selection_epoch) ON public.payload_profile_account_anchors TO PUBLIC,zrotext_runtime;"
+                 "GRANT EXECUTE ON FUNCTION public.payload_profile_anchor_account_created() TO PUBLIC,zrotext_runtime;")
+        self.provision()
+        self.sql((COMPOSE / "verify_runtime_role.sql").read_text(encoding="utf-8"), runtime=True)
+        self.sql("DELETE FROM public.accounts WHERE id='01010101-0101-0101-0101-010101010101';", runtime=True)
+        self.sql("DO $$ BEGIN IF NOT EXISTS (SELECT FROM public.payload_profile_account_anchors "
+                 "WHERE account_id='01010101-0101-0101-0101-010101010101' AND state='deleted' AND selection_epoch=1) "
+                 "THEN RAISE EXCEPTION 'upgraded identity tombstone missing'; END IF; END $$;", runtime=True)
+        self.sql("INSERT INTO public.accounts(id) VALUES ('01010101-0101-0101-0101-010101010101');",
+                 runtime=True, success=False)
 
 
 if __name__ == "__main__":

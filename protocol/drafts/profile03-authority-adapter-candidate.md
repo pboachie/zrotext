@@ -210,16 +210,17 @@ Content/state rules must distinguish effect creation from invalidation:
 
 ## Required inventory and acceptance before mounting
 
-`profile03-writer-inventory-candidate.json` pins the numbered migration99
-catalog: 157 public relations, including 140 with an `account_id` column and 17
-requiring a different review class. Its CI fixture runs the actual migrator in
+`profile03-writer-inventory-candidate.json` pins the numbered migration100
+catalog: 158 public relations, including 141 with an `account_id` column and 17
+without that column. Its CI fixture runs the actual migrator in
 a unique database and compares column shape, FK edges and trigger definitions.
 These are extraction **review obligations**, not installed policies. The hashes
 do not replace exact function-body, privilege, state or cryptographic checks.
 
 | Extraction class | Required treatment before installation |
 |---|---|
-| 136 required `account_id` columns | Fence exact OLD/NEW account sets; compare full UUIDs, independently classify every operation, and preserve invalidation/erasure |
+| 136 ordinary required `account_id` columns | Fence exact OLD/NEW account sets; compare full UUIDs, independently classify every operation, and preserve invalidation/erasure |
+| Lifecycle-only account anchor | Migration100 provides immutable identity and create/delete epoch guards, narrow privileges and retained tombstones; it is not an ordinary writer guard or an accepted profile selection |
 | Nullable `billing_events` / `billing_risk_events` | Unbound audit state never supplies authority; account assignment must fence the resolved account before downstream effects |
 | Nullable `device_sessions` / `dispatch_fences` | Reconcile exact enrolled device/message account; absent/mismatched account cannot become03 lease/grant authority |
 | `accounts` | Fence immutable identity, account-create anchor coupling and disable/delete/erasure lifecycle |

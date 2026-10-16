@@ -493,6 +493,12 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "099_line_readiness_observations.sql",
         include_str!("../../../../deploy/compose/migrations/099_line_readiness_observations.sql"),
     ),
+    (
+        "100_payload_profile_account_anchors.sql",
+        include_str!(
+            "../../../../deploy/compose/migrations/100_payload_profile_account_anchors.sql"
+        ),
+    ),
 ];
 
 async fn apply_selected(

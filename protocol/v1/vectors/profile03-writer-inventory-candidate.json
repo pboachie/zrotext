@@ -1,6 +1,6 @@
 {
   "status": "candidate-scope-inventory-only-not-installed",
-  "migration_version": 99,
+  "migration_version": 100,
   "row_columns": [
     "relation",
     "account_extraction_review_class",
@@ -11,7 +11,7 @@
   "hash_encoding": "SHA256 of compact UTF-8 JSON arrays; columns preserve attnum, FK pairs sort by parent/definition, trigger name/function/definition/enabled tuples sort by name/function/definition; empty list is []",
   "limitations": "Extraction classes are review obligations, not executable policies or installed guards. Per-operation state policies, mirror/cascade backfill and full current-reader qualification remain required before mounting.",
   "relations": [
-    ["accounts","account_identity","27667a0fcde3c1682163ce77ccdf9fef9a8766dde79e33ebc890b4bc3b35b34e","4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"],
+    ["accounts","account_identity","27667a0fcde3c1682163ce77ccdf9fef9a8766dde79e33ebc890b4bc3b35b34e","4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","f0071922478b03fc1acb67ab5048bb492b8690e91cff86820b42630f50a36da1"],
     ["agent_authority_actions","column:account_id","b28d4f1c6a5a3bb71540d97aa1f4b90d832163035cd0bf0fd87529b7354228a6","a8d6f0b415241b89b2cab4f017a0fd7b0f991e1bec38bd5ab467c74230accf58","c9d68d3c2564897066e50dcc4cbb8559f762b5a4638a42ee2501ae25b3df52b9"],
     ["agent_authority_approvals","column:account_id","743eddfc92782c88081760164887daa1e6aadd0d22711edc708ce676a3806b3d","f2093a78114bacc5312a4662a7bffc71cd216e3b302f90bbc2d1ec17abff0f88","1200af2c554711a2fd0840b4f3e4ffdbfb70ca9781c98db9b85d9a83cba986e6"],
     ["agent_authority_grants","column:account_id","a8b5a164e8e242f2de95304eb6632cb91c5faa516c2fa4d6a87f1a71d3d50dda","d6fda4172591a30a84304ec7eea0b871e2a06f84b320798a3dab3d21a3004f5d","235ea3128be384c5a420feaaae16bcd936da538daee34a6ad2675d59b9f4b0c9"],
@@ -104,6 +104,7 @@
     ["password_reset_mail_outbox","parent:password_resets:mirror_account_required","696c4e9ff0a8f1ecc9bd59a604a979a934dc4cd14689f84cf4cb6b924ece718f","198b082f24b0f4f3c4ef6a10b2783812867ea961a224491e0ed96fd9e2ab7c1b","4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"],
     ["password_reset_notice_outbox","column:account_id","6d1dab25ed17387dd815555ecd2cd96998da28d5cc4607936617dc305b74e670","7a1ebf0cb4650160847ee057c193656b999f5d2d460ed34e0db97b292bf8a192","4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"],
     ["password_resets","column:account_id","4c7d6e738e953f9c0bc3f5bd80d7a8e4b6fef2f6747b0d00d238c8a39e198839","7a1ebf0cb4650160847ee057c193656b999f5d2d460ed34e0db97b292bf8a192","4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"],
+    ["payload_profile_account_anchors","anchor_lifecycle_only","5d26e991ddf4ea110a1cfe1816324753ea380874be30f44d80d6a4ba8808e04f","4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","6260a3d9946e0475087c23453e74ed8daa9fc8cfa8c88925b2f50802e2742476"],
     ["phone_lines","column:account_id","9735e867eb00c111b167a3827d55cfb334bd5894e7f75d801ec64e6edb333140","392f4a9eadcc4448e102c787e6374396d2575aa29a3c06796c537aac0925afa3","bf00c26fc544d70fa9000311c685a420fafeefb7a145b1f15eaba48a7b4b1498"],
     ["provider_send_attempts","column:account_id","02c56cd5ba81adb5f343cffd88929a9b6497dc21fc5b949dcad7d0ec671b6c70","b81e161b5b9e695d1dd987a9fbd6585c7e41eec4bb80419f059232d841854c52","88a8aee1149f9bd3449b801238d2a5ea5a60ace551702e8a2247c64382f76d3f"],
     ["recipient_suppressions","column:account_id","27b8b6ce556c1805ce5ac73861040c621606f4813084c2ed8aad135a2ada98d1","e3ec5e5af0f10dc702745e018e1750126a9099c4c5e6acfdab6f5fddf569f85b","020242dd186cc21b78cdce93ebcca85da271a97cfd8ef675cc6e6e8ddc53fb9c"],

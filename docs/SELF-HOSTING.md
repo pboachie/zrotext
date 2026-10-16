@@ -636,10 +636,22 @@ transaction, ending with the account row itself. Authorization is re-checked
 under row locks inside that transaction immediately before the first delete:
 a password change, session revocation, or account disable that lands after
 the password was proven aborts the request with nothing deleted. The success
-response lists every table with its deleted row count plus the single
-retained set (the request-budget counters, which are pepper-keyed digests
-shared across accounts and hold no identifiers); this response is the only
-confirmation, because the account and its sessions no longer exist.
+response lists each deleted table with its row count and explicitly names all
+retained sets. These include the shared request-budget counters and, when
+migration 100 is installed, `payload_profile_account_anchors`: one pseudonymous
+account UUID, its deleted state and monotonic selection epoch, retained for the
+application database lifetime to prevent identity reuse and stale profile
+selection. The anchor holds no message, email, phone, device, root or key payload;
+its UUID is still retained identity and is not anonymous data. This response is
+the only confirmation, because the account and its sessions no longer exist.
+
+The same minimal tombstone remains when expired unverified signup cleanup
+removes an otherwise-empty account. Migration 100 backfills existing account
+identities and atomically creates an anchor with each subsequent account; it
+does not reconstruct previously erased identities. A live anchor is not owner
+authorization. Lifecycle triggers alone may advance it on account deletion;
+the runtime cannot insert/delete anchors or change their state/epoch. This
+foundation does not select profile03, mount an election, or enable dispatch.
 
 Observers are erased with the account. Their user rows (email, password hash,
 verification state), including removed seats whose user row survived, and the

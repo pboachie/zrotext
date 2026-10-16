@@ -154,6 +154,7 @@
       <h3>Erase this account on this server</h3>
       <p>This permanently deletes the account and its invited observer users in one transaction if the server permits it. Line identities, immutable trust or audit history and other retained references can block the whole request. Nothing is deleted when the server reports blockers.</p>
       <p>Erasure does not cancel external subscriptions, release carrier identities, delete external copies, or rewrite backups, replicas or WAL archives. Export first if you need a copy.</p>
+      <p>An account-ID record may remain for the app's database lifetime to prevent identity reuse. It contains your account ID, deleted state, and a version counter. The receipt lists this retained identity record and shared request-budget counters when present.</p>
       <button id="erasure-review" type="button">Review account erasure</button>
       <form id="erasure-form" hidden>
         <p id="erasure-account"></p>

@@ -85,4 +85,20 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO zrotext_runtime;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE ON SEQUENCES TO zrotext_runtime;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO zrotext_runtime;
+-- Lifecycle-only anchor authority is narrower than the ordinary DML defaults.
+-- Reset column ACLs too: relation REVOKE does not remove old column grants.
+DO $$
+BEGIN
+    IF to_regclass('public.payload_profile_account_anchors') IS NOT NULL THEN
+        REVOKE ALL ON TABLE public.payload_profile_account_anchors FROM PUBLIC,zrotext_runtime;
+        REVOKE ALL (account_id,state,selection_epoch) ON TABLE public.payload_profile_account_anchors FROM PUBLIC,zrotext_runtime;
+        GRANT SELECT ON TABLE public.payload_profile_account_anchors TO zrotext_runtime;
+        GRANT UPDATE(account_id) ON TABLE public.payload_profile_account_anchors TO zrotext_runtime;
+        GRANT EXECUTE ON FUNCTION public.payload_profile_account_fence_key(uuid) TO zrotext_runtime;
+        REVOKE ALL ON FUNCTION public.payload_profile_anchor_row_guard() FROM PUBLIC,zrotext_runtime;
+        REVOKE ALL ON FUNCTION public.payload_profile_anchor_account_created() FROM PUBLIC,zrotext_runtime;
+        REVOKE ALL ON FUNCTION public.payload_profile_anchor_account_changing() FROM PUBLIC,zrotext_runtime;
+        REVOKE ALL ON FUNCTION public.payload_profile_anchor_account_deleted() FROM PUBLIC,zrotext_runtime;
+    END IF;
+END $$;
 COMMIT;

@@ -4,6 +4,7 @@ BEGIN;
 DO $$
 DECLARE
     statement text;
+    anchor_account uuid;
 BEGIN
     IF current_user <> 'zrotext_runtime' OR EXISTS (
         SELECT FROM pg_roles WHERE rolname = current_user AND
@@ -39,5 +40,46 @@ BEGIN
             NULL;
         END;
     END LOOP;
+    IF to_regclass('public.payload_profile_account_anchors') IS NOT NULL THEN
+        IF has_table_privilege(current_user,'public.payload_profile_account_anchors','INSERT')
+          OR has_table_privilege(current_user,'public.payload_profile_account_anchors','DELETE')
+          OR has_table_privilege(current_user,'public.payload_profile_account_anchors','TRUNCATE')
+          OR has_column_privilege(current_user,'public.payload_profile_account_anchors','state','UPDATE')
+          OR has_column_privilege(current_user,'public.payload_profile_account_anchors','selection_epoch','UPDATE')
+          OR NOT has_column_privilege(current_user,'public.payload_profile_account_anchors','account_id','UPDATE') THEN
+            RAISE EXCEPTION 'runtime anchor privileges are not narrow';
+        END IF;
+        anchor_account := gen_random_uuid();
+        INSERT INTO public.accounts(id) VALUES(anchor_account);
+        PERFORM account_id FROM public.payload_profile_account_anchors
+          WHERE account_id=anchor_account AND state='live' AND selection_epoch=0
+          FOR SHARE NOWAIT;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'runtime account creation did not create a live anchor';
+        END IF;
+        FOREACH statement IN ARRAY ARRAY[
+            'UPDATE public.payload_profile_account_anchors SET selection_epoch=1',
+            'UPDATE public.payload_profile_account_anchors SET state=''deleted''',
+            'DELETE FROM public.payload_profile_account_anchors',
+            'INSERT INTO public.payload_profile_account_anchors(account_id) SELECT id FROM public.accounts',
+            'TRUNCATE public.payload_profile_account_anchors',
+            'SELECT public.payload_profile_anchor_row_guard()',
+            'SELECT public.payload_profile_anchor_account_created()',
+            'SELECT public.payload_profile_anchor_account_changing()',
+            'SELECT public.payload_profile_anchor_account_deleted()'
+        ] LOOP
+            BEGIN
+                EXECUTE statement;
+                RAISE EXCEPTION 'runtime unexpectedly allowed anchor operation';
+            EXCEPTION WHEN insufficient_privilege THEN
+                NULL;
+            END;
+        END LOOP;
+        DELETE FROM public.accounts WHERE id=anchor_account;
+        IF NOT EXISTS (SELECT FROM public.payload_profile_account_anchors
+          WHERE account_id=anchor_account AND state='deleted' AND selection_epoch=1) THEN
+            RAISE EXCEPTION 'runtime account deletion did not retain its tombstone';
+        END IF;
+    END IF;
 END $$;
 ROLLBACK;
