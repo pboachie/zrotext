@@ -1022,16 +1022,16 @@ impl RegisteredConnection {
         let expected = config
             .get_dbname()
             .ok_or("explicit owned database required")?;
-        let matches: bool = registered_step(
+        let actual: String = registered_step(
             deadline,
             "actual database binding",
             value
                 .db()?
-                .query_one("SELECT current_database()=$1", &[&expected]),
+                .query_one("SELECT pg_catalog.current_database()::pg_catalog.text", &[]),
         )
         .await?
         .get(0);
-        if !matches {
+        if actual != expected {
             return Err("actual owned database mismatch; retain namespace".into());
         }
         Ok(value)
@@ -1260,9 +1260,50 @@ impl RegisteredOwnerCase {
         )
         .await?;
         Self::assert_schema(&setup, &schema, deadline).await?;
-        config.options(format!("-csearch_path={schema}"));
+        // Each real control proves the database guard cannot resolve a caller's
+        // shadow function. Only this newly owned schema is modified, and the
+        // exact function is removed before maintained migrations run.
+        registered_step(
+            deadline,
+            "create owned database-name shadow",
+            setup.db()?.batch_execute(&format!(
+                "CREATE FUNCTION {schema}.current_database() RETURNS pg_catalog.text LANGUAGE sql IMMUTABLE AS $$ SELECT 'not_the_owned_database'::pg_catalog.text $$"
+            )),
+        )
+        .await?;
+        config.options(format!("-csearch_path={schema},pg_catalog"));
         let mut db = RegisteredConnection::connect(&config, deadline).await?;
         let cleanup = RegisteredConnection::connect(&config, deadline).await?;
+        for connection in [&db, &cleanup] {
+            let shadow: String = registered_step(
+                deadline,
+                "owned database-name shadow selected",
+                connection
+                    .db()?
+                    .query_one("SELECT current_database()::pg_catalog.text", &[]),
+            )
+            .await?
+            .get(0);
+            if shadow != "not_the_owned_database" {
+                return Err("owned database-name shadow not selected; retain namespace".into());
+            }
+            registered_step(
+                deadline,
+                "restore owned search path",
+                connection
+                    .db()?
+                    .batch_execute(&format!("SET search_path TO {schema}")),
+            )
+            .await?;
+        }
+        registered_step(
+            deadline,
+            "drop exact owned database-name shadow",
+            setup
+                .db()?
+                .batch_execute(&format!("DROP FUNCTION {schema}.current_database()")),
+        )
+        .await?;
         Self::assert_schema(&db, &schema, deadline).await?;
         Self::assert_schema(&cleanup, &schema, deadline).await?;
         let backend_row = registered_step(
