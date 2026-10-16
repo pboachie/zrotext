@@ -28,7 +28,7 @@ async fn current_runtime_refuses_legacy_billing_mixtures_in_both_installation_or
         db.execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
             .await
             .unwrap();
-        let legacy = "INSERT INTO billing_customers(account_id,stripe_customer_id) VALUES($1,'cus_isolation_fixture')";
+        let legacy = "INSERT INTO billing_customers(account_id,stripe_customer_id) VALUES($1,'cus_IsolationFixture')";
         let runtime = "INSERT INTO hosted_billing_namespaces(namespace_id,mode,provider_account,policy_revision,enabled,old_binary_fenced) VALUES($1,'test','acct_isolation_fixture',1,true,true)";
         let error = if legacy_first {
             db.execute(legacy, &[&account]).await.unwrap();

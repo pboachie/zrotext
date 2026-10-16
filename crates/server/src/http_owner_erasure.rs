@@ -92,20 +92,13 @@ const BLOCKED_TABLES: &[&str] = &[
     "known_signing_role_claims",
     "sealed_root_enrollments",
     "sealed_root_receipts",
-    // External subscriptions and payment-review records require operator
-    // termination/retention handling before a complete account erasure.
-    "hosted_billing_customers",
-    "hosted_billing_projections",
-    "hosted_billing_history",
-    "hosted_billing_events",
-    "hosted_billing_audit",
-    "hosted_billing_usage",
-    "hosted_billing_resolutions",
 ];
 
 // Proposal schemas may be absent on an ordinary migrated installation. They
 // remain erasure blockers whenever installed; absence is not a query failure.
 const OPTIONAL_BLOCKED_TABLES: &[&str] = &["sealed_line_activation_exchanges"];
+
+mod hosted;
 
 /// FK-safe deletion order: every table is emptied before the rows it
 /// references. Each statement takes the account UUID as `$1`; composite
@@ -728,6 +721,10 @@ async fn erase_account(
         if rows > 0 {
             blocked.push(TableCount { table, rows });
         }
+    }
+    match hosted::blockers(&tx, account_id).await {
+        Ok(rows) => blocked.extend(rows),
+        Err(()) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
     }
     let live_challenges = match count(
         &tx,

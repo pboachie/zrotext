@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use totp_rs::{Builder, Secret};
 use tower::ServiceExt;
 mod anchor_lifecycle;
+mod hosted;
 mod managed_grants;
 mod opening_capacity;
 #[path = "provider_receipts_tests.rs"]
@@ -588,6 +589,7 @@ async fn erasure_plans_name_only_tables_of_the_migrated_schema() {
         .map(|(table, _)| *table)
         .filter(|table| *table != OBSERVER_USERS_TABLE)
         .chain(BLOCKED_TABLES.iter().copied())
+        .chain(super::hosted::BLOCKERS.iter().copied())
         .chain(["users", "accounts"])
     {
         let exists: bool = db

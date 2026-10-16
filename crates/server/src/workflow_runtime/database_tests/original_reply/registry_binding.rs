@@ -501,10 +501,43 @@ async fn ordinary_origin_requires_exact_registration_and_keeps_earliest_creator_
     ).await.unwrap();
     assert_eq!(row.get::<_, Option<i64>>(0), Some(expiry));
     assert!((1usize..=6).all(|index| row.get::<_, i64>(index) >= expiry));
-    let now: i64 = row.get(7);
+    // Keep the original five-second database deadline and its upper-bound
+    // assertion. Recover only the fixture's clock precondition before timing it.
+    let now = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let observed: i64 = tx
+                .query_one(
+                    "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",
+                    &[],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            if observed >= expiry - 5000 {
+                break observed;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     let remaining = u64::try_from(expiry - now).unwrap();
     assert!(remaining <= 5000);
-    tokio::time::sleep(std::time::Duration::from_millis(remaining + 1)).await;
+    tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        while tx
+            .query_one(
+                "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint<$1",
+                &[&expiry],
+            )
+            .await
+            .unwrap()
+            .get::<_, bool>(0)
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     let observed: i64 = tx
         .query_one(
             "SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint",

@@ -5,8 +5,11 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 async fn value(response: axum::response::Response) -> Value {
-    assert_eq!(response.status(), StatusCode::OK);
-    serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.unwrap()).unwrap()
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 65536).await.unwrap();
+    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(status, StatusCode::OK, "{value}");
+    value
 }
 async fn status(f: &Fixture, r: &Arc<Runtime>) -> Value {
     value(
