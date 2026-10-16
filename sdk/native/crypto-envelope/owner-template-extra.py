@@ -5,12 +5,30 @@ import hashlib
 import http.server
 import importlib.util
 import json
+import math
 from pathlib import Path
 import socket
 import ssl
 import subprocess
 import tempfile
 import threading
+
+
+def measured_phases(actual, reads, *, constructed=True):
+    phases = actual['phases']
+    assert set(phases) == {'constructorSeconds', 'requestSeconds', 'disposalSeconds'}, actual
+    def seconds(value):
+        assert isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0, actual
+    seconds(phases['constructorSeconds'])
+    assert len(phases['requestSeconds']) == reads, actual
+    for value in phases['requestSeconds']:
+        seconds(value)
+    if constructed:
+        seconds(phases['disposalSeconds'])
+    else:
+        assert phases['disposalSeconds'] is None, actual
+    measured = phases['constructorSeconds'] + sum(phases['requestSeconds']) + (phases['disposalSeconds'] or 0)
+    assert measured <= actual['elapsed'], actual
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -84,7 +102,10 @@ def main():
                 for mode in modes:
                     server.mode = mode; server.calls = 0
                     result = subprocess.run(command, input=json.dumps(value), text=True, encoding='utf-8', capture_output=True, check=True, timeout=15)
-                    actual = json.loads(result.stdout)['results'][0]
+                    output = json.loads(result.stdout)
+                    if args.language != 'ruby':
+                        measured_phases(output, 1)
+                    actual = output['results'][0]
                     assert actual['accepted'] == (mode in modes[:2]), (mode, actual)
                     assert server.calls == 1, (mode, server.calls)
                     if actual['accepted']:
@@ -93,11 +114,30 @@ def main():
                 changed = bytearray(server.bodies[0]); changed[-1] ^= 1
                 server.bodies.append(bytes(changed)); server.mode = 'chunked'; server.calls = 0
                 result = subprocess.run(command, input=json.dumps({**value, 'Reads': 2}), text=True, encoding='utf-8', capture_output=True, check=True, timeout=15)
-                assert [v['accepted'] for v in json.loads(result.stdout)['results']] == [True, False], 'Same revision contradiction accepted'
+                output = json.loads(result.stdout)
+                if args.language != 'ruby':
+                    measured_phases(output, 2)
+                assert [v['accepted'] for v in output['results']] == [True, False], 'Same revision contradiction accepted'
                 assert server.calls == 2
+                if args.language != 'ruby':
+                    server.mode = 'chunked'; server.calls = 0
+                    result = subprocess.run(command, input=json.dumps({**value, 'Origin': value['Origin'] + '/invalid'}), text=True, encoding='utf-8', capture_output=True, check=True, timeout=15)
+                    output = json.loads(result.stdout)
+                    measured_phases(output, 0, constructed=False)
+                    assert not output['results'][0]['accepted'] and server.calls == 0, output
+                    for at, budget, sleep, calls in [(1, 100, 400, 0), (2, 1000, 1400, 1)]:
+                        server.calls = 0
+                        result = subprocess.run(command, input=json.dumps({**value, 'CurrentSleepAt': at, 'SleepMS': sleep, 'TimeoutMS': budget, 'SettleMS': sleep + 50}), text=True, encoding='utf-8', capture_output=True, check=True, timeout=15)
+                        output = json.loads(result.stdout)
+                        measured_phases(output, 1)
+                        assert not output['results'][0]['accepted'] and output['currentCalls'] >= at and server.calls == calls, output
+                        assert output['phases']['requestSeconds'][0] >= budget / 1000 * .75, output
+                        assert value['Cookie'] not in result.stdout + result.stderr and value['CSRF'] not in result.stdout + result.stderr
             finally:
                 server.shutdown()
     print(f'4 managed admission/lifecycle controls and {len(modes)} HTTP framing controls and one contradictory-head control passed')
+    if args.language != 'ruby':
+        print('Measured constructor/request/disposal phases checked on framing, two-read, constructor refusal and two actual callback deadline controls')
 
 
 if __name__ == '__main__':
