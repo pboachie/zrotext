@@ -100,7 +100,7 @@ class GatewaySetupRecoveryUiTest {
         compose.runOnIdle { assertTrue(shadowOf(compose.activity).allStartedServices.isEmpty()) }
     }
 
-    @Test fun savedPublicLocatorAndMissingKeyExplainReplacementWithoutRecreatingIdentity() {
+    @Test fun savedPublicLocatorAndUnavailableProviderKeepRetryWithoutReplacingIdentity() {
         val locator = PairingLocator("https://gateway.example.test",
             UUID.fromString("11111111-1111-4111-8111-111111111111"), "AB".repeat(32))
         compose.runOnIdle {
@@ -111,14 +111,54 @@ class GatewaySetupRecoveryUiTest {
         compose.activityRule.scenario.recreate()
         compose.openGatewayPage("Setup")
         compose.waitUntil(5000) {
-            compose.onAllNodesWithText(GatewaySetupRecovery.KEYS_LOST.title).fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithText(GatewaySetupRecovery.UNAVAILABLE.title).fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithText(GatewaySetupRecovery.KEYS_LOST.detail).assertExists()
-        compose.onNodeWithText("Use replacement pairing").assertExists()
+        compose.onNodeWithText(GatewaySetupRecovery.UNAVAILABLE.detail).assertExists()
+        compose.onNodeWithText("Check saved pairing").assertExists()
+        compose.onNodeWithText("Get setup help").assertExists()
+        compose.onNodeWithText("Use replacement pairing").assertDoesNotExist()
         compose.onNodeWithText("Start connection").assertDoesNotExist()
         compose.runOnIdle {
             assertEquals(locator, PairingLocatorStore.read(compose.activity))
             assertTrue(shadowOf(compose.activity).allStartedServices.isEmpty())
+            assertTrue(PairingLocatorStore.clear(compose.activity))
+        }
+    }
+
+    @Test fun transientKeyReadCanRecoverOnExplicitCheckWithoutClaimOrStart() {
+        val locator = PairingLocator("https://gateway.example.test",
+            UUID.fromString("11111111-1111-4111-8111-111111111111"), "AB".repeat(32))
+        var available = false
+        var bindingReads = 0
+        val identity = { ExistingSigningIdentity.observe({ true }) {
+            if (!available) throw java.security.ProviderException("Temporarily unavailable")
+            locator.fingerprint
+        } }
+        val check = { observePairingRecovery(locator, identity) {
+            bindingReads++; PairingBinding(PairingBindingStatus.PENDING, null, "12345678")
+        } }
+        val recovery = mutableStateOf(check().recovery)
+        compose.runOnIdle {
+            assertTrue(PairingLocatorStore.save(compose.activity, locator))
+            compose.activity.setContent { GatewayTheme {
+                GatewayCompanion(initialPage = GatewayPage.SETUP) { _, _ ->
+                    GatewaySetupGuide("Not selected", "Unconfirmed", {}, recovery = recovery.value,
+                        onCheck = { available = true; recovery.value = check().recovery },
+                        accessContent = {}, simContent = {}, pairingContent = {})
+                }
+            } }
+        }
+        assertEquals(0, bindingReads)
+        compose.onNodeWithText("Use replacement pairing").assertDoesNotExist()
+        compose.onNodeWithText("Check saved pairing").performScrollTo().performClick()
+        compose.onNodeWithText("Compare phone details").assertExists()
+        assertEquals(1, bindingReads)
+        compose.onNodeWithText("Scan pairing QR").assertDoesNotExist()
+        compose.onNodeWithText("Start connection").assertDoesNotExist()
+        compose.runOnIdle {
+            assertEquals(locator, PairingLocatorStore.read(compose.activity))
+            assertTrue(shadowOf(compose.activity).allStartedServices.isEmpty())
+            assertNull(shadowOf(compose.activity).lastRequestedPermission)
             assertTrue(PairingLocatorStore.clear(compose.activity))
         }
     }

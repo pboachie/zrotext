@@ -53,8 +53,12 @@ credentials, line approval, permission consent or active binding authority.
 
 On a visible foreground Setup screen, a distinct binding challenge proves
 possession of the existing original signing key. A missing or different key is
-refused before network access and is never replaced by recovery. The approved
-device ID comes from the binding response; the stream URL is derived locally
+refused before network access and is never replaced by recovery. An
+unavailable Keystore/provider read does not establish key loss: it keeps
+the saved locator and offers the bounded status retry and help actions. Only
+a confirmed absent alias or a different observed fingerprint offers replacement.
+
+The approved device ID comes from the binding response; the stream URL is derived locally
 from the independently trusted origin and `/v1/device-stream`. No response URL
 can replace that origin. Exact response fields, UUIDs, fingerprint, domain,
 nonce and a monotonic 60-second operation bound are checked. The shared server

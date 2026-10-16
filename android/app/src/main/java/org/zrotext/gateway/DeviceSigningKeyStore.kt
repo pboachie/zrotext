@@ -19,6 +19,19 @@ import java.util.UUID
 
 enum class SigningKeySecurity { STRONGBOX, TRUSTED_ENVIRONMENT, SOFTWARE, UNKNOWN_SECURE, UNKNOWN }
 
+/** An unreadable provider is not evidence that an enrolled identity was lost. */
+internal sealed interface ExistingSigningIdentity {
+    data class Present(val fingerprint: String) : ExistingSigningIdentity
+    data object Missing : ExistingSigningIdentity
+    data object Unavailable : ExistingSigningIdentity
+
+    companion object {
+        fun observe(aliasPresent: () -> Boolean, fingerprint: () -> String): ExistingSigningIdentity = try {
+            if (aliasPresent()) Present(fingerprint()) else Missing
+        } catch (_: Exception) { Unavailable }
+    }
+}
+
 class DeviceSigningPublic internal constructor(
     val spkiDer: ByteArray,
     val fingerprint: ByteArray,
@@ -75,6 +88,10 @@ class DeviceSigningKeyStore(
     /** Read a previously enrolled identity. Recovery must never silently create a new key. */
     @Synchronized
     fun existing(): DeviceSigningPublic = existing(null)
+
+    @Synchronized
+    internal fun observeExistingIdentity(): ExistingSigningIdentity = ExistingSigningIdentity.observe(
+        { openStore().containsAlias(alias) }, { existing().fingerprintHex })
 
     private fun existing(fallbackOnCreation: Boolean?): DeviceSigningPublic {
         val certificate = openStore().getCertificate(alias) ?: error("Signing identity missing certificate")

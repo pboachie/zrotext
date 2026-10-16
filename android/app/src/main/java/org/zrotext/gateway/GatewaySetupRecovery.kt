@@ -21,6 +21,22 @@ internal object PairingLocatorStore {
     fun clear(context: Context): Boolean = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().commit()
 }
 
+internal data class PairingRecoveryObservation(val recovery: GatewaySetupRecovery, val binding: PairingBinding? = null)
+
+/** This boundary can read only the existing identity and binding, never create or claim one. */
+internal fun observePairingRecovery(locator: PairingLocator, identity: () -> ExistingSigningIdentity,
+    readBinding: () -> PairingBinding): PairingRecoveryObservation {
+    when (val key = runCatching(identity).getOrDefault(ExistingSigningIdentity.Unavailable)) {
+        ExistingSigningIdentity.Missing -> return PairingRecoveryObservation(GatewaySetupRecovery.KEYS_LOST)
+        ExistingSigningIdentity.Unavailable -> return PairingRecoveryObservation(GatewaySetupRecovery.UNAVAILABLE)
+        is ExistingSigningIdentity.Present -> if (key.fingerprint != locator.fingerprint)
+            return PairingRecoveryObservation(GatewaySetupRecovery.KEYS_LOST)
+    }
+    val binding = runCatching(readBinding).getOrNull()
+        ?: return PairingRecoveryObservation(GatewaySetupRecovery.UNAVAILABLE)
+    return PairingRecoveryObservation(GatewaySetupRecovery.from(binding.status), binding)
+}
+
 internal enum class GatewaySetupRecovery(val title: String, val detail: String) {
     NEW("Connect this phone", "Keep the owner dashboard open. Select the service you trust, then scan its pairing QR."),
     CHECKING("Checking your last pairing", "Your progress is saved. This checks the original phone key; it does not repeat an approval or start a connection."),

@@ -1418,11 +1418,17 @@ class MainActivity : ComponentActivity() {
     private fun recoverOriginalPairingLocator() {
         if (pairingTransportInFlight.get() || pairingLocator != null) return
         val keys = DeviceSigningKeyStore(applicationContext)
-        val fingerprint = runCatching { keys.existing().fingerprintHex }.getOrNull()
-        if (fingerprint == null) {
-            setupRecovery = GatewaySetupRecovery.KEYS_LOST
-            pairingStatus = setupRecovery.title
-            return
+        val fingerprint = when (val identity = keys.observeExistingIdentity()) {
+            is ExistingSigningIdentity.Present -> identity.fingerprint
+            ExistingSigningIdentity.Missing -> {
+                setupRecovery = GatewaySetupRecovery.KEYS_LOST
+                pairingStatus = setupRecovery.title
+                return
+            }
+            ExistingSigningIdentity.Unavailable -> {
+                pairingStatus = "Could not check the phone key yet. Keep the original ticket and try Find saved pairing again; no key was replaced."
+                return
+            }
         }
         val locator = runCatching { PairingLocator(pairingOrigin, java.util.UUID.fromString(pairingId), fingerprint) }.getOrNull()
         if (locator == null || !PairingLocatorStore.save(this, locator)) {
@@ -1467,13 +1473,13 @@ class MainActivity : ComponentActivity() {
         val epoch = bindingEpoch
         val keys = DeviceSigningKeyStore(applicationContext)
         bindingWorker.execute {
-            val missingKey = runCatching { keys.existing().fingerprintHex != locator.fingerprint }.getOrDefault(true)
-            val result = if (missingKey) null else runCatching { PairingBindingClient(keys).read(locator) }.getOrNull()
+            val observation = observePairingRecovery(locator, keys::observeExistingIdentity) { PairingBindingClient(keys).read(locator) }
+            val result = observation.binding
             bindingBusy.set(false)
             bindingHandler.post {
                 if (!bindingForeground || !bindingSetupVisible || isDestroyed || bindingEpoch != epoch || pairingLocator != locator || pairingOrigin != locator.origin) return@post
                 bindingCurrent = false
-                if (missingKey) {
+                if (observation.recovery == GatewaySetupRecovery.KEYS_LOST) {
                     setupRecovery = GatewaySetupRecovery.KEYS_LOST
                     pairingStatus = setupRecovery.title
                 } else if (result == null) {
