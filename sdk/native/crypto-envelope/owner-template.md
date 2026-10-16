@@ -74,3 +74,14 @@ assertion and a bounded no-result deadline. The separate 100 ms pre-dispatch
 refusal stays unchanged. Ruby uses the shared 100 ms profile. This separates cold
 TLS startup from the phase under test and does not change runtime defaults.
 Source acceptance is not installed-package, hosted-CI or production approval.
+
+The Java and C# owner-template test drivers also report independently sampled
+`phases.constructorSeconds`, one `phases.requestSeconds` entry per attempted
+read, and `phases.disposalSeconds` (null when construction failed). These
+monotonic intervals surround the actual constructor, read call and disposal;
+they are not residual estimates or a diagnosis. A read interval includes all
+work and any internal cleanup performed by that call. The existing total
+`elapsed`, caller budgets, assertions and classifications remain unchanged.
+The same fields appear in shared-suite assertion output and installed-consumer
+runs, so a cold-start failure can be investigated without inferring its cause
+from total elapsed time alone.
