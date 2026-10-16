@@ -591,6 +591,26 @@ async fn schema_guard_uses_installed_function_path_and_rejects_drift() {
             after.get::<_, Option<Vec<String>>>(3)
         );
     }
+    // The explicit catalog-first function setting is equivalent even for a
+    // quoted installation schema. Restore it before exercising drift below.
+    let tx = db.transaction().await.unwrap();
+    for function in [
+        "device_session_line_activation_version_guard",
+        "line_activation_v2_pending_guard",
+        "line_activation_v2_observation_guard",
+    ] {
+        tx.batch_execute(&format!(
+            "ALTER FUNCTION {function}() SET search_path TO pg_catalog, {quoted}"
+        ))
+        .await
+        .unwrap();
+        schema::require_installed(&tx).await.unwrap();
+    }
+    tx.rollback().await.unwrap();
+    // Capturing a caller path with an extra namespace must still be rejected.
+    db.batch_execute(&format!("SET search_path TO pg_catalog, {quoted}, pg_temp"))
+        .await
+        .unwrap();
     for mutation in [
         "ALTER FUNCTION device_session_line_activation_version_guard() SET search_path FROM CURRENT",
         "ALTER FUNCTION device_session_line_activation_version_guard() RESET search_path",

@@ -3319,6 +3319,7 @@ dependencies = [
  "http-body",
  "lettre",
  "p256",
+ "postgres-protocol",
  "rand 0.10.3",
  "rcgen",
  "reqwest",
