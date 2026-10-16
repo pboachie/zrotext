@@ -106,6 +106,9 @@ BEGIN
     IF to_regprocedure('public.parent_account_mirror_guard()') IS NOT NULL THEN
         REVOKE ALL ON FUNCTION public.parent_account_mirror_guard() FROM PUBLIC,zrotext_runtime;
     END IF;
+    IF to_regprocedure('public.user_membership_freshness_guard()') IS NOT NULL THEN
+        REVOKE ALL ON FUNCTION public.user_membership_freshness_guard() FROM PUBLIC,zrotext_runtime;
+    END IF;
 END $$;
 -- Review-realm persistence is unmounted: runtime SELECT only, no factory call.
 DO $$

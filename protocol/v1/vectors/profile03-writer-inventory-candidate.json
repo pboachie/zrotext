@@ -1,6 +1,6 @@
 {
   "status": "candidate-scope-inventory-only-not-installed",
-  "migration_version": 102,
+  "migration_version": 103,
   "row_columns": [
     "relation",
     "account_extraction_review_class",
@@ -81,7 +81,7 @@
     ["line_opt_out_events","column:account_id","5590315cac40a798db2991ea1f9ccd2b340c17e20f6ab8f9ee02b5e05ee6173f","f600d6daec4ffff2bfb688533fee4e204f3fe417066081ea7920306a320aafce","e9006f9ba3fb13ad5f4b211643cc10b09816a0bcaa446f5b7802e5c655453fa6"],
     ["line_owner_approval_keys","column:account_id","e963f80b02ddf964a24f485219ee2c300b5ae7b9ae62e3c7a1859a106d4702bc","7c99914e649b54241920ce8abde6578d40b1ee44a367d478e9298bdb292d6164","235a14949d485eb0d684acbedb630475e168555b85c3ba138c5502b68b5f999b"],
     ["line_readiness_observations","column:account_id","529bc8471b0e22fb8ccb4b16870facbc1bb88749395002795c077aa92a2a1e47","fa9e152970cd2129b75b7f003f0bafb849936b15bf49a4fa0697c950958286a8","4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"],
-    ["memberships","column:account_id","b81f6bd943c50c7b5912a95ae4149c4f84b4c1e2bead01db3285986432d221f5","8ebc49390d707445cd71856de8456cc3c7d14b4c6e4fbcedb1379cf475801fa2","704e8613fe6506990f35cfc6e708a6356254174f9e5228c912c1c7660eb2ea61"],
+    ["memberships","column:account_id","b81f6bd943c50c7b5912a95ae4149c4f84b4c1e2bead01db3285986432d221f5","8ebc49390d707445cd71856de8456cc3c7d14b4c6e4fbcedb1379cf475801fa2","e2c9568ee7933ae500aae118d4bbfdb22595adb2fe4d3ae5a8c27772c2be40ec"],
     ["message_attempts","column:account_id","c267b73d978a984d5aaf136625cba877eaa2527f88efbf7fd1b3f344d1fb8cfd","8d1e13586912d8bbe5da72878edf079bf0ecbf7df114eacc4ddc60175e030fca","3b429e0be2df15b1ee9d0ca786d2ce89ca84e16307cc5b16e6fa6ca128ceb70f"],
     ["message_events","column:account_id","4b110adf505e5ae2ffd1297eede9455f09103f8207009d8e2bfebced08d2095a","cb6c000a08c0f7da8261156537795e72167e7ba3fd21c9a2acd59131fbc25021","3fff6dbde950180f300207fc75f0287bbcb6fd0efb78ad62c9963502376cfca7"],
     ["message_submission_receipts","column:account_id","974dadf0f358e4b360873d0642331ef054191455531d0faa885ac334852ef74e","ec5d02da50a03aabf6d4017b86bda01154944253b1a7eef5a81e2e86121869b6","4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"],
@@ -138,7 +138,7 @@
     ["usage_plan_assignments","column:account_id","4dbe0951eebb440033ad79b2fc42ef6dec204c0f0863ccf3e0361671e28cd491","79e2de2c31c3f1f8a0f14dc825dd05f0e526df3195fb1d42c897e20d973753ab","4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"],
     ["usage_plan_audit","column:account_id","be6e6a51d6b5eb87dee00674ba13f4e0e28f49508b8e94e1c7f43c78dbc99aa8","79e2de2c31c3f1f8a0f14dc825dd05f0e526df3195fb1d42c897e20d973753ab","4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"],
     ["usage_quota_policies","column:account_id","a745783c01b46c1a434d4dafc7ad40aac860d85cae0264a96f1e7378b4878869","7c99914e649b54241920ce8abde6578d40b1ee44a367d478e9298bdb292d6164","4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"],
-    ["users","membership_account_set","52b5b3cf4778a52be13138c473b84558a75867942add2b8fb226778643db8d7d","4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"],
+    ["users","membership_account_set","52b5b3cf4778a52be13138c473b84558a75867942add2b8fb226778643db8d7d","4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","520640b53c38a728a1faa51400abedd969829a853ebbef47dfbc50c0c190443e"],
     ["verification_mail_outbox","parent_account_mirror_only","0bf8502c7ceaecf1326182f4be66f95e9e2b278681ab4893c6a9fa239ea94104","4fbe67bcc5f1d58c49f31320e2fff09d8cf97e2d5652862d2c28aca53bdeadc9","2c2de89f58e67a628293a8d582b6db60e515cfa57de80c3589037b27f45128c3"],
     ["webhook_attempts","parent_account_mirror_only","52685a9aee21088007de3fbf8a61e2f621b65abee9160ef31f301f92fd017d23","080e827ecce66406d9f81f8106a1b527c3afd37acc3c99d38642afdf8e066c3b","c57e0ec0d9d692747e5ec19dc303c604676b8d07d29a5cf281b7807d09b5c9e2"],
     ["webhook_deliveries","column:account_id","6f60a828814bcaede31183a51b7f88de3217d7022717efe87e4c0aa714ce05af","232f607cf6831e8e12f115f355de84dc453086344fba64e9d072bfc0efedc061","4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"],

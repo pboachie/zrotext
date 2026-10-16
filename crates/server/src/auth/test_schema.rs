@@ -507,6 +507,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "102_review_workspace_persistence.sql",
         include_str!("../../../../deploy/compose/migrations/102_review_workspace_persistence.sql"),
     ),
+    (
+        "103_user_membership_freshness.sql",
+        include_str!("../../../../deploy/compose/migrations/103_user_membership_freshness.sql"),
+    ),
 ];
 
 async fn apply_selected(

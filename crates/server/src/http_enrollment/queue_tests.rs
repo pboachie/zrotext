@@ -286,6 +286,7 @@ const QUEUE_SCHEMA: [(&str, &str); 102] = queue_schema!(
     "100_payload_profile_account_anchors.sql",
     "101_parent_account_mirrors.sql",
     "102_review_workspace_persistence.sql",
+    "103_user_membership_freshness.sql",
 );
 #[test]
 fn queue_fixture_includes_every_checked_in_migration() {

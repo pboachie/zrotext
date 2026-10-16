@@ -9,6 +9,10 @@ DECLARE
     review_column record;
     review_routine record;
 BEGIN
+    IF to_regprocedure('public.user_membership_freshness_guard()') IS NOT NULL
+      AND has_function_privilege(current_user,'public.user_membership_freshness_guard()','EXECUTE') THEN
+        RAISE EXCEPTION 'runtime can directly execute the user membership freshness helper';
+    END IF;
     IF to_regprocedure('public.parent_account_mirror_guard()') IS NOT NULL
       AND has_function_privilege(current_user,'public.parent_account_mirror_guard()','EXECUTE') THEN
         RAISE EXCEPTION 'runtime can directly execute the ownership mirror helper';

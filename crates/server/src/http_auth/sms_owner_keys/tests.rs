@@ -412,6 +412,10 @@ const TEST_MIGRATIONS: [(&str, &str); 102] = [
         "102_review_workspace_persistence.sql",
         migration!("102_review_workspace_persistence.sql"),
     ),
+    (
+        "103_user_membership_freshness.sql",
+        migration!("103_user_membership_freshness.sql"),
+    ),
 ];
 
 #[test]

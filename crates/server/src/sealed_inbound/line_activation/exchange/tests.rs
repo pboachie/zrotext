@@ -137,6 +137,7 @@ const TEST_MIGRATIONS: [(&str, &str); 102] = [
     migration!("100_payload_profile_account_anchors.sql"),
     migration!("101_parent_account_mirrors.sql"),
     migration!("102_review_workspace_persistence.sql"),
+    migration!("103_user_membership_freshness.sql"),
 ];
 #[test]
 fn exchange_fixture_tracks_numbered_migrations() {

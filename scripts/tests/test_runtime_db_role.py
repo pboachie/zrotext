@@ -243,6 +243,41 @@ class RuntimeRoleAnchorUpgradeTest(RuntimeRoleFixture, unittest.TestCase):
                  runtime=True, success=False)
 
 
+class RuntimeRoleMembershipUpgradeTest(RuntimeRoleFixture, unittest.TestCase):
+    migration_limit = 102
+
+    def test_membership_guard_upgrade_and_helper_grant_pollution_repair(self):
+        self.provision()
+        account = "10000000-0000-4000-8000-000000000001"
+        user = "10000000-0000-4000-8000-000000000002"
+        self.sql(f"INSERT INTO users(id,email,password_hash) VALUES('{user}','owner@review.invalid','!');"
+                 f"INSERT INTO accounts(id) VALUES('{account}');"
+                 f"INSERT INTO memberships(account_id,user_id,role) VALUES('{account}','{user}','owner');",
+                 runtime=True)
+        migration = COMPOSE / "migrations" / "103_user_membership_freshness.sql"
+        self.sql("BEGIN;\n" + migration.read_text(encoding="utf-8") + "\nCOMMIT;")
+        verify = (COMPOSE / "verify_runtime_role.sql").read_text(encoding="utf-8")
+        self.sql(verify, runtime=True)
+        self.sql(f"UPDATE users SET password_hash='changed' WHERE id='{user}';", runtime=True)
+        self.sql("SELECT public.user_membership_freshness_guard();", runtime=True, success=False)
+        self.sql("ALTER TABLE public.users DISABLE TRIGGER user_membership_freshness_before_user_change;",
+                 runtime=True, success=False)
+        self.sql("TRUNCATE public.users CASCADE;", runtime=True, success=False)
+        self.sql("GRANT EXECUTE ON FUNCTION public.user_membership_freshness_guard() TO PUBLIC,zrotext_runtime;")
+        self.sql(verify, runtime=True, success=False)
+        self.provision()
+        self.provision()
+        self.sql(verify, runtime=True)
+        self.sql("SELECT public.user_membership_freshness_guard();", runtime=True, success=False)
+        self.sql(f"BEGIN; DELETE FROM memberships WHERE account_id='{account}';"
+                 f"DELETE FROM users WHERE id='{user}'; DELETE FROM accounts WHERE id='{account}'; COMMIT;",
+                 runtime=True)
+        result = self.sql(f"SELECT state,selection_epoch FROM payload_profile_account_anchors WHERE account_id='{account}';",
+                          runtime=True)
+        self.assertIn("deleted", result.stdout)
+        self.assertRegex(result.stdout, r"deleted\s*\|\s*1")
+
+
 class RuntimeRoleReviewWorkspaceUpgradeTest(RuntimeRoleFixture, unittest.TestCase):
     migration_limit = 101
 
