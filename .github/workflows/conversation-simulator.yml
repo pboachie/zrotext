@@ -16,6 +16,7 @@ on:
       - 'android/**'
       - 'scripts/build_android_owner_custody.py'
       - 'scripts/conversation_simulator.py'
+      - 'scripts/registered_control_databases.sql'
       - 'scripts/sealed_setup_ci.py'
       - 'scripts/sealed_setup_ci_driver.mjs'
       - 'scripts/test_sealed_setup_ci.py'
@@ -202,7 +203,14 @@ jobs:
           done
           docker exec "$POSTGRES_SERVICE_ID" pg_isready -U postgres
           test "$(docker exec "$POSTGRES_SERVICE_ID" psql -U postgres -d postgres -Atc 'SHOW max_locks_per_transaction')" = '256'
+      - name: Provision isolated registered-owner control databases
+        env:
+          POSTGRES_SERVICE_ID: ${{ job.services.postgres.id }}
+        run: docker exec -i "$POSTGRES_SERVICE_ID" psql -U postgres -d postgres -v ON_ERROR_STOP=1 < scripts/registered_control_databases.sql
       - name: Validate every simulator-enabled ignored library target
+        env:
+          ZT_REGISTERED_OWNER_EMPTY_DATABASE_URL: postgresql://zt_registered_control@localhost:5432/zt_registered_empty
+          ZT_REGISTERED_OWNER_MFA_DATABASE_URL: postgresql://zt_registered_control@localhost:5432/zt_registered_mfa
         # Retain all workspace packages and features, including the complete
         # server PostgreSQL suite. External fixtures retain their original routes.
         run: cargo test --locked --workspace --features conversation-simulator-tests --lib -- --ignored --skip real_stripe_ --skip loopback_journal_bridge --skip ordinary_setup_server_browser_fixture --test-threads=4
