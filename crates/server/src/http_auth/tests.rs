@@ -2538,17 +2538,9 @@ async fn postgres_http_expired_pending_signup_is_replaced_with_uniform_responses
     let url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
     let (client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
-    for migration in [
-        include_str!("../../../../deploy/compose/migrations/002_auth.sql"),
-        include_str!("../../../../deploy/compose/migrations/005_verification_outbox.sql"),
-        include_str!("../../../../deploy/compose/migrations/012_auth_abuse_limits.sql"),
-        include_str!("../../../../deploy/compose/migrations/013_owner_mfa.sql"),
-        include_str!("../../../../deploy/compose/migrations/016_auth_abuse_atomic.sql"),
-        include_str!("../../../../deploy/compose/migrations/022_pending_owner_expiry.sql"),
-        include_str!("../../../../deploy/compose/migrations/048_observer_memberships.sql"),
-    ] {
-        client.batch_execute(migration).await.unwrap();
-    }
+    // Registration also persists the original-browser intent. Exercise the
+    // maintained schema, including that intent and the account/membership guards.
+    auth::test_schema::apply(&client).await;
     let capture = Arc::new(CaptureVerification(Mutex::new(None)));
     let state = AuthHttpState::new(
         url,

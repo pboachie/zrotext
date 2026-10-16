@@ -836,6 +836,16 @@ async fn approval_rechecks_owner_membership_device_revocation_and_owner_expiry_a
         let tx = blocker.transaction().await.unwrap();
         match case {
             "membership_revoked" => {
+                // Membership writers also lock and version the actual user.
+                // Hold that row before approval starts so its owner read waits
+                // before retaining a conflicting user SHARE lock. The guarded
+                // revocation can then commit while approval is genuinely waiting.
+                tx.query_one(
+                    "SELECT id FROM users WHERE id=$1 FOR UPDATE",
+                    &[&c.principal.user_id],
+                )
+                .await
+                .unwrap();
                 tx.query_one(
                     "SELECT user_id FROM memberships WHERE account_id=$1 AND user_id=$2 FOR UPDATE",
                     &[&c.principal.tenant.account_id(), &c.principal.user_id],
