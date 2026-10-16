@@ -40,6 +40,7 @@ internal fun GatewaySetupGuide(
     recovery: GatewaySetupRecovery = GatewaySetupRecovery.NEW,
     onCheck: () -> Unit = {},
     onOwnerCustody: () -> Unit = {},
+    onReviewCustody: () -> Unit = {},
     onReplace: () -> Boolean = { false },
     accessContent: @Composable ColumnScope.() -> Unit,
     simContent: @Composable ColumnScope.() -> Unit,
@@ -101,6 +102,7 @@ internal fun GatewaySetupGuide(
                     TextButton(onClick = { show(GatewaySetupStep.ACCESS) }, modifier = Modifier.sizeIn(minHeight = 48.dp)) { Text("Review Android access") }
                     OutlinedButton(onClick = onConnection, modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Advanced connection controls") }
                     TextButton(onClick = onOwnerCustody, modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Set up or recover owner custody on Android") }
+                    TextButton(onClick = onReviewCustody, modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Open isolated review workspace custody") }
                 }
                 GatewaySetupStep.PAIRING -> {
                     GatewaySectionTitle("Device pairing")

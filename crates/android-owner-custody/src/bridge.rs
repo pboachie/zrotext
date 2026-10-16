@@ -18,6 +18,8 @@ use std::{
 use zeroize::Zeroizing;
 use zrotext_root_material::root_backup::ExpectedIdentity;
 
+mod review_root_custody;
+
 static SERVICE: OnceLock<SigningService> = OnceLock::new();
 static TYPED_SERVICE: OnceLock<TypedService> = OnceLock::new();
 
@@ -194,6 +196,7 @@ fn boundary<T>(
             if result.is_err() {
                 service().close_all();
                 typed_service().close_all();
+                review_root_custody::close_all();
             }
             if env.exception_check().unwrap_or(false) {
                 let _ = env.exception_clear();
@@ -373,6 +376,7 @@ pub extern "system" fn Java_org_zrotext_gateway_AndroidOwnerCustodyNativeBridge_
     boundary(&mut env, &[], (), |_| {
         service().close_all();
         typed_service().close_all();
+        review_root_custody::close_all();
         Ok(())
     });
 }
@@ -488,6 +492,7 @@ fn prepared_boundary<'local>(
             if panicked {
                 service().close_all();
                 typed_service().close_all();
+                review_root_custody::close_all();
             }
             if env.exception_check().unwrap_or(false) {
                 let _ = env.exception_clear();
