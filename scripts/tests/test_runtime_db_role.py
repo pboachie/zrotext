@@ -322,6 +322,93 @@ class RuntimeRoleReviewWorkspaceUpgradeTest(RuntimeRoleFixture, unittest.TestCas
                  runtime=True, success=False)
 
 
+class RuntimeRoleReviewAccessUpgradeTest(RuntimeRoleFixture, unittest.TestCase):
+    migration_limit = 103
+
+    def test_access_upgrade_and_full_default_column_helper_pollution_repair(self):
+        self.provision()
+        self.sql("CREATE FUNCTION public.review_access_prune(integer) RETURNS bigint LANGUAGE sql AS 'SELECT $1::bigint'; "
+                 "GRANT EXECUTE ON FUNCTION public.review_access_prune(integer) TO PUBLIC,zrotext_runtime;")
+        migration = COMPOSE / "migrations" / "104_review_root_access.sql"
+        self.sql("BEGIN;\n" + migration.read_text(encoding="utf-8") + "\nCOMMIT;")
+        verify = (COMPOSE / "verify_runtime_role.sql").read_text(encoding="utf-8")
+        self.sql(verify, runtime=True)
+        self.sql("SELECT public.review_access_prune(1);", runtime=True, success=False)
+        self.sql("""DO $$ DECLARE r record; columns_sql text; BEGIN
+          FOR r IN SELECT c.oid,c.relname FROM pg_class c WHERE c.relnamespace='public'::regnamespace
+            AND c.relname LIKE 'review_%' AND c.relkind='r' LOOP
+            SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) INTO columns_sql
+              FROM pg_attribute WHERE attrelid=r.oid AND attnum>0 AND NOT attisdropped;
+            EXECUTE format('GRANT SELECT (%s),INSERT (%s),UPDATE (%s),REFERENCES (%s) ON TABLE public.%I TO PUBLIC,zrotext_runtime',
+                           columns_sql,columns_sql,columns_sql,columns_sql,r.relname);
+            EXECUTE format('GRANT ALL ON TABLE public.%I TO PUBLIC,zrotext_runtime',r.relname);
+          END LOOP;
+          FOR r IN SELECT p.oid::regprocedure AS signature FROM pg_proc p
+            WHERE p.pronamespace='public'::regnamespace
+              AND (p.proname LIKE 'review_workspace_%' OR p.proname LIKE 'review_access_%') LOOP
+            EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO PUBLIC,zrotext_runtime',r.signature);
+          END LOOP;
+        END $$;
+        ALTER DEFAULT PRIVILEGES GRANT ALL ON TABLES TO PUBLIC,zrotext_runtime;
+        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO PUBLIC,zrotext_runtime;
+        ALTER DEFAULT PRIVILEGES GRANT EXECUTE ON FUNCTIONS TO PUBLIC,zrotext_runtime;
+        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO PUBLIC,zrotext_runtime;
+        """)
+        self.sql(verify, runtime=True, success=False)
+        self.provision()
+        self.provision()
+        self.sql(verify, runtime=True)
+        self.sql("SELECT public.review_access_prune(1);", runtime=True, success=False)
+        for relation in ("review_access_preparations", "review_access_sessions",
+                         "review_access_authentications", "review_access_root_reauth", "review_access_locators"):
+            self.sql(f"INSERT INTO public.{relation} DEFAULT VALUES;", runtime=True, success=False)
+            self.sql(f"DELETE FROM public.{relation};", runtime=True, success=False)
+        self.sql("SELECT public.review_access_account_lock(NULL,NULL,true);", runtime=True, success=False)
+        self.sql("SELECT public.review_workspace_provision(NULL,NULL,NULL,NULL,NULL,NULL,NULL);", runtime=True, success=False)
+
+
+class RuntimeRoleReviewAccessRelocationTest(RuntimeRoleFixture, unittest.TestCase):
+    migration_limit = 103
+
+    def test_existing_stock_role_never_gains_relocated_review_privileges(self):
+        self.provision()  # Actual stock role exists before either installation.
+        dependencies = ["002_auth.sql", "013_owner_mfa.sql",
+                        "100_payload_profile_account_anchors.sql",
+                        "102_review_workspace_persistence.sql",
+                        "104_review_root_access.sql"]
+        for schema in ("review_relocated", "Review'Quoted"):
+            with self.subTest(schema=schema):
+                quoted = '"' + schema.replace('"', '""') + '"'
+                self.sql(f"CREATE SCHEMA {quoted};")
+                for filename in dependencies:
+                    self.sql(f"SET search_path TO {quoted}; BEGIN;\n"
+                             + (COMPOSE / "migrations" / filename).read_text(encoding="utf-8")
+                             + "\nCOMMIT;")
+                literal = "'" + schema.replace("'", "''") + "'"
+                self.sql("""DO $$ DECLARE namespace_oid oid; r record; c record; BEGIN
+                  SELECT oid INTO STRICT namespace_oid FROM pg_namespace WHERE nspname=""" + literal + """;
+                  FOR r IN SELECT oid FROM pg_class WHERE relnamespace=namespace_oid AND relname LIKE 'review_%' LOOP
+                    IF has_table_privilege('zrotext_runtime',r.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') THEN
+                      RAISE EXCEPTION 'stock runtime gained relocated review relation access'; END IF;
+                    FOR c IN SELECT attname FROM pg_attribute WHERE attrelid=r.oid AND attnum>0 AND NOT attisdropped LOOP
+                      IF has_column_privilege('zrotext_runtime',r.oid,c.attname,'SELECT,INSERT,UPDATE,REFERENCES') THEN
+                        RAISE EXCEPTION 'stock runtime gained relocated review column access'; END IF;
+                    END LOOP;
+                  END LOOP;
+                  IF (SELECT count(*) FROM pg_class WHERE relnamespace=namespace_oid AND relname LIKE 'review_%' AND relkind='r')<>10 THEN
+                    RAISE EXCEPTION 'expected actual review relations'; END IF;
+                  FOR r IN SELECT oid FROM pg_proc WHERE pronamespace=namespace_oid AND proname LIKE 'review_%' LOOP
+                    IF has_function_privilege('zrotext_runtime',r.oid,'EXECUTE') THEN
+                      RAISE EXCEPTION 'stock runtime gained relocated review helper execution'; END IF;
+                  END LOOP;
+                END $$;""")
+                self.sql(f"DROP SCHEMA {quoted} CASCADE;")
+        # An unrelated supported installation remains usable and independently
+        # qualifies the actual stock-role provisioner rather than an exemption.
+        self.provision()
+        self.sql((COMPOSE / "verify_runtime_role.sql").read_text(encoding="utf-8"), runtime=True)
+
+
 class RuntimeRoleParentMirrorUpgradeTest(RuntimeRoleFixture, unittest.TestCase):
     migration_limit = 100
 

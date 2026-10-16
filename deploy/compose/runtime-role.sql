@@ -110,7 +110,9 @@ BEGIN
         REVOKE ALL ON FUNCTION public.user_membership_freshness_guard() FROM PUBLIC,zrotext_runtime;
     END IF;
 END $$;
--- Review-realm persistence is unmounted: runtime SELECT only, no factory call.
+-- Review persistence remains SELECT only. Only explicit authenticated access
+-- wrappers are callable; original owner/test factories and internal helpers
+-- remain unavailable even after broad/default grants and provisioner reruns.
 DO $$
 DECLARE relation_name text;
         columns_sql text;
@@ -118,6 +120,7 @@ DECLARE relation_name text;
 BEGIN
     FOREACH relation_name IN ARRAY ARRAY['review_realm_installation','review_brokers',
         'review_broker_sessions','review_bootstrap_attempts','review_workspaces'] LOOP
+        -- 104 relations use the same relation AND column reset below.
         IF to_regclass(format('public.%I',relation_name)) IS NULL THEN CONTINUE; END IF;
         SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) INTO columns_sql
           FROM pg_attribute WHERE attrelid=to_regclass(format('public.%I',relation_name))
@@ -127,8 +130,40 @@ BEGIN
         EXECUTE format('GRANT SELECT ON TABLE public.%I TO zrotext_runtime',relation_name);
     END LOOP;
     FOR routine IN SELECT p.oid::regprocedure AS signature FROM pg_proc p
-      WHERE p.pronamespace='public'::regnamespace AND p.proname LIKE 'review_workspace_%' LOOP
+      WHERE p.pronamespace='public'::regnamespace AND
+        (p.proname LIKE 'review_workspace_%' OR p.proname LIKE 'review_access_%') LOOP
         EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC,zrotext_runtime',routine.signature);
     END LOOP;
+END $$;
+DO $$
+DECLARE relation_name text; columns_sql text; signature text;
+BEGIN
+    FOREACH relation_name IN ARRAY ARRAY['review_access_preparations','review_access_sessions',
+        'review_access_authentications','review_access_root_reauth','review_access_locators'] LOOP
+        IF to_regclass(format('public.%I',relation_name)) IS NULL THEN CONTINUE; END IF;
+        SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) INTO columns_sql FROM pg_attribute
+          WHERE attrelid=to_regclass(format('public.%I',relation_name)) AND attnum>0 AND NOT attisdropped;
+        EXECUTE format('REVOKE ALL ON TABLE public.%I FROM PUBLIC,zrotext_runtime',relation_name);
+        EXECUTE format('REVOKE ALL (%s) ON TABLE public.%I FROM PUBLIC,zrotext_runtime',columns_sql,relation_name);
+        EXECUTE format('GRANT SELECT ON TABLE public.%I TO zrotext_runtime',relation_name);
+    END LOOP;
+    IF to_regclass('public.review_access_preparations') IS NOT NULL THEN
+        FOREACH signature IN ARRAY ARRAY[
+            'public.review_access_prune()',
+            'public.review_access_abuse_consume(text,bytea,bytea,integer,integer,integer,integer)',
+            'public.review_access_browser(uuid,bytea,text,bytea,bytea,bigint,bytea,bigint,bigint,boolean)',
+            'public.review_access_guard_lock(uuid,bytea,text,bytea,bytea,bigint,bytea)',
+            'public.review_access_prepare(uuid,bytea,text,bytea,bytea,bigint,bytea,uuid,uuid,smallint,bytea,bigint,bigint,bigint,bigint,bytea)',
+            'public.review_access_transition(uuid,bytea,text,bytea,bytea,bigint,bytea,uuid,uuid,smallint,bytea,bigint,text)',
+            'public.review_access_login(uuid,bytea,text,bytea,bytea,bigint,bytea,uuid,uuid,smallint,bytea,bigint,uuid,uuid,bigint,text,uuid,uuid,bytea,bytea,uuid,uuid,uuid,bytea,bytea,bytea,bigint)',
+            'public.review_access_broker_current(uuid,bytea,text,bytea,bytea,bigint,bytea,uuid,bytea,bytea,boolean)',
+            'public.review_access_owner_current(uuid,bytea,text,bytea,bytea,bigint,bytea,uuid,bytea,bytea,uuid,bytea,bytea,boolean)',
+            'public.review_access_owner_settlement(uuid,bytea,text,bytea,bytea,bigint,bytea,uuid,bytea,bytea,uuid,bytea,bytea,text,uuid,uuid,bigint,bytea,bytea,bytea)',
+            'public.review_access_root_commit(uuid,bytea,text,bytea,bytea,bigint,bytea,uuid,bytea,bytea,uuid,bytea,bytea,uuid,uuid,bigint,bytea,jsonb,uuid,uuid,bigint,text,bigint)'
+        ] LOOP
+            IF to_regprocedure(signature) IS NULL THEN RAISE EXCEPTION 'review access wrapper missing'; END IF;
+            EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO zrotext_runtime',signature);
+        END LOOP;
+    END IF;
 END $$;
 COMMIT;

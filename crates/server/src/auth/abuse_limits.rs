@@ -98,6 +98,11 @@ limits! {
     SeatAccept,
     CollaborationGrant,
     CollaborationDraft,
+    ReviewLogin,
+    ReviewBrowser,
+    ReviewRootPassword,
+    ReviewRootPasswordFailures,
+    ReviewRootManage,
 }
 
 impl Limit {
@@ -123,7 +128,12 @@ impl Limit {
     fn subject_only(self) -> bool {
         matches!(
             self,
-            Self::OutboundAccept | Self::CollaborationGrant | Self::CollaborationDraft
+            Self::OutboundAccept
+                | Self::CollaborationGrant
+                | Self::CollaborationDraft
+                | Self::ReviewRootPassword
+                | Self::ReviewRootPasswordFailures
+                | Self::ReviewRootManage
         )
     }
 
@@ -159,6 +169,13 @@ impl Limit {
             Self::OutboundAccept => ("alpha_send", 600, 60, Some((60, 60))),
             Self::Registration => ("registration", 120, 3_600, Some((3, 86_400))),
             Self::Login => ("login", 240, 60, Some((12, 900))),
+            Self::ReviewLogin => ("review_login", 240, 60, Some((12, 900))),
+            Self::ReviewBrowser => ("review_browser", 240, 60, None),
+            Self::ReviewRootPassword => ("review_root_password", 2400, 60, Some((8, 900))),
+            Self::ReviewRootPasswordFailures => {
+                ("review_root_password_failures", 2400, 60, Some((5, 900)))
+            }
+            Self::ReviewRootManage => ("review_root_manage", 2400, 60, Some((8, 900))),
             Self::Resend => ("resend", 120, 60, Some((12, 900))),
             Self::Verify => ("verify", 120, 60, None),
             Self::PasswordResetRequest => ("password_reset_request", 120, 60, Some((3, 86_400))),
@@ -267,6 +284,85 @@ pub(crate) async fn consume_owner_management(
     subject: &str,
 ) -> Result<bool, tokio_postgres::Error> {
     charge(tx, hasher, Limit::MfaManage, Some(subject), Lane::Anonymous).await
+}
+
+/// Review claim admission is charged in the same short transaction as the
+/// exact preparation CAS. It commits before any password worker is awaited.
+pub(crate) async fn consume_review(
+    tx: &Transaction<'_>,
+    hasher: &TokenHasher,
+    limit: Limit,
+    subject: &str,
+) -> Result<bool, tokio_postgres::Error> {
+    if !matches!(
+        limit,
+        Limit::ReviewLogin
+            | Limit::ReviewBrowser
+            | Limit::ReviewRootPassword
+            | Limit::ReviewRootPasswordFailures
+            | Limit::ReviewRootManage
+    ) {
+        return Ok(false);
+    }
+    // Unlike ordinary per-schema fixtures, this separate review adapter pins
+    // pg_catalog only. Its installed persistence is explicitly public-qualified.
+    let (scope, global_max, global_seconds, _) = limit.policy();
+    let (maximum, seconds) = limit.subject_policy(Lane::Anonymous).unwrap_or((0, 0));
+    let subject_hash = subject_hash(hasher, limit, subject, Lane::Anonymous);
+    let only = limit.subject_only() && subject_hash.is_some();
+    let route = if only {
+        subject_hash.unwrap()
+    } else {
+        hasher.digest(b"abuse-global-v1", scope)
+    };
+    let subject_bytes = if only {
+        None
+    } else {
+        subject_hash.as_ref().map(|v| &v[..])
+    };
+    let row = tx
+        .query_typed_one(
+            "SELECT public.review_access_abuse_consume($1,$2,$3,$4,$5,$6,$7)",
+            &[
+                (&scope, Type::TEXT),
+                (&&route[..], Type::BYTEA),
+                (&subject_bytes, Type::BYTEA),
+                (&if only { maximum } else { global_max }, Type::INT4),
+                (&if only { seconds } else { global_seconds }, Type::INT4),
+                (&maximum, Type::INT4),
+                (&seconds, Type::INT4),
+            ],
+        )
+        .await?;
+    Ok(row.get(0))
+}
+
+/// Closed review-only failure budget; no ordinary MFA policy is substituted.
+pub(crate) async fn review_root_failure_open(
+    tx: &Transaction<'_>,
+    hasher: &TokenHasher,
+    subject: &str,
+) -> Result<bool, tokio_postgres::Error> {
+    let (scope, maximum, seconds, hash) =
+        failure_subject(hasher, Limit::ReviewRootPasswordFailures, subject);
+    Ok(tx.query_opt("SELECT attempts FROM public.auth_abuse_counters WHERE scope=$1 AND subject_hash=$2 \
+        AND window_started_at>pg_catalog.clock_timestamp()-pg_catalog.make_interval(secs=>$3::int4)",
+        &[&scope,&&hash[..],&seconds]).await?.map_or(0,|r|r.get::<_,i32>(0))<maximum)
+}
+pub(crate) async fn record_review_root_failure(
+    tx: &Transaction<'_>,
+    hasher: &TokenHasher,
+    subject: &str,
+) -> Result<(), tokio_postgres::Error> {
+    let (scope, _, seconds, hash) =
+        failure_subject(hasher, Limit::ReviewRootPasswordFailures, subject);
+    tx.execute("INSERT INTO public.auth_abuse_counters(scope,subject_hash,window_started_at,attempts,updated_at) \
+        VALUES($1,$2,pg_catalog.clock_timestamp(),1,pg_catalog.clock_timestamp()) ON CONFLICT(scope,subject_hash) DO UPDATE SET \
+        window_started_at=CASE WHEN public.auth_abuse_counters.window_started_at<=pg_catalog.clock_timestamp()-pg_catalog.make_interval(secs=>$3::int4) \
+            THEN pg_catalog.clock_timestamp() ELSE public.auth_abuse_counters.window_started_at END, \
+        attempts=CASE WHEN public.auth_abuse_counters.window_started_at<=pg_catalog.clock_timestamp()-pg_catalog.make_interval(secs=>$3::int4) \
+            THEN 1 ELSE public.auth_abuse_counters.attempts+1 END,updated_at=pg_catalog.clock_timestamp()",&[&scope,&&hash[..],&seconds]).await?;
+    Ok(())
 }
 
 /// Which counters a charge spends. The anonymous lane is open to anyone who

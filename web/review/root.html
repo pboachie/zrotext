@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>ZROtext review workspace</title>
+  <link rel="stylesheet" href="/review/root.css">
+  <script type="module" src="/review/root.mjs"></script>
+</head>
+<body>
+  <main>
+    <h1>Review workspace</h1>
+    <p>Sign in with the provided review credentials. Keep your recovery kit private: each workspace uses your own keys.</p>
+    <p id="status" role="status" aria-live="polite">Preparing this browser…</p>
+    <form id="login">
+      <h2>1. Sign in</h2>
+      <label for="alias">Review sign-in name</label>
+      <input id="alias" name="username" autocomplete="username" maxlength="32" pattern="[a-z0-9][a-z0-9_-]{0,31}" required>
+      <label for="password">Review password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" maxlength="1024" required>
+      <button type="submit" disabled>Sign in</button>
+    </form>
+    <section aria-labelledby="workspace-title" hidden id="workspace">
+      <h2 id="workspace-title">Your workspace</h2>
+      <dl><dt>Server</dt><dd id="origin"></dd><dt>Account</dt><dd id="account"></dd><dt>Root status</dt><dd id="root-state"></dd></dl>
+      <p>Use the app’s review custody screen to create and retain your recovery kit, record its token, and independently recover the saved files. Never enter the recovery token on this page.</p>
+      <p>Save the separate private workspace locator in the app before starting another operation. Keep it separate from your public card. A locator alone cannot sign in, and a server configuration change may make it unusable.</p>
+    </section>
+    <form id="issue" hidden>
+      <h2>2. Compare your retained kit</h2>
+      <label for="backup">Retained encrypted backup</label><input id="backup" type="file" required>
+      <label for="card">Retained public card</label><input id="card" type="file" required>
+      <label for="bundle">Bundle ID from your independently retained receipt</label><input id="bundle" type="text" maxlength="36" required spellcheck="false" autocomplete="off">
+      <label for="fingerprint">Full root fingerprint from that receipt</label><input id="fingerprint" type="text" maxlength="64" pattern="[0-9a-f]{64}" required spellcheck="false" autocomplete="off" aria-describedby="fingerprint-help">
+      <p id="fingerprint-help">Compare all 64 lowercase hexadecimal characters with the app. The page does not choose an identity from a proposed challenge.</p>
+      <label class="choice"><input id="publish-consent" type="checkbox" required> Publish this exact encrypted backup and public card to my review workspace.</label>
+      <button type="submit" disabled>Prepare enrollment for this kit</button>
+    </form>
+    <section id="challenge" hidden aria-labelledby="challenge-title">
+      <h2 id="challenge-title">3. Review in the app</h2>
+      <p>Copy the public enrollment challenge into the app’s review custody screen. Compare the workspace, fingerprint, backup and card there, then approve with your recovery token in the app.</p>
+      <label for="unsigned">Public enrollment challenge (Base64)</label><textarea id="unsigned" readonly rows="5" spellcheck="false"></textarea>
+      <button id="copy-challenge" type="button">Copy public challenge</button>
+      <p id="expiry"></p>
+    </section>
+    <form id="complete" hidden>
+      <h2>4. Complete the reviewed publication</h2>
+      <label for="signatures">Two public signature lines from the app</label><textarea id="signatures" maxlength="320" rows="5" required spellcheck="false" autocomplete="off"></textarea>
+      <label for="reauth-password">Review password</label><input id="reauth-password" type="password" autocomplete="current-password" maxlength="1024" required>
+      <label class="choice"><input id="complete-consent" type="checkbox" required> Enroll only the root and encrypted custody I compared and approved.</label>
+      <button type="submit" disabled>Complete enrollment</button>
+    </form>
+    <section id="recovery" hidden aria-labelledby="recovery-title">
+      <h2 id="recovery-title">Check an unconfirmed operation</h2>
+      <p>A missing response does not tell us whether the server committed it. Keep your files and this browser open. Checking uses the original operation; it does not start another.</p>
+      <button id="reconcile" type="button">Check original operation</button>
+      <button id="cancel" type="button">Request cancellation of original operation</button>
+    </section>
+    <p class="scope">This screen handles review sign-in and first-root custody. Phone pairing, line permission and SMS remain separate steps. Root enrollment alone does not enable messaging.</p>
+    <noscript>This review screen requires JavaScript. Recovery tokens and private keys still stay in the app.</noscript>
+  </main>
+</body>
+</html>

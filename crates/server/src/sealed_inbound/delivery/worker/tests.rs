@@ -17,6 +17,7 @@ async fn install_account_mirrors(f: &crate::sealed_manifest_store::tests::Fixtur
         include_str!(
             "../../../../../../deploy/compose/migrations/103_user_membership_freshness.sql"
         ),
+        include_str!("../../../../../../deploy/compose/migrations/104_review_root_access.sql"),
     ] {
         f.db.batch_execute("BEGIN").await.unwrap();
         f.db.batch_execute(migration).await.unwrap();
