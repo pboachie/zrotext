@@ -111,8 +111,8 @@ function renderKeys() {
   const held = active && localKey && localKey.fingerprint === active.fingerprint;
   say("key-summary", !active
     ? "No active SMS approval key. Create one to approve line activations."
-    : held ? `Active key ${active.fingerprint.slice(0, 12)}Ã¢â‚¬Â¦ is held by this browser.`
-      : `Active key ${active.fingerprint.slice(0, 12)}Ã¢â‚¬Â¦ is held by another browser. Approve from there, or revoke it here.`);
+    : held ? `Active key ${active.fingerprint.slice(0, 12)}... is held by this browser.`
+      : `Active key ${active.fingerprint.slice(0, 12)}... is held by another browser. Approve from there, or revoke it here.`);
   byId("key-create").hidden = Boolean(active);
   byId("key-revoke").hidden = !active;
   if (document.body?.dataset?.workspaceView === "setup") document.body.dataset.lineKeyReady = String(Boolean(held));
@@ -169,7 +169,7 @@ function lineLabel(line) {
   const revoked = line.device_revoked ? " (phone revoked; activate it on another phone)" : "";
   const phone = line.device_name ? ` on ${line.device_name}${revoked}` : "";
   const scope = line.purpose ? ` (${line.purpose})` : "";
-  return `${line.line_id.slice(0, 8)}Ã¢â‚¬Â¦ ${line.state}${phone}${scope}, generation ${line.generation}`;
+  return `${line.line_id.slice(0, 8)}... ${line.state}${phone}${scope}, generation ${line.generation}`;
 }
 
 async function loadLines(more = false) {
@@ -269,7 +269,7 @@ async function poll() {
     view = await api(`/v1/auth/sms-lines/${current.lineId}/activations/${current.challengeId}`);
   } catch (error) {
     if (activation !== current) return;
-    say("activation-status", `${error.message} RetryingÃ¢â‚¬Â¦`);
+    say("activation-status", `${error.message} Retrying...`);
     // Poll errors back off exponentially, capped, instead of retrying
     // at the fixed cadence.
     current.backoffMs = Math.min((current.backoffMs ?? pollIntervalMs) * 2, pollBackoffMaxMs);
@@ -308,7 +308,7 @@ async function poll() {
     say("activation-status", "This activation can no longer complete. The phone may have disconnected or the request expired; start again.");
     return;
   } else if (view.status === "awaiting_device") {
-    say("activation-status", "Waiting for the phone to sign its declarationÃ¢â‚¬Â¦");
+    say("activation-status", "Waiting for the phone to sign its declaration...");
   }
   // The server reports expiry as "closed"; this only bounds a stuck page.
   if (Date.now() - current.startedAt > maxPollMs) {
@@ -337,7 +337,7 @@ async function startActivation(deviceId, lineId) {
   activation = { deviceId, lineId, challengeId: opened.challenge_id, generation: opened.generation,
     ownerStatement: null, startedAt: Date.now() };
   renderKeys();
-  say("activation-status", "Waiting for the phone to sign its declarationÃ¢â‚¬Â¦");
+  say("activation-status", "Waiting for the phone to sign its declaration...");
   await poll();
 }
 
@@ -353,7 +353,7 @@ async function approveActivation() {
   await api(`/v1/auth/sms-lines/${activation.lineId}/activations/${activation.challengeId}/approve`, "POST",
     { owner_signature_der_b64: signing.base64(signature) });
   byId("activation-approve").disabled = true;
-  say("activation-status", "Approved. Waiting for the server to confirmÃ¢â‚¬Â¦");
+  say("activation-status", "Approved. Waiting for the server to confirm...");
   stopPolling();
   await poll();
 }
@@ -455,7 +455,7 @@ async function openV2(current) {
     current.expires = expiryV2(opened.expires_at_ms);
     current.phase = "awaiting_device";
     byId("activation-start").disabled = false;
-    say("activation-status", "Waiting for the phone's selected SIM declarationÃ¢â‚¬Â¦");
+    say("activation-status", "Waiting for the phone's selected SIM declaration...");
     await pollV2(current);
   } catch (error) {
     if (activation !== current) return;

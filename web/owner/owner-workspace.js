@@ -53,7 +53,7 @@
     link.removeAttribute("aria-current");
     if (new URL(link.href).pathname === (selected[0] === "setup" ? "/owner/phones" : location.pathname)) link.setAttribute("aria-current", "page");
   }
-  let epoch = 0, busy = false, active = true, timer = null, deviceId = null, snapshot = null;
+  let epoch = 0, busy = false, active = true, timer = null, deviceId = null, snapshot = null, snapshotCsrf = null;
   let requestedPairing = new URLSearchParams(location.search).get("pairing");
   if (requestedPairing !== null && !uuid.test(requestedPairing)) requestedPairing = null;
   let adding = new URLSearchParams(location.search).get("new") === "1";
@@ -69,10 +69,19 @@
     byId("setup-connection").hidden = value !== "connect";
     byId("setup-complete").hidden = value !== "complete";
   }
-  async function read(path) {
-    const response = await fetch(path, { credentials: "same-origin", cache: "no-store", redirect: "error", signal: AbortSignal.timeout(15000) });
+  function csrfToken() {
+    return document.cookie.split(";").map(part => part.trim())
+      .find(part => part.startsWith("__Host-zrotext_csrf="))?.slice("__Host-zrotext_csrf=".length) || null;
+  }
+  async function read(path, expectedCsrf = null) {
+    const protectedRead = path !== "/v1/auth/session";
+    if (protectedRead && !expectedCsrf) throw new Error("Sign in again to check saved setup progress.");
+    if (protectedRead && csrfToken() !== expectedCsrf) throw new Error("Your sign-in changed. Check progress again.");
+    const response = await fetch(path, { headers: protectedRead ? { "x-zrotext-csrf": expectedCsrf } : {}, credentials: "same-origin", cache: "no-store", redirect: "error", signal: AbortSignal.timeout(15000) });
     if (!response.ok) throw new Error(response.status === 401 ? "Sign in to continue your saved setup." : "Could not check saved progress. Try Check progress when the server is available.");
-    return response.json();
+    const result = await response.json();
+    if (protectedRead && csrfToken() !== expectedCsrf) throw new Error("Your sign-in changed. Check progress again.");
+    return result;
   }
   function schedule() {
     if (timer !== null) clearTimeout(timer);
@@ -85,13 +94,14 @@
     const current = epoch;
     busy = true; byId("setup-refresh").disabled = true;
     try {
+      const csrf = csrfToken();
       const before = await read("/v1/auth/session");
       if (before.role !== "owner" || !uuid.test(before.account_id) || !uuid.test(before.session_id)) throw new Error("Sign in with your owner account to continue.");
-      const progress = validateSetup(await read("/v1/account/setup"), before);
+      const progress = validateSetup(await read("/v1/account/setup", csrf), before);
       const after = await read("/v1/auth/session");
       if (current !== epoch || !active) return;
-      if (after.account_id !== before.account_id || after.session_id !== before.session_id) throw new Error("Your account changed. Sign in and check progress again.");
-      snapshot = progress;
+      if (after.account_id !== before.account_id || after.session_id !== before.session_id || csrfToken() !== csrf) throw new Error("Your account changed. Sign in and check progress again.");
+      snapshot = progress; snapshotCsrf = csrf;
       body.dataset.progressState = "ready";
       const unresolved = progress.pairings.filter(p => unresolvedPairing(p, progress.observed_at_ms));
       byId("create-form").querySelector("button[type=submit]").disabled = progress.truncated || unresolved.length > 0;
@@ -116,10 +126,10 @@
         if (retired && selected[0] === "setup") globalThis.ZtOwnerPairing?.retire(retired.pairing_id);
         stage("pair"); return;
       }
-      const devices = await read("/v1/enrollment/devices");
+      const devices = await read("/v1/enrollment/devices", csrf);
       const afterDevices = await read("/v1/auth/session");
       if (current !== epoch || !active) return;
-      if (afterDevices.account_id !== before.account_id || afterDevices.session_id !== before.session_id) throw new Error("Your sign-in changed. Check progress again.");
+      if (afterDevices.account_id !== before.account_id || afterDevices.session_id !== before.session_id || csrfToken() !== csrf) throw new Error("Your sign-in changed. Check progress again.");
       const device = devices.devices?.find(d => d.device_id === deviceId && !d.revoked);
       if (!device) { deviceId = null; message("The saved phone is unavailable in this page of devices. Review your phone overview before adding another."); stage("pair"); return; }
       if (!device.active_socket_lease) {
@@ -146,7 +156,7 @@
         else if (changed && !pendingLine) message("Phone approval is saved. Your sign-in changed, so review a fresh phone declaration; the account and subscription are unchanged.");
       }
     } catch (error) {
-      if (current === epoch && active) { snapshot = null; body.dataset.progressState = "error"; byId("create-form").querySelector("button[type=submit]").disabled = true; message(error.message); }
+      if (current === epoch && active) { snapshot = null; snapshotCsrf = null; body.dataset.progressState = "error"; byId("create-form").querySelector("button[type=submit]").disabled = true; message(error.message); }
     } finally {
       busy = false; byId("setup-refresh").disabled = false; schedule();
     }
@@ -157,8 +167,9 @@
       const saved = snapshot;
       if (!saved) throw new Error("Check setup progress before continuing.");
       const fresh = await read("/v1/auth/session");
-      if (saved !== snapshot || fresh.account_id !== saved.account_id || fresh.session_id !== saved.session_id) {
-        epoch++; snapshot = null; globalThis.ZtOwnerPairing?.clear();
+      if (saved !== snapshot || !snapshotCsrf || csrfToken() !== snapshotCsrf || fresh.account_id !== saved.account_id || fresh.session_id !== saved.session_id) {
+        epoch++; snapshot = null; snapshotCsrf = null; globalThis.ZtOwnerPairing?.clear();
+        body.dataset.progressState = "error"; byId("create-form").querySelector("button[type=submit]").disabled = true;
         message("Your sign-in changed. Check progress before continuing the affected step.");
         throw new Error("Your sign-in changed. Check progress before continuing.");
       }
@@ -177,12 +188,12 @@
   });
   byId("setup-refresh").addEventListener("click", refresh);
   document.addEventListener("zrotext-owner-session", event => {
-    epoch++; snapshot = null; deviceId = null;
+    epoch++; snapshot = null; snapshotCsrf = null; deviceId = null;
     if (event.detail?.signedIn) refresh();
     else { stage("pair"); message("Sign in to continue your saved setup."); }
   });
   document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); else if (timer !== null) { clearTimeout(timer); timer = null; } });
-  window.addEventListener("pagehide", () => { active = false; epoch++; snapshot = null; if (timer !== null) clearTimeout(timer); });
+  window.addEventListener("pagehide", () => { active = false; epoch++; snapshot = null; snapshotCsrf = null; if (timer !== null) clearTimeout(timer); });
   window.addEventListener("pageshow", () => { active = true; refresh(); });
   byId("create-form").querySelector("button[type=submit]").disabled = true;
   stage("pair");

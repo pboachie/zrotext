@@ -14,6 +14,7 @@ const account = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", session = "bbbbbbbb-bbbb
 const pairing = "cccccccc-cccc-4ccc-8ccc-cccccccccccc", device = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const line = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", opening = "ffffffff-ffff-4fff-8fff-ffffffffffff";
 const proof = "AB".repeat(32);
+const csrfProof = "ztc_" + Buffer.alloc(32, 9).toString("base64url"), rotatedCsrfProof = "ztc_" + Buffer.alloc(32, 10).toString("base64url");
 let browser, captureRoot;
 test.before(async () => { browser = await chromium.launch(); if (process.env.ZT_OWNER_SCREENSHOTS === "1") { captureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "zrotext-workspace-review-")); console.log("Workspace screenshots: " + captureRoot); } });
 test.after(async () => { await browser.close(); });
@@ -22,7 +23,7 @@ async function fixture(destination = "setup?new=1", width = 1440, changes = {}) 
   const page = await browser.newPage({ viewport: { width, height: width <= 390 ? 844 : 900 }, reducedMotion: "reduce" });
   await page.clock.install();
   const state = { signedIn: true, session, requests: [], pair: null, approved: false, connected: false, lostApproval: false,
-    billing: "new", deployment: "hosted", registration: "open", mode: "test", catalog: true, ...changes };
+    csrfToken: csrfProof, billing: "new", deployment: "hosted", registration: "open", mode: "test", catalog: true, ...changes };
   if (state.lineFixture) {
     const keys = await webcrypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign"]);
     const point = new Uint8Array(await webcrypto.subtle.exportKey("raw", keys.publicKey));
@@ -45,10 +46,10 @@ async function fixture(destination = "setup?new=1", width = 1440, changes = {}) 
     state.linePhase = "awaiting_owner";
     state.expires = Date.now() + 300000;
   }
-  await page.context().addCookies([{ name: "__Host-zrotext_csrf", value: "ztc_synthetic", url: "https://example.test", secure: true, sameSite: "Strict" }]);
+  if (!state.csrfMissing) await page.context().addCookies([{ name: "__Host-zrotext_csrf", value: state.csrfToken, url: "https://example.test", secure: true, sameSite: "Strict" }]);
   await page.route("**/*", async route => {
-    const request = route.request(), url = new URL(request.url()), method = request.method();
-    state.requests.push({ path: url.pathname, method, body: request.postData(), headers: request.headers() });
+    const request = route.request(), url = new URL(request.url()), method = request.method(), headers = await request.allHeaders();
+    state.requests.push({ path: url.pathname, method, body: request.postData(), headers });
     const json = (value, status = 200) => route.fulfill({ status, json: value });
     if (url.hostname === "checkout.stripe.com") return route.fulfill({ contentType: "text/html", body: "<p>Synthetic TEST provider</p>" });
     if (url.pathname === "/owner/events") return route.abort();
@@ -56,6 +57,14 @@ async function fixture(destination = "setup?new=1", width = 1440, changes = {}) 
       const name = url.pathname.slice(7), file = ["devices", "phones", "activity", "integrations", "security", "setup"].includes(name) ? "devices.html" : name.includes(".") ? name : name + ".html";
       if (!/^[a-z-]+\.(html|css|js)$/.test(file)) return route.fulfill({ status: 404 });
       return route.fulfill({ body: await fs.readFile(path.join(root, file)), contentType: file.endsWith(".js") ? "text/javascript" : file.endsWith(".css") ? "text/css" : "text/html" });
+    }
+    if (method === "GET" && ["/v1/account/setup", "/v1/enrollment/devices"].includes(url.pathname)) {
+      const cookie = (headers.cookie || "").split(";").map(part => part.trim()).find(part => part.startsWith("__Host-zrotext_csrf="));
+      if (!state.signedIn || headers["x-zrotext-csrf"] !== state.csrfToken || cookie !== "__Host-zrotext_csrf=" + state.csrfToken) return json({}, 403);
+      if (url.pathname === "/v1/account/setup" && state.rotateCsrfOnSetup) {
+        state.rotateCsrfOnSetup = false; state.csrfToken = rotatedCsrfProof;
+        await page.context().addCookies([{ name: "__Host-zrotext_csrf", value: state.csrfToken, url: "https://example.test", secure: true, sameSite: "Strict" }]);
+      }
     }
     if (url.pathname === "/v1/service/availability") return json({ schema_version: 1, deployment: state.deployment, registration: state.registration,
       billing: state.mode, checkout_available: state.catalog && state.mode === "test", plan_catalog_available: state.catalog });
@@ -416,5 +425,60 @@ test("SETUP-RESUME-01 a specific approved phone does not switch to a different p
     await page.waitForFunction(() => document.getElementById("pair-status").textContent.includes("This pairing is saved"));
     assert.equal(await page.locator("#create-form button").isDisabled(), true);
     assert.equal(count("/v1/enrollment/pairings"), 0);
+  } finally { await page.close(); }
+});
+
+
+test("SETUP-FRESH-01 protected setup reads send matching CSRF while session observations stay cookie-only", async () => {
+  requires("SETUP-FRESH-01");
+  const { page, state } = await fixture("setup?pairing=" + pairing, 390, { pair: true, approved: true });
+  try {
+    await page.waitForFunction(() => document.body.dataset.setupStage === "connect");
+    for (const path of ["/v1/account/setup", "/v1/enrollment/devices"]) {
+      const reads = state.requests.filter(request => request.path === path && request.method === "GET");
+      assert.ok(reads.length > 0);
+      assert.ok(reads.every(request => request.headers["x-zrotext-csrf"] === csrfProof));
+      assert.equal(await page.evaluate(path => fetch(path).then(response => response.status), path), 403, "protected fixture rejects cookie-only reads");
+    }
+    assert.ok(state.requests.filter(request => request.path === "/v1/auth/session").some(request => request.headers["x-zrotext-csrf"] === undefined));
+  } finally { await page.close(); }
+});
+
+test("SETUP-FRESH-01 missing or rotating CSRF cannot publish setup progress or create another attempt", async () => {
+  requires("SETUP-FRESH-01", "SETUP-UNKNOWN-01");
+  for (const changes of [{ csrfMissing: true }]) {
+    const { page, count } = await fixture("setup?new=1", 390, changes);
+    try {
+      await page.waitForFunction(() => document.body.dataset.progressState === "error");
+      assert.equal(await page.locator("#create-form button").isDisabled(), true);
+      assert.equal(await page.evaluate(() => ZtOwnerWorkspace.snapshot()), null);
+      assert.equal(count("/v1/enrollment/pairings"), 0);
+    } finally { await page.close(); }
+  }
+  const rotating = await fixture("setup?new=1", 390);
+  try {
+    await rotating.page.waitForFunction(() => document.body.dataset.progressState === "ready");
+    rotating.state.rotateCsrfOnSetup = true;
+    await rotating.page.evaluate(() => ZtOwnerWorkspace.refresh());
+    await rotating.page.waitForFunction(() => document.body.dataset.progressState === "error");
+    assert.equal(await rotating.page.locator("#create-form button").isDisabled(), true);
+    assert.equal(await rotating.page.evaluate(() => ZtOwnerWorkspace.snapshot()), null);
+    assert.equal(rotating.count("/v1/enrollment/pairings"), 0);
+    assert.equal(await rotating.page.locator("#setup-refresh").isVisible(), true);
+    await rotating.page.locator("#setup-refresh").evaluate(button => button.click());
+    await rotating.page.waitForFunction(() => document.body.dataset.progressState === "ready");
+    assert.equal(await rotating.page.locator("#create-form button").isDisabled(), false);
+    assert.equal(rotating.count("/v1/enrollment/pairings"), 0, "a fresh proof recovers by reading, without creating an attempt");
+  } finally { await rotating.page.close(); }
+  const { page, state, count } = await fixture("setup?new=1", 390, { pair: true });
+  try {
+    await page.waitForFunction(() => !document.getElementById("approve-form").hidden);
+    state.csrfToken = rotatedCsrfProof;
+    await page.context().addCookies([{ name: "__Host-zrotext_csrf", value: state.csrfToken, url: "https://example.test", secure: true, sameSite: "Strict" }]);
+    await page.getByRole("button", { name: "Values match — approve phone" }).click();
+    await page.waitForFunction(() => document.getElementById("pair-status").textContent.includes("sign-in changed"));
+    assert.equal(count(`/v1/enrollment/pairings/${pairing}/approve`), 0);
+    assert.equal(await page.evaluate(() => ZtOwnerWorkspace.snapshot()), null);
+    assert.equal(await page.locator("#setup-refresh").isVisible(), true, "changed proof exposes the recovery action");
   } finally { await page.close(); }
 });

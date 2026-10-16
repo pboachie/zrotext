@@ -42,7 +42,10 @@ the explicit approval action. The gateway app obtains its approved identity usin
 its distinct device-key binding protocol; the browser does not ask owners to copy
 a device UUID or stream address.
 
-`GET /v1/account/setup` supplies current account/session-bound progress. A public
+`GET /v1/account/setup` supplies current account/session-bound progress. Protected
+progress and fleet reads send the captured CSRF cookie proof in the required
+header; session observations remain cookie-only. Missing or rotated proof clears
+progress and blocks creation or approval until a fresh check succeeds. A public
 pairing locator can appear in the setup URL; no ticket token or comparison value
 is saved there. `new=1` expresses an intentional additional phone, but cannot
 bypass an unresolved pairing or an unavailable/incomplete progress read. A
