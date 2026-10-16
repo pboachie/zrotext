@@ -640,3 +640,91 @@ async fn review_bounded_slots_refuse_eviction_and_reuse_only_genuinely_cleaned_s
     );
     f.finish().await;
 }
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with superuser on a disposable PostgreSQL cluster"]
+async fn review_quoted_component_namespace_ignores_wrong_path_and_temp_shadows() {
+    let f = Fixture::create().await;
+    // Full public numbered-migrator qualification already ran in Fixture. This
+    // separately relocates ONLY the actual component dependency files, without
+    // pretending the entire historical stack supports relocation.
+    let namespace = "\"review'quoted\"";
+    f.db.batch_execute(&format!(
+        "CREATE SCHEMA {namespace}; SET search_path TO {namespace}"
+    ))
+    .await
+    .unwrap();
+    for sql in [
+        include_str!("../../../deploy/compose/migrations/002_auth.sql"),
+        include_str!("../../../deploy/compose/migrations/013_owner_mfa.sql"),
+        include_str!("../../../deploy/compose/migrations/100_payload_profile_account_anchors.sql"),
+        include_str!("../../../deploy/compose/migrations/102_review_workspace_persistence.sql"),
+    ] {
+        f.db.batch_execute("BEGIN").await.unwrap();
+        f.db.batch_execute(sql).await.unwrap();
+        f.db.batch_execute("COMMIT").await.unwrap();
+    }
+    f.db.batch_execute(&format!("INSERT INTO {namespace}.review_realm_installation SELECT * FROM public.review_realm_installation;
+        INSERT INTO {namespace}.review_brokers SELECT * FROM public.review_brokers;
+        SET search_path TO public;
+        CREATE TEMP TABLE accounts(id uuid);
+        CREATE TEMP TABLE users(id uuid);
+        CREATE TEMP TABLE memberships(account_id uuid,user_id uuid);
+        CREATE TEMP TABLE payload_profile_account_anchors(account_id uuid,state text,selection_epoch bigint);
+        CREATE TEMP TABLE review_brokers(id uuid);
+        CREATE TEMP TABLE review_broker_sessions(id uuid);
+        CREATE TEMP TABLE review_bootstrap_attempts(id uuid);
+        CREATE TEMP TABLE review_workspaces(account_id uuid);
+        SELECT {namespace}.review_workspace_broker_session_create('{BROKER}','{SESSION}','{EVENT}',1,
+            decode(repeat('08',32),'hex'),decode(repeat('09',32),'hex'),'https://review.invalid')")).await.unwrap();
+    f.db.batch_execute(&reserve().replace(
+        "review_workspace_reserve",
+        &format!("{namespace}.review_workspace_reserve"),
+    ))
+    .await
+    .unwrap();
+    f.db.batch_execute(&provision().replace(
+        "review_workspace_provision",
+        &format!("{namespace}.review_workspace_provision"),
+    ))
+    .await
+    .unwrap();
+    let rows = f.db.query_one(&format!("SELECT
+        (SELECT id='{ACCOUNT}'::uuid FROM {namespace}.accounts),
+        (SELECT id='{USER}'::uuid AND password_hash='!' AND email_verified_at IS NULL AND NOT mfa_enabled FROM {namespace}.users),
+        (SELECT state='provisioned' AND bound_account_id='{ACCOUNT}'::uuid AND bound_user_id='{USER}'::uuid
+            AND reserved_account_id=bound_account_id AND reserved_user_id=bound_user_id FROM {namespace}.review_bootstrap_attempts),
+        (SELECT state='live' AND selection_epoch=0 FROM {namespace}.payload_profile_account_anchors),
+        (SELECT count(*)=0 FROM public.accounts)") , &[]).await.unwrap();
+    for column in 0..5 {
+        assert!(rows.get::<_, bool>(column));
+    }
+    for table in [
+        "accounts",
+        "users",
+        "memberships",
+        "payload_profile_account_anchors",
+        "review_brokers",
+        "review_broker_sessions",
+        "review_bootstrap_attempts",
+        "review_workspaces",
+    ] {
+        assert_eq!(
+            count(&f.db, &format!("pg_temp.{table}")).await,
+            0,
+            "shadow table untouched: {table}"
+        );
+    }
+    // The exact quoted deletion trigger context must also resolve original IDs.
+    f.db.batch_execute(&format!("DELETE FROM {namespace}.users WHERE id='{USER}'; DELETE FROM {namespace}.accounts WHERE id='{ACCOUNT}'")).await.unwrap();
+    assert_eq!(
+        count(&f.db, &format!("{namespace}.review_bootstrap_attempts")).await,
+        0
+    );
+    assert_eq!(
+        count(&f.db, &format!("{namespace}.review_workspaces")).await,
+        0
+    );
+    assert_eq!(count(&f.db, "public.review_bootstrap_attempts").await, 0);
+    f.finish().await;
+}
