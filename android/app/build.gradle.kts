@@ -7,6 +7,7 @@ import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.TaskAction
 import org.cyclonedx.gradle.CyclonedxDirectTask
 import org.cyclonedx.model.Component
+import java.net.URI
 
 abstract class WriteReleaseSourceCommit : DefaultTask() {
     @get:Input abstract val sourceCommit: Property<String>
@@ -55,6 +56,17 @@ require(Regex("[+0-9,]*").matches(mmsSpikeAllowlist)) {
     "zrotextMmsSpikeAllowlist must be comma-separated +E.164 numbers"
 }
 
+// Hosting operators may configure their independently trusted service in a dedicated build.
+// Self-host builds stay blank. A QR must never choose its own trust origin.
+val hostedOrigin = providers.gradleProperty("zrotextHostedOrigin").orNull.orEmpty()
+require(hostedOrigin.isEmpty() || runCatching {
+    val uri = URI(hostedOrigin)
+    uri.scheme == "https" && uri.host != null && uri.rawUserInfo == null &&
+        uri.rawPath.isEmpty() && uri.rawQuery == null && uri.rawFragment == null &&
+        uri.host == uri.host.lowercase() && uri.port in -1..65535 && uri.port !in listOf(0, 443) && hostedOrigin.all { it.code in 0x21..0x7e } &&
+        '"' !in hostedOrigin && '\\' !in hostedOrigin
+}.getOrDefault(false)) { "zrotextHostedOrigin must be a canonical HTTPS origin without a path" }
+
 tasks.named<CyclonedxDirectTask>("cyclonedxDirectBom") {
     // This inventory describes dependencies resolved for the shipped release APK.
     includeConfigs = listOf("releaseRuntimeClasspath")
@@ -76,6 +88,7 @@ android {
         versionCode = 13
         versionName = "0.1.7-rc.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("String", "ZROTEXT_HOSTED_ORIGIN", "\"$hostedOrigin\"")
         if (isolatedConversationProbe) {
             applicationId = "org.zrotext.gateway.conversationprobe"
             testApplicationId = "org.zrotext.gateway.conversationprobe.test"

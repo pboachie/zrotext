@@ -22,7 +22,8 @@ data class VerifiedPairing(
 )
 
 /** Manual M1 claim/proof. Approval remains an explicit authenticated browser action. */
-class PairingClient(private val signingKeys: DeviceSigningKeyStore) {
+class PairingClient(private val signingKeys: DeviceSigningKeyStore,
+                    private val onAttempt: (String, UUID, String) -> Unit = { _, _, _ -> }) {
     private val client = OkHttpClient.Builder()
         .followRedirects(false)
         .followSslRedirects(false)
@@ -39,6 +40,8 @@ class PairingClient(private val signingKeys: DeviceSigningKeyStore) {
         val pairingId = UUID.fromString(pairingIdText.trim())
         require(token.matches(Regex("ztp_[A-Za-z0-9_-]{43}"))) { "Invalid pairing token" }
         val key = signingKeys.getOrCreate()
+        // Save only the public locator before transport so a lost response can be reconciled.
+        onAttempt(baseOrigin.trim(), pairingId, key.fingerprintHex)
         val path = origin.newBuilder().addPathSegments("v1/enrollment/pairings")
             .addPathSegment(pairingId.toString())
         val claim = post(path.build().newBuilder().addPathSegment("claim").build().toString(),

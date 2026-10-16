@@ -69,6 +69,14 @@ class DeviceSigningKeyStore(
                 generate(strongBox = false)
             }
         }
+        return existing(fallbackOnCreation)
+    }
+
+    /** Read a previously enrolled identity. Recovery must never silently create a new key. */
+    @Synchronized
+    fun existing(): DeviceSigningPublic = existing(null)
+
+    private fun existing(fallbackOnCreation: Boolean?): DeviceSigningPublic {
         val certificate = openStore().getCertificate(alias) ?: error("Signing identity missing certificate")
         val publicKey = certificate.publicKey as? ECPublicKey ?: error("Signing identity is not EC")
         val privateKey = privateKey()
@@ -98,6 +106,13 @@ class DeviceSigningKeyStore(
 
     fun signDeviceChallenge(accountId: UUID, deviceId: UUID, challengeId: UUID, nonce: ByteArray): ByteArray =
           sign(EnrollmentProof.deviceAuthBytes(accountId, deviceId, challengeId, nonce))
+
+    /** Read-only pairing reconciliation with the original existing identity only. */
+    internal fun signPairingBinding(accountId: UUID, pairingId: UUID, challengeId: UUID,
+                                    fingerprint: ByteArray, nonce: ByteArray): ByteArray {
+        check(java.security.MessageDigest.isEqual(existing().fingerprint, fingerprint))
+        return sign(PairingBindingProof.bytes(accountId, pairingId, challengeId, fingerprint, nonce))
+    }
 
     /** Exact scoped fetch only. Missing identities are never enrolled or replaced by a receive path. */
     internal fun signSealedEnvelopeFetch(grant: SealedExecutionGrantValidator.Fields): ByteArray {
