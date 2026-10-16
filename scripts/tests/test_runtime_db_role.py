@@ -440,5 +440,42 @@ class RuntimeRoleParentMirrorUpgradeTest(RuntimeRoleFixture, unittest.TestCase):
                  "THEN RAISE EXCEPTION 'mail parent cascade changed'; END IF; END $$;", runtime=True)
 
 
+class RuntimeRoleHostedUpgradeTest(RuntimeRoleFixture, unittest.TestCase):
+    migration_limit = 105
+
+    def test_hosted_upgrade_and_provisioner_reruns_repair_private_relation_column_and_helper_grants(self):
+        self.provision()
+        migration = COMPOSE / "migrations" / "106_hosted_runtime.sql"
+        self.sql("BEGIN;\n" + migration.read_text(encoding="utf-8") + "\nCOMMIT;")
+        verify = (COMPOSE / "verify_runtime_role.sql").read_text(encoding="utf-8")
+        self.sql(verify, runtime=True)
+        self.sql("""DO $$ DECLARE r record; columns_sql text; BEGIN
+          FOR r IN SELECT c.oid,c.relname FROM pg_class c WHERE c.relnamespace='public'::regnamespace
+            AND c.relname IN ('hosted_runtime_secrets','hosted_runtime_sessions','hosted_billing_resolutions','hosted_billing_namespaces','hosted_billing_history') LOOP
+            SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) INTO columns_sql
+              FROM pg_attribute WHERE attrelid=r.oid AND attnum>0 AND NOT attisdropped;
+            EXECUTE format('GRANT SELECT (%s),INSERT (%s),UPDATE (%s),REFERENCES (%s) ON TABLE public.%I TO PUBLIC,zrotext_runtime',
+                           columns_sql,columns_sql,columns_sql,columns_sql,r.relname);
+            EXECUTE format('GRANT ALL ON TABLE public.%I TO PUBLIC,zrotext_runtime',r.relname);
+          END LOOP;
+          FOR r IN SELECT p.oid::regprocedure AS signature FROM pg_proc p
+            WHERE p.pronamespace='public'::regnamespace AND p.proname LIKE 'hosted_%' LOOP
+            EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO PUBLIC,zrotext_runtime',r.signature);
+          END LOOP;
+        END $$;
+        CREATE FUNCTION public.hosted_runtime_bind(integer) RETURNS integer LANGUAGE sql SECURITY DEFINER AS 'SELECT $1';
+        GRANT EXECUTE ON FUNCTION public.hosted_runtime_bind(integer) TO PUBLIC,zrotext_runtime;
+        """)
+        self.sql(verify, runtime=True, success=False)
+        self.provision()
+        self.provision()
+        self.sql(verify, runtime=True)
+        self.sql("SELECT public.hosted_runtime_bind(1)", runtime=True, success=False)
+        for relation in ('hosted_runtime_secrets', 'hosted_runtime_sessions', 'hosted_billing_resolutions'):
+            self.sql(f"SELECT * FROM public.{relation}", runtime=True, success=False)
+            self.sql(f"DELETE FROM public.{relation}", runtime=True, success=False)
+        self.sql("SELECT public.hosted_resolve_review(NULL,NULL,NULL,NULL)",runtime=True,success=False)
+
+
 if __name__ == "__main__":
     unittest.main()

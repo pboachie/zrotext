@@ -166,4 +166,27 @@ BEGIN
         END LOOP;
     END IF;
 END $$;
+-- Isolated hosted runtime has its own proof and operator-only review boundary.
+-- Reset relation, column and default-derived helper grants on every rerun.
+DO $$
+DECLARE relation_name text; columns_sql text; routine record;
+BEGIN
+    IF to_regclass('public.hosted_runtime_secrets') IS NOT NULL THEN
+        FOREACH relation_name IN ARRAY ARRAY['hosted_runtime_secrets','hosted_runtime_sessions','hosted_billing_resolutions','hosted_billing_namespaces','hosted_billing_history'] LOOP
+            SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) INTO columns_sql FROM pg_attribute
+              WHERE attrelid=to_regclass(format('public.%I',relation_name)) AND attnum>0 AND NOT attisdropped;
+            EXECUTE format('REVOKE ALL ON TABLE public.%I FROM PUBLIC,zrotext_runtime',relation_name);
+            EXECUTE format('REVOKE ALL (%s) ON TABLE public.%I FROM PUBLIC,zrotext_runtime',columns_sql,relation_name);
+        END LOOP;
+        GRANT SELECT,UPDATE(review_required) ON TABLE public.hosted_billing_namespaces TO zrotext_runtime;
+        GRANT SELECT,INSERT ON TABLE public.hosted_billing_history TO zrotext_runtime;
+        FOR routine IN SELECT p.oid::regprocedure AS signature FROM pg_proc p
+          WHERE p.pronamespace='public'::regnamespace AND p.proname LIKE 'hosted_%'
+            AND (p.prosecdef OR p.proname='hosted_resolve_review') LOOP
+            EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC,zrotext_runtime',routine.signature);
+        END LOOP;
+        GRANT EXECUTE ON FUNCTION public.hosted_runtime_role_safe(),public.hosted_runtime_challenge(uuid,bigint),
+          public.hosted_runtime_bind(uuid,bigint,bytea),public.hosted_runtime_verified(uuid,bigint) TO zrotext_runtime;
+    END IF;
+END $$;
 COMMIT;

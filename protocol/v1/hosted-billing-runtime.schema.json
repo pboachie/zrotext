@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zrotext.example/protocol/v1/hosted-billing-runtime.schema.json",
+  "title": "Isolated hosted billing owner observations",
+  "oneOf": [{"$ref":"#/$defs/plan"},{"$ref":"#/$defs/status"}],
+  "$defs": {
+    "uuid": {"type":"string","pattern":"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$","not":{"const":"00000000-0000-0000-0000-000000000000"}},
+    "count": {"type":"integer","minimum":0,"maximum":9007199254740991},
+    "nullable_time": {"oneOf":[{"$ref":"#/$defs/count"},{"type":"null"}]},
+    "plan": {
+      "type":"object","additionalProperties":false,
+      "required":["schema_version","mode","currency","unit_amount","interval","interval_count","outbound_limit","device_cap","tax_behavior","automatic_tax","allowance_period"],
+      "properties": {
+        "schema_version":{"const":1},"mode":{"enum":["test","live"]},
+        "currency":{"type":"string","pattern":"^[a-z]{3}$"},
+        "unit_amount":{"type":"integer","minimum":1,"maximum":9007199254740991},
+        "interval":{"enum":["day","week","month","year"]},"interval_count":{"type":"integer","minimum":1,"maximum":365},
+        "outbound_limit":{"type":"integer","minimum":1,"maximum":9007199254740991},
+        "device_cap":{"type":"integer","minimum":1,"maximum":9007199254740991},
+        "tax_behavior":{"enum":["inclusive","exclusive"]},"automatic_tax":{"type":"boolean"},
+        "allowance_period":{"const":"subscription_invoice"}
+      }
+    },
+    "checkout": {
+      "type":"object","additionalProperties":false,"required":["state","url","expires_at_ms"],
+      "properties":{
+        "state":{"enum":["none","pending","resumable","reconciliation_required","replaceable"]},
+        "url":{"oneOf":[{"type":"string","pattern":"^https://checkout\\.stripe\\.com/","maxLength":4096},{"type":"null"}]},
+        "expires_at_ms":{"$ref":"#/$defs/nullable_time"}
+      },
+      "allOf":[{"if":{"properties":{"state":{"const":"resumable"}}},"then":{"properties":{"url":{"type":"string"},"expires_at_ms":{"type":"integer"}}},"else":{"properties":{"url":{"type":"null"}}}}]
+    },
+    "entitlement": {
+      "type":"object","additionalProperties":false,
+      "required":["phase","valid_until_ms","first_failure_at_ms","outbound_limit","device_cap","payment_hold","review_required"],
+      "properties":{
+        "phase":{"enum":["pending","active","grace","restricted","terminal"]},
+        "valid_until_ms":{"$ref":"#/$defs/count"},"first_failure_at_ms":{"$ref":"#/$defs/nullable_time"},
+        "outbound_limit":{"$ref":"#/$defs/count"},"device_cap":{"$ref":"#/$defs/count"},
+        "payment_hold":{"type":"boolean"},"review_required":{"type":"boolean"}
+      }
+    },
+    "status":{
+      "type":"object","additionalProperties":false,
+      "required":["schema_version","mode","account_id","session_id","observed_at_ms","customer_bound","checkout","entitlement","reconciliation_pending"],
+      "properties":{
+        "schema_version":{"const":1},"mode":{"enum":["test","live"]},"account_id":{"$ref":"#/$defs/uuid"},"session_id":{"$ref":"#/$defs/uuid"},
+        "observed_at_ms":{"$ref":"#/$defs/count"},"customer_bound":{"type":"boolean"},"checkout":{"$ref":"#/$defs/checkout"},"entitlement":{"$ref":"#/$defs/entitlement"},"reconciliation_pending":{"type":"boolean"}
+      }
+    }
+  }
+}

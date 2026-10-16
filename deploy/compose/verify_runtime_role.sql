@@ -88,6 +88,18 @@ BEGIN
         RAISE EXCEPTION 'runtime CRUD failed';
     END IF;
     DELETE FROM sites WHERE site_id = 'runtime-role-smoke';
+    IF to_regclass('public.hosted_runtime_secrets') IS NOT NULL THEN
+        IF has_any_column_privilege(current_user,'public.hosted_runtime_secrets','SELECT,INSERT,UPDATE,REFERENCES')
+           OR has_any_column_privilege(current_user,'public.hosted_runtime_sessions','SELECT,INSERT,UPDATE,REFERENCES')
+           OR has_any_column_privilege(current_user,'public.hosted_billing_resolutions','SELECT,INSERT,UPDATE,REFERENCES')
+           OR has_table_privilege(current_user,'public.hosted_runtime_secrets','SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+           OR has_table_privilege(current_user,'public.hosted_runtime_sessions','SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+           OR has_table_privilege(current_user,'public.hosted_billing_resolutions','SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+           OR has_table_privilege(current_user,'public.hosted_billing_namespaces','INSERT,DELETE,TRUNCATE,TRIGGER')
+           OR has_function_privilege(current_user,'public.hosted_resolve_review(uuid,bigint,text,text)','EXECUTE') THEN
+            RAISE EXCEPTION 'hosted authority privileges are not isolated';
+        END IF;
+    END IF;
     IF NOT auth_abuse_consume('runtime-role-smoke', decode(repeat('01', 32), 'hex'), decode(repeat('02', 32), 'hex'), 2, 60, 1, 60) THEN
         RAISE EXCEPTION 'runtime function execution failed';
     END IF;

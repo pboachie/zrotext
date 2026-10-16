@@ -2,7 +2,7 @@ use super::*;
 
 // Keep the admission fixtures on the complete, reviewed schema. SQL is
 // embedded at build time so tests never execute files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 105] = [
+const TEST_MIGRATIONS: [(&str, &str); 106] = [
     (
         "001_foundation.sql",
         include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -432,6 +432,10 @@ const TEST_MIGRATIONS: [(&str, &str); 105] = [
     (
         "105_device_pairing_bindings.sql",
         include_str!("../../../deploy/compose/migrations/105_device_pairing_bindings.sql"),
+    ),
+    (
+        "106_hosted_runtime.sql",
+        include_str!("../../../deploy/compose/migrations/106_hosted_runtime.sql"),
     ),
 ];
 
@@ -3232,6 +3236,22 @@ async fn billed_admission_guard_share_locks_every_row_it_reads() {
         .execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
         .await
         .unwrap();
+    client
+        .batch_execute("SET zrotext.hosted_namespace='forged'; SET zrotext.hosted_revision='1'")
+        .await
+        .unwrap();
+    let tx = client.transaction().await.unwrap();
+    let (required, bound) = lock_billing_account(&tx, account, true).await.unwrap();
+    assert!(
+        required,
+        "a forged setting in an unscoped database cannot skip legacy metering"
+    );
+    assert_eq!(bound, Some(false));
+    assert!(matches!(
+        reserve_outbound(&tx, account, Uuid::new_v4(), None, bound).await,
+        Err(StoreError::QuotaNotConfigured)
+    ));
+    tx.rollback().await.unwrap();
     for statement in [
         "INSERT INTO billing_customers(account_id,stripe_customer_id) VALUES($1,'cus_guardlock')",
         "INSERT INTO billing_reconciliations(stripe_subscription_id,account_id,stripe_customer_id, \

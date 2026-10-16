@@ -5,6 +5,7 @@
 pub mod admission;
 pub mod namespace;
 pub mod policy;
+pub mod runtime;
 pub mod store;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

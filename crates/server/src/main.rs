@@ -222,6 +222,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             env::var("CONVERSATION_WSS_ORIGIN").ok().as_deref(),
         )?;
     let hosted_sessions_enabled = optional_bool("STRIPE_TEST_HOSTED_SESSIONS_ENABLED")?;
+    let mut hosted_options = zrotext_server::billing::hosted::runtime::Options::from_env()?;
     let billing_test = match env::var("STRIPE_BILLING_TEST_ENABLED").ok().as_deref() {
         None | Some("false") => None,
         Some("true") => {
@@ -283,6 +284,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             meter_key,
         )?;
     let usage_reconcile_enabled = optional_bool("STRIPE_TEST_USAGE_RECONCILE_ENABLED")?;
+    if hosted_options.is_some()
+        && (billing_test.is_some()
+            || hosted_sessions_enabled
+            || meter_enabled
+            || usage_reconcile_enabled)
+    {
+        return Err(
+            "isolated hosted runtime cannot share legacy TEST billing configuration".into(),
+        );
+    }
     let usage_reconcile_key = if usage_reconcile_enabled {
         Some(required("STRIPE_TEST_USAGE_RECONCILE_SECRET_KEY")?)
     } else {
@@ -300,6 +311,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let usage_limit_plans =
         parse_usage_limit_plans(&env::var("USAGE_LIMIT_PLANS").unwrap_or_default())?;
     let usage_limits_enabled = optional_bool("USAGE_LIMITS_ENABLED")?;
+    if hosted_options.is_some() && usage_limits_enabled {
+        return Err("isolated hosted runtime cannot use self-hosted quota assignments".into());
+    }
     if usage_limits_enabled && usage_limit_plans.is_empty() {
         return Err("USAGE_LIMITS_ENABLED requires USAGE_LIMIT_PLANS".into());
     }
@@ -324,7 +338,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     worker_budget_check(
         webhook_delivery_enabled,
         webhook_dispatch_concurrency,
-        billing_test.as_ref().map(|billing| billing.7),
+        billing_test
+            .as_ref()
+            .map(|billing| billing.7)
+            .or_else(|| hosted_options.as_ref().map(|_| 1)),
         sealed_setup_enabled,
         workflow_tools_enabled,
     )?;
@@ -421,6 +438,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // would only report the database as unavailable.
     zrotext_postgres_connection::check_url(&database_url)
         .map_err(|error| format!("DATABASE_URL: {error}"))?;
+    if hosted_options.is_none() {
+        zrotext_server::runtime_db::require_unscoped(&database_url).await?;
+    }
     let external_authority_config = if failover_executor_env.is_some() {
         match env::var("FAILOVER_EXTERNAL_AUTHORITY_CONFIG") {
             Ok(path) if !path.is_empty() => Some(std::path::PathBuf::from(path)),
@@ -558,6 +578,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let mut quotas_reset = false;
     let mut billing_auth_state = None;
+    let mut hosted_runtime = None;
     let mut service_availability = None;
     let configured_accounts = account_routes(&config).await?;
     let account_root_trust_router =
@@ -571,26 +592,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some((auth_state, enrollment_state)) = configured_accounts {
         app = app.merge(account_root_trust_router);
         billing_auth_state = Some(auth_state.clone());
-        service_availability = Some(
-            availability::State::new(
-                if billing_test.is_some() {
-                    Deployment::HostedPaid
-                } else {
-                    Deployment::SelfHosted
-                },
-                &auth_state.registration_policy,
-                auth_state.dispatcher.ready(),
-                if billing_test.is_some() {
-                    BillingVisibility::Test
-                } else {
-                    BillingVisibility::Disabled
-                },
-                false,
-                false,
-                None,
+        if let Some(options) = hosted_options.take() {
+            let runtime = zrotext_server::billing::hosted::runtime::Runtime::start(
+                auth_state.clone(),
+                options,
+                config.draining.clone(),
+                config.drain_notify.clone(),
             )
-            .map_err(|_| "invalid service availability configuration")?,
-        );
+            .await?;
+            service_availability = Some(
+                availability::State::new(
+                    Deployment::HostedPaid,
+                    &auth_state.registration_policy,
+                    auth_state.dispatcher.ready(),
+                    if runtime
+                        .gate()
+                        .marker()
+                        .map_err(|_| "hosted namespace unavailable")?
+                        .namespace
+                        .mode()
+                        == zrotext_server::billing::hosted::namespace::Mode::Live
+                    {
+                        BillingVisibility::Live
+                    } else {
+                        BillingVisibility::Test
+                    },
+                    true,
+                    true,
+                    Some(runtime.gate()),
+                )
+                .map_err(|_| "hosted availability invalid")?,
+            );
+            hosted_runtime = Some(runtime);
+        }
+        if hosted_runtime.is_none() {
+            service_availability = Some(
+                availability::State::new(
+                    if billing_test.is_some() {
+                        Deployment::HostedPaid
+                    } else {
+                        Deployment::SelfHosted
+                    },
+                    &auth_state.registration_policy,
+                    auth_state.dispatcher.ready(),
+                    if billing_test.is_some() {
+                        BillingVisibility::Test
+                    } else {
+                        BillingVisibility::Disabled
+                    },
+                    false,
+                    false,
+                    None,
+                )
+                .map_err(|_| "invalid service availability configuration")?,
+            );
+        }
         if config.original_reply_enabled {
             let db = zrotext_server::runtime_db::connect(&config.database_url).await?;
             let installed:bool=db.query_one("SELECT to_regclass('original_reply_sources') IS NOT NULL AND to_regprocedure('original_reply_source_current(uuid,uuid)') IS NOT NULL",&[]).await?.get(0);
@@ -1123,6 +1179,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         || usage_limits_enabled
     {
         return Err("account and enrollment routes are required for enabled features".into());
+    }
+    if hosted_options.is_some() {
+        return Err("isolated hosted billing requires account routes".into());
+    }
+    if let Some(runtime) = hosted_runtime {
+        app = app.nest("/v1/billing", runtime.router());
+        runtime.spawn();
     }
     if let Some((
         endpoint_secret,

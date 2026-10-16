@@ -54,6 +54,7 @@ pub(super) fn classify(result: &JobResult) -> Option<String> {
             ConnectError::Capacity => "runtime_capacity".to_owned(),
             ConnectError::Timeout => "runtime_timeout".to_owned(),
             ConnectError::Database(error) => database("runtime_database", error),
+            ConnectError::Identity => "runtime_identity".to_owned(),
             ConnectError::Transport(error) => match error {
                 zrotext_postgres_connection::ConnectError::Configuration(_) => {
                     "runtime_transport_configuration".to_owned()
