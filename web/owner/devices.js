@@ -8,6 +8,9 @@ let pairingExpiryTimer = null;
 let pairingDeadline = null;
 let retiredPairingId = null;
 let pairingApproval = null;
+let pairingProof = null;
+let pairingPollTimer = null;
+let pairingCheckBusy = false;
 const pairingLifetimeMs = 5 * 60 * 1000;
 const pairingClock = () => typeof performance !== "undefined" ? performance.now() : Date.now();
 let nextDeviceCursor = null;
@@ -121,6 +124,7 @@ function agePreconditions() {
     if (entry.element.textContent !== text) entry.element.textContent = text;
     if (!entry.expired) nextExpiry = Math.min(nextExpiry, entry.remaining - elapsed);
   }
+  if (document.body?.dataset?.workspaceView && byId("phone-inspector")?.open) openDeviceDialog();
   if (Number.isFinite(nextExpiry)) {
     preconditionTimer = window.setTimeout(agePreconditions, Math.max(1, Math.ceil(nextExpiry)));
   }
@@ -153,6 +157,7 @@ function stopLiveUpdates() {
 }
 
 function liveUpdatesAllowed() {
+  if (document.body?.dataset?.workspaceView && !["overview", "phones", "activity", "setup"].includes(document.body.dataset.workspaceView)) return false;
   return dashboardSignedIn && dashboardPageActive && !document.hidden && byId("auto-refresh").checked;
 }
 
@@ -214,6 +219,7 @@ function syncLiveUpdates() {
 }
 
 function canRefreshDashboard() {
+  if (document.body?.dataset?.workspaceView && !["overview", "phones", "activity", "setup"].includes(document.body.dataset.workspaceView)) return false;
   return dashboardSignedIn && dashboardPageActive && !document.hidden && byId("auto-refresh").checked;
 }
 
@@ -239,6 +245,7 @@ function requestLiveDevicesReload() {
 }
 
 function requestLiveMessagesReload() {
+  if (document.body?.dataset?.workspaceView && !["overview", "activity"].includes(document.body.dataset.workspaceView)) return;
   if (browsingOlderMessages || viewingList("message-list")) return;
   if (messageLoads) {
     messagesSignalDuringLoad = true;
@@ -278,7 +285,7 @@ async function refreshDashboard() {
   try {
     const requests = [];
     if (!deviceLoads && !browsingOlderDevices && !viewingList("device-list")) requests.push(loadDevices(true, true));
-    if (!messageLoads && !browsingOlderMessages && !viewingList("message-list")) requests.push(loadMessages(true, true));
+    if ((!document.body?.dataset?.workspaceView || ["overview", "activity"].includes(document.body.dataset.workspaceView)) && !messageLoads && !browsingOlderMessages && !viewingList("message-list")) requests.push(loadMessages(true, true));
     await Promise.all(requests);
   } finally {
     dashboardRefreshing = false;
@@ -447,6 +454,13 @@ async function completeSignIn() {
 }
 
 function loadOwnerData() {
+  const view = document.body?.dataset?.workspaceView;
+  if (view === "overview") return Promise.all([loadDevices(), loadMessages()]).then(() => loadSummary());
+  if (view === "phones") return loadDevices();
+  if (view === "activity") return Promise.all([loadDevices(), loadMessages()]).then(() => Promise.all([loadOptOutReview(), loadOwnerHolds()]));
+  if (view === "integrations") return Promise.all([loadKeys(), loadWebhookEndpoints()]);
+  if (view === "security") return loadSessions();
+  if (view === "setup") return Promise.all([loadDevices(), loadDeviceCapacity()]);
   // The above-the-fold sections load first and alone; the below-the-fold
   // panels wait for them so a sign-in never occupies half the request pool.
   return Promise.all([loadDevices(), loadMessages()]).then(() => loadSummary()).finally(() => loadBelowFoldSections());
@@ -462,6 +476,10 @@ function loadBelowFoldSections() {
 
 function clearPairing() {
   pairingGeneration += 1;
+  pairingProof = null;
+  if (document.body?.dataset) document.body.dataset.pairingActive = String(Boolean(pairingApproval));
+  if (pairingPollTimer !== null) window.clearTimeout(pairingPollTimer);
+  pairingPollTimer = null;
   if (pairingExpiryTimer !== null) window.clearTimeout(pairingExpiryTimer);
   pairingExpiryTimer = null;
   pairingDeadline = null;
@@ -471,10 +489,10 @@ function clearPairing() {
   byId("approve-form").hidden = true;
   for (const id of ["server-origin", "pair-id", "pair-token", "browser-code", "browser-fingerprint", "phone-code", "phone-fingerprint"]) {
     const element = byId(id);
-    element.textContent = "";
-    if ("value" in element) element.value = "";
+    if (element) { element.textContent = "";
+    if ("value" in element) element.value = ""; }
   }
-  byId("compared").checked = false;
+  if (byId("compared")) byId("compared").checked = false;
   if (typeof ZrotextPairingCode !== "undefined") ZrotextPairingCode.clear(byId("pair-qr"));
   const panel = byId("pair-qr-panel");
   if (panel) panel.hidden = true;
@@ -486,6 +504,7 @@ function clearPairing() {
   if (manual) manual.open = false;
   const recovery = byId("resolve-pairing");
   if (recovery) recovery.hidden = !pairingApproval;
+  if (byId("cancel-interrupted-pairing")) byId("cancel-interrupted-pairing").hidden = !pairingApproval;
 }
 
 function retirePairingView() {
@@ -1100,6 +1119,15 @@ function renderSelectedDevice() {
   agePreconditions();
 }
 
+function openDeviceDialog() {
+  const dialog = byId("phone-inspector");
+  const entry = fleetRows.get(selectedDeviceId);
+  if (!entry || !dialog || typeof dialog.showModal !== "function") return;
+  byId("phone-inspector-title").textContent = entry.device.display_name || "Phone details";
+  byId("phone-inspector-status").textContent = [deviceConnectivityText(entry.device), deviceQueueText(entry.device), byId("device-detail-preconditions").textContent].join("\n\n");
+  if (!dialog.open) dialog.showModal();
+}
+
 function updateFleetRow(device, started, wallStarted) {
   let entry = fleetRows.get(device.device_id);
   if (!entry) {
@@ -1110,8 +1138,11 @@ function updateFleetRow(device, started, wallStarted) {
     const state = document.createElement("span");
     const queue = document.createElement("span");
     const preconditions = document.createElement("span");
+    const quick = document.createElement("span");
+    quick.className = "fleet-quick";
+    for (const node of [id, state, queue, preconditions]) node.className = "fleet-technical";
     preconditions.setAttribute("aria-live", "off");
-    detail.append(name, id, state, queue, preconditions);
+    detail.append(name, quick, id, state, queue, preconditions);
     const revoke = document.createElement("button");
     revoke.type = "button";
     revoke.className = "quiet";
@@ -1121,9 +1152,9 @@ function updateFleetRow(device, started, wallStarted) {
     select.className = "fleet-select";
     select.textContent = "View details";
     row.append(detail, revoke, select);
-    entry = { row, name, id, state, queue, preconditions, revoke, select, device };
+    entry = { row, name, quick, id, state, queue, preconditions, revoke, select, device };
     fleetRows.set(device.device_id, entry);
-    select.addEventListener("click", () => { selectedDeviceId = entry.device.device_id; renderSelectedDevice(); });
+    select.addEventListener("click", () => { selectedDeviceId = entry.device.device_id; renderSelectedDevice(); if (window.matchMedia?.("(max-width: 60rem)").matches) openDeviceDialog(); });
     revoke.addEventListener("click", async () => {
       const current = entry.device;
       if (current.revoked || !window.confirm(`Revoke ${current.display_name}? Its gateway connection will lose authorization.`)) return;
@@ -1142,6 +1173,7 @@ function updateFleetRow(device, started, wallStarted) {
   }
   entry.device = device;
   entry.name.textContent = device.display_name || "Unnamed gateway";
+  entry.quick.textContent = device.revoked ? "Revoked" : device.active_socket_lease === true ? "Connection observed · sending readiness unknown" : device.active_socket_lease === false ? "No connection observed · check phone" : "Connection unavailable";
   entry.id.textContent = device.device_id;
   entry.state.textContent = deviceConnectivityText(device);
   entry.queue.textContent = deviceQueueText(device);
@@ -1398,6 +1430,7 @@ async function loadMessages(reset = true, automatic = false) {
     moreButton.disabled = false;
     if (reset && page.messages.length === 0) {
       message("message-status", "No messages yet.");
+      if (byId("overview-recent-list")) byId("overview-recent-list").textContent = "No messages yet.";
       return;
     }
     nextMessageCursor = page.next_cursor || null;
@@ -1433,7 +1466,8 @@ async function loadMessages(reset = true, automatic = false) {
           if (!fleetRows.has(item.device_id)) return;
           selectedDeviceId = item.device_id;
           renderSelectedDevice();
-          if (typeof byId("device-detail-title").scrollIntoView === "function") byId("device-detail-title").scrollIntoView({ block: "nearest" });
+          if (document.body?.dataset?.workspaceView === "activity") openDeviceDialog();
+          else if (typeof byId("device-detail-title").scrollIntoView === "function") byId("device-detail-title").scrollIntoView({ block: "nearest" });
           message("message-status", "Selected device context in the fleet panel. Message paging and history are unchanged.");
         });
         const unavailable = document.createElement("span");
@@ -1488,6 +1522,8 @@ async function loadMessages(reset = true, automatic = false) {
       rows.push(row);
     }
     byId("message-list").append(...rows);
+    const recent = byId("overview-recent-list");
+    if (recent) recent.replaceChildren(...page.messages.slice(0, 3).map(item => { const li = document.createElement("li"); li.textContent = `${localTime(item.updated_at_ms)} · ${item.state.replaceAll("_", " ")}`; return li; }));
     for (const row of rows) {
       if (row.activityRestoreFocus && typeof row.activityRestoreFocus.focus === "function") row.activityRestoreFocus.focus();
       row.activityRestoreFocus = null;
@@ -1695,7 +1731,20 @@ async function createOwnerHold() {
   }
 }
 
+function schedulePairingPoll() {
+  if (pairingPollTimer !== null) window.clearTimeout(pairingPollTimer);
+  pairingPollTimer = null;
+  if (!activePairingId || pairingProof || !dashboardPageActive || document.hidden) return;
+  pairingPollTimer = window.setTimeout(() => { pairingPollTimer = null; checkPairing(); }, 3000);
+}
+
 async function checkPairing() {
+  if (pairingCheckBusy) return;
+  pairingCheckBusy = true;
+  try { await checkPairingWithin(); } finally { pairingCheckBusy = false; schedulePairingPoll(); }
+}
+
+async function checkPairingWithin() {
   agePairing();
   if (pairingApproval) { await reconcilePairingApproval(); return; }
   if (!activePairingId) return;
@@ -1722,13 +1771,18 @@ async function checkPairing() {
       message("pair-status", "Phone claimed the pairing. Waiting for its key proof. If proof failed, cancel and create a new pairing.");
       return;
     }
+    if (globalThis.ZtOwnerWorkspace) { await globalThis.ZtOwnerWorkspace.assertCurrent(); if (!pairingIsCurrent(pairingId, generation)) return; }
+    if (!/^[0-9]{8}$/.test(view.comparison_code) || !/^[A-Fa-f0-9]{64}$/.test(view.key_fingerprint)) throw new Error("The phone proof was invalid. Do not approve it.");
+    pairingProof = { id: pairingId, generation, code: view.comparison_code, fingerprint: view.key_fingerprint.toUpperCase() };
+    globalThis.ZtOwnerWorkspace?.stage("compare");
     byId("browser-code").textContent = view.comparison_code;
     byId("browser-fingerprint").textContent = view.key_fingerprint;
     byId("approve-form").hidden = false;
-    message("pair-status", "Key proof accepted. Compare the code and fingerprint with the phone before approval.");
+    message("pair-status", "Compare both values with your phone, then approve when they match. No typing is needed.");
   } catch (error) {
     if (requestEpoch !== ownerEpoch || !pairingIsCurrent(pairingId, generation)) { agePairing(); return; }
     message("pair-status", `Could not check pairing. ${error.message}`);
+    pairingProof = null;
     byId("approve-form").hidden = true;
     // A 404 includes expiry, cancellation and exhaustion. Retire the
     // one-time token locally rather than presenting it as still usable.
@@ -1907,6 +1961,8 @@ byId("create-form").addEventListener("submit", exclusive(async (event) => {
     message("pair-status", "Finish or cancel the current pairing before creating another.");
     return;
   }
+  if (globalThis.ZtOwnerWorkspace && !globalThis.ZtOwnerWorkspace.canCreate()) { message("pair-status", "Check saved progress before creating a pairing. Your previous setup may already have completed."); return; }
+  if (globalThis.ZtOwnerWorkspace) { try { await globalThis.ZtOwnerWorkspace.assertCurrent(); } catch (error) { message("pair-status", error.message); return; } }
   clearPairing();
   message("approved-result", "");
   message("pair-status", "Creating pairing.");
@@ -1917,18 +1973,29 @@ byId("create-form").addEventListener("submit", exclusive(async (event) => {
   try {
     if (retiredPairingId) {
       const retired = retiredPairingId;
+      try {
+        const prior = await api(`/v1/enrollment/pairings/${encodeURIComponent(retired)}`);
+        if (stale()) return;
+        if (uuidPattern.test(prior.approved_device_id)) {
+          retiredPairingId = null;
+          message("pair-status", "Your previous phone was approved. Continue with its connection instead of pairing again.");
+          globalThis.ZtOwnerWorkspace?.approvedDevice(prior.approved_device_id);
+          await loadDevices(); return;
+        }
+      } catch (error) { if (error.status !== 404) throw error; }
       try { await api(`/v1/enrollment/pairings/${encodeURIComponent(retired)}/cancel`, "POST"); }
       catch (error) { if (error.status !== 404) throw error; }
       if (stale()) return;
       if (retiredPairingId === retired) retiredPairingId = null;
     }
-    const ticket = await api("/v1/enrollment/pairings", "POST", { display_name: byId("display-name").value });
+    const ticket = await api("/v1/enrollment/pairings", "POST", { display_name: byId("display-name").value.trim() || "My phone" });
     if (requestEpoch !== ownerEpoch) return;
     if (stale()) {
       if (uuidPattern.test(ticket.pairing_id)) retiredPairingId = ticket.pairing_id;
       return;
     }
     activePairingId = ticket.pairing_id;
+    globalThis.ZtOwnerWorkspace?.pairingStarted(ticket.pairing_id);
     pairingDeadline = started + pairingLifetimeMs;
     if (pairingClock() >= pairingDeadline) { agePairing(); return; }
     for (const [id, value] of [["server-origin", window.location.origin], ["pair-id", ticket.pairing_id], ["pair-token", ticket.token]]) {
@@ -1936,8 +2003,10 @@ byId("create-form").addEventListener("submit", exclusive(async (event) => {
       if ("value" in byId(id)) byId(id).value = value;
     }
     byId("pair-ticket").hidden = false;
+    if (document.body?.dataset) document.body.dataset.pairingActive = "true";
     renderPairingCode(ticket);
     agePairing();
+    schedulePairingPoll();
     message("pair-status", "Pairing ready. Scan it with a supported app or enter the manual details. Then check the phone proof and compare both values before approval.");
   } catch (error) {
     if (stale()) return;
@@ -1947,7 +2016,9 @@ byId("create-form").addEventListener("submit", exclusive(async (event) => {
 
 byId("check-proof").addEventListener("click", checkPairing);
 const resolvePairingButton = byId("resolve-pairing");
-if (resolvePairingButton) resolvePairingButton.addEventListener("click", exclusive(async () => {
+if (resolvePairingButton) resolvePairingButton.addEventListener("click", exclusive(reconcilePairingApproval));
+const cancelInterruptedButton = byId("cancel-interrupted-pairing");
+if (cancelInterruptedButton) cancelInterruptedButton.addEventListener("click", exclusive(async () => {
   const attempt = pairingApproval;
   if (!attempt) return;
   await reconcilePairingApproval();
@@ -1989,18 +2060,21 @@ byId("approve-form").addEventListener("submit", exclusive(async (event) => {
   event.preventDefault();
   agePairing();
   if (pairingApproval) { await reconcilePairingApproval(); return; }
-  if (!activePairingId || !byId("compared").checked) return;
+  if (!activePairingId || !pairingProof || pairingProof.id !== activePairingId || pairingProof.generation !== pairingGeneration) return;
   const pairingId = activePairingId;
   const generation = pairingGeneration;
   const requestEpoch = ownerEpoch;
+  if (globalThis.ZtOwnerWorkspace) { try { await globalThis.ZtOwnerWorkspace.assertCurrent(); } catch (error) { message("pair-status", error.message); return; } }
+  if (!pairingIsCurrent(pairingId, generation) || !pairingProof) return;
   const attempt = { id: pairingId, epoch: requestEpoch, deviceId: null };
   pairingApproval = attempt;
+  globalThis.ZtOwnerWorkspace?.approvalStarted(pairingId);
   message("pair-status", "Approving device.");
   byId("pair-cap-devices-link").hidden = true;
   try {
     const result = await api(`/v1/enrollment/pairings/${encodeURIComponent(pairingId)}/approve`, "POST", {
-      comparison_code: byId("phone-code").value,
-      key_fingerprint: byId("phone-fingerprint").value.toUpperCase(),
+      comparison_code: pairingProof.code,
+      key_fingerprint: pairingProof.fingerprint,
     });
     if (requestEpoch !== ownerEpoch || pairingApproval !== attempt) return;
     if (!uuidPattern.test(result.device_id)) throw new Error("The approval response was invalid.");
@@ -2008,7 +2082,8 @@ byId("approve-form").addEventListener("submit", exclusive(async (event) => {
     if (!pairingIsCurrent(pairingId, generation)) { agePairing(); return; }
     pairingApproval = null;
     message("approved-result", `Approved device UUID: ${result.device_id}`);
-    message("pair-status", "Pairing complete. Enter this UUID on the phone, then start its gateway connection. Approval does not confirm the phone is connected or ready to send.");
+    message("pair-status", "Phone approved. Continue on the phone: choose its SIM and permissions, then Start connection. The app retrieves its device identity automatically.");
+    globalThis.ZtOwnerWorkspace?.approvedDevice(result.device_id);
     clearPairing();
     await Promise.all([loadDevices(), loadDeviceCapacity()]);
   } catch (error) {
@@ -2148,3 +2223,36 @@ byId("key-create-form").addEventListener("submit", exclusive(async (event) => {
     message("global-status", error.message.startsWith("Your sign-in") ? "Sign in to manage devices." : `Could not verify session. ${error.message}`);
   }
 })();
+
+if (document.body?.dataset?.workspaceView) globalThis.ZtOwnerPairing = Object.freeze({
+  clear() { clearPairing(); },
+  retire(id) { if (uuidPattern.test(id) && !activePairingId && !pairingApproval) retiredPairingId = id; },
+  resumeUnknown(receipt) {
+    if (pairingApproval || !uuidPattern.test(receipt.pairing_id)) return;
+    pairingApproval = { id: receipt.pairing_id, epoch: ownerEpoch, deviceId: null };
+    clearPairing();
+    message("pair-status", "The previous approval outcome is unknown. Check or cancel the interrupted pairing before repeating setup.");
+    byId("resolve-pairing").hidden = false;
+    byId("cancel-interrupted-pairing").hidden = false;
+    document.body.dataset.pairingActive = "true";
+  },
+  resume(receipt) {
+    if (!receipt || !uuidPattern.test(receipt.pairing_id) || activePairingId || pairingApproval) return;
+    clearPairing();
+    activePairingId = receipt.pairing_id;
+    document.body.dataset.pairingActive = "true";
+    pairingDeadline = pairingClock() + Math.max(0, Math.min(pairingLifetimeMs, receipt.expires_at_ms - Date.now()));
+    if (receipt.status === "awaiting_approval") checkPairing();
+    else {
+      message("pair-status", "This pairing is saved. If you already scanned it, continue on the phone. The QR token is not stored; cancel this attempt to create a replacement if needed.");
+      byId("pair-ticket").hidden = false;
+      byId("pair-manual").hidden = true;
+      schedulePairingPoll();
+    }
+  }
+});
+
+if (document.body?.dataset?.workspaceView) {
+  byId("phone-inspector-close").addEventListener("click", () => byId("phone-inspector").close());
+  byId("reject-proof").addEventListener("click", () => byId("cancel-pairing").click());
+}

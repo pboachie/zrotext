@@ -41,6 +41,7 @@ pub mod mfa;
 mod owner_reduction;
 pub(crate) use owner_reduction::OwnerReductionFence;
 mod password_work;
+pub(crate) mod registration_intent;
 pub mod review_access;
 #[cfg(test)]
 mod roles_tests;
@@ -421,6 +422,16 @@ pub async fn register(
     email: &str,
     password: &str,
 ) -> Result<Signup, AuthError> {
+    register_with_intent(client, hasher, email, password, None).await
+}
+
+pub(crate) async fn register_with_intent(
+    client: &mut Client,
+    hasher: &TokenHasher,
+    email: &str,
+    password: &str,
+    intent: Option<&registration_intent::Credentials>,
+) -> Result<Signup, AuthError> {
     if !(12..=1024).contains(&password.len()) {
         return Err(AuthError::InvalidInput);
     }
@@ -477,6 +488,21 @@ pub async fn register(
             &[&verification_id],
         )
         .await?;
+    if let Some(credentials) = intent {
+        registration_intent::insert(
+            &transaction,
+            hasher,
+            registration_intent::Registration {
+                account_id,
+                user_id,
+                verification_id,
+                email: &email,
+                password_hash: &password_hash,
+                credentials,
+            },
+        )
+        .await?;
+    }
     transaction.commit().await?;
     crate::wakeups::account_mail_queued();
     Ok(Signup {

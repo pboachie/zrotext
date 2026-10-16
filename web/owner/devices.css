@@ -190,3 +190,123 @@ code, .eyebrow, .rail-label, .rail-status, .nav-note { font-family: Consolas, "C
   .setup-note, .service-options article, .pair-qr-panel { padding: .85rem; }
   .pair-manual { padding-inline: .75rem; }
 }
+
+/* Workspace contract: real destinations, compact observation and one setup task. */
+body[data-workspace-view] [data-workspace] { display: none; }
+body[data-workspace-view="overview"] [data-workspace~="overview"],
+body[data-workspace-view="phones"] [data-workspace~="phones"],
+body[data-workspace-view="activity"] [data-workspace~="activity"],
+body[data-workspace-view="integrations"] [data-workspace~="integrations"],
+body[data-workspace-view="security"] [data-workspace~="security"],
+body[data-workspace-view="setup"] [data-workspace~="setup"] { display: block; }
+header > a { min-height: 2.75rem; display: inline-flex; align-items: center; }
+.owner-menu { margin: 0; }
+.owner-menu > summary { color: var(--owner-accent); font-weight: 600; }
+.setup-progress ol { display: flex; flex-wrap: wrap; padding: 0; gap: .65rem; list-style: none; }
+.setup-progress li { flex: 1 1 8rem; padding: .8rem; border-bottom: 2px solid var(--owner-border); color: var(--owner-secondary); }
+.setup-progress [aria-current="step"] { border-color: var(--owner-accent); color: var(--owner-accent); font-weight: 700; }
+.setup-resume { background: var(--owner-raised); }
+.setup-resume h2 { margin-bottom: .4rem; }
+body[data-workspace-view] #approved-devices #device-list .fleet-technical { display: none; }
+body[data-workspace-view] #device-list .fleet-quick { color: var(--owner-secondary); }
+#phone-inspector { max-width: min(36rem, calc(100% - 2rem)); max-height: calc(100dvh - 2rem); overflow: auto; background: var(--owner-surface); color: var(--owner-text); border: 1px solid var(--owner-border); border-radius: .75rem; padding: 1rem; }
+#phone-inspector::backdrop { background: rgb(0 0 0 / .75); }
+#phone-inspector-status { white-space: pre-line; }
+
+/* Overview starts with phone status; summary options remain deliberate. */
+body[data-workspace-view="overview"] header .eyebrow, body[data-workspace-view="overview"] #workspace-intro { display: none; }
+body[data-workspace-view="overview"] header h1 { font-size: 1.5rem; }
+body[data-workspace-view="overview"] .setup-resume { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: .75rem; align-items: center; padding: .85rem 1rem; }
+body[data-workspace-view="overview"] .setup-resume .section-head { display: contents; }
+body[data-workspace-view="overview"] .setup-resume .section-head > div { display: none; }
+body[data-workspace-view="overview"] #setup-resume-status { grid-column: 1; grid-row: 1; margin: 0; }
+body[data-workspace-view="overview"] #setup-resume-link { grid-column: 2; grid-row: 1; }
+body[data-workspace-view="overview"] #setup-refresh { grid-column: 3; grid-row: 1; }
+body[data-workspace-view="overview"] #message-summary .summary-cards { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+body[data-workspace-view="overview"] #message-summary .summary-cards > div { padding: .7rem; flex-wrap: wrap; }
+body[data-workspace-view="overview"] #message-summary .summary-cards h3 { font-size: .875rem; margin-bottom: .25rem; }
+body[data-workspace-view="overview"] #message-summary .summary-value { font-size: 1.25rem; margin: .25rem 0; overflow-wrap: normal; white-space: nowrap; flex: none; }
+body[data-workspace-view="overview"] #message-summary .summary-scope { margin: .5rem 0; }
+
+/* Setup presents only its current, server-confirmed task. */
+body[data-workspace-view="setup"] .owner-entry-actions,
+body[data-workspace-view="setup"] #lines,
+body[data-workspace-view="setup"] #setup-resume-link,
+body[data-workspace-view="setup"] header .eyebrow,
+body[data-workspace-view="setup"] #workspace-intro,
+body[data-workspace-view="setup"][data-progress-state="ready"] #setup-resume,
+body[data-workspace-view="setup"] #pair-phone > .eyebrow,
+body[data-workspace-view="setup"] #activation > .eyebrow,
+body[data-workspace-view="setup"] #approval-key > .eyebrow,
+body[data-workspace-view="setup"] #setup-mfa > h3 { display: none; }
+body[data-workspace-view="setup"]:is([data-setup-stage="connect"], [data-setup-stage="line"], [data-setup-stage="complete"]) #pair-phone,
+body[data-workspace-view="setup"]:not([data-setup-stage="line"]) :is(#approval-key, #activation),
+body[data-workspace-view="setup"][data-line-key-ready="true"] #approval-key,
+body[data-workspace-view="setup"]:not([data-line-key-ready="true"]) #activation { display: none; }
+body[data-workspace-view="setup"][data-pairing-active="true"] #create-form,
+body[data-workspace-view="setup"][data-setup-stage="compare"] #pair-ticket,
+body[data-workspace-view="setup"][data-setup-stage="compare"] #pair-phone > p:not([role="status"]):not(.eyebrow),
+body[data-workspace-view="setup"][data-setup-stage="compare"] #approve-form > h3,
+body[data-workspace-view="setup"][data-setup-stage="compare"] #approve-form > p,
+body[data-workspace-view="setup"][data-setup-stage="compare"] .setup-help { display: none; }
+body[data-workspace-view="setup"] header { margin-bottom: .5rem; }
+body[data-workspace-view="setup"] .setup-progress { margin: .5rem 0; }
+body[data-workspace-view="setup"] .setup-resume { padding: .75rem 1rem; }
+body[data-workspace-view="setup"] .setup-resume .eyebrow { display: none; }
+body[data-workspace-view="setup"] .setup-resume h2 { font-size: 1rem; margin: 0; }
+body[data-workspace-view="setup"] .setup-resume p { margin: .5rem 0 0; color: var(--owner-secondary); }
+#pair-phone #approve-form { max-width: 42rem; }
+#pair-phone #browser-code { font: 700 2rem Consolas, monospace; color: var(--owner-accent); }
+.pairing-recovery-help { color: var(--owner-secondary); font-size: .875rem; }
+body[data-workspace-view="setup"] #activation-form > label[for="activation-device"],
+body[data-workspace-view="setup"] #activation-device,
+body[data-workspace-view="setup"] #activation-form > .line-advanced,
+body[data-workspace-view="setup"][data-activation-capability="2"] #activation-form,
+body[data-workspace-view="setup"] #activation > p:not(.line-decision-note):not(#activation-status),
+body[data-workspace-view="setup"] #activation > .pairing-steps { display: none; }
+body[data-workspace-view="setup"] #activation-review dl { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); margin: .75rem 0; }
+body[data-workspace-view="setup"] #activation-review > h3 { font-size: 1rem; }
+body[data-workspace-view="setup"] #approval-key:has(#setup-mfa:not([hidden])) > #key-summary { display: none; }
+
+/* Hosted review keeps requirements and exact provider terms beside checkout. */
+body[data-owner-page="hosted"] header .eyebrow, body[data-owner-page="hosted"] header .page-intro { display: none; }
+body[data-owner-page="hosted"] header h1 { font-size: 1.5rem; }
+body[data-owner-page="hosted"] #hosted-billing dl { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); margin: .75rem 0; }
+body[data-owner-page="hosted"] #hosted-mode { margin-bottom: .5rem; }
+body[data-owner-page="hosted"] .hosted-hardware { color: var(--owner-secondary); }
+body[data-owner-page="hosted"] #hosted-checkout { width: 100%; }
+body[data-hosted-phase="test_subscription_observed"] .hosted-hardware { display: none; }
+@media (min-width:60.001rem) { .owner-menu > summary { display: none; } }
+@media (max-width:60rem) {
+  body[data-workspace-view] .device-detail { display: none; }
+  .owner-rail .rail-label, .owner-rail .rail-status { display: none; }
+  .owner-menu > summary { padding: .35rem 0; }
+  body.owner-shell .owner-rail { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .7rem 1rem; position: relative; }
+  body.owner-shell .owner-brand { margin: 0; }
+  body.owner-shell .owner-menu[open] .owner-menu-content { position: absolute; top: 100%; left: 0; right: 0; z-index: 5; background: var(--owner-canvas); border-bottom: 1px solid var(--owner-border); padding: 1rem; }
+  body[data-workspace-view="setup"] header h1 { font-size: 1.25rem; }
+  body[data-workspace-view="setup"] main { padding-top: .75rem; }
+}
+@media (max-width:45rem) {
+  body[data-workspace-view="overview"] .setup-resume { grid-template-columns: 1fr 1fr; }
+  body[data-workspace-view="overview"] #setup-resume-status { grid-column: 1 / -1; }
+  body[data-workspace-view="overview"] #setup-resume-link { grid-column: 1; grid-row: 2; }
+  body[data-workspace-view="overview"] #setup-refresh { grid-column: 2; grid-row: 2; }
+}
+@media (max-width:35rem) { .setup-progress ol { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .25rem; } .setup-progress li { padding: .5rem .15rem; font-size: .8rem; } }
+@media (max-width:25rem) {
+  body[data-workspace-view="overview"] #message-summary .summary-cards { grid-template-columns: 1fr; }
+  body[data-workspace-view="overview"] #message-summary .summary-cards > div { display: flex; align-items: center; justify-content: space-between; gap: .75rem; padding: .5rem .75rem; }
+  body[data-workspace-view="overview"] #message-summary .summary-cards > div + div { border-left: 0; border-top: 1px solid var(--owner-border); }
+}
+
+.owner-utilities { display: grid; gap: .4rem; margin-top: 1rem; border-top: 1px solid var(--owner-border); padding-top: .75rem; }
+.owner-utilities a { display: inline-flex; align-items: center; gap: .35rem; min-height: 2.75rem; padding: .5rem .75rem; color: var(--owner-secondary); }
+@media(min-width:60.001rem) {
+  body[data-workspace-view] .device-detail { height: 16rem; max-height: 16rem; overflow-y: auto; overscroll-behavior: contain; }
+  body[data-workspace-view="overview"] #owner-content { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1rem; align-items: start; }
+  body[data-workspace-view="overview"] #owner-content > .owner-entry-actions,
+  body[data-workspace-view="overview"] #setup-resume,
+  body[data-workspace-view="overview"] #approved-devices { grid-column: 1 / -1; }
+  body[data-workspace-view="overview"] #owner-content > section { margin: 0; }
+}

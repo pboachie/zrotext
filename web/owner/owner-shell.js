@@ -1,11 +1,33 @@
 /* SPDX-License-Identifier: AGPL-3.0-only */
 "use strict";
 (() => {
+  // The compact menu keeps page tasks above the fold on a small browser.
+  const navigation = document.querySelector(".owner-nav");
+  if (navigation) {
+    const menu = document.createElement("details"), label = document.createElement("summary");
+    menu.className = "owner-menu"; label.textContent = "Menu";
+    const content = document.createElement("div"); content.className = "owner-menu-content";
+    navigation.before(menu); menu.append(label, content); content.append(navigation);
+    const utilities = document.querySelector(".owner-utilities");
+    if (utilities) content.append(utilities);
+    const wide = matchMedia("(min-width: 60.001rem)");
+    menu.open = wide.matches;
+    wide.addEventListener("change", event => { menu.open = event.matches; });
+  }
+  const currentPath = location.pathname;
+  const destination = ["/owner/setup", "/owner/sms-lines"].includes(currentPath) ? "/owner/phones" : ["/owner/account", "/owner/hosted", "/owner/account-root-trust"].includes(currentPath) ? "/owner/security" : currentPath;
+  for (const link of document.querySelectorAll(".owner-nav a")) {
+    link.removeAttribute("aria-current");
+    const target = new URL(link.href);
+    if (!target.hash && target.pathname === destination) link.setAttribute("aria-current", "page");
+  }
   const ownerLinks = [...document.querySelectorAll("[data-owner-only]")];
   const observerLink = document.getElementById("owner-observer-link");
   const status = document.getElementById("owner-nav-status");
   const billing = document.getElementById("owner-billing-link");
   let generation = 0;
+  const csrf = () => document.cookie.split(";").map(part => part.trim())
+    .find(part => part.startsWith("__Host-zrotext_csrf="))?.slice("__Host-zrotext_csrf=".length);
   function clear() {
     generation++;
     for (const link of ownerLinks) link.hidden = true;
@@ -30,10 +52,19 @@
       if (status) status.textContent = "Owner controls. Connected status does not prove carrier readiness.";
       if (!billing) return;
       try {
-        const view = await fetch("/v1/billing/status", { credentials: "same-origin", cache: "no-store", redirect: "error", signal: AbortSignal.timeout(30000) });
+        const proof = csrf();
+        if (!proof) return;
+        const view = await fetch("/v1/billing/status", { headers: { "x-zrotext-csrf": proof }, credentials: "same-origin", cache: "no-store", redirect: "error", signal: AbortSignal.timeout(30000) });
         if (!view.ok) return;
         const body = await view.json();
-        if (epoch === generation && body.mode === "test") billing.hidden = false;
+        if (epoch !== generation || csrf() !== proof) return;
+        if (body.schema_version === 1 && (body.account_id !== session.account_id || body.session_id !== session.session_id)) return;
+        if (body.mode === "test" || body.mode === "live" && body.schema_version === 1) {
+          billing.href = body.schema_version === 1 ? "/owner/hosted" : "/billing";
+          const note = billing.querySelector(".nav-note");
+          if (note) note.textContent = body.mode === "test" ? "Test mode" : "Subscription";
+          billing.hidden = false;
+        }
       } catch { /* Disabled or unavailable billing must not advertise a working destination. */ }
     } catch { /* Existing page controllers report sign-in errors; navigation stays closed. */ }
   }

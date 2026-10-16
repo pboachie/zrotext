@@ -16,6 +16,7 @@ mod managed_grants;
 mod opening_capacity;
 #[path = "provider_receipts_tests.rs"]
 mod provider_receipts;
+mod registration_intents;
 
 const ORIGIN: &str = "https://test.example";
 
@@ -476,6 +477,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "106_hosted_runtime.sql",
         include_str!("../../../../deploy/compose/migrations/106_hosted_runtime.sql"),
+    ),
+    (
+        "107_registration_browser_intents.sql",
+        include_str!("../../../../deploy/compose/migrations/107_registration_browser_intents.sql"),
     ),
 ];
 

@@ -74,7 +74,7 @@ private val LocalGatewayCompactHome = staticCompositionLocalOf { true }
 private val LocalGatewayHomePanel = staticCompositionLocalOf<MutableState<String?>?> { null }
 
 internal enum class GatewayPage(val label: String) {
-    HOME("Home"), SETUP("Setup"), CONNECTION("Connection"), TOOLS("Tools")
+    HOME("Home"), ACTIVITY("Activity"), SETUP("Setup"), CONNECTION("Connection"), TOOLS("Tools")
 }
 
 /** Navigation is presentation only: changing pages never starts a service or asks for access. */
@@ -92,49 +92,67 @@ internal fun GatewayCompanion(initialPage: GatewayPage = GatewayPage.HOME,
     // enlarged type, short landscape windows, keyboards and long status errors.
     BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding().imePadding().clipToBounds()) {
         val compactHome = maxHeight < 700.dp
-        screenState.SaveableStateProvider(page.name) {
-            val scroll = rememberScrollState()
-            val scope = rememberCoroutineScope()
-            val resetScroll: () -> Unit = { scope.launch { scroll.scrollTo(0) } }
-            Column(Modifier.fillMaxSize().verticalScroll(scroll).testTag("gateway-screen-scroll")
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(if (page == GatewayPage.HOME) 4.dp else 16.dp)) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    GatewayBrandMark()
-                    Text("ZROtext", style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.weight(1f).semantics { heading() })
-                    var menu by remember { mutableStateOf(false) }
-                    Box {
-                        IconButton(onClick = { menu = true }, modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-                            .testTag("gateway-controls").semantics {
-                                contentDescription = "Controls"
-                                stateDescription = "${page.label}. Open controls menu"
-                            }) { GatewayGearMark() }
-                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false },
-                            containerColor = MaterialTheme.colorScheme.surface) {
-                            listOf("Quick controls" to "controls", "Android access" to "access", "Phone details" to "details")
-                                .forEach { (label, panel) ->
-                                    DropdownMenuItem(text = { Text(label) },
-                                        onClick = { menu = false; homePanel.value = panel; navigate(GatewayPage.HOME) },
-                                        modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp))
-                                }
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
-                            GatewayPage.entries.forEach { destination ->
-                                DropdownMenuItem(text = { Text(destination.label) },
-                                    onClick = { menu = false; navigate(destination) },
-                                    modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).semantics {
-                                        selected = page == destination
-                                        stateDescription = if (page == destination) "Current screen" else "Open screen"
-                                    })
+        Column(Modifier.fillMaxSize()) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                GatewayBrandMark()
+                Text("ZROtext", style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f).semantics { heading() })
+                var menu by remember { mutableStateOf(false) }
+                Box {
+                    IconButton(onClick = { menu = true }, modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                        .testTag("gateway-controls").semantics {
+                            contentDescription = "Controls"
+                            stateDescription = "${page.label}. Open controls menu"
+                        }) { GatewayGearMark() }
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false },
+                        containerColor = MaterialTheme.colorScheme.surface) {
+                        listOf("Quick controls" to "controls", "Android access" to "access", "Phone details" to "details")
+                            .forEach { (label, panel) ->
+                                DropdownMenuItem(text = { Text(label) },
+                                    onClick = { menu = false; homePanel.value = panel; navigate(GatewayPage.HOME) },
+                                    modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp))
                             }
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+                        listOf(GatewayPage.CONNECTION, GatewayPage.TOOLS).forEach { destination ->
+                            DropdownMenuItem(text = { Text(destination.label) },
+                                onClick = { menu = false; navigate(destination) },
+                                modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).semantics {
+                                    selected = page == destination
+                                    stateDescription = if (page == destination) "Current screen" else "Open screen"
+                                })
                         }
                     }
                 }
-                CompositionLocalProvider(LocalGatewayScrollReset provides resetScroll,
-                    LocalGatewayCompactHome provides compactHome,
-                    LocalGatewayHomePanel provides homePanel) {
-                    content(page, navigate)
+            }
+            Box(Modifier.weight(1f)) {
+                screenState.SaveableStateProvider(page.name) {
+                    val scroll = rememberScrollState()
+                    val scope = rememberCoroutineScope()
+                    val resetScroll: () -> Unit = { scope.launch { scroll.scrollTo(0) } }
+                    Column(Modifier.fillMaxSize().verticalScroll(scroll).testTag("gateway-screen-scroll")
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(if (page == GatewayPage.HOME) 4.dp else 16.dp)) {
+                        CompositionLocalProvider(LocalGatewayScrollReset provides resetScroll,
+                            LocalGatewayCompactHome provides compactHome,
+                            LocalGatewayHomePanel provides homePanel) {
+                            content(page, navigate)
+                        }
+                    }
+                }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+            Row(Modifier.fillMaxWidth().testTag("gateway-primary-navigation")) {
+                listOf(GatewayPage.HOME, GatewayPage.ACTIVITY, GatewayPage.SETUP).forEach { destination ->
+                    TextButton(onClick = { navigate(destination) },
+                        modifier = Modifier.weight(1f).sizeIn(minWidth = 48.dp, minHeight = 56.dp)
+                            .testTag("gateway-nav-${destination.label}").semantics {
+                                selected = page == destination
+                                stateDescription = if (page == destination) "Current screen" else "Open screen"
+                            }, colors = ButtonDefaults.textButtonColors(contentColor =
+                                if (page == destination) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)) {
+                        Text(destination.label)
+                    }
                 }
             }
         }
@@ -154,7 +172,8 @@ internal fun GatewayHome(
     summaryStatus: String = "Message counts are unavailable on this phone. An authorized summary reader is not connected.",
     onSetup: () -> Unit,
     onConnection: () -> Unit,
-    onPause: () -> Unit
+    onPause: () -> Unit,
+    recovery: GatewaySetupRecovery? = null
 ) {
     val motion = gatewayMotionAllowed()
     val mood = GatewayConnectionMood.from(authenticatedStatus)
@@ -219,6 +238,20 @@ internal fun GatewayHome(
             GatewayObservationRow("Sending from", sim)
             GatewayObservationRow("Power", power.label)
         }
+    }
+    if (recovery != null && mood != GatewayConnectionMood.CONNECTED) {
+        if (recovery in setOf(GatewaySetupRecovery.EXPIRED, GatewaySetupRecovery.CANCELLED,
+                GatewaySetupRecovery.PROOF_REQUIRED, GatewaySetupRecovery.KEYS_LOST, GatewaySetupRecovery.UNAVAILABLE)) {
+            Text(recovery.title, style = MaterialTheme.typography.labelMedium)
+        }
+        GatewayHomeButton(when (recovery) {
+            GatewaySetupRecovery.APPROVED -> if (sim == "Not selected") "Choose a SIM" else "Continue connection setup"
+            GatewaySetupRecovery.COMPARE -> "Compare phone details"
+            GatewaySetupRecovery.KEYS_LOST -> "Recover phone pairing"
+            GatewaySetupRecovery.EXPIRED, GatewaySetupRecovery.CANCELLED, GatewaySetupRecovery.PROOF_REQUIRED -> "Review pairing recovery"
+            else -> "Continue setup"
+        },
+            onSetup, Modifier.fillMaxWidth())
     }
     // Pause stays beside its complete disclosure in the main dashboard.
     GatewayHomeButton("Pause connections", onPause, Modifier.fillMaxWidth())

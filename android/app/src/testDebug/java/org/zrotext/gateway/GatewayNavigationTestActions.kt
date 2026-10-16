@@ -6,13 +6,17 @@ import androidx.compose.ui.test.junit4.ComposeContentTestRule
 
 /** Follow the visible screen menu; navigation must not be bypassed by test intents. */
 internal fun ComposeContentTestRule.openGatewayPage(label: String) {
-    onNode(hasContentDescription("Controls") and hasClickAction()).performScrollTo().performClick()
-    onNode(hasText(label) and hasClickAction()).assertIsDisplayed().performClick()
+    if (label in listOf("Home", "Activity", "Setup")) {
+        onNodeWithTag("gateway-nav-$label").assertIsDisplayed().performClick()
+    } else {
+        onNode(hasContentDescription("Controls") and hasClickAction()).performClick()
+        onNode(hasText(label) and hasClickAction()).assertIsDisplayed().performClick()
+    }
 }
 
 /** Follow the gear popover to the preserved secondary actions. */
 internal fun ComposeContentTestRule.openGatewayQuickControls() {
-    onNode(hasContentDescription("Controls") and hasClickAction()).performScrollTo().performClick()
+    onNode(hasContentDescription("Controls") and hasClickAction()).performClick()
     onNode(hasText("Quick controls") and hasClickAction()).assertIsDisplayed().performClick()
 }
 

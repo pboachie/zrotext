@@ -36,7 +36,7 @@ class AndroidOwnerCustodyMainActivityTest {
         val host = Robolectric.buildActivity(MainActivity::class.java,
             Intent(app, MainActivity::class.java).putExtra("gateway_screen", "SETUP")).setup().visible()
         try {
-            compose.onNodeWithText("3. Pair this phone").performScrollTo().performClick()
+            compose.onNodeWithText("Continue setup").performScrollTo().performClick()
             compose.onNodeWithText("HTTPS server origin").performScrollTo().performTextInput("https://owner.invalid")
             compose.onNodeWithText("Use existing manual pairing").performScrollTo().performClick()
             compose.onNodeWithText("Pairing ID").performScrollTo()
@@ -50,6 +50,7 @@ class AndroidOwnerCustodyMainActivityTest {
             compose.onNodeWithText("Clear scanned pairing").performScrollTo().performClick()
             assertEquals("", fieldText("Pairing ID"))
             assertEquals("", fieldText("One-use pairing token"))
+            compose.onNodeWithText("Use scanner instead").performScrollTo().performClick()
             compose.onNodeWithText("Scan pairing QR").performScrollTo().assertIsDisplayed()
         } finally {
             host.pause().stop().destroy()
@@ -68,8 +69,8 @@ class AndroidOwnerCustodyMainActivityTest {
             val host = Robolectric.buildActivity(MainActivity::class.java,
                 Intent(app, MainActivity::class.java).putExtra("gateway_screen", "SETUP")).setup().visible()
             try {
-                compose.onNodeWithText("3. Pair this phone").performScrollTo().performClick()
-                compose.onNodeWithText("I reconciled the original ticket; use a fresh ticket")
+                compose.onNodeWithText("Continue setup").performScrollTo().performClick()
+                compose.onNodeWithText("Check saved pairing")
                     .performScrollTo().assertIsDisplayed()
                 compose.onNodeWithText("Scan pairing QR").assertDoesNotExist()
                 compose.onNodeWithText("Use existing manual pairing").assertDoesNotExist()
@@ -92,8 +93,8 @@ class AndroidOwnerCustodyMainActivityTest {
                 val host = Robolectric.buildActivity(MainActivity::class.java,
                     Intent(app, MainActivity::class.java).putExtra("gateway_screen", "SETUP")).setup().visible()
                 try {
-                    compose.onNodeWithText("3. Pair this phone").performScrollTo().performClick()
-                    compose.onNodeWithText("I reconciled the original ticket; use a fresh ticket")
+                    compose.onNodeWithText("Continue setup").performScrollTo().performClick()
+                    compose.onNodeWithText("Check saved pairing")
                         .performScrollTo().assertIsDisplayed()
                     compose.onNodeWithText("Scan pairing QR").assertDoesNotExist()
                     compose.onNodeWithText("Use existing manual pairing").assertDoesNotExist()

@@ -42,6 +42,7 @@ mod agent_grants;
 mod collaboration;
 mod original_reply;
 pub mod preauth;
+mod registration_intent;
 mod root_custody;
 mod seats_http;
 pub mod setup;
@@ -198,7 +199,7 @@ pub struct SmtpVerificationDispatcher {
 
 fn verification_email_body(token: &str) -> String {
     format!(
-        "Your ZROtext email verification code is:\n\n{token}\n\nOpen /owner/account#verify on your ZROtext server and enter this code together with the password you chose at sign-up. It expires in 24 hours. If you did not sign up for ZROtext, ignore this message.\n"
+        "Your ZROtext email verification code is:\n\n{token}\n\nOn your ZROtext server, open /owner/hosted and choose Continue email verification. The browser that created the account can verify with this code during its original 15-minute setup window. In another browser or after that window, use /owner/account#verify with this code and the password you chose at sign-up. The code expires in 24 hours. If you did not sign up for ZROtext, ignore this message.\n"
     )
 }
 
@@ -761,6 +762,14 @@ impl AuthHttpState {
 pub fn router(state: AuthHttpState) -> Router {
     let mut router = Router::new()
         .route("/register", post(register))
+        .route(
+            "/registration-intent/verify",
+            post(registration_intent::verify),
+        )
+        .route(
+            "/registration-intent/resend",
+            post(registration_intent::resend),
+        )
         .route("/resend-verification", post(resend_verification))
         .route("/verify-email", post(verify_email))
         .route("/login", post(login))
@@ -1202,8 +1211,9 @@ async fn register(
     State(state): State<Arc<AuthHttpState>>,
     headers: HeaderMap,
     ApiJson(body): ApiJson<RegisterBody>,
-) -> Result<StatusCode, AuthHttpError> {
+) -> Result<Response, AuthHttpError> {
     require_origin(&headers, &state.canonical_origin)?;
+    let intent = auth::registration_intent::Credentials::random();
     // Private modes first require an address-bound operator invite. Missing
     // or malformed credentials return before email parsing; every denied
     // request avoids the database, abuse budget, and password hashing.
@@ -1212,7 +1222,7 @@ async fn register(
         .admitted_email(&headers, &body.email)
         .map_err(map_auth)?
     else {
-        return Ok(StatusCode::ACCEPTED);
+        return registration_intent::opaque_registration(&intent);
     };
     if !state.dispatcher.ready() {
         return Err(AuthHttpError::Unavailable);
@@ -1225,7 +1235,15 @@ async fn register(
         return Err(AuthHttpError::TooManyRequests);
     }
     let _permit = state.hash_permit().await?;
-    match auth::register(&mut client, &state.hasher, &body.email, &body.password).await {
+    match auth::register_with_intent(
+        &mut client,
+        &state.hasher,
+        &body.email,
+        &body.password,
+        Some(&intent),
+    )
+    .await
+    {
         Ok(_) => {}
         // Avoid leaking whether this address is already registered. A pending
         // owner that still holds the address keeps its record, but its mailed
@@ -1239,11 +1257,11 @@ async fn register(
             auth::cancel_pending_verification(&mut client, &body.email)
                 .await
                 .map_err(map_auth)?;
-            return Ok(StatusCode::ACCEPTED);
+            return registration_intent::opaque_registration(&intent);
         }
         Err(error) => return Err(map_auth(error)),
     }
-    Ok(StatusCode::ACCEPTED)
+    registration_intent::opaque_registration(&intent)
 }
 
 #[derive(Deserialize)]

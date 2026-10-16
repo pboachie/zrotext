@@ -164,4 +164,11 @@ BEGIN
         END IF;
     END IF;
 END $$;
+DO $$
+BEGIN
+    IF to_regprocedure('public.registration_browser_intent_binding_guard()') IS NOT NULL
+      AND has_function_privilege(current_user,'public.registration_browser_intent_binding_guard()','EXECUTE') THEN
+        RAISE EXCEPTION 'runtime registration trigger privilege is not narrow';
+    END IF;
+END $$;
 ROLLBACK;

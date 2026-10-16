@@ -463,6 +463,12 @@ pub(crate) const DELETE_PLAN: &[(&str, &str)] = &[
         "DELETE FROM billing_customers WHERE account_id=$1",
     ),
     // Account mail, second-factor and session state before the membership.
+    // Count original-browser proof rows before their verification parent can
+    // cascade them, so the erasure receipt reports their removal explicitly.
+    (
+        "registration_browser_intents",
+        "DELETE FROM registration_browser_intents WHERE account_id=$1",
+    ),
     (
         "verification_mail_outbox",
         "DELETE FROM verification_mail_outbox \

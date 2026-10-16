@@ -448,22 +448,36 @@ async fn checkout_expires_every_other_open_session_before_returning_one() {
 }
 
 #[tokio::test]
-async fn stripe_return_destinations_are_concrete_and_do_not_claim_access() {
-    for path in ["/billing/success", "/billing/cancel"] {
+async fn stripe_returns_resume_setup_without_claiming_access_or_trusting_query_parameters() {
+    for (path, destination) in [
+        ("/billing/success", "/owner/hosted?checkout=return"),
+        ("/billing/cancel", "/owner/hosted?checkout=cancel"),
+        (
+            "/billing/success?status=active&next=https://untrusted.example",
+            "/owner/hosted?checkout=return",
+        ),
+        (
+            "/billing/cancel?status=active&checkout=return",
+            "/owner/hosted?checkout=cancel",
+        ),
+    ] {
         let response = return_router()
             .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(response.headers()[header::LOCATION], destination);
         assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
-        let body = to_bytes(response.into_body(), 2048).await.unwrap();
-        let page = std::str::from_utf8(&body).unwrap();
-        assert!(page.contains("billing") || page.contains("Billing"));
+        assert_eq!(response.headers()["referrer-policy"], "no-referrer");
+        assert_eq!(response.headers()["x-content-type-options"], "nosniff");
         assert!(
-            page.contains("pending")
-                || page.contains("not confirm")
-                || page.contains("No subscription")
+            response.headers()["content-security-policy"]
+                .to_str()
+                .unwrap()
+                .contains("frame-ancestors 'none'")
         );
+        let body = to_bytes(response.into_body(), 2048).await.unwrap();
+        assert!(body.is_empty());
     }
 }
 
