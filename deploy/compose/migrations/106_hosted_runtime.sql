@@ -491,11 +491,11 @@ END $$;
 -- Additive account-anchor participation. No writer factory, epoch advancement,
 -- profile selection, or payload authority is introduced here.
 DO $migration$
-DECLARE installation name; relation_name text;
+DECLARE installation name; installation_oid oid; relation_name text;
 BEGIN
-    SELECT n.nspname INTO STRICT installation FROM pg_catalog.pg_class c
+    SELECT n.nspname,n.oid INTO STRICT installation,installation_oid FROM pg_catalog.pg_class c
        JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE c.oid='accounts'::regclass;
-    IF NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class c WHERE c.relnamespace=installation::regnamespace
+    IF NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class c WHERE c.relnamespace=installation_oid
        AND c.relname='payload_profile_account_anchors' AND c.relkind='r') THEN
        RAISE EXCEPTION 'account anchor foundation required' USING ERRCODE='23514';
     END IF;
