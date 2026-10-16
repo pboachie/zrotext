@@ -68,8 +68,15 @@ async function fixture(destination = "setup?new=1", width = 1440, changes = {}) 
     }
     if (url.pathname === "/v1/service/availability") return json({ schema_version: 1, deployment: state.deployment, registration: state.registration,
       billing: state.mode, checkout_available: state.catalog && (state.mode === "test" || state.runtime && state.mode === "live"), plan_catalog_available: state.catalog });
-    if (url.pathname === "/v1/auth/session") return state.signedIn ? json({ role: "owner", account_id: account, session_id: state.session, user_id: account }) : json({}, 401);
-    if (url.pathname === "/v1/auth/login") { state.signedIn = true; return route.fulfill({ status: 204 }); }
+    if (url.pathname === "/v1/auth/session") {
+      if (state.sessionUnavailable) return route.abort();
+      return state.signedIn ? json({ role: "owner", account_id: account, session_id: state.session, user_id: account }) : json({}, 401);
+    }
+    if (url.pathname === "/v1/auth/login") {
+      state.signedIn = true;
+      await page.context().addCookies([{ name: "__Host-zrotext_csrf", value: state.csrfToken, url: "https://example.test", secure: true, sameSite: "Strict" }]);
+      return route.fulfill({ status: 204 });
+    }
     if (["/v1/auth/register", "/v1/auth/resend-verification"].includes(url.pathname)) return route.fulfill({ status: 202 });
     if (url.pathname === "/v1/auth/verify-email") return route.fulfill({ status: 204 });
     if (url.pathname === "/v1/auth/logout") { state.signedIn = false; return route.fulfill({ status: 204 }); }
@@ -542,6 +549,50 @@ for (const width of [390, 1440]) test(`LIVE subscription recovery preserves prog
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
   } catch (error) { throw new Error(`LIVE recovery failed at ${stage}`, { cause: error }); }
   finally { await page.close(); }
+});
+
+for (const loss of ["cookie", "session"]) test(`LIVE ${loss} loss exposes usable sign-in without an automatic authentication or checkout POST`, async () => {
+  const { page, state, count } = await fixture("hosted", 390, { mode: "live", runtime: true, billing: "active" });
+  try {
+    await page.waitForFunction(() => document.body.dataset.hostedPhase === "subscription_observed" && !document.getElementById("hosted-refresh").disabled);
+    if (loss === "cookie") await page.context().clearCookies({ name: "__Host-zrotext_csrf" });
+    else state.signedIn = false;
+    await page.clock.fastForward(10000);
+    await page.waitForFunction(() => document.body.dataset.hostedPhase === "sign_in" && !document.querySelector('#hosted-login-form button[type="submit"]').disabled);
+    assert.equal(await page.locator("#hosted-account").isVisible(), true);
+    assert.equal(await page.locator("#hosted-login-form").isVisible(), true);
+    assert.equal(await page.locator("#hosted-billing").isVisible(), false);
+    assert.equal(await page.locator("#hosted-phone").isVisible(), false);
+    assert.equal(state.requests.filter(request => request.method === "POST").length, 0);
+    await page.locator("#hosted-email").fill("owner@example.test");
+    await page.locator("#hosted-password").fill("synthetic-password");
+    await page.locator('#hosted-login-form button[type="submit"]').click();
+    await page.waitForFunction(() => document.body.dataset.hostedPhase === "subscription_observed" && !document.getElementById("hosted-refresh").disabled);
+    assert.equal(await page.locator("#hosted-phone").isVisible(), true);
+    assert.equal(await page.locator("#hosted-password").inputValue(), "");
+    assert.equal(count("/v1/auth/login"), 1, "only the user's explicit sign-in is posted");
+    assert.equal(state.requests.filter(request => request.method === "POST").length, 1);
+    assert.equal(count("/v1/billing/checkout"), 0);
+    assert.equal(count("/v1/billing/checkout/recover"), 0);
+  } finally { await page.close(); }
+});
+
+test("LIVE transient network failure retains billing recovery and resumes without sign-in", async () => {
+  const { page, state } = await fixture("hosted", 390, { mode: "live", runtime: true, billing: "active" });
+  try {
+    await page.waitForFunction(() => document.body.dataset.hostedPhase === "subscription_observed" && !document.getElementById("hosted-refresh").disabled);
+    state.sessionUnavailable = true;
+    await page.locator("#hosted-refresh").click();
+    await page.waitForFunction(() => document.body.dataset.hostedPhase === "unavailable" && !document.getElementById("hosted-refresh").disabled);
+    assert.equal(await page.locator("#hosted-billing").isVisible(), true);
+    assert.equal(await page.locator("#hosted-login-form").isVisible(), false);
+    assert.equal(await page.locator("#hosted-phone").isVisible(), false);
+    state.sessionUnavailable = false;
+    await page.locator("#hosted-refresh").click();
+    await page.waitForFunction(() => document.body.dataset.hostedPhase === "subscription_observed" && !document.getElementById("hosted-refresh").disabled);
+    assert.equal(await page.locator("#hosted-phone").isVisible(), true);
+    assert.equal(state.requests.filter(request => request.method === "POST").length, 0);
+  } finally { await page.close(); }
 });
 
 test("a lost checkout reply offers current status and reload cannot repeat the purchase", async () => {

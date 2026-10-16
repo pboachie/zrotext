@@ -19,11 +19,14 @@ const response = (body, status = 200) => ({ ok: status >= 200 && status < 300, s
 function fixture(mode = "live", options = {}) {
   const state = { status: observed(mode), plan: plan(mode), mode, calls: [], attempts: 0, ...options.state };
   const controller = create({ now: () => now, checkoutReturn: options.checkoutReturn,
-    cookie: () => "__Host-zrotext_csrf=proof-a", randomUUID: () => expected.id,
+    cookie: options.cookie || (() => "__Host-zrotext_csrf=proof-a"), randomUUID: () => expected.id,
     onCheckoutAttempt: () => { state.attempts++; },
     fetch: async (path, init) => {
       state.calls.push({ path, ...init });
-      if (path === "/v1/auth/session") return response({ role: "owner", account_id: expected.account, session_id: expected.id });
+      if (path === "/v1/auth/session") {
+        if (state.sessionUnavailable) throw new Error("synthetic network failure");
+        return response({ role: "owner", account_id: expected.account, session_id: expected.id }, state.sessionStatus || 200);
+      }
       if (path === "/v1/service/availability") return response({ schema_version: 1, deployment: "hosted", registration: "open",
         billing: state.mode, checkout_available: true, plan_catalog_available: true });
       if (path === "/v1/billing/status") {
@@ -78,6 +81,33 @@ test("active and grace require fresh clean positive entitlement and never repeat
     await assert.rejects(controller.handoff("checkout"));
     assert.equal(state.calls.filter(c => c.method === "POST").length, 0);
   }
+});
+test("lost sign-in proof and expired sessions expose sign-in without repeating any mutation", async () => {
+  for (const loss of ["cookie", "empty_cookie", "expired"]) {
+    let cookie = "__Host-zrotext_csrf=proof-a";
+    const { controller, state } = fixture("live", { cookie: () => cookie });
+    Object.assign(state.status.entitlement, { phase: "active", valid_until_ms: now + 30000, outbound_limit: 19, device_cap: 1 });
+    await controller.refresh();
+    assert.equal(controller.view().phase, "subscription_observed");
+    if (loss === "expired") state.sessionStatus = 401;
+    else cookie = loss === "empty_cookie" ? "__Host-zrotext_csrf=" : "";
+    await assert.rejects(controller.refresh(), error => error.status === 401);
+    assert.equal(controller.view().phase, "sign_in", loss);
+    assert.equal(controller.view().recoverBilling, false);
+    assert.equal(controller.view().phoneSetupAvailable, undefined);
+    assert.equal(controller.view().checkoutAvailable, undefined);
+    assert.equal(state.calls.filter(c => c.method === "POST").length, 0);
+  }
+});
+test("transient session network failure retains billing recovery without sign-in or mutations", async () => {
+  const { controller, state } = fixture();
+  await controller.refresh();
+  state.sessionUnavailable = true;
+  await assert.rejects(controller.refresh(), /Could not reach/);
+  assert.equal(controller.view().phase, "unavailable");
+  assert.equal(controller.view().recoverBilling, true);
+  assert.equal(controller.view().billingMode, "live");
+  assert.equal(state.calls.filter(c => c.method === "POST").length, 0);
 });
 test("risk, dirty, expired and zero-capacity observations retain progress without enabling phone setup", () => {
   for (const change of [

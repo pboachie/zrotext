@@ -55,6 +55,8 @@ The hosted sequence uses these existing APIs:
    `resend(email, password)` and `verify(token, password)` remain available in
    another browser or after the original intent expires. All verification paths
    return to explicit sign-in; none issues an ordinary session.
+   An existing session opened in another tab is preserved. Its recovery link
+   opens the owner or observer workspace appropriate to that observed role.
 4. `login(email, password)` establishes a session or requests a second factor.
    `secondFactor(code)` completes the private in-memory challenge. MFA failure
    clears the challenge and requires sign-in again.
@@ -131,6 +133,9 @@ not activate service signup, prices, deployment or a live launch.
 Missing, malformed, mismatched or disabled billing observations fail closed. Failed
 refresh removes previously actionable controls. Pending reconciliation, review,
 payment hold or any nonterminal subscription blocks a second checkout.
+Missing sign-in proof or an expired session returns to the explicit sign-in form;
+a transient network failure preserves billing recovery without replaying sign-in
+or checkout. Signing in again re-reads the existing subscription and phone progress.
 Runtime account/session envelopes and timestamps must remain current. Active or
 grace service also needs fresh positive limits and no dirty/risk hold. Legacy
 TEST active, grace and invoice-current projections remain labelled TEST.

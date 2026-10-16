@@ -141,6 +141,7 @@
         guard();
         if (!["owner", "observer"].includes(current?.role) || !uuid.test(current.account_id) || !uuid.test(current.session_id)) throw new Error("The current sign-in could not be confirmed.");
         return publish({ phase: "existing_session", hosting: "hosted",
+          workspacePath: current.role === "observer" ? "/owner/observer" : "/owner/devices",
           message: "An account is already signed in in this browser. Open its workspace, or sign out there before using another account." });
       } catch (error) {
         guard();
@@ -204,7 +205,11 @@
 
     async function ownerSession() {
       const csrf = csrfToken();
-      if (!csrf) throw new Error("Sign in again to continue.");
+      if (!csrf) {
+        const error = new Error("Sign in again to continue.");
+        error.status = 401;
+        throw error;
+      }
       const result = await request("/v1/auth/session");
       if (csrfToken() !== csrf) throw new Error("Your account session changed. Refresh before continuing.");
       if (!result || result.role !== "owner" || !uuid.test(result.account_id) || !uuid.test(result.session_id)) {

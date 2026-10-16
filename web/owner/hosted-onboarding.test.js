@@ -448,13 +448,14 @@ test("original-browser verification and resend use only the independent intent p
 
 test("lost original-browser reply checks current session once without repeating verification or replacing another account", async () => {
   const proof = "ztrc_" + Buffer.alloc(32, 8).toString("base64url");
-  for (const current of [response({}, 401), response(owner)]) {
+  for (const [current, workspacePath] of [[response({}, 401), undefined], [response(owner), "/owner/devices"], [response({ ...owner, role: "observer" }), "/owner/observer"]]) {
     const f = fixture({ "/v1/auth/registration-intent/verify": () => { throw new Error("lost reply"); },
       "/v1/auth/session": () => current }, { cookie: () => "__Host-zrotext_registration_csrf=" + proof });
     f.controller.select("hosted");
     await f.controller.resumeVerification();
     await f.controller.verifyOriginal("synthetic-mailed-code");
     assert.equal(f.controller.view().phase, current.status === 401 ? "sign_in" : "existing_session");
+    assert.equal(f.controller.view().workspacePath, workspacePath);
     assert.equal(f.calls.filter(call => call.path.endsWith("intent/verify")).length, 1);
     assert.equal(f.calls.filter(call => call.path === "/v1/auth/session").length, 1);
     assert.equal(f.calls.filter(call => call.path === "/v1/auth/login").length, 0);

@@ -68,6 +68,19 @@ current password hash; it does not duplicate the password verifier. Foreign keys
 retain account/user ownership and cascade cleanup when the pending owner is
 removed. This is authentication metadata, with no message or root-key authority.
 
+The table has an immutable, nonnull `account_id`; there is no deployment-wide
+or unbound row. Its invoker trigger fixes its search path and checks the
+verification generation in the same installation schema. The stock runtime
+provisioner revokes direct helper execution, including after reprovisioning.
+The table is excluded from account exports because it contains authentication
+proof and password-version bindings. Complete owner erasure deletes and reports
+its account-scoped rows before deleting verification parents or memberships;
+another account's pending proof is preserved. Parent verification cleanup and
+membership removal also cascade its rows. The fifteen-minute limit expires
+authority; it does not claim immediate storage deletion. These classifications
+do not modify the separately reviewed profile03 candidate inventory or enable
+that profile.
+
 Expiry is fixed at creation plus 15 minutes. Resend, refresh, failure and page
 departure cannot extend it or reset the verification-attempt budget. Verification
 and resend hold account, user, membership and intent locks in a specified order,

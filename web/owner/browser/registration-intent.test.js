@@ -34,7 +34,7 @@ async function fixture(width = 390, changes = {}) {
       return route.fulfill({ body: await fs.readFile(path.join(root, file)), contentType: file.endsWith("js") ? "text/javascript" : file.endsWith("css") ? "text/css" : "text/html" });
     }
     if (url.pathname === "/v1/service/availability") return json({ schema_version: 1, deployment: "hosted", registration: "open", billing: "disabled", checkout_available: false, plan_catalog_available: false });
-    if (url.pathname === "/v1/auth/session") return state.signedIn ? json({ role: "owner", account_id: account, session_id: session, user_id: account }) : json({}, 401);
+    if (url.pathname === "/v1/auth/session") return state.signedIn ? json({ role: state.role || "owner", account_id: account, session_id: session, user_id: account }) : json({}, 401);
     if (request.method() !== "POST" || headers.origin !== "https://example.test") return json({}, 403);
     if (url.pathname === "/v1/auth/register") {
       assert.deepEqual(Object.keys(body).sort(), ["email", "password"]);
@@ -163,8 +163,9 @@ test("expired original browser intent offers explicit password fallback without 
     assert.equal(count("/v1/auth/verify-email"), 1);
   } finally { await page.close(); }
 });
-for (const otherAccount of [false, true]) test(`uncertain verification checks current session without replay and preserves another account=${otherAccount}`, async () => {
-  const { page, state, count } = await fixture(390, { lostReply: true, otherAccount });
+for (const role of [null, "owner", "observer"]) test(`uncertain verification checks current session without replay and preserves the ${role || "signed-out"} session`, async () => {
+  const otherAccount = role !== null;
+  const { page, state, count } = await fixture(390, { lostReply: true, otherAccount, role });
   try {
     await register(page);
     const before = state.requests.filter(value => value.path === "/v1/auth/session").length;
@@ -180,6 +181,9 @@ for (const otherAccount of [false, true]) test(`uncertain verification checks cu
     if (otherAccount) {
       await capture(page, "existing-session");
       assert.equal(await page.getByRole("link", { name: "Open current workspace" }).isVisible(), true);
+      const destination = role === "observer" ? "/owner/observer" : "/owner/devices";
+      assert.equal(await page.getByRole("link", { name: "Open current workspace" }).getAttribute("href"), destination);
+      assert.equal(await page.getByRole("link", { name: "Open workspace", exact: true }).getAttribute("href"), destination);
       assert.equal((await page.context().cookies()).find(value => value.name === "__Host-zrotext_csrf").value, ordinary);
     }
   } finally { await page.close(); }

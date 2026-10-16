@@ -23,6 +23,8 @@
   function render() {
     const value = controller.view(), phase = value.phase;
     document.body.dataset.hostedPhase = phase;
+    for (const link of document.querySelectorAll("[data-hosted-workspace]")) link.setAttribute("href",
+      phase === "existing_session" && value.workspacePath === "/owner/observer" ? "/owner/observer" : "/owner/devices");
     byId("hosted-refresh").hidden = ["choose_test_subscription", "choose_subscription"].includes(phase);
     byId("hosted-checkout").hidden = true;
     byId("hosted-portal").hidden = true;

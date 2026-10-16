@@ -16,6 +16,7 @@ mod managed_grants;
 mod opening_capacity;
 #[path = "provider_receipts_tests.rs"]
 mod provider_receipts;
+mod registration_intents;
 
 const ORIGIN: &str = "https://test.example";
 
