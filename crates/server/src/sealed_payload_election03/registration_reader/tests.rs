@@ -283,6 +283,58 @@ async fn future_completion_missing_original_root_and_revoked_root_refuse() {
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with disposable cluster administrator"]
+async fn caller_operator_path_cannot_forge_the_primary_database_clock() {
+    let mut f = Fixture::new().await;
+    let future = Seed::with_offset(&f.owner, 600_000).await;
+    let historical = Seed::new(&f.owner).await;
+    // An exact numeric,int4 overload wins over the builtin numeric,numeric
+    // multiplication when the attacker's schema precedes pg_catalog. Table
+    // qualification or a pg_temp table test cannot detect this lookup path.
+    f.owner.batch_execute("CREATE SCHEMA reader_operator_shadow; CREATE FUNCTION reader_operator_shadow.forge_clock(numeric,integer) RETURNS numeric LANGUAGE sql IMMUTABLE STRICT AS 'SELECT 9000000000000::numeric'; CREATE OPERATOR reader_operator_shadow.* (LEFTARG=numeric,RIGHTARG=integer,FUNCTION=reader_operator_shadow.forge_clock)").await.unwrap();
+    f.owner
+        .batch_execute(&format!(
+            "GRANT USAGE ON SCHEMA reader_operator_shadow TO {}",
+            escape_identifier(&f.read_role)
+        ))
+        .await
+        .unwrap();
+    f.reader
+        .batch_execute("SET search_path=reader_operator_shadow,pg_catalog")
+        .await
+        .unwrap();
+    let query =
+        "SELECT pg_catalog.floor(extract(epoch FROM pg_catalog.clock_timestamp())*1000)::bigint";
+    assert_eq!(
+        f.reader
+            .query_one(query, &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        9_000_000_000_000
+    );
+    assert!(matches!(
+        read(&mut f.reader, future.locator, ORIGIN).await,
+        Err(ReadError::Refused)
+    ));
+    assert!(
+        read(&mut f.reader, historical.locator, ORIGIN)
+            .await
+            .is_ok()
+    );
+    // SET LOCAL also leaves the supplied connection's session setting intact.
+    assert_eq!(
+        f.reader
+            .query_one(query, &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        9_000_000_000_000
+    );
+    f.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with disposable cluster administrator"]
 async fn original_signed_history_survives_expiry_without_granting_current_authority() {
     let mut f = Fixture::new().await;
     let s = Seed::new(&f.owner).await;

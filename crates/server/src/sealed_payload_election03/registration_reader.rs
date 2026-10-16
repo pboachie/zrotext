@@ -105,7 +105,10 @@ pub async fn read(
         .isolation_level(IsolationLevel::ReadCommitted)
         .start()
         .await?;
-    tx.batch_execute("SET LOCAL lock_timeout='3s'; SET LOCAL statement_timeout='5s'")
+    // Qualification alone does not pin operator lookup (including the clock's
+    // numeric multiplication and UUID predicates). Discard the caller's path
+    // for the whole transaction before executing any expression or row query.
+    tx.batch_execute("SET LOCAL search_path TO pg_catalog; SET LOCAL lock_timeout='3s'; SET LOCAL statement_timeout='5s'")
         .await?;
     let proof = read_locked(&tx, locator, configured_origin).await?;
     tx.commit().await?;
