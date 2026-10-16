@@ -186,7 +186,11 @@
       guard();
       await sameSession(before);
       guard();
-      const next = billingView(billing);
+      let next = billingView(billing);
+      // A return marker only removes actions. It cannot assert payment success or failure.
+      if (options.checkoutReturn === true && next.phase === "choose_test_subscription") {
+        next = { ...next, phase: "billing_pending", checkoutAvailable: false };
+      }
       session = before;
       challenge = null;
       return publish({ hosting: "hosted", ...next,
@@ -268,6 +272,25 @@
         return refreshWithin(guard);
       }),
       refresh: () => run(refreshWithin),
+      plan: () => {
+        const expected = session, previous = view;
+        return run(async (guard) => {
+          if (!previous.checkoutAvailable) throw new Error("Refresh subscription status before reviewing a plan.");
+          const capability = await availabilityWithin(guard);
+          if (capability.billing !== "test" || !capability.checkout_available || !capability.plan_catalog_available) throw new Error("A verified TEST plan is unavailable.");
+          await sameSession(expected); guard();
+          const value = await request("/v1/billing/plan");
+          guard(); await sameSession(expected); guard();
+          const fields = ["schema_version", "mode", "currency", "unit_amount", "interval", "interval_count", "outbound_limit", "device_cap"];
+          if (!value || Object.keys(value).length !== fields.length || !Object.keys(value).every(key => fields.includes(key)) ||
+              value.schema_version !== 1 || value.mode !== "test" || !/^[a-z]{3}$/.test(value.currency) ||
+              !count(value.unit_amount) || !Number.isSafeInteger(value.interval_count) || value.interval_count < 1 ||
+              !["day", "week", "month", "year"].includes(value.interval) ||
+              (value.outbound_limit !== null && !count(value.outbound_limit)) || (value.device_cap !== null && !count(value.device_cap))) throw new Error("The configured TEST plan was invalid.");
+          publish(previous);
+          return Object.freeze({ ...value });
+        });
+      },
       handoff: (kind) => {
         const expected = session;
         const permitted = kind === "checkout" ? view.checkoutAvailable

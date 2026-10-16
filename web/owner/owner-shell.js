@@ -1,6 +1,26 @@
 /* SPDX-License-Identifier: AGPL-3.0-only */
 "use strict";
 (() => {
+  // The compact menu keeps page tasks above the fold on a small browser.
+  const navigation = document.querySelector(".owner-nav");
+  if (navigation) {
+    const menu = document.createElement("details"), label = document.createElement("summary");
+    menu.className = "owner-menu"; label.textContent = "Menu";
+    const content = document.createElement("div"); content.className = "owner-menu-content";
+    navigation.before(menu); menu.append(label, content); content.append(navigation);
+    const utilities = document.querySelector(".owner-utilities");
+    if (utilities) content.append(utilities);
+    const wide = matchMedia("(min-width: 60.001rem)");
+    menu.open = wide.matches;
+    wide.addEventListener("change", event => { menu.open = event.matches; });
+  }
+  const currentPath = location.pathname;
+  const destination = ["/owner/setup", "/owner/sms-lines"].includes(currentPath) ? "/owner/phones" : ["/owner/account", "/owner/hosted", "/owner/account-root-trust"].includes(currentPath) ? "/owner/security" : currentPath;
+  for (const link of document.querySelectorAll(".owner-nav a")) {
+    link.removeAttribute("aria-current");
+    const target = new URL(link.href);
+    if (!target.hash && target.pathname === destination) link.setAttribute("aria-current", "page");
+  }
   const ownerLinks = [...document.querySelectorAll("[data-owner-only]")];
   const observerLink = document.getElementById("owner-observer-link");
   const status = document.getElementById("owner-nav-status");

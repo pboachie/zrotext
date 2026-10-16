@@ -1,10 +1,11 @@
 # Hosted TEST onboarding controller
 
 `web/owner/hosted-onboarding.js` provides a browser controller for the existing
-account and Stripe TEST APIs. It is an integration component, not a served
-onboarding page. The current account, fleet and billing pages remain the served
-interfaces. There is no live payment implementation or commercial catalog in
-this component. See [current TEST billing](STRIPE-TEST-BILLING.md) and the
+account and Stripe TEST APIs. The served `/owner/hosted` page uses it for
+registration, verification, sign-in, configured TEST plan review, checkout,
+return reconciliation and subscription management. Existing account, fleet and
+billing pages remain available. There is no LIVE payment implementation or
+commercial default catalog in this component. See [current TEST billing](STRIPE-TEST-BILLING.md) and the
 [mode-isolation proposal](BILLING-MODES-PROPOSAL.md).
 
 ## Integration
@@ -52,7 +53,14 @@ The hosted sequence uses these existing APIs:
 5. `refresh()` reads the owner session and local TEST billing projection, then
    checks that the same account and session remain current. Observers are
    refused before requesting billing data.
-6. `handoff("checkout")` or `handoff("portal")` returns a transient validated
+6. `plan()` checks the same current owner session and capability, then reads
+   `/v1/billing/plan`. The closed version-one response contains TEST mode,
+   currency, integer charge units, recurrence and configured device/outbound
+   allowances. The served page shows checkout only after these terms validate.
+   Stripe charge units are used for display, including the documented ISK/UGX
+   exceptions; unsupported fractional exceptions cannot be rounded into a
+   purchase.
+7. `handoff("checkout")` or `handoff("portal")` returns a transient validated
    HTTPS Stripe URL. The integrating website may navigate to that URL. It must
    refresh after return; neither return nor checkout completion grants access.
 
@@ -66,6 +74,31 @@ session read and sends that captured token for mutations, so replacement
 session cookies cannot silently select a different account. Missing or rotated
 CSRF clears the controls. A server conflict requires an explicit refresh.
 Actions are serialized, so repeated submissions cannot run in parallel.
+
+## Served account and recovery flow
+
+The account view preserves an email address in memory while moving between
+registration, email verification, resend and sign-in. Password-manager attributes
+remain present. Passwords, verification codes and MFA codes are cleared after
+submit and page departure. Closed or unknown signup retains sign-in and recovery.
+Self-hosted owners continue through their server's account/setup interfaces
+without a Stripe subscription.
+
+The subscription view explains compatible Android, active SIM, internet and
+separate carrier service before purchase. Configured TEST price, currency,
+recurrence and allowances come from the server's verified provider metadata;
+there are no sample commercial plans. Checkout is a transient Stripe navigation.
+Returning to the page refreshes the server projection. A `checkout=return` or
+`checkout=cancel` marker is conservative only: an empty stale subscription
+projection remains pending and cannot offer another checkout. The marker never
+grants entitlement or proves cancellation. Pending reconciliation
+shows a status check and help path, with no second purchase control. An observed
+eligible TEST subscription links into Add phone, where server enrollment and
+line authority are checked independently. TEST never becomes LIVE eligibility.
+
+Missing LIVE runtime support, configured prices, namespace verification or
+provider readiness remains an explicit unavailable capability. This page does
+not activate service signup, prices, deployment or a live launch.
 
 ## States and authority
 

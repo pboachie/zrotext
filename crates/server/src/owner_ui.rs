@@ -15,6 +15,10 @@ const EXCEPTIONS_NAV_LINK: &str =
 const EXCEPTIONS_PAGE: &str = include_str!("../../../web/owner/workflow-exceptions.html");
 const EXCEPTIONS_SCRIPT: &str = include_str!("../../../web/owner/workflow-exceptions.js");
 const SCRIPT: &str = include_str!("../../../web/owner/devices.js");
+const WORKSPACE_SCRIPT: &str = include_str!("../../../web/owner/owner-workspace.js");
+const HOSTED_PAGE: &str = include_str!("../../../web/owner/hosted.html");
+const HOSTED_SCRIPT: &str = include_str!("../../../web/owner/hosted.js");
+const HOSTED_CONTROLLER: &str = include_str!("../../../web/owner/hosted-onboarding.js");
 const SHELL_SCRIPT: &str = include_str!("../../../web/owner/owner-shell.js");
 const STYLE: &str = include_str!("../../../web/owner/devices.css");
 const ACCOUNT_PAGE: &str = include_str!("../../../web/owner/account.html");
@@ -67,6 +71,30 @@ pub fn router_with_customer_routines(customer_routines_enabled: bool) -> Router 
             "/owner/devices",
             get(move || async move { page(customer_routines_enabled).await }),
         )
+        .route(
+            "/owner/phones",
+            get(move || async move { page(customer_routines_enabled).await }),
+        )
+        .route(
+            "/owner/activity",
+            get(move || async move { page(customer_routines_enabled).await }),
+        )
+        .route(
+            "/owner/integrations",
+            get(move || async move { page(customer_routines_enabled).await }),
+        )
+        .route(
+            "/owner/security",
+            get(move || async move { page(customer_routines_enabled).await }),
+        )
+        .route(
+            "/owner/setup",
+            get(move || async move { page(customer_routines_enabled).await }),
+        )
+        .route("/owner/hosted", get(hosted_page))
+        .route("/owner/hosted.js", get(hosted_script))
+        .route("/owner/hosted-onboarding.js", get(hosted_controller))
+        .route("/owner/owner-workspace.js", get(workspace_script))
         .route("/owner/devices.js", get(script))
         .route("/owner/owner-shell.js", get(shell_script))
         .route("/owner/devices.css", get(style))
@@ -270,6 +298,46 @@ async fn page(customer_routines_enabled: bool) -> Response {
     secure_response(
         Html(PAGE.replace(EXCEPTIONS_NAV_SLOT, navigation)).into_response(),
         "text/html; charset=utf-8",
+    )
+}
+
+async fn hosted_page() -> Response {
+    secure_response(
+        Html(HOSTED_PAGE).into_response(),
+        "text/html; charset=utf-8",
+    )
+}
+
+async fn hosted_script(headers: HeaderMap) -> Response {
+    static ETAG: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| asset_etag(HOSTED_SCRIPT));
+    cached_asset(
+        HOSTED_SCRIPT,
+        "text/javascript; charset=utf-8",
+        &ETAG,
+        headers.get(header::IF_NONE_MATCH),
+    )
+}
+
+async fn hosted_controller(headers: HeaderMap) -> Response {
+    static ETAG: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| asset_etag(HOSTED_CONTROLLER));
+    cached_asset(
+        HOSTED_CONTROLLER,
+        "text/javascript; charset=utf-8",
+        &ETAG,
+        headers.get(header::IF_NONE_MATCH),
+    )
+}
+
+async fn workspace_script(headers: HeaderMap) -> Response {
+    static ETAG: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| asset_etag(WORKSPACE_SCRIPT));
+    cached_asset(
+        WORKSPACE_SCRIPT,
+        "text/javascript; charset=utf-8",
+        &ETAG,
+        headers.get(header::IF_NONE_MATCH),
     )
 }
 
@@ -679,6 +747,31 @@ mod tests {
         assert!(ACCOUNT_PAGE.contains("id=\"verify\""));
         for (path, content_type, cache_control) in [
             ("/owner/devices", "text/html; charset=utf-8", "no-store"),
+            ("/owner/phones", "text/html; charset=utf-8", "no-store"),
+            ("/owner/activity", "text/html; charset=utf-8", "no-store"),
+            (
+                "/owner/integrations",
+                "text/html; charset=utf-8",
+                "no-store",
+            ),
+            ("/owner/security", "text/html; charset=utf-8", "no-store"),
+            ("/owner/setup", "text/html; charset=utf-8", "no-store"),
+            ("/owner/hosted", "text/html; charset=utf-8", "no-store"),
+            (
+                "/owner/owner-workspace.js",
+                "text/javascript; charset=utf-8",
+                "no-cache",
+            ),
+            (
+                "/owner/hosted.js",
+                "text/javascript; charset=utf-8",
+                "no-cache",
+            ),
+            (
+                "/owner/hosted-onboarding.js",
+                "text/javascript; charset=utf-8",
+                "no-cache",
+            ),
             (
                 "/owner/devices.js",
                 "text/javascript; charset=utf-8",

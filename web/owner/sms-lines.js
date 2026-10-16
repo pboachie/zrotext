@@ -4,6 +4,7 @@
 // only ever receives its public key and signatures over statements this page
 // rebuilt itself.
 "use strict";
+(() => {
 
 const signing = globalThis.ZtSmsLineSigning;
 const pollIntervalMs = 2000;
@@ -52,8 +53,8 @@ class ApiRejection extends Error {
   }
 }
 
-async function api(path, method = "GET", body = undefined) {
-  const csrf = csrfToken();
+async function api(path, method = "GET", body = undefined, expectedCsrf = null) {
+  const csrf = expectedCsrf || csrfToken();
   if (!csrf) throw new Error("Your sign-in expired. Sign in again.");
   const headers = { "x-zrotext-csrf": csrf };
   if (body !== undefined) headers["content-type"] = "application/json";
@@ -110,10 +111,11 @@ function renderKeys() {
   const held = active && localKey && localKey.fingerprint === active.fingerprint;
   say("key-summary", !active
     ? "No active SMS approval key. Create one to approve line activations."
-    : held ? `Active key ${active.fingerprint.slice(0, 12)}… is held by this browser.`
-      : `Active key ${active.fingerprint.slice(0, 12)}… is held by another browser. Approve from there, or revoke it here.`);
+    : held ? `Active key ${active.fingerprint.slice(0, 12)}Ã¢â‚¬Â¦ is held by this browser.`
+      : `Active key ${active.fingerprint.slice(0, 12)}Ã¢â‚¬Â¦ is held by another browser. Approve from there, or revoke it here.`);
   byId("key-create").hidden = Boolean(active);
   byId("key-revoke").hidden = !active;
+  if (document.body?.dataset?.workspaceView === "setup") document.body.dataset.lineKeyReady = String(Boolean(held));
   byId("activation-approve").disabled = !held || !activation || !activation.ownerStatement ||
     Boolean(activation.v2 && (activation.phase !== "review" || document.hidden));
 }
@@ -167,7 +169,7 @@ function lineLabel(line) {
   const revoked = line.device_revoked ? " (phone revoked; activate it on another phone)" : "";
   const phone = line.device_name ? ` on ${line.device_name}${revoked}` : "";
   const scope = line.purpose ? ` (${line.purpose})` : "";
-  return `${line.line_id.slice(0, 8)}… ${line.state}${phone}${scope}, generation ${line.generation}`;
+  return `${line.line_id.slice(0, 8)}Ã¢â‚¬Â¦ ${line.state}${phone}${scope}, generation ${line.generation}`;
 }
 
 async function loadLines(more = false) {
@@ -267,7 +269,7 @@ async function poll() {
     view = await api(`/v1/auth/sms-lines/${current.lineId}/activations/${current.challengeId}`);
   } catch (error) {
     if (activation !== current) return;
-    say("activation-status", `${error.message} Retrying…`);
+    say("activation-status", `${error.message} RetryingÃ¢â‚¬Â¦`);
     // Poll errors back off exponentially, capped, instead of retrying
     // at the fixed cadence.
     current.backoffMs = Math.min((current.backoffMs ?? pollIntervalMs) * 2, pollBackoffMaxMs);
@@ -306,7 +308,7 @@ async function poll() {
     say("activation-status", "This activation can no longer complete. The phone may have disconnected or the request expired; start again.");
     return;
   } else if (view.status === "awaiting_device") {
-    say("activation-status", "Waiting for the phone to sign its declaration…");
+    say("activation-status", "Waiting for the phone to sign its declarationÃ¢â‚¬Â¦");
   }
   // The server reports expiry as "closed"; this only bounds a stuck page.
   if (Date.now() - current.startedAt > maxPollMs) {
@@ -335,7 +337,7 @@ async function startActivation(deviceId, lineId) {
   activation = { deviceId, lineId, challengeId: opened.challenge_id, generation: opened.generation,
     ownerStatement: null, startedAt: Date.now() };
   renderKeys();
-  say("activation-status", "Waiting for the phone to sign its declaration…");
+  say("activation-status", "Waiting for the phone to sign its declarationÃ¢â‚¬Â¦");
   await poll();
 }
 
@@ -351,7 +353,7 @@ async function approveActivation() {
   await api(`/v1/auth/sms-lines/${activation.lineId}/activations/${activation.challengeId}/approve`, "POST",
     { owner_signature_der_b64: signing.base64(signature) });
   byId("activation-approve").disabled = true;
-  say("activation-status", "Approved. Waiting for the server to confirm…");
+  say("activation-status", "Approved. Waiting for the server to confirmÃ¢â‚¬Â¦");
   stopPolling();
   await poll();
 }
@@ -421,14 +423,14 @@ function holdV2(current, phase) {
   say("activation-status", "Outcome unknown. Check this same request before starting another; it will not be repeated automatically.");
 }
 
-async function startV2(deviceId, lineId) {
+async function startV2(deviceId, lineId, openingId = null) {
   if (activation?.v2 && ["opening", "opening_unknown", "approving", "approval_unknown"].includes(activation.phase))
     throw new Error("Check the existing selected SIM request before starting another.");
   canonicalUuidV2(deviceId); canonicalUuidV2(lineId);
   canonicalUuidV2(session.account_id); canonicalUuidV2(session.session_id);
   activationOpeningRound += 1;
   stopPolling();
-  activation = { v2: true, deviceId, lineId, openingId: crypto.randomUUID(), session,
+  activation = { v2: true, deviceId, lineId, openingId: openingId || crypto.randomUUID(), session,
     revision: 0, phase: "opening", ownerStatement: null, startedAt: Date.now() };
   byId("activation-review").hidden = true;
   await openV2(activation);
@@ -453,7 +455,7 @@ async function openV2(current) {
     current.expires = expiryV2(opened.expires_at_ms);
     current.phase = "awaiting_device";
     byId("activation-start").disabled = false;
-    say("activation-status", "Waiting for the phone's selected SIM declaration…");
+    say("activation-status", "Waiting for the phone's selected SIM declarationÃ¢â‚¬Â¦");
     await pollV2(current);
   } catch (error) {
     if (activation !== current) return;
@@ -496,6 +498,7 @@ async function pollV2(current) {
       byId("activation-review").hidden = true; byId("activation-recheck").hidden = true;
       byId("activation-start").disabled = false;
       say("activation-status", "The server approved the selected SIM declaration. Check the phone to confirm local installation.");
+      globalThis.ZtOwnerWorkspace?.refresh();
       renderKeys(); await loadLines().catch(() => {}); return;
     }
     if (["approval_unknown", "awaiting_confirmation"].includes(current.phase)) {
@@ -591,16 +594,19 @@ function guard(statusId, action) {
   };
 }
 
-async function init() {
-  const response = await fetch("/v1/auth/session", { credentials: "same-origin", cache: "no-store" });
-  if (!response.ok) {
-    byId("signed-out").hidden = false;
-    return;
-  }
-  session = await response.json();
-  byId("approval-key").hidden = false;
-  byId("activation").hidden = false;
-  byId("lines").hidden = false;
+let initialized = false;
+let bindingsReady = false;
+let setupMfaReady = false;
+let setupLocator = null;
+async function maybeStartSetup() {
+  if (document.body?.dataset?.workspaceView !== "setup" || !setupLocator || activation ||
+      setupLocator.line_activation_version !== 2 || !localKey || activeServerKey()?.fingerprint !== localKey.fingerprint) return;
+  byId("activation-mode").value = "v2";
+  await startV2(byId("activation-device").value, setupLocator.setup_line_id, setupLocator.setup_opening_id);
+}
+function bindControls() {
+  if (bindingsReady) return;
+  bindingsReady = true;
   byId("line-more").addEventListener("click", guard("lines-status", () => loadLines(true)));
   byId("key-form").addEventListener("submit", guard("key-status", async () => {
     try {
@@ -608,6 +614,7 @@ async function init() {
     } finally {
       byId("key-mfa").value = "";
       await loadKeys().catch(() => {});
+      await maybeStartSetup();
     }
     say("key-status", "Key created and registered.");
   }));
@@ -621,10 +628,13 @@ async function init() {
     if (activation?.v2) invalidateV2(activation);
     byId("activation-line").value = crypto.randomUUID();
   });
-  byId("activation-form").addEventListener("submit", guard("activation-status", () =>
-    byId("activation-mode").value === "v2"
-      ? startV2(byId("activation-device").value, byId("activation-line").value.trim())
-      : startActivation(byId("activation-device").value, byId("activation-line").value.trim())));
+  byId("activation-form").addEventListener("submit", guard("activation-status", () => {
+    if (document.body && !["v1", "v2"].includes(byId("activation-mode").value)) throw new Error("Choose the setup supported by your phone. No activation has been requested.");
+    if (!byId("activation-line").value) byId("activation-line").value = crypto.randomUUID();
+    return byId("activation-mode").value === "v2"
+      ? startV2(byId("activation-device").value, byId("activation-line").value.trim(), setupLocator?.setup_opening_id)
+      : startActivation(byId("activation-device").value, byId("activation-line").value.trim());
+  }));
   byId("activation-recheck").addEventListener("click", guard("activation-status", recheckV2));
   for (const id of ["activation-device", "activation-line", "activation-mode"]) {
     byId(id).addEventListener("change", () => {
@@ -632,11 +642,141 @@ async function init() {
     });
   }
   byId("activation-approve").addEventListener("click", guard("activation-status", approveActivation));
+  if (document.body?.dataset?.workspaceView === "setup") bindSetupMfa();
+}
+
+function clearSetupMfa() {
+  for (const id of ["setup-mfa-password", "setup-mfa-code"]) byId(id).value = "";
+  for (const id of ["setup-mfa-secret", "setup-mfa-uri"]) byId(id).textContent = "";
+  byId("setup-mfa-recovery-codes").replaceChildren();
+  for (const id of ["setup-mfa-secret-panel", "setup-mfa-confirm", "setup-mfa-recovery"]) byId(id).hidden = true;
+}
+async function freshSetupSession(expected, csrf) {
+  const fresh = await api("/v1/auth/session");
+  if (!session || session !== expected || csrfToken() !== csrf ||
+      ["account_id", "session_id", "user_id"].some(key => fresh[key] !== expected[key])) throw new Error("Your sign-in changed. Check setup progress again.");
+}
+async function loadSetupMfa() {
+  if (document.body?.dataset?.workspaceView !== "setup") return;
+  const expected = session, csrf = csrfToken();
+  const value = await api("/v1/auth/mfa");
+  await freshSetupSession(expected, csrf);
+  if (!value || typeof value.enabled !== "boolean" || typeof value.pending !== "boolean") throw new Error("Security setup could not be verified.");
+  setupMfaReady = value.enabled;
+  byId("setup-mfa").hidden = value.enabled;
+  byId("key-form").hidden = !value.enabled;
+  say("setup-mfa-status", value.pending ? "Authenticator setup is pending. Continue with the secret shown here, or explicitly restart it if you left without saving it." : "Add an authenticator to protect line approval.");
+}
+function bindSetupMfa() {
+  let busy = false;
+  function submit(id, action) {
+    byId(id).addEventListener("submit", async event => {
+      event.preventDefault(); if (busy) return; busy = true;
+      const expected = session, csrf = csrfToken();
+      try { await freshSetupSession(expected, csrf); await action(expected, csrf); }
+      catch (error) {
+        let retryCode = false;
+        if (id === "setup-mfa-confirm" && error instanceof ApiRejection && [400, 401].includes(error.status)) {
+          try { await freshSetupSession(expected, csrf); retryCode = true; } catch { /* Replaced sessions cannot keep enrollment secrets. */ }
+        }
+        if (retryCode) say("setup-mfa-status", "That authenticator code was not accepted. Enter a current code to continue this same setup.");
+        else { clearSetupMfa(); say("setup-mfa-status", `Could not confirm security setup. ${error.message} Check security setup before trying again.`); }
+      }
+      finally { byId("setup-mfa-password").value = ""; byId("setup-mfa-code").value = ""; busy = false; }
+    });
+  }
+  submit("setup-mfa-enroll", async (expected, csrf) => {
+    const password = byId("setup-mfa-password").value; byId("setup-mfa-password").value = "";
+    clearSetupMfa();
+    const value = await api("/v1/auth/mfa/enroll", "POST", { password }, csrf);
+    await freshSetupSession(expected, csrf);
+    if (!value || !/^[A-Z2-7]{16,}$/.test(value.secret_base32) || typeof value.provisioning_uri !== "string" || !value.provisioning_uri.startsWith("otpauth://totp/")) throw new Error("The authenticator response was invalid.");
+    say("setup-mfa-secret", value.secret_base32); say("setup-mfa-uri", value.provisioning_uri);
+    byId("setup-mfa-secret-panel").hidden = false; byId("setup-mfa-confirm").hidden = false;
+    byId("setup-mfa-enroll").hidden = true;
+    say("setup-mfa-status", "Add the secret to your authenticator, then confirm its current code.");
+  });
+  submit("setup-mfa-confirm", async (expected, csrf) => {
+    const code = byId("setup-mfa-code").value.trim(); byId("setup-mfa-code").value = "";
+    const value = await api("/v1/auth/mfa/confirm", "POST", { code }, csrf);
+    await freshSetupSession(expected, csrf);
+    if (!value || !Array.isArray(value.recovery_codes) || value.recovery_codes.length < 1 || value.recovery_codes.length > 20 || !value.recovery_codes.every(item => typeof item === "string" && item.length <= 64)) throw new Error("The recovery codes were invalid.");
+    clearSetupMfa(); byId("setup-mfa-enroll").hidden = true;
+    byId("setup-mfa-recovery-codes").replaceChildren(...value.recovery_codes.map(code => { const li = document.createElement("li"); li.textContent = code; return li; }));
+    byId("setup-mfa-recovery").hidden = false;
+    say("setup-mfa-status", "Authenticator enabled. Save your recovery codes before continuing.");
+  });
+  byId("setup-mfa-saved").addEventListener("click", async () => { clearSetupMfa(); await loadSetupMfa().catch(error => say("setup-mfa-status", error.message)); });
+  byId("setup-mfa-refresh").addEventListener("click", async () => { if (busy) return; clearSetupMfa(); byId("setup-mfa-enroll").hidden = false; await loadSetupMfa().catch(error => say("setup-mfa-status", error.message)); });
+}
+
+async function init() {
+  if (document.body?.dataset?.workspaceView && document.body.dataset.workspaceView !== "setup") return;
+  if (initialized) return;
+  initialized = true;
+  const response = await fetch("/v1/auth/session", { credentials: "same-origin", cache: "no-store" });
+  if (!response.ok) {
+    initialized = false;
+    if (byId("signed-out")) byId("signed-out").hidden = false;
+    return;
+  }
+  session = await response.json();
+  byId("approval-key").hidden = false;
+  byId("activation").hidden = false;
+  byId("lines").hidden = false;
+  bindControls();
   await Promise.all([
     loadKeys().catch((error) => say("key-status", error.message)),
+    loadSetupMfa().catch((error) => say("setup-mfa-status", error.message)),
     loadDevices().catch((error) => say("activation-status", error.message)),
     loadLines().catch((error) => say("lines-status", error.message)),
   ]);
+  if (document.body && !byId("activation-line").value) byId("activation-line").value = crypto.randomUUID();
 }
 
 globalThis.ZtSmsLinesReady = init().catch((error) => say("global-status", error.message));
+
+if (document.body?.dataset?.workspaceView === "setup") {
+  byId("activation-line").readOnly = true;
+  byId("activation-new-line").hidden = true;
+  byId("activation-start").disabled = true;
+  globalThis.ZtSmsLinesController = Object.freeze({
+    blockNew(text) { setupLocator = null; byId("activation-start").disabled = true; say("activation-status", text); },
+    async selectDevice(id, pending, locator) {
+      await globalThis.ZtSmsLinesReady;
+      if (!session) return;
+      if (activation && activation.deviceId === id && !["session_changed", "connection_changed"].includes(pending?.status)) return;
+      if (activation?.v2) { invalidateV2(activation); activation = null; }
+      await loadDevices();
+      byId("activation-device").value = id;
+      if (byId("activation-device").value !== id) throw new Error("The selected phone is unavailable. Check its connection.");
+      setupLocator = locator;
+      byId("activation-start").disabled = !locator;
+      document.body.dataset.activationCapability = String(locator?.line_activation_version ?? "unknown");
+      if (pending && ["awaiting_device", "awaiting_owner"].includes(pending.status) && pending.same_session && pending.expires_at_ms > Date.now()) {
+        byId("activation-mode").value = "v2";
+        byId("activation-line").value = pending.line_id;
+        activation = { v2: true, deviceId: id, lineId: pending.line_id, openingId: pending.opening_id,
+          challengeId: pending.challenge_id, generation: pending.generation, expires: BigInt(pending.expires_at_ms),
+          session, revision: 0, phase: "awaiting_device", ownerStatement: null, startedAt: Date.now() };
+        await pollV2(activation);
+      } else if (locator) {
+        canonicalUuidV2(locator.setup_line_id); canonicalUuidV2(locator.setup_opening_id);
+        byId("activation-line").value = locator.setup_line_id;
+        if (locator.line_activation_version === 2) byId("activation-mode").value = "v2";
+        else if (locator.line_activation_version === 1) byId("activation-mode").value = "v1";
+        else byId("activation-mode").value = "";
+        say("activation-status", locator.line_activation_version === null ? "This phone has not reported an activation capability. Check the gateway app, then Check progress." : "Your phone and line are filled in from the current connection.");
+        await maybeStartSetup();
+      }
+    },
+  });
+  document.addEventListener("zrotext-owner-session", event => {
+    if (event.detail?.signedIn && !initialized) { globalThis.ZtSmsLinesReady = init(); }
+    else if (!event.detail?.signedIn) { initialized = false; clearSetupMfa(); stopPolling(); session = null; activation = null; localKey = null; document.body.dataset.lineKeyReady = "false"; }
+  });
+  window.addEventListener("pageshow", event => { if (event.persisted && !session) { initialized = false; globalThis.ZtSmsLinesReady = init(); } });
+  window.addEventListener("pagehide", () => { initialized = false; clearSetupMfa(); stopPolling(); if (activation?.v2) invalidateV2(activation); session = null; activation = null; localKey = null; });
+}
+
+})();

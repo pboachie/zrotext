@@ -17,7 +17,7 @@ const response = (body, status = 200) => ({ ok: status >= 200 && status < 300, s
 const available = (changes = {}) => ({ schema_version: 1, deployment: "hosted", registration: "open",
   billing: "test", checkout_available: true, plan_catalog_available: true, ...changes });
 
-function fixture(overrides = {}) {
+function fixture(overrides = {}, options = {}) {
   const calls = [];
   let snapshot = billing();
   const routes = {
@@ -33,7 +33,7 @@ function fixture(overrides = {}) {
     "/v1/billing/portal": () => response({ url: "https://billing.stripe.com/p/session/test_fixture" }),
     ...overrides,
   };
-  const controller = create({ cookie: () => "__Host-zrotext_csrf=synthetic-csrf",
+  const controller = create({ ...options, cookie: () => "__Host-zrotext_csrf=synthetic-csrf",
     randomUUID: () => "00000000-0000-4000-8000-000000000003",
     fetch: async (path, init) => {
       calls.push({ path, ...init });
@@ -388,4 +388,36 @@ test("TEST portal remains available when registration, catalog and checkout are 
   assert.equal(f.controller.view().portalAvailable, true);
   assert.equal(await f.controller.handoff("portal"), "https://billing.stripe.com/p/session/test_fixture");
   assert.equal(f.controller.view().billingMode, "test");
+});
+
+
+test("configured TEST plan terms require exact shape and current owner session", async () => {
+  const plan = { schema_version: 1, mode: "test", currency: "usd", unit_amount: 1900,
+    interval: "month", interval_count: 1, outbound_limit: 19, device_cap: 1 };
+  const f = fixture({ "/v1/billing/plan": () => response(plan) });
+  f.controller.select("hosted"); await f.controller.refresh();
+  assert.deepEqual(await f.controller.plan(), plan);
+  assert.equal(f.controller.view().checkoutAvailable, true);
+  assert.equal(f.calls.filter(c => c.path === "/v1/billing/checkout").length, 0);
+  for (const invalid of [{ ...plan, mode: "live" }, { ...plan, unit_amount: -1 },
+    { ...plan, interval_count: 0 }, { ...plan, amount: 19 }, { ...plan, currency: "unknown" }]) {
+    const bad = fixture({ "/v1/billing/plan": () => response(invalid) });
+    bad.controller.select("hosted"); await bad.controller.refresh();
+    await assert.rejects(bad.controller.plan(), /invalid/);
+    assert.equal(bad.controller.view().checkoutAvailable, undefined);
+  }
+});
+
+
+test("checkout return with a stale empty projection cannot offer or repeat checkout", async () => {
+  const f = fixture({}, { checkoutReturn: true });
+  f.controller.select("hosted");
+  await f.controller.refresh();
+  assert.equal(f.controller.view().phase, "billing_pending");
+  assert.equal(f.controller.view().checkoutAvailable, false);
+  await assert.rejects(f.controller.handoff("checkout"));
+  assert.equal(f.calls.filter(call => call.path.endsWith("/checkout")).length, 0);
+  f.snapshot(active());
+  await f.controller.refresh();
+  assert.equal(f.controller.view().phase, "test_subscription_observed");
 });
