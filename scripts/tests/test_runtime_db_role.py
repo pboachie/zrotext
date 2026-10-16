@@ -243,6 +243,50 @@ class RuntimeRoleAnchorUpgradeTest(RuntimeRoleFixture, unittest.TestCase):
                  runtime=True, success=False)
 
 
+class RuntimeRoleReviewWorkspaceUpgradeTest(RuntimeRoleFixture, unittest.TestCase):
+    migration_limit = 101
+
+    def test_review_schema_overrides_broad_defaults_and_polluted_column_helper_grants(self):
+        self.provision()
+        migration = COMPOSE / "migrations" / "102_review_workspace_persistence.sql"
+        self.sql("BEGIN;\n" + migration.read_text(encoding="utf-8") + "\nCOMMIT;")
+        verify = (COMPOSE / "verify_runtime_role.sql").read_text(encoding="utf-8")
+        self.sql(verify, runtime=True)
+        relations = ("review_realm_installation", "review_brokers",
+                     "review_broker_sessions", "review_bootstrap_attempts", "review_workspaces")
+        for relation in relations:
+            for sql in (f"INSERT INTO public.{relation} DEFAULT VALUES;",
+                        f"DELETE FROM public.{relation};",
+                        f"TRUNCATE public.{relation};"):
+                self.sql(sql, runtime=True, success=False)
+        # Old column ACLs survive relation REVOKE. Pollute every actual column
+        # for both PUBLIC and the role, and every exact new helper signature.
+        self.sql("""DO $$ DECLARE r record; columns_sql text; BEGIN
+          FOR r IN SELECT c.oid,c.relname FROM pg_class c WHERE c.relnamespace='public'::regnamespace
+            AND c.relname IN ('review_realm_installation','review_brokers','review_broker_sessions',
+                             'review_bootstrap_attempts','review_workspaces') LOOP
+            SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) INTO columns_sql
+              FROM pg_attribute WHERE attrelid=r.oid AND attnum>0 AND NOT attisdropped;
+            EXECUTE format('GRANT INSERT (%s),UPDATE (%s),REFERENCES (%s) ON TABLE public.%I TO PUBLIC,zrotext_runtime',
+                           columns_sql,columns_sql,columns_sql,r.relname);
+            EXECUTE format('GRANT ALL ON TABLE public.%I TO PUBLIC,zrotext_runtime',r.relname);
+          END LOOP;
+          FOR r IN SELECT p.oid::regprocedure AS signature FROM pg_proc p
+            WHERE p.pronamespace='public'::regnamespace AND p.proname LIKE 'review_workspace_%' LOOP
+            EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO PUBLIC,zrotext_runtime',r.signature);
+          END LOOP;
+        END $$;""")
+        self.sql(verify, runtime=True, success=False)
+        self.provision()
+        self.provision()
+        self.sql(verify, runtime=True)
+        self.sql("SELECT public.review_workspace_before_delete();", runtime=True, success=False)
+        self.sql("SELECT public.review_workspace_reserve(NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL);",
+                 runtime=True, success=False)
+        self.sql("SELECT public.review_workspace_provision(NULL,NULL,NULL,NULL,NULL,NULL,NULL);",
+                 runtime=True, success=False)
+
+
 class RuntimeRoleParentMirrorUpgradeTest(RuntimeRoleFixture, unittest.TestCase):
     migration_limit = 100
 

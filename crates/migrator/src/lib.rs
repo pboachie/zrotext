@@ -973,6 +973,8 @@ mod radio_evidence_index_tests;
 #[cfg(test)]
 mod recent_attempt_index_tests;
 #[cfg(test)]
+mod review_workspace_tests;
+#[cfg(test)]
 mod webhook_history_index_tests;
 
 #[cfg(test)]

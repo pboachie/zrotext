@@ -5,11 +5,34 @@ DO $$
 DECLARE
     statement text;
     anchor_account uuid;
+    review_relation text;
+    review_column record;
+    review_routine record;
 BEGIN
     IF to_regprocedure('public.parent_account_mirror_guard()') IS NOT NULL
       AND has_function_privilege(current_user,'public.parent_account_mirror_guard()','EXECUTE') THEN
         RAISE EXCEPTION 'runtime can directly execute the ownership mirror helper';
     END IF;
+    FOREACH review_relation IN ARRAY ARRAY['review_realm_installation','review_brokers',
+        'review_broker_sessions','review_bootstrap_attempts','review_workspaces'] LOOP
+        IF to_regclass(format('public.%I',review_relation)) IS NULL THEN CONTINUE; END IF;
+        IF NOT has_table_privilege(current_user,format('public.%I',review_relation),'SELECT')
+          OR has_table_privilege(current_user,format('public.%I',review_relation),'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') THEN
+            RAISE EXCEPTION 'review persistence runtime privileges are not select-only';
+        END IF;
+        FOR review_column IN SELECT attname FROM pg_attribute
+          WHERE attrelid=to_regclass(format('public.%I',review_relation)) AND attnum>0 AND NOT attisdropped LOOP
+            IF has_column_privilege(current_user,format('public.%I',review_relation),review_column.attname,'INSERT,UPDATE,REFERENCES') THEN
+                RAISE EXCEPTION 'review persistence column write privileges remain';
+            END IF;
+        END LOOP;
+    END LOOP;
+    FOR review_routine IN SELECT p.oid FROM pg_proc p WHERE p.pronamespace='public'::regnamespace
+      AND p.proname LIKE 'review_workspace_%' LOOP
+        IF has_function_privilege(current_user,review_routine.oid,'EXECUTE') THEN
+            RAISE EXCEPTION 'runtime can execute owner-only review persistence helper';
+        END IF;
+    END LOOP;
     IF current_user <> 'zrotext_runtime' OR EXISTS (
         SELECT FROM pg_roles WHERE rolname = current_user AND
         (rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls)

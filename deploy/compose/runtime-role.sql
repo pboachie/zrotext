@@ -107,4 +107,25 @@ BEGIN
         REVOKE ALL ON FUNCTION public.parent_account_mirror_guard() FROM PUBLIC,zrotext_runtime;
     END IF;
 END $$;
+-- Review-realm persistence is unmounted: runtime SELECT only, no factory call.
+DO $$
+DECLARE relation_name text;
+        columns_sql text;
+        routine record;
+BEGIN
+    FOREACH relation_name IN ARRAY ARRAY['review_realm_installation','review_brokers',
+        'review_broker_sessions','review_bootstrap_attempts','review_workspaces'] LOOP
+        IF to_regclass(format('public.%I',relation_name)) IS NULL THEN CONTINUE; END IF;
+        SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) INTO columns_sql
+          FROM pg_attribute WHERE attrelid=to_regclass(format('public.%I',relation_name))
+            AND attnum>0 AND NOT attisdropped;
+        EXECUTE format('REVOKE ALL ON TABLE public.%I FROM PUBLIC,zrotext_runtime',relation_name);
+        EXECUTE format('REVOKE ALL (%s) ON TABLE public.%I FROM PUBLIC,zrotext_runtime',columns_sql,relation_name);
+        EXECUTE format('GRANT SELECT ON TABLE public.%I TO zrotext_runtime',relation_name);
+    END LOOP;
+    FOR routine IN SELECT p.oid::regprocedure AS signature FROM pg_proc p
+      WHERE p.pronamespace='public'::regnamespace AND p.proname LIKE 'review_workspace_%' LOOP
+        EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC,zrotext_runtime',routine.signature);
+    END LOOP;
+END $$;
 COMMIT;

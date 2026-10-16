@@ -11,6 +11,9 @@ async fn install_account_mirrors(f: &crate::sealed_manifest_store::tests::Fixtur
             "../../../../../../deploy/compose/migrations/100_payload_profile_account_anchors.sql"
         ),
         include_str!("../../../../../../deploy/compose/migrations/101_parent_account_mirrors.sql"),
+        include_str!(
+            "../../../../../../deploy/compose/migrations/102_review_workspace_persistence.sql"
+        ),
     ] {
         f.db.batch_execute("BEGIN").await.unwrap();
         f.db.batch_execute(migration).await.unwrap();

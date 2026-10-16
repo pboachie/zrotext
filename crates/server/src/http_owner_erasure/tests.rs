@@ -457,6 +457,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "101_parent_account_mirrors.sql",
         include_str!("../../../../deploy/compose/migrations/101_parent_account_mirrors.sql"),
     ),
+    (
+        "102_review_workspace_persistence.sql",
+        include_str!("../../../../deploy/compose/migrations/102_review_workspace_persistence.sql"),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in

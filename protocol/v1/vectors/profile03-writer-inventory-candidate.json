@@ -1,6 +1,6 @@
 {
   "status": "candidate-scope-inventory-only-not-installed",
-  "migration_version": 101,
+  "migration_version": 102,
   "row_columns": [
     "relation",
     "account_extraction_review_class",
@@ -108,6 +108,11 @@
     ["phone_lines","column:account_id","9735e867eb00c111b167a3827d55cfb334bd5894e7f75d801ec64e6edb333140","392f4a9eadcc4448e102c787e6374396d2575aa29a3c06796c537aac0925afa3","bf00c26fc544d70fa9000311c685a420fafeefb7a145b1f15eaba48a7b4b1498"],
     ["provider_send_attempts","column:account_id","02c56cd5ba81adb5f343cffd88929a9b6497dc21fc5b949dcad7d0ec671b6c70","b81e161b5b9e695d1dd987a9fbd6585c7e41eec4bb80419f059232d841854c52","88a8aee1149f9bd3449b801238d2a5ea5a60ace551702e8a2247c64382f76d3f"],
     ["recipient_suppressions","column:account_id","27b8b6ce556c1805ce5ac73861040c621606f4813084c2ed8aad135a2ada98d1","e3ec5e5af0f10dc702745e018e1750126a9099c4c5e6acfdab6f5fddf569f85b","020242dd186cc21b78cdce93ebcca85da271a97cfd8ef675cc6e6e8ddc53fb9c"],
+    ["review_bootstrap_attempts","review_preaccount_prospective_bootstrap_only","dcc979c8fa82a80f49902660e68b63f49b39ac0e276a55cee4cb5b33d5f71e17","4a993cdd58dbcc92bbd001cdf0334a8a3736c66bea8953e5ee37c7ffaf6bec38","b70ecce11470d412d7ed67a6dd92a931fa56c56b22a2481d7dbd7f0693bdcbff"],
+    ["review_broker_sessions","review_broker_session_owner_fixture_only","b859a2a7c46f02b71aff0854d4ec11010b092e101c5d8e51f03d9328f1e01fe7","3c44176fe0f1f76e315f8aa6f5bea5855d342b6d0dee412c0a223b7a92a92165","00f1f5f5eba3f6f4796d92dbe0d2802ceb4ab4e1ada873a09cb63abeebeabe97"],
+    ["review_brokers","review_broker_current_permission_oob_only","3d2dc51438420d6330c52e75928894e5009b8ba302d9eee47aff48dfbb4a4a9d","b0e5a7b966df6ff72c0ffb0433abd88c1a463f45a812dad845c2d706d6e80a3a","9001f42dafcb4af92b317d1a9a2eef0de872cbfcba441e0a3b2ed505d029511e"],
+    ["review_realm_installation","review_realm_installation_oob_only","b4485b7e1edbc70bfaa1d6a6bb6a26f7ccba4c6b8b6acb52e77c7475bdfd80fe","4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","d80671be78e7eb0496dc69360776459020d86aca8725f83aae1f57a1d6c2751e"],
+    ["review_workspaces","review_workspace_association_owner_factory_only","7de00ec61e612e26d652d9ff057709b7b095cc30627c21f4af9084aef498a4d3","44f3b47a7f2037a11d0cf5368ee8eac047c889ff26056a190eea40045115b531","c450d7d3ea13725abf236ac4a1c2721e551e5924e642bf7cea56819bec32d74a"],
     ["schema_migrations","migrator_only_ledger","606be0ca4fc76f69dab27483aa367752bf59851ada1c5a2dfe375aaae7e0d475","4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"],
     ["sealed_event_deliveries","column:account_id","25d7f2a329f25ea2ef9c8f92e21f76c06075f7c736c986377d4322633733956b","6241f375397eac95cca0f65e4fbd6173a48faba56bd562f8581b95f203bfc8e2","4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"],
     ["sealed_event_delivery_attempts","parent_account_mirror_only","14225ef6ff2a2f03d14d7c188f2818e3b2501045151ce01035303f6f61aee7f6","cd2c3987ba6f7373d0f087e55845145e15fb329ae0771cf8983b070515330675","75e430871036080b59cd2cc170a961e1f7011deb881911f10af36cb179bc533a"],
