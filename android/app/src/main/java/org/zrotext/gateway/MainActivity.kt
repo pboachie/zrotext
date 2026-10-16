@@ -157,6 +157,7 @@ class MainActivity : ComponentActivity() {
     private var conversationReplyChoiceGeneration by mutableStateOf(0L)
     private var conversationEnrollmentOpen by mutableStateOf(false)
     private var ownerCustodyOpen by mutableStateOf(false)
+    private var reviewRootCustodyOpen by mutableStateOf(false)
     private var conversationEnrollmentBusy by mutableStateOf(false)
     private var conversationEnrollmentStatus by mutableStateOf("")
     private var conversationReaderExport by mutableStateOf("")
@@ -214,6 +215,14 @@ class MainActivity : ComponentActivity() {
         defaultSmsAppRcsRisk = DefaultSmsAppRcsRisk.observe(this)
         setContent {
             GatewayTheme {
+                if (reviewRootCustodyOpen) Dialog(onDismissRequest = { reviewRootCustodyOpen = false },
+                    properties = DialogProperties(usePlatformDefaultWidth = false,
+                        securePolicy = androidx.compose.ui.window.SecureFlagPolicy.SecureOn)) {
+                    Surface(Modifier.fillMaxSize()) {
+                        AndroidReviewRootCustodyScreen(onClose = { reviewRootCustodyOpen = false },
+                            modifier = Modifier.fillMaxSize().safeDrawingPadding().imePadding())
+                    }
+                }
                 if (ownerCustodyOpen) Dialog(onDismissRequest = { ownerCustodyOpen = false },
                     properties = DialogProperties(usePlatformDefaultWidth = false,
                         securePolicy = androidx.compose.ui.window.SecureFlagPolicy.SecureOn)) {
@@ -290,6 +299,9 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                     if (page == GatewayPage.SETUP) {
+                        GatewayButton(onClick = { reviewRootCustodyOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Open isolated review workspace custody")
+                        }
                         GatewayButton(onClick = { ownerCustodyOpen = true }, modifier = Modifier.fillMaxWidth()) {
                             Text("Set up or recover owner custody on Android")
                         }

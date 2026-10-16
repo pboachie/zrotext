@@ -8,5 +8,6 @@
 
 pub mod bridge;
 pub mod custody;
+pub mod review_root_custody;
 pub mod signing;
 pub mod typed;
