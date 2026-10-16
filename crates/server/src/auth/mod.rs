@@ -43,6 +43,7 @@ pub(crate) use owner_reduction::OwnerReductionFence;
 mod password_work;
 pub(crate) mod registration_intent;
 pub mod review_access;
+pub mod review_realm;
 #[cfg(test)]
 mod roles_tests;
 pub mod seats;
