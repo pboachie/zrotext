@@ -39,22 +39,20 @@ async fn anchor_contention_rolls_back_users_sessions_content_and_account_deletio
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        for (table, column, id) in [
-            ("accounts", "id", a.account_id),
-            ("users", "id", a.user_id),
-            ("messages", "account_id", a.account_id),
-            ("sessions", "account_id", a.account_id),
-        ] {
-            let count: i64 = db
-                .query_one(
-                    &format!("SELECT count(*) FROM {table} WHERE {column}=$1"),
-                    &[&id],
-                )
-                .await
-                .unwrap()
-                .get(0);
-            assert!(count > 0, "{table} must survive refused erasure");
-        }
+        let surviving = db
+            .query_one(
+                "SELECT EXISTS(SELECT FROM accounts WHERE id=$1), \
+                    EXISTS(SELECT FROM users WHERE id=$2), \
+                    EXISTS(SELECT FROM messages WHERE account_id=$1), \
+                    EXISTS(SELECT FROM sessions WHERE account_id=$1)",
+                &[&a.account_id, &a.user_id],
+            )
+            .await
+            .unwrap();
+        assert!(surviving.get::<_, bool>(0));
+        assert!(surviving.get::<_, bool>(1));
+        assert!(surviving.get::<_, bool>(2));
+        assert!(surviving.get::<_, bool>(3));
         let anchor=db.query_one("SELECT state,selection_epoch FROM payload_profile_account_anchors WHERE account_id=$1", &[&a.account_id]).await.unwrap();
         assert_eq!(anchor.get::<_, String>(0), "live");
         assert_eq!(anchor.get::<_, i64>(1), 0);

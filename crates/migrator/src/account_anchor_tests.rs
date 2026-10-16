@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
+use postgres_protocol::escape::{escape_identifier, escape_literal};
 use tokio_postgres::{Config, NoTls};
 
 async fn connect(
@@ -41,10 +42,15 @@ async fn ordinary_migrator_backfills_anchors_and_replay_preserves_lifecycle_and_
     assert!(verifier.starts_with("SCRAM-SHA-256$") && verifier != password);
     let database = format!("zt_anchor_m_{suffix}");
     let role = format!("zt_anchor_m_role_{suffix}");
-    admin.batch_execute(&format!("CREATE ROLE {role} LOGIN PASSWORD '{verifier}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION"))
+    // DDL identifiers cannot use bind parameters. Quote every generated name
+    // and the SCRAM verifier through the driver's maintained SQL escapers.
+    let sql_database = escape_identifier(&database);
+    let sql_role = escape_identifier(&role);
+    let sql_verifier = escape_literal(&verifier);
+    admin.batch_execute(&format!("CREATE ROLE {sql_role} LOGIN PASSWORD {sql_verifier} NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION"))
         .await.unwrap();
     admin
-        .batch_execute(&format!("CREATE DATABASE {database} OWNER {role}"))
+        .batch_execute(&format!("CREATE DATABASE {sql_database} OWNER {sql_role}"))
         .await
         .unwrap();
     config.dbname(&database).user(&role).password(&password);
@@ -124,11 +130,11 @@ async fn ordinary_migrator_backfills_anchors_and_replay_preserves_lifecycle_and_
     }
     close(db, driver).await;
     admin
-        .batch_execute(&format!("DROP DATABASE {database}"))
+        .batch_execute(&format!("DROP DATABASE {sql_database}"))
         .await
         .unwrap();
     admin
-        .batch_execute(&format!("DROP ROLE {role}"))
+        .batch_execute(&format!("DROP ROLE {sql_role}"))
         .await
         .unwrap();
     close(admin, admin_driver).await;
