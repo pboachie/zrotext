@@ -4,7 +4,7 @@
   const byId = id => document.getElementById(id);
   const controller = ZrotextHostedOnboarding.create({ checkoutReturn: ["return", "cancel"].includes(new URLSearchParams(location.search).get("checkout")) });
   let email = "", registration = "closed", busy = false, epoch = 0, active = true, timer = null;
-  const panels = ["hosted-account", "hosted-verify", "hosted-factor", "hosted-requirements", "hosted-billing", "hosted-phone"];
+  const panels = ["hosted-account", "hosted-verify", "hosted-existing-session", "hosted-factor", "hosted-requirements", "hosted-billing", "hosted-phone"];
   const messages = {
     choose_test_subscription: "Review the verified TEST plan before checkout.",
     billing_pending: "Confirming your subscription. Your existing attempt is being checked; no new purchase is needed.",
@@ -27,7 +27,17 @@
     if (phase === "loading") return;
     for (const id of ["hosted-step-account", "hosted-step-plan", "hosted-step-phone"]) byId(id).removeAttribute("aria-current");
     byId(["test_subscription_observed"].includes(phase) ? "hosted-step-phone" : phase.startsWith("billing") || phase === "choose_test_subscription" ? "hosted-step-plan" : "hosted-step-account").setAttribute("aria-current", "step");
-    if (phase === "verification_requested") { show(["hosted-verify"]); byId("hosted-verification-address").textContent = email ? `Check the inbox for ${email}.` : "Use the code sent to your account email."; return; }
+    if (phase === "existing_session") { show(["hosted-existing-session"]); return; }
+    if (phase === "verification_requested") {
+      show(["hosted-verify"]);
+      const original = value.originalBrowser === true;
+      byId("hosted-verification-address").textContent = email ? `Check the inbox for ${email}.` : "Use the code sent to your account email.";
+      for (const id of ["hosted-verify-password-field", "hosted-resend-password-field"]) byId(id).hidden = original;
+      for (const id of ["hosted-verify-password", "hosted-resend-password", "hosted-resend-email"]) byId(id).required = !original;
+      byId("hosted-resend-email").value = email;
+      byId("hosted-verify-fallback").hidden = !original;
+      return;
+    }
     if (phase === "second_factor") { show(["hosted-factor"]); byId("hosted-factor-code").focus(); return; }
     if (["choose_test_subscription", "billing_pending", "billing_restricted", "test_subscription_observed", "billing_unavailable", "billing_handoff"].includes(phase)) {
       show(phase === "test_subscription_observed" ? ["hosted-billing", "hosted-phone"] : ["hosted-requirements", "hosted-billing"]);
@@ -107,9 +117,11 @@
   byId("hosted-change-email").addEventListener("click", () => { show(["hosted-account"]); register(); });
   submit("hosted-login-form", () => { email = byId("hosted-email").value.trim(); return controller.login(email, byId("hosted-password").value); });
   submit("hosted-register-form", () => { email = byId("hosted-register-email").value.trim(); return controller.register(email, byId("hosted-register-password").value, byId("hosted-invite").value); });
-  submit("hosted-verify-form", () => controller.verify(byId("hosted-verification-code").value.trim(), byId("hosted-verify-password").value));
-  submit("hosted-resend-form", () => controller.resend(email, byId("hosted-resend-password").value));
+  submit("hosted-verify-form", () => controller.view().originalBrowser === true ? controller.verifyOriginal(byId("hosted-verification-code").value.trim()) : controller.verify(byId("hosted-verification-code").value.trim(), byId("hosted-verify-password").value));
+  submit("hosted-resend-form", () => { if (controller.view().originalBrowser === true) return controller.resendOriginal(); email = byId("hosted-resend-email").value.trim(); return controller.resend(email, byId("hosted-resend-password").value); });
   submit("hosted-factor-form", () => controller.secondFactor(byId("hosted-factor-code").value.trim()));
+  byId("hosted-continue-verification").addEventListener("click", () => run(() => controller.resumeVerification()));
+  byId("hosted-verify-fallback").addEventListener("click", () => run(() => controller.resumeVerification(true)));
   byId("hosted-refresh").addEventListener("click", () => run(() => controller.refresh()));
   byId("hosted-checkout").addEventListener("click", () => run(() => controller.handoff("checkout"), { handoff: true }));
   byId("hosted-portal").addEventListener("click", () => run(() => controller.handoff("portal"), { handoff: true }));

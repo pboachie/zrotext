@@ -73,6 +73,27 @@
         .find((part) => part.startsWith("__Host-zrotext_csrf="))?.slice("__Host-zrotext_csrf=".length);
     }
 
+    function registrationCsrf() {
+      const proof = cookie().split(";").map(part => part.trim())
+        .find(part => part.startsWith("__Host-zrotext_registration_csrf="))?.slice("__Host-zrotext_registration_csrf=".length);
+      return /^ztrc_[A-Za-z0-9_-]{43}$/.test(proof || "") ? proof : null;
+    }
+
+    async function afterIntentVerification(guard, message) {
+      clear();
+      try {
+        const current = await request("/v1/auth/session");
+        guard();
+        if (!["owner", "observer"].includes(current?.role) || !uuid.test(current.account_id) || !uuid.test(current.session_id)) throw new Error("The current sign-in could not be confirmed.");
+        return publish({ phase: "existing_session", hosting: "hosted",
+          message: "An account is already signed in in this browser. Open its workspace, or sign out there before using another account." });
+      } catch (error) {
+        guard();
+        if (error.status !== 401) throw error;
+      }
+      return publish({ phase: "sign_in", hosting: "hosted", message });
+    }
+
     function select(mode) {
       if (!["hosted", "self_hosted"].includes(mode)) throw new Error("Choose a hosting option.");
       epoch += 1;
@@ -235,11 +256,49 @@
           throw new Error("Registration is closed. Sign-in and recovery remain available.");
         }
         if (value.registration === "invite_only" && !invite.trim()) throw new Error("An invitation is required.");
-        await request("/v1/auth/register", "POST", { email, password },
-          invite ? { "x-zrotext-registration-token": invite.trim() } : {});
+        try {
+          await request("/v1/auth/register", "POST", { email, password },
+            invite ? { "x-zrotext-registration-token": invite.trim() } : {});
+        } catch (error) {
+          guard();
+          if (!error.status) return afterIntentVerification(guard,
+            "The registration result could not be confirmed. Continue email verification or sign in to check your account; do not create it again.");
+          throw error;
+        }
         guard();
-        return publish({ phase: "verification_requested", hosting: "hosted",
+        return publish({ phase: "verification_requested", hosting: "hosted", originalBrowser: Boolean(registrationCsrf()),
           message: "If registration is open for this address, check your mailbox for a code." });
+      }),
+      resumeVerification: (passwordFallback = false) => run(async (guard) => {
+        clear(); guard();
+        return publish({ phase: "verification_requested", hosting: "hosted", originalBrowser: !passwordFallback && Boolean(registrationCsrf()) });
+      }),
+      resendOriginal: () => run(async (guard) => {
+        const proof = registrationCsrf();
+        if (!proof) throw new Error("Use password verification in this browser to continue.");
+        await request("/v1/auth/registration-intent/resend", "POST", {}, { "x-zrotext-registration-csrf": proof });
+        guard();
+        if (registrationCsrf() !== proof) throw new Error("Account setup changed in another tab. Check the current setup before continuing.");
+        return publish({ phase: "verification_requested", hosting: "hosted", originalBrowser: true,
+          message: "If this setup is still eligible, a fresh code will arrive. Use the most recent code or choose password verification." });
+      }),
+      verifyOriginal: (token) => run(async (guard) => {
+        const proof = registrationCsrf();
+        if (!proof) throw new Error("Use password verification in this browser to continue.");
+        try {
+          await request("/v1/auth/registration-intent/verify", "POST", { token }, { "x-zrotext-registration-csrf": proof });
+        } catch (error) {
+          guard();
+          if (error.status === 400 && registrationCsrf() === proof) return publish({ phase: "verification_requested", hosting: "hosted", originalBrowser: true,
+            message: "The code could not be verified here. Try the latest code or choose password verification; your existing account is unchanged." });
+          if (!error.status || error.status === 409) return afterIntentVerification(guard,
+            "The verification result could not be confirmed. Sign in to check your account, or use password verification. Do not register again.");
+          throw error;
+        }
+        guard();
+        return afterIntentVerification(guard, registrationCsrf() === proof
+          ? "Email verification finished. Sign in to continue; your password manager can fill your account details."
+          : "The verification request finished for an earlier setup. Sign in to the account you intended to use.");
       }),
       resend: (email, password) => run(async (guard) => {
         await request("/v1/auth/resend-verification", "POST", { email, password });

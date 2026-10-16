@@ -45,8 +45,15 @@ The hosted sequence uses these existing APIs:
 1. `register(email, password, invite)` requests registration. The optional
    address-bound invite travels only in its existing header. A 202 response
    reports a request, not successful creation or permission to use the service.
-2. `resend(email, password)` requests another verification code when needed.
-3. `verify(token, password)` verifies the email and returns to sign-in.
+2. `resumeVerification()` offers code-only verification when the independent
+   registration proof cookie is present. This is presentation only; the server
+   validates the HttpOnly intent, exact Origin, bound CSRF and current account.
+   `resendOriginal()` posts an empty body and `verifyOriginal(token)` posts only
+   the mailed code. A fixed fifteen-minute intent cannot be renewed by resend.
+3. `resumeVerification(true)` selects explicit password fallback. Existing
+   `resend(email, password)` and `verify(token, password)` remain available in
+   another browser or after the original intent expires. All verification paths
+   return to explicit sign-in; none issues an ordinary session.
 4. `login(email, password)` establishes a session or requests a second factor.
    `secondFactor(code)` completes the private in-memory challenge. MFA failure
    clears the challenge and requires sign-in again.
@@ -81,6 +88,13 @@ The account view preserves an email address in memory while moving between
 registration, email verification, resend and sign-in. Password-manager attributes
 remain present. Passwords, verification codes and MFA codes are cleared after
 submit and page departure. Closed or unknown signup retains sign-in and recovery.
+An uncertain registration or verification reply checks the ordinary session
+once and offers verification/sign-in without replaying account creation. A valid
+account already signed in is preserved and shown as an existing session.
+Registration passwords and the HttpOnly intent never enter JavaScript storage;
+the page reads only the independent registration CSRF proof. See
+[the intent contract](registration-browser-intent.md).
+
 Self-hosted owners continue through their server's account/setup interfaces
 without a Stripe subscription.
 

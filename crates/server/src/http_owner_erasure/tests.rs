@@ -446,6 +446,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "099_line_readiness_observations.sql",
         include_str!("../../../../deploy/compose/migrations/099_line_readiness_observations.sql"),
     ),
+    (
+        "107_registration_browser_intents.sql",
+        include_str!("../../../../deploy/compose/migrations/107_registration_browser_intents.sql"),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in
