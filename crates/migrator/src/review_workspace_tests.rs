@@ -453,12 +453,6 @@ async fn review_result_that_expires_while_association_read_waits_is_not_returned
     let f = Fixture::create().await;
     f.db.batch_execute(&reserve()).await.unwrap();
     f.db.batch_execute(&provision()).await.unwrap();
-    f.db.batch_execute("ALTER TABLE review_bootstrap_attempts DISABLE TRIGGER review_workspace_identity_before_update;
-        UPDATE review_bootstrap_attempts SET issued_ms=(EXTRACT(epoch FROM statement_timestamp())*1000)::bigint-600000000,
-            expires_ms=(EXTRACT(epoch FROM statement_timestamp())*1000)::bigint-599700000,
-            provisioned_ms=(EXTRACT(epoch FROM statement_timestamp())*1000)::bigint-599999000,
-            reconcile_until_ms=(EXTRACT(epoch FROM statement_timestamp())*1000)::bigint+1500;
-        ALTER TABLE review_bootstrap_attempts ENABLE TRIGGER review_workspace_identity_before_update").await.unwrap();
     let (gate, gate_driver) = connect(&f.config).await;
     gate.batch_execute("BEGIN; LOCK TABLE review_workspaces IN ACCESS EXCLUSIVE MODE")
         .await
@@ -469,6 +463,14 @@ async fn review_result_that_expires_while_association_read_waits_is_not_returned
     )
     .await
     .unwrap();
+    // Start the unchanged expiry window after both connections are ready.
+    // Connection authentication must not consume the association-read race.
+    f.db.batch_execute("ALTER TABLE review_bootstrap_attempts DISABLE TRIGGER review_workspace_identity_before_update;
+        UPDATE review_bootstrap_attempts SET issued_ms=(EXTRACT(epoch FROM statement_timestamp())*1000)::bigint-600000000,
+            expires_ms=(EXTRACT(epoch FROM statement_timestamp())*1000)::bigint-599700000,
+            provisioned_ms=(EXTRACT(epoch FROM statement_timestamp())*1000)::bigint-599999000,
+            reconcile_until_ms=(EXTRACT(epoch FROM statement_timestamp())*1000)::bigint+1500;
+        ALTER TABLE review_bootstrap_attempts ENABLE TRIGGER review_workspace_identity_before_update").await.unwrap();
     let pending = tokio::spawn(async move {
         let result = race.batch_execute(&provision()).await;
         (race, result)
