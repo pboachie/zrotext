@@ -33,7 +33,7 @@ async fn erasure_counts_registration_intents_and_preserves_another_accounts_pend
             .unwrap()
     );
     let session = login(
-        &mut db,
+        &db,
         &hasher,
         "erase-intent-a@example.test",
         &crate::test_keys::password(1),
