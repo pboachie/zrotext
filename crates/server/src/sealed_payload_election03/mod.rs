@@ -3,6 +3,7 @@
 //! inputs. This does not prove a commit, sessions/MFA, allocation or permission.
 
 pub mod adapter_contract;
+pub mod registration_reader;
 
 use crate::sealed_manifest;
 use crate::sealed_manifest03::{
