@@ -347,9 +347,18 @@ async fn hosted_checkout_recovers_lost_results_and_restart_without_duplicate_att
     );
     // A process restart clears only the transport pause, never the operation.
     let r = f.runtime(Mode::Live).await;
+    assert_eq!(status(&f, &r).await["checkout"]["state"], "recoverable");
+    for _ in 0..3 {
+        assert_eq!(status(&f, &r).await["checkout"]["state"], "recoverable");
+    }
+    assert_eq!(
+        f.fake.inner.lock().unwrap().operations.len(),
+        1,
+        "GET never replays a provider operation"
+    );
     let first = value(
         r.router()
-            .oneshot(f.request("/checkout", "POST"))
+            .oneshot(f.request("/checkout/recover", "POST"))
             .await
             .unwrap(),
     )

@@ -4,6 +4,7 @@ use super::*;
 mod fixture;
 mod integration;
 mod invoice;
+mod recovery;
 
 fn options(mode: Mode) -> Options {
     Options {

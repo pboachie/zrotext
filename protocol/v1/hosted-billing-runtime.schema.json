@@ -24,7 +24,7 @@
     "checkout": {
       "type":"object","additionalProperties":false,"required":["state","url","expires_at_ms"],
       "properties":{
-        "state":{"enum":["none","pending","resumable","reconciliation_required","replaceable"]},
+        "state":{"enum":["none","pending","recoverable","resumable","reconciliation_required","replaceable"]},
         "url":{"oneOf":[{"type":"string","pattern":"^https://checkout\\.stripe\\.com/","maxLength":4096},{"type":"null"}]},
         "expires_at_ms":{"$ref":"#/$defs/nullable_time"}
       },

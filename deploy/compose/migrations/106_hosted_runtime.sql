@@ -103,6 +103,7 @@ CREATE TABLE hosted_billing_customers (
     customer_started_at bigint NOT NULL DEFAULT floor(extract(epoch FROM clock_timestamp())),
     checkout_operation uuid,
     checkout_started_at bigint,
+    checkout_request_digest bytea CHECK(checkout_request_digest IS NULL OR octet_length(checkout_request_digest)=32),
     checkout_id text,
     checkout_url text,
     checkout_expires_at bigint,

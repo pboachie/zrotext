@@ -74,8 +74,15 @@ a browser are rejected. Checkout/Portal URLs must use the exact trusted HTTPS
 provider host.
 
 Customer and Checkout operation IDs are durable before provider creation.
-Unknown results reuse the same operation within a window shorter than the
-provider's idempotency retention. An unknown operation outside that window
+Unknown results preserve the same operation and a digest of its exact server
+request. `POST /v1/billing/checkout/recover` accepts an empty body or object and
+only replays that matching pending operation inside a 23-hour window, shorter
+than provider idempotency retention. It cannot create a customer, allocate an
+operation, replace an attempt, or select changed terms. Status reads and workers
+never replay provider mutations. The recovery response is `{url}`: the same
+confirmed open URL, or null if that same operation is already closed and needs
+current reconciliation. Missing request provenance, changed configuration, known
+open/closed sessions and risk latches refuse recovery. An unknown operation outside that window
 requires operator reconciliation; it is never silently retried with a new key.
 
 `GET /v1/billing/status` returns `account_id`, `session_id`, current observation
@@ -85,7 +92,8 @@ state, plus a Checkout observation:
 | State | Meaning |
 | --- | --- |
 | `none` | No local attempt exists. |
-| `pending` | The existing operation has no confirmed result, or billing needs review. |
+| `pending` | The existing operation cannot be safely replayed, or billing needs review. |
+| `recoverable` | An exact durable pending request remains inside its replay window; an explicit recovery action may replay only that operation. |
 | `resumable` | The provider confirms the same open session; use its returned URL. |
 | `reconciliation_required` | A closed attempt needs complete current subscription reconciliation. |
 | `replaceable` | A closed attempt and complete reconciliation confirm no nonterminal subscription; a new explicit POST may replace it. |

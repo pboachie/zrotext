@@ -24,7 +24,7 @@ class HostedBillingRuntime(unittest.TestCase):
 
     def test_checkout_resume_needs_a_confirmed_same_session_url(self):
         self.validator.validate(self.status)
-        for state in ("none", "pending", "reconciliation_required", "replaceable"):
+        for state in ("none", "pending", "recoverable", "reconciliation_required", "replaceable"):
             value = copy.deepcopy(self.status)
             value["checkout"]["state"] = state
             self.validator.validate(value)

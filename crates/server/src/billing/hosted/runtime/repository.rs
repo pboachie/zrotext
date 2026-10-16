@@ -94,6 +94,7 @@ pub(super) struct Customer {
     pub started: i64,
     pub checkout: Option<Uuid>,
     pub checkout_started: Option<i64>,
+    pub checkout_digest: Option<Vec<u8>>,
     pub checkout_id: Option<String>,
     pub checkout_url: Option<String>,
     pub checkout_expires: Option<i64>,
@@ -114,7 +115,7 @@ pub(super) async fn customer(
     if ensure {
         tx.execute("INSERT INTO hosted_billing_customers(namespace_id,account_id) VALUES($1,$2) ON CONFLICT DO NOTHING",&[&ns(r),&account]).await?;
     }
-    let Some(row)=tx.query_opt("SELECT customer_id,customer_operation,customer_started_at,checkout_operation,checkout_started_at,checkout_id,checkout_url,checkout_expires_at,checkout_state,queue_generation,processed_generation,payment_hold,review_required,last_observation_complete,last_nonterminal_count FROM hosted_billing_customers WHERE namespace_id=$1 AND account_id=$2 FOR UPDATE",&[&ns(r),&account]).await? else{return Ok(None)};
+    let Some(row)=tx.query_opt("SELECT customer_id,customer_operation,customer_started_at,checkout_operation,checkout_started_at,checkout_id,checkout_url,checkout_expires_at,checkout_state,queue_generation,processed_generation,payment_hold,review_required,last_observation_complete,last_nonterminal_count,checkout_request_digest FROM hosted_billing_customers WHERE namespace_id=$1 AND account_id=$2 FOR UPDATE",&[&ns(r),&account]).await? else{return Ok(None)};
     Ok(Some(Customer {
         id: row.get(0),
         operation: row.get(1),
@@ -131,6 +132,7 @@ pub(super) async fn customer(
         review: row.get(12),
         complete: row.get(13),
         nonterminal: row.get(14),
+        checkout_digest: row.get(15),
     }))
 }
 pub(super) async fn queue(tx: &Transaction<'_>, r: &Runtime, account: Uuid) -> Result<(), Error> {

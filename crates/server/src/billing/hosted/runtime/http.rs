@@ -58,6 +58,7 @@ pub(super) fn router(r: Arc<Runtime>) -> Router {
         .route("/plan", get(plan))
         .route("/status", get(status))
         .route("/checkout", post(checkout))
+        .route("/checkout/recover", post(recover_checkout))
         .route("/portal", post(portal))
         .route("/stripe-events", post(webhook))
         .layer(DefaultBodyLimit::max(64 * 1024))
@@ -126,6 +127,9 @@ async fn status(State(r): State<Arc<Runtime>>, headers: HeaderMap) -> Result<Jso
         json!({"state":"none","url":null,"expires_at_ms":null}),
         |c| {
             checkout_view(
+                &r,
+                account,
+                now,
                 c,
                 projection
                     .as_ref()
@@ -154,10 +158,11 @@ async fn status(State(r): State<Arc<Runtime>>, headers: HeaderMap) -> Result<Jso
     tx.commit().await?;
     Ok(Json(value))
 }
-fn checkout_view(c: &db::Customer, terminal: bool) -> Value {
+fn checkout_view(r: &Runtime, account: Uuid, now: i64, c: &db::Customer, terminal: bool) -> Value {
     let terminal = terminal || (c.complete && c.nonterminal == 0);
     let state = match c.checkout_state.as_str() {
         "none" => "none",
+        "pending" if recoverable(r, account, now, c) => "recoverable",
         "open" => "resumable",
         "complete" | "expired" if c.queued == c.processed && terminal => "replaceable",
         "complete" | "expired" => "reconciliation_required",
@@ -260,61 +265,145 @@ async fn checkout(
             tx.commit().await?;
             return Ok(Json(json!({"url":url})));
         }
-        let operation = if c.checkout_state == "pending" {
-            if c.checkout_started
-                .is_none_or(|at| now < at || now - at > 23 * 60 * 60)
-            {
+        if c.checkout_state == "pending" {
+            return Err(Error::Pending);
+        }
+        if matches!(c.checkout_state.as_str(), "complete" | "expired") {
+            let terminal=tx.query_opt("SELECT 1 FROM hosted_billing_projections WHERE namespace_id=$1 AND account_id=$2 AND phase='terminal' AND dirty_generation=processed_generation",&[&db::ns(&r),&account]).await?.is_some();
+            if c.queued != c.processed || !(terminal || (c.complete && c.nonterminal == 0)) {
                 return Err(Error::Pending);
             }
-            c.checkout.ok_or(Error::Identity)?
-        } else {
-            if matches!(c.checkout_state.as_str(), "complete" | "expired") {
-                let terminal=tx.query_opt("SELECT 1 FROM hosted_billing_projections WHERE namespace_id=$1 AND account_id=$2 AND phase='terminal' AND dirty_generation=processed_generation",&[&db::ns(&r),&account]).await?.is_some();
-                if c.queued != c.processed || !(terminal || (c.complete && c.nonterminal == 0)) {
-                    return Err(Error::Pending);
-                }
-            }
-            let operation = Uuid::new_v4();
-            tx.execute("UPDATE hosted_billing_customers SET checkout_operation=$3,checkout_started_at=$4,checkout_id=NULL,checkout_url=NULL,checkout_expires_at=NULL,checkout_state='pending' WHERE namespace_id=$1 AND account_id=$2",&[&db::ns(&r),&account,&operation,&now]).await?;
-            operation
-        };
+        }
+        let operation = Uuid::new_v4();
+        let digest = checkout_digest(&r, account, &customer, operation);
+        tx.execute("UPDATE hosted_billing_customers SET checkout_operation=$3,checkout_started_at=$4,checkout_request_digest=$5,checkout_id=NULL,checkout_url=NULL,checkout_expires_at=NULL,checkout_state='pending' WHERE namespace_id=$1 AND account_id=$2",&[&db::ns(&r),&account,&operation,&now,&digest]).await?;
         db::final_owner(&tx, &p).await?;
         tx.commit().await?;
         operation
     };
-    owner_now(&r, &p).await?;
+    dispatch_checkout(&r, &p, &customer, operation, false).await
+}
+fn checkout_fields(r: &Runtime, account: Uuid, customer: &str) -> Vec<(&'static str, String)> {
     let origin = &r.auth.canonical_origin;
+    vec![
+        ("mode", "subscription".into()),
+        ("customer", customer.to_owned()),
+        ("client_reference_id", account.to_string()),
+        ("line_items[0][price]", r.options.plan.price().into()),
+        ("line_items[0][quantity]", "1".into()),
+        (
+            "automatic_tax[enabled]",
+            r.options.automatic_tax.to_string(),
+        ),
+        ("billing_address_collection", "required".into()),
+        ("customer_update[address]", "auto".into()),
+        ("allow_promotion_codes", "false".into()),
+        ("metadata[zrotext_namespace]", db::ns(r).to_string()),
+        ("metadata[zrotext_account]", account.to_string()),
+        (
+            "success_url",
+            format!("{origin}/owner/hosted?checkout=return"),
+        ),
+        (
+            "cancel_url",
+            format!("{origin}/owner/hosted?checkout=cancel"),
+        ),
+    ]
+}
+fn checkout_digest(r: &Runtime, account: Uuid, customer: &str, operation: Uuid) -> Vec<u8> {
+    let mut hash = Sha256::new();
+    hash.update(b"ZROTEXT-CHECKOUT-REQUEST-V1");
+    hash.update(db::ns(r).as_bytes());
+    hash.update(account.as_bytes());
+    hash.update(operation.as_bytes());
+    hash.update(crate::billing::risk::STRIPE_API_VERSION.as_bytes());
+    hash.update(
+        serde_json::to_vec(&(
+            mode_name(r.options.namespace.mode()),
+            r.options.namespace.provider_account(),
+            r.options.policy_revision,
+            r.options.plan.outbound_limit(),
+            r.options.plan.device_limit(),
+            r.options.plan.grace_seconds(),
+            checkout_fields(r, account, customer),
+        ))
+        .expect("string tuple serialization"),
+    );
+    hash.finalize().to_vec()
+}
+fn recoverable(r: &Runtime, account: Uuid, now: i64, c: &db::Customer) -> bool {
+    if c.checkout_state != "pending" || c.checkout_id.is_some() || c.hold || c.review {
+        return false;
+    }
+    let (Some(customer), Some(operation), Some(started), Some(digest)) =
+        (&c.id, c.checkout, c.checkout_started, &c.checkout_digest)
+    else {
+        return false;
+    };
+    now >= started
+        && now - started <= 23 * 60 * 60
+        && *digest == checkout_digest(r, account, customer, operation)
+}
+async fn recover_checkout(
+    State(r): State<Arc<Runtime>>,
+    OwnerMutation(p, _slot): OwnerMutation,
+    body: Bytes,
+) -> Result<Json<Value>, Error> {
+    empty(&body)?;
+    let (customer, operation) = {
+        let mut conn = db::connect(&r).await?;
+        let tx = conn.transaction().await?;
+        db::owner(&tx, &r, &p).await?;
+        db::require_no_global_review(&tx, &r).await?;
+        let c = db::customer(&tx, &r, p.tenant.account_id(), false)
+            .await?
+            .ok_or(Error::Pending)?;
+        if !recoverable(&r, p.tenant.account_id(), db::now(&tx).await?, &c) {
+            return Err(Error::Pending);
+        }
+        db::final_owner(&tx, &p).await?;
+        tx.commit().await?;
+        (
+            c.id.ok_or(Error::Identity)?,
+            c.checkout.ok_or(Error::Identity)?,
+        )
+    };
+    dispatch_checkout(&r, &p, &customer, operation, true).await
+}
+async fn dispatch_checkout(
+    r: &Runtime,
+    p: &SessionPrincipal,
+    customer: &str,
+    operation: Uuid,
+    allow_closed: bool,
+) -> Result<Json<Value>, Error> {
+    let account = p.tenant.account_id();
+    let digest = checkout_digest(r, account, customer, operation);
+    {
+        let mut conn = db::connect(r).await?;
+        let tx = conn.transaction().await?;
+        db::owner(&tx, r, p).await?;
+        db::require_no_global_review(&tx, r).await?;
+        let c = db::customer(&tx, r, account, false)
+            .await?
+            .ok_or(Error::Pending)?;
+        if c.checkout != Some(operation)
+            || c.id.as_deref() != Some(customer)
+            || !recoverable(r, account, db::now(&tx).await?, &c)
+        {
+            return Err(Error::Pending);
+        }
+        db::final_owner(&tx, p).await?;
+        tx.commit().await?;
+    }
     let value = r
         .provider
         .request(
             &r.options.session_key,
             Method::POST,
             "/v1/checkout/sessions",
-            &[
-                ("mode", "subscription".into()),
-                ("customer", customer.clone()),
-                ("client_reference_id", account.to_string()),
-                ("line_items[0][price]", r.options.plan.price().into()),
-                ("line_items[0][quantity]", "1".into()),
-                (
-                    "automatic_tax[enabled]",
-                    r.options.automatic_tax.to_string(),
-                ),
-                ("billing_address_collection", "required".into()),
-                ("customer_update[address]", "auto".into()),
-                ("allow_promotion_codes", "false".into()),
-                ("metadata[zrotext_namespace]", db::ns(&r).to_string()),
-                ("metadata[zrotext_account]", account.to_string()),
-                (
-                    "success_url",
-                    format!("{origin}/owner/hosted?checkout=return"),
-                ),
-                (
-                    "cancel_url",
-                    format!("{origin}/owner/hosted?checkout=cancel"),
-                ),
-            ],
-            Some(&format!("hosted-checkout-{}-{operation}", db::ns(&r))),
+            &checkout_fields(r, account, customer),
+            Some(&format!("hosted-checkout-{}-{operation}", db::ns(r))),
         )
         .await?;
     let session = value["id"]
@@ -327,24 +416,48 @@ async fn checkout(
     {
         return Err(Error::Identity);
     }
-    let mut conn = db::connect(&r).await?;
+    let mut conn = db::connect(r).await?;
     let tx = conn.transaction().await?;
-    db::owner(&tx, &r, &p).await?;
-    tx.execute("UPDATE hosted_billing_customers SET checkout_id=$4 WHERE namespace_id=$1 AND account_id=$2 AND checkout_operation=$3 AND checkout_state='pending' AND (checkout_id IS NULL OR checkout_id=$4)",&[&db::ns(&r),&account,&operation,&session]).await?;
-    db::final_owner(&tx, &p).await?;
-    tx.commit().await?;
-    observe_checkout(&r, &p).await?;
-    let mut conn = db::connect(&r).await?;
-    let tx = conn.transaction().await?;
-    db::owner(&tx, &r, &p).await?;
-    let c = db::customer(&tx, &r, account, false)
+    db::owner(&tx, r, p).await?;
+    db::require_no_global_review(&tx, r).await?;
+    let current = db::customer(&tx, r, account, false)
         .await?
         .ok_or(Error::Pending)?;
-    if c.checkout_state != "open" {
+    if current.hold
+        || current.review
+        || current.id.as_deref() != Some(customer)
+        || current.checkout != Some(operation)
+        || current.checkout_digest.as_ref() != Some(&digest)
+        || current.checkout_id.as_ref().is_some_and(|id| id != session)
+    {
         return Err(Error::Pending);
     }
-    let url = c.checkout_url.ok_or(Error::Pending)?;
-    db::final_owner(&tx, &p).await?;
+    tx.execute("UPDATE hosted_billing_customers SET checkout_id=$4 WHERE namespace_id=$1 AND account_id=$2 AND checkout_operation=$3 AND checkout_state='pending' AND (checkout_id IS NULL OR checkout_id=$4)",&[&db::ns(r),&account,&operation,&session]).await?;
+    db::final_owner(&tx, p).await?;
+    tx.commit().await?;
+    observe_checkout(r, p).await?;
+    let mut conn = db::connect(r).await?;
+    let tx = conn.transaction().await?;
+    db::owner(&tx, r, p).await?;
+    let c = db::customer(&tx, r, account, false)
+        .await?
+        .ok_or(Error::Pending)?;
+    db::require_no_global_review(&tx, r).await?;
+    if c.hold
+        || c.review
+        || c.checkout != Some(operation)
+        || c.checkout_digest.as_ref() != Some(&digest)
+    {
+        return Err(Error::Pending);
+    }
+    let url = if c.checkout_state == "open" {
+        Some(c.checkout_url.ok_or(Error::Pending)?)
+    } else if allow_closed && matches!(c.checkout_state.as_str(), "complete" | "expired") {
+        None
+    } else {
+        return Err(Error::Pending);
+    };
+    db::final_owner(&tx, p).await?;
     tx.commit().await?;
     Ok(Json(json!({"url":url})))
 }
