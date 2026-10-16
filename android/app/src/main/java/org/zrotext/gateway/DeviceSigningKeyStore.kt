@@ -19,6 +19,19 @@ import java.util.UUID
 
 enum class SigningKeySecurity { STRONGBOX, TRUSTED_ENVIRONMENT, SOFTWARE, UNKNOWN_SECURE, UNKNOWN }
 
+/** An unreadable provider is not evidence that an enrolled identity was lost. */
+internal sealed interface ExistingSigningIdentity {
+    data class Present(val fingerprint: String) : ExistingSigningIdentity
+    data object Missing : ExistingSigningIdentity
+    data object Unavailable : ExistingSigningIdentity
+
+    companion object {
+        fun observe(aliasPresent: () -> Boolean, fingerprint: () -> String): ExistingSigningIdentity = try {
+            if (aliasPresent()) Present(fingerprint()) else Missing
+        } catch (_: Exception) { Unavailable }
+    }
+}
+
 class DeviceSigningPublic internal constructor(
     val spkiDer: ByteArray,
     val fingerprint: ByteArray,
@@ -69,6 +82,18 @@ class DeviceSigningKeyStore(
                 generate(strongBox = false)
             }
         }
+        return existing(fallbackOnCreation)
+    }
+
+    /** Read a previously enrolled identity. Recovery must never silently create a new key. */
+    @Synchronized
+    fun existing(): DeviceSigningPublic = existing(null)
+
+    @Synchronized
+    internal fun observeExistingIdentity(): ExistingSigningIdentity = ExistingSigningIdentity.observe(
+        { openStore().containsAlias(alias) }, { existing().fingerprintHex })
+
+    private fun existing(fallbackOnCreation: Boolean?): DeviceSigningPublic {
         val certificate = openStore().getCertificate(alias) ?: error("Signing identity missing certificate")
         val publicKey = certificate.publicKey as? ECPublicKey ?: error("Signing identity is not EC")
         val privateKey = privateKey()
@@ -98,6 +123,13 @@ class DeviceSigningKeyStore(
 
     fun signDeviceChallenge(accountId: UUID, deviceId: UUID, challengeId: UUID, nonce: ByteArray): ByteArray =
           sign(EnrollmentProof.deviceAuthBytes(accountId, deviceId, challengeId, nonce))
+
+    /** Read-only pairing reconciliation with the original existing identity only. */
+    internal fun signPairingBinding(accountId: UUID, pairingId: UUID, challengeId: UUID,
+                                    fingerprint: ByteArray, nonce: ByteArray): ByteArray {
+        check(java.security.MessageDigest.isEqual(existing().fingerprint, fingerprint))
+        return sign(PairingBindingProof.bytes(accountId, pairingId, challengeId, fingerprint, nonce))
+    }
 
     /** Exact scoped fetch only. Missing identities are never enrolled or replaced by a receive path. */
     internal fun signSealedEnvelopeFetch(grant: SealedExecutionGrantValidator.Fields): ByteArray {

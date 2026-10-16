@@ -11,7 +11,7 @@ use axum::{
     extract::{DefaultBodyLimit, Request, State},
     http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
-    response::{Html, IntoResponse, Response},
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use reqwest::{Client as HttpClient, redirect, retry};
@@ -248,31 +248,33 @@ pub fn return_router() -> Router {
         .route("/billing/cancel", get(cancel_return))
 }
 
-fn return_page(title: &'static str, message: &'static str) -> Response {
+fn return_to_setup(destination: &'static str) -> Response {
     (
+        StatusCode::SEE_OTHER,
         [
+            ("location", destination),
             ("cache-control", "no-store"),
             ("referrer-policy", "no-referrer"),
-            ("content-security-policy", "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"),
+            (
+                "content-security-policy",
+                "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+            ),
             ("x-content-type-options", "nosniff"),
-            ("strict-transport-security", "max-age=63072000; includeSubDomains"),
+            (
+                "strict-transport-security",
+                "max-age=63072000; includeSubDomains",
+            ),
         ],
-        Html(format!("<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><title>{title}</title><main><h1>{title}</h1><p>{message}</p><p><a href=\"/billing\">Billing status</a></p></main><footer><a href=\"/source\">Source code for this server</a></footer></html>")),
-    ).into_response()
+    )
+        .into_response()
 }
 
 async fn checkout_return() -> Response {
-    return_page(
-        "Checkout returned",
-        "Stripe returned you to ZROtext. Your subscription and access remain pending until the server verifies and reconciles billing events.",
-    )
+    return_to_setup("/owner/hosted?checkout=return")
 }
 
 async fn cancel_return() -> Response {
-    return_page(
-        "Checkout canceled",
-        "The Checkout flow was canceled. No subscription or access change is confirmed by this page.",
-    )
+    return_to_setup("/owner/hosted?checkout=cancel")
 }
 
 async fn no_store_response(request: Request, next: Next) -> Response {

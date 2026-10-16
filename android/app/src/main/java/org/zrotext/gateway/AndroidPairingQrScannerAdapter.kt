@@ -7,14 +7,12 @@ import android.os.Looper
 import android.os.SystemClock
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.sizeIn
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.Button
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -26,7 +24,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.LiveRegionMode
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -84,7 +81,8 @@ internal class AndroidPairingQrGoogleScanner(private val context: Context) : And
     manualCredentials: (() -> AndroidPairingQrManualCredentials?)? = null,
     onState: (AndroidPairingQrScanner.Snapshot) -> Unit = {},
     onScannerReady: (AndroidPairingQrScanner?) -> Unit = {},
-    renderStatus: Boolean = true
+    renderStatus: Boolean = true,
+    manualMode: Boolean = false
 ) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -101,7 +99,6 @@ internal class AndroidPairingQrGoogleScanner(private val context: Context) : And
     val worker = remember(scanSource, lifecycle) { Executors.newSingleThreadExecutor() }
     val disposed = remember(scanSource, lifecycle) { AtomicBoolean(false) }
     var snapshot by remember { mutableStateOf<AndroidPairingQrScanner.Snapshot?>(null) }
-    var confirmed by remember { mutableStateOf(false) }
     val scanner = remember(scanSource, lifecycle) {
         lateinit var coordinator: AndroidPairingQrScanner
         coordinator = AndroidPairingQrScanner(scanSource, { currentOrigin() }, SystemClock::elapsedRealtime,
@@ -130,46 +127,37 @@ internal class AndroidPairingQrGoogleScanner(private val context: Context) : And
         if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) scanner.pause()
         val observer = LifecycleEventObserver { _, event -> when (event) {
             Lifecycle.Event.ON_RESUME -> scanner.resume()
-            Lifecycle.Event.ON_PAUSE -> { confirmed = false; scanner.pause() }
+            Lifecycle.Event.ON_PAUSE -> { scanner.pause() }
             Lifecycle.Event.ON_DESTROY -> scanner.close()
             else -> Unit
         } }
         lifecycle.addObserver(observer)
         onDispose {
-            disposed.set(true); lifecycle.removeObserver(observer); confirmed = false
+            disposed.set(true); lifecycle.removeObserver(observer)
             currentReady(null)
             scanner.close(); worker.shutdownNow()
         }
     }
     LaunchedEffect(scanner) { while (true) { delay(1000); snapshot = scanner.snapshot() } }
-    LaunchedEffect(snapshot?.generation) { confirmed = false }
     LaunchedEffect(snapshot?.phase) { if (snapshot?.phase == AndroidPairingQrScanner.Phase.UNKNOWN) currentUnknown() }
     val state = snapshot ?: scanner.snapshot()
     LaunchedEffect(state) { currentState(state) }
-    Column(modifier.padding(12.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Scan a pairing QR")
-        Text("Set the HTTPS server you know in the existing pairing fields first. Scanning supplies a one-use claim; it does not authenticate the owner or approve the phone.")
-        Button(onClick = { confirmed = false; scanner.scan() }, enabled = state.canScan,
+    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (state.phase != AndroidPairingQrScanner.Phase.REVIEW && !manualMode) Button(onClick = { scanner.scan() }, enabled = state.canScan,
             modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)) { Text("Scan pairing QR") }
         if (state.phase == AndroidPairingQrScanner.Phase.REVIEW) {
             Text("Selected HTTPS server: ${state.expectedOrigin}")
             Text("Scanned HTTPS server: ${state.scannedOrigin}")
-            Row(Modifier.sizeIn(minHeight = 48.dp).toggleable(
-                value = confirmed, enabled = state.canConfirm, role = Role.Checkbox,
-                onValueChange = { confirmed = it }
-            )) {
-                Checkbox(checked = confirmed, onCheckedChange = null, enabled = state.canConfirm)
-                Text("I recognize this server and approve sending this pairing claim.")
-            }
-            Button(onClick = { scanner.confirmOrigin(confirmed); confirmed = false }, enabled = state.canConfirm && confirmed,
+            Text("Only continue if this is the service you selected independently. This sends the phone's key proof; owner approval remains on the dashboard.")
+            Button(onClick = { scanner.confirmOrigin(true) }, enabled = state.canConfirm,
                 modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)) {
-                Text("Claim this pairing ticket")
+                Text("Use this trusted server and pair")
             }
         }
         if (renderStatus) Text(state.status, Modifier.semantics { liveRegion = LiveRegionMode.Polite })
-        Button(onClick = { confirmed = false; scanner.cancel() }, enabled = state.phase != AndroidPairingQrScanner.Phase.CLOSED,
+        if (manualMode || state.phase in setOf(AndroidPairingQrScanner.Phase.SCANNING, AndroidPairingQrScanner.Phase.REVIEW)) TextButton(onClick = { scanner.cancel() }, enabled = state.phase != AndroidPairingQrScanner.Phase.CLOSED,
             modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)) { Text("Clear scanned pairing") }
-        Button(onClick = { scanner.cancel(); currentManual() }, enabled = state.canUseManual,
+        if (!manualMode && state.phase != AndroidPairingQrScanner.Phase.REVIEW) TextButton(onClick = { scanner.cancel(); currentManual() }, enabled = state.canUseManual,
             modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)) { Text("Use existing manual pairing") }
         if (manualCredentials != null) Button(onClick = {
             if (scanner.snapshot().canUseManual) {
@@ -178,6 +166,5 @@ internal class AndroidPairingQrGoogleScanner(private val context: Context) : And
             }
         }, enabled = state.canUseManual,
             modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)) { Text("Claim manually entered pairing ticket") }
-        Text("The server enforces ticket expiry and one-use rules. An unknown claim must be checked in the original browser before retrying.")
     }
 }

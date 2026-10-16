@@ -168,6 +168,17 @@ class RuntimeRoleFixture:
         return self.sql((COMPOSE / "runtime-role.sql").read_text(encoding="utf-8"), **kwargs)
 
 class RuntimeRoleTest(RuntimeRoleFixture, unittest.TestCase):
+    def test_registration_trigger_permission_is_repaired_after_reprovisioning(self):
+        self.provision()
+        self.sql("GRANT EXECUTE ON FUNCTION public.registration_browser_intent_binding_guard() "
+                 "TO PUBLIC,zrotext_runtime;")
+        self.provision()
+        self.sql("DO $$ BEGIN IF has_function_privilege(current_user,"
+                 "'public.registration_browser_intent_binding_guard()','EXECUTE') THEN "
+                 "RAISE EXCEPTION 'registration trigger execute grant retained'; END IF; END $$;",
+                 runtime=True)
+        self.sql((COMPOSE / "verify_runtime_role.sql").read_text(encoding="utf-8"), runtime=True)
+
     def test_provision_upgrade_and_defenses(self):
         # Existing schema/volume migration path, then repeat without resetting DB.
         self.provision()

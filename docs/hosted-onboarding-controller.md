@@ -1,11 +1,13 @@
-# Hosted TEST onboarding controller
+# Hosted onboarding controller
 
 `web/owner/hosted-onboarding.js` provides a browser controller for the existing
-account and Stripe TEST APIs. It is an integration component, not a served
-onboarding page. The current account, fleet and billing pages remain the served
-interfaces. There is no live payment implementation or commercial catalog in
-this component. See [current TEST billing](STRIPE-TEST-BILLING.md) and the
-[mode-isolation proposal](BILLING-MODES-PROPOSAL.md).
+account and configured billing APIs. The served `/owner/hosted` page uses it for
+registration, verification, sign-in, verified plan review, checkout,
+return reconciliation and subscription management. Existing account, fleet and
+billing pages remain available. TEST and LIVE modes stay distinct, with no
+commercial default catalog. See [legacy TEST billing](STRIPE-TEST-BILLING.md)
+and [the isolated hosted runtime](hosted-billing-runtime.md). Implementing the
+controller does not enable a provider, configured price or deployment.
 
 ## Integration
 
@@ -27,52 +29,111 @@ read the coarse `/v1/service/availability` contract before showing signup.
 Registration also rechecks it before submitting. Closed or unverified signup
 leaves sign-in and existing recovery available; invite-only signup requires an
 invitation. Refresh and checkout recheck availability, and checkout needs an
-explicit TEST mode and enabled checkout capability. A LIVE capability does not
-upgrade this TEST-only controller. The runtime must mount the availability
+explicit matching billing mode and enabled checkout capability. The runtime must mount the availability
 route before integrating this component; missing or contradictory responses
 remove actionable controls.
 
 The availability v1 response must contain exactly its six documented fields.
-Valid self-hosted, disabled or LIVE capabilities preserve successful sign-in
-and produce `billing_unavailable`, without reading TEST billing. Both portal
-and checkout handoffs recheck hosted TEST mode. Portal remains usable when
+Valid self-hosted or disabled capabilities preserve successful sign-in
+and produce `billing_unavailable`. Both portal
+and checkout handoffs recheck the observed hosted mode. A response from a
+different mode is refused. Portal remains usable when
 registration is closed or new checkout is disabled, provided the authenticated
-TEST customer binding remains current.
+customer binding remains current.
 
 The hosted sequence uses these existing APIs:
 
 1. `register(email, password, invite)` requests registration. The optional
    address-bound invite travels only in its existing header. A 202 response
    reports a request, not successful creation or permission to use the service.
-2. `resend(email, password)` requests another verification code when needed.
-3. `verify(token, password)` verifies the email and returns to sign-in.
+2. `resumeVerification()` offers code-only verification when the independent
+   registration proof cookie is present. This is presentation only; the server
+   validates the HttpOnly intent, exact Origin, bound CSRF and current account.
+   `resendOriginal()` posts an empty body and `verifyOriginal(token)` posts only
+   the mailed code. A fixed fifteen-minute intent cannot be renewed by resend.
+3. `resumeVerification(true)` selects explicit password fallback. Existing
+   `resend(email, password)` and `verify(token, password)` remain available in
+   another browser or after the original intent expires. All verification paths
+   return to explicit sign-in; none issues an ordinary session.
 4. `login(email, password)` establishes a session or requests a second factor.
    `secondFactor(code)` completes the private in-memory challenge. MFA failure
    clears the challenge and requires sign-in again.
-5. `refresh()` reads the owner session and local TEST billing projection, then
+5. `refresh()` reads the owner session and current billing observation, then
    checks that the same account and session remain current. Observers are
    refused before requesting billing data.
-6. `handoff("checkout")` or `handoff("portal")` returns a transient validated
+6. `plan()` checks the same current owner session and capability, then reads
+   `/v1/billing/plan`. The closed version-one response contains the matching mode,
+   currency, integer charge units, recurrence and configured device/outbound
+   allowances. The served page shows checkout only after these terms validate.
+   Stripe charge units are used for display, including the documented ISK/UGX
+   exceptions; unsupported fractional exceptions cannot be rounded into a
+   purchase.
+   Runtime plans also state tax treatment, automatic tax and an allowance per
+   invoiced service period; the page does not assume a calendar month.
+7. `handoff("checkout")` or `handoff("portal")` returns a transient validated
    HTTPS Stripe URL. The integrating website may navigate to that URL. It must
    refresh after return; neither return nor checkout completion grants access.
+8. `handoff("resume")` re-reads an existing open checkout and returns its
+   transient URL without a mutation. `handoff("recover")` requires a current
+   recoverable observation and explicitly requests recovery of that same
+   durable operation. It never allocates a replacement operation. A null
+   recovery URL refreshes status instead of navigating.
 
 Checkout submits no browser-selected price, customer, tenant or return URL.
-It uses the server's existing configured TEST price and quota policy. Server
+It uses the server's configured price and quota policy for its verified mode. Server
 authorization, exact Origin/CSRF checks, account locking, rate limits and
 reconciliation remain authoritative. The controller checks owner-session
 continuity before and after requesting a handoff; these checks do not replace
 the server's mutation checks. It captures a stable CSRF cookie with each
-session read and sends that captured token for mutations, so replacement
+session read and sends that captured token for protected reads and mutations, so replacement
 session cookies cannot silently select a different account. Missing or rotated
 CSRF clears the controls. A server conflict requires an explicit refresh.
 Actions are serialized, so repeated submissions cannot run in parallel.
 
+## Served account and recovery flow
+
+The account view preserves an email address in memory while moving between
+registration, email verification, resend and sign-in. Password-manager attributes
+remain present. Passwords, verification codes and MFA codes are cleared after
+submit and page departure. Closed or unknown signup retains sign-in and recovery.
+An uncertain registration or verification reply checks the ordinary session
+once and offers verification/sign-in without replaying account creation. A valid
+account already signed in is preserved and shown as an existing session.
+Registration passwords and the HttpOnly intent never enter JavaScript storage;
+the page reads only the independent registration CSRF proof. See
+[the intent contract](registration-browser-intent.md).
+
+Self-hosted owners continue through their server's account/setup interfaces
+without a Stripe subscription.
+
+The subscription view explains compatible Android, active SIM, internet and
+separate carrier service before purchase. Configured price, currency,
+recurrence and allowances come from the server's verified provider metadata;
+there are no sample commercial plans. Checkout is a transient Stripe navigation.
+Returning to the page refreshes the server projection. A `checkout=return` or
+`checkout=cancel` marker is conservative only: a legacy TEST projection with no
+attempt information remains pending and cannot offer another checkout. The marker never
+grants entitlement or proves cancellation. Pending reconciliation
+shows a status check and help path, with no second purchase control. An observed
+eligible subscription links into Add phone, where server enrollment and
+line authority are checked independently. TEST stays labelled TEST and never
+becomes LIVE eligibility. Runtime status distinguishes pending, recoverable,
+resumable and confirmed replaceable attempts. A recoverable attempt can offer
+only an explicit recovery action; it cannot offer a new purchase. Automatic
+pending reads stop after six checks and preserve a manual check/help path.
+
+Missing LIVE runtime support, configured prices, namespace verification or
+provider readiness remains an explicit unavailable capability. This page does
+not activate service signup, prices, deployment or a live launch.
+
 ## States and authority
 
-Missing, malformed, live or disabled billing projections fail closed. Failed
+Missing, malformed, mismatched or disabled billing observations fail closed. Failed
 refresh removes previously actionable controls. Pending reconciliation, review,
 payment hold or any nonterminal subscription blocks a second checkout.
-Recognized active, grace and invoice-current projections remain labeled TEST.
+Runtime account/session envelopes and timestamps must remain current. Active or
+grace service also needs fresh positive limits and no dirty/risk hold. Legacy
+TEST active, grace and invoice-current projections remain labelled TEST.
 `productionReady` is always false. The controller never authorizes message
 admission, device enrollment, a content reader or a private-key operation.
 Pairing and key custody must use their existing separate protocols.
@@ -91,11 +152,15 @@ and [its consumption-only guidance](https://support.google.com/googleplay/androi
 
 ## Verification
 
-`node --test web/owner/hosted-onboarding.test.js` runs synthetic HTTP fixtures
+`node --test web/owner/hosted-onboarding.test.js web/owner/hosted-live.test.js` runs synthetic HTTP fixtures
 through signup, verification, MFA, TEST checkout, pending reconciliation,
 subscription observation, grace and portal return. It also covers stale
-sessions, observer refusal, malformed/live modes, exact URL hosts, CSRF,
-duplicate submit, unavailable billing and a switch to self hosting.
+sessions, observer refusal, mode isolation, exact URL hosts, CSRF,
+duplicate submit, recoverable/nullable existing attempts, unavailable billing
+and a switch to self hosting. Rendered workspace tests additionally cover
+responsive recovery, bounded polling and a cached page restored while an older
+read remains in flight. Restoration queues a fresh read after settlement and
+never replays the older mutation.
 These fixtures prove browser orchestration only; they do not prove database
 transactions, email delivery, provider acceptance, paid-service availability,
 carrier delivery or Android policy approval.

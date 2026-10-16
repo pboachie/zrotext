@@ -111,8 +111,17 @@ current price and return URLs (recorded in the session's
 `POST /v1/checkout/sessions/{id}/expire`: sessions from another price or return
 URL configuration, sessions created before this guard, and the newer of two
 sessions left by a race. It creates a session only when none remains open. A
-reload, a second tab, or a return through `/billing/cancel` therefore reaches
-the same session instead of opening a second subscription path.
+later explicit Checkout request after a reload or from a second tab therefore
+reaches the same session instead of opening a second subscription path.
+
+The fixed `/billing/success` and `/billing/cancel` browser destinations redirect
+to `/owner/hosted?checkout=return` and `/owner/hosted?checkout=cancel`. Those
+public navigation hints never confirm payment or cancellation. The hosted
+journey checks authoritative subscription state and keeps an uncertain result
+at **Confirming your subscription**, without offering a second purchase. The
+legacy TEST projection cannot itself distinguish a canceled Checkout from a
+delayed reconciliation; resolving that attempt needs an authoritative provider
+observation rather than trusting the return URL.
 
 New sessions carry `expires_at` and a server-derived Stripe idempotency key
 built from the account, a digest of the price and return URLs, and a fixed

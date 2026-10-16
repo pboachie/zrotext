@@ -157,7 +157,7 @@ async fn exceptions_gate_keeps_unknown_paths_and_data_apis_absent() {
 }
 
 #[tokio::test]
-async fn devices_navigation_uses_one_hidden_owner_link_only_when_enabled() {
+async fn devices_utilities_use_one_hidden_owner_link_only_when_enabled() {
     assert_eq!(
         PAGE.matches("<!-- workflow-exceptions-navigation -->")
             .count(),
@@ -178,7 +178,11 @@ async fn devices_navigation_uses_one_hidden_owner_link_only_when_enabled() {
             assert_eq!(html.matches(link).count(), 1);
             assert_eq!(html.matches("/owner/workflow-exceptions").count(), 1);
             let nav = html.split("<nav class=\"owner-nav\"").nth(1).unwrap();
-            assert!(nav.split("</nav>").next().unwrap().contains(link));
+            let primary = nav.split("</nav>").next().unwrap();
+            assert_eq!(primary.matches("<a ").count(), 6);
+            assert!(!primary.contains(link));
+            let utilities = html.split("<div class=\"owner-utilities\"").nth(1).unwrap();
+            assert!(utilities.split("</div>").next().unwrap().contains(link));
         } else {
             assert!(!html.contains("workflow-exceptions"));
             assert!(!html.contains("Workflow exceptions"));

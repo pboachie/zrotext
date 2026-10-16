@@ -8,39 +8,36 @@
   <link rel="stylesheet" href="/owner/devices.css">
   <script defer src="/owner/owner-shell.js"></script>
   <script defer src="/owner/pairing-code.js"></script>
+  <script defer src="/owner/owner-workspace.js"></script>
   <script defer src="/owner/devices.js"></script>
+  <script defer src="/owner/sms-line-signing.js"></script>
+  <script defer src="/owner/sms-lines.js"></script>
 </head>
-<body class="owner-shell" data-owner-page="devices">
+<body class="owner-shell" data-owner-page="devices" data-workspace-view="overview" data-setup-stage="pair">
   <a class="skip-link" href="#owner-main">Skip to content</a>
   <aside class="owner-rail" aria-label="ZROtext workspace">
     <a class="owner-brand" href="/owner/devices"><svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><rect width="48" height="48" rx="11" fill="#b6f36a"/><path d="M12 14h24L15 33h21M13 24h9" fill="none" stroke="#0b100b" stroke-width="4" stroke-linecap="square" stroke-linejoin="miter"/></svg><span><strong>ZRO</strong>text</span></a>
     <p class="rail-label">Owner workspace</p>
-    <nav class="owner-nav" aria-label="Owner navigation"><a href="/owner/devices" aria-current="page" data-owner-only hidden>Fleet overview</a>
-<a href="/owner/devices#message-activity" data-owner-only hidden>Message activity</a>
-<a href="/owner/devices#connection-details" data-owner-only hidden>Connection details</a>
-<a href="/owner/sms-lines" data-owner-only hidden>SMS lines</a>
-<a href="/owner/seats" data-owner-only hidden>Team seats</a>
+    <nav class="owner-nav" aria-label="Owner navigation">
+<a href="/owner/devices" data-owner-only hidden>Overview</a>
+<a href="/owner/phones" data-owner-only hidden>Phones &amp; lines</a>
+<a href="/owner/activity" data-owner-only hidden>Activity</a>
+<a href="/owner/integrations" data-owner-only hidden>Integrations</a>
+<a href="/owner/seats" data-owner-only hidden>Team</a>
+<a href="/owner/security" data-owner-only hidden>Settings</a></nav>
+<div class="owner-utilities" aria-label="Workspace utilities">
 <!-- workflow-exceptions-navigation -->
-<a href="/owner/devices#account-security" data-owner-only hidden>Security & sessions</a>
-<a href="/owner/account">Account setup</a>
-<a id="owner-billing-link" href="/billing" data-owner-only hidden>Plans & usage <span class="nav-note">Test mode</span></a>
-<a id="owner-observer-link" href="/owner/observer" hidden>Observer device status</a></nav>
+<a id="owner-billing-link" href="/billing" data-owner-only hidden>Billing <span class="nav-note">Test mode</span></a>
+<a id="owner-observer-link" href="/owner/observer" hidden>Observer device status</a></div>
     <p class="rail-status" id="owner-nav-status">Sign in to open owner controls. Real sending remains gated.</p>
   </aside>
   <main id="owner-main" tabindex="-1">
     <header>
-      <div><p class="eyebrow">ZROtext owner workspace</p><h1>Your phones and messages</h1><p class="page-intro">Connect a phone, finish its setup, then follow its status here.</p></div>
+      <div><p class="eyebrow">ZROtext owner workspace</p><h1 id="workspace-title">Your phones and messages</h1><p class="page-intro" id="workspace-intro">Follow your phones and message activity, with the next action close at hand.</p></div>
       <button id="logout" type="button" hidden>Sign out</button>
     </header>
     <p id="global-status" role="status" aria-live="polite"></p>
-    <nav class="setup-nav" aria-label="Setup steps">
-      <ol>
-        <li><a href="/owner/account"><span class="step-number" aria-hidden="true">1</span><span>Account <small>Create, verify or sign in</small></span></a></li>
-        <li><a href="#pair-phone" aria-current="step"><span class="step-number" aria-hidden="true">2</span><span>Connect a phone <small>Pair and compare</small></span></a></li>
-        <li><a href="/owner/sms-lines"><span class="step-number" aria-hidden="true">3</span><span>Set up an SMS line <small>Permissions, SIM and approval</small></span></a></li>
-        <li><a href="/owner/account#mfa-section"><span class="step-number" aria-hidden="true">4</span><span>Keep access safe <small>Authenticator and recovery</small></span></a></li>
-      </ol>
-    </nav>
+
 
     <section id="sign-in" hidden aria-labelledby="sign-in-title">
       <h2 id="sign-in-title">Sign in</h2>
@@ -89,59 +86,78 @@
     </section>
 
     <div id="owner-content" hidden>
-      <div class="owner-entry-actions"><a class="action-link" href="#pair-phone">Pair a phone</a><a href="#account-security">Security & sessions</a></div>
-      <div class="setup-note" role="note">
-        <strong>Setting up your first phone?</strong>
-        <p>Pair it below, then open <a href="/owner/sms-lines">SMS lines</a> to finish SIM and line approval. Save your <a href="/owner/account#mfa-section">account recovery codes</a> before relying on this account.</p>
-      </div>
-      <section id="message-summary" aria-labelledby="summary-title">
-        <div class="section-head"><h2 id="summary-title">Writer summary</h2><button id="refresh-summary" type="button" class="quiet">Refresh summary</button></div>
-        <div class="summary-scope"><label for="summary-device">Summary scope</label>
-        <select id="summary-device"><option value="">All devices in this account</option></select></div>
-        <p id="summary-status" role="status" aria-live="polite">Loading authoritative metadata&hellip;</p>
-        <div class="summary-cards">
-          <div role="group" aria-labelledby="summary-submitted-label"><h3 id="summary-submitted-label">Submitted today (UTC)</h3><p class="summary-value" id="summary-submitted">Loading&hellip;</p><p>First complete successful sent-callback evidence received by the writer. Delivery is not established.</p></div>
-          <div role="group" aria-labelledby="summary-pending-label"><h3 id="summary-pending-label">Waiting or claimed</h3><p class="summary-value" id="summary-pending">Loading&hellip;</p><p>Accepted, queued and claimed writer states. Claimed work may already hold a grant; this is not ungranted queue depth.</p></div>
-          <div role="group" aria-labelledby="summary-flight-label"><h3 id="summary-flight-label">Submitting / awaiting receipt</h3><p class="summary-value" id="summary-flight">Loading&hellip;</p><p>Submitting and submitted writer states. Unknown and final outcomes are separate; connectivity does not prove sending.</p></div>
-        </div>
+      <div class="owner-entry-actions"><a class="action-link" href="/owner/setup?new=1">Add phone</a><a href="/owner/hosted">Hosted account &amp; billing</a></div>
+      <section id="setup-resume" class="setup-resume" data-workspace="overview setup" aria-labelledby="setup-resume-title">
+        <div class="section-head"><div><p class="eyebrow">Your next step</p><h2 id="setup-resume-title">Continue setup</h2></div><button id="setup-refresh" class="quiet" type="button">Check progress</button></div>
+        <p id="setup-resume-status" role="status" aria-live="polite">Checking saved progress with this server…</p>
+        <a id="setup-resume-link" class="action-link" href="/owner/setup">Continue setup</a>
       </section>
-      <section id="approved-devices" aria-labelledby="devices-title">
-        <div class="section-head"><h2 id="devices-title">Approved devices</h2><button id="refresh-devices" type="button" class="quiet">Refresh</button></div>
-        <label class="check"><input id="auto-refresh" type="checkbox" checked> Refresh devices and recent messages automatically</label>
+      <nav class="setup-progress" data-workspace="setup" aria-label="Phone setup progress"><ol>
+        <li data-setup-step="pair">1. Scan</li><li data-setup-step="compare">2. Compare</li><li data-setup-step="connect">3. Connect</li><li data-setup-step="line">4. Approve line</li>
+      </ol></nav>
+      <section id="setup-connection" data-workspace="setup" aria-labelledby="setup-connection-title" hidden>
+        <p class="eyebrow">On your phone</p><h2 id="setup-connection-title">Start the connection</h2>
+        <p id="setup-connection-status" role="status" aria-live="polite">Phone approved. Choose the SIM and required permissions in the app, then press Start connection.</p>
+        <p class="field-help">The app retrieves its approved device identity. There is no device ID or stream address to enter.</p>
+      </section>
+      <section id="setup-complete" data-workspace="setup" hidden><h2>Phone connected · Line approval recorded</h2><p>Setup progress is confirmed by this server. Carrier testing remains a separate, deliberate action.</p><div class="actions"><a class="action-link" href="/owner/devices">Open overview</a><a href="/owner/setup?new=1">Add another phone</a></div></section>
+      <section data-workspace="overview phones" id="approved-devices" aria-labelledby="devices-title">
+        <div class="section-head"><h2 id="devices-title">Phones</h2><button id="refresh-devices" type="button" class="quiet">Refresh</button></div>
+
         <p id="device-cap-prompt" role="status" aria-live="polite" hidden></p>
         <p id="device-status" role="status" aria-live="polite"></p>
-        <p id="fleet-summary" class="fleet-summary" role="status" aria-live="polite">Fleet observations are loading.</p>
+
         <div class="fleet-workspace">
           <div class="fleet-table">
             <ul id="device-list" aria-label="Approved device snapshots"></ul>
             <button id="more-devices" type="button" class="quiet" hidden>Load more devices</button>
           </div>
           <aside id="device-detail" class="device-detail" aria-labelledby="device-detail-title">
-            <h3 id="device-detail-title">Device details</h3>
+            <h3 id="device-detail-title">Phone details</h3>
             <p id="device-detail-status" role="status" aria-live="polite">Choose a device to inspect its latest loaded snapshot.</p>
             <div id="device-detail-content" hidden>
               <p><strong id="device-detail-name"></strong><code id="device-detail-id"></code></p>
               <p id="device-detail-connectivity"></p>
               <p id="device-detail-queue"></p>
-              <p id="device-detail-preconditions"></p>
-              <p>Default SMS role, battery, charging and exact heartbeat age: not reported by this contract.</p>
+              <details><summary>Android status and troubleshooting</summary><p id="device-detail-preconditions"></p></details>
+              <details><summary>Status limits and advanced details</summary>              <p>Default SMS role, battery, charging and exact heartbeat age: not reported by this contract.</p>
               <p>SIM phone digits are unavailable. Select the SIM in the gateway app and use <a href="/owner/sms-lines">SMS line activation</a> for line authority.</p>
               <p>Remote Pause is unavailable. Revoke removes authorization; it is not a pause.</p>
               <p>Private pilot sending remains gated. These observations do not establish carrier readiness or delivery.</p>
+              </details>
             </div>
           </aside>
         </div>
         <details class="fleet-help">
-          <summary>How to interpret freshness, queues and readiness</summary>
+          <summary>Updates and status details</summary>
+        <p id="fleet-summary" class="fleet-summary" role="status" aria-live="polite">Fleet observations are loading.</p>
+        <label class="check"><input id="auto-refresh" type="checkbox" checked> Refresh devices and recent messages automatically</label>
         <p>While this tab is visible, device and message updates arrive over a live same-origin event stream and lists refresh within a few seconds of a server-side change. If that stream cannot connect, updates fall back to a 15-second snapshot refresh. A list pauses while you browse older entries, focus a row, or open message events. Use Refresh to return to its latest entries.</p>
         <p>Approval permits a phone to connect. A displayed authenticated socket lease is a server observation that can lag a dropped connection by up to 90 seconds. It does not prove SMS permission, SIM service, or dispatch readiness. Check the gateway app on the phone before a controlled test.</p>
         <p>Pending counts accepted, queued and claimed messages; in flight counts submitting and submitted messages. These server states can include work awaiting expiry reconciliation. Counts stop at 1,000+ per category. Check the snapshot time and message timeline for unknown or final outcomes.</p>
         <p>Android reports describe selected SIM availability, SMS permission and airplane mode at the shown receipt time. Fresh reports explain local blockers to check on the phone. Saved reports become historical after the freshness window, even with automatic refresh paused. No reported blockers does not prove carrier readiness or delivery. Check the message timeline for actual callback evidence.</p>
         </details>
       </section>
+      <section data-workspace="overview" id="message-summary" aria-labelledby="summary-title">
+        <div class="section-head"><h2 id="summary-title">Message summary</h2><button id="refresh-summary" type="button" class="quiet">Refresh</button></div>
+        <p id="summary-status" role="status" aria-live="polite">Loading authoritative metadata&hellip;</p>
+        <div class="summary-cards">
+          <div role="group" aria-labelledby="summary-submitted-label"><h3 id="summary-submitted-label">Submitted today (UTC)</h3><p class="summary-value" id="summary-submitted">Loading&hellip;</p></div>
+          <div role="group" aria-labelledby="summary-pending-label"><h3 id="summary-pending-label">Waiting or claimed</h3><p class="summary-value" id="summary-pending">Loading&hellip;</p></div>
+          <div role="group" aria-labelledby="summary-flight-label"><h3 id="summary-flight-label">Submitting / awaiting receipt</h3><p class="summary-value" id="summary-flight">Loading&hellip;</p></div>
+        </div>
+        <details id="summary-options"><summary>Summary scope and definitions</summary>
+        <div class="summary-scope"><label for="summary-device">Summary scope</label>
+        <select id="summary-device"><option value="">All devices in this account</option></select></div>
+          <p>Submitted today counts complete sent-callback evidence received by the writer; delivery is separate. Waiting counts accepted, queued and claimed states. Claimed work may already hold a grant; this is not ungranted queue depth. In progress counts submitting and submitted states. Counts cover the selected scope and UTC day.</p>
+        </details>
+      </section>
 
 
-      <section id="message-activity" aria-labelledby="messages-title">
+
+      <section data-workspace="overview" id="overview-recent"><div class="section-head"><h2>Recent activity</h2><a href="/owner/activity">View activity</a></div><ul id="overview-recent-list"><li>Loading recent writer metadata…</li></ul></section>
+      <section data-workspace="phones" id="phone-line-tools"><h2>Line tools</h2><p>Use the guided flow to add a phone, or manage existing browser approval keys and SMS lines.</p><a href="/owner/sms-lines">Manage SMS lines and approval keys</a></section>
+      <section data-workspace="activity" id="message-activity" aria-labelledby="messages-title">
         <div class="section-head"><h2 id="messages-title">Message activity</h2><button id="refresh-messages" type="button" class="quiet">Refresh</button></div>
         <p>Message history shows server states and device events from controlled tests. A delivery callback does not prove the recipient read a message.</p>
         <p class="activity-scope">Outbound writer metadata only. Recipient values are unavailable in this feed. All/Inbound filters require a scoped unified feed and are unavailable; inbound UUID history and webhook replay remain below. Sealed conversation content is not available here.</p>
@@ -151,8 +167,9 @@
         <button id="more-messages" type="button" class="quiet" hidden>Load more messages</button>
       </section>
 
-      <section id="account-security" aria-labelledby="account-security-title">
-        <h2 id="account-security-title">Account security</h2>
+      <section data-workspace="security" id="account-security" aria-labelledby="account-security-title">
+        <h2 id="account-security-title">Account settings</h2>
+        <p><a href="/owner/account#mfa-section">Authenticator and recovery</a> · <a href="/owner/account#data-section">Export or erase account data</a> · <a href="/owner/hosted">Subscription setup</a></p>
         <p>Manage your authenticator and recovery codes on the <a href="/owner/account">account setup page</a>.</p>
         <p>Create your SMS approval key and activate phone lines on the <a href="/owner/sms-lines">SMS lines page</a>.</p>
         <p>Invite device-status observers for your team on the <a href="/owner/seats">team seats page</a>.</p>
@@ -184,28 +201,30 @@
         </form>
       </section>
 
-      <section id="pair-phone" aria-labelledby="pair-title">
+      <section data-workspace="setup" id="pair-phone" aria-labelledby="pair-title">
         <p class="eyebrow">Connect a phone</p>
         <h2 id="pair-title">Pair a phone</h2>
         <p>Keep this page and the gateway app open together. Create a five-minute, one-use pairing code, then use it on the phone. You will compare both devices before approving access.</p>
-        <ol class="pairing-steps">
+        <ol class="pairing-steps" hidden>
           <li><strong>Name this phone.</strong> Choose a name you will recognize in your device list.</li>
           <li><strong>Connect in the gateway app.</strong> Scan in a supported gateway app, or enter the details manually.</li>
           <li><strong>Compare and approve.</strong> Check the comparison code and fingerprint on your phone against this page.</li>
         </ol>
         <form id="create-form">
-          <label for="display-name">Phone name</label>
-          <input id="display-name" name="display_name" maxlength="64" autocomplete="off" required>
-          <button type="submit">Create pairing</button>
+          <label for="display-name">Phone name <span class="field-help">(optional)</span></label>
+          <input id="display-name" name="display_name" maxlength="64" autocomplete="off" placeholder="My phone">
+          <button type="submit">Show pairing QR</button>
         </form>
         <p id="pair-status" role="status" aria-live="polite"></p>
-        <button id="resolve-pairing" type="button" hidden>Check or cancel interrupted pairing</button>
-        <p><a id="pair-cap-devices-link" href="#approved-devices" hidden>Choose devices to revoke</a></p>
+        <button id="resolve-pairing" type="button" hidden>Check approval status</button>
+        <button id="cancel-interrupted-pairing" type="button" class="quiet" hidden>Cancel interrupted pairing</button>
+
+        <p><a id="pair-cap-devices-link" href="/owner/devices" hidden>Choose devices to revoke</a></p>
         <div id="pair-ticket" hidden>
           <div id="pair-qr-panel" class="pair-qr-panel" hidden>
             <canvas id="pair-qr" role="img" aria-label="One-use phone pairing code"></canvas>
             <div class="pair-qr-copy">
-              <h3>Connect with your phone</h3>
+              <h3>Scan with your phone</h3>
               <p>Scan in a supported gateway app, or enter the details manually.</p>
             </div>
           </div>
@@ -220,7 +239,7 @@
               <dt><label for="pair-token">One-use token</label></dt><dd><input id="pair-token" type="text" readonly autocomplete="off" spellcheck="false"></dd>
             </dl>
           </details>
-          <p class="setup-note">Keep the code and token private. Do not share a screenshot or put the token in a link. If this pairing expires or you leave the page, create a new one.</p>
+          <p class="setup-note">Keep the code and token private. Do not share a screenshot or put the token in a link. If you leave this page, the one-use token is cleared. Return to Continue setup to check the saved attempt before replacing it.</p>
           <div class="actions">
             <button id="check-proof" type="button">Check phone proof</button>
             <button id="cancel-pairing" type="button" class="quiet">Cancel pairing</button>
@@ -228,32 +247,31 @@
         </div>
         <form id="approve-form" hidden>
           <h3>Compare with the phone</h3>
-          <p>Read both values on the phone and compare them with the browser values below. Type the phone's values to approve only that phone. If they differ, cancel pairing and start again.</p>
+          <p>Check both values against the phone you are connecting.</p>
           <dl>
             <dt>Browser comparison code</dt><dd><code id="browser-code"></code></dd>
             <dt>Browser key fingerprint</dt><dd><code id="browser-fingerprint" class="fingerprint"></code></dd>
           </dl>
-          <label for="phone-code">Code shown on phone</label>
-          <input id="phone-code" inputmode="numeric" pattern="[0-9]{8}" minlength="8" maxlength="8" autocomplete="off" required>
-          <label for="phone-fingerprint">Fingerprint shown on phone</label>
-          <input id="phone-fingerprint" class="fingerprint" pattern="[A-Fa-f0-9]{64}" minlength="64" maxlength="64" autocomplete="off" spellcheck="false" required>
-          <label class="check"><input id="compared" type="checkbox" required> I compared both values on the phone and in this browser.</label>
-          <button type="submit">Approve device</button>
+          <p>Approve only when both values match.</p>
+          <button type="submit">Values match — approve phone</button>
+          <button id="reject-proof" type="button" class="quiet">These do not match</button>
+
         </form>
         <p id="approved-result" role="status" aria-live="polite"></p>
+        <details class="pairing-recovery-help"><summary>Need help?</summary><p>If progress cannot be checked, contact your operator with reference <code>PHONE-SETUP</code>. Keep pairing tokens private.</p></details>
         <details class="setup-help">
           <summary>After pairing: permissions, SIM and connection</summary>
           <ol>
             <li>On the phone, review the gateway app's permission requests. If you denied a required permission, open the app's Android settings and choose whether to grant it; then return to the app.</li>
             <li>In the gateway app, select the active physical SIM you intend to use. Check airplane mode and network service on the phone.</li>
             <li>Open <a href="/owner/sms-lines">SMS lines</a>, create the browser approval key and review the phone's declaration before activating a line.</li>
-            <li>Check <a href="#approved-devices">device status</a>. Connected status alone does not prove that the phone can send or that a message was delivered.</li>
+            <li>Check <a href="/owner/devices">device status</a>. Connected status alone does not prove that the phone can send or that a message was delivered.</li>
           </ol>
           <p>Pairing adds a phone to this account. Permission choices, line approval and consent are separate steps; pairing does not authorize a real SMS test.</p>
         </details>
       </section>
 
-      <section aria-labelledby="opt-out-review-title">
+      <section data-workspace="activity" aria-labelledby="opt-out-review-title">
         <div class="section-head"><h2 id="opt-out-review-title">Opt-out review</h2><button id="refresh-opt-out-review" type="button" class="quiet">Refresh holds</button></div>
         <p>Record your decision after reviewing a possible SMS withdrawal through your consent process. Both decisions leave the recipient blocked; neither establishes consent or resumes sending. Decisions are permanent. Only recipient metadata is shown, never SMS content.</p>
         <p id="opt-out-review-status" role="status" aria-live="polite"></p>
@@ -261,7 +279,7 @@
         <button id="more-opt-out-review" type="button" class="quiet" hidden>Load more holds</button>
       </section>
 
-      <section aria-labelledby="owner-holds-title">
+      <section data-workspace="activity" aria-labelledby="owner-holds-title">
         <div class="section-head"><h2 id="owner-holds-title">Requests received elsewhere</h2><button id="refresh-owner-holds" type="button" class="quiet">Refresh requests</button></div>
         <p>Record an opt-out received by phone, email or another channel. This blocks new messages and cancels queued messages before they are authorized for sending. Sending already in progress may still finish.</p>
         <form id="owner-hold-form" method="post" action="/v1/owner/opt-out-holds">
@@ -286,7 +304,7 @@
         <button id="more-owner-holds" type="button" class="quiet" hidden>Load more requests</button>
       </section>
 
-      <section id="connection-details" aria-labelledby="keys-title">
+      <section data-workspace="integrations" id="connection-details" aria-labelledby="keys-title">
         <div class="section-head"><h2 id="keys-title">API keys</h2><button id="refresh-keys" type="button" class="quiet">Refresh</button></div>
         <p>Create a key for the current pilot API. <code>messages:read</code> reads message status; <code>messages:send</code> is limited to the private synthetic alpha route and its account and recipient allowlists. Other product APIs do not accept these keys yet.</p>
         <form id="key-create-form">
@@ -311,7 +329,7 @@
         <button id="more-keys" type="button" class="quiet" hidden>Load more keys</button>
       </section>
 
-      <section aria-labelledby="inbound-title">
+      <section data-workspace="activity" aria-labelledby="inbound-title">
         <h2 id="inbound-title">Inbound event history</h2>
         <p>Enter a message UUID you want to inspect. This pilot view shows event metadata only; it does not show SMS content or phone numbers.</p>
         <form id="inbound-history-form">
@@ -325,7 +343,7 @@
         <button id="more-inbound-events" type="button" class="quiet" hidden>Load more events</button>
       </section>
 
-      <section aria-labelledby="webhook-history-title">
+      <section data-workspace="integrations" aria-labelledby="webhook-history-title">
         <div class="section-head"><h2 id="webhook-history-title">Webhook delivery history</h2><button id="refresh-webhook-endpoints" type="button" class="quiet">Refresh endpoints</button></div>
         <p>Choose an endpoint to inspect delivery and attempt metadata. This view does not show callback URLs, secrets, payloads or response bodies.</p>
         <p id="webhook-endpoint-status" role="status" aria-live="polite"></p>
@@ -335,8 +353,77 @@
         <ol id="webhook-delivery-list"></ol>
         <button id="more-webhook-deliveries" type="button" class="quiet" hidden>Load more deliveries</button>
       </section>
+    <section data-workspace="setup" id="approval-key" hidden aria-labelledby="approval-key-title">
+      <p class="eyebrow">Line setup &middot; step 1</p>
+      <h2 id="approval-key-title">Protect line approval</h2>
+      <p id="key-summary" role="status" aria-live="polite"></p>
+      <div id="setup-mfa" hidden>
+        <h3>Keep access safe</h3><p>Add an authenticator and save recovery codes before creating the browser's line approval key.</p>
+        <p id="setup-mfa-status" role="status" aria-live="polite"></p>
+        <form id="setup-mfa-enroll" method="post" action="/v1/auth/mfa/enroll"><label for="setup-mfa-password">Current password</label><input id="setup-mfa-password" type="password" autocomplete="current-password" required><button type="submit">Set up authenticator</button></form>
+        <div id="setup-mfa-secret-panel" hidden><p>Add this secret to your authenticator. It is cleared when you leave this page.</p><code id="setup-mfa-secret" class="fingerprint"></code><details><summary>Authenticator import details</summary><code id="setup-mfa-uri" class="fingerprint"></code></details></div>
+        <form id="setup-mfa-confirm" method="post" action="/v1/auth/mfa/confirm" hidden><label for="setup-mfa-code">Code from authenticator</label><input id="setup-mfa-code" inputmode="numeric" autocomplete="one-time-code" required><button type="submit">Confirm authenticator</button></form>
+        <div id="setup-mfa-recovery" hidden><p>Save these recovery codes somewhere you can reach if you lose your phone. Each works once.</p><ul id="setup-mfa-recovery-codes"></ul><button id="setup-mfa-saved" type="button">I saved my recovery codes</button></div>
+        <button id="setup-mfa-refresh" class="quiet" type="button">Check security setup</button>
+      </div>
+      <form id="key-form" method="post" action="/v1/auth/sms-line-owner-keys">
+        <label for="key-mfa">Authenticator or recovery code</label>
+        <input id="key-mfa" name="mfa" type="text" inputmode="numeric" autocomplete="one-time-code" spellcheck="false" maxlength="30" required>
+        <button id="key-create" type="submit">Create key in this browser</button>
+        <button id="key-revoke" type="button" hidden>Revoke active key</button>
+      </form>
+      <details class="line-key-help"><summary>Why this security step?</summary>      <p>Line activations are approved with a signing key that stays in this browser. The server stores only its public key. Clearing this browser's site data removes the key; revoke it and create a new one if that happens.</p>
+      <p>If you need an authenticator or recovery code, finish <a href="/owner/account#mfa-section">account security setup</a> first. Keep this browser available while you review and approve the phone's declaration.</p>
+</details>
+      <p id="key-status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section data-workspace="setup" id="lines" hidden aria-labelledby="lines-title">
+      <h2 id="lines-title">Your lines</h2>
+      <p>Review existing lines before creating another. A line identifies the SIM declaration you approved; it does not show the SIM's phone number.</p>
+      <ul id="line-list"></ul>
+      <button id="line-more" type="button" hidden>Show more</button>
+      <p id="lines-status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section data-workspace="setup" id="activation" hidden aria-labelledby="activation-title">
+      <p class="eyebrow">Line setup &middot; step 2</p>
+      <h2 id="activation-title">Approve this phone's SIM</h2>
+      <p class="line-decision-note">Review the SIM reported by this phone. Approval does not send an SMS.</p>
+      <p>The phone must be connected and have a selected, active SIM. It signs a declaration; you check it and approve with your key. Selected SIM setup supports physical SIMs and eSIMs on Android 13 or later with a compatible gateway and server. Nothing here sends an SMS.</p>
+      <ol class="pairing-steps">
+        <li>Choose your paired phone. If it is missing, return to <a href="/owner/devices#approved-devices">your phones</a> and check its connection.</li>
+        <li>The line identity is filled for you. Choose the supported phone setup, then review its declaration.</li>
+        <li>Review the selected SIM and active subscription count before approving. If the phone reports a different SIM, correct its selection in the gateway app and request again.</li>
+      </ol>
+      <form id="activation-form" method="post" action="/owner/sms-lines">
+        <label for="activation-mode">Phone setup</label>
+        <select id="activation-mode" required><option value="">Choose your phone setup</option><option value="v2">Selected SIM or eSIM (Android 13+)</option><option value="v1">Older single physical SIM</option></select>
+        <label for="activation-device">Phone</label>
+        <select id="activation-device" required></select>
+        <details class="line-advanced"><summary>Advanced line identity</summary><label for="activation-line">Line ID</label>
+        <input id="activation-line" type="text" spellcheck="false" autocomplete="off" required>
+        <button id="activation-new-line" type="button">New line ID</button></details>
+        <button id="activation-start" type="submit">Review phone SIM</button>
+      </form>
+      <button id="activation-recheck" type="button" hidden>Check this request</button>
+      <div id="activation-review" hidden>
+        <h3>Check the phone's declaration</h3>
+        <dl>
+
+          <dt>Selected subscription</dt><dd id="review-subscription"></dd>
+          <dt>Active subscriptions</dt><dd id="review-count"></dd>
+          <dt>Selected SIM type</dt><dd id="review-kind"></dd>
+        </dl>
+        <details class="line-review-technical"><summary>Technical declaration</summary><p>Android API level: <span id="review-api"></span>. The selected SIM declaration is checked against this phone, line and current ceremony.</p></details>
+        <button id="activation-approve" type="button">Approve this phone and SIM</button>
+      </div>
+      <p id="activation-status" role="status" aria-live="polite"></p>
+      <p class="section-next">After activation, check <a href="/owner/devices#approved-devices">phone status</a> and <a href="/owner/security">Security &amp; sessions</a>. A connected phone alone does not prove carrier readiness or delivery.</p>
+    </section>
     </div>
   </main>
+  <dialog id="phone-inspector" aria-labelledby="phone-inspector-title"><div class="section-head"><h2 id="phone-inspector-title">Phone details</h2><button id="phone-inspector-close" class="quiet" type="button">Back to list</button></div><p id="phone-inspector-status"></p><a href="/owner/setup">Continue phone setup</a></dialog>
   <footer><a href="/source">Source code for this server</a> &middot; <a href="/about/version">Build version</a></footer>
 </body>
 </html>

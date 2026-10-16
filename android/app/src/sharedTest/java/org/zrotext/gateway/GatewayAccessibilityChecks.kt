@@ -30,17 +30,20 @@ abstract class GatewayAccessibilityChecks {
         if (BuildConfig.DEBUG) labels.toList() else emptyList()
 
     private fun everyScreen(check: (String, RootForTest) -> Unit) {
-        (GatewayPage.entries.map { it.name } + listOf("SETUP/ACCESS", "SETUP/SIM", "SETUP/PAIRING"))
+        (GatewayPage.entries.map { it.name } + listOf("SETUP/ACCESS", "SETUP/SIM", "SETUP/PAIRING", "SETUP/COMPARE", "SETUP/CONNECT"))
             .forEach { page -> onScreen(page) { check(page, it) } }
     }
 
     @Test fun sectionsAreHeadingsInReadingOrder() = everyScreen { page, root ->
         val expected = when (page) {
             "HOME" -> listOf("Gateway home")
+            "ACTIVITY" -> listOf("Phone activity")
             "SETUP" -> listOf("Set up this phone")
-            "SETUP/ACCESS" -> listOf("Set up this phone", "Review access", "Android access")
-            "SETUP/SIM" -> listOf("Set up this phone", "Choose a SIM")
-            "SETUP/PAIRING" -> listOf("Set up this phone", "Device pairing")
+            "SETUP/ACCESS" -> listOf("Review access", "Android access")
+            "SETUP/SIM" -> listOf("Choose a SIM")
+            "SETUP/PAIRING" -> listOf("Device pairing")
+            "SETUP/COMPARE" -> listOf("Compare phone details")
+            "SETUP/CONNECT" -> listOf("Connect this phone")
             "CONNECTION" -> listOf("Conversation content", "Authenticated device heartbeat", "Message summary reader")
             "TOOLS" -> listOf("Owner custody", "Advanced pilots", "Gateway connection test", "Controlled SMS test") +
                 debugOnly("Controlled MMS spike")
@@ -48,7 +51,10 @@ abstract class GatewayAccessibilityChecks {
         }
         val headings = nodes(root).filter { it.config.contains(SemanticsProperties.Heading) }
         assertEquals(listOf("ZROtext") + expected, headings.map(::text))
-        assertTrue(headings.zipWithNext().all { (first, next) ->
+        // The persistent header remains visible while offscreen task headings
+        // can legitimately have negative coordinates in the scroll container.
+        assertTrue("The fixed brand heading stays visible", headings.first().positionInRoot.y >= 0f)
+        assertTrue("$page task headings stay ordered: ${headings.map { text(it) to it.positionInRoot.y }}", headings.drop(1).zipWithNext().all { (first, next) ->
             first.positionInRoot.y < next.positionInRoot.y
         })
     }
@@ -56,9 +62,12 @@ abstract class GatewayAccessibilityChecks {
     @Test fun statusRegionsExcludeRoutineHeartbeatCounters() = everyScreen { page, root ->
         val expected = when (page) {
             "HOME" -> listOf("Device status")
+            "ACTIVITY" -> listOf("Connection")
             "SETUP" -> listOf("Pairing in this session")
             "SETUP/ACCESS", "SETUP/SIM" -> emptyList()
             "SETUP/PAIRING" -> listOf("Pairing status")
+            "SETUP/COMPARE" -> listOf("Pairing status")
+            "SETUP/CONNECT" -> listOf("Authenticated connection status")
             "CONNECTION" -> listOf("Authenticated connection status")
             "TOOLS" -> listOf("Pilot status", "Connection status") + debugOnly("MMS spike status")
             else -> error("Unknown test screen")
@@ -178,7 +187,7 @@ abstract class GatewayAccessibilityChecks {
 
     @Test fun fieldsKeepLabelsAndTokensRemainPasswordFields() = everyScreen { page, root ->
         val expected = when (page) {
-            "HOME", "SETUP", "SETUP/ACCESS", "SETUP/SIM" -> emptyList()
+            "HOME", "ACTIVITY", "SETUP", "SETUP/ACCESS", "SETUP/SIM", "SETUP/COMPARE", "SETUP/CONNECT" -> emptyList()
             "SETUP/PAIRING" -> listOf("HTTPS server origin")
             "CONNECTION" -> listOf("WSS device stream URL", "Approved device UUID", "Summary HTTPS origin", "Summary device UUID", "Separate messages-read API key")
             "TOOLS" -> listOf("WSS test endpoint", "Short-lived test token", "Controlled recipient +E.164") +

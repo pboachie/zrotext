@@ -33,6 +33,8 @@ const MAX_BODY_BYTES: usize = 4096;
 mod binding;
 #[cfg(test)]
 mod binding_tests;
+#[cfg(all(test, feature = "conversation-simulator-tests"))]
+mod setup_browser_fixture;
 
 pub struct EnrollmentHttpState {
     pub database_url: String,

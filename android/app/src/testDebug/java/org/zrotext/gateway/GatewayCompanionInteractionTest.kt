@@ -112,7 +112,7 @@ class GatewayCompanionInteractionTest {
     private fun checkScreenMenu() {
         val density = compose.activity.resources.displayMetrics.density
         compose.onNode(hasContentDescription("Controls") and hasClickAction()).assertIsDisplayed().performClick()
-        GatewayPage.entries.forEach { destination ->
+        listOf(GatewayPage.CONNECTION, GatewayPage.TOOLS).forEach { destination ->
             val node = compose.onNode(hasText(destination.label) and hasClickAction())
                 .assertIsDisplayed().fetchSemanticsNode()
             assertEquals(destination == GatewayPage.HOME, node.config[SemanticsProperties.Selected])
@@ -141,7 +141,7 @@ class GatewayCompanionInteractionTest {
         compose.onNodeWithText("Heartbeat acknowledgments this session: 7").assertExists()
         compose.onNodeWithText("Close widget").performScrollTo().performClick()
         compose.openGatewayPage("Setup")
-        compose.onNodeWithText("3. Pair this phone").assertExists()
+        compose.onNodeWithText("Continue setup").assertExists()
         compose.onNodeWithText("Arm one test SMS").assertDoesNotExist()
         compose.runOnIdle {
             assertEquals("Waiting for network", AuthenticatedGatewayStatus.value)
@@ -152,7 +152,7 @@ class GatewayCompanionInteractionTest {
 
     @Test fun navigationClearsMaskedPairingInputAndBackReturnsHome() {
         compose.openGatewayPage("Setup")
-        compose.onNodeWithText("3. Pair this phone").performScrollTo().performClick()
+        compose.onNodeWithText("Continue setup").performScrollTo().performClick()
         compose.onNodeWithText("One-use pairing token").assertDoesNotExist()
         compose.onNodeWithText("Use existing manual pairing").performScrollTo().performClick()
         compose.onNodeWithText("One-use pairing token").performScrollTo().performTextInput("synthetic-token")
@@ -167,7 +167,7 @@ class GatewayCompanionInteractionTest {
         assertTrue(field.config.contains(SemanticsProperties.Password))
         assertEquals("Leaving the scanner pane clears its pending manual secret", "", field.config[SemanticsProperties.EditableText].text)
         compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
-        compose.onNodeWithText("3. Pair this phone").assertExists()
+        compose.onNodeWithText("Continue setup").assertExists()
         compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
         compose.onNodeWithText("Gateway home").assertExists()
         compose.runOnIdle {
@@ -220,7 +220,7 @@ class GatewayCompanionInteractionTest {
         compose.openGatewayPage("Home")
         compose.openGatewayQuickControls()
         compose.onNodeWithText("Set up this phone").performScrollTo().performClick()
-        compose.onNodeWithText("3. Pair this phone").assertExists()
+        compose.onNodeWithText("Continue setup").assertExists()
         compose.runOnIdle {
             assertNull(shadowOf(compose.activity).lastRequestedPermission)
             assertTrue(shadowOf(compose.activity).allStartedServices.isEmpty())
@@ -257,7 +257,7 @@ class GatewayCompanionInteractionTest {
         RuntimeEnvironment.setFontScale(2f)
         compose.activityRule.scenario.recreate()
         compose.openGatewayPage("Setup")
-        compose.onNodeWithText("1. Review access").performScrollTo().performClick()
+        compose.onNodeWithText("Review Android access").performScrollTo().performClick()
         compose.onNodeWithText("Review SMS receiving access").performScrollTo().performClick()
         compose.onNodeWithText(GatewayPermissionPurpose.RECEIVE.disclosure).assertExists()
         compose.onNodeWithText("Agree and continue").performScrollTo().assertIsDisplayed()

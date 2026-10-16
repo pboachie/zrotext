@@ -189,6 +189,9 @@ internal fun GatewayShortcutIcon(page: GatewayPage) {
                 drawCircle(ink, 4f * unit, Offset(7f * unit, 8f * unit), style = Stroke(1.8.dp.toPx()))
                 line(10f, 11f, 20f, 21f); line(15f, 16f, 18f, 13f); line(18f, 19f, 21f, 16f)
             }
+            GatewayPage.ACTIVITY -> {
+                line(4f, 18f, 4f, 12f); line(10f, 18f, 10f, 6f); line(16f, 18f, 16f, 9f)
+            }
             GatewayPage.CONNECTION -> {
                 line(4f, 20f, 20f, 4f); line(10f, 4f, 20f, 4f); line(20f, 4f, 20f, 14f)
             }

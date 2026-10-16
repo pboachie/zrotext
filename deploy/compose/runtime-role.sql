@@ -189,4 +189,12 @@ BEGIN
           public.hosted_runtime_bind(uuid,bigint,bytea),public.hosted_runtime_verified(uuid,bigint) TO zrotext_runtime;
     END IF;
 END $$;
+-- The registration trigger runs only in its table's trigger context. Broad
+-- function defaults must not regrant direct execution during reprovisioning.
+DO $$
+BEGIN
+    IF to_regprocedure('public.registration_browser_intent_binding_guard()') IS NOT NULL THEN
+        REVOKE ALL ON FUNCTION public.registration_browser_intent_binding_guard() FROM PUBLIC,zrotext_runtime;
+    END IF;
+END $$;
 COMMIT;
