@@ -542,11 +542,34 @@ async fn naturally_expired_lease_is_refused_even_while_every_tuple_stays_locked(
     f.owner.execute("UPDATE public.device_sessions SET lease_until=clock_timestamp()+interval '10 seconds' WHERE device_id=$1",&[&s.selector.device]).await.unwrap();
     let tx = f.reader.transaction().await.unwrap();
     let mut held = lock(&tx, &s.selector).await.unwrap();
-    tokio::time::sleep(std::time::Duration::from_secs(11)).await;
-    assert!(matches!(
-        held.revalidate().await,
-        Err(ContextError::Refused)
-    ));
+    let settings=tx.query_one("SELECT pg_catalog.current_setting('idle_in_transaction_session_timeout'),pg_catalog.current_setting('transaction_timeout'),pg_catalog.current_setting('statement_timeout')",&[]).await.unwrap();
+    let limits = (
+        settings.get::<_, String>(0),
+        settings.get::<_, String>(1),
+        settings.get::<_, String>(2),
+    );
+    let initial_clock = held.checked_ms;
+    // A host timer and the container's primary clock need not advance at the
+    // same rate. Observe the actual ten-second DB deadline while retaining all
+    // tuple locks; the fixture wait is finite and changes no runtime deadline.
+    let observed_clock=tokio::time::timeout(std::time::Duration::from_secs(30),async {
+        loop {
+            let now=clock(&tx,initial_clock).await.unwrap();
+            if now>=held.rows.lease_until_ms { break now; }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }).await.unwrap_or_else(|_|panic!("primary clock did not reach lease deadline within fixture wait: initial={initial_clock}; lease_cutoff={}; timeouts={limits:?}",held.rows.lease_until_ms));
+    let revalidated = held.revalidate().await;
+    assert!(
+        observed_clock >= held.rows.lease_until_ms,
+        "primary clock has not demonstrated expiry: revalidation={revalidated:?}; observed_clock={observed_clock:?}; initial_clock={initial_clock}; lease_cutoff={}; timeouts={limits:?}",
+        held.rows.lease_until_ms
+    );
+    assert!(
+        matches!(&revalidated, Err(ContextError::Refused)),
+        "revalidation={revalidated:?}; observed_clock={observed_clock:?}; initial_clock={initial_clock}; lease_cutoff={}; timeouts={limits:?}",
+        held.rows.lease_until_ms
+    );
     drop(held);
     tx.rollback().await.unwrap();
     f.finish().await;
