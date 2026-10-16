@@ -34,7 +34,9 @@ use zrotext_server::{
         mfa::{self, MfaCipher},
     },
     billing::{
+        availability::{self, BillingVisibility},
         drain::{BillingQueueConfig, run_billing_queue},
+        hosted::Deployment,
         http::{self as billing_http, BillingHttpState},
         owner as billing_owner, parse_test_quota_plans,
         plans::{self, parse_usage_limit_plans},
@@ -556,6 +558,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let mut quotas_reset = false;
     let mut billing_auth_state = None;
+    let mut service_availability = None;
     let configured_accounts = account_routes(&config).await?;
     let account_root_trust_router =
         zrotext_server::http_owner_account_root_trust::configured_router(
@@ -568,6 +571,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some((auth_state, enrollment_state)) = configured_accounts {
         app = app.merge(account_root_trust_router);
         billing_auth_state = Some(auth_state.clone());
+        service_availability = Some(
+            availability::State::new(
+                if billing_test.is_some() {
+                    Deployment::HostedPaid
+                } else {
+                    Deployment::SelfHosted
+                },
+                &auth_state.registration_policy,
+                auth_state.dispatcher.ready(),
+                if billing_test.is_some() {
+                    BillingVisibility::Test
+                } else {
+                    BillingVisibility::Disabled
+                },
+                false,
+                false,
+                None,
+            )
+            .map_err(|_| "invalid service availability configuration")?,
+        );
         if config.original_reply_enabled {
             let db = zrotext_server::runtime_db::connect(&config.database_url).await?;
             let installed:bool=db.query_one("SELECT to_regclass('original_reply_sources') IS NOT NULL AND to_regprocedure('original_reply_source_current(uuid,uuid)') IS NOT NULL",&[]).await?.get(0);
@@ -1005,6 +1028,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             config.managed_ai_grants_enabled,
         );
         app = app
+            .nest("/v1/account", http_auth::setup::router(auth_state.clone()))
             .nest("/v1/auth", http_auth::router(auth_state))
             .nest("/v1/enrollment", http_enrollment::router(enrollment_state))
             .nest("/v1/observer", http_observer::router(observer_state))
@@ -1134,9 +1158,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let sessions = SessionState::new(
                 auth.clone(),
                 session_key.ok_or("Stripe test session key missing")?,
-                price_id,
+                price_id.clone(),
             )?
             .with_portal_configuration(required("STRIPE_TEST_PORTAL_CONFIGURATION_ID")?)?;
+            let quota_plans = parse_test_quota_plans(
+                &env::var("STRIPE_TEST_QUOTA_PLANS").unwrap_or_default(),
+                &prices,
+            )?;
+            let quota = quota_plans.iter().find(|p| p.price_id == price_id);
+            let sessions = sessions
+                .verify_catalog(quota)
+                .await
+                .map_err(|_| "configured TEST price metadata unavailable")?;
+            service_availability = Some(availability::State::for_test_sessions(
+                &auth.registration_policy,
+                auth.dispatcher.ready(),
+                sessions
+                    .verified_catalog()
+                    .ok_or("TEST catalog unavailable")?,
+            ));
             billing_routes = billing_routes.merge(billing_sessions::router(sessions));
             billing_routes = billing_routes.merge(billing_owner::status_router(auth.clone()));
             app = app
@@ -1207,6 +1247,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "zrotext site={} instance={} listening={bind}",
         config.site_id, config.instance_id
     );
+    let service_availability = service_availability.unwrap_or(
+        availability::State::new(
+            Deployment::SelfHosted,
+            &RegistrationPolicy::Closed,
+            false,
+            BillingVisibility::Disabled,
+            false,
+            false,
+            None,
+        )
+        .map_err(|_| "invalid closed service availability")?,
+    );
+    app = app.nest("/v1/service", availability::router(service_availability));
     let listener = tokio::net::TcpListener::bind(bind).await?;
     // Connection info is required for the reset lane's trusted-network
     // evidence: handlers must see the socket peer to decide whether an

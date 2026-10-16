@@ -30,6 +30,10 @@ use uuid::Uuid;
 
 const MAX_BODY_BYTES: usize = 4096;
 
+mod binding;
+#[cfg(test)]
+mod binding_tests;
+
 pub struct EnrollmentHttpState {
     pub database_url: String,
     pub auth_hasher: Arc<TokenHasher>,
@@ -77,6 +81,11 @@ pub fn router(state: EnrollmentHttpState) -> Router {
         .route("/pairings/{pairing_id}", get(view_pairing))
         .route("/pairings/{pairing_id}/claim", post(claim_pairing))
         .route("/pairings/{pairing_id}/prove", post(prove_pairing))
+        .route(
+            "/pairings/{pairing_id}/binding/challenge",
+            post(binding::challenge),
+        )
+        .route("/pairings/{pairing_id}/binding", post(binding::read))
         .route("/pairings/{pairing_id}/approve", post(approve_pairing))
         .route("/pairings/{pairing_id}/cancel", post(cancel_pairing))
         .route("/devices", get(list_devices))

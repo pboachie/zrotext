@@ -69,12 +69,22 @@ with refreshed device observations before another setup attempt is offered.
 The visible Check or cancel interrupted pairing action checks for completion
 first, then explicitly cancels an unresolved ticket. Only confirmed cancellation
 releases the attempt; an unavailable or missing response remains blocked.
-Signing out discards this state. It is page-local, so after a full reload users
-must check their device list before repeating interrupted setup.
+Signing out discards this page state. After reload, the authenticated
+`GET /v1/account/setup` response supplies bounded account and session fenced
+pairing, phone and line-ceremony observations. It never restores the ticket,
+nonce or signatures. An approved phone remains discoverable from current
+device records after the short pairing retention window. An expired or
+unknown attempt must be checked before replacing it.
 
 When no approval outcome is unknown, the browser cancels a known retired ticket
 before creating its replacement. An uncertain cancellation blocks replacement.
 No automatic retry or approval is added.
+
+The Android phone can recover a lost claim, proof or approval response using
+the existing local key and the fresh, read-only
+[pairing binding proof](../protocol/v1/pairing-binding.md). Recovery uses public
+locators and never creates a replacement key. A revoked key or phone and a
+disabled account cannot recover an approved binding.
 
 ## Encoder provenance
 

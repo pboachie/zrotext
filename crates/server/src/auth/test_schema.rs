@@ -515,6 +515,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "104_review_root_access.sql",
         include_str!("../../../../deploy/compose/migrations/104_review_root_access.sql"),
     ),
+    (
+        "105_device_pairing_bindings.sql",
+        include_str!("../../../../deploy/compose/migrations/105_device_pairing_bindings.sql"),
+    ),
 ];
 
 async fn apply_selected(

@@ -44,6 +44,7 @@ mod original_reply;
 pub mod preauth;
 mod root_custody;
 mod seats_http;
+pub mod setup;
 mod sms_lines;
 mod sms_owner_keys;
 mod smtp_session;

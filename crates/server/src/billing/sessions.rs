@@ -40,6 +40,9 @@ const CHECKOUT_EXPIRY_MARGIN_SECS: i64 = 5 * 60;
 /// expiring the page it saw, so a retry makes progress.
 const MAX_OPEN_CHECKOUTS_LISTED: usize = 10;
 
+#[cfg(test)]
+mod catalog_tests;
+
 #[derive(Clone)]
 pub struct SessionState {
     auth: AuthHttpState,
@@ -49,6 +52,21 @@ pub struct SessionState {
     cancel_url: String,
     portal_return_url: String,
     portal_configuration: Option<String>,
+    verified_catalog: Option<VerifiedTestCatalog>,
+}
+
+/// Constructible only after a bounded provider read validates the one
+/// configured TEST price. It cannot prove a LIVE namespace or entitlement.
+#[derive(Clone, Debug, Serialize)]
+pub struct VerifiedTestCatalog {
+    schema_version: u8,
+    mode: &'static str,
+    currency: String,
+    unit_amount: i64,
+    interval: String,
+    interval_count: i64,
+    outbound_limit: Option<i64>,
+    device_cap: Option<i64>,
 }
 
 impl SessionState {
@@ -86,6 +104,7 @@ impl SessionState {
             .build()
             .map_err(|_| "cannot configure Stripe test client")?;
         Ok(Self {
+            verified_catalog: None,
             portal_configuration: None,
             success_url: format!("{origin}/billing/success"),
             cancel_url: format!("{origin}/billing/cancel"),
@@ -106,6 +125,80 @@ impl SessionState {
         self.portal_configuration = Some(id);
         Ok(self)
     }
+
+    /// The only runtime catalog is the configured provider TEST price and
+    /// quota mapping; there are no illustrative or browser-selected plans.
+    pub async fn verify_catalog(
+        mut self,
+        quota: Option<&super::TestQuotaPlan>,
+    ) -> Result<Self, AuthHttpError> {
+        if quota.is_some_and(|p| p.price_id != self.checkout_price_id) {
+            return Err(AuthHttpError::Unavailable);
+        }
+        let value = StripeClient::read_json(
+            self.stripe
+                .http
+                .get(format!(
+                    "{}/v1/prices/{}",
+                    self.stripe.api_base, self.checkout_price_id
+                ))
+                .bearer_auth(&self.stripe.secret_key),
+            MAX_RESPONSE_BYTES,
+        )
+        .await?;
+        self.verified_catalog = Some(parse_catalog(&value, &self.checkout_price_id, quota)?);
+        Ok(self)
+    }
+
+    pub fn verified_catalog(&self) -> Option<&VerifiedTestCatalog> {
+        self.verified_catalog.as_ref()
+    }
+}
+
+fn parse_catalog(
+    v: &Value,
+    id: &str,
+    quota: Option<&super::TestQuotaPlan>,
+) -> Result<VerifiedTestCatalog, AuthHttpError> {
+    let currency = v["currency"].as_str().ok_or(AuthHttpError::Unavailable)?;
+    let amount = v["unit_amount"]
+        .as_i64()
+        .ok_or(AuthHttpError::Unavailable)?;
+    let interval = v["recurring"]["interval"]
+        .as_str()
+        .ok_or(AuthHttpError::Unavailable)?;
+    let count = v["recurring"]["interval_count"]
+        .as_i64()
+        .ok_or(AuthHttpError::Unavailable)?;
+    if v["object"] != "price"
+        || v["id"] != id
+        || v["livemode"] != false
+        || v["active"] != true
+        || v["type"] != "recurring"
+        || v["billing_scheme"] != "per_unit"
+        || v["recurring"]["usage_type"] != "licensed"
+        || !matches!(interval, "day" | "week" | "month" | "year")
+        || !(1..=365).contains(&count)
+        || amount <= 0
+        || amount > 9_007_199_254_740_991
+        || currency.len() != 3
+        || !currency.bytes().all(|b| b.is_ascii_lowercase())
+        || quota.is_some_and(|p| {
+            p.price_id != id || p.outbound_limit <= 0 || p.device_limit.is_some_and(|n| n < 0)
+        })
+    {
+        return Err(AuthHttpError::Unavailable);
+    }
+    Ok(VerifiedTestCatalog {
+        schema_version: 1,
+        mode: "test",
+        currency: currency.into(),
+        unit_amount: amount,
+        interval: interval.into(),
+        interval_count: count,
+        outbound_limit: quota.map(|p| p.outbound_limit),
+        device_cap: quota.and_then(|p| p.device_limit),
+    })
 }
 
 struct StripeClient {
@@ -134,9 +227,17 @@ pub fn router(state: SessionState) -> Router {
     Router::new()
         .route("/checkout", post(checkout))
         .route("/portal", post(portal))
+        .route("/plan", get(plan))
         .layer(DefaultBodyLimit::max(1024))
         .layer(middleware::from_fn(no_store_response))
         .with_state(Arc::new(state))
+}
+
+async fn plan(State(state): State<Arc<SessionState>>) -> Response {
+    match &state.verified_catalog {
+        Some(c) => ([(header::CACHE_CONTROL, "no-store")], Json(c)).into_response(),
+        None => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
 }
 
 /// Fixed browser destinations used by Stripe redirects. They deliberately

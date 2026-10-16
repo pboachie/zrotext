@@ -85,6 +85,7 @@ limits! {
     PairCreate,
     PairClaim,
     PairProof,
+    PairBinding,
     DeviceChallenge,
     DeviceAuthenticate,
     MfaChallenge,
@@ -190,6 +191,9 @@ impl Limit {
             Self::PairCreate => ("pair_create", 120, 60, Some((10, 900))),
             Self::PairClaim => ("pair_claim", 300, 60, Some((20, 60))),
             Self::PairProof => ("pair_proof", 300, 60, Some((20, 60))),
+            // The pairing locator and fingerprint are public. Anonymous
+            // callers must never spend the real phone's per-locator budget.
+            Self::PairBinding => ("pair_binding", 600, 60, None),
             // Device socket handshake steps keep no anonymous per-device
             // counter: the device ID is public information, so one would let
             // anyone who knows it refuse the enrolled phone's handshake.
