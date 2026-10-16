@@ -38,6 +38,36 @@ class SetupDesignContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicate id"):
             validate(candidate)
 
+    def test_approved_next_step_cannot_be_changed_to_duplicate_purchase_or_other_action(self):
+        for index, scenario in enumerate(self.contract["recovery_scenarios"]):
+            candidate = copy.deepcopy(self.contract)
+            candidate["recovery_scenarios"][index]["next"] = "new_checkout"
+            with self.subTest(case=scenario["id"]), self.assertRaisesRegex(ValueError, "approved recovery"):
+                validate(candidate)
+
+    def test_recovery_cannot_discard_any_required_confirmed_progress(self):
+        for index, scenario in enumerate(self.contract["recovery_scenarios"]):
+            for fact in scenario["preserve"]:
+                candidate = copy.deepcopy(self.contract)
+                candidate["recovery_scenarios"][index]["preserve"].remove(fact)
+                with self.subTest(case=scenario["id"], fact=fact), self.assertRaises(ValueError):
+                    validate(candidate)
+
+    def test_binding_routes_encoding_and_all_pending_terminal_states_are_versioned(self):
+        changes = [
+            ("challenge_route", "/v1/unrelated"),
+            ("binding_route", "/v1/unrelated"),
+            ("fingerprint_encoding", "lowercase_hex"),
+            ("statuses", ["approved"]),
+        ]
+        changes.extend(("statuses", [status for status in self.contract["binding"]["statuses"] if status != omitted])
+                       for omitted in self.contract["binding"]["statuses"])
+        for field, value in changes:
+            candidate = copy.deepcopy(self.contract)
+            candidate["binding"][field] = value
+            with self.subTest(field=field, value=value), self.assertRaisesRegex(ValueError, "versioned binding"):
+                validate(candidate)
+
     def test_progress_cannot_be_changed_to_persist_tokens_or_approval(self):
         for value in ("pairing_token", "private_key", "line_approval", "active_binding_authority"):
             candidate = copy.deepcopy(self.contract)

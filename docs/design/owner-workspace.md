@@ -74,8 +74,10 @@ build may receive its canonical service origin through reviewed build
 configuration; self-hosted owners enter and recognize their operator's origin.
 The scanned payload cannot establish or replace service trust.
 
-Camera permission is requested for scanning at the point of use. Manual pairing
-is an accessible alternative. SMS access and SIM selection are not prerequisites
+Camera access belongs only to scanning. Request scanner-specific permission at
+the point of use only when the selected scanner requires it; a delegated scanner
+need not add an app camera permission. Manual pairing is an accessible
+alternative. SMS access and SIM selection are not prerequisites
 for pairing. Ticket secrets remain short-lived and are cleared on departure.
 
 ### Compare and approve

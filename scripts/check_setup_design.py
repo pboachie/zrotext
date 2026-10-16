@@ -39,6 +39,22 @@ RECOVERY_GUARDS = {
     "REC-REVOKED": {"revive_device_from_checkpoint", "start_with_cached_binding"},
     "REC-ACCOUNT": {"restore_previous_account_controls", "transfer_checkout_authority"},
 }
+RECOVERY_OUTCOMES = {
+    "REC-RETURN": ("connection_required", {"account", "subscription", "approved_phone"}),
+    "REC-VERIFY": ("verification_required", {"eligible_account"}),
+    "REC-QR": ("reconcile_original_pairing", {"account", "subscription"}),
+    "REC-APPROVAL": ("approval_status_check", {"account", "subscription", "original_public_locator"}),
+    "REC-CAMERA": ("manual_pairing_same_trusted_origin", {"account", "subscription", "trusted_origin"}),
+    "REC-PERMISSION": ("specific_local_permission_review", {"account", "subscription", "approved_phone"}),
+    "REC-OFFLINE": ("connection_diagnostics", {"account", "subscription", "approved_phone"}),
+    "REC-SIM": ("sim_selection_then_fresh_line_review", {"account", "subscription", "approved_phone"}),
+    "REC-SESSION": ("fresh_line_declaration", {"account", "subscription", "approved_phone"}),
+    "REC-PAY-PENDING": ("billing_pending", {"account", "checkout_attempt"}),
+    "REC-PAY-FAILED": ("resume_valid_checkout_or_reconcile_replacement", {"account", "public_setup_progress"}),
+    "REC-KEYS": ("explain_new_pairing_required", {"account", "subscription"}),
+    "REC-REVOKED": ("device_authority_unavailable", {"account", "subscription"}),
+    "REC-ACCOUNT": ("discard_stale_response", {"current_account_isolation"}),
+}
 PALETTE = {
     "background": "#0b0f0c", "surface": "#111712", "raised": "#161e17",
     "text": "#f0f3e9", "secondary": "#99a696", "accent": "#b6f36a",
@@ -102,11 +118,28 @@ def validate(contract: object) -> None:
         for field in ("given", "next"):
             if not isinstance(item.get(field), str) or not item[field].strip():
                 raise ValueError(f"{scenario_id} lacks {field}")
-        unique_text(item.get("preserve"), f"{scenario_id} preserve")
+        preserved = set(unique_text(item.get("preserve"), f"{scenario_id} preserve"))
         forbidden = set(unique_text(item.get("must_not"), f"{scenario_id} forbidden actions"))
+        if scenario_id in RECOVERY_OUTCOMES:
+            expected_next, required_preserved = RECOVERY_OUTCOMES[scenario_id]
+            if item["next"] != expected_next or not required_preserved <= preserved:
+                raise ValueError(f"{scenario_id} changed its approved recovery or preserved facts")
+        if item["next"] in forbidden:
+            raise ValueError(f"{scenario_id} next step is a forbidden action")
         if not RECOVERY_GUARDS.get(scenario_id, set()) <= forbidden:
             raise ValueError(f"{scenario_id} lost an uncertainty or authority guard")
     binding = contract.get("binding", {})
+    for field, expected in (
+        ("challenge_route", "/v1/enrollment/pairings/{pairing_id}/binding/challenge"),
+        ("binding_route", "/v1/enrollment/pairings/{pairing_id}/binding"),
+        ("fingerprint_encoding", "uppercase_hex_64"),
+    ):
+        if binding.get(field) != expected:
+            raise ValueError(f"versioned binding {field} changed")
+    if set(unique_text(binding.get("statuses"), "binding statuses")) != {
+        "awaiting_proof", "pending", "approved", "expired", "cancelled", "proof_rejected",
+    }:
+        raise ValueError("versioned binding pending and terminal states changed")
     if binding.get("signature_domain") != "ZROTEXT-PAIRING-BINDING-V1" or binding.get("domain_zero_terminated") is not True:
         raise ValueError("binding proof must retain its distinct zero-terminated domain")
     if binding.get("transcript_fields") != [
