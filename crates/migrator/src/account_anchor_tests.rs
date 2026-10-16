@@ -83,28 +83,33 @@ async fn ordinary_migrator_backfills_anchors_and_replay_preserves_lifecycle_and_
     );
     let applied = apply(&mut db, &directory, false).await.unwrap();
     assert!(applied.iter().any(|m| m.version == 100));
+    assert!(applied.iter().any(|m| m.version == 101));
     let first = db.query_one("SELECT state,selection_epoch FROM payload_profile_account_anchors WHERE account_id=$1::text::uuid", &[&existing]).await.unwrap();
     assert_eq!(first.get::<_, String>(0), "live");
     assert_eq!(first.get::<_, i64>(1), 0);
     let ledger = db
-        .query_one(
-            "SELECT checksum_sha256,applied_at::text FROM schema_migrations WHERE version=100",
+        .query(
+            "SELECT checksum_sha256,applied_at::text FROM schema_migrations WHERE version IN (100,101) ORDER BY version",
             &[],
         )
         .await
         .unwrap();
-    let metadata: String = db.query_one("SELECT json_agg(json_build_array(oid,proowner,proacl::text,prosecdef,proconfig,prosrc) ORDER BY proname)::text FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname LIKE 'payload_profile_a%'", &[]).await.unwrap().get(0);
+    assert_eq!(ledger.len(), 2);
+    let metadata: String = db.query_one("SELECT json_agg(json_build_array(oid,proowner,proacl::text,prosecdef,proconfig,prosrc) ORDER BY proname)::text FROM pg_proc WHERE pronamespace='public'::regnamespace AND (proname LIKE 'payload_profile_a%' OR proname='parent_account_mirror_guard')", &[]).await.unwrap().get(0);
     assert!(apply(&mut db, &directory, false).await.unwrap().is_empty());
     let replay = db
-        .query_one(
-            "SELECT checksum_sha256,applied_at::text FROM schema_migrations WHERE version=100",
+        .query(
+            "SELECT checksum_sha256,applied_at::text FROM schema_migrations WHERE version IN (100,101) ORDER BY version",
             &[],
         )
         .await
         .unwrap();
-    assert_eq!(ledger.get::<_, Vec<u8>>(0), replay.get::<_, Vec<u8>>(0));
-    assert_eq!(ledger.get::<_, String>(1), replay.get::<_, String>(1));
-    let after: String = db.query_one("SELECT json_agg(json_build_array(oid,proowner,proacl::text,prosecdef,proconfig,prosrc) ORDER BY proname)::text FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname LIKE 'payload_profile_a%'", &[]).await.unwrap().get(0);
+    assert_eq!(replay.len(), ledger.len());
+    for (before, after) in ledger.iter().zip(replay.iter()) {
+        assert_eq!(before.get::<_, Vec<u8>>(0), after.get::<_, Vec<u8>>(0));
+        assert_eq!(before.get::<_, String>(1), after.get::<_, String>(1));
+    }
+    let after: String = db.query_one("SELECT json_agg(json_build_array(oid,proowner,proacl::text,prosecdef,proconfig,prosrc) ORDER BY proname)::text FROM pg_proc WHERE pronamespace='public'::regnamespace AND (proname LIKE 'payload_profile_a%' OR proname='parent_account_mirror_guard')", &[]).await.unwrap().get(0);
     assert_eq!(metadata, after);
     let created: String = db
         .query_one(

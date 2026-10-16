@@ -35,6 +35,8 @@ pub mod inbound;
 pub mod ingress;
 pub mod maintenance;
 pub mod owner_ui;
+#[cfg(test)]
+mod parent_account_mirror_tests;
 pub(crate) mod payload_profile_anchor;
 pub mod provider_config;
 pub mod provider_sms;

@@ -243,5 +243,36 @@ class RuntimeRoleAnchorUpgradeTest(RuntimeRoleFixture, unittest.TestCase):
                  runtime=True, success=False)
 
 
+class RuntimeRoleParentMirrorUpgradeTest(RuntimeRoleFixture, unittest.TestCase):
+    migration_limit = 100
+
+    def test_existing_defaults_and_reruns_keep_parent_mirror_helpers_private(self):
+        self.provision()
+        self.sql("INSERT INTO accounts(id) VALUES(md5('mirror-account')::uuid);"
+                 "INSERT INTO users(id,email,password_hash) VALUES(md5('mirror-user')::uuid,'mirror@example.test','synthetic-unusable-hash');"
+                 "INSERT INTO memberships(account_id,user_id,role) VALUES(md5('mirror-account')::uuid,md5('mirror-user')::uuid,'owner');"
+                 "INSERT INTO email_verifications(id,account_id,user_id,token_hash,expires_at) VALUES(md5('mirror-verification')::uuid,md5('mirror-account')::uuid,md5('mirror-user')::uuid,decode(repeat('11',32),'hex'),now()+interval '1 hour');"
+                 "INSERT INTO password_resets(id,account_id,user_id,token_hash,expires_at) VALUES(md5('mirror-reset')::uuid,md5('mirror-account')::uuid,md5('mirror-user')::uuid,decode(repeat('11',32),'hex'),now()+interval '1 hour');"
+                 "INSERT INTO verification_mail_outbox(verification_id) VALUES(md5('mirror-verification')::uuid);"
+                 "INSERT INTO password_reset_mail_outbox(reset_id) VALUES(md5('mirror-reset')::uuid);", runtime=True)
+        migration = COMPOSE / "migrations" / "101_parent_account_mirrors.sql"
+        self.sql("BEGIN;\n" + migration.read_text(encoding="utf-8") + "\nCOMMIT;")
+        self.sql((COMPOSE / "verify_runtime_role.sql").read_text(encoding="utf-8"), runtime=True)
+        self.sql("SELECT public.parent_account_mirror_guard();", runtime=True, success=False)
+        self.sql("DO $$ BEGIN IF (SELECT count(*) FROM verification_mail_outbox WHERE account_id=md5('mirror-account')::uuid)<>1 "
+                 "OR (SELECT count(*) FROM password_reset_mail_outbox WHERE account_id=md5('mirror-account')::uuid)<>1 "
+                 "THEN RAISE EXCEPTION 'existing mail ownership was not backfilled'; END IF; END $$;", runtime=True)
+        self.sql("UPDATE verification_mail_outbox SET attempt_count=1; UPDATE password_reset_mail_outbox SET attempt_count=1;", runtime=True)
+        self.sql("UPDATE verification_mail_outbox SET account_id=md5('mirror-foreign')::uuid;", runtime=True, success=False)
+        self.sql("GRANT EXECUTE ON FUNCTION public.parent_account_mirror_guard() TO PUBLIC,zrotext_runtime;")
+        self.provision()
+        self.provision()
+        self.sql((COMPOSE / "verify_runtime_role.sql").read_text(encoding="utf-8"), runtime=True)
+        self.sql("SELECT public.parent_account_mirror_guard();", runtime=True, success=False)
+        self.sql("DELETE FROM email_verifications; DELETE FROM password_resets;", runtime=True)
+        self.sql("DO $$ BEGIN IF EXISTS(SELECT FROM verification_mail_outbox) OR EXISTS(SELECT FROM password_reset_mail_outbox) "
+                 "THEN RAISE EXCEPTION 'mail parent cascade changed'; END IF; END $$;", runtime=True)
+
+
 if __name__ == "__main__":
     unittest.main()

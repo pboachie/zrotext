@@ -453,6 +453,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
             "../../../../deploy/compose/migrations/100_payload_profile_account_anchors.sql"
         ),
     ),
+    (
+        "101_parent_account_mirrors.sql",
+        include_str!("../../../../deploy/compose/migrations/101_parent_account_mirrors.sql"),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in

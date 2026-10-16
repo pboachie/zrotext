@@ -653,6 +653,14 @@ authorization. Lifecycle triggers alone may advance it on account deletion;
 the runtime cannot insert/delete anchors or change their state/epoch. This
 foundation does not select profile03, mount an election, or enable dispatch.
 
+Migration 101 adds immutable account-ownership mirrors to verification/reset
+mail outboxes and sealed/webhook delivery attempts. Existing inserts derive the
+account from the exact parent; composite foreign keys prevent cross-account
+attribution. Mail outbox parent deletion still cascades, while attempt rows must
+still be removed before their delivery parent. These mirrors let later writer
+guards retain the child's account identity during erasure; they do not install
+profile03 selection or change the account-anchor retention policy above.
+
 Observers are erased with the account. Their user rows (email, password hash,
 verification state), including removed seats whose user row survived, and the
 account's invitations and removal records (which hold invitee addresses) are

@@ -6,6 +6,10 @@ DECLARE
     statement text;
     anchor_account uuid;
 BEGIN
+    IF to_regprocedure('public.parent_account_mirror_guard()') IS NOT NULL
+      AND has_function_privilege(current_user,'public.parent_account_mirror_guard()','EXECUTE') THEN
+        RAISE EXCEPTION 'runtime can directly execute the ownership mirror helper';
+    END IF;
     IF current_user <> 'zrotext_runtime' OR EXISTS (
         SELECT FROM pg_roles WHERE rolname = current_user AND
         (rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls)

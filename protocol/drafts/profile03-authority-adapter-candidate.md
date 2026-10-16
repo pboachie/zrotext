@@ -210,8 +210,8 @@ Content/state rules must distinguish effect creation from invalidation:
 
 ## Required inventory and acceptance before mounting
 
-`profile03-writer-inventory-candidate.json` pins the numbered migration100
-catalog: 158 public relations, including 141 with an `account_id` column and 17
+`profile03-writer-inventory-candidate.json` pins the numbered migration101
+catalog: 158 public relations, including 145 with an `account_id` column and 13
 without that column. Its CI fixture runs the actual migrator in
 a unique database and compares column shape, FK edges and trigger definitions.
 These are extraction **review obligations**, not installed policies. The hashes
@@ -225,7 +225,7 @@ do not replace exact function-body, privilege, state or cryptographic checks.
 | Nullable `device_sessions` / `dispatch_fences` | Reconcile exact enrolled device/message account; absent/mismatched account cannot become03 lease/grant authority |
 | `accounts` | Fence immutable identity, account-create anchor coupling and disable/delete/erasure lifecycle |
 | `users` | Stable complete membership account set for mutations affecting owner/MFA/session liveness; no silent skipped account |
-| Four parent-scoped child tables | `password_reset_mail_outbox`, `verification_mail_outbox`, `sealed_event_delivery_attempts`, `webhook_attempts` need immutable account mirroring/backfill and parent-consistent constraints before guards; parent deletion cannot erase their fence identity |
+| Four parent account mirrors | Migration101 backfills required immutable `account_id` on `password_reset_mail_outbox`, `verification_mail_outbox`, `sealed_event_delivery_attempts`, and `webhook_attempts`; qualified triggers populate unchanged INSERT callers and composite FKs preserve parent/account consistency. Mail cascades remain cascades and attempt parent deletion remains restrictive. OLD account identity survives parent erasure; full profile writer/state policy qualification is still required |
 | Global billing audit/configuration/budget | Separate audit-only rows from current billing permissions and atomic global exposure accounting; a global lock is not an account fence |
 | Global auth budget | Preserve existing abuse policy; counters do not confer owner/session permission |
 | Deployment/site/failover authority | Independently recheck exact current global fence records under the established lock order; never treat them as account identity |
