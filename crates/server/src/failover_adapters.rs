@@ -276,11 +276,9 @@ async fn latest(
         .and_then(|v| v.strip_prefix("Bearer "))
         .ok_or(StatusCode::UNAUTHORIZED)?;
     let digest_val = <[u8; 32]>::from(Sha256::digest(value.as_bytes()));
-    if state.token_hash.len() != digest_val.len() || !bool::from(
-        state
-            .token_hash
-            .ct_eq(&digest_val),
-    ) {
+    if state.token_hash.len() != digest_val.len()
+        || !bool::from(state.token_hash.ct_eq(&digest_val))
+    {
         return Err(StatusCode::UNAUTHORIZED);
     }
     let report = state

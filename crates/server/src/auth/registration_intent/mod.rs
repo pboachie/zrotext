@@ -203,11 +203,7 @@ async fn lock_binding(
         || !bool::from(intent_csrf.as_slice().ct_eq(&csrf_hash))
         || intent.get::<_, String>(1) != user.get::<_, String>(0)
         || intent_pwd.len() != password_binding.len()
-        || !bool::from(
-            intent_pwd
-                .as_slice()
-                .ct_eq(&password_binding),
-        )
+        || !bool::from(intent_pwd.as_slice().ct_eq(&password_binding))
     {
         return Ok(None);
     }

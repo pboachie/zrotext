@@ -102,7 +102,8 @@ fn nonce(hasher: &EnrollmentHasher, c: &BindingChallenge) -> [u8; 32] {
 pub fn challenge_is_current(hasher: &EnrollmentHasher, c: &BindingChallenge, now_ms: u64) -> bool {
     let issued = challenge_id_timestamp_ms(c.challenge_id);
     let expected_nonce = nonce(hasher, c);
-    expected_nonce.len() == c.nonce.len() && bool::from(expected_nonce.ct_eq(&c.nonce))
+    expected_nonce.len() == c.nonce.len()
+        && bool::from(expected_nonce.ct_eq(&c.nonce))
         && now_ms.saturating_add(SOCKET_CHALLENGE_SKEW_MS) >= issued
         && issued.saturating_add(SOCKET_CHALLENGE_LIFETIME_MS + SOCKET_CHALLENGE_SKEW_MS) >= now_ms
 }
@@ -159,7 +160,9 @@ pub async fn issue(
     now_ms: u64,
 ) -> Result<BindingChallenge, EnrollmentError> {
     let value = candidate(client, pairing_id).await?;
-    if value.fingerprint.len() != fingerprint.len() || !bool::from(value.fingerprint.ct_eq(&fingerprint)) {
+    if value.fingerprint.len() != fingerprint.len()
+        || !bool::from(value.fingerprint.ct_eq(&fingerprint))
+    {
         return Err(EnrollmentError::Unavailable);
     }
     let mut challenge = BindingChallenge {

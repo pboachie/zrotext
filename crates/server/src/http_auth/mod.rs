@@ -454,7 +454,8 @@ impl RegistrationPolicy {
                 let expires_at =
                     u64::from_be_bytes(candidate[..8].try_into().expect("length checked above"));
                 let expected = invite_mac(enrollment_key, &email, expires_at);
-                let valid = expected.len() == candidate[8..].len() && bool::from(expected.as_slice().ct_eq(candidate[8..].as_ref()));
+                let valid = expected.len() == candidate[8..].len()
+                    && bool::from(expected.as_slice().ct_eq(candidate[8..].as_ref()));
                 // The API server's own clock decides liveness; a client cannot
                 // extend a token by delaying or replaying the request.
                 let live = expires_at > now_secs;

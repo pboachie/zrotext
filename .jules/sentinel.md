@@ -1,4 +1,0 @@
-## 2024-10-17 - [Fix] Add length checks before `ct_eq` calls in `crates/server`
-**Vulnerability:** Constant-time equality (`ct_eq`) checks using the `subtle` crate were invoked on slices of potentially unequal lengths. In Rust, `subtle::ct_eq` will panic if the slices being compared do not have the same length. This panic can be deliberately triggered by an attacker supplying malformed or incorrect length data to endpoints using `ct_eq` for cryptographic validation, leading to Denial of Service (DoS).
-**Learning:** `ct_eq` in `subtle` requires both arguments to have the exact same length. While normal equality `==` handles different lengths safely, `ct_eq` doesn't to avoid variable-time early returns. Failing to explicitly check lengths before calling `ct_eq` introduces a panic risk in Rust.
-**Prevention:** Always verify that lengths are equal explicitly *before* calling `.ct_eq()`. For instance, use `a.len() == b.len() && bool::from(a.ct_eq(b))`.

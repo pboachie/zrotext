@@ -107,7 +107,10 @@ impl Cookies {
         let csrf_name = format!("__Host-ztrw-c-{}", id.simple());
         let csrf = self.csrf(headers, &csrf_name, PREPARED_HEADER)?;
         let prep = Preparation::open(value, key, scope, browser, now, creation)?;
-        if prep.id != id || csrf.as_ref().len() != prep.candidates.csrf.as_ref().len() || !bool::from(csrf.as_ref().ct_eq(prep.candidates.csrf.as_ref())) {
+        if prep.id != id
+            || csrf.as_ref().len() != prep.candidates.csrf.as_ref().len()
+            || !bool::from(csrf.as_ref().ct_eq(prep.candidates.csrf.as_ref()))
+        {
             return Err(AccessError::Rejected);
         }
         if creation && prep.operation == Operation::InitialBootstrap {
