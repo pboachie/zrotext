@@ -3230,10 +3230,12 @@ version = "0.1.0"
 name = "zrotext-migrator"
 version = "0.1.0"
 dependencies = [
+ "postgres-protocol",
  "sha2",
  "thiserror 2.0.21",
  "tokio",
  "tokio-postgres",
+ "uuid",
  "zrotext-postgres-connection",
 ]
 

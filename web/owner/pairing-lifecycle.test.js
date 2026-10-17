@@ -144,9 +144,10 @@ test("a new ticket retires a known expired ticket before creation", async () => 
   page.documentListeners.get("visibilitychange")();
   await page.create();
   const pairingCalls = page.calls.filter(call => call.url.startsWith("/v1/enrollment/pairings"));
-  assert.equal(pairingCalls.length, 3);
-  assert.equal(pairingCalls[1].url.endsWith("/cancel"), true);
-  assert.equal(pairingCalls[2].url, "/v1/enrollment/pairings");
+  assert.equal(pairingCalls.length, 4);
+  assert.equal(pairingCalls[1].options.method, "GET", "inspect before retiring the expired ticket");
+  assert.equal(pairingCalls[2].url.endsWith("/cancel"), true);
+  assert.equal(pairingCalls[3].url, "/v1/enrollment/pairings");
 });
 
 test("unknown retirement blocks a replacement without discarding its public identity", async () => {
@@ -192,6 +193,7 @@ test("late approval is recovered before an ambiguous cancel can create a replace
   await page.create();
   let release;
   page.state.deferApprove = new Promise(resolve => { release = resolve; });
+  await page.element("check-proof").listeners.click();
   const approving = page.approve();
   page.listeners.get("pagehide")();
   page.listeners.get("pageshow")();
@@ -211,11 +213,13 @@ test("pending approval with missing ticket blocks replacement and repeated appro
   await page.create();
   let release;
   page.state.deferApprove = new Promise(resolve => { release = resolve; });
+  await page.element("check-proof").listeners.click();
   const approving = page.approve();
   page.listeners.get("pagehide")();
   page.listeners.get("pageshow")();
   page.state.expired = true;
   await page.create();
+  await page.element("check-proof").listeners.click();
   await page.approve();
   assert.equal(page.calls.filter(call => call.url === "/v1/enrollment/pairings").length, 1);
   assert.equal(page.calls.filter(call => call.url.endsWith("/approve")).length, 1);
@@ -228,6 +232,7 @@ test("server approval view recovers an unknown server error without a replacemen
   const page = await pairingPage();
   await page.create();
   page.state.approveStatus = 503;
+  await page.element("check-proof").listeners.click();
   await page.approve();
   assert.equal(page.element("pair-token").value, "");
   page.state.approvedDevice = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -241,6 +246,7 @@ test("late approval after sign-out cannot retain or display the old owner's devi
   await page.create();
   let release;
   page.state.deferApprove = new Promise(resolve => { release = resolve; });
+  await page.element("check-proof").listeners.click();
   const approving = page.approve();
   await page.element("logout").listeners.click();
   release();
@@ -253,10 +259,11 @@ test("wrong-code404 can be explicitly cancelled before restarting setup", async 
   const page = await pairingPage();
   await page.create();
   page.state.approveStatus = 404;
+  await page.element("check-proof").listeners.click();
   await page.approve();
   assert.equal(page.element("pair-ticket").hidden, true);
   assert.equal(page.element("resolve-pairing").hidden, false);
-  await page.element("resolve-pairing").listeners.click();
+  await page.element("cancel-interrupted-pairing").listeners.click();
   assert.equal(page.element("resolve-pairing").hidden, true);
   await page.create();
   assert.equal(page.calls.filter(call => call.url.endsWith("/cancel")).length, 1);
@@ -267,14 +274,15 @@ test("ambiguous cancellation keeps interrupted approval recovery visible and blo
   const page = await pairingPage();
   await page.create();
   page.state.approveStatus = 503;
+  await page.element("check-proof").listeners.click();
   await page.approve();
   page.state.cancelStatus = 404;
-  await page.element("resolve-pairing").listeners.click();
+  await page.element("cancel-interrupted-pairing").listeners.click();
   await page.create();
   assert.equal(page.element("resolve-pairing").hidden, false);
   assert.equal(page.calls.filter(call => call.url === "/v1/enrollment/pairings").length, 1);
   page.state.cancelStatus = 204;
-  await page.element("resolve-pairing").listeners.click();
+  await page.element("cancel-interrupted-pairing").listeners.click();
   await page.create();
   assert.equal(page.calls.filter(call => call.url === "/v1/enrollment/pairings").length, 2);
 });
@@ -283,9 +291,10 @@ test("unexpected successful cancellation status cannot release an unknown approv
   const page = await pairingPage();
   await page.create();
   page.state.approveStatus = 503;
+  await page.element("check-proof").listeners.click();
   await page.approve();
   page.state.cancelStatus = 200;
-  await page.element("resolve-pairing").listeners.click();
+  await page.element("cancel-interrupted-pairing").listeners.click();
   await page.create();
   assert.equal(page.element("resolve-pairing").hidden, false);
   assert.equal(page.calls.filter(call => call.url === "/v1/enrollment/pairings").length, 1);

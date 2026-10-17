@@ -73,13 +73,40 @@ to succeed and verify the setting with:
 docker exec zrotext-test-postgres psql -U postgres -d postgres -Atc 'SHOW max_locks_per_transaction'
 ```
 
-The result must be `256`. Before running the database suite, build the TypeScript
+The result must be `256`. The two registered-owner controls need two additional,
+separately provisioned databases: schema isolation alone cannot exclude other
+tests' old snapshots from concurrent index construction. On this fresh disposable
+cluster, use the provisioning role to create the ordinary control login and its
+two databases (existing objects deliberately refuse):
+
+```sh
+docker exec -i zrotext-test-postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 < scripts/registered_control_databases.sql
+```
+
+In PowerShell, pipe `Get-Content -Raw scripts/registered_control_databases.sql`
+to the same `docker exec -i ...` command. The tested control role has no superuser,
+CREATEDB, CREATEROLE, replication or BYPASSRLS privilege. CI previously ran these
+controls as its privileged `postgres` fixture login; the dedicated role narrows
+that access. Provisioning does not change any existing test role's privileges.
+
+Both control URLs are mandatory, even when selecting only one control. Their
+explicit database names must be distinct from each other and every configured
+standard test URL's database name, conservatively even across hosts. The fixture
+accepts only lowercase ASCII names starting with a letter, followed by letters,
+digits or underscores, up to 63 bytes; no normalization or default dbname applies.
+Control names `postgres`, `template0` and `template1` refuse. Each owned connection
+checks its actual `current_database()` against its parsed explicit name before
+schema creation. A missing URL fails the selected test rather than skipping it.
+On UNKNOWN, retain that fixture/database for reconciliation for the disposable
+cluster's lifetime; do not retry, force-drop it or terminate another backend.
+
+Before running the database suite, build the TypeScript
 SDK used by the authenticated workflow HTTP fixtures, as CI does. From
 `sdk/typescript`, run `npm ci --ignore-scripts` and `npm run build`, then return
 to the repository root.
 
-Set all four URLs, including the failover fixture URL, and run the ignored database
-tests. Use a database you may create and drop test schemas in; do not point these
+Set the four standard URLs and both isolated control URLs, then run the ignored
+database tests. Use databases you may create and drop test schemas in; do not point these
 at a production database.
 
 ```sh
@@ -87,6 +114,8 @@ export ZT_AUTH_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:5432/postgres
 export ZT_DELIVERY_TEST_DATABASE_URL="$ZT_AUTH_TEST_DATABASE_URL"
 export ZT_INBOUND_TEST_DATABASE_URL="$ZT_AUTH_TEST_DATABASE_URL"
 export ZT_FAILOVER_TEST_DATABASE_URL="$ZT_AUTH_TEST_DATABASE_URL"
+export ZT_REGISTERED_OWNER_EMPTY_DATABASE_URL=postgresql://zt_registered_control@127.0.0.1:5432/zt_registered_empty
+export ZT_REGISTERED_OWNER_MFA_DATABASE_URL=postgresql://zt_registered_control@127.0.0.1:5432/zt_registered_mfa
 cargo test --locked --workspace -- --ignored --skip real_stripe_ --test-threads=4
 ```
 
@@ -97,9 +126,27 @@ $env:ZT_AUTH_TEST_DATABASE_URL = 'postgresql://postgres@127.0.0.1:5432/postgres'
 $env:ZT_DELIVERY_TEST_DATABASE_URL = $env:ZT_AUTH_TEST_DATABASE_URL
 $env:ZT_INBOUND_TEST_DATABASE_URL = $env:ZT_AUTH_TEST_DATABASE_URL
 $env:ZT_FAILOVER_TEST_DATABASE_URL = $env:ZT_AUTH_TEST_DATABASE_URL
+$env:ZT_REGISTERED_OWNER_EMPTY_DATABASE_URL = 'postgresql://zt_registered_control@127.0.0.1:5432/zt_registered_empty'
+$env:ZT_REGISTERED_OWNER_MFA_DATABASE_URL = 'postgresql://zt_registered_control@127.0.0.1:5432/zt_registered_mfa'
 cargo test --locked --workspace -- --ignored --skip real_stripe_ --test-threads=4
 ```
 
 The `real_stripe_` exclusion is deliberate: those two ignored tests contact Stripe TEST and need separate explicit setup. The ordinary command plus the PostgreSQL command run the same Rust test sets as CI. Stop the container with Ctrl+C when finished.
+
+With `--features conversation-simulator-tests`, the selected
+`http_enrollment::setup_browser_fixture::ordinary_pairing_browser_android_fixture`
+drives its composed owner, pairing and binding HTTP routes automatically. It
+checks proof, exact comparison, approval recovery and revocation against the
+disposable database. This is HTTP regression coverage, not browser, Android
+Keystore, TLS or carrier acceptance.
+
+For a separately selected browser/Android consumer, set the test-only
+`ZT_PAIRING_SETUP_CONSUMER=external` before running that exact ignored test with
+`--nocapture`. This mode emits private rendezvous readiness and waits for the
+selected consumer; keep that output outside the public repository. Only
+`snapshot` and `finish` are accepted fixture controls. The same 600-second outer
+deadline covers consumer execution and server completion. An unknown mode or
+failed external consumer never falls back to automatic success. Leave the mode
+unset for bulk test runs; it is not an application or Compose setting.
 
 The public repository contains application code and public development documentation. Keep production credentials, customer data, billing operations, and private marketing material out of it.

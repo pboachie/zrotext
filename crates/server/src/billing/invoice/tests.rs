@@ -25,12 +25,29 @@ struct Case {
     owner: crate::auth::SessionPrincipal,
 }
 
+enum FixtureSchema {
+    Maintained,
+    PreRuntimeInvoiceContract,
+}
+
 impl Case {
     async fn new() -> Self {
+        Self::build(FixtureSchema::Maintained).await
+    }
+
+    async fn pre_runtime_invoice_contract() -> Self {
+        Self::build(FixtureSchema::PreRuntimeInvoiceContract).await
+    }
+
+    async fn build(schema_kind: FixtureSchema) -> Self {
         let base = std::env::var("ZT_AUTH_TEST_DATABASE_URL").unwrap();
         let (setup, connection) = tokio_postgres::connect(&base, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
-        let schema = format!("invoice_policy_{}", Uuid::new_v4().simple());
+        let label = match schema_kind {
+            FixtureSchema::Maintained => "invoice_policy",
+            FixtureSchema::PreRuntimeInvoiceContract => "invoice_pre_runtime_contract",
+        };
+        let schema = format!("{label}_{}", Uuid::new_v4().simple());
         setup
             .batch_execute(&format!("CREATE SCHEMA {schema}"))
             .await
@@ -39,7 +56,12 @@ impl Case {
         let url = format!("{base}{separator}options=-csearch_path%3D{schema}");
         let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
         tokio::spawn(async move { connection.await.unwrap() });
-        crate::auth::test_schema::apply(&db).await;
+        match schema_kind {
+            FixtureSchema::Maintained => crate::auth::test_schema::apply(&db).await,
+            FixtureSchema::PreRuntimeInvoiceContract => {
+                crate::auth::test_schema::apply_pre_runtime_invoice_contract(&db).await;
+            }
+        }
         let hasher = crate::auth::TokenHasher::new(crate::test_keys::key(77)).unwrap();
         let password = crate::test_keys::password(77);
         let signup =

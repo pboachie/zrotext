@@ -1001,6 +1001,8 @@ async fn ceremony_idle_policy_uses_creation_fallback_and_recent_use_without_refr
 // These controls use registration rather than the historical seeded Owner.
 // An unfinished operation retains its namespace; aborting a driver is not a
 // claim that its server-side work or a canceled authentication request settled.
+mod registered_databases;
+
 struct RegisteredConnection {
     client: Option<Client>,
     driver: Option<tokio::task::JoinHandle<Result<(), tokio_postgres::Error>>>,
@@ -1013,10 +1015,26 @@ impl RegisteredConnection {
     ) -> Result<Self, String> {
         let (client, connection) =
             registered_step(deadline, "connect", config.connect(tokio_postgres::NoTls)).await?;
-        Ok(Self {
+        let value = Self {
             client: Some(client),
             driver: Some(tokio::spawn(connection)),
-        })
+        };
+        let expected = config
+            .get_dbname()
+            .ok_or("explicit owned database required")?;
+        let actual: String = registered_step(
+            deadline,
+            "actual database binding",
+            value
+                .db()?
+                .query_one("SELECT pg_catalog.current_database()::pg_catalog.text", &[]),
+        )
+        .await?
+        .get(0);
+        if actual != expected {
+            return Err("actual owned database mismatch; retain namespace".into());
+        }
+        Ok(value)
     }
 
     fn db(&self) -> Result<&Client, String> {
@@ -1224,15 +1242,14 @@ impl RegisteredOwnerCase {
         assert_eq!(principal.role, auth::Role::Owner);
     }
 
-    async fn new(schema: String, deadline: tokio::time::Instant) -> Result<Self, String> {
-        // Missing opt-in is refusal, including when this ignored test is selected.
-        let url = zeroize::Zeroizing::new(
-            std::env::var("ZT_INBOUND_TEST_DATABASE_URL")
-                .map_err(|_| "requires explicit ZT_INBOUND_TEST_DATABASE_URL")?,
-        );
-        let mut config: tokio_postgres::Config = url
-            .parse()
-            .map_err(|_| "invalid disposable database configuration")?;
+    async fn new(
+        schema: String,
+        deadline: tokio::time::Instant,
+        recovery_login: bool,
+    ) -> Result<Self, String> {
+        // Missing/ambiguous/colliding configuration refuses before any DDL.
+        // Provisioning is external; the tested role needs no CREATEDB privilege.
+        let mut config = registered_databases::configuration(recovery_login)?;
         let setup = RegisteredConnection::connect(&config, deadline).await?;
         registered_step(
             deadline,
@@ -1243,9 +1260,50 @@ impl RegisteredOwnerCase {
         )
         .await?;
         Self::assert_schema(&setup, &schema, deadline).await?;
-        config.options(format!("-csearch_path={schema}"));
+        // Each real control proves the database guard cannot resolve a caller's
+        // shadow function. Only this newly owned schema is modified, and the
+        // exact function is removed before maintained migrations run.
+        registered_step(
+            deadline,
+            "create owned database-name shadow",
+            setup.db()?.batch_execute(&format!(
+                "CREATE FUNCTION {schema}.current_database() RETURNS pg_catalog.text LANGUAGE sql IMMUTABLE AS $$ SELECT 'not_the_owned_database'::pg_catalog.text $$"
+            )),
+        )
+        .await?;
+        config.options(format!("-csearch_path={schema},pg_catalog"));
         let mut db = RegisteredConnection::connect(&config, deadline).await?;
         let cleanup = RegisteredConnection::connect(&config, deadline).await?;
+        for connection in [&db, &cleanup] {
+            let shadow: String = registered_step(
+                deadline,
+                "owned database-name shadow selected",
+                connection
+                    .db()?
+                    .query_one("SELECT current_database()::pg_catalog.text", &[]),
+            )
+            .await?
+            .get(0);
+            if shadow != "not_the_owned_database" {
+                return Err("owned database-name shadow not selected; retain namespace".into());
+            }
+            registered_step(
+                deadline,
+                "restore owned search path",
+                connection
+                    .db()?
+                    .batch_execute(&format!("SET search_path TO {schema}")),
+            )
+            .await?;
+        }
+        registered_step(
+            deadline,
+            "drop exact owned database-name shadow",
+            setup
+                .db()?
+                .batch_execute(&format!("DROP FUNCTION {schema}.current_database()")),
+        )
+        .await?;
         Self::assert_schema(&db, &schema, deadline).await?;
         Self::assert_schema(&cleanup, &schema, deadline).await?;
         let backend_row = registered_step(
@@ -1575,7 +1633,7 @@ async fn registered_owner_control(recovery_login: bool) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(600);
     let owned_schema = schema.clone();
     let mut operation = tokio::spawn(async move {
-        let mut case = RegisteredOwnerCase::new(owned_schema, deadline).await?;
+        let mut case = RegisteredOwnerCase::new(owned_schema, deadline, recovery_login).await?;
         case.assert_confirming_survives().await?;
         if recovery_login {
             case.recovery_login().await?;
@@ -1594,13 +1652,13 @@ async fn registered_owner_control(recovery_login: bool) {
 }
 
 #[tokio::test]
-#[ignore = "requires explicit ZT_INBOUND_TEST_DATABASE_URL; sequential owned-schema control"]
+#[ignore = "requires explicit isolated registered-owner database URLs; owned-schema control"]
 async fn postgres_account_only_empty_registration_preserves_confirming_session() {
     registered_owner_control(false).await;
 }
 
 #[tokio::test]
-#[ignore = "requires explicit ZT_INBOUND_TEST_DATABASE_URL; sequential owned-schema control"]
+#[ignore = "requires explicit isolated registered-owner database URLs; owned-schema control"]
 async fn postgres_account_only_mfa_required_login_uses_distinct_recovery() {
     registered_owner_control(true).await;
 }

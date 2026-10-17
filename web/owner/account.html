@@ -14,15 +14,17 @@
   <aside class="owner-rail" aria-label="ZROtext workspace">
     <a class="owner-brand" href="/owner/devices"><svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><rect width="48" height="48" rx="11" fill="#b6f36a"/><path d="M12 14h24L15 33h21M13 24h9" fill="none" stroke="#0b100b" stroke-width="4" stroke-linecap="square" stroke-linejoin="miter"/></svg><span><strong>ZRO</strong>text</span></a>
     <p class="rail-label">Owner workspace</p>
-    <nav class="owner-nav" aria-label="Owner navigation"><a href="/owner/devices" data-owner-only hidden>Fleet overview</a>
-<a href="/owner/devices#message-activity" data-owner-only hidden>Message activity</a>
-<a href="/owner/devices#connection-details" data-owner-only hidden>Connection details</a>
-<a href="/owner/sms-lines" data-owner-only hidden>SMS lines</a>
-<a href="/owner/seats" data-owner-only hidden>Team seats</a>
-<a href="/owner/devices#account-security" data-owner-only hidden>Security & sessions</a>
-<a href="/owner/account" aria-current="page">Account setup</a>
-<a id="owner-billing-link" href="/billing" data-owner-only hidden>Plans & usage <span class="nav-note">Test mode</span></a>
-<a id="owner-observer-link" href="/owner/observer" hidden>Observer device status</a></nav>
+    <nav class="owner-nav" aria-label="Owner navigation">
+<a href="/owner/devices" data-owner-only hidden>Overview</a>
+<a href="/owner/phones" data-owner-only hidden>Phones &amp; lines</a>
+<a href="/owner/activity" data-owner-only hidden>Activity</a>
+<a href="/owner/integrations" data-owner-only hidden>Integrations</a>
+<a href="/owner/seats" data-owner-only hidden>Team</a>
+<a href="/owner/security" data-owner-only hidden>Settings</a></nav>
+<div class="owner-utilities" aria-label="Workspace utilities">
+<!-- workflow-exceptions-navigation -->
+<a id="owner-billing-link" href="/billing" data-owner-only hidden>Billing <span class="nav-note">Test mode</span></a>
+<a id="owner-observer-link" href="/owner/observer" hidden>Observer device status</a></div>
     <p class="rail-status" id="owner-nav-status">Sign in to open owner controls. Real sending remains gated.</p>
   </aside>
   <main id="owner-main" tabindex="-1">
@@ -35,7 +37,7 @@
     <nav class="setup-nav" aria-label="Setup steps">
       <ol>
         <li><a href="/owner/account" aria-current="step"><span class="step-number" aria-hidden="true">1</span><span>Account <small>Create, verify or sign in</small></span></a></li>
-        <li><a href="/owner/devices#pair-phone"><span class="step-number" aria-hidden="true">2</span><span>Connect a phone <small>Pair and compare</small></span></a></li>
+        <li><a href="/owner/setup"><span class="step-number" aria-hidden="true">2</span><span>Connect a phone <small>Pair and compare</small></span></a></li>
         <li><a href="/owner/sms-lines"><span class="step-number" aria-hidden="true">3</span><span>Set up an SMS line <small>Permissions, SIM and approval</small></span></a></li>
         <li><a href="#mfa-section"><span class="step-number" aria-hidden="true">4</span><span>Keep access safe <small>Authenticator and recovery</small></span></a></li>
       </ol>
@@ -48,8 +50,8 @@
         <article aria-labelledby="hosted-path-title">
           <h3 id="hosted-path-title">Hosted</h3>
           <p>Use a server managed by an operator. If you have an invitation, use the account address and invite they supplied.</p>
-          <p class="availability-note">Public hosted signup and live checkout are not available in this owner workspace.</p>
-          <a href="#register">Use an invitation</a>
+          <p class="availability-note">Availability, subscription terms and checkout come from the selected service.</p>
+          <a href="/owner/hosted">Open hosted setup</a>
         </article>
         <article aria-labelledby="self-hosted-path-title">
           <h3 id="self-hosted-path-title">Self-hosted</h3>
@@ -136,7 +138,7 @@
         <input id="mfa-disable-code" name="code" type="text" autocomplete="one-time-code" required>
         <button type="submit">Disable authenticator</button>
       </form>
-      <p class="section-next">Review where you are signed in under <a href="/owner/devices#account-security">Security &amp; sessions</a>. Your SMS line approval key is managed separately on <a href="/owner/sms-lines">SMS lines</a>.</p>
+      <p class="section-next">Review where you are signed in under <a href="/owner/security">Security &amp; sessions</a>. Your SMS line approval key is managed separately on <a href="/owner/sms-lines">SMS lines</a>.</p>
     </section>
     <section id="data-section" aria-labelledby="data-title" hidden>
       <p class="eyebrow">Account &middot; your data</p>
@@ -154,6 +156,7 @@
       <h3>Erase this account on this server</h3>
       <p>This permanently deletes the account and its invited observer users in one transaction if the server permits it. Line identities, immutable trust or audit history and other retained references can block the whole request. Nothing is deleted when the server reports blockers.</p>
       <p>Erasure does not cancel external subscriptions, release carrier identities, delete external copies, or rewrite backups, replicas or WAL archives. Export first if you need a copy.</p>
+      <p>An account-ID record may remain for the app's database lifetime to prevent identity reuse. It contains your account ID, deleted state, and a version counter. The receipt lists this retained identity record and shared request-budget counters when present.</p>
       <button id="erasure-review" type="button">Review account erasure</button>
       <form id="erasure-form" hidden>
         <p id="erasure-account"></p>

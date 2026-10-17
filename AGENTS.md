@@ -70,7 +70,8 @@ Run the checks for every area you touched. CI runs all of them.
 cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
-# PostgreSQL-backed Rust tests: set ZT_AUTH_TEST_DATABASE_URL, ZT_DELIVERY_TEST_DATABASE_URL and ZT_INBOUND_TEST_DATABASE_URL to a disposable database first
+# PostgreSQL-backed Rust tests: provision the standard fixture and both isolated
+# registered-owner databases, then set all six URLs as shown in CONTRIBUTING.md.
 cargo test --locked --workspace -- --ignored --skip real_stripe_ --test-threads=4
 
 # Android (use gradlew.bat on Windows)

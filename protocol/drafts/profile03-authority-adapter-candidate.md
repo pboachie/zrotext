@@ -210,23 +210,37 @@ Content/state rules must distinguish effect creation from invalidation:
 
 ## Required inventory and acceptance before mounting
 
-`profile03-writer-inventory-candidate.json` pins the numbered migration99
-catalog: 157 public relations, including 140 with an `account_id` column and 17
-requiring a different review class. Its CI fixture runs the actual migrator in
+`profile03-writer-inventory-candidate.json` pins the numbered migration104
+catalog: 168 public relations. The original migration101 inventory has 158
+relations; migration102 adds five closed review-foundation classifications and
+migration104 adds five review-access classifications. Migration103 changes the
+existing user/member trigger graph without adding a relation. Its CI fixture
+runs the actual migrator in
 a unique database and compares column shape, FK edges and trigger definitions.
 These are extraction **review obligations**, not installed policies. The hashes
 do not replace exact function-body, privilege, state or cryptographic checks.
 
 | Extraction class | Required treatment before installation |
 |---|---|
-| 136 required `account_id` columns | Fence exact OLD/NEW account sets; compare full UUIDs, independently classify every operation, and preserve invalidation/erasure |
+| 136 ordinary required `account_id` columns | Fence exact OLD/NEW account sets; compare full UUIDs, independently classify every operation, and preserve invalidation/erasure |
+| Lifecycle-only account anchor | Migration100 provides immutable identity and create/delete epoch guards, narrow privileges and retained tombstones; it is not an ordinary writer guard or an accepted profile selection |
 | Nullable `billing_events` / `billing_risk_events` | Unbound audit state never supplies authority; account assignment must fence the resolved account before downstream effects |
 | Nullable `device_sessions` / `dispatch_fences` | Reconcile exact enrolled device/message account; absent/mismatched account cannot become03 lease/grant authority |
 | `accounts` | Fence immutable identity, account-create anchor coupling and disable/delete/erasure lifecycle |
 | `users` | Stable complete membership account set for mutations affecting owner/MFA/session liveness; no silent skipped account |
-| Four parent-scoped child tables | `password_reset_mail_outbox`, `verification_mail_outbox`, `sealed_event_delivery_attempts`, `webhook_attempts` need immutable account mirroring/backfill and parent-consistent constraints before guards; parent deletion cannot erase their fence identity |
+| Four parent account mirrors | Migration101 backfills required immutable `account_id` on `password_reset_mail_outbox`, `verification_mail_outbox`, `sealed_event_delivery_attempts`, and `webhook_attempts`; qualified triggers populate unchanged INSERT callers and composite FKs preserve parent/account consistency. Mail cascades remain cascades and attempt parent deletion remains restrictive. OLD account identity survives parent erasure; full profile writer/state policy qualification is still required |
 | Global billing audit/configuration/budget | Separate audit-only rows from current billing permissions and atomic global exposure accounting; a global lock is not an account fence |
 | Global auth budget | Preserve existing abuse policy; counters do not confer owner/session permission |
+| Review realm marker and broker | OOB owner-managed configuration and credential identity; never ordinary owner authority. Configuration revision prevents digest ABA revival; runtime has no table/column writes |
+| Review broker sessions | Closed broker-only permission, current credential revision and original expiry; never an ordinary owner session |
+| Review bootstrap attempts | Reserved is private prospective identity only, with NULL bound parents; provisioned requires the real live account anchor and exact bound account/user/member association. No generic missing-anchor exception |
+| Review workspaces | Exact account/user/member identity and account anchor, erased with real parents; neither broker membership nor an ordinary login permission |
+| Review browser preparations | Account-free continuity/closed operation state and exact generation; never derive an account or permission from this class |
+| Review typed owner sessions | Exact current account anchor, workspace, broker session/event/credential, browser generation and configuration; no ordinary `SessionPrincipal` conversion |
+| Review authentications | Broker-only branch has explicitly NULL account/user/owner-session fields; account-bound branch requires the actual account anchor and composite typed-session parent |
+| Review root reauthentication | Account-bound exact typed session, original challenge/transcript and one-use state; no generic MFA fallback |
+| Review private locator | Selection-only account-bound association until actual erasure, without session/result lifetime extension; configuration/key rotation may make a retained selector unusable |
+
 | Deployment/site/failover authority | Independently recheck exact current global fence records under the established lock order; never treat them as account identity |
 | Global key integrity | Preserve KEK commitment validation and qualified historical data handling |
 | `schema_migrations` | Migrator-only ledger; runtime has no mutation privileges, and unreviewed graph/version changes cannot silently join03 support |

@@ -1,0 +1,259 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zrotext.example/protocol/v1/pairing-binding.schema.json",
+  "title": "Phone pairing recovery closed wire objects",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/challenge_request"
+    },
+    {
+      "$ref": "#/$defs/challenge_response"
+    },
+    {
+      "$ref": "#/$defs/binding_request"
+    },
+    {
+      "$ref": "#/$defs/binding_response"
+    },
+    {
+      "$ref": "#/$defs/unclaimed_terminal"
+    }
+  ],
+  "$defs": {
+    "challenge_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key_fingerprint"
+      ],
+      "properties": {
+        "key_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9A-F]{64}$"
+        }
+      }
+    },
+    "challenge_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "account_id",
+        "pairing_id",
+        "challenge_id",
+        "challenge_nonce",
+        "key_fingerprint"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "account_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "pairing_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "challenge_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "challenge_nonce": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+        },
+        "key_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9A-F]{64}$"
+        }
+      }
+    },
+    "binding_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "account_id",
+        "challenge_id",
+        "challenge_nonce",
+        "signature_der"
+      ],
+      "properties": {
+        "account_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "challenge_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "challenge_nonce": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+        },
+        "signature_der": {
+          "type": "string",
+          "minLength": 11,
+          "maxLength": 107,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        }
+      }
+    },
+    "binding_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "status",
+        "account_id",
+        "pairing_id",
+        "device_id",
+        "comparison_code",
+        "key_fingerprint"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "approved",
+            "expired",
+            "cancelled",
+            "proof_rejected",
+            "awaiting_proof"
+          ]
+        },
+        "account_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "pairing_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "device_id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "not": {
+                "const": "00000000-0000-0000-0000-000000000000"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "comparison_code": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]{8}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "key_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9A-F]{64}$"
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "pending"}}},
+          "then": {"properties": {"comparison_code": {"type": "string", "pattern": "^[0-9]{8}$"}}}
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "approved"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "device_id": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "not": {
+                  "const": "00000000-0000-0000-0000-000000000000"
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "device_id": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "not": {
+                  "enum": [
+                    "pending",
+                    "approved"
+                  ]
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "comparison_code": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "unclaimed_terminal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code"
+      ],
+      "properties": {
+        "code": {
+          "enum": [
+            "pairing_cancelled",
+            "pairing_expired"
+          ]
+        }
+      }
+    }
+  }
+}

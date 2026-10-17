@@ -26,6 +26,7 @@ COPY crates ./crates
 # Contact issuer compile-time guards also read the dormant schema proposal.
 COPY protocol/v1/contact-reader-issuance-storage-proposal.sql ./protocol/v1/contact-reader-issuance-storage-proposal.sql
 COPY web/owner ./web/owner
+COPY web/review ./web/review
 # Compile-time schema guards use the same migration sources as the migrator.
 COPY deploy/compose/migrations ./deploy/compose/migrations
 ARG GIT_COMMIT

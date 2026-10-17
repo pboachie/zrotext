@@ -32,7 +32,7 @@ async function activity(width, initial = [metadata("unknown")], hold = false) {
     state.requests.push(url.pathname + url.search);
     if (url.pathname === "/owner/events") return route.abort();
     if (url.pathname.startsWith("/owner/")) {
-      const asset = url.pathname.slice(7), file = asset.includes(".") ? asset : asset + ".html";
+      const asset = url.pathname.slice(7), file = asset === "activity" ? "devices.html" : asset.includes(".") ? asset : asset + ".html";
       if (!/^[a-z-]+\.(html|css|js)$/.test(file)) return route.fulfill({ status: 404 });
       return route.fulfill({ body: await fs.readFile(path.join(root, file)), contentType:
         file.endsWith(".js") ? "text/javascript" : file.endsWith(".css") ? "text/css" : "text/html" });
@@ -49,7 +49,7 @@ async function activity(width, initial = [metadata("unknown")], hold = false) {
     return route.fulfill({ json: url.pathname === "/v1/auth/mfa" ? { enabled: false, pending: false } :
       url.pathname === "/v1/auth/sessions" ? { sessions: [] } : { messages: [], events: [], deliveries: [], endpoints: [], holds: [], keys: [], next_cursor: null } });
   });
-  await page.goto("https://example.test/owner/devices");
+  await page.goto("https://example.test/owner/activity");
   await page.waitForFunction(() => document.getElementById("device-list").children.length === 1);
   if (!hold) await page.waitForFunction(() => !document.getElementById("message-status").textContent.startsWith("Loading"));
   return { page, state };
@@ -85,7 +85,6 @@ test("paging, writer expansion, focused refresh and device linking retain histor
     const first = page.locator(".activity-row").first();
     await first.locator("summary").click();
     assert.match(await first.textContent(), /segment 1\/2.*segment 2\/2/);
-    await page.locator("#display-name").fill("Pending synthetic input");
     await first.locator("summary").focus();
     state.messages = [metadata("submitted")];
     await page.evaluate(() => document.getElementById("refresh-messages").click());
@@ -95,8 +94,9 @@ test("paging, writer expansion, focused refresh and device linking retain histor
     await first.getByRole("button", { name: "View device Synthetic gateway" }).focus();
     await page.keyboard.press("Enter");
     assert.equal(await page.locator("#device-detail-name").textContent(), "Synthetic gateway");
+    assert.equal(await page.locator("#phone-inspector").evaluate(node => node.open), true);
+    await page.getByRole("button", { name: "Back to list" }).click();
     assert.equal(await first.getByRole("button").evaluate(node => node === document.activeElement), true);
-    assert.equal(await page.locator("#display-name").inputValue(), "Pending synthetic input");
     state.messages = [metadata("delivered", older)]; state.cursor = null;
     await page.locator("#more-messages").click();
     await page.waitForFunction(() => document.querySelectorAll(".activity-row").length === 2);
@@ -106,7 +106,7 @@ test("paging, writer expansion, focused refresh and device linking retain histor
     await page.clock.fastForward(15000);
     assert.equal(state.requests.filter(url => url.startsWith("/v1/owner/messages")).length, before);
     assert.equal(await page.locator("#inbound-history-form").isVisible(), true);
-    assert.equal(await page.locator("#refresh-webhook-endpoints").isVisible(), true);
+    assert.equal(await page.locator("#refresh-webhook-endpoints").isVisible(), false);
   } finally { await page.close(); }
 });
 test("loading, empty and failed refresh retain historical metadata until a valid empty page", async () => {

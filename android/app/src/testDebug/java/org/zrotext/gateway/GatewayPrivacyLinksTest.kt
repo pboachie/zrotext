@@ -21,7 +21,7 @@ class GatewayPrivacyLinksTest {
 
     private fun access() {
         compose.openGatewayPage("Setup")
-        compose.onNodeWithText("1. Review access").performScrollTo().performClick()
+        compose.onNodeWithText("Review Android access").performScrollTo().performClick()
     }
 
     private fun assertBrowserOnly(url: String) = compose.runOnIdle {

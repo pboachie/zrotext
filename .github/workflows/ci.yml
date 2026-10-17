@@ -222,6 +222,8 @@ jobs:
       ZT_AUTH_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/postgres
       ZT_DELIVERY_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/postgres
       ZT_INBOUND_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/postgres
+      ZT_REGISTERED_OWNER_EMPTY_DATABASE_URL: postgresql://zt_registered_control@127.0.0.1:5432/zt_registered_empty
+      ZT_REGISTERED_OWNER_MFA_DATABASE_URL: postgresql://zt_registered_control@127.0.0.1:5432/zt_registered_mfa
       # Smaller, reusable build artifacts: no incremental churn, symbols only
       # deep enough for line-numbered backtraces.
       CARGO_INCREMENTAL: '0'
@@ -284,6 +286,11 @@ jobs:
         if: env.RUN_RUST == 'true'
         working-directory: sdk/typescript
         run: npm ci --ignore-scripts && npm run build
+      - name: Provision isolated registered-owner control databases
+        if: env.RUN_RUST == 'true'
+        env:
+          POSTGRES_SERVICE_ID: ${{ job.services.postgres.id }}
+        run: docker exec -i "$POSTGRES_SERVICE_ID" psql -U postgres -d postgres -v ON_ERROR_STOP=1 < scripts/registered_control_databases.sql
       - name: Test against PostgreSQL
         if: env.RUN_RUST == 'true'
         run: cargo test --locked --workspace -- --ignored --skip real_stripe_ --test-threads=4

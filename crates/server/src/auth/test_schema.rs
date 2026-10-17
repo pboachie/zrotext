@@ -4,12 +4,12 @@ use tokio_postgres::Client;
 /// Apply actual migrations and their required autocommit index preparation.
 /// The caller must provide a connection to a unique disposable schema.
 pub(crate) async fn apply(db: &Client) {
-    apply_selected(db, false, None).await;
+    apply_selected(db, MIGRATIONS, false, None).await;
 }
 
 /// Preserve the summary tests' explicit index and migration validation gates.
 pub(crate) async fn apply_without_summary(db: &Client) {
-    apply_selected(db, true, None).await;
+    apply_selected(db, MIGRATIONS, true, None).await;
 }
 
 /// Observe trusted phase metadata without changing migration SQL or deadlines.
@@ -17,7 +17,17 @@ pub(crate) async fn apply_with_progress(
     db: &Client,
     observer: &mut (dyn FnMut(MigrationProgress) + Send),
 ) {
-    apply_selected(db, false, Some(observer)).await;
+    apply_selected(db, MIGRATIONS, false, Some(observer)).await;
+}
+
+/// Historical, unmounted invoice/admission contract only. Migration 106
+/// deliberately forbids its legacy-ledger mixture. Runtime and ordinary
+/// application tests must use `apply`, which retains the complete inventory.
+pub(crate) async fn apply_pre_runtime_invoice_contract(db: &Client) {
+    const PREFIX: usize = 105;
+    assert_eq!(MIGRATIONS[PREFIX - 1].0, "105_device_pairing_bindings.sql");
+    assert_eq!(MIGRATIONS[PREFIX].0, "106_hosted_runtime.sql");
+    apply_selected(db, &MIGRATIONS[..PREFIX], false, None).await;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -493,14 +503,49 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "099_line_readiness_observations.sql",
         include_str!("../../../../deploy/compose/migrations/099_line_readiness_observations.sql"),
     ),
+    (
+        "100_payload_profile_account_anchors.sql",
+        include_str!(
+            "../../../../deploy/compose/migrations/100_payload_profile_account_anchors.sql"
+        ),
+    ),
+    (
+        "101_parent_account_mirrors.sql",
+        include_str!("../../../../deploy/compose/migrations/101_parent_account_mirrors.sql"),
+    ),
+    (
+        "102_review_workspace_persistence.sql",
+        include_str!("../../../../deploy/compose/migrations/102_review_workspace_persistence.sql"),
+    ),
+    (
+        "103_user_membership_freshness.sql",
+        include_str!("../../../../deploy/compose/migrations/103_user_membership_freshness.sql"),
+    ),
+    (
+        "104_review_root_access.sql",
+        include_str!("../../../../deploy/compose/migrations/104_review_root_access.sql"),
+    ),
+    (
+        "105_device_pairing_bindings.sql",
+        include_str!("../../../../deploy/compose/migrations/105_device_pairing_bindings.sql"),
+    ),
+    (
+        "106_hosted_runtime.sql",
+        include_str!("../../../../deploy/compose/migrations/106_hosted_runtime.sql"),
+    ),
+    (
+        "107_registration_browser_intents.sql",
+        include_str!("../../../../deploy/compose/migrations/107_registration_browser_intents.sql"),
+    ),
 ];
 
 async fn apply_selected(
     db: &Client,
+    migrations: &[(&'static str, &'static str)],
     skip_summary: bool,
     mut observer: Option<&mut (dyn FnMut(MigrationProgress) + Send)>,
 ) {
-    for &(file, sql) in MIGRATIONS {
+    for &(file, sql) in migrations {
         if skip_summary && file.starts_with("070_") {
             continue;
         }

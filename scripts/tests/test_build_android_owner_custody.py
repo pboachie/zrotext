@@ -55,6 +55,7 @@ class NativeCommandBoundaryTests(unittest.TestCase):
                 elif "--dynamic" in command:
                     prefix = "Java_org_zrotext_gateway_AndroidOwnerCustodyNativeBridge_"
                     stdout = "\n".join("0000 T " + prefix + method for method in build.TYPED_JNI_METHODS)
+                    stdout += "\n" + "\n".join("0000 T " + build.REVIEW_JNI_PREFIX + method for method in build.REVIEW_JNI_METHODS)
                 else:
                     stdout = ""
                 return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
@@ -124,8 +125,11 @@ class TypedJniExportTests(unittest.TestCase):
     prefix = "Java_org_zrotext_gateway_AndroidOwnerCustodyNativeBridge_"
     methods = ("nativeOpenTyped", "nativeReviewTyped", "nativeSignTyped", "nativeArchiveRecoveryCheck")
 
-    def verify_output(self, methods):
+    def verify_output(self, methods, review_methods=None):
+        if review_methods is None:
+            review_methods = build.REVIEW_JNI_METHODS
         output = "\n".join("0000000000010000 T " + self.prefix + method for method in methods)
+        output += "\n" + "\n".join("0000000000010000 T " + build.REVIEW_JNI_PREFIX + method for method in review_methods)
         result = subprocess.CompletedProcess([], 0, stdout=output, stderr="")
         with patch.object(build.subprocess, "run", return_value=result) as run:
             build.verify_typed_exports("synthetic-nm", "synthetic-library")
@@ -134,6 +138,13 @@ class TypedJniExportTests(unittest.TestCase):
 
     def test_all_required_typed_exports_establish_the_current_jni_surface(self):
         self.verify_output(self.methods)
+
+    def test_stale_library_with_ordinary_surface_but_missing_review_entry_is_rejected(self):
+        for missing in build.REVIEW_JNI_METHODS:
+            with self.subTest(missing=missing), self.assertRaises(RuntimeError):
+                self.verify_output(self.methods, tuple(m for m in build.REVIEW_JNI_METHODS if m != missing))
+        with self.assertRaises(RuntimeError):
+            self.verify_output(self.methods, ())
 
     def test_stale_library_missing_any_typed_export_is_rejected(self):
         for missing in self.methods:

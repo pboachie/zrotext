@@ -21,6 +21,116 @@ use tokio::{
 };
 use tokio_postgres::Client;
 
+/// Verified runtime identity, separately authenticated from the database role.
+/// The database never trusts a caller-set custom setting as this proof.
+#[derive(Clone, Eq, PartialEq)]
+pub struct HostedBinding {
+    namespace: uuid::Uuid,
+    revision: i64,
+    key: [u8; 32],
+}
+static HOSTED_BINDINGS: LazyLock<Mutex<std::collections::HashMap<String, HostedBinding>>> =
+    LazyLock::new(Default::default);
+impl HostedBinding {
+    pub fn new(
+        gate: &crate::billing::hosted::namespace::Gate,
+        key: [u8; 32],
+    ) -> Result<Self, ConnectError> {
+        let marker = gate.marker().map_err(|_| ConnectError::Identity)?;
+        if key == [0; 32] {
+            return Err(ConnectError::Identity);
+        }
+        Ok(Self {
+            namespace: uuid::Uuid::from_bytes(marker.namespace.id()),
+            revision: i64::try_from(marker.policy_revision).map_err(|_| ConnectError::Identity)?,
+            key,
+        })
+    }
+}
+pub fn register_hosted(url: &str, binding: HostedBinding) -> Result<(), ConnectError> {
+    let mut registered = HOSTED_BINDINGS.lock().map_err(|_| ConnectError::Identity)?;
+    if registered
+        .get(url)
+        .is_some_and(|existing| existing != &binding)
+    {
+        return Err(ConnectError::Identity);
+    }
+    registered.insert(url.to_owned(), binding);
+    Ok(())
+}
+pub async fn verify_hosted_connection(
+    db: &Client,
+    binding: &HostedBinding,
+) -> Result<(), ConnectError> {
+    use hmac::{Hmac, KeyInit, Mac};
+    // The challenge invalidates any previous proof for this backend before a
+    // new proof is checked. A failed checkout is dropped, never put in the pool.
+    let row = db
+        .query_one(
+            "SELECT hosted_runtime_challenge($1,$2),pg_backend_pid()",
+            &[&binding.namespace, &binding.revision],
+        )
+        .await?;
+    let nonce: Vec<u8> = row.get(0);
+    let pid: i32 = row.get(1);
+    if nonce.len() != 32 {
+        return Err(ConnectError::Identity);
+    }
+    let mut mac =
+        Hmac::<sha2::Sha256>::new_from_slice(&binding.key).map_err(|_| ConnectError::Identity)?;
+    mac.update(b"ZROTEXT-HOSTED-RUNTIME-V1");
+    mac.update(&nonce);
+    mac.update(binding.namespace.as_bytes());
+    mac.update(&binding.revision.to_be_bytes());
+    mac.update(&pid.to_be_bytes());
+    let proof = mac.finalize().into_bytes().to_vec();
+    let verified: bool = db
+        .query_one(
+            "SELECT hosted_runtime_bind($1,$2,$3)",
+            &[&binding.namespace, &binding.revision, &proof],
+        )
+        .await?
+        .get(0);
+    if !verified {
+        return Err(ConnectError::Identity);
+    }
+    Ok(())
+}
+async fn verify_registered(db: &Client, url: &str) -> Result<(), ConnectError> {
+    let binding = HOSTED_BINDINGS
+        .lock()
+        .map_err(|_| ConnectError::Identity)?
+        .get(url)
+        .cloned();
+    if let Some(binding) = binding {
+        verify_hosted_connection(db, &binding).await?;
+    }
+    Ok(())
+}
+/// Disabled/legacy TEST startup cannot silently attach to a scoped database.
+pub async fn require_unscoped(url: &str) -> Result<(), ConnectError> {
+    let db = connect(url).await?;
+    let exists: bool = db
+        .query_one(
+            "SELECT to_regclass('hosted_billing_namespaces') IS NOT NULL",
+            &[],
+        )
+        .await?
+        .get(0);
+    if exists
+        && db
+            .query_one(
+                "SELECT EXISTS(SELECT 1 FROM hosted_billing_namespaces)",
+                &[],
+            )
+            .await?
+            .get::<_, bool>(0)
+    {
+        return Err(ConnectError::Identity);
+    }
+    Ok(())
+}
+
 // Two default hubs use at most 80 connections, leaving room on a default
 // 100-connection PostgreSQL server for migrations, inspection and recovery.
 // Pooled idle sockets count against the same budgets as busy ones.
@@ -244,6 +354,8 @@ static POOLS: LazyLock<Pools> = LazyLock::new(Pools::new);
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectError {
+    #[error("database runtime identity unavailable")]
+    Identity,
     #[error("database capacity unavailable")]
     Capacity,
     #[error("database connection deadline exceeded")]
@@ -320,6 +432,7 @@ pub(crate) fn diagnostic_connect_failure(stage: &'static str, error: &ConnectErr
         ConnectError::Timeout => "connect_timeout",
         ConnectError::Database(_) => "pg_connect",
         ConnectError::Transport(_) => "transport",
+        ConnectError::Identity => "runtime_identity",
     };
     eprintln!("fixture_database_failure stage={stage} category={category}");
 }
@@ -413,6 +526,7 @@ async fn acquire(pool: &Arc<ClassPool>, url: &str) -> Result<PooledClient, Conne
         tokio::pin!(returned);
         returned.as_mut().enable();
         if let Some((client, created)) = pool.take(&url) {
+            verify_registered(&client, &url).await?;
             return Ok(PooledClient {
                 client: Some(client),
                 url,
@@ -494,6 +608,7 @@ async fn open(
         // Connection errors contain deployment details; do not log them here.
         let _ = connection.await;
     });
+    verify_registered(&client, &url).await?;
     Ok(PooledClient {
         client: Some(client),
         url,

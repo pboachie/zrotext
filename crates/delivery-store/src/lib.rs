@@ -1330,6 +1330,28 @@ async fn reservation_exists(
         .is_some())
 }
 
+async fn billing_scope(tx: &Transaction<'_>, account: Uuid) -> Result<(bool, bool), StoreError> {
+    // Piggyback the optional scoped dispatch on the existing binding read;
+    // legacy admission keeps its constant round-trip budget.
+    let row=tx.query_typed_one("SELECT EXISTS(SELECT 1 FROM billing_customers WHERE account_id=$1 FOR SHARE),nullif(current_setting('zrotext.hosted_namespace',true),''),to_regprocedure('hosted_runtime_marker()') IS NOT NULL",&[(&account,Type::UUID)]).await?;
+    let bound: bool = row.get(0);
+    let Some(hint) = row.get::<_, Option<String>>(1) else {
+        return Ok((false, bound));
+    };
+    if !row.get::<_, bool>(2) {
+        return Ok((false, bound));
+    }
+    let marker: Option<String> = tx
+        .query_one("SELECT (hosted_runtime_marker()).namespace_id::text", &[])
+        .await?
+        .get(0);
+    match marker {
+        None => Ok((false, bound)),
+        Some(namespace) if namespace == hint => Ok((true, bound)),
+        _ => Err(StoreError::QuotaNotConfigured),
+    }
+}
+
 // Shared with dormant sealed admission; preserve billing-customer/account lock order.
 // Returns whether a usage reservation is required, and whether the account has
 // a billing-customer binding (the caller may pass the binding on to
@@ -1339,15 +1361,20 @@ async fn lock_billing_account(
     account_id: Uuid,
     billing_enabled: bool,
 ) -> Result<(bool, Option<bool>), StoreError> {
-    // Billing ingress locks an existing customer row before taking
-    // account-related FK locks. Follow that order for a bound tenant.
-    let bound = tx
-        .query_typed_opt(
-            "SELECT 1 FROM billing_customers WHERE account_id=$1 FOR SHARE",
+    // Scoped hosted admission is performed by the database message trigger
+    // against the protected runtime session and existing usage_ledger. A GUC
+    // is only a dispatch hint: forging it cannot pass that database fence.
+    let (hosted, bound) = billing_scope(tx, account_id).await?;
+    if hosted {
+        tx.query_typed_one(
+            "SELECT id FROM accounts WHERE id=$1 FOR NO KEY UPDATE",
             &[(&account_id, Type::UUID)],
         )
-        .await?
-        .is_some();
+        .await?;
+        return Ok((false, None));
+    }
+    // Billing ingress locks an existing customer row before taking
+    // account-related FK locks. Follow that order for a bound tenant.
     if bound {
         tx.query_typed_one(
             "SELECT id FROM accounts WHERE id=$1 FOR NO KEY UPDATE",
@@ -1395,13 +1422,13 @@ async fn reserve_outbound(
     // reconciliation, and policy. Risk ingestion locks the same customer row.
     let billed = match bound {
         Some(billed) => billed,
-        None => tx
-            .query_typed_opt(
-                "SELECT 1 FROM billing_customers WHERE account_id=$1 FOR SHARE",
-                &[(&account_id, Type::UUID)],
-            )
-            .await?
-            .is_some(),
+        None => {
+            let (hosted, bound) = billing_scope(tx, account_id).await?;
+            if hosted {
+                return Ok(());
+            }
+            bound
+        }
     };
     let mut past_due_rows = 0i64;
     let (limit, source, invoice_bound) = if billed {

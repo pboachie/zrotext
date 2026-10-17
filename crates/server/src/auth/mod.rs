@@ -41,6 +41,9 @@ pub mod mfa;
 mod owner_reduction;
 pub(crate) use owner_reduction::OwnerReductionFence;
 mod password_work;
+pub(crate) mod registration_intent;
+pub mod review_access;
+pub mod review_realm;
 #[cfg(test)]
 mod roles_tests;
 pub mod seats;
@@ -420,6 +423,16 @@ pub async fn register(
     email: &str,
     password: &str,
 ) -> Result<Signup, AuthError> {
+    register_with_intent(client, hasher, email, password, None).await
+}
+
+pub(crate) async fn register_with_intent(
+    client: &mut Client,
+    hasher: &TokenHasher,
+    email: &str,
+    password: &str,
+    intent: Option<&registration_intent::Credentials>,
+) -> Result<Signup, AuthError> {
     if !(12..=1024).contains(&password.len()) {
         return Err(AuthError::InvalidInput);
     }
@@ -476,6 +489,21 @@ pub async fn register(
             &[&verification_id],
         )
         .await?;
+    if let Some(credentials) = intent {
+        registration_intent::insert(
+            &transaction,
+            hasher,
+            registration_intent::Registration {
+                account_id,
+                user_id,
+                verification_id,
+                email: &email,
+                password_hash: &password_hash,
+                credentials,
+            },
+        )
+        .await?;
+    }
     transaction.commit().await?;
     crate::wakeups::account_mail_queued();
     Ok(Signup {
@@ -548,7 +576,7 @@ async fn discard_pending_owner(
     let removed = async {
         let users = savepoint
             .execute(
-                "DELETE FROM users WHERE id=$1 AND email_verified_at IS NULL AND created_at<=now()-($2::integer * interval '1 hour')",
+                "DELETE FROM users u WHERE id=$1 AND email_verified_at IS NULL AND created_at<=now()-($2::integer * interval '1 hour') AND NOT EXISTS (SELECT FROM review_workspaces w WHERE w.user_id=u.id)",
                 &[&user_id, &VERIFICATION_HOURS],
             )
             .await?;
@@ -589,7 +617,7 @@ pub async fn prune_expired_pending_owners(client: &mut Client) -> Result<u64, Au
     let mut transaction = client.transaction().await?;
     let rows = transaction
         .query(
-            "SELECT u.id,m.account_id FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.role='owner' AND u.email_verified_at IS NULL AND u.created_at<=now()-($1::integer * interval '1 hour') AND a.disabled_at IS NULL ORDER BY u.created_at,u.id LIMIT $2 FOR UPDATE OF u SKIP LOCKED",
+            "SELECT u.id,m.account_id FROM users u JOIN memberships m ON m.user_id=u.id JOIN accounts a ON a.id=m.account_id WHERE m.role='owner' AND u.email_verified_at IS NULL AND u.created_at<=now()-($1::integer * interval '1 hour') AND a.disabled_at IS NULL AND NOT EXISTS (SELECT FROM review_workspaces w WHERE w.user_id=u.id) ORDER BY u.created_at,u.id LIMIT $2 FOR UPDATE OF u SKIP LOCKED",
             &[&VERIFICATION_HOURS, &PENDING_PRUNE_BATCH],
         )
         .await?;

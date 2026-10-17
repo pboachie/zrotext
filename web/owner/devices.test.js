@@ -76,7 +76,7 @@ async function ownerPage() {
       return response(201, { pairing_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", token: "synthetic" });
     if (url.endsWith("/approve") && options.method === "POST") return state.approveResponse;
     if (url.startsWith("/v1/enrollment/pairings/") && options.method === "GET")
-      return response(200, { claimed: false, proof_verified: false });
+      return response(200, { claimed: true, proof_verified: true, comparison_code: "12345678", key_fingerprint: "A".repeat(64) });
     if (url.startsWith("/v1/enrollment/devices/") && options.method === "DELETE") {
       const id = url.split("/").at(-1);
       state.deletedDevices.push(id);
@@ -788,7 +788,7 @@ test("downgrade asks the owner to choose devices and never revokes one automatic
 
   element("display-name").value = "New phone";
   await element("create-form").listeners.submit({ preventDefault() {} });
-  element("compared").checked = true;
+  await element("check-proof").listeners.click();
   await element("approve-form").listeners.submit({ preventDefault() {} });
   assert.match(element("pair-status").textContent, /Device limit reached/);
   assert.doesNotMatch(element("pair-status").textContent, /mismatch|phone values/i);
@@ -1207,7 +1207,7 @@ test("paused polling ages reports in place without requests or focus changes", a
   element("auto-refresh").listeners.change();
   assert.equal(timers.size, 1, "local aging continues independently of polling");
   const row = element("device-list").children[0];
-  const label = row.children[0].children[4];
+  const label = row.children[0].children.find(child => child.attributes["aria-live"] === "off");
   const button = row.children[1];
   document.activeElement = button;
   assert.equal(label.attributes["aria-live"], "off");

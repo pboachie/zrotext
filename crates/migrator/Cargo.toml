@@ -11,3 +11,11 @@ thiserror = "2.0.16"
 tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread", "time"] }
 tokio-postgres = "0.7.13"
 zrotext-postgres-connection = { path = "../postgres-connection" }
+
+[dev-dependencies]
+# Already locked through tokio-postgres; fixture DDL receives only SCRAM hashes.
+postgres-protocol = "=0.6.12"
+
+# Reuse workspace UUIDs to bind fixture identities instead of interpolating SQL.
+uuid.workspace = true
+tokio-postgres = { version = "0.7.13", features = ["with-uuid-1"] }

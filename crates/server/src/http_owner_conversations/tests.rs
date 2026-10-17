@@ -300,7 +300,9 @@ async fn expiry_during_event_wait(expire_reader: bool) {
         .await
         .unwrap()
         .get(0);
-    let expires = observed + 9000;
+    // End the signed fixture lease inside the existing nine-second observation
+    // budget even when the database clock advances more slowly than host time.
+    let expires = observed + 7000;
     if expire_reader {
         // Keep manifest/version/digest unchanged during the wait. Only the
         // archive reader's validity ends; manifest expiry remains in the future.

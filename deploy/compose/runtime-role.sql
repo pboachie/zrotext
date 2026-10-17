@@ -85,4 +85,116 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO zrotext_runtime;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE ON SEQUENCES TO zrotext_runtime;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO zrotext_runtime;
+-- Lifecycle-only anchor authority is narrower than the ordinary DML defaults.
+-- Reset column ACLs too: relation REVOKE does not remove old column grants.
+DO $$
+BEGIN
+    IF to_regclass('public.payload_profile_account_anchors') IS NOT NULL THEN
+        REVOKE ALL ON TABLE public.payload_profile_account_anchors FROM PUBLIC,zrotext_runtime;
+        REVOKE ALL (account_id,state,selection_epoch) ON TABLE public.payload_profile_account_anchors FROM PUBLIC,zrotext_runtime;
+        GRANT SELECT ON TABLE public.payload_profile_account_anchors TO zrotext_runtime;
+        GRANT UPDATE(account_id) ON TABLE public.payload_profile_account_anchors TO zrotext_runtime;
+        GRANT EXECUTE ON FUNCTION public.payload_profile_account_fence_key(uuid) TO zrotext_runtime;
+        REVOKE ALL ON FUNCTION public.payload_profile_anchor_row_guard() FROM PUBLIC,zrotext_runtime;
+        REVOKE ALL ON FUNCTION public.payload_profile_anchor_account_created() FROM PUBLIC,zrotext_runtime;
+        REVOKE ALL ON FUNCTION public.payload_profile_anchor_account_changing() FROM PUBLIC,zrotext_runtime;
+        REVOKE ALL ON FUNCTION public.payload_profile_anchor_account_deleted() FROM PUBLIC,zrotext_runtime;
+    END IF;
+END $$;
+DO $$
+BEGIN
+    IF to_regprocedure('public.parent_account_mirror_guard()') IS NOT NULL THEN
+        REVOKE ALL ON FUNCTION public.parent_account_mirror_guard() FROM PUBLIC,zrotext_runtime;
+    END IF;
+    IF to_regprocedure('public.user_membership_freshness_guard()') IS NOT NULL THEN
+        REVOKE ALL ON FUNCTION public.user_membership_freshness_guard() FROM PUBLIC,zrotext_runtime;
+    END IF;
+END $$;
+-- Review persistence remains SELECT only. Only explicit authenticated access
+-- wrappers are callable; original owner/test factories and internal helpers
+-- remain unavailable even after broad/default grants and provisioner reruns.
+DO $$
+DECLARE relation_name text;
+        columns_sql text;
+        routine record;
+BEGIN
+    FOREACH relation_name IN ARRAY ARRAY['review_realm_installation','review_brokers',
+        'review_broker_sessions','review_bootstrap_attempts','review_workspaces'] LOOP
+        -- 104 relations use the same relation AND column reset below.
+        IF to_regclass(format('public.%I',relation_name)) IS NULL THEN CONTINUE; END IF;
+        SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) INTO columns_sql
+          FROM pg_attribute WHERE attrelid=to_regclass(format('public.%I',relation_name))
+            AND attnum>0 AND NOT attisdropped;
+        EXECUTE format('REVOKE ALL ON TABLE public.%I FROM PUBLIC,zrotext_runtime',relation_name);
+        EXECUTE format('REVOKE ALL (%s) ON TABLE public.%I FROM PUBLIC,zrotext_runtime',columns_sql,relation_name);
+        EXECUTE format('GRANT SELECT ON TABLE public.%I TO zrotext_runtime',relation_name);
+    END LOOP;
+    FOR routine IN SELECT p.oid::regprocedure AS signature FROM pg_proc p
+      WHERE p.pronamespace='public'::regnamespace AND
+        (p.proname LIKE 'review_workspace_%' OR p.proname LIKE 'review_access_%') LOOP
+        EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC,zrotext_runtime',routine.signature);
+    END LOOP;
+END $$;
+DO $$
+DECLARE relation_name text; columns_sql text; signature text;
+BEGIN
+    FOREACH relation_name IN ARRAY ARRAY['review_access_preparations','review_access_sessions',
+        'review_access_authentications','review_access_root_reauth','review_access_locators'] LOOP
+        IF to_regclass(format('public.%I',relation_name)) IS NULL THEN CONTINUE; END IF;
+        SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) INTO columns_sql FROM pg_attribute
+          WHERE attrelid=to_regclass(format('public.%I',relation_name)) AND attnum>0 AND NOT attisdropped;
+        EXECUTE format('REVOKE ALL ON TABLE public.%I FROM PUBLIC,zrotext_runtime',relation_name);
+        EXECUTE format('REVOKE ALL (%s) ON TABLE public.%I FROM PUBLIC,zrotext_runtime',columns_sql,relation_name);
+        EXECUTE format('GRANT SELECT ON TABLE public.%I TO zrotext_runtime',relation_name);
+    END LOOP;
+    IF to_regclass('public.review_access_preparations') IS NOT NULL THEN
+        FOREACH signature IN ARRAY ARRAY[
+            'public.review_access_prune()',
+            'public.review_access_abuse_consume(text,bytea,bytea,integer,integer,integer,integer)',
+            'public.review_access_browser(uuid,bytea,text,bytea,bytea,bigint,bytea,bigint,bigint,boolean)',
+            'public.review_access_guard_lock(uuid,bytea,text,bytea,bytea,bigint,bytea)',
+            'public.review_access_prepare(uuid,bytea,text,bytea,bytea,bigint,bytea,uuid,uuid,smallint,bytea,bigint,bigint,bigint,bigint,bytea)',
+            'public.review_access_transition(uuid,bytea,text,bytea,bytea,bigint,bytea,uuid,uuid,smallint,bytea,bigint,text)',
+            'public.review_access_login(uuid,bytea,text,bytea,bytea,bigint,bytea,uuid,uuid,smallint,bytea,bigint,uuid,uuid,bigint,text,uuid,uuid,bytea,bytea,uuid,uuid,uuid,bytea,bytea,bytea,bigint)',
+            'public.review_access_broker_current(uuid,bytea,text,bytea,bytea,bigint,bytea,uuid,bytea,bytea,boolean)',
+            'public.review_access_owner_current(uuid,bytea,text,bytea,bytea,bigint,bytea,uuid,bytea,bytea,uuid,bytea,bytea,boolean)',
+            'public.review_access_owner_settlement(uuid,bytea,text,bytea,bytea,bigint,bytea,uuid,bytea,bytea,uuid,bytea,bytea,text,uuid,uuid,bigint,bytea,bytea,bytea)',
+            'public.review_access_root_commit(uuid,bytea,text,bytea,bytea,bigint,bytea,uuid,bytea,bytea,uuid,bytea,bytea,uuid,uuid,bigint,bytea,jsonb,uuid,uuid,bigint,text,bigint)'
+        ] LOOP
+            IF to_regprocedure(signature) IS NULL THEN RAISE EXCEPTION 'review access wrapper missing'; END IF;
+            EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO zrotext_runtime',signature);
+        END LOOP;
+    END IF;
+END $$;
+-- Isolated hosted runtime has its own proof and operator-only review boundary.
+-- Reset relation, column and default-derived helper grants on every rerun.
+DO $$
+DECLARE relation_name text; columns_sql text; routine record;
+BEGIN
+    IF to_regclass('public.hosted_runtime_secrets') IS NOT NULL THEN
+        FOREACH relation_name IN ARRAY ARRAY['hosted_runtime_secrets','hosted_runtime_sessions','hosted_billing_resolutions','hosted_billing_namespaces','hosted_billing_history'] LOOP
+            SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) INTO columns_sql FROM pg_attribute
+              WHERE attrelid=to_regclass(format('public.%I',relation_name)) AND attnum>0 AND NOT attisdropped;
+            EXECUTE format('REVOKE ALL ON TABLE public.%I FROM PUBLIC,zrotext_runtime',relation_name);
+            EXECUTE format('REVOKE ALL (%s) ON TABLE public.%I FROM PUBLIC,zrotext_runtime',columns_sql,relation_name);
+        END LOOP;
+        GRANT SELECT,UPDATE(review_required) ON TABLE public.hosted_billing_namespaces TO zrotext_runtime;
+        GRANT SELECT,INSERT ON TABLE public.hosted_billing_history TO zrotext_runtime;
+        FOR routine IN SELECT p.oid::regprocedure AS signature FROM pg_proc p
+          WHERE p.pronamespace='public'::regnamespace AND p.proname LIKE 'hosted_%'
+            AND (p.prosecdef OR p.proname='hosted_resolve_review') LOOP
+            EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC,zrotext_runtime',routine.signature);
+        END LOOP;
+        GRANT EXECUTE ON FUNCTION public.hosted_runtime_role_safe(),public.hosted_runtime_challenge(uuid,bigint),
+          public.hosted_runtime_bind(uuid,bigint,bytea),public.hosted_runtime_verified(uuid,bigint) TO zrotext_runtime;
+    END IF;
+END $$;
+-- The registration trigger runs only in its table's trigger context. Broad
+-- function defaults must not regrant direct execution during reprovisioning.
+DO $$
+BEGIN
+    IF to_regprocedure('public.registration_browser_intent_binding_guard()') IS NOT NULL THEN
+        REVOKE ALL ON FUNCTION public.registration_browser_intent_binding_guard() FROM PUBLIC,zrotext_runtime;
+    END IF;
+END $$;
 COMMIT;

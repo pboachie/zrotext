@@ -949,6 +949,8 @@ async fn verify_m0_shape(tx: &tokio_postgres::Transaction<'_>) -> Result<(), Mig
 #[cfg(test)]
 mod abuse_counters_index_drop_tests;
 #[cfg(test)]
+mod account_anchor_tests;
+#[cfg(test)]
 mod admission_pending_index_tests;
 #[cfg(test)]
 mod conversation_erasure_fk_indexes_tests;
@@ -970,6 +972,10 @@ mod pending_recipient_index_tests;
 mod radio_evidence_index_tests;
 #[cfg(test)]
 mod recent_attempt_index_tests;
+#[cfg(test)]
+mod review_workspace_tests;
+#[cfg(test)]
+mod user_membership_tests;
 #[cfg(test)]
 mod webhook_history_index_tests;
 

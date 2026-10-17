@@ -48,6 +48,9 @@ futures-util = { version = "0.3.31", default-features = false, features = ["std"
 # Already locked through axum/hyper; names `Frame` for the ingress body-deadline wrapper.
 http-body = "1.1.0"
 
+# Already locked through tokio-postgres; quote catalog identifiers in erasure checks.
+postgres-protocol = "=0.6.12"
+
 # lettre's SMTP session pool is enabled only for non-Windows targets (founder
 # decision, issue #485); Windows builds keep one connection per message.
 # http_auth/smtp_session.rs reuses a session only after a transaction
@@ -59,8 +62,6 @@ lettre = { version = "0.11.23", default-features = false, features = ["builder",
 lettre = { version = "0.11.23", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls"] }
 
 [dev-dependencies]
-# Already locked through tokio-postgres; hash fixture credentials before SQL.
-postgres-protocol = "=0.6.12"
 # Already locked through Tokio; reset only a disposable pre-upgrade client without deprecated APIs.
 socket2 = "=0.6.5"
 # Ephemeral certificates prove the real post-handshake gate without changing OS trust.

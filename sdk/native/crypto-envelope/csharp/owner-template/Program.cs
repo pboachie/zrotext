@@ -16,8 +16,18 @@ OwnerTemplate.Current Source(){int at=++current;if(N("CurrentFailAt")==at)throw 
 OwnerTemplate.Session Credentials(){int at=++session;return new(p.GetProperty(p.TryGetProperty("SessionOrigin",out _)?"SessionOrigin":"Origin").GetString()!,p.GetProperty("Cookie").GetString()!,p.GetProperty("CSRF").GetString()!+(N("SessionChangeAt")==at?"-changed":""));}
 object Failure(OwnerTemplate.Failure e)=>new{accepted=false,code=e.Code,unknown=e.Unknown};
 if(p.TryGetProperty("Lifecycle",out _)){LifecycleTest.Run(p.GetProperty("Origin").GetString()!,binding,B(f.GetProperty("scope"),"templateId"),Credentials,p.GetProperty("Roots").GetString()!);Console.WriteLine("{\"lifecycle\":4}");return;}
-var results=new List<object>();var watch=Stopwatch.StartNew();
-try{using var client=new OwnerTemplate(p.GetProperty("Origin").GetString()!,binding,B(f.GetProperty("scope"),"templateId"),Source,Credentials,p.GetProperty("Enabled").GetBoolean(),(int)N("TimeoutMS"),p.GetProperty("Roots").GetString()!);
+var results=new List<object>();var phases=new PhaseMeasurements();var watch=Stopwatch.StartNew();
+try{using var client=new MeasuredClient(phases,()=>new OwnerTemplate(p.GetProperty("Origin").GetString()!,binding,B(f.GetProperty("scope"),"templateId"),Source,Credentials,p.GetProperty("Enabled").GetBoolean(),(int)N("TimeoutMS"),p.GetProperty("Roots").GetString()!));
  for(int i=0;i<N("Reads",1);i++){try{var value=client.ReadLatest();results.Add(new{accepted=true,digest=value.EncryptedDigest,ack=value.RequestAcknowledged,pending=value.MatchesPending});}catch(OwnerTemplate.Failure e){results.Add(Failure(e));}}
 }catch(OwnerTemplate.Failure e){for(int i=0;i<N("Reads",1);i++)results.Add(Failure(e));}
-double elapsed=watch.Elapsed.TotalSeconds;Thread.Sleep((int)N("SettleMS"));Console.WriteLine(JsonSerializer.Serialize(new{results,elapsed,currentCalls=current,sessionCalls=session}));
+double elapsed=watch.Elapsed.TotalSeconds;Thread.Sleep((int)N("SettleMS"));Console.WriteLine(JsonSerializer.Serialize(new{results,elapsed,currentCalls=current,sessionCalls=session,phases=new{constructorSeconds=phases.ConstructorSeconds,requestSeconds=phases.RequestSeconds,disposalSeconds=phases.DisposalSeconds}}));
+
+sealed class PhaseMeasurements {
+ public double? ConstructorSeconds,DisposalSeconds;public List<double> RequestSeconds {get;}=new();
+}
+sealed class MeasuredClient:IDisposable {
+ readonly OwnerTemplate client;readonly PhaseMeasurements phases;
+ public MeasuredClient(PhaseMeasurements phases,Func<OwnerTemplate> constructor){this.phases=phases;long start=Stopwatch.GetTimestamp();try{client=constructor();}finally{phases.ConstructorSeconds=Stopwatch.GetElapsedTime(start).TotalSeconds;}}
+ public OwnerTemplate.Snapshot ReadLatest(){long start=Stopwatch.GetTimestamp();try{return client.ReadLatest();}finally{phases.RequestSeconds.Add(Stopwatch.GetElapsedTime(start).TotalSeconds);}}
+ public void Dispose(){long start=Stopwatch.GetTimestamp();try{client.Dispose();}finally{phases.DisposalSeconds=Stopwatch.GetElapsedTime(start).TotalSeconds;}}
+}

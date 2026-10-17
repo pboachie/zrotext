@@ -237,7 +237,8 @@ async function reviewErasure(page) {
 
 function erasureReceipt() {
   return { account_id: ownerSession.account_id, deleted: [{ table: "accounts", rows: 1 }, { table: "observer_users", rows: 0 }],
-    retained: [{ table: "auth_abuse_counters", rows: null, reason: "Shared keyed request budgets retain their own lifecycle." }],
+    retained: [{ table: "auth_abuse_counters", rows: null, reason: "Shared keyed request budgets retain their own lifecycle." },
+      { table: "payload_profile_account_anchors", rows: 1, reason: "Pseudonymous account ID, deleted state and version counter prevent identity reuse." }],
     statement: "Account-local erasure committed. External copies and backups retain separate lifecycles." };
 }
 

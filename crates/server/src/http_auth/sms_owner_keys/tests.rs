@@ -18,7 +18,7 @@ macro_rules! migration {
 
 // The ceremony runs on the complete schema. SQL is embedded at build time so
 // the test never executes files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 99] = [
+const TEST_MIGRATIONS: [(&str, &str); 107] = [
     ("001_foundation.sql", migration!("001_foundation.sql")),
     ("002_auth.sql", migration!("002_auth.sql")),
     ("003_delivery.sql", migration!("003_delivery.sql")),
@@ -399,6 +399,38 @@ const TEST_MIGRATIONS: [(&str, &str); 99] = [
     (
         "099_line_readiness_observations.sql",
         migration!("099_line_readiness_observations.sql"),
+    ),
+    (
+        "100_payload_profile_account_anchors.sql",
+        migration!("100_payload_profile_account_anchors.sql"),
+    ),
+    (
+        "101_parent_account_mirrors.sql",
+        migration!("101_parent_account_mirrors.sql"),
+    ),
+    (
+        "102_review_workspace_persistence.sql",
+        migration!("102_review_workspace_persistence.sql"),
+    ),
+    (
+        "103_user_membership_freshness.sql",
+        migration!("103_user_membership_freshness.sql"),
+    ),
+    (
+        "104_review_root_access.sql",
+        migration!("104_review_root_access.sql"),
+    ),
+    (
+        "105_device_pairing_bindings.sql",
+        migration!("105_device_pairing_bindings.sql"),
+    ),
+    (
+        "106_hosted_runtime.sql",
+        migration!("106_hosted_runtime.sql"),
+    ),
+    (
+        "107_registration_browser_intents.sql",
+        migration!("107_registration_browser_intents.sql"),
     ),
 ];
 

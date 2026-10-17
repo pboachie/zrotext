@@ -80,7 +80,8 @@ for (const width of [320, 390, 1440]) {
         const list = e.querySelector(".fleet-table").getBoundingClientRect(), panel = e.querySelector(".device-detail").getBoundingClientRect();
         return { side: panel.left >= list.right, below: panel.top >= list.bottom };
       });
-      assert.equal(width === 1440 ? bounds.side : bounds.below, true);
+      if (width === 1440) assert.equal(bounds.side, true);
+      else assert.equal(await page.locator("#phone-inspector").evaluate(node => node.open), true);
       await fits(page);
       if (screenshots) {
         await page.evaluate(() => window.scrollTo(0, 0));
@@ -96,13 +97,11 @@ test("refresh preserves selected identity, focused row and unrelated pending inp
   try {
     const select = page.getByRole("button", { name: "View details for Synthetic gateway Beta", exact: true });
     await select.click();
-    await page.locator("#display-name").fill("Unsubmitted pairing name");
     await select.focus();
     state.devices = [device(second, "Renamed synthetic gateway"), device(first, "Synthetic gateway Alpha")];
     await page.evaluate(() => document.getElementById("refresh-devices").click());
     await page.waitForFunction(() => document.getElementById("device-detail-name").textContent === "Renamed synthetic gateway");
     assert.equal(await page.evaluate(() => document.activeElement.getAttribute("aria-pressed")), "true");
-    assert.equal(await page.locator("#display-name").inputValue(), "Unsubmitted pairing name");
     state.devices = [device(first, "Synthetic gateway Alpha")];
     await page.locator("#refresh-devices").click();
     await page.waitForFunction(() => document.getElementById("device-detail-status").textContent.includes("absent"));
@@ -121,11 +120,14 @@ test("loading, empty, failed refresh and local stale reports remain truthful", a
     await page.locator("#refresh-devices").click();
     await page.getByRole("button", { name: "View details for Synthetic gateway Alpha", exact: true }).click();
     assert.match(await page.locator("#device-detail-preconditions").textContent(), /No SIM selected.*SMS permission denied.*Airplane mode enabled.*Network service limited/);
+    if (await page.locator("#phone-inspector").evaluate(node => node.open)) await page.locator("#phone-inspector-close").click();
+    if (!await page.locator(".fleet-help").evaluate(node => node.open)) await page.locator(".fleet-help > summary").click();
     await page.locator("#auto-refresh").uncheck();
     const count = state.requests.filter(r => r.path === "/v1/enrollment/devices").length;
     await page.clock.fastForward(60000);
     assert.match(await page.locator("#device-detail-preconditions").textContent(), /Historical observations/);
     assert.equal(state.requests.filter(r => r.path === "/v1/enrollment/devices").length, count);
+    if (await page.locator("#phone-inspector").evaluate(node => node.open)) await page.locator("#phone-inspector-close").click();
     state.status = 503;
     await page.locator("#refresh-devices").click();
     await page.waitForFunction(() => document.getElementById("device-detail-status").textContent.startsWith("Refresh failed"));
@@ -137,6 +139,7 @@ test("revocation remains confirmed authorization removal with CSRF, never Pause"
   const { page, state } = await fleet(390);
   try {
     await page.getByRole("button", { name: "View details for Synthetic gateway Alpha", exact: true }).click();
+    await page.locator("#phone-inspector-close").click();
     page.once("dialog", dialog => dialog.dismiss());
     await page.getByRole("button", { name: "Revoke Synthetic gateway Alpha", exact: true }).click();
     assert.equal(state.requests.filter(r => r.method === "DELETE").length, 0);

@@ -39,6 +39,10 @@ def verify_load_alignment(readelf, library):
 TYPED_JNI_METHODS = ("nativeOpenTyped", "nativeReviewTyped", "nativeSignTyped", "nativeArchiveRecoveryCheck")
 
 
+REVIEW_JNI_METHODS = ("nativeOpen", "nativeReview", "nativeSign", "nativeClose", "nativeCloseAll")
+REVIEW_JNI_PREFIX = "Java_org_zrotext_gateway_AndroidReviewRootCustodyNativeBridge_"
+
+
 def verify_typed_exports(nm, library):
     result = subprocess.run([str(nm), "--dynamic", "--defined-only", str(library)],
                             check=True, capture_output=True, text=True)
@@ -46,6 +50,8 @@ def verify_typed_exports(nm, library):
     prefix = "Java_org_zrotext_gateway_AndroidOwnerCustodyNativeBridge_"
     if any(prefix + method not in symbols for method in TYPED_JNI_METHODS):
         raise RuntimeError("Native library is missing a typed owner-custody JNI export")
+    if any(REVIEW_JNI_PREFIX + method not in symbols for method in REVIEW_JNI_METHODS):
+        raise RuntimeError("Native library is missing a review-root-custody JNI export")
 
 
 def main():

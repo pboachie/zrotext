@@ -760,4 +760,6 @@ pub(crate) mod db_tests;
 #[cfg(test)]
 mod schema_roles_tests;
 #[cfg(test)]
+mod setup_resume_tests;
+#[cfg(test)]
 mod tests;

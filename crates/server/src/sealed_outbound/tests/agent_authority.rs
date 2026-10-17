@@ -287,11 +287,16 @@ async fn action_expiry_is_rechecked_after_waiting_for_the_grant_authority_lock()
         blocked,
         "the authority check must actually wait for the grant lock"
     );
-    let remaining = action
-        .expires_ms
-        .saturating_sub(now(&case.base.db).await)
-        .max(0) as u64;
-    tokio::time::sleep(Duration::from_millis(remaining + 25)).await;
+    // Observe the primary clock under the existing 30-second statement budget;
+    // a host timer alone does not establish that signed authority has expired.
+    tokio::time::timeout(Duration::from_secs(25), async {
+        while now(&case.base.db).await < action.expires_ms {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(now(&case.base.db).await >= action.expires_ms);
     lock.commit().await.unwrap();
     let error = waiting.await.unwrap().unwrap_err();
     assert_eq!(error.as_db_error().unwrap().code().code(), "23514");

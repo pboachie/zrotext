@@ -3,14 +3,48 @@ use super::super::tests::endpoint;
 use super::*;
 use crate::http_owner_conversations::activation::tests::{activate, capture, pending};
 
+async fn install_account_mirrors(f: &crate::sealed_manifest_store::tests::Fixture) {
+    // This deliberately scoped legacy fixture predates the ownership mirrors.
+    // Upgrade its genuine pending line before exercising the maintained worker.
+    for migration in [
+        include_str!(
+            "../../../../../../deploy/compose/migrations/100_payload_profile_account_anchors.sql"
+        ),
+        include_str!("../../../../../../deploy/compose/migrations/101_parent_account_mirrors.sql"),
+        include_str!(
+            "../../../../../../deploy/compose/migrations/102_review_workspace_persistence.sql"
+        ),
+        include_str!(
+            "../../../../../../deploy/compose/migrations/103_user_membership_freshness.sql"
+        ),
+        include_str!("../../../../../../deploy/compose/migrations/104_review_root_access.sql"),
+    ] {
+        f.db.batch_execute("BEGIN").await.unwrap();
+        f.db.batch_execute(migration).await.unwrap();
+        f.db.batch_execute("COMMIT").await.unwrap();
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
 async fn recovery_skips_finisher_delivery_lock_without_taking_its_attempt_lock() {
     let (f, _, s) = pending().await;
+    install_account_mirrors(&f).await;
     activate(&f, &s).await;
     endpoint(&f, true).await;
     capture(&f, &s, Uuid::new_v4(), 1, b"+12").await.unwrap();
     let lease = claim(&mut f.connect().await).await.unwrap().unwrap();
+    assert_eq!(
+        f.db.query_one(
+            "SELECT account_id FROM sealed_event_delivery_attempts WHERE delivery_id=$1",
+            &[&lease.id]
+        )
+        .await
+        .unwrap()
+        .get::<_, Uuid>(0),
+        f.account,
+        "the unchanged worker INSERT must retain immutable account ownership"
+    );
     f.db.execute("UPDATE sealed_event_deliveries SET lease_until=clock_timestamp()-interval '1 second' WHERE id=$1",&[&lease.id]).await.unwrap();
     let mut finisher = f.connect().await;
     let tx = finisher.transaction().await.unwrap();
@@ -41,6 +75,7 @@ async fn recovery_skips_finisher_delivery_lock_without_taking_its_attempt_lock()
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
 async fn expired_lease_recovery_retains_exact_identity_and_waits_the_attempt_schedule() {
     let (f, _, s) = pending().await;
+    install_account_mirrors(&f).await;
     activate(&f, &s).await;
     endpoint(&f, true).await;
     capture(&f, &s, Uuid::new_v4(), 1, b"+12").await.unwrap();
@@ -72,6 +107,7 @@ async fn expired_lease_recovery_retains_exact_identity_and_waits_the_attempt_sch
 #[ignore = "requires ZT_INBOUND_TEST_DATABASE_URL; isolated synthetic schema"]
 async fn lease_expiring_during_actual_authority_lock_wait_never_connects_or_renews() {
     let (f, _, scope) = pending().await;
+    install_account_mirrors(&f).await;
     activate(&f, &scope).await;
     endpoint(&f, true).await;
     capture(&f, &scope, Uuid::new_v4(), 1, b"+12")
@@ -140,6 +176,7 @@ async fn lease_expiring_during_actual_authority_lock_wait_never_connects_or_rene
 async fn retirement_waits_for_delivery_before_attempt_and_expired_recovery_skips_it_without_deadlock()
  {
     let (f, _, scope) = pending().await;
+    install_account_mirrors(&f).await;
     activate(&f, &scope).await;
     let endpoint_id = endpoint(&f, true).await;
     capture(&f, &scope, Uuid::new_v4(), 1, b"+12")

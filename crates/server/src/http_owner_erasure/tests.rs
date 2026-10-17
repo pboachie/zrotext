@@ -11,10 +11,13 @@ use axum::body::{Body, to_bytes};
 use serde_json::{Value, json};
 use totp_rs::{Builder, Secret};
 use tower::ServiceExt;
+mod anchor_lifecycle;
+mod hosted;
 mod managed_grants;
 mod opening_capacity;
 #[path = "provider_receipts_tests.rs"]
 mod provider_receipts;
+mod registration_intents;
 
 const ORIGIN: &str = "https://test.example";
 
@@ -446,6 +449,40 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "099_line_readiness_observations.sql",
         include_str!("../../../../deploy/compose/migrations/099_line_readiness_observations.sql"),
     ),
+    (
+        "100_payload_profile_account_anchors.sql",
+        include_str!(
+            "../../../../deploy/compose/migrations/100_payload_profile_account_anchors.sql"
+        ),
+    ),
+    (
+        "101_parent_account_mirrors.sql",
+        include_str!("../../../../deploy/compose/migrations/101_parent_account_mirrors.sql"),
+    ),
+    (
+        "102_review_workspace_persistence.sql",
+        include_str!("../../../../deploy/compose/migrations/102_review_workspace_persistence.sql"),
+    ),
+    (
+        "103_user_membership_freshness.sql",
+        include_str!("../../../../deploy/compose/migrations/103_user_membership_freshness.sql"),
+    ),
+    (
+        "104_review_root_access.sql",
+        include_str!("../../../../deploy/compose/migrations/104_review_root_access.sql"),
+    ),
+    (
+        "105_device_pairing_bindings.sql",
+        include_str!("../../../../deploy/compose/migrations/105_device_pairing_bindings.sql"),
+    ),
+    (
+        "106_hosted_runtime.sql",
+        include_str!("../../../../deploy/compose/migrations/106_hosted_runtime.sql"),
+    ),
+    (
+        "107_registration_browser_intents.sql",
+        include_str!("../../../../deploy/compose/migrations/107_registration_browser_intents.sql"),
+    ),
 ];
 
 /// Indexes the Compose migrator prepares with CREATE INDEX CONCURRENTLY in
@@ -552,6 +589,7 @@ async fn erasure_plans_name_only_tables_of_the_migrated_schema() {
         .map(|(table, _)| *table)
         .filter(|table| *table != OBSERVER_USERS_TABLE)
         .chain(BLOCKED_TABLES.iter().copied())
+        .chain(super::hosted::BLOCKERS.iter().copied())
         .chain(["users", "accounts"])
     {
         let exists: bool = db
@@ -1187,16 +1225,33 @@ async fn erasure_deletes_every_account_row_and_ends_the_session() {
     }
     assert_eq!(deleted_count(&report, "line_opt_out_events"), 0);
     assert_eq!(deleted_count(&report, "sealed_inbound_events"), 0);
-    // The only retained set is the shared request-budget counters: the
-    // account's own billing risk rows never mask its events as retained.
+    // Retention names both the shared budget and the explicit pseudonymous
+    // identity tombstone; billing risk content is still fully erased.
     let retained = report["retained"].as_array().unwrap();
     assert_eq!(
         retained.len(),
-        1,
-        "retained must only name the budget counters"
+        2,
+        "retained must name the counters and minimal account anchor"
     );
     assert_eq!(retained[0]["table"], "auth_abuse_counters");
-    // Direct queries: no row for the erased account survives anywhere.
+    assert_eq!(retained[1]["table"], "payload_profile_account_anchors");
+    assert_eq!(retained[1]["rows"], 1);
+    assert!(
+        retained[1]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("pseudonymous")
+    );
+    let anchor = db
+        .query_one(
+            "SELECT state,selection_epoch FROM payload_profile_account_anchors WHERE account_id=$1",
+            &[&a.account_id],
+        )
+        .await
+        .unwrap();
+    assert_eq!(anchor.get::<_, String>(0), "deleted");
+    assert_eq!(anchor.get::<_, i64>(1), 1);
+    // Direct queries: reported content is gone; the declared anchor is retained.
     for table in [
         "messages",
         "message_events",
@@ -2341,7 +2396,7 @@ fn runtime_role_covers_every_erased_table() {
         role_sql.contains(
             "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO zrotext_runtime"
         ),
-        "the runtime role must hold DELETE on every public table"
+        "the runtime role must hold DELETE on the erasure plan's public tables"
     );
     let revoked: Vec<&str> = role_sql
         .lines()
@@ -2354,7 +2409,7 @@ fn runtime_role_covers_every_erased_table() {
         .collect();
     assert_eq!(
         revoked.as_slice(),
-        ["schema_migrations"],
+        ["schema_migrations", "payload_profile_account_anchors"],
         "new table exceptions would silently deny the runtime role's erasure access"
     );
     for table in DELETE_PLAN

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Exercise the bridge against the real migration chain and invoice triggers.
+//! Historical unmounted invoice/admission contract against canonical migrations
+//! through 105 and the original isolated contract SQL. This is not runtime-106
+//! acceptance; the runtime suite separately exercises the complete current schema.
 use super::Case;
 use crate::billing::hosted::{
     admission,
@@ -131,10 +133,21 @@ async fn installed() -> (Case, Gate, Scope) {
 }
 
 async fn installed_horizon(horizon: i64) -> (Case, Gate, Scope) {
-    let mut case = Case::new().await;
+    let mut case = Case::pre_runtime_invoice_contract().await;
     case.end = case.start + 60 + horizon;
     let paid = case.observation("active", "paid", "subscription_cycle");
     case.observe(&paid).await.unwrap();
+    assert!(
+        case.db
+            .query_one(
+                "SELECT to_regclass('hosted_billing_namespaces') IS NULL AND to_regprocedure('hosted_runtime_schema_ready()') IS NULL",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get::<_, bool>(0),
+        "historical contract fixture must not replace an installed runtime"
+    );
     case.db
         .batch_execute(include_str!("../../hosted/store_fixture.sql"))
         .await

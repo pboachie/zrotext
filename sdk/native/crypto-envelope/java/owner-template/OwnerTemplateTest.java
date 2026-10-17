@@ -4,6 +4,20 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 public final class OwnerTemplateTest {
  private OwnerTemplateTest(){}
+ private static final class Phases {
+  Double constructorSeconds,disposalSeconds;final List<Double> requestSeconds=new ArrayList<>();
+ }
+ private interface Constructor {OwnerTemplate create()throws OwnerTemplate.Failure;}
+ private static final class MeasuredClient implements AutoCloseable {
+  final OwnerTemplate client;final Phases phases;
+  MeasuredClient(Phases phases,Constructor constructor)throws OwnerTemplate.Failure{
+   this.phases=phases;long start=System.nanoTime();try{client=constructor.create();}finally{phases.constructorSeconds=(System.nanoTime()-start)/1e9;}
+  }
+  OwnerTemplate.Snapshot readLatest()throws OwnerTemplate.Failure{
+   long start=System.nanoTime();try{return client.readLatest();}finally{phases.requestSeconds.add((System.nanoTime()-start)/1e9);}
+  }
+  @Override public void close(){long start=System.nanoTime();try{client.close();}finally{phases.disposalSeconds=(System.nanoTime()-start)/1e9;}}
+ }
  static byte[] b(JsonObject p,String key){return Base64.getDecoder().decode(p.get(key).getAsString());}
  static long n(JsonObject p,String key,long fallback){return p.has(key)?p.get(key).getAsLong():fallback;}
  static OwnerTemplate.Binding binding(JsonObject o,boolean changed)throws Exception{byte[] device=b(o,"device");if(changed)device[0]^=1;return new OwnerTemplate.Binding(b(o,"account"),device,b(o,"line"),b(o,"interval"),b(o,"session"),n(o,"generation",0),o.get("peer").getAsString(),b(o,"phoneReader"),b(o,"archiveReader"));}
@@ -20,11 +34,11 @@ public final class OwnerTemplateTest {
   OwnerTemplate.CurrentSource source=()->{int at=++current[0];if(n(p,"CurrentFailAt",0)==at)throw new OwnerTemplate.Failure("synthetic");if(n(p,"CurrentSleepAt",0)==at)Thread.sleep(n(p,"SleepMS",0));String mode=p.get("Mode").getAsString();var times=p.getAsJsonArray("Now");return new OwnerTemplate.Current(mode.equals("binding")?other:binding,m,times.get(Math.min(at-1,times.size()-1)).getAsLong(),n(p,"ValidForMS",0),!mode.equals("owner-dead"),!mode.equals("consent-dead"),!mode.equals("inactive"));};
   OwnerTemplate.SessionSource credentials=()->{int at=++session[0];return new OwnerTemplate.Session(p.get(p.has("SessionOrigin")?"SessionOrigin":"Origin").getAsString(),p.get("Cookie").getAsString(),p.get("CSRF").getAsString()+(n(p,"SessionChangeAt",0)==at?"-changed":""));};
   if(p.has("Lifecycle")){OwnerTemplateLifecycleTest.run(p.get("Origin").getAsString(),binding,b(f.getAsJsonObject("scope"),"templateId"),credentials,p.get("Roots").getAsString());System.out.println("{\"lifecycle\":4}");return;}
-  long start=System.nanoTime();
-  try(var client=new OwnerTemplate(p.get("Origin").getAsString(),binding,b(f.getAsJsonObject("scope"),"templateId"),source,credentials,p.get("Enabled").getAsBoolean(),n(p,"TimeoutMS",0),p.get("Roots").getAsString())){
+  var phases=new Phases();long start=System.nanoTime();
+  try(var client=new MeasuredClient(phases,()->new OwnerTemplate(p.get("Origin").getAsString(),binding,b(f.getAsJsonObject("scope"),"templateId"),source,credentials,p.get("Enabled").getAsBoolean(),n(p,"TimeoutMS",0),p.get("Roots").getAsString()))){
    for(int i=0;i<n(p,"Reads",1);i++){try{var value=client.readLatest();var out=new JsonObject();out.addProperty("accepted",true);out.addProperty("digest",value.encryptedDigest());out.addProperty("ack",value.requestAcknowledged());out.addProperty("pending",value.matchesPending());results.add(out);}catch(OwnerTemplate.Failure error){results.add(failure(error));}}
   }catch(OwnerTemplate.Failure error){for(int i=0;i<n(p,"Reads",1);i++)results.add(failure(error));}
-  double elapsed=(System.nanoTime()-start)/1e9;Thread.sleep(n(p,"SettleMS",0));var output=new JsonObject();output.add("results",results);output.addProperty("elapsed",elapsed);output.addProperty("currentCalls",current[0]);output.addProperty("sessionCalls",session[0]);System.out.write((output.toString()+"\n").getBytes(StandardCharsets.UTF_8));
+  double elapsed=(System.nanoTime()-start)/1e9;Thread.sleep(n(p,"SettleMS",0));var output=new JsonObject();output.add("results",results);output.addProperty("elapsed",elapsed);output.addProperty("currentCalls",current[0]);output.addProperty("sessionCalls",session[0]);var measured=new JsonObject();measured.add("constructorSeconds",phases.constructorSeconds==null?JsonNull.INSTANCE:new JsonPrimitive(phases.constructorSeconds));measured.add("requestSeconds",new Gson().toJsonTree(phases.requestSeconds));measured.add("disposalSeconds",phases.disposalSeconds==null?JsonNull.INSTANCE:new JsonPrimitive(phases.disposalSeconds));output.add("phases",measured);System.out.write((output.toString()+"\n").getBytes(StandardCharsets.UTF_8));
  }
  static JsonObject failure(OwnerTemplate.Failure e){var out=new JsonObject();out.addProperty("accepted",false);out.addProperty("code",e.code);out.addProperty("unknown",e.unknown);return out;}
 }

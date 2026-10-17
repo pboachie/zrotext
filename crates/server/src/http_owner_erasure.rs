@@ -2,7 +2,7 @@
 //! Owner-initiated account erasure. This is the one-request, irreversible
 //! counterpart of the owner data export: the signed-in owner re-proves the
 //! current password (and a second factor when MFA is enabled), and one
-//! database transaction deletes every account-owned row in foreign-key
+//! database transaction deletes the reported account-owned rows in foreign-key
 //! order, ending with the account itself. It is separate from the scheduled
 //! retention worker, which prunes old content and history on a timetable and
 //! is explicitly not an account-erasure API. Self-hosting semantics and
@@ -32,9 +32,9 @@
 //! `billing_risk_events` row still references one of this account's
 //! `billing_events`: the referenced event cannot be deleted while the
 //! reference exists, so the whole erasure is blocked instead of partially
-//! retained. Metering and billing rows are erased with everything else; only
-//! request-budget counters (keyed hashes shared across accounts) are kept,
-//! and that kept set is reported honestly in the response.
+//! retained. Metering and billing rows are erased with the reported content.
+//! Request-budget counters and, when installed, the minimal pseudonymous account
+//! anchor tombstone are retained and explicitly reported in the response.
 //!
 //! Observer seats are account-owned people too. Erasing the account deletes
 //! every observer user row of it (email, password hash, verification state),
@@ -97,6 +97,8 @@ const BLOCKED_TABLES: &[&str] = &[
 // Proposal schemas may be absent on an ordinary migrated installation. They
 // remain erasure blockers whenever installed; absence is not a query failure.
 const OPTIONAL_BLOCKED_TABLES: &[&str] = &["sealed_line_activation_exchanges"];
+
+mod hosted;
 
 /// FK-safe deletion order: every table is emptied before the rows it
 /// references. Each statement takes the account UUID as `$1`; composite
@@ -454,6 +456,12 @@ pub(crate) const DELETE_PLAN: &[(&str, &str)] = &[
         "DELETE FROM billing_customers WHERE account_id=$1",
     ),
     // Account mail, second-factor and session state before the membership.
+    // Count original-browser proof rows before their verification parent can
+    // cascade them, so the erasure receipt reports their removal explicitly.
+    (
+        "registration_browser_intents",
+        "DELETE FROM registration_browser_intents WHERE account_id=$1",
+    ),
     (
         "verification_mail_outbox",
         "DELETE FROM verification_mail_outbox \
@@ -512,7 +520,7 @@ const OBSERVER_USERS_SQL: &str = "DELETE FROM users u WHERE \
      AND NOT EXISTS (SELECT 1 FROM memberships m WHERE m.user_id=u.id \
                      AND NOT (m.account_id=$1 AND m.role='observer'))";
 
-const ERASED_STATEMENT: &str = "One transaction deleted every account-owned row listed under deleted, in foreign-key order, including the observer users invited to the account and its invitation records, and then the account itself. Rows under retained were kept only for the stated reason: the request-budget rows are pepper-keyed digests shared across accounts, hold no identifiers, and the worker prunes them. This response is the only confirmation. The account and its sessions no longer exist, so later authenticated requests fail, and database backups, replicas and WAL archives keep their own separate lifecycle.";
+const ERASED_STATEMENT: &str = "One transaction deleted the account-owned rows listed under deleted, in foreign-key order, including the observer users invited to the account and its invitation records, and then the account itself. Rows under retained were kept for the specific reason shown for each set. This response is the only confirmation. The account and its sessions no longer exist, so later authenticated requests fail, and database backups, replicas and WAL archives keep their own separate lifecycle.";
 
 const BLOCKED_STATEMENT: &str = "Nothing was deleted. The listed rows are append-only consent and audit records, line identity tombstones, immutable sealed trust history, operator review decisions, billing events still referenced by another account's risk records, or an observer user that a foreign key refuses to delete, and their foreign keys still reference the account, so a complete erasure is impossible while they exist. The transaction rolled back unchanged; contact the operator about those records.";
 
@@ -713,6 +721,10 @@ async fn erase_account(
         if rows > 0 {
             blocked.push(TableCount { table, rows });
         }
+    }
+    match hosted::blockers(&tx, account_id).await {
+        Ok(rows) => blocked.extend(rows),
+        Err(()) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
     }
     let live_challenges = match count(
         &tx,
@@ -1106,17 +1118,31 @@ async fn erase_account(
         table: "accounts",
         rows: accounts,
     });
+    let anchor = match crate::payload_profile_anchor::retention(&tx, account_id).await {
+        Ok(crate::payload_profile_anchor::Retention::NotInstalled) => false,
+        Ok(crate::payload_profile_anchor::Retention::Deleted) => true,
+        Ok(crate::payload_profile_anchor::Retention::Invalid) | Err(_) => {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+        }
+    };
     if tx.commit().await.is_err() {
         return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
     }
-    // Cross-account billing references were blocked before any delete, so
-    // the only retained set is the shared request-budget counters.
-    let retained = vec![RetainedSet {
+    // Cross-account billing references were blocked before any delete. Report
+    // every retained set, including the installed pseudonymous identity anchor.
+    let mut retained = vec![RetainedSet {
         table: "auth_abuse_counters",
         rows: None,
         reason: "request-budget rows are pepper-keyed digests shared across accounts; \
                  they hold no identifiers and the worker prunes them",
     }];
+    if anchor {
+        retained.push(RetainedSet {
+            table: "payload_profile_account_anchors",
+            rows: Some(1),
+            reason: "pseudonymous account UUID, deleted state and monotonic selection epoch are retained for the application database lifetime to prevent identity reuse and stale profile selection; no message, email, phone, device, root or key payload is stored",
+        });
+    }
     Json(ErasureView {
         account_id,
         deleted,

@@ -54,6 +54,35 @@ pub enum AvailabilityError {
 }
 
 impl State {
+    /// The existing TEST session adapter has its own restricted test-key and
+    /// exact configured-price verification. This capability is deliberately
+    /// separate from a hosted namespace Gate and cannot advertise LIVE.
+    pub fn for_test_sessions(
+        registration_policy: &RegistrationPolicy,
+        verification_ready: bool,
+        _catalog: &super::sessions::VerifiedTestCatalog,
+    ) -> Self {
+        let registration = if !verification_ready {
+            RegistrationVisibility::Closed
+        } else {
+            match registration_policy {
+                RegistrationPolicy::Closed => RegistrationVisibility::Closed,
+                RegistrationPolicy::Allowlist { .. } => RegistrationVisibility::InviteOnly,
+                RegistrationPolicy::Open => RegistrationVisibility::Open,
+            }
+        };
+        Self {
+            view: Availability {
+                schema_version: 1,
+                deployment: DeploymentVisibility::Hosted,
+                registration,
+                billing: BillingVisibility::Test,
+                checkout_available: true,
+                plan_catalog_available: true,
+            },
+        }
+    }
+
     /// Root/runtime owns these values. Route-mounted and approved-catalog
     /// booleans must describe actual runtime capabilities, never browser input.
     pub fn new(
