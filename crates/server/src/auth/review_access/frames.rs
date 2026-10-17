@@ -146,7 +146,10 @@ impl CookieKey {
             return Err(AccessError::Rejected);
         }
         let split = bytes.len() - 32;
-        if !bool::from(self.mac(purpose, &bytes[..split]).ct_eq(&bytes[split..])) {
+        let expected_mac = self.mac(purpose, &bytes[..split]);
+        if expected_mac.len() != bytes[split..].len()
+            || !bool::from(expected_mac.ct_eq(&bytes[split..]))
+        {
             return Err(AccessError::Rejected);
         }
         bytes.truncate(split);

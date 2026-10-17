@@ -462,7 +462,7 @@ pub fn socket_challenge_is_current(
         challenge.device_id,
         challenge.id,
     );
-    if !bool::from(expected.ct_eq(&challenge.nonce)) {
+    if expected.len() != challenge.nonce.len() || !bool::from(expected.ct_eq(&challenge.nonce)) {
         return false;
     }
     let issued_ms = challenge_id_timestamp_ms(challenge.id);
