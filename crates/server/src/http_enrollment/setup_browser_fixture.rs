@@ -52,6 +52,7 @@ async fn control(
         .unwrap_or("");
     if command.version != 1
         || values.iter().count() != 1
+        || supplied.len() != f.token.len()
         || !bool::from(supplied.as_bytes().ct_eq(f.token.as_bytes()))
     {
         return StatusCode::FORBIDDEN.into_response();

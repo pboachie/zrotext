@@ -58,7 +58,7 @@ fn header_proof(headers: &HeaderMap, origin: &str) -> Result<Credentials, AuthHt
         .get(intent::CSRF_HEADER)
         .and_then(|value| value.to_str().ok())
         .ok_or(AuthHttpError::Forbidden)?;
-    if !bool::from(csrf.as_bytes().ct_eq(proof.as_bytes())) {
+    if csrf.len() != proof.len() || !bool::from(csrf.as_bytes().ct_eq(proof.as_bytes())) {
         return Err(AuthHttpError::Forbidden);
     }
     let credentials = Credentials {
