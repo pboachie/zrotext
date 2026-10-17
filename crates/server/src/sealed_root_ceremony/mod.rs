@@ -296,6 +296,7 @@ async fn complete(
         || row.get::<_, Uuid>(2) != principal.session_id
         || origin != configured_origin
         || nonce_digest.len() != 32
+        || nonce_digest.len() != Sha256::digest(received.nonce).len()
         || !bool::from(
             nonce_digest
                 .as_slice()

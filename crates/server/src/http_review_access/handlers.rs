@@ -600,7 +600,7 @@ async fn preparation_status(
     let held = cookies::decode_secret(cookies::one_header(&headers, cookies::PREPARED_HEADER)?)?;
     let digest: [u8; 32] = Sha256::digest(held.as_ref()).into();
     let expected: Vec<u8> = row.get("prepared_csrf_digest");
-    if !bool::from(digest.as_slice().ct_eq(&expected)) {
+    if digest.as_slice().len() != expected.len() || !bool::from(digest.as_slice().ct_eq(&expected)) {
         return Err(AccessError::Rejected.into());
     }
     Ok(Json(result).into_response())

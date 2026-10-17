@@ -131,7 +131,8 @@ pub(crate) async fn live_code_for_budget(
             b"registration-browser-password-v1",
             row.get::<_, String>(1).as_str(),
         );
-        bool::from(row.get::<_, Vec<u8>>(0).as_slice().ct_eq(&expected))
+        let hash: Vec<u8> = row.get(0);
+        hash.len() == expected.len() && bool::from(hash.as_slice().ct_eq(&expected))
     }))
 }
 
@@ -196,11 +197,14 @@ async fn lock_binding(
         b"registration-browser-password-v1",
         user.get::<_, String>(1).as_str(),
     );
-    if !bool::from(intent.get::<_, Vec<u8>>(0).as_slice().ct_eq(&csrf_hash))
+    let intent_csrf: Vec<u8> = intent.get(0);
+    let intent_pwd: Vec<u8> = intent.get(2);
+    if intent_csrf.len() != csrf_hash.len()
+        || !bool::from(intent_csrf.as_slice().ct_eq(&csrf_hash))
         || intent.get::<_, String>(1) != user.get::<_, String>(0)
+        || intent_pwd.len() != password_binding.len()
         || !bool::from(
-            intent
-                .get::<_, Vec<u8>>(2)
+            intent_pwd
                 .as_slice()
                 .ct_eq(&password_binding),
         )
@@ -244,6 +248,7 @@ pub(crate) async fn verify(
     }
     let actual = hasher.digest(b"email-verification-v1", token);
     if !valid_token(token, "ztv_")
+        || binding.verification_hash.len() != actual.len()
         || !bool::from(binding.verification_hash.as_slice().ct_eq(&actual))
     {
         tx.commit().await?;
