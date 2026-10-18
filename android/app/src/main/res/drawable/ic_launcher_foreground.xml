@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="72"
+    android:viewportHeight="72">
+    <!-- Preserve the existing 48-unit mark and allow adaptive launcher overscan. -->
+    <group android:translateX="12" android:translateY="12">
+        <path
+            android:pathData="M12,14h24L15,33h21M13,24h9"
+            android:fillColor="@android:color/transparent"
+            android:strokeColor="#0B100B"
+            android:strokeWidth="4"
+            android:strokeLineCap="square"
+            android:strokeLineJoin="miter" />
+    </group>
+</vector>
