@@ -85,8 +85,8 @@ android {
         applicationId = "org.zrotext.gateway"
         minSdk = 28
         targetSdk = 36
-        versionCode = 14
-        versionName = "1.0.0"
+        versionCode = 15
+        versionName = "1.0.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "ZROTEXT_HOSTED_ORIGIN", "\"$hostedOrigin\"")
         if (isolatedConversationProbe) {
