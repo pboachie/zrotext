@@ -52,6 +52,22 @@ class ControlledTestRadioCancellationTest {
         assertEquals(SmsAttemptAdapter.StartResult.RESERVED_NOT_SENT, result.get())
     }
 
+    @Test fun selectedSimChangeDuringApprovalReadRejectsItsOtherwiseSuccessfulResult() {
+        val selected = AtomicInteger(7)
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val result = AtomicBoolean(true)
+        val worker = thread {
+            result.set(ControlledTestApproval.currentAfterApproval({ selected.get() == 7 }) {
+                entered.countDown(); await(release); true
+            })
+        }
+        try { await(entered); selected.set(8) } finally { release.countDown() }
+        worker.join(5000)
+        assertFalse(worker.isAlive)
+        assertFalse(result.get())
+    }
+
     @Test fun pauseDuringSuppressionQueryCallsNoRadio() {
         val current = AtomicBoolean(true)
         val entered = CountDownLatch(1)

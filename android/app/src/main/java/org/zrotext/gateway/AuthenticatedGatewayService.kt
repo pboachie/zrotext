@@ -1126,6 +1126,8 @@ class AuthenticatedGatewayService : Service() {
                         SmsAttemptAdapter.sendAuthorized(applicationContext, grant,
                             { ControlledTestApproval.currentAfterApproval(
                                 { generation == currentGeneration &&
+                                    getSharedPreferences("gateway_selection", MODE_PRIVATE)
+                                        .getInt("subscription_id", SubscriptionManager.INVALID_SUBSCRIPTION_ID) == grant.subscriptionId &&
                                     runCatching { machine.heartbeatEpoch() == grant.connectionEpoch }.getOrDefault(false) },
                                 { approval == null || identity != null && ControlledTestApproval(SmsJournalDatabase.get(applicationContext),
                                     getSharedPreferences("alpha_pilot", MODE_PRIVATE)).radioStillApproved(
