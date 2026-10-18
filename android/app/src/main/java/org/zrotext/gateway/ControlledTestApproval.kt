@@ -18,6 +18,10 @@ internal data class ControlledTestScope(val deviceId: String, val originHash: St
         require(listOf(originHash, recipientDigest).all { it.matches(Regex("[0-9a-f]{64}")) })
     }
     companion object {
+        /** Approval reads may block; retirement during that read must still refuse the radio. */
+        internal fun currentAfterApproval(current: () -> Boolean, approved: () -> Boolean): Boolean =
+            current() && approved() && current()
+
         fun capture(endpoint: String, deviceId: String, subscriptionId: Int, recipient: String): ControlledTestScope {
             require(HeartbeatResumeStore.validUrl(endpoint) && recipient.matches(Regex("^\\+[1-9][0-9]{1,14}$")))
             val uri = URI(endpoint)

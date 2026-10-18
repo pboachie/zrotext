@@ -70,13 +70,18 @@ review and cannot start a connection or SMS.
 
 The authenticated grant consumes that approval durably before reserving a new
 attempt. A consumed prior failure cannot authorize another grant, and replacing
-an unused approval invalidates its old nonce. Expiry, clock rollback, changed
-scope, malformed history or failed persistence refuses admission. The phone
+an unused approval invalidates its old nonce. Expiry, a clock value before
+approval creation, changed scope, malformed history or failed persistence
+refuses admission. Approval history has a lifetime limit of 64 entries,
+including replaced and expired entries; reaching it refuses further approvals.
+The existing monotonic five-minute arm deadline also remains enforced. The phone
 rechecks the previous failure before the new radio boundary, so late
 contradictory evidence fences the new test. Existing per-attempt radio
 deduplication and all server allowlists, dispatch authority, suppression and
 idempotency checks still apply. This is deliberate consent to one new message;
-it never retries an earlier radio operation automatically.
+it never retries an earlier radio operation automatically. Session retirement
+is checked after the failure-proof read and after the final suppression lookup,
+immediately before invoking the radio.
 
 ## MMS spike grant
 

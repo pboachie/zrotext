@@ -1124,11 +1124,12 @@ class AuthenticatedGatewayService : Service() {
                             machine.activeAccountId(), UUID.fromString(event.deviceId), url) else null
                         AuthenticatedGatewayStatus.value = "Writer authorized one radio attempt"
                         SmsAttemptAdapter.sendAuthorized(applicationContext, grant,
-                            { generation == currentGeneration &&
-                                runCatching { machine.heartbeatEpoch() }.isSuccess &&
-                                (approval == null || identity != null && ControlledTestApproval(SmsJournalDatabase.get(applicationContext),
+                            { ControlledTestApproval.currentAfterApproval(
+                                { generation == currentGeneration &&
+                                    runCatching { machine.heartbeatEpoch() == grant.connectionEpoch }.getOrDefault(false) },
+                                { approval == null || identity != null && ControlledTestApproval(SmsJournalDatabase.get(applicationContext),
                                     getSharedPreferences("alpha_pilot", MODE_PRIVATE)).radioStillApproved(
-                                        approval, identity, grant.attemptId.toString())) }) { result ->
+                                        approval, identity, grant.attemptId.toString()) }) }) { result ->
                             if (generation == currentGeneration) {
                                 AuthenticatedGatewayStatus.value = when (result) {
                                     SmsAttemptAdapter.StartResult.CALL_RETURNED ->
