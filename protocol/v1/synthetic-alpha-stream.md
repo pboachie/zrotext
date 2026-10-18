@@ -51,6 +51,33 @@ locally approved recipient before any radio call. It persists the attempt ID
 and one-use radio start before calling `SmsManager`. It never retries a radio call
 for the same attempt after an ambiguous return or crash.
 
+### A separately approved test after failure
+
+Android keeps its original installation-level one-use marker. After that
+attempt, pressing **Arm one test SMS** can only open an approval review when
+the latest standalone controlled attempt for the same device and service has
+failed sent callbacks for every segment, all of its evidence is acknowledged,
+and no ambiguous, conflicting or in-flight local attempt remains. Sealed
+conversation attempts cannot supply this controlled-test failure proof.
+
+The review names the currently selected SIM and controlled recipient and warns
+that a new message can duplicate an SMS if carrier failure evidence is wrong.
+Only **Approve one new test** writes a separate five-minute approval. It stores
+the prior failed attempt, account, device, service-origin hash, selected
+subscription and recipient digest, without clearing the old marker, journal,
+pairing or keys. Canceling, changing screens or backgrounding dismisses the
+review and cannot start a connection or SMS.
+
+The authenticated grant consumes that approval durably before reserving a new
+attempt. A consumed prior failure cannot authorize another grant, and replacing
+an unused approval invalidates its old nonce. Expiry, clock rollback, changed
+scope, malformed history or failed persistence refuses admission. The phone
+rechecks the previous failure before the new radio boundary, so late
+contradictory evidence fences the new test. Existing per-attempt radio
+deduplication and all server allowlists, dispatch authority, suppression and
+idempotency checks still apply. This is deliberate consent to one new message;
+it never retries an earlier radio operation automatically.
+
 ## MMS spike grant
 
 Separately from synthetic SMS, the hub can issue the founder-gated

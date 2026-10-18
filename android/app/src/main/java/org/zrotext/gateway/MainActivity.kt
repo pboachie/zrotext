@@ -93,6 +93,12 @@ class MainActivity : ComponentActivity() {
     private var deviceStreamEndpoint by mutableStateOf("")
     private var approvedDeviceId by mutableStateOf("")
     private var alphaRecipient by mutableStateOf("")
+    private data class ControlledTestReview(val scope: ControlledTestScope, val failure: ControlledTestFailure,
+        val recipient: String, val simLabel: String)
+    private var controlledTestReview by mutableStateOf<ControlledTestReview?>(null)
+    private var controlledTestReviewBusy by mutableStateOf(false)
+    private var controlledTestStatus by mutableStateOf("")
+    private var controlledTestReviewEpoch = 0L
     private var pairingOrigin by mutableStateOf("")
     private var pairingId by mutableStateOf("")
     private var pairingToken by mutableStateOf("")
@@ -301,9 +307,29 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                controlledTestReview?.let { review ->
+                    Dialog(onDismissRequest = { cancelControlledTestReview() }) {
+                        Surface(shape = MaterialTheme.shapes.large) {
+                            Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(24.dp),
+                                verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                                GatewaySectionTitle("Approve one new controlled test")
+                                Text("The previous test has an acknowledged failure for every SMS segment. Its records, your pairing and your keys will be kept.")
+                                Text("Sending SIM: ${review.simLabel}")
+                                Text("Recipient you control: ${review.recipient}")
+                                Text("This approves one new test message for five minutes. Carrier charges may apply. A missing or uncertain result is never retried automatically; a duplicate is possible if carrier evidence is incorrect.")
+                                Button(onClick = { approveControlledTest(review) }, enabled = !controlledTestReviewBusy,
+                                    modifier = Modifier.fillMaxWidth()) { Text("Approve one new test") }
+                                OutlinedButton(onClick = { cancelControlledTestReview() }, enabled = !controlledTestReviewBusy,
+                                    modifier = Modifier.fillMaxWidth()) { Text("Cancel") }
+                            }
+                        }
+                    }
+                }
+
                 GatewayCompanion(initialPage = GatewayPage.entries.firstOrNull {
                     it.name == intent.getStringExtra("gateway_screen")
                 } ?: GatewayPage.HOME, onPageChanged = { page ->
+                    if (page != GatewayPage.TOOLS) cancelControlledTestReview()
                     summaryPageChanged(page)
                     bindingSetupVisible = page == GatewayPage.SETUP
                     if (bindingSetupVisible) requestPairingCheck()
@@ -647,7 +673,7 @@ class MainActivity : ComponentActivity() {
                         }) { Text("Start inbound metadata pilot") }
                         HorizontalDivider()
                         GatewaySectionTitle("Controlled SMS test")
-                        Text("Enter a recipient you control in +E.164 form. This test allows one send per app installation. A confirmed grant can send one SMS from the selected SIM; an uncertain result is never retried automatically.")
+                        Text("Enter a recipient you control in +E.164 form. A confirmed grant can send one SMS from the selected SIM. After an acknowledged failure, a new test needs a separate explicit approval. An uncertain result is never retried automatically.")
                         OutlinedTextField(value = alphaRecipient, onValueChange = { alphaRecipient = it.trim() },
                             label = { Text("Controlled recipient +E.164") })
                         GatewayButton(onClick = {
@@ -655,7 +681,7 @@ class MainActivity : ComponentActivity() {
                             if (!validAuthenticatedFields()) return@GatewayButton
                             if (getSharedPreferences("alpha_pilot", MODE_PRIVATE)
                                     .getBoolean("attempt_used", false)) {
-                                AuthenticatedGatewayStatus.value = "Alpha arm refused: one test attempt already used"
+                                reviewControlledTest()
                             } else if (sim == null || sims.none { it.first == sim } ||
                                 !alphaRecipient.matches(Regex("^\\+[1-9][0-9]{1,14}$"))) {
                                 AuthenticatedGatewayStatus.value = "Select an active SIM and enter a valid recipient"
@@ -670,6 +696,7 @@ class MainActivity : ComponentActivity() {
                                 alphaRecipient = ""
                             }
                         }) { Text("Arm one test SMS") }
+                        if (controlledTestStatus.isNotEmpty()) Text(controlledTestStatus)
                         HorizontalDivider()
                         MmsSpikeSection(selectedSim, sims.map { it.first })
                     }
@@ -691,6 +718,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
+        cancelControlledTestReview()
         bindingForeground = false
         bindingEpoch++
         bindingCurrent = false
@@ -1551,6 +1579,79 @@ class MainActivity : ComponentActivity() {
             GatewayInputValidation.deviceId(approvedDeviceId.trim()) != null) return true
         AuthenticatedGatewayStatus.value = "Set a WSS device stream and approved device ID"
         return false
+    }
+
+    private fun controlledTestScope(): ControlledTestScope = ControlledTestScope.capture(
+        deviceStreamEndpoint, approvedDeviceId.trim(), checkNotNull(selectedSim), alphaRecipient)
+
+    private fun cancelControlledTestReview() {
+        controlledTestReviewEpoch++
+        controlledTestReview = null
+        controlledTestReviewBusy = false
+    }
+
+    private fun reviewControlledTest() {
+        if (controlledTestReviewBusy || !validAuthenticatedFields()) return
+        val scope = runCatching { controlledTestScope() }.getOrNull() ?: run {
+            controlledTestStatus = "Select an active SIM and enter a valid controlled recipient"; return
+        }
+        val recipient = alphaRecipient
+        val simLabel = sims.firstOrNull { it.first == scope.subscriptionId }?.second ?: return
+        val epoch = ++controlledTestReviewEpoch
+        controlledTestReviewBusy = true
+        controlledTestStatus = "Checking the previous test's acknowledged failure"
+        JournalRuntime.io.execute {
+            val failure = runCatching { ControlledTestApproval(SmsJournalDatabase.get(applicationContext),
+                getSharedPreferences("alpha_pilot", MODE_PRIVATE)).prepare(scope) }.getOrNull()
+            runOnUiThread {
+                if (controlledTestReviewEpoch != epoch || isDestroyed ||
+                    !lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return@runOnUiThread
+                controlledTestReviewBusy = false
+                if (runCatching { controlledTestScope() }.getOrNull() != scope) {
+                    controlledTestStatus = "Test details changed; review the current SIM and recipient again"
+                } else if (failure == null) {
+                    controlledTestStatus = "A new test is unavailable: the previous result is not an acknowledged, conflict-free failure, or its approval was already spent. Keep the existing records."
+                } else {
+                    controlledTestStatus = "Review the SIM and recipient before approving one new test"
+                    controlledTestReview = ControlledTestReview(scope, failure, recipient, simLabel)
+                }
+            }
+        }
+    }
+
+    private fun approveControlledTest(review: ControlledTestReview) {
+        if (controlledTestReviewBusy || runCatching { controlledTestScope() }.getOrNull() != review.scope) {
+            cancelControlledTestReview();controlledTestStatus = "Test details changed; review again";return
+        }
+        val epoch = controlledTestReviewEpoch
+        val url = deviceStreamEndpoint
+        val device = approvedDeviceId.trim()
+        controlledTestReviewBusy = true
+        JournalRuntime.io.execute {
+            val nonce = runCatching { ControlledTestApproval(SmsJournalDatabase.get(applicationContext),
+                getSharedPreferences("alpha_pilot", MODE_PRIVATE)).approve(review.scope, review.failure,
+                    System.currentTimeMillis()) }.getOrNull()
+            runOnUiThread {
+                if (controlledTestReviewEpoch != epoch || isDestroyed ||
+                    !lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return@runOnUiThread
+                controlledTestReviewBusy = false
+                controlledTestReview = null
+                if (nonce == null || runCatching { controlledTestScope() }.getOrNull() != review.scope) {
+                    controlledTestStatus = "Could not approve this test; no connection or SMS was started"
+                    return@runOnUiThread
+                }
+                stopService(Intent(this@MainActivity, GatewayService::class.java))
+                ContextCompat.startForegroundService(this@MainActivity,
+                    Intent(this@MainActivity, AuthenticatedGatewayService::class.java)
+                        .putExtra(AuthenticatedGatewayService.EXTRA_URL, url)
+                        .putExtra(AuthenticatedGatewayService.EXTRA_DEVICE_ID, device)
+                        .putExtra(AuthenticatedGatewayService.EXTRA_ALPHA_RECIPIENT, review.recipient)
+                        .putExtra(AuthenticatedGatewayService.EXTRA_ALPHA_SUBSCRIPTION_ID, review.scope.subscriptionId)
+                        .putExtra(AuthenticatedGatewayService.EXTRA_ALPHA_APPROVAL, nonce))
+                alphaRecipient = ""
+                controlledTestStatus = "One new test approved; waiting for its authenticated server grant"
+            }
+        }
     }
 
     private fun askPermissions(purpose: GatewayPermissionPurpose) {

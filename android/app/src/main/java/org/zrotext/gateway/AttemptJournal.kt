@@ -585,6 +585,15 @@ abstract class SmsAttemptDao {
     @Query("SELECT * FROM sms_attempts WHERE attemptId = :attemptId")
     abstract fun getAttempt(attemptId: String): SmsAttempt?
 
+    @Query("SELECT a.* FROM sms_attempts a WHERE a.messageId IS NOT NULL AND a.deviceId = :deviceId AND a.originHash = :originHash AND NOT EXISTS (SELECT 1 FROM sealed_preparations p WHERE p.attemptId = a.attemptId) ORDER BY a.createdAtMs DESC, a.rowid DESC LIMIT 1")
+    abstract fun latestControlledTest(deviceId: String, originHash: String): SmsAttempt?
+
+    @Query("SELECT count(*) FROM sms_attempts WHERE attemptId != :excluded AND (evidenceConflict = 1 OR state IN ('reserved','radio_started','submitting','unknown','partial_failure'))")
+    abstract fun unresolvedControlledTestPeers(excluded: String): Int
+
+    @Query("SELECT * FROM alpha_radio_events WHERE attemptId = :attemptId ORDER BY rowid")
+    abstract fun controlledTestEvents(attemptId: String): List<AlphaRadioEvent>
+
     @Query("SELECT * FROM sms_segments WHERE attemptId = :attemptId ORDER BY segmentIndex")
     abstract fun getSegments(attemptId: String): List<SmsSegment>
 
