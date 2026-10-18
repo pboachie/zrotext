@@ -113,8 +113,9 @@ internal object SmsAttemptAdapter {
         return try {
             withFinalRadioGuard(
                 { dao.isRecipientSuppressed(senderToken) },
-                { isSessionCurrent() && System.currentTimeMillis() < grant.expiresAtMs &&
-                    hasSelectedSim(context, subscriptionId) },
+                { hasSelectedSim(context, subscriptionId) },
+                isSessionCurrent,
+                { System.currentTimeMillis() < grant.expiresAtMs },
                 {
                     if (dao.markPreflightNoRadio(attemptId, System.currentTimeMillis()) == 1)
                         JournalWriteSignal.alphaEventRecorded()
@@ -135,10 +136,11 @@ internal object SmsAttemptAdapter {
 
     /** The authority check follows every potentially blocking suppression operation. */
     internal fun withFinalRadioGuard(
-        suppressed: () -> Boolean, authorized: () -> Boolean,
+        suppressed: () -> Boolean, selectedSim: () -> Boolean,
+        authorized: () -> Boolean, unexpired: () -> Boolean,
         denied: () -> StartResult, send: () -> StartResult
     ): StartResult = synchronized(LocalSuppressionGate.lock) {
-        if (suppressed() || !authorized()) denied() else send()
+        if (suppressed() || !selectedSim() || !authorized() || !unexpired()) denied() else send()
     }
 
     internal fun hasSelectedSim(context: Context, subscriptionId: Int): Boolean {

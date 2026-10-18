@@ -39,7 +39,7 @@ class ControlledTestRadioCancellationTest {
         synchronized(LocalSuppressionGate.lock) {
             worker = thread {
                 entered.countDown()
-                result.set(SmsAttemptAdapter.withFinalRadioGuard({ false }, current::get,
+                result.set(SmsAttemptAdapter.withFinalRadioGuard({ false }, { true }, current::get, { true },
                     { SmsAttemptAdapter.StartResult.RESERVED_NOT_SENT },
                     { calls.incrementAndGet(); SmsAttemptAdapter.StartResult.CALL_RETURNED }))
             }
@@ -60,7 +60,26 @@ class ControlledTestRadioCancellationTest {
         val result = AtomicReference<SmsAttemptAdapter.StartResult>()
         val worker = thread {
             result.set(SmsAttemptAdapter.withFinalRadioGuard(
-                { entered.countDown(); await(release); false }, current::get,
+                { entered.countDown(); await(release); false }, { true }, current::get, { true },
+                { SmsAttemptAdapter.StartResult.RESERVED_NOT_SENT },
+                { calls.incrementAndGet(); SmsAttemptAdapter.StartResult.CALL_RETURNED }))
+        }
+        try { await(entered); current.set(false) } finally { release.countDown() }
+        worker.join(5000)
+        assertFalse(worker.isAlive)
+        assertEquals(0, calls.get())
+        assertEquals(SmsAttemptAdapter.StartResult.RESERVED_NOT_SENT, result.get())
+    }
+
+    @Test fun pauseDuringFinalSimLookupCallsNoRadio() {
+        val current = AtomicBoolean(true)
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val calls = AtomicInteger()
+        val result = AtomicReference<SmsAttemptAdapter.StartResult>()
+        val worker = thread {
+            result.set(SmsAttemptAdapter.withFinalRadioGuard(
+                { false }, { entered.countDown(); await(release); true }, current::get, { true },
                 { SmsAttemptAdapter.StartResult.RESERVED_NOT_SENT },
                 { calls.incrementAndGet(); SmsAttemptAdapter.StartResult.CALL_RETURNED }))
         }
@@ -76,9 +95,9 @@ class ControlledTestRadioCancellationTest {
         val send = { calls.incrementAndGet(); SmsAttemptAdapter.StartResult.CALL_RETURNED }
         val denied = { SmsAttemptAdapter.StartResult.RESERVED_NOT_SENT }
         assertEquals(SmsAttemptAdapter.StartResult.CALL_RETURNED,
-            SmsAttemptAdapter.withFinalRadioGuard({ false }, { true }, denied, send))
+            SmsAttemptAdapter.withFinalRadioGuard({ false }, { true }, { true }, { true }, denied, send))
         assertEquals(SmsAttemptAdapter.StartResult.RESERVED_NOT_SENT,
-            SmsAttemptAdapter.withFinalRadioGuard({ true }, { true }, denied, send))
+            SmsAttemptAdapter.withFinalRadioGuard({ true }, { true }, { true }, { true }, denied, send))
         assertEquals(1, calls.get())
     }
 }
