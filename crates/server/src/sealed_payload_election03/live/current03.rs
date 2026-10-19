@@ -8,6 +8,7 @@ use crate::sealed_payload_election03::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B};
 use uuid::Uuid;
+mod physical;
 
 struct Current<'held, 'db> {
     reservation: Reservation,
@@ -254,7 +255,7 @@ pub async fn current(
     }
     let who = owner.selected_identity();
     let mut current = Current::lock(tx, who.account, line, origin).await?;
-    current.original_physical(tx).await?;
+    let _physical = current.physical(tx).await?;
     owner
         .revalidate()
         .await
@@ -315,7 +316,7 @@ pub(crate) async fn device_current(
     {
         return Err(Error::Authentication);
     }
-    current.original_physical(tx).await?;
+    let physical = current.physical(tx).await?;
     current
         .context
         .revalidate()
@@ -336,9 +337,6 @@ pub(crate) async fn device_current(
         "selection_expires_ms".into(),
         serde_json::json!(current.deadline.to_string()),
     );
-    object.insert(
-        "physical_selection".into(),
-        serde_json::json!({"kind":"original_v2"}),
-    );
+    object.insert("physical_selection".into(), physical.projection());
     Ok(value)
 }
