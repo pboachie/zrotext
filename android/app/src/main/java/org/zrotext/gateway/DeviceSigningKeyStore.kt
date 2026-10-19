@@ -249,6 +249,25 @@ class DeviceSigningKeyStore(
     private fun selectedSubscription(): Int = context.getSharedPreferences("gateway_selection", Context.MODE_PRIVATE)
         .getInt("subscription_id", android.telephony.SubscriptionManager.INVALID_SUBSCRIPTION_ID)
 
+    /** Same enrolled nonexportable signer, only after the caller's durable one-use reservation.
+     * Canonicalizes this newly generated outgoing signature; received originalv2 DER is untouched.
+     */
+    internal fun signPayloadElection03(core: ByteArray, expectedPoint: ByteArray, current: () -> Unit): ByteArray {
+        require(core.size == 500 && expectedPoint.size == 65)
+        val owned = core.copyOf()
+        val point = expectedPoint.copyOf()
+        current()
+        check(java.security.MessageDigest.isEqual(point, existingConversationPublicPoint()))
+        current()
+        val transcript = ReviewedIntent03.framed("ZTSE/line/payload-profile/device/v1", owned)
+        val raw = Draft01SignaturePrimitive.canonicalRawFromDer(sign(transcript))
+        current()
+        check(java.security.MessageDigest.isEqual(point, existingConversationPublicPoint()) &&
+            ConversationContentCrypto.verifyRaw(raw, point, transcript))
+        current()
+        return raw
+    }
+
     /** Existing enrolled identity only. A received line challenge cannot create a replacement key. */
     internal fun existingLineActivationV2Point(purpose: LineActivationV2Purpose): ByteArray {
         if (purpose == LineActivationV2Purpose.SEALED) return existingConversationPublicPoint()

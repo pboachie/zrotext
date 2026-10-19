@@ -100,6 +100,7 @@ internal class Profile03ExecutionFixture(private val selectedReaderUntilMs: Long
         check(dao.recordSigned(installed.copy(state = "signed", acceptedEvidenceSha256 = null)) {})
         check(dao.install(installed) {})
     }
+    fun successor02() = manifest(2, 2, unsigned(old))
     private fun intent(): ByteArray = byteArrayOf(90, 84, 82, 73, 1, 3, 3, 0) +
         account + device + lineId + uuid(newBinding) + uuid(ownerUser) + uuid(ownerSession) + uuid(interval) + uuid(message) +
         long(2) + long(1) + long(2) + long(3) + long(100_010) + long(100_500) + long(100_010) + long(100_030) +

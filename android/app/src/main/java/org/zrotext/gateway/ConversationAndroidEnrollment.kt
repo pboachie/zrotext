@@ -35,7 +35,7 @@ internal object ConversationAndroidEnrollment {
         val signerPoint = signing.existingConversationPublicPoint()
         current()
         // A stable exact account/device/line alias cannot replace another enrolled reader.
-        val alias = "org.zrotext.conversation-reader.${binding.accountId}.${binding.deviceId}.${binding.lineId}.${binding.generation}"
+        val alias = readerAlias(binding)
         val storage = Draft02AndroidTrustStorage(app)
         return ConversationEnrollmentSession(binding.accountId, ::current,
             { current(); DevicePayloadKeyStore(app, alias).getOrCreateForEnrollment() }, storage, {
@@ -82,5 +82,41 @@ internal object ConversationAndroidEnrollment {
                         boundCurrent()
                     }, android.os.SystemClock::elapsedRealtime)
             })
+    }
+
+    internal fun readerAlias(binding: LocalLineBinding) =
+        "org.zrotext.conversation-reader.${binding.accountId}.${binding.deviceId}.${binding.lineId}.${binding.generation}"
+
+    /** Foreground explicit initial chain import, independent of conversation/interval consent. */
+    fun importInitialProfile03Manifests(context: Context, database: SmsJournalDatabase,
+        foreground: AtomicBoolean, chain: List<ByteArray>): Long {
+        val app = checkNotNull(context.applicationContext)
+        val host = checkNotNull(ConversationSocketComposition.currentAuthenticatedIdentity())
+        val line = checkNotNull(database.attempts().currentLineBinding())
+        val permit = checkNotNull(line.installedSelectionV2())
+        val time = Profile03BootstrapClock.capture(java.util.UUID.fromString(line.accountId),
+            java.util.UUID.fromString(line.deviceId), host.identity.originHash)
+        fun ramNow(): Long {
+            check(foreground.get() && permit.isCurrent() && permit.matches(line))
+            host.requireCurrent()
+            return time().also { check(foreground.get() && permit.isCurrent()) }
+        }
+        fun current() {
+            ramNow()
+            check(line.accountId == host.identity.accountId && line.deviceId == host.identity.deviceId &&
+                line.v2Purpose == "sealed" && line.protocolVersion == 2 && database.attempts().currentLineBinding() == line)
+            val selected = app.getSharedPreferences("gateway_selection", Context.MODE_PRIVATE)
+                .getInt("subscription_id", SubscriptionManager.INVALID_SUBSCRIPTION_ID)
+            check(selected == line.subscriptionId && SimCardContinuity.matches(line.activatedSim(), SimCardContinuity.observe(app)))
+            ramNow()
+        }
+        current()
+        val reader = DevicePayloadKeyStore(app, readerAlias(line)).existingPublic()
+        check(reader.security in setOf(PayloadKeySecurity.STRONGBOX, PayloadKeySecurity.TRUSTED_ENVIRONMENT))
+        val signer = DeviceSigningKeyStore(app).existingConversationPublicPoint()
+        current()
+        return Draft02AndroidTrustStorage(app).use { storage ->
+            Profile03ManifestBootstrap.install(Draft02TrustStore(storage), chain, line, reader, signer, ::ramNow, ::current)
+        }
     }
 }

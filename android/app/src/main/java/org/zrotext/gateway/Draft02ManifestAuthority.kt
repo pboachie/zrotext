@@ -58,6 +58,18 @@ internal class Draft02ManifestAuthority private constructor(
         init { require(id.size == 32) { "Reader ID" } }
     }
 
+    /** Historical election selection only; no fabricated message/request is used for key lookup. */
+    internal fun requireElectionKeys(device: ByteArray, line: ByteArray, readerId: ByteArray,
+        enrollmentId: ByteArray, readerPoint: ByteArray, enrollmentPoint: ByteArray, acceptedMs: Long) {
+        require(device.size == 16 && line.size == 16 && readerId.size == 32 && enrollmentId.size == 32)
+        window(issued, expires, acceptedMs)
+        for ((role, id, point) in listOf(Triple(1, readerId, readerPoint), Triple(4, enrollmentId, enrollmentPoint))) {
+            val key = records.singleOrNull { it.role == role && same(it.id, id) }
+            require(key != null && key.active(acceptedMs) && key.scope == (if (role == 1) 4 else 2) &&
+                same(key.device, device) && same(key.line, line) && same(key.point, point)) { "Original selected key" }
+        }
+    }
+
     /** Caller-selected routing, never inferred from a relay's manifest directory. */
     class Request(
         val direction: Direction, accountId: ByteArray, messageId: ByteArray,
