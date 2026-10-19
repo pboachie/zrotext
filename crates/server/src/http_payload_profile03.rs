@@ -87,17 +87,7 @@ pub async fn router(state: ProfileHttpState) -> Result<Router, &'static str> {
 macro_rules! handler {
     ($name:ident,$op:ident) => {
         async fn $name(State(state): State<Arc<ProfileHttpState>>, request: Request) -> Response {
-            let mut response = match handle(&state, Operation::$op, request).await {
-                Ok((status, value)) => (status, Json(value)).into_response(),
-                Err(code) => code.into_response(),
-            };
-            response
-                .headers_mut()
-                .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
-            response
-                .headers_mut()
-                .insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
-            response
+            wire_response(handle(&state, Operation::$op, request).await)
         }
     };
 }
@@ -108,15 +98,47 @@ handler!(status, Status);
 handler!(proof, Proof);
 handler!(accept, Accept);
 
+fn wire_response(result: Result<(StatusCode, serde_json::Value), StatusCode>) -> Response {
+    let (status, value) = match result {
+        Ok(reply) => reply,
+        Err(status) => {
+            let (status, error) = match status {
+                StatusCode::BAD_REQUEST
+                | StatusCode::REQUEST_TIMEOUT
+                | StatusCode::PAYLOAD_TOO_LARGE
+                | StatusCode::UNSUPPORTED_MEDIA_TYPE => {
+                    (StatusCode::BAD_REQUEST, "invalid_request")
+                }
+                StatusCode::UNAUTHORIZED => (status, "authentication_required"),
+                StatusCode::FORBIDDEN => (status, "origin_or_csrf_refused"),
+                StatusCode::NOT_FOUND => (status, "not_found"),
+                StatusCode::CONFLICT => (status, "conflict"),
+                StatusCode::GONE => (status, "expired"),
+                StatusCode::UNPROCESSABLE_ENTITY => (status, "unsupported_state"),
+                StatusCode::TOO_MANY_REQUESTS => (status, "rate_limited"),
+                _ => (StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable"),
+            };
+            (status, serde_json::json!({"error":error}))
+        }
+    };
+    let mut response = (status, Json(value)).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    response
+        .headers_mut()
+        .insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
+    response
+}
+
 fn mapped(e: live::Error) -> StatusCode {
     match e {
         live::Error::Authentication => StatusCode::FORBIDDEN,
         live::Error::Conflict => StatusCode::CONFLICT,
         live::Error::Expired => StatusCode::GONE,
         live::Error::NotFound => StatusCode::NOT_FOUND,
-        live::Error::Unsupported | live::Error::Unavailable | live::Error::Database(_) => {
-            StatusCode::SERVICE_UNAVAILABLE
-        }
+        live::Error::Unsupported => StatusCode::UNPROCESSABLE_ENTITY,
+        live::Error::Unavailable | live::Error::Database(_) => StatusCode::SERVICE_UNAVAILABLE,
     }
 }
 fn source(headers: &HeaderMap) -> Result<ordinary_owner03::RequestSource<'_>, StatusCode> {
@@ -215,12 +237,12 @@ async fn handle(
             .and_then(|v| v.to_str().ok())
             != Some("application/json")
     {
-        return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        return Err(StatusCode::BAD_REQUEST);
     }
     let bytes = tokio::time::timeout(Duration::from_secs(5), to_bytes(body, 96 * 1024))
         .await
-        .map_err(|_| StatusCode::REQUEST_TIMEOUT)?
-        .map_err(|_| StatusCode::PAYLOAD_TOO_LARGE)?;
+        .map_err(|_| StatusCode::BAD_REQUEST)?
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
     let body = request::parse(op, &bytes)?;
     let mut db = crate::runtime_db::connect(&s.database_url)
         .await
@@ -348,3 +370,6 @@ async fn finish_mutation(
         Err(step_up::Rejection::RateLimited) => Err(StatusCode::TOO_MANY_REQUESTS),
     }
 }
+
+#[cfg(test)]
+mod tests;
