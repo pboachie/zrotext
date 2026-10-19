@@ -144,6 +144,34 @@ class DeviceSigningKeyStore(
         }
     }
 
+    /** Additive03 transcript only. Canonicalize our own randomized signing output; received
+     * signatures are never normalized. This neither authenticates a grant nor selects a key.
+     */
+    internal fun signSealedEnvelopeFetch03(grant: SealedDispatch03Frames.Grant,
+        expectedPoint: ByteArray, current: () -> Unit): ByteArray {
+        val transcript = SealedEnvelopeFetch03.transcript(SealedDispatch03Frames.grant(grant.json()))
+        val point = expectedPoint.copyOf()
+        current()
+        check(java.security.MessageDigest.isEqual(existingConversationPublicPoint(), point))
+        val key = privateKey()
+        check(key.encoded == null && securityLevel(key) in setOf(
+            SigningKeySecurity.STRONGBOX, SigningKeySecurity.TRUSTED_ENVIRONMENT))
+        current()
+        val der = Signature.getInstance("SHA256withECDSA").run {
+            initSign(key); update(transcript); sign()
+        }
+        current()
+        check(java.security.MessageDigest.isEqual(existingConversationPublicPoint(), point))
+        val raw = Draft01SignaturePrimitive.canonicalRawFromDer(der)
+        fun integer(at: Int) = java.math.BigInteger(1, raw.copyOfRange(at, at + 32)).toByteArray()
+            .let { byteArrayOf(2, it.size.toByte()) + it }
+        val fields = integer(0) + integer(32)
+        val canonical = byteArrayOf(0x30, fields.size.toByte()) + fields
+        SealedEnvelopeFetch03.requireCanonicalDer(canonical)
+        current()
+        return canonical
+    }
+
     /** Explicit approved conversation only; missing/unsupported existing keys are never created. */
     internal fun signConversationStatement(domain:ByteArray,statement:ByteArray,expectedPoint:ByteArray):ByteArray {
         ConversationActivationCodec.decode(statement)

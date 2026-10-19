@@ -210,7 +210,7 @@ class PreparationProbeTest(unittest.TestCase):
         with self.assertRaises(ValueError): probe.run_custody_lifecycle(device)
         self.assertEqual(2, device.call_count)
 
-    def test_selected_provider_requires_exact_four_methods_and_zero_skips(self):
+    def test_selected_provider_requires_exact_five_methods_and_zero_skips(self):
         output = ''.join(f'INSTRUMENTATION_STATUS: class={probe.HPKE_TEST}\n'
                          f'INSTRUMENTATION_STATUS: test={method}\nINSTRUMENTATION_STATUS_CODE: 0\n'
                          for method in sorted(probe.HPKE_METHODS)) + 'INSTRUMENTATION_CODE: -1\n'

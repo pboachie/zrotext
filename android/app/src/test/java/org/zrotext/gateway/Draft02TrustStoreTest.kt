@@ -8,6 +8,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.nio.ByteBuffer
+import java.security.MessageDigest
 import java.util.Base64
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -65,6 +66,28 @@ class Draft02TrustStoreTest {
         var calls=0;denied {store.currentAuthority {if(calls++==0)now else now-1}}
         memory.key=Draft02TrustStore.KeyState.ABSENT;denied {store.currentAuthority {now}}
         assertEquals(1,memory.creations)
+    }
+
+    @Test fun electionHistoryComesOnlyFromTheComparedAcceptedStoreAndNeverCreatesOrAdvancesIt() {
+        val memory = Memory()
+        val store = Draft02TrustStore(memory)
+        denied { store.historicalElectionCheckpoint { now } }
+        assertEquals(0, memory.creations)
+        val enrolled = store.enroll(receipt())
+        denied { store.historicalElectionCheckpoint { now } }
+        assertEquals(Draft02TrustStore.Status.NEEDS_FRESHNESS,
+            store.acceptManifest(checkNotNull(enrolled.snapshot), manifest) { now }.status)
+        val before = checkNotNull(store.inspect().snapshot)
+        val history = store.historicalElectionCheckpoint { now }
+        assertEquals(before.version, history.version())
+        assertArrayEquals(MessageDigest.getInstance("SHA-256").digest(manifest), history.signedSha256())
+        assertArrayEquals(before.bytes(), checkNotNull(store.inspect().snapshot).bytes())
+        denied { store.historicalElectionCheckpoint { now - 1 } }
+        var calls = 0
+        denied { store.historicalElectionCheckpoint { if (calls++ == 0) now else now - 1 } }
+        memory.key = Draft02TrustStore.KeyState.ABSENT
+        denied { store.historicalElectionCheckpoint { now } }
+        assertEquals(1, memory.creations)
     }
 
     @Test fun fullDeliberateAccountBoundComparisonIsRequiredAndOneUse() {

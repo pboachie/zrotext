@@ -492,16 +492,16 @@ class DeviceSmokeTests(unittest.TestCase):
             source = root / "android/app/src/androidTest/java/org/zrotext/gateway/WolfHpkeKeystoreBridgeDeviceTest.kt"
             source.parent.mkdir(parents=True)
             source.touch()
-            expected = {smoke.PRECONDITIONS: 1, smoke.HPKE_BRIDGE: 4}
+            expected = {smoke.PRECONDITIONS: 1, smoke.HPKE_BRIDGE: 5}
             self.assertEqual(smoke.selected_tests(root), expected)
             self.assertIn(smoke.HPKE_BRIDGE,
                           smoke.instrumentation_arguments(expected)[
                               smoke.instrumentation_arguments(expected).index("class") + 1].split(","))
 
-    def test_hpke_bridge_requires_all_four_completed_cases(self):
-        expected = {smoke.PRECONDITIONS: 1, smoke.HPKE_BRIDGE: 4}
+    def test_hpke_bridge_requires_all_five_completed_cases(self):
+        expected = {smoke.PRECONDITIONS: 1, smoke.HPKE_BRIDGE: 5}
         output = result(smoke.PRECONDITIONS)
-        for index in range(4):
+        for index in range(5):
             output += result(smoke.HPKE_BRIDGE, f"bridgeCase{index}")
         smoke.verify_results(output + "INSTRUMENTATION_CODE: -1\n", expected)
         for bad in [output.replace(result(smoke.HPKE_BRIDGE, "bridgeCase3"), ""),

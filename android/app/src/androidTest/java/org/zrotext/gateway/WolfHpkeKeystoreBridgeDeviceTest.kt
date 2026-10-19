@@ -163,6 +163,43 @@ class WolfHpkeKeystoreBridgeDeviceTest {
         }
     }
 
+    @Test fun currentAdmissionRefusesAtEveryHardwareWaitAndCannotLeakTheGuardIntoAnotherOpen() {
+        assumeTrue(Build.VERSION.SDK_INT >= 31)
+        val alias = newAlias()
+        val store = openStore()
+        val cek = ByteArray(32) { (it + 1).toByte() }
+        try {
+            val public = recipient(alias).getOrCreateForEnrollment()
+            val info = "ZTSE/wrap/v3\u0000".toByteArray(Charsets.US_ASCII) + public.keyId
+            val aad = "ZTSE/wrap-aad/v3\u0000".toByteArray(Charsets.US_ASCII) + public.keyId
+            val (enc, sealed) = SoftwareHpkeSeal.seal(public.point, cek, info, aad)
+            val target = receiver(alias)
+            var checks = 0
+            val opened = target.openCurrent(public.keyId, enc, sealed, info, aad) { checks++ }
+            try { assertArrayEquals(cek, opened) } finally { opened.fill(0) }
+            assertTrue("Acquisition, every ECDH wait and the post-lifecycle return must be guarded", checks >= 8)
+            val boundaries = checks
+            for (stopAt in 1..boundaries) {
+                checks = 0
+                rejects {
+                    target.openCurrent(public.keyId, enc, sealed, info, aad) {
+                        checks++
+                        check(checks < stopAt) { "Synthetic admission withdrawal" }
+                    }
+                }
+                assertEquals(stopAt, checks)
+            }
+            // A primitive open has no admission policy and grants no replay/effect authority.
+            // This independent KAT proves the failed call removed its scoped thread callback.
+            val again = target.open(public.keyId, enc, sealed, info, aad)
+            try { assertArrayEquals(cek, again) } finally { again.fill(0) }
+        } finally {
+            cek.fill(0)
+            if (store.containsAlias(alias)) store.deleteEntry(alias)
+            assertFalse(store.containsAlias(alias))
+        }
+    }
+
     @Test fun revokedRecipientKeyRefusesLaterOpens() {
         assumeTrue(Build.VERSION.SDK_INT >= 31)
         val alias = newAlias()

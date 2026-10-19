@@ -50,6 +50,31 @@ internal class Draft02TrustStore(private val storage: Storage) {
         result
     }
 
+    /** Genuine retained02 acceptance only. Downloaded metadata cannot supply the original clock,
+     * pin or chain position. The store accepted genesis with zero original anchor and verified
+     * every later02 successor before writing this record. Present time still comes from the
+     * authenticated socket clock; no stored time is promoted to current permission.
+     */
+    fun historicalElectionCheckpoint(trustedNow: () -> Long): Draft03PayloadElectionProof.VerifiedHistorical02 =
+        storage.locked {
+            val result = readState()
+            check(result.status == Status.NEEDS_FRESHNESS)
+            val saved = checkNotNull(result.snapshot)
+            val record = decode(saved.bytes())
+            check(record.version > 0 && record.time > 0)
+            val now = trustedNow()
+            check(now >= record.time && now > 0)
+            val checkpoint = Draft03ManifestAuthority.Accepted02Checkpoint(record.pin,
+                record.pin.copyOfRange(5, 21), Draft02RootComparison.fingerprint(record.pin), 1,
+                record.version, digest(record.manifest), ByteArray(32),
+                MessageDigest.getInstance("SHA-256").digest(record.manifest), record.time)
+            val proof = Draft03PayloadElectionProof.verifyHistorical02(record.manifest, checkpoint, record.time, now)
+            val completed = trustedNow()
+            check(completed >= now)
+            Draft03PayloadElectionProof.verifyHistorical02(record.manifest, checkpoint, record.time, completed)
+            proof
+        }
+
     fun enroll(receipt: Draft02RootComparison.Receipt): Result = guarded {
         // Consume even on conflict/failure: retry requires a new deliberate comparison.
         val pin = receipt.consume()

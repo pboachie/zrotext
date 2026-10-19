@@ -127,6 +127,20 @@ internal class Draft03ManifestAuthority private constructor(
         return records.single { it.role == reader.role && same(it.id, reader.keyId) }.point.copyOf()
     }
 
+    /** A signed review may not predate any selected outbound key, even if all keys are active now.
+     * This supplements current authorization without treating the historical observation as now.
+     */
+    fun reviewedContext(request: Request, observedMs: Long, nowMs: Long, notAfterMs: Long): Context {
+        require(observedMs > 0 && observedMs <= nowMs)
+        val checked = context(request, nowMs, notAfterMs)
+        val selected = request.readers().map { it.role to it.keyId } + (5 to request.signer())
+        for ((role, id) in selected) {
+            val key = records.single { it.role == role && same(it.id, id) }
+            require(observedMs >= key.from && observedMs < key.until) { "Review predates selected key" }
+        }
+        return checked
+    }
+
     private class Key(val role: Int, val id: ByteArray, val point: ByteArray, val device: ByteArray,
                       val line: ByteArray, val scope: Int, val from: Long, val until: Long, val state: Int) {
         fun active(now: Long) = state == 1 && from <= now && now < until
