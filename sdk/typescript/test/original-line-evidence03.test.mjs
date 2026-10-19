@@ -2,7 +2,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { verifyOriginalRegistrationSignatures03 as registration, verifyOriginalActivationSignatures03 as activation } from '../dist/original-line-evidence03.js';
+import { verifyOriginalRegistrationSignatures03 as registration, verifyOriginalActivationSignatures03 as activation,
+  originalRegistrationPublicKeys03 as originalKeys } from '../dist/original-line-evidence03.js';
 
 const enc = new TextEncoder(), N = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
 const regLabel = 'ZTSE/line/payload-profile/registration-evidence/v1';
@@ -88,6 +89,18 @@ test('original canonical evidence and old binding digest match independent frami
   assert.equal(result.oldBindingDigestHex, hex(await sha(expected))); assert.equal(result.evidenceSha256Hex, hex(await sha(blob)));
   assert.equal(result.deviceConfirmationDigestHex, hex(deviceDigest)); assert.equal(result.ownerApprovalDigestHex, hex(ownerDigest));
   assert.equal(result.acceptedMs, f.accepted); assert.ok(Object.isFrozen(result));
+});
+
+test('verified original public points are isolated copies and require the original verified handle', async () => {
+  const f = await fixture(), handle = await registration(regBytes(f), f.selected), points = originalKeys(handle);
+  assert.ok(Object.isFrozen(points));
+  assert.deepEqual(points.approvalPoint, f.approval.point); assert.deepEqual(points.pairedPoint, f.phone.point);
+  points.approvalPoint.fill(0); points.pairedPoint.fill(0);
+  const again = originalKeys(handle);
+  assert.deepEqual(again.approvalPoint, f.approval.point); assert.deepEqual(again.pairedPoint, f.phone.point);
+  assert.notEqual(again.approvalPoint, points.approvalPoint);
+  for (const fake of [{ ...handle }, Object.freeze({ ...handle }), {}, null]) assert.throws(() => originalKeys(fake));
+  assert.equal((await activation(actBytes(f), handle, f.activationSelection)).oldBindingHex, hex(f.binding));
 });
 
 test('legacy v2 high-S DER remains valid and its exact bytes stay in owner statement and commitments', async () => {

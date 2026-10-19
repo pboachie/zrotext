@@ -110,6 +110,15 @@ type RegistrationState = {
 };
 const verifiedRegistrations = new WeakMap<HistoricalRegistrationSignatures03, RegistrationState>();
 
+/** Copies of the verified original public points, for exact retained-key lookup.
+ * This exposes no private key or present authorization; copied handles are refused. */
+export function originalRegistrationPublicKeys03(
+  handle: HistoricalRegistrationSignatures03,
+): Readonly<{ approvalPoint: Uint8Array; pairedPoint: Uint8Array }> {
+  const original = verifiedRegistrations.get(handle); if (!original) fail();
+  return Object.freeze({ approvalPoint: original.approvalPoint.slice(), pairedPoint: original.pairedPoint.slice() });
+}
+
 /** Inputs must come from the existing independent root/paired-phone comparison.
  * Historical session IDs stay historical; a fresh owner sign-in must not rewrite them. */
 export async function verifyOriginalRegistrationSignatures03(

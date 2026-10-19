@@ -14,6 +14,11 @@ and owner-session IDs remain historical after a later authorized sign-in.
 Present time may be after that original window; historical verification does
 not extend it or require another registration.
 
+`originalRegistrationPublicKeys03` returns fresh copies of the verified original
+approval and paired phone public points for exact retained-key lookup. It requires
+the original verified registration handle and refuses copied objects. Public
+point lookup grants no present permission and exposes no private key.
+
 `verifyOriginalActivationSignatures03` requires the actual registration result
 from this module, the exact old binding and selected reader IDs, and a trusted
 observation time that has not regressed. It checks the original sealed-purpose
