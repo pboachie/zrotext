@@ -20,7 +20,9 @@ fn body(name: &str, marker: &str, version: i64) -> Result<&'static str> {
     let source = if version == 109
         && matches!(
             name,
-            "payload_profile_writer_version" | "payload_profile_writer_ready"
+            "payload_profile_writer_graph"
+                | "payload_profile_writer_version"
+                | "payload_profile_writer_ready"
         ) {
         RECEIPT_MIGRATION
     } else {
