@@ -76,6 +76,10 @@ pause reads and retain recovery history.
 
 ## Message path and recovery limits
 
+Explicit root/reader enrollment uses separate full validation and a
+[callback-scoped storage guard](android-enrollment-storage.md); no Room or
+framework read runs under its protected root-storage monitor.
+
 The ordinary raw03 grant path independently checks local current selection before
 the exact signed HTTPS fetch. It verifies the sidecar's original proofs, same
 existing nonexportable keys and current complete-SIM permit, then composes the
