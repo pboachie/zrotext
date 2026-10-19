@@ -19,7 +19,8 @@ import org.json.JSONObject
  * its process-only installed v2 permit; no persisted row or test boolean substitutes for it.
  */
 internal class Profile03ExecutionFixture(private val selectedReaderUntilMs: Long = 900_000) : AutoCloseable {
-    val line = LineActivationV2RuntimeFixture(true)
+    val enrollment = pair()
+    val line = LineActivationV2RuntimeFixture(true, enrollment)
     val binding = line.installSealed()
     val account = uuid(line.account)
     val device = uuid(line.device)
@@ -36,7 +37,6 @@ internal class Profile03ExecutionFixture(private val selectedReaderUntilMs: Long
     val root = pair()
     val reader = pair()
     val archive = pair()
-    val enrollment = pair()
     val approval = pair()
     val signer = pair()
     val now = 100_020L

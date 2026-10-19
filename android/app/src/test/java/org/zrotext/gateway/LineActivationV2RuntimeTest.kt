@@ -17,7 +17,8 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 /** Proper synthetic P-256 keys and source callbacks; no Android key creation or carrier claim. */
-internal class LineActivationV2RuntimeFixture(selectedEmbedded: Boolean = false) : AutoCloseable {
+internal class LineActivationV2RuntimeFixture(selectedEmbedded: Boolean = false,
+    providedPair: java.security.KeyPair? = null) : AutoCloseable {
     val account = UUID.fromString(testEvidenceIdentity.accountId)
     val device = UUID.fromString(testEvidenceIdentity.deviceId)
     val line = UUID.fromString("33333333-3333-4333-8333-333333333333")
@@ -40,7 +41,7 @@ internal class LineActivationV2RuntimeFixture(selectedEmbedded: Boolean = false)
     }, { action -> action(); true }, Executor { it.run() })
     val db = Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(), SmsJournalDatabase::class.java)
         .allowMainThreadQueries().build()
-    private val pair = KeyPairGenerator.getInstance("EC").run { initialize(ECGenParameterSpec("secp256r1")); generateKeyPair() }
+    private val pair = providedPair ?: KeyPairGenerator.getInstance("EC").run { initialize(ECGenParameterSpec("secp256r1")); generateKeyPair() }
     val point = DevicePayloadKeyStore.encodePoint(pair.public as ECPublicKey)
     var signCalls = 0
     var signHook: () -> Unit = {}
