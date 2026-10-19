@@ -125,8 +125,10 @@ test('duplicate decoded keys, unknown keys, wrong content type and malformed UTF
   for (const kind of ['duplicate', 'escaped_duplicate', 'extra', 'wrong_type', 'utf8', 'bom']) {
     const s = await setup(), r = await reservation(s); let response;
     const raw = JSON.stringify(r);
-    if (kind === 'duplicate') response = new Response(raw.replace('{', '{"v":1,'), { headers: { 'content-type': 'application/json' } });
-    if (kind === 'escaped_duplicate') response = new Response(raw.replace('{', '{"\\u0076":1,'), { headers: { 'content-type': 'application/json' } });
+    // Deliberately prepend one duplicate member to this known serialized object;
+    // this is malformed fixture construction, not an escaping operation.
+    if (kind === 'duplicate') response = new Response('{"v":1,' + raw.slice(1), { headers: { 'content-type': 'application/json' } });
+    if (kind === 'escaped_duplicate') response = new Response('{"\\u0076":1,' + raw.slice(1), { headers: { 'content-type': 'application/json' } });
     if (kind === 'extra') response = data({ ...r, verified: true });
     if (kind === 'wrong_type') response = new Response(raw, { headers: { 'content-type': 'text/plain' } });
     if (kind === 'utf8') response = new Response(new Uint8Array([255]), { headers: { 'content-type': 'application/json' } });
