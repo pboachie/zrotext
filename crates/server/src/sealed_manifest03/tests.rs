@@ -229,7 +229,8 @@ fn election_selects_both_registered_signers_independently_of_conversation_roles(
     assert_eq!(b.reader_id, a.reader_id);
     assert_eq!(b.approval_id, a.approval_id);
     assert_eq!(b.approval_id, sealed_manifest::key_id(4, &owner));
-    assert_ne!(b.approval_id, sealed_manifest::key_id(5, &owner));
+    // Signing key IDs identify algorithm0101 plus point, not manifest role.
+    assert_eq!(b.approval_id, sealed_manifest::key_id(5, &owner));
     for (device, line, signer, approval, now) in [
         ([9; 16], f.line, point, owner, NOW),
         (f.device, [9; 16], point, owner, NOW),
