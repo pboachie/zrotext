@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Closed proposal inventory, not installation or per-operation qualification.
+//! Closed installed writer graph; no accepted election or effect authority.
 use super::{
     fence_tests::{close, connect},
     sha,
@@ -91,10 +91,28 @@ async fn candidate_inventory_covers_exact_numbered_schema_relations_columns_fk_a
             expected[1].as_str().is_some_and(|scope| !scope.is_empty()),
             "{table}: extraction review class"
         );
+        let policy = corpus["operation_policies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|policy| policy["relation"] == table)
+            .unwrap();
+        for operation in ["insert", "update", "delete"] {
+            assert!(
+                policy[operation]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty()),
+                "{table}: {operation} policy"
+            );
+        }
+        assert_eq!(policy["current_profile"], "no_accepted_profile03_state");
     }
-    // These hashes pin the proposal's graph, not arbitrary runtime SQL or
-    // function-body authority. Mutation controls prove missing/extra/changed
-    // shape is visible before a production guard could be elected.
+    assert_eq!(
+        corpus["operation_policies"].as_array().unwrap().len(),
+        wanted.len()
+    );
+    // This fixture pins relation extraction metadata. The separate mandatory
+    // writer tests qualify actual locks, state policies and function/ACL checks.
     assert!(matches_graph(&rows, wanted));
     for mutation in [
         "ALTER TABLE public.device_sessions ADD COLUMN unreviewed boolean",

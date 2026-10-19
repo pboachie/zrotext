@@ -108,7 +108,11 @@ async fn real_migrator_and_runtime_roles_accept_only_equivalent_guard_paths() {
         "public"
     );
     owner
-        .batch_execute(&format!("GRANT USAGE ON SCHEMA public TO {runtime}"))
+        .batch_execute(&format!(
+            "GRANT USAGE ON SCHEMA public TO {runtime};
+             GRANT SELECT ON public.payload_profile_writer_catalog,public.payload_profile_writer_global_fences TO {runtime};
+             GRANT EXECUTE ON FUNCTION public.payload_profile_writer_json(json),public.payload_profile_writer_graph(),public.payload_profile_writer_version() TO {runtime}"
+        ))
         .await
         .unwrap();
     config.user(&runtime);
