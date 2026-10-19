@@ -319,6 +319,37 @@ fn actual_anchor_checkpoint_and_original_comparison_are_not_invented() {
 }
 
 #[test]
+fn outbound_authorization_deadline_includes_signer_lifetime() {
+    let mut f = Fixture::new();
+    let signer = f.records.iter_mut().find(|r| r[0] == 5).unwrap();
+    signer[140..148].copy_from_slice(&(NOW + 250).to_be_bytes());
+    let (_, _, manifest) = f.pair();
+    let readers: Vec<_> = f
+        .records
+        .iter()
+        .filter(|r| r[0] <= 3)
+        .map(|r| (r[0], r[1..33].try_into().unwrap()))
+        .collect();
+    let signer = f.records.iter().find(|r| r[0] == 5).unwrap()[1..33]
+        .try_into()
+        .unwrap();
+    let (_, _, deadline) = manifest
+        .authorize(
+            &Authorization03 {
+                kind: 1,
+                account: &f.account,
+                device: &f.device,
+                line: &f.line,
+                signer_id: &signer,
+                readers: &readers,
+            },
+            NOW,
+        )
+        .unwrap();
+    assert_eq!(deadline, NOW + 250);
+}
+
+#[test]
 fn root_signed_wrong_roles_scopes_subjects_and_chain_refuse() {
     let f = Fixture::new();
     let (prior, first, current) = f.pair();
