@@ -9,7 +9,38 @@ DECLARE
     review_column record;
     review_routine record;
     review_allowed oid[] := ARRAY[]::oid[];
+    writer_expected record;
 BEGIN
+    IF to_regclass('public.payload_profile_writer_catalog') IS NOT NULL THEN
+        -- Pin compiled migration108 bodies before invoking a readiness helper.
+        -- A substituted helper returning true cannot validate its own body.
+        FOR writer_expected IN SELECT * FROM (VALUES
+            ('payload_profile_writer_json(json)','ba20a6a52c8e77012dc41546475ab19f0d1743bd4675a3184108b78abdfb4b45','text','plpgsql','i',true,false,ARRAY['search_path=pg_catalog']),
+            ('payload_profile_writer_guard()','f47f6d64ef583f2f5272128aa02c7bd5974d2e9f06b6bfff743a5b0a29e3c18a','trigger','plpgsql','v',false,true,ARRAY['search_path=pg_catalog','lock_timeout=3s']),
+            ('payload_profile_writer_global_guard()','b8837a0f8a53c45722524ff8082ffaebb3d992cac441a69f02e9750b2a9ee106','trigger','plpgsql','v',false,false,ARRAY['search_path=pg_catalog']),
+            ('payload_profile_writer_catalog_guard()','07fb697ab77abd9ae2142bb44ca59d0fdf3515a5507f0ab74c57b2d42d73bc8a','trigger','plpgsql','v',false,false,ARRAY['search_path=pg_catalog']),
+            ('payload_profile_writer_graph()','cc9acfd80e3b38f0bd821047921b0fb08511f1a5169c62c6e1fe2ebacb4aa9a1','bytea','sql','s',false,false,ARRAY['search_path=pg_catalog']),
+            ('payload_profile_writer_version()','b09c934ba13422e2ef7c11436822f20561a2aedb5534f00801ceca853a6639b4','boolean','sql','s',false,true,ARRAY['search_path=pg_catalog']),
+            ('payload_profile_writer_ready()','8759842715d6f164f2533cbd2778d0ba0a67450d53f0874203e3c66d4d80488a','boolean','sql','s',false,false,ARRAY['search_path=pg_catalog']),
+            ('user_membership_freshness_guard()','57392dcb3337dfcc09266f17a6135d3d45c9d086fba03f860a3ac18ee56cef51','trigger','plpgsql','v',false,true,ARRAY['search_path=pg_catalog','lock_timeout=3s']),
+            ('auth_abuse_consume(text, bytea, bytea, integer, integer, integer, integer)','cdac204cd61b30c1c4a7e9513264467da8cd81ebb1b72332a065ad8ab380d6a1','boolean','plpgsql','v',false,false,ARRAY['search_path=pg_catalog'])
+        ) expected(signature,body_sha256,result_type,language_name,volatility,is_strict,is_definer,configuration) LOOP
+            IF NOT EXISTS(SELECT FROM pg_proc p JOIN pg_language l ON l.oid=p.prolang
+              JOIN pg_class c ON c.oid='public.accounts'::regclass
+              WHERE p.oid=to_regprocedure(writer_expected.signature)
+                AND encode(sha256(convert_to(p.prosrc,'UTF8')),'hex')=writer_expected.body_sha256
+                AND format_type(p.prorettype,NULL)=writer_expected.result_type
+                AND l.lanname=writer_expected.language_name AND p.provolatile::text=writer_expected.volatility
+                AND p.proisstrict=writer_expected.is_strict AND p.prosecdef=writer_expected.is_definer
+                AND p.proconfig=writer_expected.configuration AND p.proowner=c.relowner
+                AND NOT p.proretset AND p.proparallel='u' AND p.prokind='f' AND p.pronargdefaults=0) THEN
+                RAISE EXCEPTION 'mandatory writer helper body or configuration is inconsistent';
+            END IF;
+        END LOOP;
+        IF public.payload_profile_writer_ready() IS DISTINCT FROM true THEN
+            RAISE EXCEPTION 'mandatory writer graph or runtime authority is inconsistent';
+        END IF;
+    END IF;
     IF to_regprocedure('public.user_membership_freshness_guard()') IS NOT NULL
       AND has_function_privilege(current_user,'public.user_membership_freshness_guard()','EXECUTE') THEN
         RAISE EXCEPTION 'runtime can directly execute the user membership freshness helper';

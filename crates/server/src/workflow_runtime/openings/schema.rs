@@ -203,9 +203,18 @@ async fn refuse(tx: &Transaction<'_>) -> Result<(), tokio_postgres::Error> {
 /// Resolve the same unqualified names used by commands, and verify those exact
 /// OIDs belong to the current schema. Never inspect a different named object.
 pub(super) async fn installed(tx: &Transaction<'_>) -> Result<bool, tokio_postgres::Error> {
+    let writers = match crate::payload_profile_writer::optional(tx, "workflow_openings").await {
+        Ok(installed) => installed,
+        Err(_) => {
+            refuse(tx).await?;
+            return Ok(false);
+        }
+    };
     let mut objects = Vec::new();
     for (name, _) in TABLES {
-        let row=tx.query_one("SELECT to_regclass($1)::oid,(SELECT oid FROM pg_namespace WHERE nspname=current_schema())", &[&name]).await?;
+        // The reviewed108 adapter supports only its exact public graph. Older
+        // isolated fixtures retain their original current-schema requirement.
+        let row=tx.query_one("SELECT to_regclass($1)::oid,(SELECT oid FROM pg_namespace WHERE nspname=CASE WHEN $2::boolean THEN 'public' ELSE current_schema() END)", &[&name,&writers]).await?;
         objects.push((
             name,
             row.try_get::<_, Option<u32>>(0)?,
@@ -229,7 +238,7 @@ pub(super) async fn installed(tx: &Transaction<'_>) -> Result<bool, tokio_postgr
     for ((name, schema), (_, oid, namespace)) in TABLES.iter().zip(&objects) {
         let oid = oid.expect("presence checked");
         let namespace = namespace.expect("namespace checked");
-        let row=tx.query_one("SELECT relnamespace,relkind::text,relpersistence::text,relrowsecurity,relforcerowsecurity,EXISTS(SELECT 1 FROM pg_inherits WHERE inhrelid=$1 OR inhparent=$1),EXISTS(SELECT 1 FROM pg_rewrite WHERE ev_class=$1),EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid=$1 AND NOT tgisinternal) FROM pg_class WHERE oid=$1", &[&oid]).await?;
+        let row=tx.query_one("SELECT relnamespace,relkind::text,relpersistence::text,relrowsecurity,relforcerowsecurity,EXISTS(SELECT 1 FROM pg_inherits WHERE inhrelid=$1 OR inhparent=$1),EXISTS(SELECT 1 FROM pg_rewrite WHERE ev_class=$1),EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid=$1 AND NOT tgisinternal AND (NOT $2::boolean OR tgname<>'zz_payload_profile_writer_before_change')) FROM pg_class WHERE oid=$1", &[&oid,&writers]).await?;
         if row.try_get::<_, u32>(0)? != namespace
             || row.try_get::<_, String>(1)? != "r"
             || row.try_get::<_, String>(2)? != "p"
