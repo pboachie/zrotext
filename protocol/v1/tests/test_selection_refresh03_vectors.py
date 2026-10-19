@@ -163,8 +163,10 @@ class SelectionRefreshSchemaTest(unittest.TestCase):
                     ("owner_approval_point", 65), ("registration_evidence", 1), ("activation_evidence", 1))}
         evidence.update(prior_accepted_ms="99000", accepted_ms="99900")
         challenge = {"v": 1, "type": "payload_profile_selection_challenge03", "refresh_id": self.refresh,
-                     "core": b64(raw("core")), "evidence": evidence}
+                     "core": b64(raw("core")), "evidence": evidence, "closed_unaccepted": []}
         self.validator.validate(challenge)
+        missing_closures = dict(challenge); missing_closures.pop("closed_unaccepted")
+        self.assertFalse(self.validator.is_valid(missing_closures))
         for name in evidence:
             missing = copy.deepcopy(challenge); missing["evidence"].pop(name)
             self.assertFalse(self.validator.is_valid(missing))

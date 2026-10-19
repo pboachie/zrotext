@@ -76,20 +76,36 @@ internal class SelectionRefresh03Runtime(private val origin: String, private val
     private fun now(): Long = checkNotNull(clock.nowMs()).also { check(!closed && socketCurrent() && it > 0) }
 
     fun acceptDecision(input: SamePhoneSelectionReview.Pending) = synchronized(lock) {
-        check(work == null && decision == null && activeHandle == null)
+        check(activeHandle == null)
         input.requireCurrent(); session()
+        val previous = work
+        if (previous == null) check(decision == null)
+        else SelectionRefresh03Closure.requireFreshDecision(previous.row, input, now())
         decision = input
         process()
     }
     fun challenge(raw: ByteArray) = synchronized(lock) {
         val f = Profile03Json.objectValue(raw)
-        require(f.keys == setOf("v", "type", "refresh_id", "core", "evidence") &&
+        require(f.keys == setOf("v", "type", "refresh_id", "core", "evidence", "closed_unaccepted") &&
             f["v"] == Profile03Json.Integer(1) && f["type"] == "payload_profile_selection_challenge03")
         val core = SelectionRefresh03.Core.decode(Profile03Json.binary(f, "core", 496, 496))
         require(f["refresh_id"] == core.refresh.toString())
-        core.requireCurrent(now())
+        val closures = SelectionRefresh03Closure.decode(f)
+        SelectionRefresh03Closure.requireChain(core, closures, now())
         val previous = challenge
-        check(previous == null || MessageDigest.isEqual(previous, raw))
+        if (previous != null && !MessageDigest.isEqual(previous, raw)) {
+            check(activeHandle == null)
+            val old = SelectionRefresh03.Core.decode(Profile03Json.binary(Profile03Json.objectValue(previous), "core", 496, 496))
+            val closed = checkNotNull(closures.find { it.refreshId == old.refresh.toString() })
+            check(closed.coreB64url == b64(old.bytes()))
+            work?.let { prior ->
+                check(prior.row.ownerSignatureB64url == null && prior.row.acceptedMs == null && prior.row.installedMs == null)
+                check(closures.find { it.refreshId == prior.row.refreshId }?.coreB64url == prior.row.coreB64url)
+            }
+            // A new owner opening only queues a candidate. An expired phone decision never
+            // becomes fresh consent; wait for another actual foreground complete-SIM review.
+            if (decision?.confirmedMs?.let { it >= old.expiresMs } != true) decision = null
+        }
         challenge = raw.copyOf()
         process()
     }
@@ -128,11 +144,16 @@ internal class SelectionRefresh03Runtime(private val origin: String, private val
         w.core.requireCurrent(now())
     }
     private fun process() {
-        if (work != null) return // An existing signed record is never re-signed on another delivery.
         val pending = decision ?: return
         val fields = challenge?.let(Profile03Json::objectValue) ?: return
         pending.requireCurrent()
         val core = SelectionRefresh03.Core.decode(Profile03Json.binary(fields, "core", 496, 496))
+        val previous = work
+        if (previous != null) {
+            if (core.refresh == previous.core.refresh) return // Exact original proof is never re-signed.
+            SelectionRefresh03Closure.requireFreshDecision(previous.row, pending, now())
+        }
+        val closures = SelectionRefresh03Closure.decode(fields)
         val observation = pending.observation()
         val retained = pending.retained
         val identity = session()
@@ -144,7 +165,7 @@ internal class SelectionRefresh03Runtime(private val origin: String, private val
             pending.confirmedMs, pending.expiresMs, b64(core.bytes()), b64(observation))
         val next = Work(pending, core, Profile03Json.nested(fields, "evidence"), observation, row, identity)
         verify(next)
-        check(dao.reserve(row) { actual -> check(actual == retained.binding); ram(next) })
+        check(dao.reserveWithClosures(row, closures, now()) { actual -> check(actual == retained.binding); ram(next) })
         work = next // A failure after reservation is intentionally a burned, recoverable unknown.
         val signature = signer.signSelectionRefresh03(core, observation, retained.point()) { ram(next) }
         verify(next)
@@ -226,7 +247,7 @@ internal class SelectionRefresh03Runtime(private val origin: String, private val
     }
     override fun close() {
         closed = true // Withdraw before any blocked writer/provider/UI operation can complete.
-        synchronized(lock) { decision = null; challenge = null; activeHandle = null }
+        synchronized(lock) { decision = null; challenge = null; work = null; activeHandle = null }
     }
     override fun toString() = "SelectionRefresh03Runtime(redacted)"
     companion object {

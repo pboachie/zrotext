@@ -10,7 +10,8 @@
         "type",
         "refresh_id",
         "core",
-        "evidence"
+        "evidence",
+        "closed_unaccepted"
       ],
       "properties": {
         "v": {
@@ -105,6 +106,13 @@
             }
           },
           "additionalProperties": false
+        },
+        "closed_unaccepted": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/refresh_closure"
+          }
         }
       },
       "additionalProperties": false
@@ -329,6 +337,48 @@
           "additionalProperties": false
         }
       ]
+    },
+    "refresh_closure": {
+      "type": "object",
+      "required": [
+        "opening_id",
+        "refresh_id",
+        "core",
+        "closed_unaccepted_ms",
+        "superseded_by_refresh_id"
+      ],
+      "properties": {
+        "opening_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "refresh_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "core": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{662}$"
+        },
+        "closed_unaccepted_ms": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "superseded_by_refresh_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

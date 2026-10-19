@@ -42,6 +42,18 @@ activation/election and separately identifies the new physical approval. A store
 receipt cannot recreate a lost issuer. Every released proof remains fenced after
 retirement, and unresolved bound or unbound radio effects refuse a refresh.
 
+Schema18 retains a separate immutable `selection_refresh03_closures` journal.
+An explicitly opened replacement for an expired never-approved refresh requires
+the complete authenticated server chain, exact known records, original full
+binding/election/device-session scope and a genuinely new foreground complete-SIM
+confirmation after the old expiry. The chain and new reservation share one writer
+before signing. Unknown intermediates remain server history without fabricated
+local observations or proofs. Closed rows cannot accept late approval or install.
+Every ever-signed refresh permanently fences original physical-selection fallback
+for that full connection, including after retirement, expiry or closure. A fresh
+opening cannot reuse an expired phone decision. Each binding/full connection is
+bounded to sixteen retained reservations; no history is pruned to make room.
+
 Device selection requires its closed `physical_selection` union, including the
 actual installed refresh receipt when applicable. Message permission remains a
 separate full current-owner projection. Preparation and radio checks retain the

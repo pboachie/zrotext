@@ -131,16 +131,16 @@ class JournalDeviceUpgradeTest {
             SmsJournalDatabase.MIGRATION_7_8, SmsJournalDatabase.MIGRATION_8_9,
             SmsJournalDatabase.MIGRATION_9_10, SmsJournalDatabase.MIGRATION_10_11,
             SmsJournalDatabase.MIGRATION_11_12, SmsJournalDatabase.MIGRATION_12_13,
-            SmsJournalDatabase.MIGRATION_13_14, SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17,
+            SmsJournalDatabase.MIGRATION_13_14, SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17, SmsJournalDatabase.MIGRATION_17_18,
         ) else arrayOf(SmsJournalDatabase.MIGRATION_11_12, SmsJournalDatabase.MIGRATION_12_13,
-            SmsJournalDatabase.MIGRATION_13_14, SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17)
+            SmsJournalDatabase.MIGRATION_13_14, SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17, SmsJournalDatabase.MIGRATION_17_18)
         return Room.databaseBuilder(context, SmsJournalDatabase::class.java, name)
             .allowMainThreadQueries().addMigrations(*migrations).build()
     }
 
     private fun assertCurrentSchema(room: SmsJournalDatabase): String {
         val db = room.openHelper.writableDatabase
-        assertEquals(17, db.version)
+        assertEquals(18, db.version)
         val expectedBindingColumns = legacyColumns(11).getValue("local_line_binding") + listOf(
             Column("continuityKind", "TEXT", true, "'physical'"),
             Column("profilePortIndex", "INTEGER", false, "NULL"),
@@ -174,7 +174,7 @@ class JournalDeviceUpgradeTest {
                 if (isApplicationTable(table)) tables.add(table)
             }
         }
-        assertEquals(legacyColumns(11).keys + setOf("sealed_preparations", "line_activation_v2", "profile03_elections", "selection_refresh03", "profile03_unaccepted_closures"), tables)
+        assertEquals(legacyColumns(11).keys + setOf("sealed_preparations", "line_activation_v2", "profile03_elections", "selection_refresh03", "profile03_unaccepted_closures", "selection_refresh03_closures"), tables)
         val indexes = mutableSetOf<String>()
         db.query("SELECT name FROM sqlite_master WHERE type = 'index'").use { cursor ->
             while (cursor.moveToNext()) {
