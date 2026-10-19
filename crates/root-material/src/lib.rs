@@ -16,6 +16,8 @@ pub use archive_backup::creation as archive_init;
 /// Public typed refresh verification; secret signing remains unlock-only.
 pub mod conversation_refresh;
 pub use conversation_refresh::activation as conversation_activation;
+/// Closed public first03 proposal; existing root signing remains unlock-only.
+pub use conversation_refresh::payload_profile_upgrade;
 /// One historical contact statement signature with a genuinely recovered root.
 #[cfg(feature = "unlock")]
 pub mod contact_reader_signing;
