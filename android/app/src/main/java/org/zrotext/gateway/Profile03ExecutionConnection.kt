@@ -96,7 +96,12 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
             runCatching {
                 check(current())
                 val proof = setup.challenge(owned)
-                check(current() && socket.send(proof))
+                synchronized(effects) {
+                    check(current() && socket.send(proof))
+                    // Only a fully verified explicit opening can resume reads after expiry.
+                    // Keep this socket's nonce, rate and total-request bounds unchanged.
+                    pollingStopped = false
+                }
                 Profile03MessagingStatus.update(this, "Phone approval saved. Complete approval in your owner workspace.")
                 requestCurrentIfDue()
             }.onFailure { close() }

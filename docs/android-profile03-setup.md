@@ -40,6 +40,15 @@ be re-emitted only while its same original live ceremony remains valid. Reserved
 retired, conflicting or expired openings cannot create another signature. Remote
 acceptance remains unknown until the exact authenticated accepted evidence is read.
 
+An explicitly opened replacement for an expired never-accepted ceremony requires
+the server's complete immutable `closed_unaccepted` chain. Android independently
+checks every original02 scope and exact locally retained predecessor, then commits
+the chain and higher fresh reservation together before signing. Missing history,
+accepted predecessors or unresolved radio effects refuse. This separate
+[unaccepted-election recovery](../protocol/drafts/profile03-unaccepted-recovery.md)
+preserves old signatures and permanent02 fallback fences; a timeout cannot resolve
+an unknown outcome. The initial challenge also requires the empty array.
+
 ## Original evidence and current authority
 
 `Profile03OriginalBindingProof` decodes the existing canonical registration
