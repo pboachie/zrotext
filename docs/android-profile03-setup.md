@@ -76,6 +76,10 @@ pause reads and retain recovery history.
 
 ## Message path and recovery limits
 
+Explicit root/reader enrollment uses separate full validation and a
+[callback-scoped storage guard](android-enrollment-storage.md); no Room or
+framework read runs under its protected root-storage monitor.
+
 The enrolled device-authentication/E500/fetch signer is independent of manifest
 role04, which authorizes inbound event signing. Setup, history comparison and
 payload-reader availability check role01 and independently verify the original
