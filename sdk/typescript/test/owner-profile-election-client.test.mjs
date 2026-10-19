@@ -104,6 +104,7 @@ test('missing, oversized, foreign, reordered or incompletely bound closure chain
     r => r.closed_unaccepted.reverse(), r => r.closed_unaccepted[0].extra = '1',
     r => r.closed_unaccepted[1].superseded_by_challenge_id = id(uuid(210)),
     r => r.closed_unaccepted[0].closed_unaccepted_ms = '1999',
+    r => r.closed_unaccepted[0].closed_unaccepted_ms = '2999',
     r => r.closed_unaccepted[0].closed_unaccepted_ms = '3001',
     r => r.closed_unaccepted[1].new_binding_id = r.new_binding_id,
     r => { const c = Buffer.from(r.closed_unaccepted[0].core, 'base64url'); c[104] ^= 1; r.closed_unaccepted[0].core = b64(c); },

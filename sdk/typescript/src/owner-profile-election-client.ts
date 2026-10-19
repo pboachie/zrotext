@@ -333,7 +333,7 @@ export class OwnerProfileElectionClient03 {
       const targetView = new DataView(target.buffer, target.byteOffset, target.byteLength);
       if (row.supersededByChallengeId !== (next?.challengeId ?? challenge)
         || view.getBigUint64(96) >= targetView.getBigUint64(96)
-        || row.closedUnacceptedMs > targetView.getBigUint64(384)) fail('scope');
+        || row.closedUnacceptedMs !== targetView.getBigUint64(384)) fail('scope');
     }
     return Object.freeze(rows);
   }

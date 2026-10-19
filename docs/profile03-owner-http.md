@@ -31,7 +31,8 @@ no closed predecessors and otherwise at most16 exact linked records. Each
 contains `opening_id`, `challenge_id`, `new_binding_id`, original E500 `core`,
 `closed_unaccepted_ms` and `superseded_by_challenge_id`. The transport checks the
 same original02 scope, increasing burned generations, original expiry, closure
-time, distinct IDs and a complete ascending link to the returned challenge.
+time equal to its successor's original issue time, distinct IDs and a complete
+ascending link to the returned challenge.
 Historical session/nonce bytes stay unchanged. These are candidates: the server
 must permanently fence actual closed rows, and the phone must compare the chain
 with its own retained signed journal. Elapsed time or an absent response alone
