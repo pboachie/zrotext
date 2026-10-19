@@ -56,6 +56,9 @@ pub(super) async fn capture(
     {
         return Ok(None);
     }
+    crate::payload_profile_v2_receipts::require(tx)
+        .await
+        .map_err(|_| unavailable())?;
     let p = original.principal;
     let c = original.challenge;
     let statement = original.registration;
