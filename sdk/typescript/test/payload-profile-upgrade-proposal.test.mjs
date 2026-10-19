@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { fixture, account, device, line, present, join, frame, canonicalP256Signature } from './fixtures/profile03-outbound-fixture.mjs';
+import { readFile } from 'node:fs/promises';
+import { fixture, account, device, line, present, join, frame, canonicalP256Signature, enrollRootPin02, verifyManifest02 } from './fixtures/profile03-outbound-fixture.mjs';
 import { encodePayloadProfileUpgradeProposal03, verifyPayloadProfileUpgradeOutput03 } from '../dist/payload-profile-upgrade-proposal.js';
 import { verifiedManifestIdentity03 } from '../dist/draft03-manifest.js';
 function input(f) {
@@ -54,4 +55,17 @@ test('scope accessors and shared byte storage refuse without reading caller acce
   assert.equal(calls, 0);
   const shared = new Uint8Array(new SharedArrayBuffer(16)); shared.set(account);
   await assert.rejects(encodePayloadProfileUpgradeProposal03({ ...selected, scope: { ...selected.scope, accountId: shared } }));
+});
+test('independently signed public vector matches exact proposal bytes and returned03 signature', async () => {
+  const vector = JSON.parse(await readFile(new URL('../../../protocol/v1/vectors/sealed-profile03-upgrade-proposal-01.json', import.meta.url)));
+  const b = value => Uint8Array.from(Buffer.from(value, 'hex')), s = vector.scope, nowMs = BigInt(s.issuedMs);
+  const originalSigned02 = b(vector.predecessorSignedHex);
+  const trust = await enrollRootPin02(b(vector.rootPinHex), b(s.rootFingerprint));
+  const predecessor = await verifyManifest02(originalSigned02, trust, nowMs);
+  const selected = { scope: { accountId: b(s.account), deviceId: b(s.device), lineId: b(s.line), origin: s.origin,
+    rootFingerprint: b(s.rootFingerprint), predecessorVersion: BigInt(s.predecessorVersion), predecessorDigest: b(s.predecessorDigest),
+    phoneReaderKeyId: b(s.phoneReaderKeyId), phoneSigningKeyId: b(s.phoneSigningKeyId), issuedMs: nowMs }, predecessor, originalSigned02, nowMs };
+  const result = await encodePayloadProfileUpgradeProposal03(selected);
+  assert.deepEqual(result.proposal, b(vector.proposalHex)); assert.deepEqual(result.unsigned, b(vector.unsigned03Hex));
+  assert.equal(verifiedManifestIdentity03(await verifyPayloadProfileUpgradeOutput03({ ...selected, signed03: b(vector.signed03Hex) }), nowMs).version, 2n);
 });

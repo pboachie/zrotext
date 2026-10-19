@@ -174,3 +174,65 @@ pub fn sign(root: &RootSecret, p: &Proposal, e: &Expected, now: u64) -> Result<V
 #[cfg(all(test, feature = "unlock"))]
 #[path = "payload_profile_upgrade_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod public_vector {
+    use super::*;
+    fn bytes(value: &serde_json::Value) -> Vec<u8> {
+        value
+            .as_str()
+            .unwrap()
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect()
+    }
+    fn fixed<const N: usize>(value: &serde_json::Value) -> [u8; N] {
+        bytes(value).try_into().unwrap()
+    }
+    #[test]
+    fn independent_public_proposal_and_signatures_interoperate_without_root_secret() {
+        let v: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../protocol/v1/vectors/sealed-profile03-upgrade-proposal-01.json"
+        ))
+        .unwrap();
+        let s = &v["scope"];
+        let n = |field: &str| s[field].as_str().unwrap().parse::<u64>().unwrap();
+        let scope = Scope {
+            account: fixed(&s["account"]),
+            device: fixed(&s["device"]),
+            line: fixed(&s["line"]),
+            origin: s["origin"].as_str().unwrap().into(),
+            fingerprint: fixed(&s["rootFingerprint"]),
+            predecessor_version: n("predecessorVersion"),
+            predecessor_digest: fixed(&s["predecessorDigest"]),
+            phone_reader: fixed(&s["phoneReaderKeyId"]),
+            phone_signer: fixed(&s["phoneSigningKeyId"]),
+            issued_ms: n("issuedMs"),
+        };
+        let expected = Expected {
+            identity: ExpectedIdentity {
+                account_id: scope.account,
+                origin: scope.origin.clone(),
+                root_fingerprint: scope.fingerprint,
+            },
+            scope,
+        };
+        let p = decode(&bytes(&v["proposalHex"])).unwrap();
+        assert!(inspect(&p, &expected, n("issuedMs")).is_ok());
+        assert_eq!(p.predecessor, bytes(&v["predecessorSignedHex"]));
+        assert_eq!(p.unsigned, bytes(&v["unsigned03Hex"]));
+        let signed = bytes(&v["signed03Hex"]);
+        assert_eq!(&signed[..signed.len() - 64], p.unsigned);
+        let signature = Signature::from_slice(&signed[signed.len() - 64..]).unwrap();
+        assert_eq!(signature.normalize_s().to_bytes(), signature.to_bytes());
+        let key = VerifyingKey::from_sec1_bytes(&signed[87..152]).unwrap();
+        let transcript = [
+            b"ZTSE/manifest/v3\0".as_slice(),
+            &(p.unsigned.len() as u32).to_be_bytes(),
+            &p.unsigned,
+        ]
+        .concat();
+        assert!(key.verify(&transcript, &signature).is_ok());
+    }
+}
