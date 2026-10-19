@@ -210,15 +210,16 @@ Content/state rules must distinguish effect creation from invalidation:
 
 ## Required inventory and acceptance before mounting
 
-`profile03-writer-inventory-candidate.json` pins the numbered migration104
-catalog: 168 public relations. The original migration101 inventory has 158
-relations; migration102 adds five closed review-foundation classifications and
-migration104 adds five review-access classifications. Migration103 changes the
-existing user/member trigger graph without adding a relation. Its CI fixture
-runs the actual migrator in
-a unique database and compares column shape, FK edges and trigger definitions.
-These are extraction **review obligations**, not installed policies. The hashes
-do not replace exact function-body, privilege, state or cryptographic checks.
+`profile03-writer-inventory-candidate.json` pins the numbered migration110
+catalog:184 public relations, each with an extraction class and explicit
+operation policy. Migrations108/109 provide mandatory writer participation and
+original activation retention;110 adds the narrow first-election ledger and
+positive-epoch policy. Its fixture runs the actual migrator in a unique database
+and compares column shape, FK edges and trigger definitions. Separate closed
+validators pin bodies, declarations, rules, inheritance, RLS and privileges.
+These structural checks do not replace cryptographic authentication or current
+permission. See `docs/profile03-atomic-election-storage.md` for the bounded
+initial selection and independently qualified production-adapter obligations.
 
 | Extraction class | Required treatment before installation |
 |---|---|
