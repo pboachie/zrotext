@@ -48,6 +48,7 @@ pub struct HistoricalRegistration03 {
     paired_signing_key_id: [u8; 32],
     canonical: Vec<u8>,
     digest: [u8; 32],
+    checked_primary_ms: u64,
 }
 impl HistoricalRegistration03 {
     pub fn identity(&self) -> OriginalIdentity {
@@ -64,6 +65,9 @@ impl HistoricalRegistration03 {
     }
     pub fn evidence_digest(&self) -> &[u8; 32] {
         &self.digest
+    }
+    pub(super) fn checked_primary_ms(&self) -> u64 {
+        self.checked_primary_ms
     }
 }
 
@@ -115,7 +119,7 @@ pub async fn read(
     Ok(proof)
 }
 
-async fn read_locked(
+pub(super) async fn read_locked(
     tx: &Transaction<'_>,
     locator: Locator,
     configured_origin: &str,
@@ -234,13 +238,14 @@ async fn read_locked(
     };
     let canonical = evidence.canonical().map_err(|_| ReadError::Refused)?;
     let digest = evidence.digest().map_err(|_| ReadError::Refused)?;
-    clock(tx, floor.max(completed)).await?;
+    let checked_primary_ms = clock(tx, floor.max(completed)).await?;
     Ok(HistoricalRegistration03 {
         identity,
         root_fingerprint: fingerprint,
         paired_signing_key_id,
         canonical,
         digest,
+        checked_primary_ms,
     })
 }
 
