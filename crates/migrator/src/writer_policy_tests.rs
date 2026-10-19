@@ -153,6 +153,32 @@ END $mutation$"#.to_owned(), original_budget.clone()));
         assert!(owner.query_one("SELECT pg_catalog.to_regprocedure('public.payload_profile_v2_ready()') IS NULL AND pg_catalog.to_regclass('public.payload_profile_v2_activation_receipts') IS NULL", &[]).await.unwrap().get::<_,bool>(0));
         owner.batch_execute(&restore).await.unwrap();
     }
+    let receipt_position = all_migrations
+        .iter()
+        .position(|migration| migration.version == 109)
+        .unwrap();
+    assert_eq!(
+        apply_locked(&mut owner, &all_migrations[..=receipt_position], false)
+            .await
+            .unwrap()
+            .last()
+            .unwrap()
+            .version,
+        109
+    );
+    let receipt_ready:String=owner.query_one("SELECT pg_catalog.pg_get_functiondef('public.payload_profile_v2_ready()'::regprocedure)",&[]).await.unwrap().get(0);
+    for(mutation,restore) in [
+        ("CREATE RULE unreviewed AS ON UPDATE TO public.devices DO INSTEAD NOTHING".to_owned(),"DROP RULE unreviewed ON public.devices".to_owned()),
+        ("ALTER TABLE public.payload_profile_v2_activation_receipts ADD COLUMN unreviewed boolean".to_owned(),"ALTER TABLE public.payload_profile_v2_activation_receipts DROP COLUMN unreviewed".to_owned()),
+        ("CREATE OR REPLACE FUNCTION public.payload_profile_v2_ready() RETURNS boolean LANGUAGE sql STABLE SET search_path TO pg_catalog AS 'SELECT true'".to_owned(),receipt_ready),
+    ] {
+        owner.batch_execute(&mutation).await.unwrap();
+        let error=apply_locked(&mut owner,&all_migrations,false).await.unwrap_err();
+        assert!(matches!(error,MigrationError::Database(ref db) if db.code()==Some(&SqlState::CHECK_VIOLATION)),"{error}");
+        assert!(owner.query_one("SELECT max(version)=109 AND count(*)=109 FROM public.schema_migrations",&[]).await.unwrap().get::<_,bool>(0));
+        assert!(owner.query_one("SELECT pg_catalog.to_regclass('public.payload_profile_elections') IS NULL AND pg_catalog.to_regprocedure('public.payload_profile_election_ready()') IS NULL",&[]).await.unwrap().get::<_,bool>(0));
+        owner.batch_execute(&restore).await.unwrap();
+    }
     assert_eq!(
         apply_locked(&mut owner, &all_migrations, false)
             .await
@@ -160,7 +186,7 @@ END $mutation$"#.to_owned(), original_budget.clone()));
             .last()
             .unwrap()
             .version,
-        109
+        110
     );
     assert!(
         apply_locked(&mut owner, &all_migrations, false)
