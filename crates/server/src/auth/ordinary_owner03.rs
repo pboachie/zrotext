@@ -9,6 +9,8 @@ use crate::sealed_payload_election03::{
 use subtle::ConstantTimeEq;
 use tokio_postgres::Transaction;
 
+pub mod step_up;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("ordinary owner authentication refused")]
@@ -34,6 +36,8 @@ pub struct RequestSource<'a> {
 /// No secret or reusable unlocked principal is retained or exported. Separate
 /// step-up, schema/state, device, election and effect checks remain mandatory.
 pub struct HeldOrdinaryOwner03<'held, 'db> {
+    tx: &'held Transaction<'db>,
+    selector: Selector,
     records: HeldOwnerRecords03<'held, 'db>,
     origin_digest: [u8; 32],
 }
@@ -185,6 +189,8 @@ async fn lock_and_verify<'held, 'db>(
         .map_err(|_| Error::Refused)?;
     records.revalidate().await?;
     Ok(HeldOrdinaryOwner03 {
+        tx,
+        selector,
         records,
         origin_digest,
     })

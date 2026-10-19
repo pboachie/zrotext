@@ -24,6 +24,8 @@ const CHALLENGE_MINUTES: i32 = 5;
 const RECOVERY_COUNT: usize = 10;
 const FACTOR_FAILURES_PER_WINDOW: i32 = 5;
 
+pub(crate) mod held_profile03;
+
 pub struct MfaCipher(Zeroizing<[u8; 32]>);
 
 impl MfaCipher {

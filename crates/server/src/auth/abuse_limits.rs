@@ -290,6 +290,26 @@ pub(crate) async fn consume_owner_management(
     charge(tx, hasher, Limit::MfaManage, Some(subject), Lane::Anonymous).await
 }
 
+pub(crate) async fn held_factor_budget_open(
+    tx: &Transaction<'_>,
+    hasher: &TokenHasher,
+    subject: &str,
+) -> Result<bool, tokio_postgres::Error> {
+    let (scope, maximum, seconds, hash) = failure_subject(hasher, Limit::MfaStepUp, subject);
+    let row = tx.query_opt("SELECT attempts FROM public.auth_abuse_counters WHERE scope=$1 AND subject_hash=$2 AND window_started_at>pg_catalog.clock_timestamp()-pg_catalog.make_interval(secs=>$3::int4)", &[&scope, &&hash[..], &seconds]).await?;
+    Ok(row.map_or(0, |row| row.get::<_, i32>(0)) < maximum)
+}
+
+pub(crate) async fn record_held_factor_failure(
+    tx: &Transaction<'_>,
+    hasher: &TokenHasher,
+    subject: &str,
+) -> Result<(), tokio_postgres::Error> {
+    let (scope, _, seconds, hash) = failure_subject(hasher, Limit::MfaStepUp, subject);
+    tx.execute("INSERT INTO public.auth_abuse_counters(scope,subject_hash,window_started_at,attempts,updated_at) VALUES($1,$2,pg_catalog.clock_timestamp(),1,pg_catalog.clock_timestamp()) ON CONFLICT(scope,subject_hash) DO UPDATE SET window_started_at=CASE WHEN auth_abuse_counters.window_started_at<=pg_catalog.clock_timestamp()-pg_catalog.make_interval(secs=>$3::int4) THEN pg_catalog.clock_timestamp() ELSE auth_abuse_counters.window_started_at END,attempts=CASE WHEN auth_abuse_counters.window_started_at<=pg_catalog.clock_timestamp()-pg_catalog.make_interval(secs=>$3::int4) THEN 1 ELSE auth_abuse_counters.attempts+1 END,updated_at=pg_catalog.clock_timestamp()", &[&scope, &&hash[..], &seconds]).await?;
+    Ok(())
+}
+
 /// Review claim admission is charged in the same short transaction as the
 /// exact preparation CAS. It commits before any password worker is awaited.
 pub(crate) async fn consume_review(

@@ -8,6 +8,8 @@ use tokio_postgres::{Client, Config, IsolationLevel, NoTls, error::SqlState};
 use uuid::Uuid;
 use zrotext_root_material::sealed_root_enrollment;
 
+mod step_up_tests;
+
 const ORIGIN: &str = "https://gateway.example.test";
 type Driver = tokio::task::JoinHandle<std::result::Result<(), tokio_postgres::Error>>;
 async fn connect(config: &Config) -> (Client, Driver) {
@@ -33,6 +35,7 @@ struct Fixture {
     owner_driver: Driver,
     reader: Client,
     reader_driver: Driver,
+    reader_config: Config,
     database: String,
     owner_role: String,
     reader_role: String,
@@ -84,6 +87,7 @@ impl Fixture {
             owner_driver,
             reader,
             reader_driver,
+            reader_config: config,
             database,
             owner_role,
             reader_role,
