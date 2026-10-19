@@ -63,7 +63,7 @@ impl Fixture {
         let applied = zrotext_migrator::apply(&mut owner, &directory, false)
             .await
             .unwrap();
-        assert_eq!(applied.last().unwrap().version, 109);
+        assert_eq!(applied.last().unwrap().version, 110);
         let snapshot: Vec<u8> = owner
             .query_one("SELECT public.payload_profile_writer_graph()", &[])
             .await
@@ -399,7 +399,7 @@ async fn complete_graph_rejects_unknown_missing_disabled_function_body_and_colum
         "CREATE OR REPLACE FUNCTION public.payload_profile_writer_ready() RETURNS boolean LANGUAGE sql STABLE SET search_path TO pg_catalog AS 'SELECT true'",
         "GRANT UPDATE(graph_sha256) ON public.payload_profile_writer_catalog TO PUBLIC",
         "GRANT EXECUTE ON FUNCTION public.payload_profile_writer_ready() TO PUBLIC",
-        "INSERT INTO public.schema_migrations(version,filename,checksum_sha256,kind) VALUES(110,'110_unknown.sql',decode(repeat('01',32),'hex'),'applied')",
+        "INSERT INTO public.schema_migrations(version,filename,checksum_sha256,kind) VALUES(111,'111_unknown.sql',decode(repeat('01',32),'hex'),'applied')",
     ] {
         let tx = f.owner.transaction().await.unwrap();
         // A migration owner may mutate only its own ordinary objects. Disabling
