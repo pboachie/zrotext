@@ -60,6 +60,9 @@ impl HeldOrdinaryOwner03<'_, '_> {
     pub fn session_deadline_ms(&self) -> u64 {
         self.records.session_deadline_ms()
     }
+    pub fn checked_at_ms(&self) -> u64 {
+        self.records.checked_at_ms()
+    }
     /// Recheck exact held credentials, records and primary time immediately
     /// before later composition. Trusted code can mutate its own transaction.
     pub async fn revalidate(&mut self) -> Result<()> {

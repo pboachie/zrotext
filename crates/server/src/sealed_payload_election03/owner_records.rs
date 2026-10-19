@@ -70,6 +70,11 @@ impl HeldOwnerRecords03<'_, '_> {
             .expiry_ms
             .min(self.records.activity_ms.saturating_add(IDLE_MS))
     }
+    /// The last actual primary clock observation retained by this witness.
+    /// Composing adapters must not reset their clock floor after a recheck.
+    pub fn checked_at_ms(&self) -> u64 {
+        self.checked_ms
+    }
     /// Repeat actual row, credential-state, epoch and temporal checks directly
     /// before later composition. Locks cannot stop time or own-transaction writes.
     pub async fn revalidate(&mut self) -> Result<()> {

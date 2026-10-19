@@ -72,7 +72,11 @@ impl HeldStepUp03<'_, '_> {
         if !self.factor.state_matches(self.owner.tx).await? {
             return Err(Error::Refused);
         }
-        let now = clock(self.owner.tx, self.checked_ms).await?;
+        let now = clock(
+            self.owner.tx,
+            self.checked_ms.max(self.owner.checked_at_ms()),
+        )
+        .await?;
         if now >= self.expires_ms || !self.factor.current_at(now) {
             return Err(Error::Refused);
         }
@@ -128,7 +132,7 @@ pub async fn verify<'held, 'db>(
     }
     password_result?;
     owner.revalidate().await?;
-    let now = clock(owner.tx, 0).await?;
+    let now = clock(owner.tx, owner.checked_at_ms()).await?;
     let Some(factor) = mfa::held_profile03::consume(
         owner.tx,
         cipher,

@@ -94,3 +94,37 @@ pub(crate) async fn consume(
         state: State::Totp(step),
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn totp_deadline_is_the_exact_end_of_the_original_accepted_window() {
+        let factor = HeldFactor {
+            account: Uuid::new_v4(),
+            user: Uuid::new_v4(),
+            factor: ConsumedFactor { step: Some(42) },
+            state: State::Totp(42),
+        };
+        let deadline = factor.deadline_ms().unwrap().unwrap();
+        assert_eq!(deadline, 44 * 30_000);
+        assert!(factor.current_at(deadline - 1));
+        assert!(!factor.current_at(deadline));
+    }
+
+    #[test]
+    fn recovery_needs_the_separate_ceremony_bound_and_unrepresentable_steps_refuse() {
+        let mut factor = HeldFactor {
+            account: Uuid::new_v4(),
+            user: Uuid::new_v4(),
+            factor: ConsumedFactor { step: None },
+            state: State::Recovery([1; 32], [2; 8]),
+        };
+        assert_eq!(factor.deadline_ms().unwrap(), None);
+        factor.factor.step = Some(i64::MAX);
+        assert!(factor.deadline_ms().is_err());
+        factor.factor.step = Some(-1);
+        assert!(factor.deadline_ms().is_err());
+    }
+}
