@@ -47,6 +47,9 @@ async fn guard<C: GenericClient + Sync>(
 }
 /// Required for every actual claimed socket epoch, including legacy claims.
 pub async fn require_lease<C: GenericClient + Sync>(db: &C) -> Result<()> {
+    crate::payload_profile_writer::optional(db, "device_sessions")
+        .await
+        .map_err(|_| invalid())?;
     let row=db.query_opt("SELECT a.attnotnull,pg_get_expr(d.adbin,d.adrelid) FROM pg_attribute a JOIN pg_attrdef d ON (d.adrelid,d.adnum)=(a.attrelid,a.attnum) WHERE a.attrelid=to_regclass('device_sessions') AND a.attname='line_activation_version' AND NOT a.attisdropped AND a.atttypid='int2'::regtype",&[]).await?.ok_or_else(invalid)?;
     let default: String = row.get(1);
     if !row.get::<_, bool>(0) || !matches!(default.as_str(), "1" | "1::smallint") {
@@ -164,7 +167,13 @@ async fn trigger_names<C: GenericClient + Sync>(
         )
         .await?;
     let actual: BTreeSet<String> = rows.iter().map(|r| r.get(0)).collect();
-    let expected: BTreeSet<String> = expected.iter().map(|s| (*s).to_owned()).collect();
+    let mut expected: BTreeSet<String> = expected.iter().map(|s| (*s).to_owned()).collect();
+    if crate::payload_profile_writer::optional(db, table)
+        .await
+        .map_err(|_| invalid())?
+    {
+        expected.insert("zz_payload_profile_writer_before_change".to_owned());
+    }
     if actual != expected {
         return Err(invalid());
     }

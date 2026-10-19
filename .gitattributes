@@ -2,3 +2,4 @@ android/app/src/sharedTest/resources/candidate02-outbound-signatures.json text e
 android/app/src/sharedTest/resources/candidate02-preparation.json text eol=lf
 protocol/v1/openapi/*.json text eol=lf
 sdk/tungsten/** text eol=lf
+deploy/compose/migrations/108_payload_profile_writer_fences.sql text eol=lf
