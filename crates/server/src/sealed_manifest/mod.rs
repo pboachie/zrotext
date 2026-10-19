@@ -340,33 +340,22 @@ impl VerifiedManifest {
     ) -> Result<ProfileElectionKeys, &'static str> {
         freshness(self.issued, self.expires, now)?;
         VerifyingKey::from_sec1_bytes(device_point).map_err(|_| "enrollment signing point")?;
-        let unique = |role: u8| -> Result<&RoleRecord, &'static str> {
-            let mut found = self.roles.iter().filter(|key| {
-                key.role == role
-                    && key.line == *line
-                    && key.active(now)
-                    && (role == 5 || key.device == *device)
-            });
-            let key = found.next().ok_or("missing selected election role")?;
-            if found.next().is_some() {
-                return Err("ambiguous selected election role");
-            }
-            Ok(key)
-        };
-        let reader = unique(1)?;
-        let approval = unique(5)?;
-        if device_point == approval_point
-            || approval.point != *approval_point
-            || reader.scope != 4
-            || approval.scope != 1
-        {
+        VerifyingKey::from_sec1_bytes(approval_point).map_err(|_| "registered approval point")?;
+        let mut selected = self.roles.iter().filter(|key| {
+            key.role == 1 && key.line == *line && key.device == *device && key.active(now)
+        });
+        let reader = selected.next().ok_or("missing selected election reader")?;
+        if selected.next().is_some() || device_point == approval_point || reader.scope != 4 {
             return Err("selected election key mismatch");
         }
         Ok(ProfileElectionKeys {
             reader_id: reader.id,
             device_signer_id: key_id(4, device_point),
-            approval_id: approval.id,
-            expires_ms: self.expires.min(reader.until).min(approval.until),
+            // Both election signers are independently enrolled/registered
+            // signing keys (purpose4). Manifest role5 is outbound content
+            // authority and is neither required nor selected by this helper.
+            approval_id: key_id(4, approval_point),
+            expires_ms: self.expires.min(reader.until),
         })
     }
     /// Owned historical public records only; no installed contact permission.

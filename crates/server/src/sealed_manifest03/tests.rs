@@ -194,7 +194,7 @@ fn exact_public_cross_profile_vectors_verify_in_rust() {
 }
 
 #[test]
-fn election_selects_enrolled_signer_independently_of_conversation_role_four() {
+fn election_selects_both_registered_signers_independently_of_conversation_roles() {
     let f = Fixture::new();
     let old = f.manifest(2, 1, 0, [0; 32]);
     let context = f.context(&old);
@@ -207,7 +207,8 @@ fn election_selects_enrolled_signer_independently_of_conversation_role_four() {
         .as_bytes()
         .try_into()
         .unwrap();
-    let owner: [u8; 65] = f.keys[4]
+    let original_approval = SigningKey::generate_from_rng(&mut rand::rng());
+    let owner: [u8; 65] = original_approval
         .verifying_key()
         .to_sec1_point(false)
         .as_bytes()
@@ -227,10 +228,13 @@ fn election_selects_enrolled_signer_independently_of_conversation_role_four() {
     assert_eq!(b.device_signer_id, a.device_signer_id);
     assert_eq!(b.reader_id, a.reader_id);
     assert_eq!(b.approval_id, a.approval_id);
+    assert_eq!(b.approval_id, sealed_manifest::key_id(4, &owner));
+    assert_ne!(b.approval_id, sealed_manifest::key_id(5, &owner));
     for (device, line, signer, approval, now) in [
         ([9; 16], f.line, point, owner, NOW),
         (f.device, [9; 16], point, owner, NOW),
         (f.device, f.line, [0; 65], owner, NOW),
+        (f.device, f.line, point, [0; 65], NOW),
         (f.device, f.line, point, point, NOW),
         (f.device, f.line, point, owner, NOW + 100_000),
     ] {
@@ -245,6 +249,48 @@ fn election_selects_enrolled_signer_independently_of_conversation_role_four() {
                 .is_err()
         );
     }
+}
+
+#[test]
+fn signed_manifests_without_outbound_role_still_select_election_but_cannot_send() {
+    let mut f = Fixture::new();
+    f.records.retain(|r| r[0] != 5);
+    let old = f.manifest(2, 1, 0, [0; 32]);
+    let old02 = sealed_manifest::verify(&f.pin, &old, &f.context(&old).trust, NOW).unwrap();
+    let (_, _, new03) = f.pair();
+    let device = SigningKey::generate_from_rng(&mut rand::rng());
+    let owner = SigningKey::generate_from_rng(&mut rand::rng());
+    let point = |key: &SigningKey| -> [u8; 65] {
+        key.verifying_key()
+            .to_sec1_point(false)
+            .as_bytes()
+            .try_into()
+            .unwrap()
+    };
+    let selection = old02
+        .profile_election_keys(&f.device, &f.line, &point(&device), &point(&owner), NOW)
+        .unwrap();
+    let next = new03
+        .profile_election_keys(&f.device, &f.line, &point(&device), &point(&owner), NOW)
+        .unwrap();
+    assert_eq!(selection.reader_id, next.reader_id);
+    let archive =
+        sealed_manifest::key_id(2, f.keys[1].verifying_key().to_sec1_point(false).as_bytes());
+    assert!(
+        new03
+            .authorize(
+                &Authorization03 {
+                    kind: 1,
+                    account: &f.account,
+                    device: &f.device,
+                    line: &f.line,
+                    signer_id: &sealed_manifest::key_id(5, &point(&owner)),
+                    readers: &[(1, next.reader_id), (2, archive)]
+                },
+                NOW
+            )
+            .is_err()
+    );
 }
 
 #[test]

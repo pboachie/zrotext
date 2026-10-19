@@ -174,37 +174,19 @@ impl VerifiedManifest03 {
     ) -> Check<crate::sealed_manifest::ProfileElectionKeys> {
         self.identity_at(now)?;
         VerifyingKey::from_sec1_bytes(device_point).map_err(|_| "enrollment signing point")?;
-        let unique = |role: u8| -> Check<&Role> {
-            let mut found = self.roles.iter().filter(|key| {
-                key.role == role
-                    && key.line == *line
-                    && key.active(now)
-                    && (role == 5 || key.device == *device)
-            });
-            let key = found.next().ok_or("missing selected election role")?;
-            if found.next().is_some() {
-                return Err("ambiguous selected election role");
-            }
-            Ok(key)
-        };
-        let reader = unique(1)?;
-        let approval = unique(5)?;
-        if device_point == approval_point
-            || approval.point != *approval_point
-            || reader.scope != 4
-            || approval.scope != 1
-        {
+        VerifyingKey::from_sec1_bytes(approval_point).map_err(|_| "registered approval point")?;
+        let mut selected = self.roles.iter().filter(|key| {
+            key.role == 1 && key.line == *line && key.device == *device && key.active(now)
+        });
+        let reader = selected.next().ok_or("missing selected election reader")?;
+        if selected.next().is_some() || device_point == approval_point || reader.scope != 4 {
             return Err("selected election key mismatch");
         }
         Ok(crate::sealed_manifest::ProfileElectionKeys {
             reader_id: reader.id,
             device_signer_id: sealed_manifest::key_id(4, device_point),
-            approval_id: approval.id,
-            expires_ms: self
-                .identity
-                .expires_ms
-                .min(reader.until)
-                .min(approval.until),
+            approval_id: sealed_manifest::key_id(4, approval_point),
+            expires_ms: self.identity.expires_ms.min(reader.until),
         })
     }
     fn comparison(&self, now: u64) -> Check<()> {
