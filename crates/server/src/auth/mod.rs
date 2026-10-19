@@ -38,6 +38,7 @@ pub mod account;
 pub mod agent_grants;
 pub mod collaboration;
 pub mod mfa;
+pub mod ordinary_owner03;
 mod owner_reduction;
 pub(crate) use owner_reduction::OwnerReductionFence;
 mod password_work;
