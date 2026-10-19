@@ -4,6 +4,8 @@ use tokio_postgres::GenericClient;
 
 const MIGRATION: &str =
     include_str!("../../../deploy/compose/migrations/108_payload_profile_writer_fences.sql");
+const RECEIPT_MIGRATION: &str =
+    include_str!("../../../deploy/compose/migrations/109_original_sealed_activation_receipts.sql");
 
 #[derive(Debug, thiserror::Error)]
 pub enum WriterSchemaError {
@@ -14,8 +16,17 @@ pub enum WriterSchemaError {
 }
 type Result<T> = std::result::Result<T, WriterSchemaError>;
 
-fn body(name: &str, marker: &str) -> Result<&'static str> {
-    MIGRATION
+fn body(name: &str, marker: &str, version: i64) -> Result<&'static str> {
+    let source = if version == 109
+        && matches!(
+            name,
+            "payload_profile_writer_version" | "payload_profile_writer_ready"
+        ) {
+        RECEIPT_MIGRATION
+    } else {
+        MIGRATION
+    };
+    source
         .split_once(&format!("FUNCTION public.{name}("))
         .and_then(|(_, sql)| sql.split_once(&format!("AS {marker}")))
         .and_then(|(_, sql)| sql.split_once(&format!("{marker};")))
@@ -23,7 +34,7 @@ fn body(name: &str, marker: &str) -> Result<&'static str> {
         .ok_or(WriterSchemaError::Invalid)
 }
 
-async fn functions<C: GenericClient + Sync>(db: &C) -> Result<()> {
+async fn functions<C: GenericClient + Sync>(db: &C, version: i64) -> Result<()> {
     for (name, args, result, language, volatility, strict, definer, config, marker) in [
         (
             "payload_profile_writer_json",
@@ -136,7 +147,7 @@ async fn functions<C: GenericClient + Sync>(db: &C) -> Result<()> {
             return Err(WriterSchemaError::Invalid);
         }
         let row = &rows[0];
-        if row.try_get::<_, String>(0)? != body(name, marker)?
+        if row.try_get::<_, String>(0)? != body(name, marker, version)?
             || row.try_get::<_, String>(1)? != args
             || row.try_get::<_, String>(2)? != result
             || row.try_get::<_, String>(3)? != language
@@ -194,15 +205,25 @@ pub(crate) async fn optional<C: GenericClient + Sync>(db: &C, table: &str) -> Re
     {
         return Err(WriterSchemaError::Invalid);
     }
-    functions(db).await?;
+    let version: i64 = db
+        .query_one(
+            "SELECT migration_version FROM public.payload_profile_writer_catalog WHERE singleton",
+            &[],
+        )
+        .await?
+        .try_get(0)?;
+    if !matches!(version, 108 | 109) {
+        return Err(WriterSchemaError::Invalid);
+    }
+    functions(db, version).await?;
     let valid: bool = db.query_one(
-        "SELECT public.payload_profile_writer_version() AND coalesce((SELECT migration_version=108 AND graph_sha256=public.payload_profile_writer_graph() FROM public.payload_profile_writer_catalog WHERE singleton),false)
+        "SELECT public.payload_profile_writer_version() AND coalesce((SELECT migration_version=$1 AND graph_sha256=public.payload_profile_writer_graph() FROM public.payload_profile_writer_catalog WHERE singleton),false)
          AND (SELECT count(*)=12 AND bool_and(revision>=0) FROM public.payload_profile_writer_global_fences)
          AND NOT EXISTS(SELECT FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_class c ON c.oid=t.tgrelid WHERE c.relnamespace='public'::pg_catalog.regnamespace AND t.tgisinternal AND t.tgenabled<>'O')
          AND NOT EXISTS(SELECT FROM pg_catalog.pg_proc p CROSS JOIN LATERAL pg_catalog.aclexplode(coalesce(p.proacl,pg_catalog.acldefault('f',p.proowner))) a WHERE p.pronamespace='public'::pg_catalog.regnamespace AND p.proname LIKE 'payload_profile_writer_%' AND a.grantee=0 AND a.privilege_type='EXECUTE')
          AND NOT EXISTS(SELECT FROM pg_catalog.pg_class c CROSS JOIN LATERAL pg_catalog.aclexplode(coalesce(c.relacl,pg_catalog.acldefault('r',c.relowner))) a WHERE c.relnamespace='public'::pg_catalog.regnamespace AND c.relkind IN ('r','p') AND a.grantee=0)
          AND NOT EXISTS(SELECT FROM pg_catalog.pg_attribute c JOIN pg_catalog.pg_class r ON r.oid=c.attrelid CROSS JOIN LATERAL pg_catalog.aclexplode(c.attacl) a WHERE r.relnamespace='public'::pg_catalog.regnamespace AND a.grantee=0)",
-        &[],
+        &[&version],
     ).await?.try_get(0)?;
     if !valid {
         return Err(WriterSchemaError::Invalid);
@@ -225,4 +246,4 @@ pub async fn require<C: GenericClient + Sync>(db: &C) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

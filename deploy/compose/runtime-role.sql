@@ -215,4 +215,20 @@ BEGIN
         GRANT EXECUTE ON FUNCTION public.payload_profile_writer_json(json),public.payload_profile_writer_graph(),public.payload_profile_writer_version(),public.payload_profile_writer_ready() TO zrotext_runtime;
     END IF;
 END $$;
+-- Accepted original proofs have one narrow fresh-capture entry point. Broad
+-- defaults and reprovisioning must never grant direct row/column mutation.
+DO $$
+DECLARE columns_sql text;
+BEGIN
+    IF to_regclass('public.payload_profile_v2_activation_receipts') IS NOT NULL THEN
+        SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) INTO columns_sql FROM pg_attribute
+          WHERE attrelid='public.payload_profile_v2_activation_receipts'::regclass AND attnum>0 AND NOT attisdropped;
+        REVOKE ALL ON TABLE public.payload_profile_v2_activation_receipts FROM PUBLIC,zrotext_runtime;
+        EXECUTE format('REVOKE ALL (%s) ON TABLE public.payload_profile_v2_activation_receipts FROM PUBLIC,zrotext_runtime',columns_sql);
+        GRANT SELECT ON TABLE public.payload_profile_v2_activation_receipts TO zrotext_runtime;
+        REVOKE ALL ON FUNCTION public.payload_profile_v2_receipt_guard(),public.payload_profile_v2_receipt_complete() FROM PUBLIC,zrotext_runtime;
+        REVOKE ALL ON FUNCTION public.payload_profile_v2_capture(uuid,uuid,bytea,bytea,bytea,bytea,bytea,bytea),public.payload_profile_v2_ready() FROM PUBLIC;
+        GRANT EXECUTE ON FUNCTION public.payload_profile_v2_capture(uuid,uuid,bytea,bytea,bytea,bytea,bytea,bytea),public.payload_profile_v2_ready() TO zrotext_runtime;
+    END IF;
+END $$;
 COMMIT;
