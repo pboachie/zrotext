@@ -326,6 +326,15 @@ internal object CallbackEvidence {
 
 @Dao
 abstract class SmsAttemptDao {
+    @Query("SELECT EXISTS(SELECT 1 FROM profile03_elections WHERE (state IN ('reserved','signed','installed') OR deviceSignatureB64url IS NOT NULL OR acceptedEvidenceSha256 IS NOT NULL) AND (:account IS NULL OR accountId = :account))")
+    protected abstract fun hasProfile03EffectFence(account: String?): Boolean
+
+    @Query("SELECT * FROM profile03_elections WHERE challengeId = :challenge")
+    protected abstract fun profile03Election(challenge: String): Profile03ElectionRecord?
+
+    @Query("SELECT * FROM sealed_preparations WHERE accountId = :account AND messageId = :message AND attemptId = :attempt")
+    protected abstract fun profile03Preparation(account: String, message: String, attempt: String): SealedPreparationRecord?
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     protected abstract fun insertLocalWithdrawal(entry: LocalInboundWithdrawal)
 
@@ -735,6 +744,7 @@ abstract class SmsAttemptDao {
 
     @Transaction
     open fun reserve(attemptId: String, subscriptionId: Int, segmentCount: Int, now: Long) {
+        check(!hasProfile03EffectFence(null)) { "Unbound submission is unavailable during or after election03" }
         require(segmentCount in 1..6)
         insertAttempt(SmsAttempt(attemptId, subscriptionId, segmentCount, AttemptState.SUBMITTING, now, now))
         insertSegments((0 until segmentCount).map { SmsSegment(attemptId, it) })
@@ -747,6 +757,31 @@ abstract class SmsAttemptDao {
         segmentCount: Int, intentEventId: String, now: Long,
         approvedSenderToken: String? = null, identity: EvidenceIdentity
     ) {
+        check(!hasProfile03EffectFence(identity.accountId)) { "Legacy submission is unavailable during or after election03" }
+        reserveAlphaChecked(attemptId, messageId, subscriptionId, segmentCount, intentEventId, now, approvedSenderToken, identity)
+    }
+
+    /** Only the existing installed03 selection + prepared one-use row may reserve a03 radio intent.
+     * These and the selected base line are read under the SAME writer acquisition as the attempt.
+     */
+    @Transaction
+    open fun reserveProfile03Radio(attemptId: String, messageId: String, subscriptionId: Int,
+        segmentCount: Int, intentEventId: String, now: Long, identity: EvidenceIdentity,
+        installation: Profile03ElectionRecord, current: (LocalLineBinding?) -> Unit) {
+        installation.requireShape()
+        require(installation.state == "installed" && installation.accountId == identity.accountId &&
+            installation.deviceId == identity.deviceId && installation.originHash == identity.originHash)
+        current(currentLineBinding())
+        check(profile03Election(installation.challengeId) == installation)
+        val preparation = checkNotNull(profile03Preparation(identity.accountId, messageId, attemptId))
+        check(preparation.state == "prepared" && preparation.segmentCount == segmentCount)
+        reserveAlphaChecked(attemptId, messageId, subscriptionId, segmentCount, intentEventId, now, null, identity)
+        check(profile03Election(installation.challengeId) == installation)
+        current(currentLineBinding())
+    }
+
+    private fun reserveAlphaChecked(attemptId: String, messageId: String, subscriptionId: Int,
+        segmentCount: Int, intentEventId: String, now: Long, approvedSenderToken: String?, identity: EvidenceIdentity) {
         require(segmentCount in 1..6)
         require(listOf(attemptId, messageId, intentEventId).all {
             runCatching { UUID.fromString(it).toString() == it }.getOrDefault(false)
@@ -844,11 +879,12 @@ private const val PRUNE_BATCH = 500
     InboundWindow::class, InboundEvent::class, InboundUpload::class,
     LocalRecipientSuppression::class, LocalLineBinding::class,
     LocalInboundWithdrawal::class, LocalWithdrawalSequence::class, SealedPreparationRecord::class,
-    LineActivationV2Record::class], version = 14, exportSchema = false)
+    LineActivationV2Record::class, Profile03ElectionRecord::class], version = 15, exportSchema = false)
 abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun attempts(): SmsAttemptDao
     abstract fun sealedPreparations(): SealedPreparationDao
     abstract fun lineActivationsV2(): LineActivationV2Dao
+    abstract fun profile03Elections(): Profile03ElectionDao
 
     companion object {
         @Volatile private var instance: SmsJournalDatabase? = null
@@ -858,13 +894,20 @@ abstract class SmsJournalDatabase : RoomDatabase() {
                 context.applicationContext, SmsJournalDatabase::class.java, "sms_attempts.db"
             ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
                 MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
-                MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14)
+                MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15)
                 .build().also { instance = it }
         }
 
         internal val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE sms_attempts ADD COLUMN evidenceConflict INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        internal val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS profile03_elections (challengeId TEXT NOT NULL, accountId TEXT NOT NULL, deviceId TEXT NOT NULL, lineId TEXT NOT NULL, oldBindingId TEXT NOT NULL, newBindingId TEXT NOT NULL, oldGeneration INTEGER NOT NULL, newGeneration INTEGER NOT NULL, rootFingerprint TEXT NOT NULL, readerKeyId TEXT NOT NULL, originHash TEXT NOT NULL, connectionEpoch INTEGER NOT NULL, deploymentEpoch INTEGER NOT NULL, coreB64url TEXT NOT NULL, state TEXT NOT NULL, deviceSignatureB64url TEXT, acceptedEvidenceSha256 TEXT, PRIMARY KEY(challengeId))")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_profile03_elections_newBindingId ON profile03_elections(newBindingId)")
             }
         }
 

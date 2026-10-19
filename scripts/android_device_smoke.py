@@ -73,7 +73,7 @@ def selected_tests(root=ROOT):
     if (root / "android/app/src/androidTest/java/org/zrotext/gateway/JournalDeviceUpgradeTest.kt").is_file():
         expected[JOURNAL_UPGRADE] = 2
     if (root / "android/app/src/androidTest/java/org/zrotext/gateway/WolfHpkeKeystoreBridgeDeviceTest.kt").is_file():
-        expected[HPKE_BRIDGE] = 4
+        expected[HPKE_BRIDGE] = 5
     return expected
 
 

@@ -51,14 +51,17 @@ internal object HpkeWrapFraming {
  *     the 16-byte inline tag (ctSz = C - 16) and re-validates.
  *  4. API 28-30 is refused at runtime; minSdk stays 28.
  *
- * Dormant boundary: key creation stays enrollment-only through
- * [DevicePayloadKeyStore]; nothing in the gateway service, registration or
- * radio path calls this class, and sealed mode stays disabled. A lost or
+ * [Draft03OutboundPreparation] calls this only after its durable journal and
+ * authority fences. That integration component has no ordinary socket mount
+ * yet; key creation stays enrollment-only through [DevicePayloadKeyStore]. A lost or
  * revoked key is refused here, never regenerated. The DH shared secret is a
  * per-message transient: the native layer zeroes its copies, wolfSSL zeroes
  * the KEM copy, and the caller must zero the returned plaintext after use.
  */
 class WolfHpkeKeystoreReceiver(private val keystore: DevicePayloadKeyStore) {
+    // The bridge is synchronous and invokes agreeFromNative on this same JNI thread.
+    // A current-admission callback must be RAM-only: never invert custody -> Room/provider locks.
+    private val admission = ThreadLocal<(() -> Unit)?>()
 
     companion object {
         init {
@@ -79,9 +82,37 @@ class WolfHpkeKeystoreReceiver(private val keystore: DevicePayloadKeyStore) {
     ): ByteArray {
         if (Build.VERSION.SDK_INT < 31) error("Sealed HPKE requires Android API 31+")
         HpkeWrapFraming.requireValid(enc, ct, info, aad)
-        return keystore.withRecipientKey(pinnedKeyId) { privateKey, public ->
-            nativeOpen(privateKey, public.point, enc, ct, info, aad)
+        var pending: ByteArray? = null
+        var returned = false
+        try {
+            admission.get()?.invoke()
+            val result = keystore.withRecipientKey(pinnedKeyId) { privateKey, public ->
+                admission.get()?.invoke() // Acquisition of the existing hardware identity can wait.
+                nativeOpen(privateKey, public.point, enc, ct, info, aad).also {
+                    pending = it
+                    admission.get()?.invoke()
+                }
+            }
+            admission.get()?.invoke() // Including the lifecycle's post-operation identity check.
+            returned = true
+            return result
+        } finally {
+            if (!returned) pending?.fill(0)
         }
+    }
+
+    /** The03 preparation supplies its already established RAM-only session/time/SIM permit
+     * guard. It runs after every blocked key operation and before returning a CEK. This is not
+     * an authority constructor; full current records are checked outside the custody lock.
+     */
+    internal fun openCurrent(pinnedKeyId: ByteArray, enc: ByteArray, ct: ByteArray,
+        info: ByteArray, aad: ByteArray, requireCurrent: () -> Unit): ByteArray {
+        HpkeWrapFraming.requireApiFloor(Build.VERSION.SDK_INT)
+        HpkeWrapFraming.requireValid(enc, ct, info, aad)
+        check(admission.get() == null) { "Nested recipient admission" }
+        admission.set(requireCurrent)
+        try { return open(pinnedKeyId, enc, ct, info, aad) }
+        finally { admission.remove() }
     }
 
     /** One native RFC 9180 open. The enrolled public point rides along so the
@@ -105,15 +136,20 @@ class WolfHpkeKeystoreReceiver(private val keystore: DevicePayloadKeyStore) {
         require(peerPoint.size == HpkeWrapFraming.ENC_LEN && peerPoint[0] == 0x04.toByte()) {
             "Invalid peer point"
         }
-        val secret = KeyAgreement.getInstance("ECDH").run {
-            init(privateKey)
-            doPhase(DevicePayloadKeyStore.decodePoint(peerPoint), true)
-            generateSecret()
-        }
-        if (secret.size != 32) {
+        admission.get()?.invoke()
+        val agreement = KeyAgreement.getInstance("ECDH")
+        agreement.init(privateKey)
+        admission.get()?.invoke()
+        agreement.doPhase(DevicePayloadKeyStore.decodePoint(peerPoint), true)
+        admission.get()?.invoke()
+        val secret = agreement.generateSecret()
+        try {
+            admission.get()?.invoke()
+            check(secret.size == 32) { "Unexpected P-256 secret width" }
+            return secret
+        } catch (failure: Throwable) {
             secret.fill(0)
-            error("Unexpected P-256 secret width")
+            throw failure
         }
-        return secret
     }
 }
