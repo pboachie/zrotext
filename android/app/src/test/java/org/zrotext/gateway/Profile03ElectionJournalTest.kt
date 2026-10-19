@@ -150,15 +150,16 @@ class Profile03ElectionJournalTest {
                 } finally { db.close() }
             }
             context.openOrCreateDatabase(name, Context.MODE_PRIVATE, null).use {
+                it.execSQL("DROP TABLE selection_refresh03_closures")
                 it.execSQL("DROP TABLE profile03_unaccepted_closures")
                 it.execSQL("DROP TABLE selection_refresh03")
                 it.execSQL("DROP TABLE profile03_elections")
                 it.version = 14
             }
             Room.databaseBuilder(context, SmsJournalDatabase::class.java, name).allowMainThreadQueries()
-                .addMigrations(SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17).build().let { db ->
+                .addMigrations(SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17, SmsJournalDatabase.MIGRATION_17_18).build().let { db ->
                     try {
-                        assertEquals(17, db.openHelper.readableDatabase.version)
+                        assertEquals(18, db.openHelper.readableDatabase.version)
                         assertEquals(line, db.attempts().currentLineBinding())
                         assertEquals(AttemptState.UNKNOWN, db.attempts().getAttempt(attempt)?.state)
                         assertNull(db.profile03Elections().installed(line.accountId, line.lineId))

@@ -13,7 +13,7 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = android.app.Application::class)
 class SelectionRefresh03JournalTest {
-    private class Fixture : AutoCloseable {
+    internal class Fixture : AutoCloseable {
         val f = Profile03ExecutionFixture().also { it.install() }
         val observation = checkNotNull(f.line.owner.capture()).observation().bytes()
         val session = Profile03SessionTime.Identity(f.session, "synthetic-site", "synthetic-instance")

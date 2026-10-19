@@ -146,13 +146,14 @@ class Profile03UnacceptedRecoveryJournalTest {
                     } finally { db.close() }
                 }
                 context.openOrCreateDatabase(name, Context.MODE_PRIVATE, null).use { old ->
+                    old.execSQL("DROP TABLE selection_refresh03_closures")
                     old.execSQL("DROP TABLE profile03_unaccepted_closures")
                     old.version = 16
                 }
                 Room.databaseBuilder(context, SmsJournalDatabase::class.java, name).allowMainThreadQueries()
-                    .addMigrations(SmsJournalDatabase.MIGRATION_16_17).build().let { migrated ->
+                    .addMigrations(SmsJournalDatabase.MIGRATION_16_17, SmsJournalDatabase.MIGRATION_17_18).build().let { migrated ->
                         try {
-                            assertEquals(17, migrated.openHelper.readableDatabase.version)
+                            assertEquals(18, migrated.openHelper.readableDatabase.version)
                             assertEquals(signed, migrated.profile03Elections().find(signed.challengeId))
                             assertEquals(unknown, migrated.attempts().getAttempt(unknown.attemptId))
                             assertNull(migrated.profile03Elections().closedUnaccepted(signed.challengeId))
