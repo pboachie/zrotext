@@ -33,7 +33,7 @@ async function reservation(s, mutate = () => {}) {
     new Uint8Array([...uuid(1), ...uuid(140), ...uuid(160)]))), 432);
   const result = { v: 1, opening_id: s.opening.opening_id, challenge_id: id(core.subarray(56, 72)),
     new_binding_id: id(uuid(100)), core: b64(core), successor_manifest03: s.opening.successor_manifest03,
-    issued_ms: '9000', expires_ms: '20000', status: 'reserved' };
+    issued_ms: '9000', expires_ms: '20000', status: 'reserved', closed_unaccepted: [] };
   mutate(result); return result;
 }
 async function bundle(s) {
@@ -70,6 +70,49 @@ async function original(s) {
 }
 function deferred() { let resolve; const promise = new Promise(r => resolve = r); return { promise, resolve }; }
 const checkError = (code, outcome) => error => error instanceof OwnerProfileElectionError03 && error.code === code && (!outcome || error.outcome === outcome);
+
+async function recoveredReservation(s) {
+  const r = await reservation(s), current = Buffer.from(r.core, 'base64url');
+  const old = (n, generation, issued, expires, closed, target) => {
+    const core = Uint8Array.from(current), view = new DataView(core.buffer);
+    core.set(uuid(n), 56); view.setBigUint64(96, generation);
+    view.setBigUint64(384, issued); view.setBigUint64(392, expires);
+    // Actual old owner/device sessions can differ after reconnect.
+    core.fill(n, 352, 384); core.fill(n, 432, 496);
+    return { opening_id: id(uuid(n + 1)), challenge_id: id(uuid(n)), new_binding_id: id(uuid(n + 2)),
+      core: b64(core), closed_unaccepted_ms: String(closed), superseded_by_challenge_id: target };
+  };
+  r.closed_unaccepted = [old(180, 5n, 1000n, 2000n, 3000n, id(uuid(190))),
+    old(190, 6n, 3000n, 4000n, 9000n, r.challenge_id)];
+  return r;
+}
+
+test('expired closure candidates retain the complete exact ordered chain without renewing an opening', async () => {
+  const s = await setup(), r = await recoveredReservation(s);
+  s.handle(() => data(r));
+  const value = await s.client.status(s.opening);
+  assert.equal(value.closedUnaccepted.length, 2);
+  assert.equal(value.closedUnaccepted[0].closedUnacceptedMs, 3000n);
+  assert.deepEqual(value.closedUnaccepted[0].core, Uint8Array.from(Buffer.from(r.closed_unaccepted[0].core, 'base64url')));
+  assert(Object.isFrozen(value.closedUnaccepted)); assert.equal(s.calls.length, 1); assert.equal(s.saved.length, 0);
+  assert.equal(value.expiresMs, 20000n); s.client.close();
+});
+
+test('missing, oversized, foreign, reordered or incompletely bound closure chains refuse', async () => {
+  for (const mutate of [r => delete r.closed_unaccepted, r => r.closed_unaccepted = null,
+    r => r.closed_unaccepted = Array(17).fill(r.closed_unaccepted[0]),
+    r => r.closed_unaccepted.reverse(), r => r.closed_unaccepted[0].extra = '1',
+    r => r.closed_unaccepted[1].superseded_by_challenge_id = id(uuid(210)),
+    r => r.closed_unaccepted[0].closed_unaccepted_ms = '1999',
+    r => r.closed_unaccepted[0].closed_unaccepted_ms = '3001',
+    r => r.closed_unaccepted[1].new_binding_id = r.new_binding_id,
+    r => { const c = Buffer.from(r.closed_unaccepted[0].core, 'base64url'); c[104] ^= 1; r.closed_unaccepted[0].core = b64(c); },
+    r => { const c = Buffer.from(r.closed_unaccepted[0].core, 'base64url'); c.writeBigUInt64BE(7n, 96); r.closed_unaccepted[0].core = b64(c); }]) {
+    const s = await setup(), r = await recoveredReservation(s); mutate(r); s.handle(() => data(r));
+    await assert.rejects(s.client.status(s.opening), OwnerProfileElectionError03);
+    assert.equal(s.calls.length, 1); s.client.close();
+  }
+});
 
 test('recovery stores only exact public input before same-origin reservation and returns no authority', async () => {
   const s = await setup(), r = await reservation(s), trace = [];

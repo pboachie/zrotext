@@ -10,9 +10,14 @@ export type ElectionRecovery03 = Readonly<{
   successor_manifest03: string;
 }>;
 export type ElectionCredentials03 = Readonly<{ password: string; factor: string }>;
+export type ClosedUnacceptedCandidate03 = Readonly<{
+  openingId: string; challengeId: string; newBindingId: string; core: Uint8Array;
+  closedUnacceptedMs: bigint; supersededByChallengeId: string;
+}>;
 export type ElectionReservationCandidate03 = Readonly<{
   openingId: string; challengeId: string; newBindingId: string; core: Uint8Array;
   successorManifest03: Uint8Array; issuedMs: bigint; expiresMs: bigint; status: 'reserved' | 'accepted';
+  closedUnaccepted: readonly ClosedUnacceptedCandidate03[];
 }>;
 export type ElectionReceiptCandidate03 = Readonly<{
   openingId: string; challengeId: string; bindingId: string; bindingGeneration: bigint;
@@ -141,8 +146,16 @@ function json(raw: string): unknown {
         const end = raw[at++]; if (end === '}') return out; if (end !== ',') fail('response');
       } return fail('response');
     }
+    if (raw[at] === '[') {
+      at++; const out: unknown[] = []; whitespace();
+      if (raw[at] === ']') { at++; return out; }
+      while (at < raw.length) {
+        if (out.length >= 16) fail('response'); out.push(value(depth + 1)); whitespace();
+        const end = raw[at++]; if (end === ']') return out; if (end !== ',') fail('response');
+      } return fail('response');
+    }
     // Only version/profile constants are JSON numbers. Counters are decimal strings.
-    if (raw[at] === '1' || raw[at] === '3') return Number(raw[at++]);
+    if (raw[at] === '1' || raw[at] === '2' || raw[at] === '3') return Number(raw[at++]);
     return fail('response');
   }
   const parsed = value(0); whitespace(); if (at !== raw.length) fail('response'); return parsed;
@@ -277,7 +290,7 @@ export class OwnerProfileElectionClient03 {
     } finally { if (response?.body && !response.body.locked) void response.body.cancel().catch(() => {}); this.#busy = false; }
   }
   async #reservation(value: unknown, opening: ElectionRecovery03): Promise<ElectionReservationCandidate03> {
-    const r = record(value, ['v', 'opening_id', 'challenge_id', 'new_binding_id', 'core', 'successor_manifest03', 'issued_ms', 'expires_ms', 'status']);
+    const r = record(value, ['v', 'opening_id', 'challenge_id', 'new_binding_id', 'core', 'successor_manifest03', 'issued_ms', 'expires_ms', 'status', 'closed_unaccepted']);
     const challenge = uuid(r.challenge_id), binding = uuid(r.new_binding_id), core = binary(r.core, 500);
     if (r.v !== 1 || r.opening_id !== opening.opening_id || r.successor_manifest03 !== opening.successor_manifest03
       || new Set([opening.opening_id, challenge, binding]).size !== 3 || !['reserved', 'accepted'].includes(r.status as string)) fail('scope');
@@ -286,9 +299,43 @@ export class OwnerProfileElectionClient03 {
     await this.#core(core, opening, challenge);
     const successor = binary(r.successor_manifest03, 366, 9753);
     if (!same(await sha(successor.subarray(0, -64)), core.subarray(224, 256))) fail('scope');
+    const closedUnaccepted = await this.#closures(r.closed_unaccepted, opening, challenge, binding, core);
     this.#live();
     return Object.freeze({ openingId: opening.opening_id, challengeId: challenge, newBindingId: binding, core,
-      successorManifest03: binary(r.successor_manifest03, 366, 9753), issuedMs: issued, expiresMs: expires, status: r.status as 'reserved' | 'accepted' });
+      successorManifest03: binary(r.successor_manifest03, 366, 9753), issuedMs: issued, expiresMs: expires, status: r.status as 'reserved' | 'accepted', closedUnaccepted });
+  }
+  async #closures(value: unknown, opening: ElectionRecovery03, challenge: string, binding: string,
+    current: Uint8Array): Promise<readonly ClosedUnacceptedCandidate03[]> {
+    if (!Array.isArray(value) || value.length > 16) fail('response');
+    const occupied = new Set([opening.opening_id, challenge, binding, uuidText(current.subarray(72, 88))]);
+    if (occupied.size !== 4) fail('scope');
+    const rows: ClosedUnacceptedCandidate03[] = [];
+    for (const item of value) {
+      const r = record(item, ['opening_id', 'challenge_id', 'new_binding_id', 'core', 'closed_unaccepted_ms', 'superseded_by_challenge_id']);
+      const openingId = uuid(r.opening_id), challengeId = uuid(r.challenge_id), newBindingId = uuid(r.new_binding_id);
+      for (const id of [openingId, challengeId, newBindingId]) { if (occupied.has(id)) fail('scope'); occupied.add(id); }
+      const core = binary(r.core, 500), closedUnacceptedMs = decimal(r.closed_unaccepted_ms);
+      await this.#core(core, opening, challengeId, true);
+      // Original02 binding, root, predecessor, selected keys and origin stay exact.
+      // Historical owner/device sessions, nonce and proposed successor digest may differ.
+      for (const [start, end] of [[72, 96], [104, 224], [256, 352], [400, 432]]) {
+        if (!same(core.subarray(start, end), current.subarray(start, end))) fail('scope');
+      }
+      const view = new DataView(core.buffer, core.byteOffset, core.byteLength);
+      const issued = view.getBigUint64(384), expires = view.getBigUint64(392);
+      if (expires <= issued || expires - issued > 300_000n || closedUnacceptedMs < expires) fail('response');
+      rows.push(Object.freeze({ openingId, challengeId, newBindingId, core, closedUnacceptedMs,
+        supersededByChallengeId: uuid(r.superseded_by_challenge_id) }));
+    }
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i], next = rows[i + 1], target = next?.core ?? current;
+      const view = new DataView(row.core.buffer, row.core.byteOffset, row.core.byteLength);
+      const targetView = new DataView(target.buffer, target.byteOffset, target.byteLength);
+      if (row.supersededByChallengeId !== (next?.challengeId ?? challenge)
+        || view.getBigUint64(96) >= targetView.getBigUint64(96)
+        || row.closedUnacceptedMs > targetView.getBigUint64(384)) fail('scope');
+    }
+    return Object.freeze(rows);
   }
   async reserve(opening: ElectionRecovery03, factor: ElectionCredentials03): Promise<ElectionReservationCandidate03> {
     const o = this.#recovery(opening), c = credentials(factor);
