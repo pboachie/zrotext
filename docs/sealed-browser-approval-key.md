@@ -3,7 +3,7 @@
 The source helper `SealedApprovalKeyStore` retains the exact nonextractable
 P-256 sealed line approval key through IndexedDB structured cloning. It uses a
 separate database and purpose from ordinary SMS approval and account root custody.
-It is not yet mounted by the owner setup UI.
+The existing sealed line setup exposes this as a separate, unchecked local-retention choice. Session-only setup remains available. This mount does not add profile03 election or change the original line protocol.
 
 An embedding must obtain explicit browser-local retention consent for a genuinely
 new sealed registration. `create(scope, {retain: true, newRegistration: true})`
