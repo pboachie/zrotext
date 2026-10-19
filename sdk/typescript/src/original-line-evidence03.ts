@@ -106,7 +106,7 @@ export type HistoricalRegistrationSignatures03 = Readonly<{
 }>;
 type RegistrationState = {
   account: Uint8Array; device: Uint8Array; line: Uint8Array; generation: bigint; registration: Uint8Array;
-  approvalPoint: Uint8Array; pairedPoint: Uint8Array; evidenceDigest: Uint8Array; completed: bigint; observed: bigint;
+  approvalPoint: Uint8Array; pairedPoint: Uint8Array; evidenceDigest: Uint8Array; completed: bigint; expires: bigint; observed: bigint;
 };
 const verifiedRegistrations = new WeakMap<HistoricalRegistrationSignatures03, RegistrationState>();
 
@@ -145,7 +145,7 @@ export async function verifyOriginalRegistrationSignatures03(
   const result = Object.freeze({ accountHex: hex(account), deviceHex: hex(device), lineHex: hex(line), generation,
     registrationHex: hex(registration), originalUserHex: hex(user), originalSessionHex: hex(session),
     evidenceSha256Hex: hex(evidenceDigest), completedMs: completed });
-  verifiedRegistrations.set(result, { account, device, line, generation, registration, approvalPoint, pairedPoint, evidenceDigest, completed, observed: now });
+  verifiedRegistrations.set(result, { account, device, line, generation, registration, approvalPoint, pairedPoint, evidenceDigest, completed, expires, observed: now });
   return result;
 }
 
@@ -166,7 +166,7 @@ export async function verifyOriginalActivationSignatures03(
   const registrationId = c.id(), oldBinding = c.id(), devicePoint = c.take(65), ownerPoint = c.take(65), deviceStatement = c.take(255);
   const deviceDer = c.take(c.u16()), ownerStatement = c.take(314), ownerDer = c.take(c.u16()), accepted = c.time(); c.end();
   if (!same(registrationId, r.registration) || !same(binding, oldBinding) || !same(devicePoint, r.pairedPoint)
-    || !same(ownerPoint, r.approvalPoint) || accepted < r.completed || accepted > now || now < r.observed) fail();
+    || !same(ownerPoint, r.approvalPoint) || accepted < r.completed || accepted >= r.expires || accepted > now || now < r.observed) fail();
   const deviceRaw = rawFromOriginalDer(deviceDer), ownerRaw = rawFromOriginalDer(ownerDer), d = new Cursor(deviceStatement);
   if (!same(d.take(deviceDomain.length), deviceDomain) || !same(d.take(2), Uint8Array.of(2, 2))
     || !same(d.id(), r.account) || !same(d.id(), r.line) || !same(d.id(), r.device) || d.time() !== r.generation) fail();

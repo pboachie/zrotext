@@ -18,7 +18,8 @@ not extend it or require another registration.
 from this module, the exact old binding and selected reader IDs, and a trusted
 observation time that has not regressed. It checks the original sealed-purpose
 v2 statement, complete-set observation framing, both original signing points,
-device and owner signatures, and the owner's hash of the exact device DER.
+device and owner signatures, the owner's hash of the exact device DER, and an
+activation checkpoint before the original registration expiry.
 It derives the existing `OldBindingIdentity03` commitment from those originals.
 Caller buffers are copied before asynchronous work; returned records contain
 immutable strings and counters. A copied registration result is refused.

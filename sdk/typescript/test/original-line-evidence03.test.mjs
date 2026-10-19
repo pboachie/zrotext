@@ -227,3 +227,12 @@ test('later verifier calls refuse a regressing trusted observation instead of re
   const old = await activation(actBytes(f), r, { ...f.activationSelection, trustedNowMs: f.now + 1000n });
   assert.equal(old.acceptedMs, f.accepted);
 });
+
+test('activation must have completed before the exact original registration expiry', async () => {
+  const f = await fixture(), r = await registration(regBytes(f), f.selected);
+  const before = await activation(actBytes({ ...f, accepted: f.expires - 1n }), r, f.activationSelection);
+  assert.equal(before.acceptedMs, f.expires - 1n);
+  for (const accepted of [f.expires, f.expires + 1n, f.now]) {
+    await assert.rejects(activation(actBytes({ ...f, accepted }), r, f.activationSelection));
+  }
+});
