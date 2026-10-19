@@ -18,7 +18,15 @@ fn fixture() -> (RootSecret, Proposal, Expected) {
         predecessor_version: before.version,
         predecessor_digest: hash(&old.predecessor()[..old.predecessor().len() - 64]),
         phone_reader: selected(1),
-        phone_signer: selected(4),
+        // Independent enrollment identity, deliberately different from role4.
+        phone_signer: key_id(
+            4,
+            &SigningKey::from_slice(&[27; 32])
+                .unwrap()
+                .verifying_key()
+                .to_sec1_point(false)
+                .as_bytes(),
+        ),
         issued_ms: 2000,
     };
     let mut unsigned = b"ZTMA\x03\x03\x02".to_vec();

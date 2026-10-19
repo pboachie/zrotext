@@ -13,6 +13,7 @@ pub struct Scope {
     pub predecessor_version: u64,
     pub predecessor_digest: [u8; 32],
     pub phone_reader: [u8; 32],
+    /// Independently paired enrollment signer ID; not manifest conversation role4.
     pub phone_signer: [u8; 32],
     pub issued_ms: u64,
 }
@@ -131,22 +132,20 @@ pub fn inspect<'a>(p: &'a Proposal, e: &Expected, now: u64) -> Result<&'a Scope>
     // equivalent02 grammar as well; no general03 signer or key mutation is exposed.
     let equivalent02 = [&b"ZTMA\x02"[..], &exact[7..]].concat();
     manifest(&equivalent02, false, &e.identity, now)?;
-    for (role, id) in [(1, s.phone_reader), (4, s.phone_signer)] {
-        let selected: Vec<_> = before
-            .records
-            .iter()
-            .filter(|r| {
-                r[0] == role
-                    && r[148] == 1
-                    && u64::from_be_bytes(r[132..140].try_into().unwrap()) <= now
-                    && now < u64::from_be_bytes(r[140..148].try_into().unwrap())
-                    && r[98..114] == s.device
-                    && r[114..130] == s.line
-            })
-            .collect();
-        if selected.len() != 1 || selected[0][1..33] != id {
-            return Err(Error);
-        }
+    let selected: Vec<_> = before
+        .records
+        .iter()
+        .filter(|r| {
+            r[0] == 1
+                && r[148] == 1
+                && u64::from_be_bytes(r[132..140].try_into().unwrap()) <= now
+                && now < u64::from_be_bytes(r[140..148].try_into().unwrap())
+                && r[98..114] == s.device
+                && r[114..130] == s.line
+        })
+        .collect();
+    if selected.len() != 1 || selected[0][1..33] != s.phone_reader {
+        return Err(Error);
     }
     Ok(s)
 }
@@ -219,6 +218,10 @@ mod public_vector {
             scope,
         };
         let p = decode(&bytes(&v["proposalHex"])).unwrap();
+        assert_eq!(
+            key_id(4, &bytes(&v["deviceEnrollmentSigningPointHex"])),
+            expected.scope.phone_signer
+        );
         assert!(inspect(&p, &expected, n("issuedMs")).is_ok());
         assert_eq!(p.predecessor, bytes(&v["predecessorSignedHex"]));
         assert_eq!(p.unsigned, bytes(&v["unsigned03Hex"]));

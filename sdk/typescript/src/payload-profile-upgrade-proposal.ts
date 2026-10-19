@@ -8,6 +8,8 @@ export type ProfileUpgradeScope03 = Readonly<{
   accountId: Uint8Array; deviceId: Uint8Array; lineId: Uint8Array;
   origin: string; rootFingerprint: Uint8Array; predecessorVersion: bigint;
   predecessorDigest: Uint8Array; phoneReaderKeyId: Uint8Array; phoneSigningKeyId: Uint8Array;
+  // phoneSigningKeyId is the independently paired device ENROLLMENT key ID,
+  // not the manifest role4 conversation signer. This proposal grants neither.
   issuedMs: bigint;
 }>;
 const max = (1n << 63n) - 1n, enc = new TextEncoder();
@@ -50,11 +52,9 @@ async function prepare(input: ProfileUpgradeScope03, original: Manifest02, signe
   const pin = join(Uint8Array.of(90, 84, 82, 80, 2), identity.accountId, u64(1n), identity.rootPoint);
   const actual = new Uint8Array(await crypto.subtle.digest('SHA-256', join(enc.encode('ZTSE/root-pin/v2\0'), pin)));
   if (!same(actual, s.rootFingerprint)) throw Error('Profile upgrade independent root refused');
-  for (const [role, id] of [[1, s.phoneReaderKeyId], [4, s.phoneSigningKeyId]] as const) {
-    const selected = before.keys.filter(k => k.role === role && k.state === 1 && k.fromMs <= now && now < k.untilMs
-      && same(k.deviceId, s.deviceId) && same(k.lineId, s.lineId));
-    if (selected.length !== 1 || !same(selected[0].keyId, id)) throw Error('Profile upgrade original selected key refused');
-  }
+  const selected = before.keys.filter(k => k.role === 1 && k.state === 1 && k.fromMs <= now && now < k.untilMs
+    && same(k.deviceId, s.deviceId) && same(k.lineId, s.lineId));
+  if (selected.length !== 1 || !same(selected[0].keyId, s.phoneReaderKeyId)) throw Error('Profile upgrade original selected key refused');
   const unsigned = join(Uint8Array.of(90, 84, 77, 65, 3, 3, 2), originalBytes.subarray(5, -64));
   unsigned.set(u64(identity.version + 1n), 31); unsigned.set(u64(s.issuedMs), 39); unsigned.set(identity.digest, 55);
   return { scope: s, originalBytes, unsigned };

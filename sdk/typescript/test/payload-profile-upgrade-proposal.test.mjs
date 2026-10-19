@@ -5,10 +5,11 @@ import { readFile } from 'node:fs/promises';
 import { fixture, account, device, line, present, join, frame, canonicalP256Signature, enrollRootPin02, verifyManifest02 } from './fixtures/profile03-outbound-fixture.mjs';
 import { encodePayloadProfileUpgradeProposal03, verifyPayloadProfileUpgradeOutput03 } from '../dist/payload-profile-upgrade-proposal.js';
 import { verifiedManifestIdentity03 } from '../dist/draft03-manifest.js';
+import { keyId } from '../dist/draft01.js';
 function input(f) {
   return { scope: { accountId: account.slice(), deviceId: device.slice(), lineId: line.slice(), origin: 'https://owner.invalid',
     rootFingerprint: f.fingerprint.slice(), predecessorVersion: 1n, predecessorDigest: f.old.digest.slice(),
-    phoneReaderKeyId: f.records[0].id.slice(), phoneSigningKeyId: f.records[3].id.slice(), issuedMs: present },
+    phoneReaderKeyId: f.records[0].id.slice(), phoneSigningKeyId: f.core.slice(288, 320), issuedMs: present },
   predecessor: f.prior, originalSigned02: f.old.bytes.slice(), nowMs: present };
 }
 async function signed(f, unsigned) {
@@ -18,6 +19,7 @@ async function signed(f, unsigned) {
 }
 test('the first03 proposal preserves every original key and expiry and verifies returned genuine output', async () => {
   const f = await fixture(), selected = input(f);
+  assert.notDeepEqual(selected.scope.phoneSigningKeyId, f.records[3].id);
   const result = await encodePayloadProfileUpgradeProposal03(selected);
   assert.deepEqual(result.proposal.slice(0, 5), Uint8Array.of(90, 84, 80, 85, 1));
   assert.deepEqual(result.unsigned.slice(153), f.old.bytes.slice(151, -64));
@@ -28,7 +30,7 @@ test('the first03 proposal preserves every original key and expiry and verifies 
 });
 test('scope substitution, missing original checkpoint, future issuance and expired original refuse', async () => {
   const f = await fixture(), selected = input(f);
-  for (const key of ['accountId', 'deviceId', 'lineId', 'rootFingerprint', 'predecessorDigest', 'phoneReaderKeyId', 'phoneSigningKeyId']) {
+  for (const key of ['accountId', 'deviceId', 'lineId', 'rootFingerprint', 'predecessorDigest', 'phoneReaderKeyId']) {
     const changed = { ...selected.scope, [key]: selected.scope[key].slice() }; changed[key][0] ^= 1;
     await assert.rejects(encodePayloadProfileUpgradeProposal03({ ...selected, scope: changed }));
   }
@@ -60,6 +62,7 @@ test('independently signed public vector matches exact proposal bytes and return
   const vector = JSON.parse(await readFile(new URL('../../../protocol/v1/vectors/sealed-profile03-upgrade-proposal-01.json', import.meta.url)));
   const b = value => Uint8Array.from(Buffer.from(value, 'hex')), s = vector.scope, nowMs = BigInt(s.issuedMs);
   const originalSigned02 = b(vector.predecessorSignedHex);
+  assert.deepEqual(await keyId(0x101, b(vector.deviceEnrollmentSigningPointHex)), b(s.phoneSigningKeyId));
   const trust = await enrollRootPin02(b(vector.rootPinHex), b(s.rootFingerprint));
   const predecessor = await verifyManifest02(originalSigned02, trust, nowMs);
   const selected = { scope: { accountId: b(s.account), deviceId: b(s.device), lineId: b(s.line), origin: s.origin,

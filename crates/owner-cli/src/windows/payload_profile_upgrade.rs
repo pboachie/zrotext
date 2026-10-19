@@ -137,7 +137,7 @@ pub(super) fn run(args: &[String], parent: PathBuf) -> Result<()> {
             display_hex(&reviewed.predecessor_digest)
         ),
         format!(
-            "Existing phone reader: {}\r\nExisting phone signer: {}\r\nIssued milliseconds: {}\r\n",
+            "Existing phone reader: {}\r\nIndependently paired device enrollment signer: {}\r\nIssued milliseconds: {}\r\n",
             display_hex(&reviewed.phone_reader),
             display_hex(&reviewed.phone_signer),
             reviewed.issued_ms

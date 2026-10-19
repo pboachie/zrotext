@@ -18,8 +18,12 @@ The builder requires a genuine verified02 handle and its separately retained
 original signed bytes, the compared root, selected existing phone identities and
 trusted time. The custodian must supply intended scope and predecessor high-water
 independently; decoding a downloaded proposal cannot supply those expectations.
-The predecessor signature, original root, selected active role1 reader and role4
-signer and their exact device/line are verified. Original02 chain provenance and
+The predecessor signature, original root, and selected active role1 reader with
+its exact device/line are verified. The phone signer field is the independently
+paired device enrollment signing key ID, which the caller and custodian must
+obtain from actual enrollment, not from manifest role4. Role4 is a separate
+conversation signer and may differ; all its bytes stay unchanged. The unsigned
+successor does not authorize the enrollment signer. Original02 chain provenance and
 the supported initial generation remain installation obligations.
 
 Only the following bytes change: the existing03 profile/predecessor header,
