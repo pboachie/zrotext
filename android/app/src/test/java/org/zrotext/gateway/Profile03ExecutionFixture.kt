@@ -18,8 +18,12 @@ import org.json.JSONObject
  * not prove HPKE/provider interoperability. The real SIM observation/runtime fixture supplies
  * its process-only installed v2 permit; no persisted row or test boolean substitutes for it.
  */
-internal class Profile03ExecutionFixture(private val selectedReaderUntilMs: Long = 900_000) : AutoCloseable {
-    val line = LineActivationV2RuntimeFixture(true)
+internal class Profile03ExecutionFixture(private val selectedReaderUntilMs: Long = 900_000, canonicalOrigin: String? = null,
+    distinctEventSigner: Boolean = false, private val includeEventSigner: Boolean = true) : AutoCloseable {
+    val enrollment = pair()
+    val eventSigning = if (distinctEventSigner) pair() else enrollment
+    private val originHash = canonicalOrigin?.let { hex(sha(it.toByteArray(Charsets.UTF_8))) } ?: testEvidenceIdentity.originHash
+    val line = LineActivationV2RuntimeFixture(true, enrollment, originHash)
     val binding = line.installSealed()
     val account = uuid(line.account)
     val device = uuid(line.device)
@@ -32,11 +36,10 @@ internal class Profile03ExecutionFixture(private val selectedReaderUntilMs: Long
     val oldBinding = UUID(0, 15)
     val newBinding = UUID(0, 16)
     val challenge = UUID(0, 17)
-    val session = SealedDispatchExecutor.Session(line.account, line.device, line.epoch, 1, UUID(0, 18), testEvidenceIdentity.originHash)
+    val session = SealedDispatchExecutor.Session(line.account, line.device, line.epoch, 1, UUID(0, 18), originHash)
     val root = pair()
     val reader = pair()
     val archive = pair()
-    val enrollment = pair()
     val approval = pair()
     val signer = pair()
     val now = 100_020L
@@ -113,9 +116,11 @@ internal class Profile03ExecutionFixture(private val selectedReaderUntilMs: Long
             point(key) + (if (role == 1 || role == 4) device else ByteArray(16)) +
             (if (role in setOf(1, 4, 5)) lineId else ByteArray(16)) + byteArrayOf(0, scope.toByte()) + long(1) +
             long(if (role == 1) selectedReaderUntilMs else 900_000) + byteArrayOf(1)
-        val rows = row(1, reader, 4) + row(2, archive, 12) + row(4, enrollment, 2) + row(5, signer, 1) + row(6, root, 0)
+        val rows = row(1, reader, 4) + row(2, archive, 12) +
+            (if (includeEventSigner) row(4, eventSigning, 2) else ByteArray(0)) + row(5, signer, 1) + row(6, root, 0)
         val header = if (profile == 2) ascii("ZTMA") + byteArrayOf(2) else ascii("ZTMA") + byteArrayOf(3, 3, 2)
-        val unsigned = header + account + long(1) + long(version) + long(99_000) + long(900_000) + previous + point(root) + byteArrayOf(5) + rows
+        val unsigned = header + account + long(1) + long(version) + long(99_000) + long(900_000) + previous + point(root) +
+            byteArrayOf((if (includeEventSigner) 5 else 4).toByte()) + rows
         return unsigned + rawSign(root, ReviewedIntent03.framed("ZTSE/manifest/v$profile", unsigned))
     }
     private fun envelope(): ByteArray {

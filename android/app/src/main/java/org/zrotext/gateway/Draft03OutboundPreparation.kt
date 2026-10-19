@@ -21,6 +21,7 @@ internal object Draft03OutboundPreparation {
         val selectionEpoch: Long, val ownerUserId: UUID, val ownerSessionId: UUID,
         val intervalStartsMs: Long, val intervalExpiresMs: Long,
         val selectedSubscriptionId: Int, activeCards: List<ActiveSimCard>?,
+        internal val physicalSelection: InstalledSelectedLineV2? = baseBinding.installedSelectionV2(),
     ) {
         private val signature = intentSignature.copyOf()
         private val cards = activeCards?.toList()
@@ -58,6 +59,7 @@ internal object Draft03OutboundPreparation {
         var clear: CharArray? = null
         var verified: Draft03OutboundEnvelope? = null
         var initialIdentity: String? = null
+        var initialPhysical: InstalledSelectedLineV2? = null
         var lastNow = 0L
         val dao = db.sealedPreparations()
         val record = SealedPreparationRecord(grant.accountId.toString(), grant.messageId.toString(),
@@ -74,7 +76,7 @@ internal object Draft03OutboundPreparation {
                 line.lineId == grant.lineId.toString() && line.generation == c.installation.oldGeneration &&
                 line.subscriptionId == c.selectedSubscriptionId)
             val permit = checkNotNull(line.installedSelectionV2())
-            check(permit.isCurrent() && permit.record.isInstalled() && permit.matches(line) &&
+            check(permit === c.physicalSelection && permit.isCurrent() && permit.record.isInstalled() && permit.matches(line) &&
                 SimCardContinuity.matches(line.activatedSim(), c.cards()))
         }
         fun fresh(): Current {
@@ -97,6 +99,8 @@ internal object Draft03OutboundPreparation {
             check(grant.accountId == session.accountId && grant.deviceId == session.deviceId &&
                 grant.connectionEpoch == session.connectionEpoch && grant.deploymentEpoch == session.deploymentEpoch)
             selected(c, c.baseBinding)
+            check(initialPhysical == null || initialPhysical === c.physicalSelection)
+            initialPhysical = checkNotNull(c.physicalSelection)
             // Reentrant Room transaction: when called by reserve/finish this shares their writer snapshot.
             db.profile03Elections().requireInstalled(row, grant.attemptId.toString()) { selected(c, it) }
             val instant = now() // Authority, Room and SIM/key providers above may wait.

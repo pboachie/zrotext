@@ -76,6 +76,14 @@ pause reads and retain recovery history.
 
 ## Message path and recovery limits
 
+The enrolled device-authentication/E500/fetch signer is independent of manifest
+role04, which authorizes inbound event signing. Setup, history comparison and
+payload-reader availability check role01 and independently verify the original
+registered enrollment key; they accept a distinct or absent role04 record.
+Message-direction signer gates remain separate: outbound requires role05, and
+the existing inbound02 consumer still requires its exact role04 point in actual
+local signer custody. Availability does not grant that inbound capability.
+
 The ordinary raw03 grant path independently checks local current selection before
 the exact signed HTTPS fetch. It verifies the sidecar's original proofs, same
 existing nonexportable keys and current complete-SIM permit, then composes the
@@ -86,8 +94,10 @@ one-use radio-start CAS remain required. Unknown effects cannot retry.
 The original complete-v2 permit is process-only and is withdrawn on connection or
 process loss. Saved observation tokens are historical declarations, not current
 OS continuity. Same-phone reconnect needs the distinct fresh phone/owner review
-and selected-binding acknowledgment tracked in
-[#1551](https://github.com/pboachie/zrotext/issues/1551). New-phone replacement remains
+and selected-binding acknowledgment implemented by the
+[separate same-phone review](android-same-phone-selection-review.md). Its source
+still requires integrated no-radio server/database/provider qualification before
+repeatable hosted messaging can be claimed. New-phone replacement remains
 the separate proposed operation in [#1469](https://github.com/pboachie/zrotext/issues/1469).
 This source does not restore an old monitor, relabel a binding generation or
 claim repeatable reviewer access from first-session preparation.

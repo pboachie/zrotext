@@ -49,6 +49,8 @@ internal class Profile03RadioContext(
     override fun requireGrantBinding(selected: LocalLineBinding) {
         current.intent.requireGrant(grant)
         val row = current.installation
+        val physical = checkNotNull(current.physicalSelection)
+        check(selected.installedSelectionV2() === physical && physical.isCurrent() && physical.matches(selected))
         check(selected == binding && selected.protocolVersion == 2 && selected.v2Purpose == "sealed" &&
             row.state == "installed" && row.accountId == accountId && row.deviceId == deviceId &&
             row.lineId == selected.lineId && row.oldGeneration == selected.generation &&

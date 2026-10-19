@@ -268,6 +268,29 @@ class DeviceSigningKeyStore(
         return raw
     }
 
+    /** Caller commits the distinct refresh reservation before this dedicated signing operation. */
+    internal fun signSelectionRefresh03(core: SelectionRefresh03.Core, observation: ByteArray,
+        expectedPoint: ByteArray, current: () -> Unit): ByteArray = signExistingRefreshTranscript(
+        SelectionRefresh03.deviceTranscript(core, observation), expectedPoint, current)
+
+    /** Caller atomically installs the original exact accepted refresh row before this ACK. */
+    internal fun signSelectionRefreshInstalled03(bundle: SelectionRefresh03.Bundle, actualDeviceSessionDigest: ByteArray,
+        expectedPoint: ByteArray, current: () -> Unit): ByteArray = signExistingRefreshTranscript(
+        SelectionRefresh03.installedTranscript(bundle, actualDeviceSessionDigest), expectedPoint, current)
+
+    private fun signExistingRefreshTranscript(transcript: ByteArray, expectedPoint: ByteArray, current: () -> Unit): ByteArray {
+        val point = expectedPoint.copyOf()
+        current()
+        check(java.security.MessageDigest.isEqual(point, existingConversationPublicPoint()))
+        current()
+        val raw = Draft01SignaturePrimitive.canonicalRawFromDer(sign(transcript))
+        current()
+        check(java.security.MessageDigest.isEqual(point, existingConversationPublicPoint()) &&
+            ConversationContentCrypto.verifyRaw(raw, point, transcript))
+        current()
+        return raw
+    }
+
     /** Existing enrolled identity only. A received line challenge cannot create a replacement key. */
     internal fun existingLineActivationV2Point(purpose: LineActivationV2Purpose): ByteArray {
         if (purpose == LineActivationV2Purpose.SEALED) return existingConversationPublicPoint()

@@ -51,6 +51,11 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
     private val wire = ConversationSocketWire(socket, { time.snapshot()?.first?.session?.let(ConversationPhoneSession::from) })
     private val reader by lazy { Profile03CurrentReader(application, origin, db, trust, recipients, keys, time, ::current) }
     private val setup by lazy { Profile03SetupRuntime(application, origin, db, trust, recipients, keys, time, ::current) }
+    private val refresh = SelectionRefresh03Runtime(origin, db, trust, { recipients }, keys, time, ::current, socket::send) {
+        synchronized(effects) { check(current()); projection = null }
+        Profile03MessagingStatus.update(this, "SIM approval acknowledged. Checking current messaging availability.")
+        requestCurrentIfDue()
+    }
     private data class Pending(val challenge: UUID, val line: UUID, val started: Long)
     private var pending: Pending? = null
     private var requests = 0
@@ -61,7 +66,14 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
     private val fetch = SealedEnvelope03Client(streamUrl, client, { grant ->
         keys.signSealedEnvelopeFetch03(grant, keys.existingConversationPublicPoint()) { requireGrantCurrent(grant) }
     }, ::requireGrantCurrent)
-    init { Profile03MessagingStatus.open(this) }
+    init {
+        Profile03MessagingStatus.open(this)
+        SelectionRefresh03Mount.attach(this, ::current) { decision ->
+            synchronized(effects) { check(current()); projection = null }
+            refresh.acceptDecision(decision)
+            Profile03MessagingStatus.update(this, "Fresh SIM review saved. Approve this selection in your owner workspace.")
+        }
+    }
 
     private fun current() = !closed && socketCurrent() && lineConsumerVersion() == 2
     fun start() = current() && time.request()
@@ -89,6 +101,18 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
                 requestCurrentIfDue()
             }.onFailure { close() }
         }
+    }
+    fun selectionRefresh(raw: ByteArray) {
+        val owned = raw.copyOf()
+        JournalRuntime.io.execute { runCatching {
+            check(current())
+            when (Profile03Json.objectValue(owned)["type"]) {
+                "payload_profile_selection_challenge03" -> refresh.challenge(owned)
+                "payload_profile_selection_approved03" -> refresh.approved(owned)
+                "payload_profile_selection_install_ack03" -> refresh.installedAck(owned)
+                else -> error("Refresh direction")
+            }
+        }.onFailure { close() } }
     }
     /** Bounded reads only; it never opens/reserves/signs an election. */
     private fun requestCurrentIfDue() {
@@ -210,6 +234,8 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
     override fun close() {
         // Withdraw before acquiring a lock that a blocked preparation/radio operation may hold.
         closed = true
+        SelectionRefresh03Mount.detach(this)
+        refresh.close()
         Profile03MessagingStatus.update(this, "Messaging paused. Your pairing and setup history are saved.")
         Profile03BootstrapClock.withdraw(this)
         time.close(); wire.invalidate()

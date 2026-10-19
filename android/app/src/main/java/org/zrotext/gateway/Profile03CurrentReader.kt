@@ -24,7 +24,7 @@ internal class Profile03CurrentReader(context: Context, private val origin: Stri
     class Selection internal constructor(val election: Draft03PayloadElectionProof, val authority: Draft03ManifestAuthority,
         val selected: Draft03PayloadElectionProof.CurrentAuthority03, val installation: Profile03ElectionRecord,
         val baseBinding: LocalLineBinding, val user: UUID?, val ownerSession: UUID?, val epoch: Long,
-        val selectedSubscription: Int, private val activeCards: List<ActiveSimCard>?) {
+        val selectedSubscription: Int, private val activeCards: List<ActiveSimCard>?, val physical: InstalledSelectedLineV2) {
         fun cards() = activeCards?.toList()
         override fun toString() = "Profile03CurrentSelection(verified-local-evidence)"
     }
@@ -48,7 +48,7 @@ internal class Profile03CurrentReader(context: Context, private val origin: Stri
         check(socketCurrent() && value.baseBinding.installedSelectionV2()?.isCurrent() == true)
         return Draft03OutboundPreparation.Current(value.election, value.authority, value.selected, value.installation,
             value.baseBinding, intent, packet.signature(), packet.acceptedMs, packet.selectionEpoch, intent.ownerUserId,
-            intent.ownerSessionId, packet.intervalStartsMs, packet.intervalExpiresMs, value.selectedSubscription, value.cards())
+            intent.ownerSessionId, packet.intervalStartsMs, packet.intervalExpiresMs, value.selectedSubscription, value.cards(), value.physical)
     }
 
     /** Only a nonce-matched authenticated current socket reply or device fetch may call this.
@@ -129,8 +129,7 @@ internal class Profile03CurrentReader(context: Context, private val origin: Stri
             same(bytes("device_signing_key_id"), signingId(enrolled)) &&
             same(bytes("approval_key_id"), signingId(original.approvalPoint())) &&
             same(bytes("device_session_digest"), identity.deviceSessionDigest(enrolled)))
-        history.requireOriginalKeys(uuid(session.deviceId), uuid(expectedLine), hardwareReader.keyId,
-            signingId(enrolled), hardwareReader.point, enrolled)
+        history.requireOriginalReader(uuid(session.deviceId), uuid(expectedLine), hardwareReader.keyId, hardwareReader.point)
         val election = Draft03PayloadElectionProof.verifyAccepted(bundle, core, accepted, history.proof,
             successor, enrolled, original.approvalPoint())
         val authority = history.current03(successor, now())
@@ -141,8 +140,8 @@ internal class Profile03CurrentReader(context: Context, private val origin: Stri
             accepted.electionCommitment, accepted.electionBundleSha256, number("compared_ms"),
             number(if (deviceOnly) "selection_expires_ms" else "permission_expires_ms"))
         election.requireCurrent(authority, selected, now())
-        authority.requireSelectedDeviceKeys(accepted.deviceId, accepted.lineId, hardwareReader.keyId, hardwareReader.point,
-            signingId(enrolled), enrolled, now(), selected.permissionExpiresAtMs)
+        authority.requireSelectedReader(accepted.deviceId, accepted.lineId, hardwareReader.keyId, hardwareReader.point,
+            now(), selected.permissionExpiresAtMs)
         if (!deviceOnly) require(same(bytes("owner_session_digest"), sha(ReviewedIntent03.framed("ZTSE/line/payload-profile/owner-session/v1",
             accepted.accountId + uuid(fieldId("user_id")) + uuid(fieldId("owner_session_id"))))))
         for (permission in listOf(Manifest.permission.SEND_SMS, Manifest.permission.RECEIVE_SMS, Manifest.permission.READ_PHONE_STATE)) {
@@ -158,6 +157,15 @@ internal class Profile03CurrentReader(context: Context, private val origin: Stri
             line.generation == installation.oldGeneration && line.subscriptionId == selectedSubscription &&
             permit.isCurrent() && permit.matches(line) && original.matchesLocal(permit.record) &&
             SimCardContinuity.matches(line.activatedSim(), cards))
+        val refreshed = permit.refresh03
+        if (deviceOnly) {
+            val physical = Profile03Json.nested(f, "physical_selection")
+            if (refreshed == null) require(physical.keys == setOf("kind") && physical["kind"] == "original_v2")
+            else refreshed.requireProjection(physical, number("selection_epoch"), bytes("device_session_digest"), db)
+        } else refreshed?.requireContext(number("selection_epoch"), bytes("device_session_digest"), db)
+        if (refreshed != null) require(refreshed.record.electionChallengeId == installation.challengeId &&
+            refreshed.record.electionIdentitySha256 == installation.acceptedEvidenceSha256 &&
+            refreshed.record.bindingId == installation.newBindingId && refreshed.record.bindingGeneration == installation.newGeneration)
         election.requireCurrent(authority, selected, now())
         check(permit.isCurrent())
         if (install) {
@@ -170,7 +178,7 @@ internal class Profile03CurrentReader(context: Context, private val origin: Stri
         check(permit.isCurrent())
         return Selection(election, authority, selected, installation, line,
             if (deviceOnly) null else fieldId("user_id"), if (deviceOnly) null else fieldId("owner_session_id"),
-            number("selection_epoch"), selectedSubscription, cards)
+            number("selection_epoch"), selectedSubscription, cards, permit)
     }
     override fun toString() = "Profile03CurrentReader(local-and-authenticated-device-evidence)"
     companion object {
@@ -181,7 +189,7 @@ internal class Profile03CurrentReader(context: Context, private val origin: Stri
             "trust_generation", "manifest_version", "manifest_digest", "election_digest", "election_bundle_sha256", "compared_ms",
             "permission_expires_ms", "evidence")
         private val DEVICE_SELECTION_KEYS = (CURRENT_KEYS - setOf("user_id", "owner_session_id", "owner_session_digest", "permission_expires_ms")) +
-            setOf("kind", "selection_expires_ms")
+            setOf("kind", "selection_expires_ms", "physical_selection")
         private val EVIDENCE_KEYS = setOf("root_pin", "prior_manifest02", "prior_accepted_ms", "accepted_manifest03", "accepted_ms",
             "bundle", "device_signing_point", "owner_approval_point", "registration_evidence", "activation_evidence")
         private fun id(f: Map<String, Any>, name: String): UUID {

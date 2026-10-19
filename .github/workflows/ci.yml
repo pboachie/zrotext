@@ -148,6 +148,8 @@ jobs:
           /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_device_stream_schema.py'
       - name: Complete selected-line v2 protocol contract
         run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_line_activation_v2.py'
+      - name: Same-phone selection refresh03 contract
+        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_selection_refresh03_vectors.py'
       - name: Candidate encrypted workflow context contract
         run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_workflow_context.py'
       - name: Candidate provider SMS submit-body codec

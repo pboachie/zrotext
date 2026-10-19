@@ -340,7 +340,8 @@ class AuthenticatedGatewayService : Service() {
                     val frame = JSONObject(text)
                     val type = frame.opt("type")
                     if (selectedTuple.sealedVersion == 3 && type in setOf("payload_profile_session03", "payload_profile_challenge03",
-                            "payload_profile_current03", "payload_profile_current03_unavailable", "sealed_execution_grant")) {
+                            "payload_profile_current03", "payload_profile_current03_unavailable", "sealed_execution_grant",
+                            "payload_profile_selection_challenge03", "payload_profile_selection_approved03", "payload_profile_selection_install_ack03")) {
                         check(machine.phase == DeviceStreamMachine.Phase.ACTIVE)
                         val consumer = checkNotNull(profile03Connection)
                         when (type) {
@@ -349,6 +350,8 @@ class AuthenticatedGatewayService : Service() {
                             "payload_profile_current03" -> consumer.acceptCurrent(raw)
                             "payload_profile_current03_unavailable" -> consumer.acceptUnavailable(raw)
                             "sealed_execution_grant" -> consumer.grant(text)
+                            "payload_profile_selection_challenge03", "payload_profile_selection_approved03",
+                            "payload_profile_selection_install_ack03" -> consumer.selectionRefresh(raw)
                         }
                         return
                     }

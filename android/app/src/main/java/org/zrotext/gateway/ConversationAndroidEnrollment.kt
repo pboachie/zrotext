@@ -113,10 +113,10 @@ internal object ConversationAndroidEnrollment {
         current()
         val reader = DevicePayloadKeyStore(app, readerAlias(line)).existingPublic()
         check(reader.security in setOf(PayloadKeySecurity.STRONGBOX, PayloadKeySecurity.TRUSTED_ENVIRONMENT))
-        val signer = DeviceSigningKeyStore(app).existingConversationPublicPoint()
+        DeviceSigningKeyStore(app).existingConversationPublicPoint() // Independent enrolled identity; not manifest role04.
         current()
         return Draft02AndroidTrustStorage(app).use { storage ->
-            Profile03ManifestBootstrap.install(Draft02TrustStore(storage), chain, line, reader, signer, ::ramNow, ::current)
+            Profile03ManifestBootstrap.install(Draft02TrustStore(storage), chain, line, reader, ::ramNow, ::current)
         }
     }
 }

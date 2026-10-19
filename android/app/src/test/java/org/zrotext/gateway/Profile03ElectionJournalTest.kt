@@ -150,13 +150,14 @@ class Profile03ElectionJournalTest {
                 } finally { db.close() }
             }
             context.openOrCreateDatabase(name, Context.MODE_PRIVATE, null).use {
+                it.execSQL("DROP TABLE selection_refresh03")
                 it.execSQL("DROP TABLE profile03_elections")
                 it.version = 14
             }
             Room.databaseBuilder(context, SmsJournalDatabase::class.java, name).allowMainThreadQueries()
-                .addMigrations(SmsJournalDatabase.MIGRATION_14_15).build().let { db ->
+                .addMigrations(SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16).build().let { db ->
                     try {
-                        assertEquals(15, db.openHelper.readableDatabase.version)
+                        assertEquals(16, db.openHelper.readableDatabase.version)
                         assertEquals(line, db.attempts().currentLineBinding())
                         assertEquals(AttemptState.UNKNOWN, db.attempts().getAttempt(attempt)?.state)
                         assertNull(db.profile03Elections().installed(line.accountId, line.lineId))
