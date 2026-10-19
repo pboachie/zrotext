@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Closed installed writer graph; no accepted election or effect authority.
+//! Closed installed writer graph; structural acceptance is not effect authority.
 use super::{
     fence_tests::{close, connect},
     sha,
@@ -105,7 +105,19 @@ async fn candidate_inventory_covers_exact_numbered_schema_relations_columns_fk_a
                 "{table}: {operation} policy"
             );
         }
-        assert_eq!(policy["current_profile"], "no_accepted_profile03_state");
+        assert!(
+            matches!(
+                policy["current_profile"].as_str(),
+                Some(
+                    "ordinary_state_or_actual_accepted_epoch1_with_explicit_operation_policy"
+                        | "originals_retained_without_rewrite_or_backfill_after_selection"
+                        | "relation_specific_legacy02_fence_and_typed_initial03_or_monotone_security_policy"
+                        | "closed_rows_never_accept_or_restore02_fallback"
+                        | "historical_acceptance_not_current_permission"
+                )
+            ),
+            "{table}: unknown current-profile writer policy"
+        );
     }
     assert_eq!(
         corpus["operation_policies"].as_array().unwrap().len(),
