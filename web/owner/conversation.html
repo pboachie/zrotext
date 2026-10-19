@@ -4,7 +4,7 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex"><title>Conversation simulator · ZROtext</title>
   <link rel="stylesheet" href="devices.css"><link rel="stylesheet" href="conversation.css">
-  <script defer src="conversation-core.js"></script><script defer src="conversation-owner-adapter.js"></script><script defer src="conversation-bootstrap.js"></script><script defer src="conversation-owner-setup.js"></script><script defer src="conversation-root-enrollment.js"></script><script defer src="conversation-line-setup.js"></script><script defer src="conversation.js"></script>
+  <script defer src="conversation-core.js"></script><script defer src="conversation-owner-adapter.js"></script><script defer src="conversation-bootstrap.js"></script><script defer src="conversation-owner-setup.js"></script><script defer src="conversation-root-enrollment.js"></script><script defer src="conversation-line-setup.js"></script><script defer src="conversation-profile03-recovery.js"></script><script defer src="conversation-profile03-setup.js"></script><script defer src="conversation.js"></script><script defer src="conversation-profile03-page.js"></script>
 </head>
 <body><main>
   <header><div><p class="eyebrow">ZROtext</p><h1>One conversation</h1></div></header>
@@ -74,6 +74,26 @@
       <button id="line-check" type="button" disabled>Check phone proof or acknowledgment</button>
       <button id="line-approve" type="button" disabled>Review and approve selected SIM proof</button>
       <p id="line-status">SEALED line setup is unavailable until explicitly configured and approved.</p>
+    </fieldset>
+    <fieldset id="profile03-setup"><legend>Continue phone messaging setup</legend>
+      <p>Keep the existing paired phone, accepted reader checkpoint and browser approval key. This step upgrades that same reader profile. Conversation content consent follows separately.</p>
+      <label><input id="profile-compared" type="checkbox"> I compared the root, paired phone signing fingerprint and accepted reader checkpoint above with my existing receipts.</label>
+      <label><input id="profile-retained-consent" type="checkbox"> Use the original nonexportable approval key already saved in this browser and save public setup recovery records here. Clearing browser data loses this local recovery; no replacement key is created.</label>
+      <label>Existing paired phone public signing point <input id="profile-phone-point" type="file" accept="application/octet-stream"></label>
+      <button id="profile-begin" type="button">Prepare same-phone profile upgrade</button>
+      <button id="profile-find" type="button">Find saved setup</button>
+      <div id="profile-artifacts"></div>
+      <p>Approve the downloaded public proposal using the existing offline custodian's profile-upgrade command. Select only its signed public manifest output here; root recovery material stays with the custodian.</p>
+      <label>Signed public profile upgrade <input id="profile-signed" type="file" accept="application/octet-stream"></label>
+      <label>Current password <input id="profile-password" type="password" autocomplete="current-password" maxlength="1024"></label>
+      <label>Fresh authenticator or recovery code <input id="profile-factor" type="password" autocomplete="off" maxlength="26"></label>
+      <button id="profile-reserve" type="button" disabled>Request phone confirmation</button>
+      <button id="profile-check" type="button" disabled>Check original setup</button>
+      <button id="profile-approve" type="button" disabled>Approve this exact profile with a fresh code</button>
+      <label>Saved original attempt <select id="profile-openings" aria-label="Saved original setup attempt"></select></label>
+      <button id="profile-recover" type="button" disabled>Load saved attempt</button>
+      <button id="profile-close" type="button">Close setup</button>
+      <p id="profile-status" role="status" aria-live="polite">Prepare the same-phone upgrade, or recover the original saved attempt after an interruption. No automatic approval or retry occurs.</p>
     </fieldset>
     <div id="custody-artifacts"></div>
   </fieldset>
