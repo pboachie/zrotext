@@ -52,3 +52,10 @@ reviewed graph before consulting runtime readiness. Optional legacy v2 fixtures
 without this installation retain their old behavior and cannot claim original
 receipt or Profile03 support. Required consumers refuse missing, partial,
 changed, disabled or polluted installations.
+
+Function declarations are part of this graph: input/output names, modes and
+types, defaults, variadic identity and routine kind are pinned with body/config
+metadata. Migration checks the complete predecessor declaration snapshot before
+installing the new receipt. The stock runtime verifier independently checks
+the capture function's complete input/output type list before calling readiness;
+a compatible-looking `record` result cannot substitute a different OUT type.
