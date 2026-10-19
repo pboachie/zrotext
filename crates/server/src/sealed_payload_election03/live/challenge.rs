@@ -5,6 +5,7 @@ use crate::sealed_manifest::{ChainPosition, ManifestTrust};
 use crate::sealed_manifest03::{self as crypto, AuthenticatedCheckpoint02};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B};
 use uuid::Uuid;
+mod closures;
 
 pub struct Reservation {
     pub(super) account: Uuid,
@@ -108,44 +109,35 @@ impl Reservation {
         if rows.len() > 16 {
             return Err(Error::Unsupported);
         }
-        let mut out = Vec::with_capacity(rows.len());
-        let mut previous = 0;
+        let mut closed = Vec::with_capacity(rows.len());
         for r in rows {
-            let opening: Uuid = r.try_get(0)?;
-            let challenge: Uuid = r.try_get(1)?;
-            let binding: Uuid = r.try_get(2)?;
-            let generation = positive(r.try_get(3)?)?;
-            let old: Uuid = r.try_get(4)?;
-            let line: Uuid = r.try_get(5)?;
-            let device: Uuid = r.try_get(6)?;
             let core: [u8; 500] = fixed(&r, 7)?;
-            let expires = positive(r.try_get(8)?)?;
-            let closed = positive(r.try_get(9)?)?;
-            let target: Uuid = r.try_get(10)?;
-            if opening.is_nil()
-                || challenge.is_nil()
-                || binding.is_nil()
-                || target.is_nil()
-                || challenge == target
-                || generation <= previous
-                || generation >= self.new_generation
-                || old != self.old_binding
-                || line != self.line
-                || device != self.device
-                || core[8..24] != *self.account.as_bytes()
-                || core[56..72] != *challenge.as_bytes()
-                || core[72..88] != *old.as_bytes()
-                || core[96..104] != generation.to_be_bytes()
-                || core[392..400] != expires.to_be_bytes()
-                || closed < expires
-                || closed >= self.expires
+            if r.try_get::<_, Uuid>(4)? != self.old_binding
+                || r.try_get::<_, Uuid>(5)? != self.line
+                || r.try_get::<_, Uuid>(6)? != self.device
+                || positive(r.try_get(3)?)?
+                    != crypto::number(&core[96..104]).map_err(|_| Error::Unsupported)?
+                || positive(r.try_get(8)?)?
+                    != crypto::number(&core[392..400]).map_err(|_| Error::Unsupported)?
             {
                 return Err(Error::Unsupported);
             }
-            previous = generation;
-            out.push(serde_json::json!({"opening_id":opening,"challenge_id":challenge,"new_binding_id":binding,"core":B.encode(core),"closed_unaccepted_ms":closed.to_string(),"superseded_by_challenge_id":target}));
+            closed.push(closures::Closed {
+                opening: r.try_get(0)?,
+                challenge: r.try_get(1)?,
+                binding: r.try_get(2)?,
+                core,
+                closed_ms: positive(r.try_get(9)?)?,
+                target: r.try_get(10)?,
+            });
         }
-        Ok(out)
+        closures::project(
+            &self.core,
+            self.opening,
+            self.challenge,
+            self.new_binding,
+            &closed,
+        )
     }
     pub(super) fn checkpoint(&self) -> Result<crypto::VerifiedCheckpoint02> {
         let core = &self.core;

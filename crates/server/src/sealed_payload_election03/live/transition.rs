@@ -126,6 +126,9 @@ pub async fn reserve(
     exclusive(tx, &Owner::StepUp(proof)).await?;
     let mut current = state02::Current02::lock(tx, &Owner::StepUp(proof), line, origin).await?;
     let who = proof.selected_identity();
+    if opening == current.history.binding_id() {
+        return Err(Error::Conflict);
+    }
     if let Some(existing) = Reservation::read(tx, who.account, opening).await? {
         if existing.user != who.user || existing.line != line || existing.successor != successor {
             return Err(Error::Conflict);
@@ -179,6 +182,12 @@ pub async fn reserve(
         || nonce == [0; 32]
     {
         return Err(Error::Unavailable);
+    }
+    // Opening IDs are human/client retained recovery handles. They must not
+    // alias any retained challenge, binding or opening in this account; all
+    // original identities remain permanent after expiry and supersession.
+    if tx.query_one("SELECT EXISTS(SELECT 1 FROM public.payload_profile_election_challenges WHERE account_id=$1 AND (opening_id=ANY($2) OR challenge_id=ANY($2) OR new_binding_id=ANY($2)))", &[&who.account, &vec![opening, challenge, binding]]).await?.try_get::<_, bool>(0)? {
+        return Err(Error::Conflict);
     }
     let mut core = Vec::with_capacity(500);
     core.extend_from_slice(b"ZTPE\x03\x01\x02\x03");
