@@ -9,7 +9,7 @@ import java.security.MessageDigest
  */
 internal object Profile03ManifestBootstrap {
     fun install(trust: Draft02TrustStore, chain: List<ByteArray>, binding: LocalLineBinding,
-        reader: DevicePayloadPublic, enrollmentPoint: ByteArray, now: () -> Long, requireCurrent: () -> Unit): Long {
+        reader: DevicePayloadPublic, now: () -> Long, requireCurrent: () -> Unit): Long {
         require(chain.size in 1..ConversationEnrollmentSession.MAX_CHAIN)
         val owned = chain.map { require(it.size in 364..9751); it.copyOf() }
         try {
@@ -30,14 +30,14 @@ internal object Profile03ManifestBootstrap {
                 require(snapshot.version == versions.last())
                 val history = trust.currentElectionHistory(now)
                 require(MessageDigest.isEqual(history.proof.signedSha256(), sha(owned.last())))
-                history.requireOriginalKeys(ConversationEnrollmentSession.uuid(binding.deviceId),
-                    ConversationEnrollmentSession.uuid(binding.lineId), reader.keyId, signingId(enrollmentPoint), reader.point, enrollmentPoint)
+                history.requireOriginalReader(ConversationEnrollmentSession.uuid(binding.deviceId),
+                    ConversationEnrollmentSession.uuid(binding.lineId), reader.keyId, reader.point)
                 requireCurrent()
                 return snapshot.version
             }
             var position = Draft02ManifestAuthority.Position.genesis(ByteArray(32))
             var final: Draft02ManifestAuthority? = null
-            // Verify every root-signed link and final selected identities BEFORE the first write.
+            // Verify every root-signed link and selected payload reader BEFORE the first write.
             for (bytes in owned) {
                 requireCurrent()
                 val value = Draft02ManifestAuthority.verify(pin, bytes,
@@ -45,14 +45,12 @@ internal object Profile03ManifestBootstrap {
                 position = Draft02ManifestAuthority.Position.after(value.version, value.digest)
                 final = value
             }
-            checkNotNull(final).requireElectionKeys(ConversationEnrollmentSession.uuid(binding.deviceId),
-                ConversationEnrollmentSession.uuid(binding.lineId), reader.keyId, signingId(enrollmentPoint), reader.point,
-                enrollmentPoint, now())
+            checkNotNull(final).requireElectionReader(ConversationEnrollmentSession.uuid(binding.deviceId),
+                ConversationEnrollmentSession.uuid(binding.lineId), reader.keyId, reader.point, now())
             requireCurrent()
             val accepted = trust.acceptInitialManifestChain(snapshot, owned, now) { value, instant ->
-                value.requireElectionKeys(ConversationEnrollmentSession.uuid(binding.deviceId),
-                    ConversationEnrollmentSession.uuid(binding.lineId), reader.keyId, signingId(enrollmentPoint),
-                    reader.point, enrollmentPoint, instant)
+                value.requireElectionReader(ConversationEnrollmentSession.uuid(binding.deviceId),
+                    ConversationEnrollmentSession.uuid(binding.lineId), reader.keyId, reader.point, instant)
             }
             check(accepted.status == Draft02TrustStore.Status.NEEDS_FRESHNESS)
             snapshot = checkNotNull(accepted.snapshot)
@@ -61,5 +59,4 @@ internal object Profile03ManifestBootstrap {
         } finally { owned.forEach { it.fill(0) } }
     }
     private fun sha(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes)
-    private fun signingId(point: ByteArray) = sha("ZTSE/key/v1\u0000".toByteArray(Charsets.US_ASCII) + byteArrayOf(1, 1) + point)
 }

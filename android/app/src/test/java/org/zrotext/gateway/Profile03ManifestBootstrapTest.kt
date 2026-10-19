@@ -40,18 +40,18 @@ class Profile03ManifestBootstrapTest {
         val memory = Memory(); val store = compared(f, memory)
         val chain = listOf(f.old, f.successor02())
         assertEquals(2L, Profile03ManifestBootstrap.install(store, chain, f.binding, reader(f),
-            Profile03ExecutionFixture.point(f.enrollment), { f.now }, {}))
+            { f.now }, {}))
         assertEquals(2, memory.writes) // Compared-root write plus one old-or-final chain write.
         val accepted = checkNotNull(store.inspect().snapshot).bytes()
         assertEquals(2L, Profile03ManifestBootstrap.install(store, chain, f.binding, reader(f),
-            Profile03ExecutionFixture.point(f.enrollment), { f.now + 1 }, {}))
+            { f.now + 1 }, {}))
         assertArrayEquals(accepted, checkNotNull(store.inspect().snapshot).bytes())
         assertEquals(2, memory.writes)
     }
-    @Test fun missingComparisonWrongReaderWrongEnrollmentAndNonGenesisOrderNeverPublishAPrefix() = Profile03ExecutionFixture().use { f ->
+    @Test fun missingComparisonWrongReaderWrongLineAndNonGenesisOrderNeverPublishAPrefix() = Profile03ExecutionFixture().use { f ->
         val empty = Memory()
         assertTrue(runCatching { Profile03ManifestBootstrap.install(Draft02TrustStore(empty), listOf(f.old), f.binding,
-            reader(f), Profile03ExecutionFixture.point(f.enrollment), { f.now }, {}) }.isFailure)
+            reader(f), { f.now }, {}) }.isFailure)
         assertEquals(0, empty.writes)
         for (test in 0..2) {
             val memory = Memory(); val store = compared(f, memory)
@@ -59,9 +59,10 @@ class Profile03ManifestBootstrapTest {
             val wrongReader = DevicePayloadPublic(Profile03ExecutionFixture.point(f.archive),
                 Profile03ExecutionFixture.keyId(f.archive, false), PayloadKeySecurity.TRUSTED_ENVIRONMENT)
             assertTrue(runCatching { Profile03ManifestBootstrap.install(store,
-                if (test == 2) listOf(f.successor02(), f.old) else listOf(f.old, f.successor02()), f.binding,
+                if (test == 2) listOf(f.successor02(), f.old) else listOf(f.old, f.successor02()),
+                if (test == 1) f.binding.copy(lineId = java.util.UUID(0, 99).toString()) else f.binding,
                 if (test == 0) wrongReader else reader(f),
-                Profile03ExecutionFixture.point(if (test == 1) f.approval else f.enrollment), { f.now }, {}) }.isFailure)
+                { f.now }, {}) }.isFailure)
             assertArrayEquals(before, memory.bytes)
             assertEquals(1, memory.writes)
         }
@@ -74,12 +75,21 @@ class Profile03ManifestBootstrapTest {
         fun now(): Long { check(current); return f.now }
         val chain = listOf(f.old, f.successor02())
         assertTrue(runCatching { Profile03ManifestBootstrap.install(store, chain, f.binding, reader(f),
-            Profile03ExecutionFixture.point(f.enrollment), ::now, {}) }.isFailure)
+            ::now, {}) }.isFailure)
         assertArrayEquals(original, memory.bytes)
         assertEquals(0L, store.inspect().snapshot!!.version)
         current = true; memory.beforeCommit = {}
         assertEquals(2L, Profile03ManifestBootstrap.install(store, chain, f.binding, reader(f),
-            Profile03ExecutionFixture.point(f.enrollment), ::now, {}))
+            ::now, {}))
         assertEquals(2, memory.writes)
+    }
+    @Test fun initialReaderChainDoesNotEnrollOrRequireAnInboundEventSigningRole() {
+        for (eventPresent in listOf(true, false)) Profile03ExecutionFixture(distinctEventSigner = true, includeEventSigner = eventPresent).use { f ->
+            val memory = Memory(); val store = compared(f, memory)
+            assertEquals(1L, Profile03ManifestBootstrap.install(store, listOf(f.old), f.binding, reader(f), { 100_000 }, {}))
+            store.currentElectionHistory { f.now }.requireOriginalReader(f.device, f.lineId,
+                Profile03ExecutionFixture.keyId(f.reader, false), Profile03ExecutionFixture.point(f.reader))
+            assertEquals(2, memory.writes)
+        }
     }
 }

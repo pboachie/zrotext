@@ -54,8 +54,7 @@ internal object Profile03RetainedElection {
         require(original.matchesLocal(activation) && original.acceptedMs <= number(384) && original.acceptedMs <= acceptedMs &&
             same(Profile03Json.binary(evidence, "device_signing_point", 65, 65), enrollment) &&
             same(Profile03Json.binary(evidence, "owner_approval_point", 65, 65), original.approvalPoint()))
-        history.requireOriginalKeys(uuid(installed.deviceId), uuid(installed.lineId), hardware.keyId,
-            signingId(enrollment), hardware.point, enrollment)
+        history.requireOriginalReader(uuid(installed.deviceId), uuid(installed.lineId), hardware.keyId, hardware.point)
         val election = Draft03PayloadElectionProof.verifyAccepted(bundle, core, accepted, history.proof, successor,
             enrollment, original.approvalPoint())
         val authority = history.current03(successor, now())

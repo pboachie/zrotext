@@ -118,12 +118,11 @@ internal class Draft02TrustStore(private val storage: Storage) {
             // historical checkpoints. Exact signed bytes must be valid at both original times.
             Draft02ManifestAuthority.verify(root, prior, trust, originalAcceptedMs)
         }
-        fun requireOriginalKeys(device: ByteArray, line: ByteArray, readerId: ByteArray, enrollmentId: ByteArray,
-            readerPoint: ByteArray, enrollmentPoint: ByteArray) {
+        fun requireOriginalReader(device: ByteArray, line: ByteArray, readerId: ByteArray, readerPoint: ByteArray) {
             val trust = Draft02ManifestAuthority.Trust(checkpoint.account(), checkpoint.fingerprint(), 1,
                 Draft02ManifestAuthority.Position.current(checkpoint.version, checkpoint.digest()))
             Draft02ManifestAuthority.verify(root, prior, trust, electionAcceptedMs)
-                .requireElectionKeys(device, line, readerId, enrollmentId, readerPoint, enrollmentPoint, electionAcceptedMs)
+                .requireElectionReader(device, line, readerId, readerPoint, electionAcceptedMs)
         }
         fun current03(signed: ByteArray, now: Long) =
             Draft03ManifestAuthority.verifyFrom02(signed, prior, checkpoint, now)

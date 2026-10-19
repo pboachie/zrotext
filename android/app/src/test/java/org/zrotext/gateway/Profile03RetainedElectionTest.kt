@@ -27,9 +27,9 @@ class Profile03RetainedElectionTest {
         override fun open(ciphertext: ByteArray) = ciphertext.copyOf()
         override fun write(ciphertext: ByteArray, preCommit: () -> Unit) { preCommit(); value = ciphertext.copyOf() }
     }
-    private class Fixture : AutoCloseable {
+    private class Fixture(distinctEventSigner: Boolean = false, includeEventSigner: Boolean = true) : AutoCloseable {
         val origin = "https://gateway.example.test"
-        val f = Profile03ExecutionFixture(canonicalOrigin = origin)
+        val f = Profile03ExecutionFixture(canonicalOrigin = origin, distinctEventSigner = distinctEventSigner, includeEventSigner = includeEventSigner)
         val activation = checkNotNull(f.line.db.lineActivationsV2().find("sealed", f.line.challengeId.toString()))
         val registrationId = UUID(0, 91)
         val ownerPoint = Profile03ExecutionFixture.point(f.approval)
@@ -83,7 +83,7 @@ class Profile03RetainedElectionTest {
             val comparison = Draft02RootComparison()
             val display = comparison.begin(f.pin, f.account)
             check(storage.enroll(comparison.confirm(display.fingerprintHex, true)).status == Draft02TrustStore.Status.NEEDS_FRESHNESS)
-            check(Profile03ManifestBootstrap.install(storage, listOf(f.old), f.binding, reader, devicePoint, { 100_000 }, {}) == 1L)
+            check(Profile03ManifestBootstrap.install(storage, listOf(f.old), f.binding, reader, { 100_000 }, {}) == 1L)
             return storage
         }
         val evidence = mapOf<String, Any>("root_pin" to b64(f.pin), "prior_manifest02" to b64(f.old), "prior_accepted_ms" to "100000",
@@ -125,5 +125,14 @@ class Profile03RetainedElectionTest {
         val wrong = DevicePayloadPublic(Profile03ExecutionFixture.point(v.f.archive), Profile03ExecutionFixture.keyId(v.f.archive, false), PayloadKeySecurity.TRUSTED_ENVIRONMENT)
         assertTrue(runCatching { v.verify(hardware = wrong) }.isFailure)
         assertTrue(runCatching { v.verify(v.evidence + ("extra" to "unsupported")) }.isFailure)
+    }
+    @Test fun originalEnrollmentProofCompositionDoesNotRequireItToBeTheManifestInboundEventSigner() {
+        for (eventPresent in listOf(true, false)) Fixture(distinctEventSigner = true, includeEventSigner = eventPresent).use { v ->
+            v.f.line.callback()
+            val verified = v.verify()
+            assertArrayEquals(v.devicePoint, verified.original.devicePoint())
+            assertArrayEquals(v.accepted.electionCommitment, verified.election.acceptedRecord().electionCommitment)
+            assertNull(v.f.binding.installedSelectionV2())
+        }
     }
 }
