@@ -18,9 +18,10 @@ import org.json.JSONObject
  * not prove HPKE/provider interoperability. The real SIM observation/runtime fixture supplies
  * its process-only installed v2 permit; no persisted row or test boolean substitutes for it.
  */
-internal class Profile03ExecutionFixture(private val selectedReaderUntilMs: Long = 900_000) : AutoCloseable {
+internal class Profile03ExecutionFixture(private val selectedReaderUntilMs: Long = 900_000, canonicalOrigin: String? = null) : AutoCloseable {
     val enrollment = pair()
-    val line = LineActivationV2RuntimeFixture(true, enrollment)
+    private val originHash = canonicalOrigin?.let { hex(sha(it.toByteArray(Charsets.UTF_8))) } ?: testEvidenceIdentity.originHash
+    val line = LineActivationV2RuntimeFixture(true, enrollment, originHash)
     val binding = line.installSealed()
     val account = uuid(line.account)
     val device = uuid(line.device)
@@ -33,7 +34,7 @@ internal class Profile03ExecutionFixture(private val selectedReaderUntilMs: Long
     val oldBinding = UUID(0, 15)
     val newBinding = UUID(0, 16)
     val challenge = UUID(0, 17)
-    val session = SealedDispatchExecutor.Session(line.account, line.device, line.epoch, 1, UUID(0, 18), testEvidenceIdentity.originHash)
+    val session = SealedDispatchExecutor.Session(line.account, line.device, line.epoch, 1, UUID(0, 18), originHash)
     val root = pair()
     val reader = pair()
     val archive = pair()

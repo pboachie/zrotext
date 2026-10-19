@@ -18,7 +18,7 @@ import org.robolectric.annotation.Config
 
 /** Proper synthetic P-256 keys and source callbacks; no Android key creation or carrier claim. */
 internal class LineActivationV2RuntimeFixture(selectedEmbedded: Boolean = false,
-    providedPair: java.security.KeyPair? = null) : AutoCloseable {
+    providedPair: java.security.KeyPair? = null, private val originHash: String = testEvidenceIdentity.originHash) : AutoCloseable {
     val account = UUID.fromString(testEvidenceIdentity.accountId)
     val device = UUID.fromString(testEvidenceIdentity.deviceId)
     val line = UUID.fromString("33333333-3333-4333-8333-333333333333")
@@ -58,9 +58,9 @@ internal class LineActivationV2RuntimeFixture(selectedEmbedded: Boolean = false,
             return SignedLineActivationV2(bytes, signature, point)
         }
     }
-    val runtime = LineActivationV2Runtime(account, device, epoch, testEvidenceIdentity.originHash, owner, signer, db, { active }, { now })
+    val runtime = LineActivationV2Runtime(account, device, epoch, originHash, owner, signer, db, { active }, { now })
     fun newRuntime(connectionEpoch: Long) = LineActivationV2Runtime(account, device, connectionEpoch,
-        testEvidenceIdentity.originHash, owner, signer, db, { active }, { now })
+        originHash, owner, signer, db, { active }, { now })
     private var acceptance: AutoCloseable? = null
     init { owner.selectCurrent(); LineActivationV2SelectedLineMount.attach(owner) }
     fun callback() = changed()

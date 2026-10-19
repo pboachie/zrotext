@@ -17,6 +17,7 @@ class SamePhoneSelectionReviewTest {
         var now = f.now
         var active = true
         var readHook: () -> Unit = {}
+        override fun withdrawInstalled() { f.line.owner.retireInstalled() }
         override fun requireSession() { check(active) }
         override fun nowMs() = now
         override fun captureFresh() = f.line.owner.capture()

@@ -181,6 +181,12 @@ class MainActivity : ComponentActivity() {
         private set
     private var conversationReplyChoiceGeneration by mutableStateOf(0L)
     private var conversationEnrollmentOpen by mutableStateOf(false)
+    private var samePhoneReviewOpen by mutableStateOf(false)
+    private var samePhoneReviewBusy by mutableStateOf(false)
+    private var samePhoneReviewStatus by mutableStateOf("")
+    private var samePhoneDisplayed by mutableStateOf<SamePhoneSelectionReview.Review?>(null)
+    private var samePhoneReviewToken: AtomicBoolean? = null
+    private val samePhoneReview = AtomicReference<SamePhoneSelectionReview?>(null)
     private var ownerCustodyOpen by mutableStateOf(false)
     private var reviewRootCustodyOpen by mutableStateOf(false)
     private var conversationEnrollmentBusy by mutableStateOf(false)
@@ -553,6 +559,9 @@ class MainActivity : ComponentActivity() {
                         GatewayButton(onClick = { startHeartbeat(rebootResume = false, profile03 = true) }) {
                             Text("Connect for encrypted messaging")
                         }
+                        OutlinedButton(onClick = { startSamePhoneReview() },
+                            modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Review this phone's SIM again") }
+                        SamePhoneReviewContent()
                         Text("Android 13 or later is required. Missing or changed setup pauses messaging and keeps your existing pairing and attempt history. Reboot resume remains heartbeat-only.", style = MaterialTheme.typography.bodySmall)
                         GatewaySectionTitle("Conversation content")
                         Text("Review a selected conversation from your paired browser. Opening this screen does not approve SMS content transfer.")
@@ -725,6 +734,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
+        closeSamePhoneReview()
         cancelControlledTestReview()
         bindingForeground = false
         bindingEpoch++
@@ -743,6 +753,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        closeSamePhoneReview()
         completeSelectionForeground = false
         completeSelectionCoordinator?.close()
         completeSelectionCoordinator = null
@@ -759,11 +770,93 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        closeSamePhoneReview()
         completeSelectionForeground = false
         completeSelectionCoordinator?.stop()
         closeSealedLineReview()
         revokeConversationForeground()
         super.onStop()
+    }
+
+    private fun startSamePhoneReview() {
+        closeSamePhoneReview()
+        val token = AtomicBoolean(true)
+        samePhoneReviewToken = token
+        samePhoneReviewOpen = true; samePhoneReviewBusy = true
+        samePhoneReviewStatus = "Reading this phone's complete SIM selection."
+        JournalRuntime.io.execute {
+            val outcome = runCatching {
+                check(token.get())
+                val controller = SamePhoneSelectionReviewAndroid.open(applicationContext, SmsJournalDatabase.get(applicationContext), token)
+                if (!samePhoneReview.compareAndSet(null, controller)) { controller.close(); error("Review already open") }
+                if (!token.get()) {
+                    if (samePhoneReview.compareAndSet(controller, null)) controller.close()
+                    error("Review cancelled")
+                }
+                checkNotNull(controller.prepare())
+            }
+            runOnUiThread {
+                if (token.get() && samePhoneReviewToken === token && samePhoneReviewOpen) {
+                    samePhoneReviewBusy = false
+                    samePhoneDisplayed = outcome.getOrNull()
+                    samePhoneReviewStatus = if (outcome.isSuccess) "Compare the complete SIM selection below. Continue in the owner workspace to approve it."
+                        else "Review paused. Connect for encrypted messaging and check the existing enrolled phone, reader and selected SIM. Saved setup history is retained."
+                }
+            }
+        }
+    }
+    private fun confirmSamePhoneReview() {
+        val token = samePhoneReviewToken ?: return
+        val displayed = samePhoneDisplayed ?: return
+        val controller = samePhoneReview.get() ?: return
+        if (!token.get() || samePhoneReviewBusy) return
+        samePhoneReviewBusy = true; samePhoneDisplayed = null
+        JournalRuntime.io.execute {
+            val outcome = runCatching {
+                check(token.get() && controller.confirm(displayed))
+                SelectionRefresh03Mount.submit(checkNotNull(controller.takePending()))
+                check(token.get())
+            }
+            runOnUiThread {
+                if (token.get() && samePhoneReviewToken === token && samePhoneReviewOpen) {
+                    samePhoneReviewBusy = false
+                    samePhoneReviewStatus = if (outcome.isSuccess) "Phone review confirmed. Keep this app open and approve the selection in your owner workspace using its password, authenticator and original messaging approval key."
+                        else "Approval paused. Check the owner workspace and reconnect before a new explicit SIM review. The original pairing, setup and attempt history are saved."
+                }
+            }
+        }
+    }
+    private fun closeSamePhoneReview() {
+        samePhoneReviewToken?.set(false); samePhoneReviewToken = null
+        samePhoneReview.getAndSet(null)?.close()
+        samePhoneDisplayed = null; samePhoneReviewBusy = false; samePhoneReviewOpen = false
+    }
+    @Composable private fun SamePhoneReviewContent() {
+        if (!samePhoneReviewOpen) return
+        Dialog(onDismissRequest = { closeSamePhoneReview() }) {
+            Surface {
+                Column(Modifier.safeDrawingPadding().verticalScroll(rememberScrollState()).padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    GatewaySectionTitle("Review selected SIM")
+                    Text("This pauses sending while you review. Approval keeps this phone's existing pairing, keys and message history. It does not send an SMS.")
+                    val shown = samePhoneDisplayed
+                    if (shown != null) {
+                        GatewayStatusText("Account", shown.account.toString())
+                        GatewayStatusText("Phone", shown.device.toString())
+                        GatewayStatusText("Line", shown.line.toString())
+                        GatewayStatusText("Selected subscription", shown.selectedSubscription.toString())
+                        GatewayStatusText("SIM type", if (shown.newObservationKind == LineActivationV2Kind.EMBEDDED) "eSIM" else "Physical SIM")
+                        GatewayStatusText("Complete active SIM count", shown.completeSimCount.toString())
+                        Button(onClick = { confirmSamePhoneReview() }, enabled = !samePhoneReviewBusy,
+                            modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Confirm this SIM for owner review") }
+                    }
+                    Text(samePhoneReviewStatus)
+                    GatewayStatusText("Messaging", Profile03MessagingStatus.value)
+                    OutlinedButton(onClick = { closeSamePhoneReview() },
+                        modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Close review") }
+                }
+            }
+        }
     }
 
     private fun revokeConversationForeground() {

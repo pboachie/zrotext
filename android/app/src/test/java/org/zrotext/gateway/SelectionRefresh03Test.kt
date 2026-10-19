@@ -14,6 +14,21 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = android.app.Application::class)
 class SelectionRefresh03Test {
+    @Test fun independentPublicVectorMatchesAndroidExactProofsAndAllThreeSignatures() {
+        val vector = javaClass.classLoader!!.getResourceAsStream("sealed-profile03-selection-refresh-01.json")!!.use {
+            org.json.JSONObject(it.bufferedReader().readText())
+        }
+        fun value(name: String) = vector.getString(name).chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        val core = SelectionRefresh03.Core.decode(value("core"))
+        val bundle = SelectionRefresh03.Bundle.verify(value("bundle"), core.bytes(), value("observation"),
+            value("device_signing_point"), value("owner_approval_point"))
+        assertArrayEquals(value("bundle_sha256"), bundle.sha256())
+        assertArrayEquals(value("device_transcript"), SelectionRefresh03.deviceTranscript(core, value("observation")))
+        assertArrayEquals(value("owner_transcript"), SelectionRefresh03.ownerTranscript(core, value("observation"), value("device_signature")))
+        val installed = SelectionRefresh03.installedTranscript(bundle, value("device_session_digest"))
+        assertArrayEquals(value("installed_transcript"), installed)
+        assertTrue(ConversationContentCrypto.verifyRaw(value("installed_signature"), value("device_signing_point"), installed))
+    }
     private class Fixture : AutoCloseable {
         val f = Profile03ExecutionFixture()
         val observation = checkNotNull(f.line.owner.capture()).observation().bytes()

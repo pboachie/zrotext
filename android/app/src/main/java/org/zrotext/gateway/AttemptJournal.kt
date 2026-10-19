@@ -879,12 +879,13 @@ private const val PRUNE_BATCH = 500
     InboundWindow::class, InboundEvent::class, InboundUpload::class,
     LocalRecipientSuppression::class, LocalLineBinding::class,
     LocalInboundWithdrawal::class, LocalWithdrawalSequence::class, SealedPreparationRecord::class,
-    LineActivationV2Record::class, Profile03ElectionRecord::class], version = 15, exportSchema = false)
+    LineActivationV2Record::class, Profile03ElectionRecord::class, SelectionRefresh03Record::class], version = 16, exportSchema = false)
 abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun attempts(): SmsAttemptDao
     abstract fun sealedPreparations(): SealedPreparationDao
     abstract fun lineActivationsV2(): LineActivationV2Dao
     abstract fun profile03Elections(): Profile03ElectionDao
+    abstract fun selectionRefreshes03(): SelectionRefresh03Dao
 
     companion object {
         @Volatile private var instance: SmsJournalDatabase? = null
@@ -894,13 +895,20 @@ abstract class SmsJournalDatabase : RoomDatabase() {
                 context.applicationContext, SmsJournalDatabase::class.java, "sms_attempts.db"
             ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
                 MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
-                MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15)
+                MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16)
                 .build().also { instance = it }
         }
 
         internal val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE sms_attempts ADD COLUMN evidenceConflict INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        internal val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS selection_refresh03 (refreshId TEXT NOT NULL, accountId TEXT NOT NULL, deviceId TEXT NOT NULL, lineId TEXT NOT NULL, bindingId TEXT NOT NULL, bindingGeneration INTEGER NOT NULL, originalActivationId TEXT NOT NULL, originalGeneration INTEGER NOT NULL, electionChallengeId TEXT NOT NULL, electionIdentitySha256 TEXT NOT NULL, deviceSessionSha256 TEXT NOT NULL, connectionEpoch INTEGER NOT NULL, deploymentEpoch INTEGER NOT NULL, originHash TEXT NOT NULL, selectedSubscription INTEGER NOT NULL, consentId TEXT NOT NULL, consentConfirmedMs INTEGER NOT NULL, consentExpiresMs INTEGER NOT NULL, coreB64url TEXT NOT NULL, observationB64url TEXT NOT NULL, state TEXT NOT NULL, deviceSignatureB64url TEXT, ownerSignatureB64url TEXT, bundleSha256 TEXT, acceptedMs INTEGER, installedSignatureB64url TEXT, installedMs INTEGER, PRIMARY KEY(refreshId))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_selection_refresh03_bindingId_deviceSessionSha256 ON selection_refresh03(bindingId, deviceSessionSha256)")
             }
         }
 

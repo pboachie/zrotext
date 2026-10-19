@@ -9,6 +9,7 @@ import java.util.UUID
  */
 internal class SamePhoneSelectionReview(private val inputs: Inputs) : AutoCloseable {
     interface Inputs {
+        fun withdrawInstalled()
         fun retained(): Retained
         fun captureFresh(): SelectedLineLeaseV2?
         fun nowMs(): Long
@@ -66,16 +67,20 @@ internal class SamePhoneSelectionReview(private val inputs: Inputs) : AutoClosea
         }
         internal fun requireCurrentSelectionOnly(inputs: Inputs) = requireCurrentSelection(inputs, retained, lease)
         internal fun requireLeaseOnly() { check(lease.isCurrent()) }
-        internal fun pending(confirmedMs: Long, live: () -> Unit) = Pending(retained, lease, UUID.randomUUID(),
-            confirmedMs, Math.addExact(confirmedMs, PENDING_MS), live)
+        internal fun pending(confirmedMs: Long, live: () -> Unit, ram: () -> Unit) = Pending(retained, lease, UUID.randomUUID(),
+            confirmedMs, Math.addExact(confirmedMs, PENDING_MS), live, ram)
     }
     /** A phone decision only. Owner/MFA/signature acceptance must still be independently obtained
      * over a separately reviewed refresh operation before any live permit may be published.
      */
     class Pending internal constructor(val retained: Retained, private val lease: SelectedLineLeaseV2,
-        val consentId: UUID, val confirmedMs: Long, val expiresMs: Long, private val live: () -> Unit) {
+        val consentId: UUID, val confirmedMs: Long, val expiresMs: Long, private val live: () -> Unit,
+        private val ram: () -> Unit) {
         fun observation(): ByteArray { live(); return lease.observation().bytes().also { live() } }
         fun requireCurrent() = live()
+        internal fun currentLease(): SelectedLineLeaseV2 { live(); return lease.also { live() } }
+        /** For an already held Room/custody boundary: no key, root storage or database lookup. */
+        internal fun requireRamCurrent() = ram()
         override fun toString() = "SamePhoneSelectionPending(no-owner-or-effect-permission)"
     }
     @Volatile private var closed = false
@@ -83,16 +88,22 @@ internal class SamePhoneSelectionReview(private val inputs: Inputs) : AutoClosea
     private val reviewEpoch = java.util.concurrent.atomic.AtomicLong(0)
     private var shown: Review? = null
     private var pending: Pending? = null
-    private var lastNow = 0L
-    private fun now(): Long = synchronized(lock) {
+    private val lastNow = java.util.concurrent.atomic.AtomicLong(0)
+    private fun now(): Long {
         check(!closed); inputs.requireSession()
-        inputs.nowMs().also { check(!closed && it > 0 && it >= lastNow); lastNow = it }
+        val value = inputs.nowMs()
+        while (true) {
+            val prior = lastNow.get()
+            check(!closed && value > 0 && value >= prior)
+            if (lastNow.compareAndSet(prior, value)) return value
+        }
     }
     fun prepare(): Review? = synchronized(lock) {
         val expectedEpoch = reviewEpoch.incrementAndGet()
         shown = null; pending = null
         runCatching {
             now()
+            inputs.withdrawInstalled() // Withdraw sending before any complete review/provider wait.
             val retained = inputs.retained()
             val lease = checkNotNull(inputs.captureFresh())
             requireCurrentSelection(inputs, retained, lease)
@@ -113,16 +124,20 @@ internal class SamePhoneSelectionReview(private val inputs: Inputs) : AutoClosea
             displayed.requireTimeAndLease(confirmed)
             check(reviewEpoch.get() == expectedEpoch && !closed)
             lateinit var accepted: Pending
-            accepted = displayed.pending(confirmed) {
+            fun ram() {
                 check(!closed && reviewEpoch.get() == expectedEpoch)
                 val current = now()
                 check(current >= accepted.confirmedMs && current < accepted.expiresMs)
+                displayed.requireLeaseOnly()
+            }
+            accepted = displayed.pending(confirmed, {
+                ram()
                 displayed.requireCurrentSelectionOnly(inputs)
                 val completed = now()
                 check(completed >= accepted.confirmedMs && completed < accepted.expiresMs &&
                     !closed && reviewEpoch.get() == expectedEpoch)
                 displayed.requireLeaseOnly()
-            }
+            }, ::ram)
             pending = accepted
             accepted.requireCurrent()
             true

@@ -19,6 +19,7 @@ internal object SamePhoneSelectionReviewAndroid {
         val clock = Profile03BootstrapClock.capture(account, device, host.identity.originHash)
         fun session() { check(foreground.get()); host.requireCurrent(); check(foreground.get()) }
         return SamePhoneSelectionReview(object : SamePhoneSelectionReview.Inputs {
+            override fun withdrawInstalled() { session(); LineActivationV2SelectedLineMount.retireInstalled(); session() }
             override fun requireSession() = session()
             override fun nowMs(): Long { session(); return clock().also { session() } }
             override fun captureFresh(): SelectedLineLeaseV2? {
