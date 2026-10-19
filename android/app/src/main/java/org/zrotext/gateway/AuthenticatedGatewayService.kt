@@ -88,6 +88,7 @@ class AuthenticatedGatewayService : Service() {
     @Volatile private var lineOptOutPaused = false
     @Volatile private var quarantinedEvidenceNotice = false
     @Volatile private var activeGrant: AlphaGrantValidator.Grant? = null
+    @Volatile private var activeTestApproval: String? = null
     /** In memory only: a restarted app cannot install an activation it did not just prove. */
     @Volatile private var smsLineActivation: PreparedSmsLineActivation? = null
     /** The hub repeats sms_line_activated on later connections; this one is already installed. */
@@ -198,10 +199,18 @@ class AuthenticatedGatewayService : Service() {
         val armSubscriptionId = intent?.getIntExtra(
             EXTRA_ALPHA_SUBSCRIPTION_ID, SubscriptionManager.INVALID_SUBSCRIPTION_ID
         ) ?: SubscriptionManager.INVALID_SUBSCRIPTION_ID
+        val testApproval = intent?.getStringExtra(EXTRA_ALPHA_APPROVAL)
         if (armRequested) {
-            if (getSharedPreferences("alpha_pilot", MODE_PRIVATE).getBoolean("attempt_used", false)) {
+            val pilot = getSharedPreferences("alpha_pilot", MODE_PRIVATE)
+            val permitted = runCatching {
+                if (!pilot.getBoolean("attempt_used", false)) testApproval == null
+                else testApproval != null && ControlledTestApproval(SmsJournalDatabase.get(applicationContext), pilot)
+                    .available(ControlledTestScope.capture(url, deviceId.toString(), armSubscriptionId, armRecipient),
+                        System.currentTimeMillis()) == testApproval
+            }.getOrDefault(false)
+            if (!permitted) {
                 halt()
-                AuthenticatedGatewayStatus.value = "Alpha arm refused: one test attempt already used"
+                AuthenticatedGatewayStatus.value = "Test attempt already used; review and approve a new controlled test"
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 return START_NOT_STICKY
@@ -246,7 +255,7 @@ class AuthenticatedGatewayService : Service() {
                 url, deviceId, action.pilotMode == DeviceReconnectPolicy.PilotMode.ALPHA_ONCE,
                 armRecipient, armSubscriptionId, armStartedAtNanos,
                 action.pilotMode == DeviceReconnectPolicy.PilotMode.INBOUND_UPLOAD,
-                action.pilotMode == DeviceReconnectPolicy.PilotMode.LINE_OPT_OUT_UPLOAD)
+                action.pilotMode == DeviceReconnectPolicy.PilotMode.LINE_OPT_OUT_UPLOAD, testApproval)
             DeviceReconnectPolicy.Action.WaitForNetwork -> {
                 retireConnection()
                 AuthenticatedGatewayStatus.value = "Waiting for network"
@@ -277,6 +286,7 @@ class AuthenticatedGatewayService : Service() {
         lineOptOutSentAtNanos = 0L
         lineOptOutPaused = false
         activeGrant = null
+        activeTestApproval = null
         return currentGeneration
     }
 
@@ -285,7 +295,7 @@ class AuthenticatedGatewayService : Service() {
         url: String, deviceId: UUID, armRequested: Boolean = false,
         armRecipient: String = "", armSubscriptionId: Int = SubscriptionManager.INVALID_SUBSCRIPTION_ID,
         armStartedAtNanos: Long = 0L, inboundUploadRequested: Boolean = false,
-        lineOptOutUploadRequested: Boolean = false
+        lineOptOutUploadRequested: Boolean = false, testApproval: String? = null
     ) {
         val currentGeneration = retireConnection()
         val keys = DeviceSigningKeyStore(applicationContext)
@@ -533,16 +543,15 @@ class AuthenticatedGatewayService : Service() {
                         "synthetic_grant" -> {
                             check(armRequested && !grantSeen && machine.phase == DeviceStreamMachine.Phase.ACTIVE)
                             check(System.nanoTime() - armStartedAtNanos <= TimeUnit.MINUTES.toNanos(5))
-                            check(!getSharedPreferences("alpha_pilot", MODE_PRIVATE)
-                                .getBoolean("attempt_used", false))
+                            val pilot = getSharedPreferences("alpha_pilot", MODE_PRIVATE)
+                            check(!pilot.getBoolean("attempt_used", false) || testApproval != null)
                             check(getSharedPreferences("gateway_selection", MODE_PRIVATE)
                                 .getInt("subscription_id", SubscriptionManager.INVALID_SUBSCRIPTION_ID)
                                 == armSubscriptionId)
                             val active = activeSubscriptionIds()
                             val grant = AlphaGrantValidator.validate(frame, deviceId, machine.heartbeatEpoch(),
                                 armRecipient, armSubscriptionId, active, System.currentTimeMillis())
-                            check(getSharedPreferences("alpha_pilot", MODE_PRIVATE).edit()
-                                .putBoolean("attempt_used", true).commit())
+                            if (testApproval == null) check(pilot.edit().putBoolean("attempt_used", true).commit())
                             grantSeen = true
                             activeGrant = grant
                             // Retirement must also run when a grant expires without an
@@ -558,14 +567,22 @@ class AuthenticatedGatewayService : Service() {
                             JournalRuntime.io.execute {
                                 try {
                                     if (generation != currentGeneration) return@execute
+                                    val identity = sessionIdentity ?: EvidenceIdentity.fromStream(
+                                        machine.activeAccountId(), deviceId, url)
+                                    if (testApproval != null) {
+                                        ControlledTestApproval(SmsJournalDatabase.get(applicationContext), pilot).consume(
+                                            ControlledTestScope.capture(url, deviceId.toString(), armSubscriptionId, armRecipient),
+                                            testApproval, identity, grant.attemptId.toString(), System.currentTimeMillis())
+                                        if (generation != currentGeneration) return@execute
+                                        activeTestApproval = testApproval
+                                    }
                                     SmsJournalDatabase.get(applicationContext).attempts().reserveAlpha(
                                         grant.attemptId.toString(), grant.messageId.toString(),
                                         grant.subscriptionId, 1, UUID.randomUUID().toString(),
                                         System.currentTimeMillis(),
                                         InboundVault.token("sender-v1",
                                             grant.recipientE164.toByteArray(Charsets.US_ASCII)),
-                                        sessionIdentity ?: EvidenceIdentity.fromStream(
-                                            machine.activeAccountId(), deviceId, url))
+                                        identity)
                                     AuthenticatedGatewayStatus.value = "Grant reserved; waiting for writer ack"
                                     alphaPump.requestQuery()
                                     pumpAlphaEvents(webSocket, machine, url, currentGeneration)
@@ -1102,10 +1119,19 @@ class AuthenticatedGatewayService : Service() {
                     awaitingEventSentAtNanos = 0L
                     reconnect.clearEvidenceCloseStreak()
                     if (authorized && grant != null) {
+                        val approval = activeTestApproval
+                        val identity = if (approval != null) EvidenceIdentity.fromStream(
+                            machine.activeAccountId(), UUID.fromString(event.deviceId), url) else null
                         AuthenticatedGatewayStatus.value = "Writer authorized one radio attempt"
                         SmsAttemptAdapter.sendAuthorized(applicationContext, grant,
-                            { generation == currentGeneration &&
-                                runCatching { machine.heartbeatEpoch() }.isSuccess }) { result ->
+                            { ControlledTestApproval.currentAfterApproval(
+                                { generation == currentGeneration &&
+                                    getSharedPreferences("gateway_selection", MODE_PRIVATE)
+                                        .getInt("subscription_id", SubscriptionManager.INVALID_SUBSCRIPTION_ID) == grant.subscriptionId &&
+                                    runCatching { machine.heartbeatEpoch() == grant.connectionEpoch }.getOrDefault(false) },
+                                { approval == null || identity != null && ControlledTestApproval(SmsJournalDatabase.get(applicationContext),
+                                    getSharedPreferences("alpha_pilot", MODE_PRIVATE)).radioStillApproved(
+                                        approval, identity, grant.attemptId.toString()) }) }) { result ->
                             if (generation == currentGeneration) {
                                 AuthenticatedGatewayStatus.value = when (result) {
                                     SmsAttemptAdapter.StartResult.CALL_RETURNED ->
@@ -1399,6 +1425,7 @@ class AuthenticatedGatewayService : Service() {
         const val EXTRA_REBOOT_RESUME = "reboot_resume"
         const val EXTRA_ALPHA_RECIPIENT = "alpha_recipient"
         const val EXTRA_ALPHA_SUBSCRIPTION_ID = "alpha_subscription_id"
+        const val EXTRA_ALPHA_APPROVAL = "alpha_explicit_test_approval"
         const val EXTRA_INBOUND_UPLOAD = "inbound_upload"
         const val EXTRA_LINE_OPT_OUT_UPLOAD = "line_opt_out_upload"
         const val EXTRA_HEARTBEAT_TIMING_TRACE = "heartbeat_timing_trace"

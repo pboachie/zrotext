@@ -111,24 +111,36 @@ internal object SmsAttemptAdapter {
 
         // There is intentionally no retry around this call. A throw may follow a partial radio action.
         return try {
-            synchronized(LocalSuppressionGate.lock) {
-                if (dao.isRecipientSuppressed(senderToken)) {
+            withFinalRadioGuard(
+                { dao.isRecipientSuppressed(senderToken) },
+                { hasSelectedSim(context, subscriptionId) },
+                isSessionCurrent,
+                { System.currentTimeMillis() < grant.expiresAtMs },
+                {
                     if (dao.markPreflightNoRadio(attemptId, System.currentTimeMillis()) == 1)
                         JournalWriteSignal.alphaEventRecorded()
                     StartResult.RESERVED_NOT_SENT
-                } else {
+                }, {
                     if (parts.size == 1) {
                         manager.sendTextMessage(grant.recipientE164, null, parts[0], sent[0], delivered[0])
                     } else {
                         manager.sendMultipartTextMessage(grant.recipientE164, null, parts, sent, delivered)
                     }
                     StartResult.CALL_RETURNED // Call return is not a delivery acknowledgment.
-                }
-            }
+                })
         } catch (_: RuntimeException) {
             runCatching { dao.setState(attemptId, AttemptState.UNKNOWN, System.currentTimeMillis()) }
             StartResult.UNKNOWN
         }
+    }
+
+    /** The authority check follows every potentially blocking suppression operation. */
+    internal fun withFinalRadioGuard(
+        suppressed: () -> Boolean, selectedSim: () -> Boolean,
+        authorized: () -> Boolean, unexpired: () -> Boolean,
+        denied: () -> StartResult, send: () -> StartResult
+    ): StartResult = synchronized(LocalSuppressionGate.lock) {
+        if (suppressed() || !selectedSim() || !authorized() || !unexpired()) denied() else send()
     }
 
     internal fun hasSelectedSim(context: Context, subscriptionId: Int): Boolean {
