@@ -197,4 +197,38 @@ BEGIN
         REVOKE ALL ON FUNCTION public.registration_browser_intent_binding_guard() FROM PUBLIC,zrotext_runtime;
     END IF;
 END $$;
+-- Mandatory writer helpers are trigger-only; the finite schema baseline and
+-- global row versions remain read-only after broad/default grants or reruns.
+DO $$
+DECLARE relation_name text; columns_sql text;
+BEGIN
+    IF to_regclass('public.payload_profile_writer_catalog') IS NOT NULL THEN
+        FOREACH relation_name IN ARRAY ARRAY['payload_profile_writer_catalog','payload_profile_writer_global_fences'] LOOP
+            SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) INTO columns_sql FROM pg_attribute
+              WHERE attrelid=to_regclass(format('public.%I',relation_name)) AND attnum>0 AND NOT attisdropped;
+            EXECUTE format('REVOKE ALL ON TABLE public.%I FROM PUBLIC,zrotext_runtime',relation_name);
+            EXECUTE format('REVOKE ALL (%s) ON TABLE public.%I FROM PUBLIC,zrotext_runtime',columns_sql,relation_name);
+            EXECUTE format('GRANT SELECT ON TABLE public.%I TO zrotext_runtime',relation_name);
+        END LOOP;
+        REVOKE ALL ON FUNCTION public.payload_profile_writer_guard(),public.payload_profile_writer_global_guard(),public.payload_profile_writer_catalog_guard() FROM PUBLIC,zrotext_runtime;
+        REVOKE ALL ON FUNCTION public.payload_profile_writer_json(json),public.payload_profile_writer_graph(),public.payload_profile_writer_version(),public.payload_profile_writer_ready() FROM PUBLIC;
+        GRANT EXECUTE ON FUNCTION public.payload_profile_writer_json(json),public.payload_profile_writer_graph(),public.payload_profile_writer_version(),public.payload_profile_writer_ready() TO zrotext_runtime;
+    END IF;
+END $$;
+-- Accepted original proofs have one narrow fresh-capture entry point. Broad
+-- defaults and reprovisioning must never grant direct row/column mutation.
+DO $$
+DECLARE columns_sql text;
+BEGIN
+    IF to_regclass('public.payload_profile_v2_activation_receipts') IS NOT NULL THEN
+        SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) INTO columns_sql FROM pg_attribute
+          WHERE attrelid='public.payload_profile_v2_activation_receipts'::regclass AND attnum>0 AND NOT attisdropped;
+        REVOKE ALL ON TABLE public.payload_profile_v2_activation_receipts FROM PUBLIC,zrotext_runtime;
+        EXECUTE format('REVOKE ALL (%s) ON TABLE public.payload_profile_v2_activation_receipts FROM PUBLIC,zrotext_runtime',columns_sql);
+        GRANT SELECT ON TABLE public.payload_profile_v2_activation_receipts TO zrotext_runtime;
+        REVOKE ALL ON FUNCTION public.payload_profile_v2_receipt_guard(),public.payload_profile_v2_receipt_complete() FROM PUBLIC,zrotext_runtime;
+        REVOKE ALL ON FUNCTION public.payload_profile_v2_capture(uuid,uuid,bytea,bytea,bytea,bytea,bytea,bytea),public.payload_profile_v2_ready() FROM PUBLIC;
+        GRANT EXECUTE ON FUNCTION public.payload_profile_v2_capture(uuid,uuid,bytea,bytea,bytea,bytea,bytea,bytea),public.payload_profile_v2_ready() TO zrotext_runtime;
+    END IF;
+END $$;
 COMMIT;

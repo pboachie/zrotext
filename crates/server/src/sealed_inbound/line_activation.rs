@@ -20,6 +20,8 @@ const OWNER_DOMAIN: &[u8] = b"ZTSE/line/owner-approve/v1\0";
 const SMS_DEVICE_DOMAIN: &[u8] = b"ZTSMS/line/device-confirm/v1\0";
 const SMS_OWNER_DOMAIN: &[u8] = b"ZTSMS/line/owner-approve/v1\0";
 
+mod original_receipt;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LinePurpose {
     Sealed,
@@ -936,6 +938,31 @@ async fn activate_selected(
         )
         .await?;
     }
+    let captured_original = if protocol_version == 2 && purpose == LinePurpose::Sealed {
+        if let (Some(registration_id), Some(statement)) = (registration, scoped.as_ref()) {
+            original_receipt::capture(
+                &tx,
+                original_receipt::Originals {
+                    principal,
+                    session,
+                    challenge: &challenge,
+                    registration_id,
+                    registration: statement,
+                    device_statement: &device_statement,
+                    owner_statement: &owner_statement,
+                    device_der: proof.device_signature_der,
+                    owner_der: proof.owner_signature_der,
+                    device_point: &device_sec1,
+                    owner_point: &owner_sec1,
+                },
+            )
+            .await?
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let device_digest = proof_digest(&device_statement, proof.device_signature_der);
     let owner_digest = proof_digest(&owner_statement, proof.owner_signature_der);
     tx.execute(
@@ -1011,6 +1038,9 @@ async fn activate_selected(
         setup_registration::fresh(&tx, principal, statement, Some(session))
             .await
             .map_err(scope_error)?;
+    }
+    if let Some(captured) = captured_original {
+        captured.recheck(&tx).await?;
     }
     tx.commit().await?;
     Ok(())

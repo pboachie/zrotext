@@ -978,6 +978,8 @@ mod review_workspace_tests;
 mod user_membership_tests;
 #[cfg(test)]
 mod webhook_history_index_tests;
+#[cfg(test)]
+mod writer_policy_tests;
 
 #[cfg(test)]
 mod tests {
