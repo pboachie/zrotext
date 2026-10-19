@@ -30,8 +30,10 @@ or downgrade path; capacity exhaustion refuses.
 The first transition refuses prior sealed preparation history and unresolved
 local effects. Reservation and installation recheck the original line under the
 same writer acquisition. Pending election fences the old02 preparation and
-legacy radio reservations. An abandoned, unaccepted ceremony can release that
-fence; an accepted election remains a downgrade fence after retirement. A03
+legacy radio reservations. An abandoned ceremony can release that fence only
+while it has never released a device signature. Every ever-signed or accepted
+election remains an irreversible unknown-effect/downgrade fence after retirement;
+local retirement cannot retract an in-flight proof or establish remote rejection. A03
 preparation requires its exact installed row within the same Room transaction as
 the one-use preparation reservation. A03 radio reservation additionally requires
 that exact installed row and its already prepared message/attempt row.
@@ -73,6 +75,9 @@ CEK if a later guard or lifecycle check refuses. The guard never acquires Room,
 network or another key while custody is held. Full current-record checks remain
 outside that lock, before and after opening. Original primitive opens and all
 provider negatives remain separate; no callback failure chooses another provider.
+The guard's RAM deadline is the minimum of the verified manifest and selected
+keys' expiry, the checked message deadline, current permission, interval and grant.
+An adapter-supplied lease cannot extend verified key or manifest validity.
 The CEK is consumed and cleared; strict body authentication,
 the signed UTF8 body digest and actual selected-subscription segment division
 must pass. A prepared holder rechecks before its single consume and clears its

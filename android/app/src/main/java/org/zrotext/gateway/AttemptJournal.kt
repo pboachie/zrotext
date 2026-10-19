@@ -326,7 +326,7 @@ internal object CallbackEvidence {
 
 @Dao
 abstract class SmsAttemptDao {
-    @Query("SELECT EXISTS(SELECT 1 FROM profile03_elections WHERE (state IN ('reserved','signed','installed') OR acceptedEvidenceSha256 IS NOT NULL) AND (:account IS NULL OR accountId = :account))")
+    @Query("SELECT EXISTS(SELECT 1 FROM profile03_elections WHERE (state IN ('reserved','signed','installed') OR deviceSignatureB64url IS NOT NULL OR acceptedEvidenceSha256 IS NOT NULL) AND (:account IS NULL OR accountId = :account))")
     protected abstract fun hasProfile03EffectFence(account: String?): Boolean
 
     @Query("SELECT * FROM profile03_elections WHERE challengeId = :challenge")

@@ -119,11 +119,11 @@ internal object Draft03OutboundPreparation {
             return c
         }
         fun line(binding: LocalLineBinding?) { val c = fresh(); selected(c, binding) }
-        fun receiverGuard(c: Current) {
+        fun receiverGuard(c: Current, authorityDeadline: Long) {
             // Invoked while custody is held: no Room, network, key lookup or framework acquisition.
             // trustedNow is the authenticated session's monotonic RAM anchor, unavailable on loss.
             val instant = now()
-            check(instant >= c.selection.comparedAtMs && instant < c.selection.permissionExpiresAtMs)
+            check(instant >= c.selection.comparedAtMs && instant < authorityDeadline)
             selected(c, c.baseBinding)
         }
         try {
@@ -145,9 +145,14 @@ internal object Draft03OutboundPreparation {
             val active = fresh()
             val parts = proof.parts(active.authority, active.intent.request(), lastNow)
             check(same(parts.keyId, public.keyId) && parts.wrap.size == 48)
+            // Capture the cryptographically verified key/manifest bound before custody is held.
+            // A long adapter lease can never extend it, and the guard performs no provider work.
+            val activeContext = active.authority.context(active.intent.request(), lastNow, active.intent.expiresMs)
+            val authorityDeadline = minOf(grant.expiresAtMs, activeContext.notAfterMs,
+                activeContext.authorityExpiresAtMs, active.selection.permissionExpiresAtMs, active.intervalExpiresMs)
             // The sole production03 recipient. Never call Draft02 JCA HPKE or retry another provider.
             val cek = WolfHpkeKeystoreReceiver(keys).openCurrent(parts.keyId, parts.enc, parts.wrap, parts.info, parts.aad) {
-                receiverGuard(active)
+                receiverGuard(active, authorityDeadline)
             }
             try {
                 check(cek.size == 32)

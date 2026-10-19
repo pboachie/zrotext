@@ -33,7 +33,7 @@ abstract class SealedPreparationDao {
     @Query("SELECT * FROM local_line_binding WHERE slot = 1")
     protected abstract fun line(): LocalLineBinding?
 
-    @Query("SELECT EXISTS(SELECT 1 FROM profile03_elections WHERE accountId = :account AND (state IN ('reserved','signed','installed') OR acceptedEvidenceSha256 IS NOT NULL))")
+    @Query("SELECT EXISTS(SELECT 1 FROM profile03_elections WHERE accountId = :account AND (state IN ('reserved','signed','installed') OR deviceSignatureB64url IS NOT NULL OR acceptedEvidenceSha256 IS NOT NULL))")
     protected abstract fun hasProfile03Fence(account: String): Boolean
 
     @Query("SELECT * FROM profile03_elections WHERE challengeId = :challenge")

@@ -18,7 +18,7 @@ import org.json.JSONObject
  * not prove HPKE/provider interoperability. The real SIM observation/runtime fixture supplies
  * its process-only installed v2 permit; no persisted row or test boolean substitutes for it.
  */
-internal class Profile03ExecutionFixture : AutoCloseable {
+internal class Profile03ExecutionFixture(private val selectedReaderUntilMs: Long = 900_000) : AutoCloseable {
     val line = LineActivationV2RuntimeFixture(true)
     val binding = line.installSealed()
     val account = uuid(line.account)
@@ -110,7 +110,8 @@ internal class Profile03ExecutionFixture : AutoCloseable {
     private fun manifest(profile: Int, version: Long, previous: ByteArray): ByteArray {
         fun row(role: Int, key: KeyPair, scope: Int): ByteArray = byteArrayOf(role.toByte()) + keyId(key, role > 3) +
             point(key) + (if (role == 1 || role == 4) device else ByteArray(16)) +
-            (if (role in setOf(1, 4, 5)) lineId else ByteArray(16)) + byteArrayOf(0, scope.toByte()) + long(1) + long(900_000) + byteArrayOf(1)
+            (if (role in setOf(1, 4, 5)) lineId else ByteArray(16)) + byteArrayOf(0, scope.toByte()) + long(1) +
+            long(if (role == 1) selectedReaderUntilMs else 900_000) + byteArrayOf(1)
         val rows = row(1, reader, 4) + row(2, archive, 12) + row(4, enrollment, 2) + row(5, signer, 1) + row(6, root, 0)
         val header = if (profile == 2) ascii("ZTMA") + byteArrayOf(2) else ascii("ZTMA") + byteArrayOf(3, 3, 2)
         val unsigned = header + account + long(1) + long(version) + long(99_000) + long(900_000) + previous + point(root) + byteArrayOf(5) + rows

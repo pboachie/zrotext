@@ -108,6 +108,34 @@ class Profile03ElectionJournalTest {
         assertEquals(old, f.line.db.attempts().getAttempt(old.attemptId))
         assertNull(f.line.db.profile03Elections().find(f.record.challengeId))
     }
+    @Test fun retiredSignedProofStillFencesOldWritersAndNewCeremoniesWhileAcceptanceIsUnknown() = Profile03ExecutionFixture().use { f ->
+        val dao = f.line.db.profile03Elections()
+        assertTrue(dao.reserve(f.record) {})
+        val signed = f.installed.copy(state = "signed", acceptedEvidenceSha256 = null)
+        assertTrue(dao.recordSigned(signed) {})
+        assertEquals(1, dao.retire(f.record.challengeId))
+        assertEquals(signed.copy(state = "retired"), dao.find(f.record.challengeId))
+        val old = SealedPreparationRecord(f.record.accountId, f.message.toString(), f.attempt.toString(), "a".repeat(64), "b".repeat(64))
+        assertThrows(IllegalStateException::class.java) { f.line.db.sealedPreparations().reserve(old) {} }
+        assertThrows(IllegalStateException::class.java) {
+            f.line.db.attempts().reserveAlpha(f.attempt.toString(), f.message.toString(), f.line.selected, 1,
+                UUID(0, 44).toString(), f.now, identity = testEvidenceIdentity)
+        }
+        assertThrows(IllegalStateException::class.java) { f.line.db.attempts().reserve(UUID(0, 45).toString(), 7, 1, f.now) }
+        val core = Profile03ElectionEncoding.decode(f.record.coreB64url, 500)
+        ReviewedIntent03.uuid(UUID(0, 47)).copyInto(core, 56)
+        val next = f.record.copy(challengeId = UUID(0, 47).toString(), newBindingId = UUID(0, 48).toString(),
+            coreB64url = Profile03ElectionEncoding.encode(core))
+        assertFalse(dao.reserve(next) {})
+        // The valid released signature may have been accepted remotely after local retirement.
+        // A delayed reply cannot renew it locally, and its unknown outcome cannot restore02.
+        assertFalse(dao.install(f.installed) {})
+        assertNull(dao.find(next.challengeId))
+        assertNull(dao.installed(f.record.accountId, f.record.lineId))
+        assertEquals(signed.copy(state = "retired"), dao.find(f.record.challengeId))
+        assertEquals(0, f.line.db.sealedPreparations().count())
+        assertNull(f.line.db.attempts().getAttempt(f.attempt.toString()))
+    }
     @Test fun upgradeFromFourteenPreservesExistingPairingLineAndUnknownAttempt() {
         val context = RuntimeEnvironment.getApplication()
         val name = "profile03-${UUID.randomUUID()}.db"

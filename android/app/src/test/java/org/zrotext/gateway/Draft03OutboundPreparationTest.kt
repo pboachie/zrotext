@@ -73,6 +73,20 @@ class Draft03OutboundPreparationTest {
         assertEquals(Draft03OutboundPreparation.Rejected, run(f))
         assertEquals(0, f.line.db.sealedPreparations().count())
     }
+    @Test fun verifiedReaderDeadlineIsIndependentOfALongerAdapterPermissionLease() {
+        Profile03ExecutionFixture(selectedReaderUntilMs = 100_600).use { f ->
+            val c = f.current()
+            val checked = c.authority.context(c.intent.request(), f.now, c.intent.expiresMs)
+            assertEquals(100_600L, checked.authorityExpiresAtMs)
+            assertEquals(100_500L, checked.notAfterMs)
+            assertTrue(checked.authorityExpiresAtMs < c.selection.permissionExpiresAtMs)
+        }
+        Profile03ExecutionFixture(selectedReaderUntilMs = 100_499).use { f ->
+            f.install()
+            assertEquals(Draft03OutboundPreparation.Rejected, run(f))
+            assertEquals(0, f.line.db.sealedPreparations().count())
+        }
+    }
     @Test @Config(sdk = [30]) fun unsupportedApiNeverConsultsAuthorityOrKeysOrJournal() {
         val frame = javaClass.classLoader!!.getResourceAsStream("sealed-profile03-contract-01.json")!!.use {
             JSONObject(it.bufferedReader().readText()).getJSONObject("grant").getJSONObject("frame").toString()

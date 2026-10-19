@@ -66,7 +66,7 @@ abstract class Profile03ElectionDao {
     abstract fun installed(account: String, line: String): Profile03ElectionRecord?
     @Query("SELECT COUNT(*) FROM profile03_elections")
     protected abstract fun count(): Int
-    @Query("SELECT COUNT(*) FROM profile03_elections WHERE accountId = :account AND state IN ('reserved','signed','installed')")
+    @Query("SELECT COUNT(*) FROM profile03_elections WHERE accountId = :account AND (state IN ('reserved','signed','installed') OR deviceSignatureB64url IS NOT NULL OR acceptedEvidenceSha256 IS NOT NULL)")
     protected abstract fun outstanding(account: String): Int
     @Query("SELECT * FROM local_line_binding WHERE slot = 1")
     protected abstract fun line(): LocalLineBinding?
@@ -80,6 +80,7 @@ abstract class Profile03ElectionDao {
     protected abstract fun signed(challenge: String, signature: String): Int
     @Query("UPDATE profile03_elections SET state = 'installed', acceptedEvidenceSha256 = :evidence WHERE challengeId = :challenge AND state = 'signed' AND acceptedEvidenceSha256 IS NULL")
     protected abstract fun accepted(challenge: String, evidence: String): Int
+    /** Retirement cannot retract a released proof or resolve its unknown server outcome. */
     @Query("UPDATE profile03_elections SET state = 'retired' WHERE challengeId = :challenge AND state IN ('reserved','signed','installed')")
     abstract fun retire(challenge: String): Int
 
