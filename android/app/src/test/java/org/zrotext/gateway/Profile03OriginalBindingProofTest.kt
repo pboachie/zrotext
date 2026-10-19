@@ -59,6 +59,18 @@ class Profile03OriginalBindingProofTest {
             assertTrue("original offset $at", runCatching { verify(a = changed) }.isFailure)
         }
     }
+    @Test fun originalActivationAcceptanceMustPrecedeOriginalRegistrationExpiry() {
+        val expires = ByteBuffer.wrap(registration, registration.size - 16, 8).long
+        val completed = ByteBuffer.wrap(registration, registration.size - 8, 8).long
+        fun at(time: Long) = activation.copyOf().apply { ByteBuffer.wrap(this).putLong(size - 8, time) }
+        // Keep all original valid signatures, including the high-s device DER. The immutable
+        // acceptance checkpoint is outside those signed statements and must be checked itself.
+        assertEquals(expires - 1, verify(a = at(expires - 1)).acceptedMs)
+        for (time in listOf(completed - 1, expires, expires + 1)) {
+            assertTrue(runCatching { verify(a = at(time)) }.isFailure)
+        }
+        assertArrayEquals(value("old_binding_proof_digest"), verify(a = at(expires - 1)).oldBindingProofDigest())
+    }
     @Test fun changedOriginalRootAccountReaderEnrollmentOriginOrBindingRefuses() {
         for (at in listOf(8, 24, 40, 72, 88, 104, 136, 256, 288, 400)) {
             assertTrue(runCatching { verify(c = core().apply { this[at] = (this[at].toInt() xor 1).toByte() }) }.isFailure)

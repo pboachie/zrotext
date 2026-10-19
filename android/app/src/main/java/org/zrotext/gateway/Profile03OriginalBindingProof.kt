@@ -65,7 +65,7 @@ internal class Profile03OriginalBindingProof private constructor(
             val ownerSignature = input.der()
             val accepted = input.positive()
             input.end()
-            require(accepted >= r.completedMs && registrationId == r.challenge)
+            require(accepted >= r.completedMs && accepted < r.expiresMs && registrationId == r.challenge)
 
             val domain = LineActivationV2Purpose.SEALED.deviceDomain()
             require(deviceStatement.copyOfRange(0, domain.size).contentEquals(domain) &&
@@ -99,7 +99,7 @@ internal class Profile03OriginalBindingProof private constructor(
         }
 
         private class Registration(val account: UUID, val device: UUID, val line: UUID,
-            val generation: Long, val challenge: UUID, val approvalPoint: ByteArray, val completedMs: Long)
+            val generation: Long, val challenge: UUID, val approvalPoint: ByteArray, val completedMs: Long, val expiresMs: Long)
         private fun registration(bytes: ByteArray, localPin: ByteArray, pairedPoint: ByteArray, origin: String): Registration {
             val input = Cursor(unframe(bytes, "ZTSE/line/payload-profile/registration-evidence/v1"))
             val transcript = input.take(input.length32(1024))
@@ -134,7 +134,7 @@ internal class Profile03OriginalBindingProof private constructor(
                 same(sha(pairedPoint), pairedFingerprint) && !same(approvalFingerprint, pairedFingerprint))
             require(ConversationContentCrypto.verifyRaw(rootSignature, pin.copyOfRange(29, 94), transcript) &&
                 ConversationContentCrypto.verifyRaw(approvalSignature, approvalPoint, transcript))
-            return Registration(account, device, line, generation, challenge, approvalPoint, completed)
+            return Registration(account, device, line, generation, challenge, approvalPoint, completed, expires)
         }
         private fun unframe(bytes: ByteArray, label: String): ByteArray {
             val d = Cursor(bytes)
