@@ -14,7 +14,7 @@ use p256::{
 };
 use sha2::{Digest, Sha256};
 
-pub(super) struct Case {
+pub(crate) struct Case {
     pub db: Fixture,
     pub principal: auth::SessionPrincipal,
     pub device: Uuid,
@@ -25,15 +25,28 @@ pub(super) struct Case {
     pub device_der: Vec<u8>,
     pub owner_statement: Vec<u8>,
     pub owner_der: Vec<u8>,
+    pub hasher: std::sync::Arc<auth::TokenHasher>,
+    pub cipher: std::sync::Arc<auth::mfa::MfaCipher>,
+    pub password: String,
+    pub credentials: auth::SessionCredentials,
+    pub recovery: Vec<String>,
+    pub root_key: SigningKey,
+    pub phone_key: SigningKey,
+    pub approval_key: SigningKey,
+    pub pin: [u8; 94],
 }
 impl Case {
-    pub(super) async fn new() -> Self {
+    pub(crate) async fn new() -> Self {
         let mut db = Fixture::runtime().await;
         crate::payload_profile_v2_receipts::require(&db.reader)
             .await
             .unwrap();
-        let hasher = auth::TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
-        let cipher = auth::mfa::MfaCipher::new(rand::random::<[u8; 32]>().to_vec()).unwrap();
+        let hasher = std::sync::Arc::new(
+            auth::TokenHasher::new(rand::random::<[u8; 32]>().to_vec()).unwrap(),
+        );
+        let cipher = std::sync::Arc::new(
+            auth::mfa::MfaCipher::new(rand::random::<[u8; 32]>().to_vec()).unwrap(),
+        );
         let password = format!("synthetic-owner-{}", Uuid::new_v4().simple());
         let account = auth::register(
             &mut db.reader,
@@ -277,9 +290,18 @@ impl Case {
             device_der,
             owner_statement,
             owner_der: signature.to_der().as_bytes().to_vec(),
+            hasher,
+            cipher,
+            password,
+            credentials: session,
+            recovery,
+            root_key,
+            phone_key,
+            approval_key,
+            pin,
         }
     }
-    pub(super) fn lease(&self) -> InboundSession<'static> {
+    pub(crate) fn lease(&self) -> InboundSession<'static> {
         InboundSession {
             account_id: self.principal.tenant.account_id(),
             device_id: self.device,
@@ -289,7 +311,7 @@ impl Case {
             deployment_epoch: 1,
         }
     }
-    pub(super) async fn approve(&mut self) {
+    pub(crate) async fn approve(&mut self) {
         run::approve(
             &mut self.db.reader,
             &self.principal,

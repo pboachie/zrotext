@@ -14,6 +14,7 @@ use uuid::Uuid;
 pub(super) struct Policy {
     origin_hash: [u8; 32],
     pub(super) sealed_line_setup: bool,
+    pub(super) profile03_origin: Option<String>,
 }
 pub(super) struct Negotiated {
     phone_session: Uuid,
@@ -42,6 +43,7 @@ impl Policy {
         Ok(Self {
             origin_hash: Sha256::digest(canonical.as_bytes()).into(),
             sealed_line_setup: false,
+            profile03_origin: None,
         })
     }
     pub(super) fn negotiate(

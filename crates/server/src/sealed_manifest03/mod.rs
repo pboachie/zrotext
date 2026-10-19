@@ -164,6 +164,31 @@ impl std::fmt::Debug for VerifiedManifest03 {
     }
 }
 impl VerifiedManifest03 {
+    pub(crate) fn profile_election_keys(
+        &self,
+        device: &[u8; 16],
+        line: &[u8; 16],
+        device_point: &[u8; 65],
+        approval_point: &[u8; 65],
+        now: u64,
+    ) -> Check<crate::sealed_manifest::ProfileElectionKeys> {
+        self.identity_at(now)?;
+        VerifyingKey::from_sec1_bytes(device_point).map_err(|_| "enrollment signing point")?;
+        VerifyingKey::from_sec1_bytes(approval_point).map_err(|_| "registered approval point")?;
+        let mut selected = self.roles.iter().filter(|key| {
+            key.role == 1 && key.line == *line && key.device == *device && key.active(now)
+        });
+        let reader = selected.next().ok_or("missing selected election reader")?;
+        if selected.next().is_some() || device_point == approval_point || reader.scope != 4 {
+            return Err("selected election key mismatch");
+        }
+        Ok(crate::sealed_manifest::ProfileElectionKeys {
+            reader_id: reader.id,
+            device_signer_id: sealed_manifest::key_id(4, device_point),
+            approval_id: sealed_manifest::key_id(4, approval_point),
+            expires_ms: self.identity.expires_ms.min(reader.until),
+        })
+    }
     fn comparison(&self, now: u64) -> Check<()> {
         time(now)?;
         if now < self.identity.comparison_ms {
