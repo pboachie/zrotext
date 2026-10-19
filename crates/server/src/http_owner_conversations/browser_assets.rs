@@ -27,6 +27,7 @@ impl BrowserAssets {
             "sdk/conversation-activation-proposal.js".to_owned(),
             "sdk/conversation-genesis-proposal.js".to_owned(),
             "sdk/owner-context-authoring.js".to_owned(),
+            "sdk/sealed-approval-key-store.js".to_owned(),
         ];
         let mut visited = BTreeSet::new();
         while let Some(name) = pending.pop() {
@@ -466,6 +467,7 @@ mod tests {
             "conversation-activation-proposal",
             "conversation-genesis-proposal",
             "owner-context-authoring",
+            "sealed-approval-key-store",
         ] {
             files.insert(format!("sdk/{name}.js"), Vec::new());
         }
@@ -490,6 +492,10 @@ mod tests {
         let author = files.remove("sdk/owner-context-authoring.js").unwrap();
         assert!(assets(files.clone()).require_owner_setup().is_err());
         files.insert("sdk/owner-context-authoring.js".into(), author);
+        assert!(assets(files.clone()).require_owner_setup().is_ok());
+        let approval = files.remove("sdk/sealed-approval-key-store.js").unwrap();
+        assert!(assets(files.clone()).require_owner_setup().is_err());
+        files.insert("sdk/sealed-approval-key-store.js".into(), approval);
         assert!(assets(files.clone()).require_owner_setup().is_ok());
         let genesis = files
             .remove("sdk/conversation-genesis-proposal.js")

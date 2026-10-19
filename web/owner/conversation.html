@@ -61,6 +61,7 @@
       <label>Independently compared paired phone signing fingerprint <input id="line-paired-fingerprint" type="text" autocomplete="off"></label>
       <label>Existing paired phone public signing point (65-byte uncompressed SEC1) <input id="line-phone-point-file" type="file"></label>
       <label><input id="line-session-consent" type="checkbox"> Create a nonexportable session-only line approval key. Closing or losing this page loses the key; an unactivated replacement requires fresh offline root approval.</label>
+      <label><input id="line-retention-consent" type="checkbox"> Save this nonexportable line approval key in this browser so I can continue after signing in again. Clearing browser data loses the key; my existing root recovery kit remains required.</label>
       <button id="line-begin" type="button" disabled>Prepare session line approval</button>
       <div id="line-artifacts"></div>
       <p>Approve the exact downloaded public packet with the existing offline line-key-registration command. Select its 64-byte public root-signature output. No root recovery material belongs in this browser.</p>
