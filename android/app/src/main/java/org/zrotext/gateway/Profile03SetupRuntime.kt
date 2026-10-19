@@ -102,11 +102,11 @@ internal class Profile03SetupRuntime(context: Context, private val origin: Strin
                 Profile03Json.binary(evidence, "activation_evidence", 1, 2048), core, history.pin(), enrolled, reader.keyId, origin)
             require(same(original.approvalPoint(), originalOwner) && same(signingId(originalOwner), bytes("approval_key_id")) &&
                 original.matchesLocal(permit.record) && original.acceptedMs <= long(core, 384))
-            history.requireOriginalKeys(uuid(session.deviceId), uuid(lineId), reader.keyId, signingId(enrolled), reader.point, enrolled)
+            history.requireOriginalReader(uuid(session.deviceId), uuid(lineId), reader.keyId, reader.point)
             val candidate = history.current03(successor, now())
             require(candidate.version == long(core, 216) && same(candidate.digest, core.copyOfRange(224, 256)))
-            candidate.requireSelectedDeviceKeys(uuid(session.deviceId), uuid(lineId), reader.keyId, reader.point,
-                signingId(enrolled), enrolled, now(), minOf(long(core, 392), number("permission_expires_ms")))
+            candidate.requireSelectedReader(uuid(session.deviceId), uuid(lineId), reader.keyId, reader.point,
+                now(), minOf(long(core, 392), number("permission_expires_ms")))
             check(SimCardContinuity.matches(line.activatedSim(), SimCardContinuity.observe(application)))
             ram(db.attempts().currentLineBinding())
         }

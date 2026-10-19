@@ -58,16 +58,15 @@ internal class Draft02ManifestAuthority private constructor(
         init { require(id.size == 32) { "Reader ID" } }
     }
 
-    /** Historical election selection only; no fabricated message/request is used for key lookup. */
-    internal fun requireElectionKeys(device: ByteArray, line: ByteArray, readerId: ByteArray,
-        enrollmentId: ByteArray, readerPoint: ByteArray, enrollmentPoint: ByteArray, acceptedMs: Long) {
-        require(device.size == 16 && line.size == 16 && readerId.size == 32 && enrollmentId.size == 32)
+    /** Historical payload reader only. E500 enrollment authentication is independent of the
+     * manifest's role04 inbound-event signer; message-direction signer checks stay in context(). */
+    internal fun requireElectionReader(device: ByteArray, line: ByteArray, readerId: ByteArray,
+        readerPoint: ByteArray, acceptedMs: Long) {
+        require(device.size == 16 && line.size == 16 && readerId.size == 32)
         window(issued, expires, acceptedMs)
-        for ((role, id, point) in listOf(Triple(1, readerId, readerPoint), Triple(4, enrollmentId, enrollmentPoint))) {
-            val key = records.singleOrNull { it.role == role && same(it.id, id) }
-            require(key != null && key.active(acceptedMs) && key.scope == (if (role == 1) 4 else 2) &&
-                same(key.device, device) && same(key.line, line) && same(key.point, point)) { "Original selected key" }
-        }
+        val key = records.singleOrNull { it.role == 1 && same(it.id, readerId) }
+        require(key != null && key.active(acceptedMs) && key.scope == 4 &&
+            same(key.device, device) && same(key.line, line) && same(key.point, readerPoint)) { "Original selected reader" }
     }
 
     /** Caller-selected routing, never inferred from a relay's manifest directory. */

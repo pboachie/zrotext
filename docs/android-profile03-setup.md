@@ -76,6 +76,14 @@ pause reads and retain recovery history.
 
 ## Message path and recovery limits
 
+The enrolled device-authentication/E500/fetch signer is independent of manifest
+role04, which authorizes inbound event signing. Setup, history comparison and
+payload-reader availability check role01 and independently verify the original
+registered enrollment key; they accept a distinct or absent role04 record.
+Message-direction signer gates remain separate: outbound requires role05, and
+the existing inbound02 consumer still requires its exact role04 point in actual
+local signer custody. Availability does not grant that inbound capability.
+
 The ordinary raw03 grant path independently checks local current selection before
 the exact signed HTTPS fetch. It verifies the sidecar's original proofs, same
 existing nonexportable keys and current complete-SIM permit, then composes the

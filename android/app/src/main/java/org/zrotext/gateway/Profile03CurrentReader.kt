@@ -129,8 +129,7 @@ internal class Profile03CurrentReader(context: Context, private val origin: Stri
             same(bytes("device_signing_key_id"), signingId(enrolled)) &&
             same(bytes("approval_key_id"), signingId(original.approvalPoint())) &&
             same(bytes("device_session_digest"), identity.deviceSessionDigest(enrolled)))
-        history.requireOriginalKeys(uuid(session.deviceId), uuid(expectedLine), hardwareReader.keyId,
-            signingId(enrolled), hardwareReader.point, enrolled)
+        history.requireOriginalReader(uuid(session.deviceId), uuid(expectedLine), hardwareReader.keyId, hardwareReader.point)
         val election = Draft03PayloadElectionProof.verifyAccepted(bundle, core, accepted, history.proof,
             successor, enrolled, original.approvalPoint())
         val authority = history.current03(successor, now())
@@ -141,8 +140,8 @@ internal class Profile03CurrentReader(context: Context, private val origin: Stri
             accepted.electionCommitment, accepted.electionBundleSha256, number("compared_ms"),
             number(if (deviceOnly) "selection_expires_ms" else "permission_expires_ms"))
         election.requireCurrent(authority, selected, now())
-        authority.requireSelectedDeviceKeys(accepted.deviceId, accepted.lineId, hardwareReader.keyId, hardwareReader.point,
-            signingId(enrolled), enrolled, now(), selected.permissionExpiresAtMs)
+        authority.requireSelectedReader(accepted.deviceId, accepted.lineId, hardwareReader.keyId, hardwareReader.point,
+            now(), selected.permissionExpiresAtMs)
         if (!deviceOnly) require(same(bytes("owner_session_digest"), sha(ReviewedIntent03.framed("ZTSE/line/payload-profile/owner-session/v1",
             accepted.accountId + uuid(fieldId("user_id")) + uuid(fieldId("owner_session_id"))))))
         for (permission in listOf(Manifest.permission.SEND_SMS, Manifest.permission.RECEIVE_SMS, Manifest.permission.READ_PHONE_STATE)) {

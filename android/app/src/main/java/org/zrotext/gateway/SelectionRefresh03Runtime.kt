@@ -118,8 +118,7 @@ internal class SelectionRefresh03Runtime(private val origin: String, private val
             same(c.approvalKeyId, Profile03RetainedElection.signingId(proofs.original.approvalPoint())) &&
             same(c.deviceSessionDigest, w.identity.deviceSessionDigest(point)) &&
             same(c.originDigest, sha(origin.toByteArray(Charsets.UTF_8))))
-        proofs.authority.requireSelectedDeviceKeys(a.deviceId, a.lineId, hardware.keyId, hardware.point,
-            c.deviceSigningKeyId, point, now(), c.expiresMs)
+        proofs.authority.requireSelectedReader(a.deviceId, a.lineId, hardware.keyId, hardware.point, now(), c.expiresMs)
         w.decision.requireCurrent(); ram(w)
         return proofs
     }
