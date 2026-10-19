@@ -177,6 +177,25 @@ input and expiry. Hidden limited-token console tests exercise success, pre-secre
 context rejection, decline, wrong token and expiry during token entry, checking
 that rejected operations emit neither signature and do not modify the bundle.
 
+## Candidate first profile03 upgrade (disabled by default)
+
+The explicit `unlock` build also supports `payload-profile-upgrade` for the first
+same-root02-to03 manifest. Supply these public flags in order: `--account`,
+`--origin`, `--bundle`, `--proposal`, `--output`, `--device`, `--line`,
+`--manifest-version`, `--manifest-digest`, `--phone-reader`, `--phone-signer`,
+`--issued`. Values must come from the intended context and independently accepted
+root/manifest receipt, rather than the downloaded proposal. Enter the full root
+fingerprint from the separate kit, review the selected existing phone identities,
+then type exactly `APPROVE-PROFILE03` before providing recovery material privately.
+The command rechecks expiry after recovery and before create-new public output.
+
+The [typed proposal](../protocol/drafts/payload-profile-upgrade-proposal.md)
+preserves every original key, archive reader, root and expiry. It signs only the
+first03 manifest under the existing03 domain. It performs no network operation,
+election commit, SIM approval, SMS sending, enrollment or persistent unlock.
+The default build refuses the command. This source path requires separate
+compiler, Windows console and integration qualification before use.
+
 ## Candidate first conversation manifest (disabled by default)
 
 The explicit `unlock` build also accepts `conversation-genesis`. Supply these
