@@ -52,6 +52,20 @@ internal class Draft03ManifestAuthority private constructor(
         init { require(id.size == 32) { "Reader ID" } }
     }
 
+    /** Setup/readiness checks use real selected identities without inventing a message/peer. */
+    internal fun requireSelectedDeviceKeys(device: ByteArray, line: ByteArray, readerId: ByteArray,
+        readerPoint: ByteArray, enrollmentId: ByteArray, enrollmentPoint: ByteArray, nowMs: Long, deadline: Long) {
+        require(nowMs >= comparisonMs && deadline > nowMs)
+        window(issued, expires, nowMs)
+        require(deadline <= expires)
+        for ((role, id, point) in listOf(Triple(1, readerId, readerPoint), Triple(4, enrollmentId, enrollmentPoint))) {
+            val key = records.singleOrNull { it.role == role && same(it.id, id) }
+            require(key != null && key.active(nowMs) && deadline <= key.until &&
+                key.scope == (if (role == 1) 4 else 2) && same(key.device, device) &&
+                same(key.line, line) && same(key.point, point)) { "Selected device key" }
+        }
+    }
+
     /** Independently selected routing and readers; never inferred as permission from ciphertext. */
     class Request(accountId: ByteArray, messageId: ByteArray, deviceId: ByteArray, lineId: ByteArray,
                   peer: ByteArray, signerKeyId: ByteArray, readers: List<Reader>) {

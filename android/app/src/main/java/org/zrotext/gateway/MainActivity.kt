@@ -547,6 +547,13 @@ class MainActivity : ComponentActivity() {
                         Text("Connection status does not confirm message delivery.", style = MaterialTheme.typography.bodySmall)
                     }
                     if (page == GatewayPage.CONNECTION) {
+                        GatewaySectionTitle("Hosted encrypted messaging")
+                        GatewayStatusText("Messaging", Profile03MessagingStatus.value)
+                        Text("Use your paired owner workspace to compare the account root, enroll this phone's reader and approve its selected SIM. Each signed message still requires current server, phone and line approval.")
+                        GatewayButton(onClick = { startHeartbeat(rebootResume = false, profile03 = true) }) {
+                            Text("Connect for encrypted messaging")
+                        }
+                        Text("Android 13 or later is required. Missing or changed setup pauses messaging and keeps your existing pairing and attempt history. Reboot resume remains heartbeat-only.", style = MaterialTheme.typography.bodySmall)
                         GatewaySectionTitle("Conversation content")
                         Text("Review a selected conversation from your paired browser. Opening this screen does not approve SMS content transfer.")
                         GatewayButton(onClick = {
@@ -865,6 +872,15 @@ class MainActivity : ComponentActivity() {
                                         conversationExportPicker.launch("zrotext-phone-public-keys.bin")
                                     }.onFailure { conversationEnrollmentStatus = "Public export expired or pairing/line/key changed. Enroll and review its current public values again." }
                                 }
+                            }, {
+                                val chain = conversationInitialChain
+                                runConversationEnrollment({ _ ->
+                                    val token = checkNotNull(conversationEnrollmentToken)
+                                    val copies = ConversationEnrollmentSession.decodeChain(chain)
+                                    try { ConversationAndroidEnrollment.importInitialProfile03Manifests(applicationContext,
+                                        SmsJournalDatabase.get(applicationContext), token, copies) }
+                                    finally { copies.forEach { it.fill(0) } }
+                                }) { version -> conversationEnrollmentStatus = "Initial signed chain accepted at version $version. Continue the same-root messaging setup in your owner workspace." }
                             })
                     }
                 }
@@ -1560,7 +1576,11 @@ class MainActivity : ComponentActivity() {
             pairingStatus = "Pairing input refused or another operation is active. Check the current server and browser ticket."
         else pairingStatus = "Claiming and proving key; compare in the browser before approval"
     }
-    private fun startHeartbeat(rebootResume: Boolean) {
+    private fun startHeartbeat(rebootResume: Boolean, profile03: Boolean = false) {
+        if (profile03 && Build.VERSION.SDK_INT < 33) {
+            AuthenticatedGatewayStatus.value = "Encrypted messaging requires Android 13 or later"
+            return
+        }
         if (selectedSim == null) {
             AuthenticatedGatewayStatus.value = "Select a SIM first"
             return
@@ -1571,6 +1591,7 @@ class MainActivity : ComponentActivity() {
             .putExtra(AuthenticatedGatewayService.EXTRA_URL, deviceStreamEndpoint)
             .putExtra(AuthenticatedGatewayService.EXTRA_DEVICE_ID, approvedDeviceId.trim())
             .putExtra(AuthenticatedGatewayService.EXTRA_REBOOT_RESUME, rebootResume)
+            .putExtra(AuthenticatedGatewayService.EXTRA_PROFILE03, profile03)
         ContextCompat.startForegroundService(this, intent)
     }
 

@@ -64,6 +64,8 @@ abstract class Profile03ElectionDao {
     abstract fun find(challenge: String): Profile03ElectionRecord?
     @Query("SELECT * FROM profile03_elections WHERE accountId = :account AND lineId = :line AND state = 'installed'")
     abstract fun installed(account: String, line: String): Profile03ElectionRecord?
+    @Query("SELECT * FROM profile03_elections WHERE accountId = :account AND lineId = :line AND state = 'signed'")
+    abstract fun signedOpening(account: String, line: String): Profile03ElectionRecord?
     @Query("SELECT COUNT(*) FROM profile03_elections")
     protected abstract fun count(): Int
     @Query("SELECT COUNT(*) FROM profile03_elections WHERE accountId = :account AND (state IN ('reserved','signed','installed') OR deviceSignatureB64url IS NOT NULL OR acceptedEvidenceSha256 IS NOT NULL)")

@@ -30,4 +30,17 @@ class LineActivationV2NegotiationTest {
         assertFalse(offered.contains(LineActivationV2Negotiation.SEALED_STATUS_LINE))
         assertFalse(LineActivationV2Negotiation.select(LineActivationV2Negotiation.STATUS_LINE, offered).sealed)
     }
+    @Test fun profile03AdvertisesOnlyWithActualCompleteV2ConsumerAndKeepsOldTuplesSeparate() {
+        assertThrows(IllegalArgumentException::class.java) { LineActivationV2Negotiation.offer(false, true, true) }
+        val offered = LineActivationV2Negotiation.offer(true, true, true)
+        assertEquals(Profile03SessionTime.PROTOCOL, offered.first())
+        val selected = LineActivationV2Negotiation.select(Profile03SessionTime.PROTOCOL, offered)
+        assertEquals(2, selected.lineVersion); assertEquals(3, selected.sealedVersion)
+        assertEquals(2, LineActivationV2Negotiation.select(SealedSocketTime.PROTOCOL, offered).sealedVersion)
+        assertEquals(1, LineActivationV2Negotiation.select(SealedSocketTime.PROTOCOL, offered).lineVersion)
+        assertThrows(IllegalArgumentException::class.java) {
+            LineActivationV2Negotiation.select(Profile03SessionTime.PROTOCOL, LineActivationV2Negotiation.offer(true, true))
+        }
+        assertFalse(LineActivationV2Negotiation.offer(true, true).contains(Profile03SessionTime.PROTOCOL))
+    }
 }

@@ -30,6 +30,11 @@ internal object Profile03Json {
         require(raw.matches(Regex("[1-9][0-9]{0,18}")))
         return raw.toLong().also { require(it > 0) }
     }
+    fun nonnegativeDecimal(fields: Map<String, Any>, name: String): Long {
+        val raw = text(fields, name)
+        require(raw.matches(Regex("0|[1-9][0-9]{0,18}")))
+        return raw.toLong().also { require(it >= 0) }
+    }
     fun binary(fields: Map<String, Any>, name: String, min: Int, max: Int): ByteArray {
         val raw = text(fields, name)
         require(raw.length in ((min * 8 + 5) / 6)..((max * 8 + 5) / 6) &&
