@@ -48,9 +48,17 @@ runtime global/account epoch-advance function is provided.
 ## Closed validation and runtime authority
 
 The migration retains an insert-once graph baseline covering relations, columns,
-defaults, constraints, indexes, triggers and complete function bodies/configuration
-and ownership. Matching it is a schema check, not P-256 authentication. Only the
+defaults, constraints, indexes, triggers, rewrite rules, inheritance edges, row
+policies and complete function bodies/configuration and ownership. Owners and
+policy roles use stable role identities so a logical restore into a new cluster
+does not depend on role OIDs. Matching it is a schema check, not P-256
+authentication. Only the
 existing reviewed equivalent catalog-first v2 trigger paths are normalized.
+The current graph also accepts the two exact reviewed PostgreSQL renderings of
+three CHECK constraints whose nested AND terms flatten on logical restore:
+the sealed-inbound envelope, webhook callback URL and workflow action revision/
+deadline checks. Other constraint text is not normalized, and function bodies
+are never rewritten for graph comparison.
 Unknown objects, changed bodies, disabled constraints/triggers, missing indexes
 and added columns refuse the optional v2/workflow consumers and the required
 future03 consumer. Pre108 isolated legacy fixtures retain their original checks.

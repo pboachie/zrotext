@@ -19,7 +19,7 @@ BEGIN
             ('payload_profile_writer_guard()','f47f6d64ef583f2f5272128aa02c7bd5974d2e9f06b6bfff743a5b0a29e3c18a','trigger','plpgsql','v',false,true,ARRAY['search_path=pg_catalog','lock_timeout=3s']),
             ('payload_profile_writer_global_guard()','b8837a0f8a53c45722524ff8082ffaebb3d992cac441a69f02e9750b2a9ee106','trigger','plpgsql','v',false,false,ARRAY['search_path=pg_catalog']),
             ('payload_profile_writer_catalog_guard()','07fb697ab77abd9ae2142bb44ca59d0fdf3515a5507f0ab74c57b2d42d73bc8a','trigger','plpgsql','v',false,false,ARRAY['search_path=pg_catalog']),
-            ('payload_profile_writer_graph()','960230c7506e3777f855c8637235a0f413c37e877c4f41b55d58ccf4914d3dd0','bytea','sql','s',false,false,ARRAY['search_path=pg_catalog']),
+            ('payload_profile_writer_graph()','cc9acfd80e3b38f0bd821047921b0fb08511f1a5169c62c6e1fe2ebacb4aa9a1','bytea','sql','s',false,false,ARRAY['search_path=pg_catalog']),
             ('payload_profile_writer_version()','b09c934ba13422e2ef7c11436822f20561a2aedb5534f00801ceca853a6639b4','boolean','sql','s',false,true,ARRAY['search_path=pg_catalog']),
             ('payload_profile_writer_ready()','8759842715d6f164f2533cbd2778d0ba0a67450d53f0874203e3c66d4d80488a','boolean','sql','s',false,false,ARRAY['search_path=pg_catalog']),
             ('user_membership_freshness_guard()','57392dcb3337dfcc09266f17a6135d3d45c9d086fba03f860a3ac18ee56cef51','trigger','plpgsql','v',false,true,ARRAY['search_path=pg_catalog','lock_timeout=3s']),
