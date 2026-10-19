@@ -160,6 +160,34 @@ test('restoration checks original account/session/origin/root and refuses access
   assert.equal(s.calls.length, 0); s.client.close();
 });
 
+test('fresh same-user sign-in observes original session-bound recovery without gaining mutation authority', async () => {
+  const s = await setup(), r = await reservation(s), packet = await bundle(s);
+  s.client.close();
+  s.handle(() => data(r));
+  const fresh = new OwnerProfileElectionClient03({ ...s.options, ownerSessionId: id(uuid(180)) });
+  assert.deepEqual(fresh.observeOpening(structuredClone(s.opening)), s.opening);
+  const observed = await fresh.status(s.opening);
+  assert.equal(observed.challengeId, r.challenge_id); assert.equal(observed.expiresMs, 20000n);
+  assert.equal(s.calls.length, 1); assert.equal(s.saved.length, 0);
+  await assert.rejects(fresh.reserve(s.opening, factor), checkError('scope', 'refused'));
+  await assert.rejects(fresh.commit(s.opening, r.challenge_id, packet.bytes, factor), checkError('scope', 'refused'));
+  assert.equal(s.calls.length, 1); assert.equal(s.saved.length, 0);
+  const altered = { ...s.opening, owner_session_id: id(uuid(181)) };
+  assert.throws(() => fresh.observeOpening(altered), checkError('opening_conflict'));
+  fresh.close();
+});
+
+test('historical observation still binds the exact original session digest and actual original user', async () => {
+  const s = await setup(), r = await reservation(s); s.client.close();
+  const fresh = new OwnerProfileElectionClient03({ ...s.options, ownerSessionId: id(uuid(180)) });
+  s.handle(() => data(r));
+  await assert.rejects(fresh.status({ ...s.opening, owner_session_id: id(uuid(181)) }), checkError('scope'));
+  fresh.close();
+  const other = new OwnerProfileElectionClient03({ ...s.options, ownerSessionId: id(uuid(180)), userId: id(uuid(182)) });
+  assert.throws(() => other.observeOpening(s.opening), checkError('scope'));
+  assert.equal(s.calls.length, 1); other.close();
+});
+
 test('lost reservation response stays unknown and explicit restored status observes the same original expiry', async () => {
   const s = await setup(); s.handle(() => { throw Error('network may have committed'); });
   await assert.rejects(s.client.reserve(s.opening, factor), checkError('unavailable', 'unknown'));
@@ -221,12 +249,20 @@ test('cross-scope core, substituted successor and noncanonical numbers cannot pa
 });
 
 test('known closed refusal is distinct from uncertain mutation and never retried automatically', async () => {
-  for (const [status, code] of [[401, 'authentication_required'], [409, 'conflict'], [410, 'expired'], [429, 'rate_limited'], [503, 'temporarily_unavailable']]) {
+  for (const [status, code] of [[401, 'authentication_required'], [409, 'conflict'], [410, 'expired'], [429, 'rate_limited']]) {
     const s = await setup(); s.handle(() => refusal(status, code));
     await assert.rejects(s.client.reserve(s.opening, factor), checkError(code, 'refused')); assert.equal(s.calls.length, 1); s.client.close();
   }
   const s = await setup(); s.handle(() => refusal(401, 'conflict'));
   await assert.rejects(s.client.reserve(s.opening, factor), checkError('response', 'unknown'));
+});
+
+test('a valid static503 still preserves UNKNOWN mutation outcome after a possibly committed transaction', async () => {
+  const s = await setup(); s.handle(() => refusal(503, 'temporarily_unavailable'));
+  await assert.rejects(s.client.reserve(s.opening, factor), checkError('temporarily_unavailable', 'unknown'));
+  assert.equal(s.calls.length, 1); assert.equal(s.saved.length, 1);
+  await assert.rejects(s.client.reserve(s.opening, factor), checkError('closed'));
+  assert.equal(s.calls.length, 1); s.client.close();
 });
 
 test('CSRF change before network refuses and after send prevents late response disclosure', async () => {

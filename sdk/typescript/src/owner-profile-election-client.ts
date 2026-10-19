@@ -203,12 +203,13 @@ export class OwnerProfileElectionClient03 {
     let current: string; try { current = csrf(this.#options.currentCsrf()); } catch { this.close(); return fail('session_changed'); }
     if (current !== this.#csrfValue) { this.close(); fail('session_changed'); }
   }
-  #recovery(value: ElectionRecovery03): ElectionRecovery03 {
+  #recovery(value: ElectionRecovery03, historical = false): ElectionRecovery03 {
     const r = record(value, recoveryNames);
     if (r.v !== 1 || r.origin !== this.#origin || r.account_id !== this.#account || r.user_id !== this.#user
-      || r.owner_session_id !== this.#session || r.device_id !== this.#device || r.root_fingerprint !== this.#root) fail('scope');
+      || !historical && r.owner_session_id !== this.#session || r.device_id !== this.#device || r.root_fingerprint !== this.#root) fail('scope');
+    uuid(r.owner_session_id);
     uuid(r.opening_id); uuid(r.line_id); binary(r.successor_manifest03, 366, 9753);
-    if (this.#opening && ['opening_id', 'line_id', 'successor_manifest03'].some(k => r[k] !== this.#opening![k as keyof ElectionRecovery03])) fail('opening_conflict');
+    if (this.#opening && ['opening_id', 'line_id', 'successor_manifest03', 'owner_session_id'].some(k => r[k] !== this.#opening![k as keyof ElectionRecovery03])) fail('opening_conflict');
     const captured = Object.freeze({ ...r }) as ElectionRecovery03; this.#opening = captured; return captured;
   }
   createOpening(lineId: string, successor: Uint8Array): ElectionRecovery03 {
@@ -219,15 +220,18 @@ export class OwnerProfileElectionClient03 {
       opening_id: crypto.randomUUID(), line_id: lineId, successor_manifest03: b64(bytes) });
   }
   restoreOpening(value: ElectionRecovery03): ElectionRecovery03 { this.#live(); return this.#recovery(value); }
-  async #digests(): Promise<{ origin: Uint8Array; session: Uint8Array }> {
+  /** Passive recovery after a fresh sign-in by the SAME actual original user.
+   * The server authenticates that user; this never permits reserve/commit of old session bytes. */
+  observeOpening(value: ElectionRecovery03): ElectionRecovery03 { this.#live(); return this.#recovery(value, true); }
+  async #digests(selectedSession = this.#session): Promise<{ origin: Uint8Array; session: Uint8Array }> {
     const label = enc.encode('ZTSE/line/payload-profile/owner-session/v1\0'), n = new Uint8Array(4);
     new DataView(n.buffer).setUint32(0, 48, false);
     const bytes = new Uint8Array(label.length + 4 + 48); bytes.set(label); bytes.set(n, label.length);
-    [this.#account, this.#user, this.#session].forEach((id, i) => bytes.set(uuidBytes(id), label.length + 4 + 16 * i));
+    [this.#account, this.#user, selectedSession].forEach((id, i) => bytes.set(uuidBytes(id), label.length + 4 + 16 * i));
     return { origin: new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(this.#origin))),
       session: new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)) };
   }
-  async #core(core: Uint8Array, opening: Pick<ElectionRecovery03, 'line_id'>, challenge: string, historical = false): Promise<void> {
+  async #core(core: Uint8Array, opening: Pick<ElectionRecovery03, 'line_id'> & Partial<Pick<ElectionRecovery03, 'owner_session_id'>>, challenge: string, historical = false): Promise<void> {
     if (!same(core.subarray(0, 8), Uint8Array.of(90, 84, 80, 69, 3, 1, 2, 3)) || core.subarray(496).some(b => b !== 0)
       || uuidText(core.subarray(8, 24)) !== this.#account || uuidText(core.subarray(24, 40)) !== this.#device
       || uuidText(core.subarray(40, 56)) !== opening.line_id || uuidText(core.subarray(56, 72)) !== challenge
@@ -239,7 +243,7 @@ export class OwnerProfileElectionClient03 {
     uuidText(core.subarray(72, 88));
     for (const at of [104, 184, 224, 256, 288, 320, 352, 400, 432, 464]) if (!core.subarray(at, at + 32).some(b => b !== 0)) fail('response');
     if (!historical) {
-      const expected = await this.#digests(); this.#live();
+      const expected = await this.#digests(opening.owner_session_id ?? this.#session); this.#live();
       if (!same(core.subarray(400, 432), expected.origin) || !same(core.subarray(432, 464), expected.session)) fail('scope');
     }
   }
@@ -280,7 +284,9 @@ export class OwnerProfileElectionClient03 {
       const parsed = await this.#read(response, deadline); this.#live();
       if (!statuses.includes(response.status)) {
         const e = record(parsed, ['error']); if (typeof e.error !== 'string' || !errors[response.status]?.includes(e.error)) fail('response');
-        knownRefusal = true; throw new OwnerProfileElectionError03(e.error);
+        // A 5xx can follow an uncertain database COMMIT. Its static public
+        // error body is not evidence that a mutation was never accepted.
+        knownRefusal = response.status < 500; throw new OwnerProfileElectionError03(e.error);
       }
       const result = await wait(Promise.resolve().then(() => parse(parsed)), this.#abort.signal, deadline, true); this.#live(); return result;
     } catch (error) {
@@ -343,11 +349,11 @@ export class OwnerProfileElectionClient03 {
       successor_manifest03: o.successor_manifest03, ...c }, true, [200, 201], v => this.#reservation(v, o), o);
   }
   async status(opening: ElectionRecovery03): Promise<ElectionReservationCandidate03> {
-    const o = this.#recovery(opening);
+    const o = this.#recovery(opening, true);
     return this.#request('/challenges/status', { v: 1, opening_id: o.opening_id, line_id: o.line_id }, false, [200], v => this.#reservation(v, o));
   }
   async deviceProof(opening: ElectionRecovery03, challengeId: string): Promise<Readonly<{ challengeId: string; signature: Uint8Array }>> {
-    const o = this.#recovery(opening), challenge = uuid(challengeId);
+    const o = this.#recovery(opening, true), challenge = uuid(challengeId);
     return this.#request('/challenges/proof', { v: 1, opening_id: o.opening_id, challenge_id: challenge }, false, [200], value => {
       const r = record(value, ['v', 'opening_id', 'challenge_id', 'device_signature']), signature = binary(r.device_signature, 64);
       if (r.v !== 1 || r.opening_id !== o.opening_id || r.challenge_id !== challenge || !isCanonicalP256Signature(signature)) fail('scope');

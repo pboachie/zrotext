@@ -26,6 +26,13 @@ original issue and expiry times, including when it has expired. A successful
 historical response does not renew permission. The instance retains one opening;
 it does not silently allocate another after failure.
 
+After a fresh sign-in by the same original user, use `observeOpening` with the
+unchanged saved record and explicitly read `status` or `deviceProof`. The
+response remains bound to its original owner-session digest. `reserve` and
+`commit` refuse that older session's record before storage or HTTP; observation
+never upgrades old signed bytes to the new session. `restoreOpening` retains
+its strict same-session mutation contract.
+
 Reservation/status responses require `closed_unaccepted`, empty when there are
 no closed predecessors and otherwise at most16 exact linked records. Each
 contains `opening_id`, `challenge_id`, `new_binding_id`, original E500 `core`,
@@ -39,8 +46,10 @@ with its own retained signed journal. Elapsed time or an absent response alone
 cannot prove nonacceptance or allow a new signature. Starting a new opening
 remains a distinct explicit user action with fresh authorization.
 
-An interrupted mutation has an **unknown** outcome unless a valid closed refusal
-arrives. The client aborts and retires after an uncertain response. Restore the
+An interrupted mutation has an **unknown** outcome unless a valid closed4xx refusal
+arrives. A503 remains unknown even with its valid static error body, since a
+database commit may already have succeeded. The client aborts and retires after
+an uncertain response. Restore the
 saved public record in a fresh client and observe its status before deciding
 on an exact retry. Failure to observe a reservation is not proof that a previous
 in-flight mutation cannot commit. The server must independently enforce durable
