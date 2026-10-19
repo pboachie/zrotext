@@ -52,6 +52,18 @@ internal class Draft03ManifestAuthority private constructor(
         init { require(id.size == 32) { "Reader ID" } }
     }
 
+    /** Readiness checks only the payload reader. Independently authenticated E500/device keys
+     * do not inherit or require the manifest's distinct role04 inbound-event signing authority. */
+    internal fun requireSelectedReader(device: ByteArray, line: ByteArray, readerId: ByteArray,
+        readerPoint: ByteArray, nowMs: Long, deadline: Long) {
+        require(nowMs >= comparisonMs && deadline > nowMs)
+        window(issued, expires, nowMs)
+        require(deadline <= expires)
+        val key = records.singleOrNull { it.role == 1 && same(it.id, readerId) }
+        require(key != null && key.active(nowMs) && deadline <= key.until && key.scope == 4 &&
+            same(key.device, device) && same(key.line, line) && same(key.point, readerPoint)) { "Selected device reader" }
+    }
+
     /** Independently selected routing and readers; never inferred as permission from ciphertext. */
     class Request(accountId: ByteArray, messageId: ByteArray, deviceId: ByteArray, lineId: ByteArray,
                   peer: ByteArray, signerKeyId: ByteArray, readers: List<Reader>) {
@@ -84,7 +96,7 @@ internal class Draft03ManifestAuthority private constructor(
     }
 
     class Context internal constructor(val request: Request, val version: Long, digest: ByteArray,
-                                       signer: ByteArray, val notAfterMs: Long) {
+                                       signer: ByteArray, val notAfterMs: Long, val authorityExpiresAtMs: Long) {
         private val identity = digest.copyOf()
         private val signingPoint = signer.copyOf()
         val manifestDigest get() = identity.copyOf()
@@ -100,6 +112,7 @@ internal class Draft03ManifestAuthority private constructor(
         val signer = records.singleOrNull { it.role == 5 && same(it.id, request.signer()) }
         require(signer != null && signer.active(nowMs) && signer.scope == 1 &&
             same(signer.line, request.line()) && notAfterMs <= signer.until) { "Signer authority" }
+        var authorityExpiresAtMs = minOf(expires, signer.until)
         var prior: Reader? = null
         var devices = 0
         var archives = 0
@@ -109,6 +122,7 @@ internal class Draft03ManifestAuthority private constructor(
             prior = reader
             val key = records.singleOrNull { it.role == reader.role && same(it.id, reader.keyId) }
             require(key != null && key.active(nowMs) && key.scope and 4 != 0 && notAfterMs <= key.until) { "Reader authority" }
+            authorityExpiresAtMs = minOf(authorityExpiresAtMs, key.until)
             when (reader.role) {
                 1 -> { require(same(key.device, request.device()) && same(key.line, request.line())); devices++ }
                 2 -> archives++
@@ -117,7 +131,7 @@ internal class Draft03ManifestAuthority private constructor(
             }
         }
         require(devices == 1 && archives == 1 && integrations <= 6) { "Reader set" }
-        return Context(request, version, semanticDigest, signer.point, notAfterMs)
+        return Context(request, version, semanticDigest, signer.point, notAfterMs, authorityExpiresAtMs)
     }
 
     fun readerPoint(context: Context, reader: Reader, nowMs: Long): ByteArray {
@@ -125,6 +139,20 @@ internal class Draft03ManifestAuthority private constructor(
         val checked = this.context(context.request, nowMs, context.notAfterMs)
         require(checked.request.readers().any { it.role == reader.role && same(it.keyId, reader.keyId) })
         return records.single { it.role == reader.role && same(it.id, reader.keyId) }.point.copyOf()
+    }
+
+    /** A signed review may not predate any selected outbound key, even if all keys are active now.
+     * This supplements current authorization without treating the historical observation as now.
+     */
+    fun reviewedContext(request: Request, observedMs: Long, nowMs: Long, notAfterMs: Long): Context {
+        require(observedMs > 0 && observedMs <= nowMs)
+        val checked = context(request, nowMs, notAfterMs)
+        val selected = request.readers().map { it.role to it.keyId } + (5 to request.signer())
+        for ((role, id) in selected) {
+            val key = records.single { it.role == role && same(it.id, id) }
+            require(observedMs >= key.from && observedMs < key.until) { "Review predates selected key" }
+        }
+        return checked
     }
 
     private class Key(val role: Int, val id: ByteArray, val point: ByteArray, val device: ByteArray,
