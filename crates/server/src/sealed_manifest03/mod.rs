@@ -242,7 +242,7 @@ impl VerifiedManifest03 {
         if readers.is_empty() || readers.len() > if inbound { 7 } else { 8 } {
             return Err("reader count");
         }
-        let mut deadline = self.identity.expires_ms;
+        let mut deadline = self.identity.expires_ms.min(signer.until);
         let mut not_before = signer.from;
         let (mut devices, mut archives, mut integrations) = (0, 0, 0);
         let mut previous = None;

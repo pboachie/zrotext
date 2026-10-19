@@ -6,7 +6,7 @@ use crate::sealed_manifest03::tests::{Fixture, NOW, corpus, hex, sign};
 use aes_gcm::aead::Generate;
 use p256::ecdsa::SigningKey;
 
-fn readers(f: &Fixture, kind: u8) -> Vec<(u8, [u8; 32])> {
+pub(crate) fn readers(f: &Fixture, kind: u8) -> Vec<(u8, [u8; 32])> {
     let mut r: Vec<_> = f
         .records
         .iter()
@@ -16,7 +16,7 @@ fn readers(f: &Fixture, kind: u8) -> Vec<(u8, [u8; 32])> {
     r.sort();
     r
 }
-fn envelope(
+pub(crate) fn envelope(
     f: &Fixture,
     manifest: &VerifiedManifest03,
     kind: u8,

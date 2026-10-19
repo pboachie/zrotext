@@ -289,4 +289,4 @@ pub fn require_current(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
