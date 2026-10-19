@@ -1,6 +1,6 @@
 {
   "status": "installed-legacy-writer-participation-no-profile03-authority",
-  "migration_version": 108,
+  "migration_version": 109,
   "row_columns": ["relation", "account_extraction_review_class", "columns_sha256", "foreign_keys_sha256", "triggers_sha256"],
   "relations": [
     ["accounts","account_identity","27667a0fcde3c1682163ce77ccdf9fef9a8766dde79e33ebc890b4bc3b35b34e","4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","9d6cd2330fd59b053aa8b403ec1bc4c8287828270d907be698cb678d1952710c"],
@@ -107,6 +107,7 @@
     ["password_reset_notice_outbox","column:account_id","6d1dab25ed17387dd815555ecd2cd96998da28d5cc4607936617dc305b74e670","7a1ebf0cb4650160847ee057c193656b999f5d2d460ed34e0db97b292bf8a192","024d045b9907bb23f89ef81baf3adf2ba84b8dd32b9eb8143b17a1324cf81c03"],
     ["password_resets","column:account_id","4c7d6e738e953f9c0bc3f5bd80d7a8e4b6fef2f6747b0d00d238c8a39e198839","7a1ebf0cb4650160847ee057c193656b999f5d2d460ed34e0db97b292bf8a192","f21aa28a0f4f37d48f3a622e78c3a3bb4b09ba22a510c82ecf36b4753b743e12"],
     ["payload_profile_account_anchors","anchor_lifecycle_only","5d26e991ddf4ea110a1cfe1816324753ea380874be30f44d80d6a4ba8808e04f","4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","6260a3d9946e0475087c23453e74ed8daa9fc8cfa8c88925b2f50802e2742476"],
+    ["payload_profile_v2_activation_receipts","fresh_original_activation_receipt","7e0f7d95309942c6cabd7b3dc7d2e85c780babce6c4f91adfab46423e255e2f7","212e00876f71c620293054e14541e840b34bc5cb944cdf04aaa6c82f6859bc3e","93f3fcdaabcd40ed273db8463ab4019d3f60e35caacc8fa0e5ff333668f7fe92"],
     ["payload_profile_writer_catalog","migration_writer_catalog","ec92e87e6660ddae9c5759832634920875803bd1c0f60fd5e67d4c779236a440","4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","da412a89520586593e9f4d9fa5c10b3eec7bbde2b9d5fb5bc1e411aad3ae8958"],
     ["payload_profile_writer_global_fences","typed_global_writer_fence","04d0b3a6cee0b3426a56accf549c8e743af817bcaa1d62d72944789868119ab4","4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","2133d5730830dca2659b6639ed3db851a46348542d8f94e2578770907361f7b0"],
     ["phone_lines","column:account_id","9735e867eb00c111b167a3827d55cfb334bd5894e7f75d801ec64e6edb333140","392f4a9eadcc4448e102c787e6374396d2575aa29a3c06796c537aac0925afa3","d6983b0304d377f58071535f3a68cdbae94b0e31203776c685aac77b7bcd9cd8"],
@@ -290,6 +291,7 @@
     {"relation":"password_reset_notice_outbox","insert":"new_live_epoch0","update":"old_and_new_live_epoch0","delete":"old_live_epoch0_or_deleted_anchor","current_profile":"no_accepted_profile03_state"},
     {"relation":"password_resets","insert":"new_live_epoch0","update":"old_and_new_live_epoch0","delete":"old_live_epoch0_or_deleted_anchor","current_profile":"no_accepted_profile03_state"},
     {"relation":"payload_profile_account_anchors","insert":"100_after_account_insert_only","update":"100_actual_account_deletion_epoch_only","delete":"retained_identity_refusal","current_profile":"no_accepted_profile03_state"},
+    {"relation":"payload_profile_v2_activation_receipts","insert":"actual_fresh_capture_and_deferred_activation_commit","update":"refuse_immutable","delete":"actual_account_erasure_only","current_profile":"no_accepted_profile03_state"},
     {"relation":"payload_profile_writer_catalog","insert":"insert_once_migration_baseline","update":"refuse","delete":"refuse","current_profile":"no_accepted_profile03_state"},
     {"relation":"payload_profile_writer_global_fences","insert":"migration_only","update":"mandatory_explicit_authority_class_version_only","delete":"refuse","current_profile":"no_accepted_profile03_state"},
     {"relation":"phone_lines","insert":"new_live_epoch0","update":"old_and_new_live_epoch0","delete":"old_live_epoch0_or_deleted_anchor","current_profile":"no_accepted_profile03_state"},

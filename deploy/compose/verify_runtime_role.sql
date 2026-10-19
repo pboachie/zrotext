@@ -10,18 +10,21 @@ DECLARE
     review_routine record;
     review_allowed oid[] := ARRAY[]::oid[];
     writer_expected record;
+    writer_installation bigint;
 BEGIN
     IF to_regclass('public.payload_profile_writer_catalog') IS NOT NULL THEN
-        -- Pin compiled migration108 bodies before invoking a readiness helper.
+        SELECT migration_version INTO writer_installation FROM public.payload_profile_writer_catalog WHERE singleton;
+        IF writer_installation NOT IN (108,109) OR writer_installation IS NULL THEN RAISE EXCEPTION 'unsupported writer installation'; END IF;
+        -- Pin exact compiled108/109 bodies before invoking a readiness helper.
         -- A substituted helper returning true cannot validate its own body.
         FOR writer_expected IN SELECT * FROM (VALUES
             ('payload_profile_writer_json(json)','ba20a6a52c8e77012dc41546475ab19f0d1743bd4675a3184108b78abdfb4b45','text','plpgsql','i',true,false,ARRAY['search_path=pg_catalog']),
             ('payload_profile_writer_guard()','f47f6d64ef583f2f5272128aa02c7bd5974d2e9f06b6bfff743a5b0a29e3c18a','trigger','plpgsql','v',false,true,ARRAY['search_path=pg_catalog','lock_timeout=3s']),
             ('payload_profile_writer_global_guard()','b8837a0f8a53c45722524ff8082ffaebb3d992cac441a69f02e9750b2a9ee106','trigger','plpgsql','v',false,false,ARRAY['search_path=pg_catalog']),
             ('payload_profile_writer_catalog_guard()','07fb697ab77abd9ae2142bb44ca59d0fdf3515a5507f0ab74c57b2d42d73bc8a','trigger','plpgsql','v',false,false,ARRAY['search_path=pg_catalog']),
-            ('payload_profile_writer_graph()','cc9acfd80e3b38f0bd821047921b0fb08511f1a5169c62c6e1fe2ebacb4aa9a1','bytea','sql','s',false,false,ARRAY['search_path=pg_catalog']),
-            ('payload_profile_writer_version()','b09c934ba13422e2ef7c11436822f20561a2aedb5534f00801ceca853a6639b4','boolean','sql','s',false,true,ARRAY['search_path=pg_catalog']),
-            ('payload_profile_writer_ready()','8759842715d6f164f2533cbd2778d0ba0a67450d53f0874203e3c66d4d80488a','boolean','sql','s',false,false,ARRAY['search_path=pg_catalog']),
+            ('payload_profile_writer_graph()',CASE WHEN writer_installation=109 THEN '93654ee42134f973861336539b90c0b4f6727355c087e6d25cb86617aa6e2061' ELSE 'cc9acfd80e3b38f0bd821047921b0fb08511f1a5169c62c6e1fe2ebacb4aa9a1' END,'bytea','sql','s',false,false,ARRAY['search_path=pg_catalog']),
+            ('payload_profile_writer_version()',CASE WHEN writer_installation=109 THEN '1f550dff94173c25c4a99be070549a88fcf35710954ea9ef547dd0cd8655029a' ELSE 'b09c934ba13422e2ef7c11436822f20561a2aedb5534f00801ceca853a6639b4' END,'boolean','sql','s',false,true,ARRAY['search_path=pg_catalog']),
+            ('payload_profile_writer_ready()',CASE WHEN writer_installation=109 THEN '69c01fcc19c8f470870c66e5483ff5e07c6755e08fc9b74611fdf96775316068' ELSE '8759842715d6f164f2533cbd2778d0ba0a67450d53f0874203e3c66d4d80488a' END,'boolean','sql','s',false,false,ARRAY['search_path=pg_catalog']),
             ('user_membership_freshness_guard()','57392dcb3337dfcc09266f17a6135d3d45c9d086fba03f860a3ac18ee56cef51','trigger','plpgsql','v',false,true,ARRAY['search_path=pg_catalog','lock_timeout=3s']),
             ('auth_abuse_consume(text, bytea, bytea, integer, integer, integer, integer)','cdac204cd61b30c1c4a7e9513264467da8cd81ebb1b72332a065ad8ab380d6a1','boolean','plpgsql','v',false,false,ARRAY['search_path=pg_catalog'])
         ) expected(signature,body_sha256,result_type,language_name,volatility,is_strict,is_definer,configuration) LOOP
@@ -39,6 +42,32 @@ BEGIN
         END LOOP;
         IF public.payload_profile_writer_ready() IS DISTINCT FROM true THEN
             RAISE EXCEPTION 'mandatory writer graph or runtime authority is inconsistent';
+        END IF;
+        IF writer_installation=109 THEN
+            FOR writer_expected IN SELECT * FROM (VALUES
+                ('payload_profile_v2_capture(uuid, uuid, bytea, bytea, bytea, bytea, bytea, bytea)','7736037a8186fd08c7c9b6793295f89d2d627c29643baafc5b47e73c30ffe334','record','plpgsql','v',true,true,ARRAY['search_path=pg_catalog','lock_timeout=3s']),
+                ('payload_profile_v2_receipt_guard()','cf69bccfb92f8429763377a802f31b58a0537fedad17baa6e303a8ba0aba4e6f','trigger','plpgsql','v',false,true,ARRAY['search_path=pg_catalog','lock_timeout=3s']),
+                ('payload_profile_v2_receipt_complete()','0b42255c08770af5440001822aca75e702be896783eddb2b8aeae5f4b9e34a34','trigger','plpgsql','v',false,true,ARRAY['search_path=pg_catalog']),
+                ('payload_profile_v2_ready()','ba64199b418b562dbf7ec0763c46e841554f83626971e9b84e645b8a5c665942','boolean','sql','s',false,false,ARRAY['search_path=pg_catalog'])
+            ) expected(signature,body_sha256,result_type,language_name,volatility,is_set,is_definer,configuration) LOOP
+                IF NOT EXISTS(SELECT FROM pg_proc p JOIN pg_language l ON l.oid=p.prolang
+                  JOIN pg_class c ON c.oid='public.accounts'::regclass
+                  WHERE p.oid=to_regprocedure(writer_expected.signature)
+                    AND encode(sha256(convert_to(p.prosrc,'UTF8')),'hex')=writer_expected.body_sha256
+                    AND format_type(p.prorettype,NULL)=writer_expected.result_type AND l.lanname=writer_expected.language_name
+                    AND p.provolatile::text=writer_expected.volatility AND NOT p.proisstrict
+                    AND p.prosecdef=writer_expected.is_definer AND p.proretset=writer_expected.is_set
+                    AND p.proconfig=writer_expected.configuration AND p.proowner=c.relowner
+                    AND p.proparallel='u' AND p.prokind='f' AND p.pronargdefaults=0
+                    AND (NOT p.proretset OR (p.proargnames=ARRAY['account','challenge','device_statement','device_der','owner_statement','owner_der','device_point','owner_point','binding_id','accepted_ms']
+                      AND p.proargmodes::text[]=ARRAY['i','i','i','i','i','i','i','i','t','t']
+                      AND ARRAY(SELECT format_type(t,NULL) FROM unnest(p.proallargtypes) t)=ARRAY['uuid','uuid','bytea','bytea','bytea','bytea','bytea','bytea','uuid','bigint']))) THEN
+                    RAISE EXCEPTION 'original receipt helper body or configuration is inconsistent';
+                END IF;
+            END LOOP;
+            IF public.payload_profile_v2_ready() IS DISTINCT FROM true THEN
+                RAISE EXCEPTION 'original receipt schema or runtime authority is inconsistent';
+            END IF;
         END IF;
     END IF;
     IF to_regprocedure('public.user_membership_freshness_guard()') IS NOT NULL

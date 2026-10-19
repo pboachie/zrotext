@@ -30,13 +30,13 @@ async fn writer_installation_refuses_unreviewed_preexisting_graph_without_blessi
     let (mut owner, connection) = config.connect(NoTls).await.unwrap();
     let owner_driver = tokio::spawn(connection);
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
-    let migrations = read_migrations(&directory).unwrap();
-    let position = migrations
+    let all_migrations = read_migrations(&directory).unwrap();
+    let position = all_migrations
         .iter()
         .position(|migration| migration.version == 108)
         .unwrap();
     assert_eq!(
-        apply_locked(&mut owner, &migrations[..position], false)
+        apply_locked(&mut owner, &all_migrations[..position], false)
             .await
             .unwrap()
             .last()
@@ -44,6 +44,7 @@ async fn writer_installation_refuses_unreviewed_preexisting_graph_without_blessi
             .version,
         107
     );
+    let migrations = &all_migrations[..=position];
     let original_budget =
         include_str!("../../../deploy/compose/migrations/016_auth_abuse_atomic.sql").replace(
             "CREATE FUNCTION auth_abuse_consume(",
@@ -98,7 +99,7 @@ END $mutation$"#.to_owned(), original_budget.clone()));
     mutations.push((changed_budget, original_budget));
     for (mutation, restore) in mutations {
         owner.batch_execute(&mutation).await.unwrap();
-        let error = apply_locked(&mut owner, &migrations, false)
+        let error = apply_locked(&mut owner, migrations, false)
             .await
             .unwrap_err();
         assert!(
@@ -119,7 +120,7 @@ END $mutation$"#.to_owned(), original_budget.clone()));
         owner.batch_execute(&restore).await.unwrap();
     }
     assert_eq!(
-        apply_locked(&mut owner, &migrations, false)
+        apply_locked(&mut owner, migrations, false)
             .await
             .unwrap()
             .last()
@@ -128,7 +129,41 @@ END $mutation$"#.to_owned(), original_budget.clone()));
         108
     );
     assert!(
-        apply_locked(&mut owner, &migrations, false)
+        apply_locked(&mut owner, migrations, false)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let original_ready: String = owner.query_one("SELECT pg_catalog.pg_get_functiondef('public.payload_profile_writer_ready()'::regprocedure)", &[]).await.unwrap().get(0);
+    let provision:String=owner.query_one("SELECT pg_catalog.pg_get_functiondef('public.review_workspace_provision(uuid,uuid,uuid,bigint,bytea,bytea,text)'::regprocedure)", &[]).await.unwrap().get(0);
+    let changed_provision = provision.replacen("user_id uuid", "user_id text", 1);
+    assert_ne!(changed_provision, provision);
+    let changed_provision = format!(
+        "DROP FUNCTION public.review_workspace_provision(uuid,uuid,uuid,bigint,bytea,bytea,text); {changed_provision}; REVOKE ALL ON FUNCTION public.review_workspace_provision(uuid,uuid,uuid,bigint,bytea,bytea,text) FROM PUBLIC"
+    );
+    for (mutation, restore) in [
+        ("CREATE RULE unreviewed AS ON UPDATE TO public.devices DO INSTEAD NOTHING".to_owned(),"DROP RULE unreviewed ON public.devices".to_owned()),
+        ("CREATE OR REPLACE FUNCTION public.payload_profile_writer_ready() RETURNS boolean LANGUAGE sql STABLE SET search_path TO pg_catalog AS 'SELECT true'".to_owned(),original_ready),
+        (changed_provision,format!("DROP FUNCTION public.review_workspace_provision(uuid,uuid,uuid,bigint,bytea,bytea,text); {provision}; REVOKE ALL ON FUNCTION public.review_workspace_provision(uuid,uuid,uuid,bigint,bytea,bytea,text) FROM PUBLIC")),
+    ] {
+        owner.batch_execute(&mutation).await.unwrap();
+        let error=apply_locked(&mut owner,&all_migrations,false).await.unwrap_err();
+        assert!(matches!(error,MigrationError::Database(ref db) if db.code()==Some(&SqlState::CHECK_VIOLATION)),"{error}");
+        assert!(owner.query_one("SELECT max(version)=108 AND count(*)=108 FROM public.schema_migrations", &[]).await.unwrap().get::<_,bool>(0));
+        assert!(owner.query_one("SELECT pg_catalog.to_regprocedure('public.payload_profile_v2_ready()') IS NULL AND pg_catalog.to_regclass('public.payload_profile_v2_activation_receipts') IS NULL", &[]).await.unwrap().get::<_,bool>(0));
+        owner.batch_execute(&restore).await.unwrap();
+    }
+    assert_eq!(
+        apply_locked(&mut owner, &all_migrations, false)
+            .await
+            .unwrap()
+            .last()
+            .unwrap()
+            .version,
+        109
+    );
+    assert!(
+        apply_locked(&mut owner, &all_migrations, false)
             .await
             .unwrap()
             .is_empty()
