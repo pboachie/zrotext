@@ -147,7 +147,7 @@ test('shared independently signed original vector preserves legacy high-S and ex
   const original = decode(v.activation_evidence), at = enc.encode(actLabel + '\0').length + 4 + 32;
   const pairedPoint = original.slice(at, at + 65);
   // Match the separately recorded producer's signing-key identity, not an echo field.
-  assert.equal(hex(await sha(cat(enc.encode('ZTSE/key/v1\0'), Uint8Array.of(4), pairedPoint))), v.paired_signing_key_id);
+  assert.equal(hex(await sha(cat(enc.encode('ZTSE/key/v1\0'), Uint8Array.of(1, 1), pairedPoint))), v.paired_signing_key_id);
   const r = await registration(decode(v.registration_evidence), {
     accountId: decode(v.account_id), deviceId: decode(v.device_id), lineId: decode(v.line_id), generation: BigInt(v.generation),
     comparedRootFingerprint: decode(v.root_fingerprint), pairedSigningPoint: pairedPoint, origin: v.origin, trustedNowMs: 100000n,
