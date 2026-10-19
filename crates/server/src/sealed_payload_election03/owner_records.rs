@@ -63,6 +63,13 @@ impl HeldOwnerRecords03<'_, '_> {
     pub fn root_fingerprint(&self) -> &[u8; 32] {
         &self.records.root_fingerprint
     }
+    /// Conservative millisecond deadline for this exact session and its idle
+    /// policy. This timestamp alone is never a detached authorization proof.
+    pub fn session_deadline_ms(&self) -> u64 {
+        self.records
+            .expiry_ms
+            .min(self.records.activity_ms.saturating_add(IDLE_MS))
+    }
     /// Repeat actual row, credential-state, epoch and temporal checks directly
     /// before later composition. Locks cannot stop time or own-transaction writes.
     pub async fn revalidate(&mut self) -> Result<()> {

@@ -61,6 +61,12 @@ impl HeldStepUp03<'_, '_> {
         self.owner.selection_epoch()
     }
 
+    /// Upper temporal bound for the held owner, consumed factor and ceremony.
+    /// All exact record/state checks are still required at the time of use.
+    pub fn expires_at_ms(&self) -> u64 {
+        self.expires_ms
+    }
+
     pub async fn revalidate(&mut self) -> Result<(), Error> {
         self.owner.revalidate().await?;
         if !self.factor.state_matches(self.owner.tx).await? {
@@ -138,11 +144,16 @@ pub async fn verify<'held, 'db>(
         owner.revalidate().await?;
         return Ok(Outcome::Rejected(Rejection::InvalidCredentials));
     };
+    let expires_ms = now
+        .checked_add(300_000)
+        .ok_or(Error::Refused)?
+        .min(owner.session_deadline_ms())
+        .min(factor.deadline_ms()?.unwrap_or(u64::MAX));
     let mut proof = HeldStepUp03 {
         owner,
         factor,
         checked_ms: now,
-        expires_ms: now.checked_add(300_000).ok_or(Error::Refused)?,
+        expires_ms,
     };
     proof.revalidate().await?;
     Ok(Outcome::Verified(Box::new(proof)))

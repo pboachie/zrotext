@@ -377,3 +377,30 @@ async fn concurrent_step_up_refuses_before_work_while_an_unrelated_owner_progres
     close(second, second_driver).await;
     f.finish().await;
 }
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn final_factor_clock_is_bounded_by_the_original_owner_session_deadline() {
+    let mut f = Fixture::new().await;
+    let s = Seed::new(&f.owner, &f.hasher, "owner").await;
+    let credentials = Credentials::install(&f, &s).await;
+    let recovery = credentials.recovery(&f, &s).await;
+    let expected: i64 = f.owner.query_one("UPDATE public.sessions SET expires_at=pg_catalog.clock_timestamp()+interval '2 minutes' WHERE id=$1 RETURNING pg_catalog.floor(extract(epoch FROM expires_at)*1000)::bigint", &[&s.selector.session]).await.unwrap().get(0);
+    let tx = f.reader.transaction().await.unwrap();
+    let owner = authenticate(&tx, &f.hasher, ORIGIN, s.source())
+        .await
+        .unwrap();
+    assert_eq!(owner.session_deadline_ms(), expected as u64);
+    let step_up::Outcome::Verified(mut proof) =
+        step_up::verify(owner, &f.hasher, &credentials.cipher, PASSWORD, &recovery)
+            .await
+            .unwrap()
+    else {
+        panic!("genuine recovery refused")
+    };
+    assert_eq!(proof.expires_at_ms(), expected as u64);
+    proof.revalidate().await.unwrap();
+    drop(proof);
+    tx.rollback().await.unwrap();
+    f.finish().await;
+}

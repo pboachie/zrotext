@@ -20,6 +20,19 @@ impl HeldFactor {
         self.factor.current_at(now_ms)
     }
 
+    pub(crate) fn deadline_ms(&self) -> Result<Option<u64>, AuthError> {
+        self.factor
+            .step
+            .map(|step| {
+                u64::try_from(step)
+                    .ok()
+                    .and_then(|step| step.checked_add(2))
+                    .and_then(|step| step.checked_mul(30_000))
+                    .ok_or(AuthError::Crypto)
+            })
+            .transpose()
+    }
+
     pub(crate) async fn state_matches(&self, tx: &Transaction<'_>) -> Result<bool, AuthError> {
         Ok(match &self.state {
             State::Totp(step) => tx.query_opt("SELECT 1 FROM public.owner_mfa WHERE account_id=$1 AND user_id=$2 AND enabled_at IS NOT NULL AND last_accepted_step=$3", &[&self.account, &self.user, step]).await?.is_some(),
