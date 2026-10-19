@@ -7,9 +7,48 @@ use crate::sealed_payload_election03::{device_context, live};
 pub(super) const PROTOCOL: &str = "zrotext-device-status-v2+sealed-dispatch-v3";
 object_body! {struct Session {v:u8,r#type:String,connection_epoch:i64,challenge:String}}
 object_body! {struct Proof {v:u8,r#type:String,challenge_id:String,device_signature:String}}
+object_body! {struct Current {v:u8,r#type:String,connection_epoch:i64,challenge:String,line_id:String}}
 pub(super) enum Incoming {
-    Session { epoch: i64, challenge: Uuid },
-    Proof { challenge: Uuid, signature: Vec<u8> },
+    Session {
+        epoch: i64,
+        challenge: Uuid,
+    },
+    Proof {
+        challenge: Uuid,
+        signature: Vec<u8>,
+    },
+    Current {
+        epoch: i64,
+        challenge: Uuid,
+        line: Uuid,
+    },
+}
+pub(super) struct CurrentReads {
+    nonces: Vec<Uuid>,
+    last: Option<Instant>,
+}
+impl CurrentReads {
+    pub(super) fn new() -> Self {
+        Self {
+            nonces: Vec::new(),
+            last: None,
+        }
+    }
+    fn admit(&mut self, challenge: Uuid, now: Instant) -> bool {
+        if challenge.is_nil()
+            || self.nonces.len() >= 64
+            || self.nonces.contains(&challenge)
+            || self.last.is_some_and(|last| {
+                now.checked_duration_since(last)
+                    .is_none_or(|age| age < Duration::from_secs(25))
+            })
+        {
+            return false;
+        }
+        self.nonces.push(challenge);
+        self.last = Some(now);
+        true
+    }
 }
 fn id(s: &str) -> Result<Uuid, ()> {
     let v = Uuid::parse_str(s).map_err(|_| ())?;
@@ -40,6 +79,17 @@ pub(super) fn parse(raw: &str) -> Result<Option<Incoming>, ()> {
         return Err(());
     }
     Ok(Some(match tag.r#type.as_str() {
+        "payload_profile_current03_request" => {
+            let b: Current = serde_json::from_str(raw).map_err(|_| ())?;
+            if b.v != 1 || b.r#type != tag.r#type || b.connection_epoch <= 0 {
+                return Err(());
+            }
+            Incoming::Current {
+                epoch: b.connection_epoch,
+                challenge: id(&b.challenge)?,
+                line: id(&b.line_id)?,
+            }
+        }
         "payload_profile_session03_request" => {
             let b: Session = serde_json::from_str(raw).map_err(|_| ())?;
             if b.v != 1 || b.r#type != tag.r#type || b.connection_epoch <= 0 {
@@ -76,6 +126,7 @@ pub(super) async fn dispatch(
     session: DeviceSession,
     origin: &str,
     samples: &mut sealed_session::Samples,
+    reads: &mut CurrentReads,
     frame: Incoming,
 ) -> Option<()> {
     let mut db = runtime_db::connect_device(&state.database_url).await.ok()?;
@@ -89,6 +140,50 @@ pub(super) async fn dispatch(
         .ok()
         .filter(|v| *v > 0)?;
     match frame {
+        Incoming::Current {
+            epoch,
+            challenge,
+            line,
+        } => {
+            if epoch != session.connection_epoch
+                || !samples.is_sampled()
+                || !reads.admit(challenge, Instant::now())
+            {
+                return None;
+            }
+            let result = live::device_current(
+                &tx,
+                session,
+                &state.site_id,
+                &state.instance_id,
+                deployment,
+                line,
+                origin,
+            )
+            .await;
+            let reply = match result {
+                Ok(current) => {
+                    serde_json::json!({"v":1,"type":"payload_profile_current03","connection_epoch":session.connection_epoch,"challenge":challenge,"current":current})
+                }
+                Err(error) => {
+                    let reason = match error {
+                        live::Error::NotFound => "not_accepted",
+                        live::Error::Expired => "expired",
+                        live::Error::Authentication
+                        | live::Error::Conflict
+                        | live::Error::Unsupported => "unsupported",
+                        _ => return None,
+                    };
+                    serde_json::json!({"v":1,"type":"payload_profile_current03_unavailable","connection_epoch":session.connection_epoch,"challenge":challenge,"reason":reason})
+                }
+            };
+            // Read-only snapshots do not extend a lease, authenticate an
+            // owner or install readiness. Later grant/fetch re-locks actual
+            // permission, never retaining this detached JSON as authority.
+            tx.rollback().await.ok()?;
+            drop(db);
+            send(socket, reply).await?;
+        }
         Incoming::Session { epoch, challenge } => {
             if epoch != session.connection_epoch || !samples.admit(challenge, Instant::now()) {
                 return None;
@@ -222,5 +317,26 @@ mod tests {
         ] {
             assert!(parse(&raw).is_err());
         }
+    }
+    #[test]
+    fn device_selection_reads_preserve_nonce_rate_and_per_connection_boundaries() {
+        let start = Instant::now();
+        let mut reads = CurrentReads::new();
+        assert!(!reads.admit(Uuid::nil(), start));
+        assert!(reads.admit(Uuid::from_u128(1), start));
+        assert!(!reads.admit(Uuid::from_u128(1), start + Duration::from_secs(25)));
+        assert!(!reads.admit(Uuid::from_u128(2), start + Duration::from_millis(24_999)));
+        for n in 2..=64 {
+            assert!(reads.admit(
+                Uuid::from_u128(n),
+                start + Duration::from_secs((n as u64 - 1) * 25)
+            ));
+        }
+        assert!(!reads.admit(Uuid::from_u128(65), start + Duration::from_secs(64 * 25)));
+        let raw=serde_json::json!({"v":1,"type":"payload_profile_current03_request","connection_epoch":1,"challenge":Uuid::from_u128(1),"line_id":Uuid::from_u128(2)}).to_string();
+        assert!(matches!(
+            parse(&raw),
+            Ok(Some(Incoming::Current { epoch: 1, .. }))
+        ));
     }
 }

@@ -67,6 +67,7 @@ pub async fn router(state: ProfileHttpState) -> Result<Router, &'static str> {
             "/v1/account/sealed/payload-profile/bootstrap",
             post(bootstrap),
         )
+        .route("/v1/account/sealed/payload-profile/current", post(current))
         .route(
             "/v1/account/sealed/payload-profile/challenges",
             post(reserve),
@@ -101,6 +102,7 @@ macro_rules! handler {
     };
 }
 handler!(bootstrap, Bootstrap);
+handler!(current, Current);
 handler!(reserve, Reserve);
 handler!(status, Status);
 handler!(proof, Proof);
@@ -176,17 +178,11 @@ async fn preflight(
     let mut owner = ordinary_owner03::authenticate(&tx, &s.hasher, &s.origin, source)
         .await
         .map_err(|_| StatusCode::FORBIDDEN)?;
-    let allowed = if mutation {
-        auth::abuse_limits::consume_owner_management(
-            &tx,
-            &s.hasher,
-            &owner.selected_identity().user.to_string(),
-        )
+    let identity = owner.selected_identity();
+    let subject = format!("{}:{}", identity.account, identity.user);
+    let allowed = auth::abuse_limits::consume_payload_profile(&tx, &s.hasher, &subject, mutation)
         .await
-        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
-    } else {
-        true
-    };
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     owner
         .revalidate()
         .await
@@ -240,6 +236,9 @@ async fn handle(
             .await
             .map_err(|_| StatusCode::FORBIDDEN)?;
     let reply = match body {
+        Body::Current(line) => live::current(&tx, &mut owner, line, &s.origin)
+            .await
+            .map_err(mapped)?,
         Body::Bootstrap(line) => live::bootstrap(&tx, &mut owner, line, &s.origin)
             .await
             .map_err(mapped)?,

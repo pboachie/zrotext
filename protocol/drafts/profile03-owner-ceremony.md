@@ -2,9 +2,9 @@
 
 This is an implementation candidate, not a production capability declaration.
 The separate owner and enrolled-socket library routers implement original02
-bootstrap, durable reservation recovery, device signature retention and final
-owner acceptance. Existing startup paths do not mount either router. Current03
-installation, message admission, execution grants and signed fetch remain
+bootstrap, durable reservation recovery, device signature retention, final
+owner acceptance and independently read current03 selection. Existing startup
+paths do not mount either router. Message admission, execution grants and signed fetch remain
 separate integration work. The serial110 schema must be installed with its
 closed ordinary-runtime ACL verifier; missing, partial and elevated callers
 refuse rather than taking a legacy alternative.
@@ -21,6 +21,7 @@ are decimal strings within signed-storage range.
 | Path | Closed request fields |
 | --- | --- |
 | `/bootstrap` | `v:1,line_id` |
+| `/current` | `v:1,line_id` |
 | `/challenges` | `v:1,opening_id,line_id,successor_manifest03,password,factor` |
 | `/challenges/status` | `v:1,opening_id,line_id` |
 | `/challenges/proof` | `v:1,opening_id,challenge_id` |
@@ -36,6 +37,10 @@ a role4 conversation signer is a different authority and is not a substitute.
 An opening UUID must be persisted by the browser before its first request.
 One request-admission transaction authenticates the actual owner and commits
 the management debit before password work or an untrusted body stream. A
+management budget permits60 authenticated account/user requests per900 seconds;
+read-only endpoints permit120 per60 seconds. Both are subject-only, without a
+deployment-wide route counter that could rate-limit unrelated tenants. The
+separate shared genuine-factor failure/replay policy is unchanged. A
 separate transition transaction authenticates again, consumes a genuine fresh
 password/factor and keeps that opaque proof in the same transaction as the
 transition. Failure budgets commit on rejected credentials; transition refusals
@@ -89,6 +94,29 @@ These metadata epochs/time retain the existing numeric socket grammar. The
 actual current enrolled lease, deployment and primary clock are read after
 waits; socket-local nonce samples are bounded to64 and five-second spacing.
 This is identity/time only, never line approval, readiness or a lease renewal.
+
+The closed current read request is
+`{v:1,type:"payload_profile_current03_request",connection_epoch,challenge,line_id}`.
+It is nonce bound, bounded to64 distinct reads per connection with at least25
+seconds between reads. The reply is exactly
+`{v:1,type:"payload_profile_current03",connection_epoch,challenge,current}`;
+the separate unavailable reply is exactly
+`{v:1,type:"payload_profile_current03_unavailable",connection_epoch,challenge,reason}`,
+with `not_accepted`, `unsupported` or `expired`. None of these replies elects,
+re-signs, renews or automatically reopens anything.
+
+The device selection has `kind:"device_selection03"`, actual current
+account/device/line/binding/reader/root/manifest/election/epoch/lease fields,
+`selection_expires_ms`, and all ten exact original evidence fields. It contains
+no current owner user/session/digest or owner permission deadline. The bounded
+same-process physical handle is `{kind:"original_v2"}` only when the original
+installed complete-v2 proof lease remains the actual selected device context.
+Reconnect/process-loss needs the separate explicit fresh physical selection
+approval; original observation history is never rewritten. The owner HTTP
+current projection instead binds the actual newly authenticated owner's live
+user/session and `permission_expires_ms`. Both projections independently
+reverify original signatures and the immutable accepted bundle against actual
+present records. A detached JSON snapshot is not a transaction/effect proof.
 
 The server challenge is exactly
 `{v:1,type:"payload_profile_challenge03",challenge_id,new_binding_id,core,successor_manifest03,original,closed_unaccepted}`.

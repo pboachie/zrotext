@@ -1305,6 +1305,7 @@ async fn run_socket(
     let mut sealed_ready_used = false;
     let mut sealed_clock = sealed_session::Samples::new();
     let mut profile_clock = sealed_session::Samples::new();
+    let mut profile_reads = payload_profile03::CurrentReads::new();
     let mut profile_next_poll = tokio::time::Instant::now();
     let mut mms_spike_ready_used = false;
     // Enabled only for controlled local liveness probes. Emit bounded,
@@ -1324,7 +1325,7 @@ async fn run_socket(
                 match message {
                     Some(ClientFrame::PayloadProfile03(frame))=>{
                         let Some(origin)=profile03_origin.filter(|_|profile03_negotiated) else {close_with_code=Some(close_code::POLICY);break;};
-                        if payload_profile03::dispatch(&mut socket,&state,session,origin,&mut profile_clock,frame).await.is_none() {close_with_code=Some(RETRY_LATER);break;}
+                        if payload_profile03::dispatch(&mut socket,&state,session,origin,&mut profile_clock,&mut profile_reads,frame).await.is_none() {close_with_code=Some(RETRY_LATER);break;}
                     }
                     Some(ClientFrame::SealedSessionRequest { v: 1, connection_epoch, challenge }) if sealed_negotiated && sealed_v2 => {
                         if connection_epoch != session.connection_epoch || !sealed_clock.admit(challenge, Instant::now()) {

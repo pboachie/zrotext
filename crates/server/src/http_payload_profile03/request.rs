@@ -8,6 +8,7 @@ use uuid::Uuid;
 #[derive(Clone, Copy)]
 pub(super) enum Operation {
     Bootstrap,
+    Current,
     Reserve,
     Status,
     Proof,
@@ -25,6 +26,7 @@ object_body! {struct Reserve {v:u8,opening_id:String,line_id:String,successor_ma
 object_body! {struct Accept {v:u8,opening_id:String,challenge_id:String,successor_manifest03:String,bundle:String,password:String,factor:String}}
 pub(super) enum Body {
     Bootstrap(Uuid),
+    Current(Uuid),
     Status(Uuid, Uuid),
     Proof(Uuid, Uuid),
     Reserve {
@@ -87,6 +89,11 @@ pub(super) fn parse(op: Operation, bytes: &[u8]) -> Result<Body, StatusCode> {
         };
     }
     Ok(match op {
+        Operation::Current => {
+            let b = body!(Bootstrap);
+            version(b.v)?;
+            Body::Current(id(&b.line_id)?)
+        }
         Operation::Bootstrap => {
             let b = body!(Bootstrap);
             version(b.v)?;

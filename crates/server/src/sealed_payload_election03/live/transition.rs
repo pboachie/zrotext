@@ -489,6 +489,7 @@ pub async fn historical_accept(
         return Err(Error::Conflict);
     }
     let a = accepted_record(&row)?;
+    matches_mapping(&r, &a)?;
     election::verify_accepted(&election::AcceptedProofInput03 {
         bundle,
         expected_core: &r.core,
@@ -568,6 +569,7 @@ pub async fn accept(
         .await?
         .ok_or(Error::Unavailable)?;
     let a = accepted_record(&accepted)?;
+    matches_mapping(&r, &a)?;
     election::verify_accepted(&election::AcceptedProofInput03 {
         bundle,
         expected_core: &r.core,
@@ -641,6 +643,22 @@ pub(super) fn accepted_record(r: &Row) -> Result<election::DurableAcceptedElecti
         election_bundle_sha256: d("election_bundle_sha256")?,
         accepted_at_ms: n("accepted_at_ms")?,
     })
+}
+pub(super) fn matches_mapping(
+    r: &Reservation,
+    a: &election::DurableAcceptedElection03,
+) -> Result<()> {
+    if a.account_id != *r.account.as_bytes()
+        || a.device_id != *r.device.as_bytes()
+        || a.line_id != *r.line.as_bytes()
+        || a.old_binding_id != *r.old_binding.as_bytes()
+        || a.old_binding_generation != r.old_generation
+        || a.new_binding_id != *r.new_binding.as_bytes()
+        || a.new_binding_generation != r.new_generation
+    {
+        return Err(Error::Conflict);
+    }
+    Ok(())
 }
 pub(super) fn receipt(
     r: &Reservation,

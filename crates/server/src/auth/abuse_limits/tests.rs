@@ -1,4 +1,25 @@
 use super::*;
+
+#[test]
+fn payload_profile_budgets_are_authenticated_subject_only_and_retained_for_pruning() {
+    for limit in [Limit::PayloadProfileManage, Limit::PayloadProfileRead] {
+        assert!(limit.subject_only());
+        assert!(limit.policy().3.is_some());
+        assert!(
+            Limit::ALL
+                .iter()
+                .any(|known| known.policy().0 == limit.policy().0)
+        );
+        assert!(
+            prune_retention()
+                .iter()
+                .any(|(scope, seconds)| *scope == limit.policy().0
+                    && *seconds >= limit.longest_window_seconds())
+        );
+    }
+    assert_eq!(Limit::PayloadProfileManage.policy().3, Some((60, 900)));
+    assert_eq!(Limit::PayloadProfileRead.policy().3, Some((120, 60)));
+}
 use crate::auth::normalize_email;
 use std::sync::Arc;
 use tokio_postgres::NoTls;

@@ -6,12 +6,15 @@ use crate::sealed_payload_election03::owner_records::Selector;
 use tokio_postgres::{Row, Transaction};
 
 mod challenge;
+mod current03;
 mod state02;
 #[cfg(test)]
 mod tests;
 mod transition;
 
 pub use challenge::Reservation;
+pub use current03::current;
+pub(crate) use current03::device_current;
 pub(crate) use transition::device_challenge;
 pub(crate) use transition::device_proof;
 pub use transition::{accept, bootstrap, historical_accept, reserve, status};

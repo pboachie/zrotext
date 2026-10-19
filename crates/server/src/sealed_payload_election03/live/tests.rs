@@ -143,6 +143,55 @@ async fn real_opening_burns_once_distinct_factors_commit_and_exact_retry_stays_h
     );
     drop(owner);
     tx.rollback().await.unwrap();
+    let tx = c.db.reader.transaction().await.unwrap();
+    let mut owner = ordinary_owner03::authenticate(&tx, &c.hasher, ORIGIN, source(&c.credentials))
+        .await
+        .unwrap();
+    let permission = current(&tx, &mut owner, c.line, ORIGIN).await.unwrap();
+    assert_eq!(
+        permission["owner_session_id"],
+        c.principal.session_id.to_string()
+    );
+    assert!(permission.get("kind").is_none());
+    assert!(permission.get("physical_selection").is_none());
+    drop(owner);
+    tx.rollback().await.unwrap();
+    assert!(
+        crate::auth::revoke_session(&c.db.reader, &c.principal, c.principal.session_id)
+            .await
+            .unwrap()
+    );
+    let socket = crate::device_socket::DeviceSession {
+        account_id: c.principal.tenant.account_id(),
+        device_id: c.device,
+        connection_epoch: 1,
+    };
+    let tx = c.db.reader.transaction().await.unwrap();
+    assert!(
+        ordinary_owner03::authenticate(&tx, &c.hasher, ORIGIN, source(&c.credentials))
+            .await
+            .is_err()
+    );
+    tx.rollback().await.unwrap();
+    let tx = c.db.reader.transaction().await.unwrap();
+    let selection = device_current(&tx, socket, "activation-test", "fixture", 1, c.line, ORIGIN)
+        .await
+        .unwrap();
+    assert_eq!(selection["kind"], "device_selection03");
+    assert_eq!(selection["physical_selection"]["kind"], "original_v2");
+    for field in [
+        "user_id",
+        "owner_session_id",
+        "owner_session_digest",
+        "permission_expires_ms",
+    ] {
+        assert!(selection.get(field).is_none());
+    }
+    assert_eq!(
+        selection["evidence"]["bundle"],
+        base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &bundle)
+    );
+    tx.rollback().await.unwrap();
     c.db.close().await;
 }
 

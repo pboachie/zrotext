@@ -104,6 +104,8 @@ limits! {
     ReviewRootPassword,
     ReviewRootPasswordFailures,
     ReviewRootManage,
+    PayloadProfileManage,
+    PayloadProfileRead,
 }
 
 impl Limit {
@@ -135,6 +137,8 @@ impl Limit {
                 | Self::ReviewRootPassword
                 | Self::ReviewRootPasswordFailures
                 | Self::ReviewRootManage
+                | Self::PayloadProfileManage
+                | Self::PayloadProfileRead
         )
     }
 
@@ -208,6 +212,8 @@ impl Limit {
             Self::MfaStepUp => ("mfa_step_up", 120, 60, Some((5, 900))),
             Self::BillingSession => ("billing_session", 120, 60, Some((8, 60))),
             Self::SmsLineActivation => ("sms_line_activation", 120, 60, Some((30, 900))),
+            Self::PayloadProfileManage => ("payload_profile_manage", 60, 900, Some((60, 900))),
+            Self::PayloadProfileRead => ("payload_profile_read", 120, 60, Some((120, 60))),
             // One MMS spike grant per device and recipient per window: the
             // subject budget of 1 is the server-side one-use gate for #438.
             Self::MmsSpikeGrant => ("mms_spike_grant", 300, 7_776_000, Some((1, 7_776_000))),
@@ -288,6 +294,29 @@ pub(crate) async fn consume_owner_management(
     subject: &str,
 ) -> Result<bool, tokio_postgres::Error> {
     charge(tx, hasher, Limit::MfaManage, Some(subject), Lane::Anonymous).await
+}
+
+/// All spenders have already authenticated an actual held account owner. Keep
+/// these counters account/user scoped, with no shared deployment route row.
+/// The separately serialized genuine factor failure budget remains unchanged.
+pub(crate) async fn consume_payload_profile(
+    tx: &Transaction<'_>,
+    hasher: &TokenHasher,
+    subject: &str,
+    mutation: bool,
+) -> Result<bool, tokio_postgres::Error> {
+    charge(
+        tx,
+        hasher,
+        if mutation {
+            Limit::PayloadProfileManage
+        } else {
+            Limit::PayloadProfileRead
+        },
+        Some(subject),
+        Lane::Anonymous,
+    )
+    .await
 }
 
 pub(crate) async fn held_factor_budget_open(
