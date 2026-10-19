@@ -3,7 +3,7 @@
  * these objects never establish database acceptance or present permission. */
 import { enrollRootPin02 } from './draft02-manifest.js';
 import { captureElectionBytes03, electionTime03 } from './payload-profile-election03.js';
-import { isCanonicalP256Signature } from './sealed-envelope.js';
+import { isCanonicalP256Signature } from './draft01.js';
 
 const enc = new TextEncoder();
 const order = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;

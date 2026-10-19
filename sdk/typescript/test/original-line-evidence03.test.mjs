@@ -141,6 +141,24 @@ test('synthetic opaque canonical vector is not a signature or original receipt',
   await assert.rejects(registration(Uint8Array.from(Buffer.from(v.registration_evidence.canonical_hex, 'hex')), f.selected));
 });
 
+test('shared independently signed original vector preserves legacy high-S and exact old binding commitment', async () => {
+  const v = JSON.parse(await readFile(new URL('../../../protocol/v1/vectors/sealed-profile03-activation-evidence-01.json', import.meta.url), 'utf8'));
+  const decode = value => Uint8Array.from(Buffer.from(value, 'hex'));
+  const original = decode(v.activation_evidence), at = enc.encode(actLabel + '\0').length + 4 + 32;
+  const pairedPoint = original.slice(at, at + 65);
+  // Match the separately recorded producer's signing-key identity, not an echo field.
+  assert.equal(hex(await sha(cat(enc.encode('ZTSE/key/v1\0'), Uint8Array.of(4), pairedPoint))), v.paired_signing_key_id);
+  const r = await registration(decode(v.registration_evidence), {
+    accountId: decode(v.account_id), deviceId: decode(v.device_id), lineId: decode(v.line_id), generation: BigInt(v.generation),
+    comparedRootFingerprint: decode(v.root_fingerprint), pairedSigningPoint: pairedPoint, origin: v.origin, trustedNowMs: 100000n,
+  });
+  const checked = await activation(original, r, { oldBindingId: decode(v.old_binding_id),
+    selectedReaderKeyId: decode(v.selected_reader_key_id), trustedNowMs: 100000n });
+  assert.equal(checked.oldBindingDigestHex, v.old_binding_proof_digest);
+  assert.equal(checked.activationChallengeHex, v.activation_challenge_id);
+  assert.equal(checked.registrationHex, v.registration_id); assert.equal(checked.acceptedMs, BigInt(v.accepted_ms));
+});
+
 test('original activation rejects unverified or copied registration objects', async () => {
   const f = await fixture(), r = await registration(regBytes(f), f.selected);
   for (const candidate of [{ ...r }, Object.freeze({ ...r }), {}, null]) await assert.rejects(activation(actBytes(f), candidate, f.activationSelection));
