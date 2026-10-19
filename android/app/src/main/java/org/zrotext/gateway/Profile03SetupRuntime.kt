@@ -25,18 +25,19 @@ internal class Profile03SetupRuntime(context: Context, private val origin: Strin
      */
     fun challenge(raw: ByteArray): String {
         val frame = Profile03Json.objectValue(raw)
-        require(frame.keys == setOf("v", "type", "challenge_id", "new_binding_id", "core", "successor_manifest03", "original") &&
+        require(frame.keys == setOf("v", "type", "challenge_id", "new_binding_id", "core", "successor_manifest03", "original", "closed_unaccepted") &&
             frame["v"] == Profile03Json.Integer(1) && frame["type"] == "payload_profile_challenge03")
         val challenge = id(frame, "challenge_id")
         val newBinding = id(frame, "new_binding_id")
         val core = Profile03Json.binary(frame, "core", 500, 500)
         val successor = Profile03Json.binary(frame, "successor_manifest03", 366, 9753)
+        val closures = Profile03ClosedUnaccepted.decode(frame)
         val f = Profile03Json.nested(frame, "original")
         require(f.keys == ORIGINAL_KEYS && f["v"] == Profile03Json.Integer(1) &&
             f["envelope_profile"] == Profile03Json.Integer(2) && f["manifest_profile"] == Profile03Json.Integer(2))
         val evidence = Profile03Json.nested(f, "evidence")
         require(evidence.keys == EVIDENCE_KEYS)
-        Profile03Json.nonnegativeDecimal(f, "selection_epoch")
+        require(Profile03Json.nonnegativeDecimal(f, "selection_epoch") == 0L)
         fun number(name: String) = Profile03Json.decimal(f, name)
         fun bytes(name: String) = Profile03Json.binary(f, name, 32, 32)
         fun fieldId(name: String) = id(f, name)
@@ -119,12 +120,13 @@ internal class Profile03SetupRuntime(context: Context, private val origin: Strin
         val existing = dao.find(record.challengeId)
         val signature: ByteArray
         if (existing == null) {
-            check(dao.reserve(record, ::ram)) // Durable before hardware signing; a crash burns it.
+            check(dao.reserveWithClosures(record, closures, now(), ::ram)) // Same writer before hardware signing; a crash burns it.
             signature = signingKeys.signPayloadElection03(core, originalEnrollment, ::fresh)
             val signed = record.copy(state = "signed", deviceSignatureB64url = Profile03ElectionEncoding.encode(signature))
             check(dao.recordSigned(signed, ::ram))
         } else {
             require(existing.sameReservation(record) && existing.state == "signed")
+            dao.requireClosureHistory(record, closures, now(), ::ram)
             signature = Profile03ElectionEncoding.decode(checkNotNull(existing.deviceSignatureB64url), 64)
             require(ConversationContentCrypto.verifyRaw(signature, originalEnrollment,
                 ReviewedIntent03.framed("ZTSE/line/payload-profile/device/v1", core)))

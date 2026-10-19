@@ -13,12 +13,16 @@ internal object Profile03Json {
         return Reader(text).read()
     }
     fun render(fields: Map<String, Any>): ByteArray {
-        fun value(node: Any): String = when (node) {
+        fun value(node: Any, field: String? = null, depth: Int = 0): String = when (node) {
             is String -> org.json.JSONObject.quote(node)
             is Integer -> node.value.toString()
             is Map<*, *> -> node.entries.joinToString(",", "{", "}") {
-                require(it.key is String && it.value != null)
-                org.json.JSONObject.quote(it.key as String) + ":" + value(checkNotNull(it.value))
+                require(depth <= 4 && it.key is String && it.value != null)
+                org.json.JSONObject.quote(it.key as String) + ":" + value(checkNotNull(it.value), it.key as String, depth + 1)
+            }
+            is List<*> -> {
+                require(field == "closed_unaccepted" && depth == 1 && node.size <= 16 && node.all { it is Map<*, *> })
+                node.joinToString(",", "[", "]") { value(checkNotNull(it), depth = depth) }
             }
             else -> error("Profile03 scalar")
         }
@@ -47,6 +51,15 @@ internal object Profile03Json {
         val raw = fields[name] as? Map<*, *> ?: error("Profile03 object field")
         return raw.entries.associate { (key, value) -> (key as? String ?: error("Profile03 key")) to checkNotNull(value) }
     }
+    /** Only this additive root field admits a bounded array; all members remain closed objects. */
+    fun closedUnaccepted(fields: Map<String, Any>): List<Map<String, Any>> {
+        val raw = fields["closed_unaccepted"] as? List<*> ?: error("Closure array required")
+        require(raw.size <= 16)
+        return raw.map { item ->
+            val value = item as? Map<*, *> ?: error("Closure object required")
+            value.entries.associate { (key, field) -> (key as? String ?: error("Closure key")) to checkNotNull(field) }
+        }
+    }
     private class Reader(private val raw: String) {
         private var at = 0
         fun read(): Map<String, Any> { val result = obj(0); whitespace(); require(at == raw.length); return result }
@@ -63,12 +76,24 @@ internal object Profile03Json {
                 fields[name] = when {
                     peek('"') -> string()
                     peek('{') -> obj(depth + 1)
+                    peek('[') -> { require(name == "closed_unaccepted" && depth == 0); closureArray(depth + 1) }
                     at < raw.length && raw[at] in '0'..'9' -> integer()
                     else -> throw IllegalArgumentException("Unsupported Profile03 JSON value")
                 }
                 whitespace()
                 if (peek('}')) { at++; return fields }
                 take(',')
+            }
+        }
+        private fun closureArray(depth: Int): List<Map<String, Any>> {
+            take('['); whitespace()
+            val values = ArrayList<Map<String, Any>>()
+            if (peek(']')) { at++; return values }
+            while (true) {
+                require(values.size < 16 && peek('{'))
+                values.add(obj(depth)); whitespace()
+                if (peek(']')) { at++; return values }
+                take(','); whitespace()
             }
         }
         private fun string(): String {

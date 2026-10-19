@@ -879,7 +879,8 @@ private const val PRUNE_BATCH = 500
     InboundWindow::class, InboundEvent::class, InboundUpload::class,
     LocalRecipientSuppression::class, LocalLineBinding::class,
     LocalInboundWithdrawal::class, LocalWithdrawalSequence::class, SealedPreparationRecord::class,
-    LineActivationV2Record::class, Profile03ElectionRecord::class, SelectionRefresh03Record::class], version = 16, exportSchema = false)
+    LineActivationV2Record::class, Profile03ElectionRecord::class, SelectionRefresh03Record::class,
+    Profile03UnacceptedClosureRecord::class], version = 17, exportSchema = false)
 abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun attempts(): SmsAttemptDao
     abstract fun sealedPreparations(): SealedPreparationDao
@@ -895,13 +896,19 @@ abstract class SmsJournalDatabase : RoomDatabase() {
                 context.applicationContext, SmsJournalDatabase::class.java, "sms_attempts.db"
             ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
                 MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
-                MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16)
+                MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17)
                 .build().also { instance = it }
         }
 
         internal val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE sms_attempts ADD COLUMN evidenceConflict INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        internal val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS profile03_unaccepted_closures (openingId TEXT NOT NULL, challengeId TEXT NOT NULL, newBindingId TEXT NOT NULL, coreB64url TEXT NOT NULL, closedUnacceptedMs INTEGER NOT NULL, supersededByChallengeId TEXT NOT NULL, PRIMARY KEY(challengeId))")
             }
         }
 
