@@ -64,12 +64,20 @@ abstract class Profile03ElectionDao {
     abstract fun find(challenge: String): Profile03ElectionRecord?
     @Query("SELECT * FROM profile03_elections WHERE accountId = :account AND lineId = :line AND state = 'installed'")
     abstract fun installed(account: String, line: String): Profile03ElectionRecord?
-    @Query("SELECT * FROM profile03_elections WHERE accountId = :account AND lineId = :line AND state = 'signed'")
+    @Query("SELECT * FROM profile03_elections WHERE accountId = :account AND lineId = :line AND state = 'signed' AND challengeId NOT IN (SELECT challengeId FROM profile03_unaccepted_closures) ORDER BY newGeneration DESC LIMIT 1")
     abstract fun signedOpening(account: String, line: String): Profile03ElectionRecord?
     @Query("SELECT COUNT(*) FROM profile03_elections")
     protected abstract fun count(): Int
     @Query("SELECT COUNT(*) FROM profile03_elections WHERE accountId = :account AND (state IN ('reserved','signed','installed') OR deviceSignatureB64url IS NOT NULL OR acceptedEvidenceSha256 IS NOT NULL)")
     protected abstract fun outstanding(account: String): Int
+    @Query("SELECT * FROM profile03_elections WHERE accountId = :account AND challengeId != :target AND (state IN ('reserved','signed','installed') OR deviceSignatureB64url IS NOT NULL OR acceptedEvidenceSha256 IS NOT NULL)")
+    protected abstract fun priorReservations(account: String, target: String): List<Profile03ElectionRecord>
+    @Query("SELECT * FROM profile03_unaccepted_closures WHERE challengeId = :challenge")
+    abstract fun closedUnaccepted(challenge: String): Profile03UnacceptedClosureRecord?
+    @Query("SELECT COUNT(*) FROM profile03_unaccepted_closures")
+    protected abstract fun closureCount(): Int
+    @Query("SELECT * FROM profile03_unaccepted_closures")
+    protected abstract fun retainedClosures(): List<Profile03UnacceptedClosureRecord>
     @Query("SELECT * FROM local_line_binding WHERE slot = 1")
     protected abstract fun line(): LocalLineBinding?
     @Query("SELECT COUNT(*) FROM sealed_preparations WHERE accountId = :account")
@@ -78,6 +86,8 @@ abstract class Profile03ElectionDao {
     protected abstract fun unresolvedEffects(account: String, excluded: String): Int
     @Insert
     protected abstract fun insert(record: Profile03ElectionRecord)
+    @Insert
+    protected abstract fun insertClosure(record: Profile03UnacceptedClosureRecord)
     @Query("UPDATE profile03_elections SET state = 'signed', deviceSignatureB64url = :signature WHERE challengeId = :challenge AND state = 'reserved' AND deviceSignatureB64url IS NULL")
     protected abstract fun signed(challenge: String, signature: String): Int
     @Query("UPDATE profile03_elections SET state = 'installed', acceptedEvidenceSha256 = :evidence WHERE challengeId = :challenge AND state = 'signed' AND acceptedEvidenceSha256 IS NULL")
@@ -99,13 +109,75 @@ abstract class Profile03ElectionDao {
         return find(record.challengeId) == record
     }
 
+    private fun requireClosures(record: Profile03ElectionRecord, closures: List<Profile03UnacceptedClosureRecord>,
+        authenticatedNow: Long, current: (LocalLineBinding?) -> Unit, retain: Boolean) {
+        current(line())
+        Profile03ClosedUnaccepted.requireChain(record, closures, authenticatedNow)
+        val indexed = closures.associateBy { it.challengeId }
+        val targetCore = Profile03ClosedUnaccepted.Core.decode(Profile03ElectionEncoding.decode(record.coreB64url, 500))
+        // Previously unseen server intermediates also become immutable retained history.
+        // A later opening may not omit them merely because no local signature row exists.
+        for (saved in retainedClosures()) {
+            saved.requireShape()
+            val savedCore = Profile03ClosedUnaccepted.Core.decode(Profile03ElectionEncoding.decode(saved.coreB64url, 500))
+            if (savedCore.sameOriginalScope(targetCore)) check(indexed[saved.challengeId] == saved)
+        }
+        // Every locally active or ever-signed ancestor must be present. An accepted local
+        // election contradicts original02 and can NEVER be resolved through this operation.
+        for (prior in priorReservations(record.accountId, record.challengeId)) {
+            prior.requireShape()
+            check(prior.state != "installed" && prior.acceptedEvidenceSha256 == null)
+            val closure = checkNotNull(indexed[prior.challengeId])
+            check(prior.coreB64url == closure.coreB64url && prior.newBindingId == closure.newBindingId)
+        }
+        for (closure in closures) {
+            find(closure.challengeId)?.let { prior ->
+                prior.requireShape()
+                check(prior.accountId == record.accountId && prior.coreB64url == closure.coreB64url &&
+                    prior.newBindingId == closure.newBindingId && prior.acceptedEvidenceSha256 == null && prior.state != "installed")
+            }
+            val saved = closedUnaccepted(closure.challengeId)
+            check(saved == null && retain || saved == closure) // Exact original receipt; no timestamp/link replacement.
+        }
+        check(oldPreparations(record.accountId) == 0 && unresolvedEffects(record.accountId, "") == 0)
+        current(line())
+    }
+
+    /** Only the authenticated original02/epoch0 challenge consumer may call this after full
+     * independent proof validation. Closures and the fresh reservation share this writer.
+     * Legacy reserve/02 preparation/radio fences remain irreversible for every released proof.
+     */
+    @Transaction
+    open fun reserveWithClosures(record: Profile03ElectionRecord, closures: List<Profile03UnacceptedClosureRecord>,
+        authenticatedNow: Long, current: (LocalLineBinding?) -> Unit): Boolean {
+        record.requireShape()
+        require(record.state == "reserved" && record.deviceSignatureB64url == null && record.acceptedEvidenceSha256 == null)
+        requireClosures(record, closures, authenticatedNow, current, true)
+        if (find(record.challengeId) != null || count() >= CAPACITY ||
+            closureCount() + closures.count { closedUnaccepted(it.challengeId) == null } > CLOSURE_CAPACITY) return false
+        for (closure in closures) if (closedUnaccepted(closure.challengeId) == null) insertClosure(closure)
+        insert(record)
+        requireClosures(record, closures, authenticatedNow, current, false)
+        return find(record.challengeId) == record
+    }
+
+    /** Passive exact-proof resume: a signed opening cannot import missing closure history. */
+    @Transaction
+    open fun requireClosureHistory(record: Profile03ElectionRecord, closures: List<Profile03UnacceptedClosureRecord>,
+        authenticatedNow: Long, current: (LocalLineBinding?) -> Unit) {
+        val saved = checkNotNull(find(record.challengeId))
+        saved.requireShape()
+        check(saved.state == "signed" && saved.sameReservation(record) && closedUnaccepted(record.challengeId) == null)
+        requireClosures(record, closures, authenticatedNow, current, false)
+    }
+
     @Transaction
     open fun recordSigned(record: Profile03ElectionRecord, current: (LocalLineBinding?) -> Unit): Boolean {
         record.requireShape()
         require(record.state == "signed" && record.deviceSignatureB64url != null && record.acceptedEvidenceSha256 == null)
         current(line())
         val prior = find(record.challengeId) ?: return false
-        if (!prior.sameReservation(record) || prior.state != "reserved") return false
+        if (!prior.sameReservation(record) || prior.state != "reserved" || closedUnaccepted(record.challengeId) != null) return false
         check(signed(record.challengeId, checkNotNull(record.deviceSignatureB64url)) == 1)
         current(line())
         return find(record.challengeId) == record
@@ -118,7 +190,8 @@ abstract class Profile03ElectionDao {
         require(record.state == "installed" && record.deviceSignatureB64url != null && record.acceptedEvidenceSha256 != null)
         current(line())
         val prior = find(record.challengeId) ?: return false
-        if (!prior.sameReservation(record) || prior.deviceSignatureB64url != record.deviceSignatureB64url) return false
+        if (!prior.sameReservation(record) || prior.deviceSignatureB64url != record.deviceSignatureB64url ||
+            closedUnaccepted(record.challengeId) != null) return false
         if (prior.state == "installed") return prior == record // Exact retry does not renew anything.
         if (prior.state != "signed") return false
         if (oldPreparations(record.accountId) != 0 || unresolvedEffects(record.accountId, "") != 0) return false
@@ -138,5 +211,5 @@ abstract class Profile03ElectionDao {
         check(unresolvedEffects(record.accountId, excludedAttempt) == 0)
         current(line())
     }
-    companion object { const val CAPACITY = 128 }
+    companion object { const val CAPACITY = 128; const val CLOSURE_CAPACITY = CAPACITY * 16 }
 }
