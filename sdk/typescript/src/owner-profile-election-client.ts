@@ -30,6 +30,17 @@ export type CurrentProfileCandidate03 = Readonly<{
   v: 1; envelope_profile: 3; manifest_profile: 3; site_id: string; instance_id: string;
   evidence: Readonly<Record<typeof evidenceNames[number], string>>;
 } & Record<typeof ids[number] | typeof counters[number] | typeof digests[number], string>>;
+const originalIds = ['account_id', 'user_id', 'owner_session_id', 'device_id', 'line_id', 'old_binding_id'] as const;
+const originalCounters = ['selection_epoch', 'connection_epoch', 'deployment_epoch', 'old_binding_generation',
+  'trust_generation', 'manifest_version', 'compared_ms', 'permission_expires_ms'] as const;
+const originalDigests = ['origin_digest', 'owner_session_digest', 'device_session_digest', 'old_binding_proof_digest',
+  'reader_key_id', 'device_signing_key_id', 'approval_key_id', 'root_fingerprint', 'manifest_digest'] as const;
+const originalEvidence = ['root_pin', 'prior_manifest02', 'prior_accepted_ms', 'device_signing_point',
+  'owner_approval_point', 'registration_evidence', 'activation_evidence'] as const;
+export type OriginalProfileCandidate02 = Readonly<{
+  v: 1; envelope_profile: 2; manifest_profile: 2; site_id: string; instance_id: string;
+  evidence: Readonly<Record<typeof originalEvidence[number], string>>;
+} & Record<typeof originalIds[number] | typeof originalCounters[number] | typeof originalDigests[number], string>>;
 export type OwnerProfileElectionOptions03 = Readonly<{
   origin: string; accountId: string; userId: string; ownerSessionId: string; deviceId: string;
   /** Previously independently compared root, never copied from this HTTP response. */
@@ -313,6 +324,39 @@ export class OwnerProfileElectionClient03 {
         electionDigest: binary(r.election_digest, 32, 32, true), bundleSha256: binary(r.bundle_sha256, 32, 32, true),
         acceptedMs: decimal(r.accepted_ms), selectionEpoch: decimal(r.selection_epoch) });
     }, o);
+  }
+  /** Original02 candidate only: no allocation, historical acceptance or key comparison ceremony. */
+  async bootstrap(lineId: string): Promise<OriginalProfileCandidate02> {
+    const line = uuid(lineId);
+    return this.#request('/bootstrap', { v: 1, line_id: line }, false, [200], async value => {
+      const r = record(value, ['v', 'envelope_profile', 'manifest_profile', ...originalIds, ...originalCounters,
+        ...originalDigests, 'site_id', 'instance_id', 'evidence']);
+      if (r.v !== 1 || r.envelope_profile !== 2 || r.manifest_profile !== 2 || r.account_id !== this.#account
+        || r.user_id !== this.#user || r.owner_session_id !== this.#session || r.device_id !== this.#device
+        || r.line_id !== line || r.root_fingerprint !== this.#root || r.trust_generation !== '1') fail('scope');
+      for (const k of originalIds) uuid(r[k]);
+      // A never-elected account has an actual initial zero epoch. No other counter admits zero.
+      for (const k of originalCounters) if (k !== 'selection_epoch' || r[k] !== '0') decimal(r[k]);
+      for (const k of originalDigests) binary(r[k], 32, 32, true);
+      for (const k of ['site_id', 'instance_id']) if (typeof r[k] !== 'string' || enc.encode(r[k] as string).length < 1
+        || enc.encode(r[k] as string).length > 256 || /[\p{Cc}\p{Cs}]/u.test(r[k] as string)) fail('response');
+      const compared = decimal(r.compared_ms);
+      if (compared < this.#lastCompared || decimal(r.permission_expires_ms) <= compared) fail('response');
+      const e = record(r.evidence, originalEvidence), pin = binary(e.root_pin, 94), prior = binary(e.prior_manifest02, 364, 9751);
+      for (const k of ['device_signing_point', 'owner_approval_point']) binary(e[k], 65);
+      for (const k of ['registration_evidence', 'activation_evidence']) binary(e[k], 1, REQUEST_MAX);
+      if (decimal(e.prior_accepted_ms) > compared || !same(pin.subarray(0, 5), Uint8Array.of(90, 84, 82, 80, 2))
+        || uuidText(pin.subarray(5, 21)) !== this.#account || new DataView(pin.buffer).getBigUint64(21) !== 1n
+        || !same(prior.subarray(0, 5), Uint8Array.of(90, 84, 77, 65, 2)) || uuidText(prior.subarray(5, 21)) !== this.#account
+        || new DataView(prior.buffer).getBigUint64(21) !== 1n
+        || new DataView(prior.buffer).getBigUint64(29) !== decimal(r.manifest_version)) fail('scope');
+      const expected = await this.#digests(), rootLabel = enc.encode('ZTSE/root-pin/v2\0');
+      const rootInput = new Uint8Array(rootLabel.length + pin.length); rootInput.set(rootLabel); rootInput.set(pin, rootLabel.length);
+      if (r.origin_digest !== b64(expected.origin) || r.owner_session_digest !== b64(expected.session)
+        || r.root_fingerprint !== b64(await sha(rootInput)) || r.manifest_digest !== b64(await sha(prior.subarray(0, -64)))) fail('scope');
+      this.#live(); this.#lastCompared = compared;
+      return Object.freeze({ ...r, evidence: Object.freeze({ ...e }) }) as OriginalProfileCandidate02;
+    });
   }
   async current(lineId: string): Promise<CurrentProfileCandidate03> {
     const line = uuid(lineId);

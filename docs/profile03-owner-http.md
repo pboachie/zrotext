@@ -54,8 +54,14 @@ from a new owner session requires a fresh explicitly authorized ceremony where
 the old challenge's session binding no longer applies. Preserve completed root,
 phone and key setup rather than manufacturing renewed challenge authority.
 
-The transport uses five explicit POST operations under
-`/v1/account/sealed/payload-profile`: `challenges`, `challenges/status`,
+`bootstrap` returns the separate original02 candidate before an election. It
+does not allocate a ceremony or renew permission. Its original signed evidence
+must be verified against the independently compared root and phone keys, actual
+retained02 history and current session before owner signing. Only its initial
+selection epoch may be zero; the other counters remain strictly positive.
+
+The transport uses six explicit POST operations under
+`/v1/account/sealed/payload-profile`: `bootstrap`, `challenges`, `challenges/status`,
 `challenges/proof`, `elections` and `current`. POST reads allow the browser to
 send its ordinary Origin header; script must not fabricate that forbidden
 header. Requests are bounded to96KiB and responses to192KiB. UUIDs are canonical

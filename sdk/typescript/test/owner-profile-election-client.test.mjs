@@ -60,6 +60,14 @@ async function current(s) {
       device_signing_point: b64(f.enrollment.point), owner_approval_point: b64(f.approval.point),
       registration_evidence: b64(new Uint8Array([1])), activation_evidence: b64(new Uint8Array([2])) } };
 }
+async function original(s) {
+  const r = await current(s);
+  for (const k of ['binding_id', 'binding_generation', 'election_digest', 'election_bundle_sha256']) delete r[k];
+  r.envelope_profile = 2; r.manifest_profile = 2; r.selection_epoch = '0';
+  r.manifest_version = '1'; r.manifest_digest = b64(s.f.old.digest);
+  for (const k of ['accepted_manifest03', 'accepted_ms', 'bundle']) delete r.evidence[k];
+  return r;
+}
 function deferred() { let resolve; const promise = new Promise(r => resolve = r); return { promise, resolve }; }
 const checkError = (code, outcome) => error => error instanceof OwnerProfileElectionError03 && error.code === code && (!outcome || error.outcome === outcome);
 
@@ -271,4 +279,32 @@ test('unsafe origin, mutable/shared bytes, malformed factor and extended recover
   await assert.rejects(fresh.client.reserve(fresh.opening, oversized), OwnerProfileElectionError03);
   const shared = new Uint8Array(new SharedArrayBuffer(628));
   await assert.rejects(fresh.client.commit(fresh.opening, id(uuid(60)), shared, factor)); assert.equal(fresh.calls.length, 0); fresh.client.close();
+});
+
+test('bootstrap reads a scoped original02 candidate with actual zero epoch without allocating or saving a ceremony', async () => {
+  const s = await setup(), r = await original(s);
+  s.handle((url, init) => {
+    assert.equal(url, base + '/bootstrap'); assert.equal(init.method, 'POST');
+    assert.deepEqual(JSON.parse(init.body), { v: 1, line_id: line }); assert.equal(s.saved.length, 0);
+    return data(r);
+  });
+  const value = await s.client.bootstrap(line);
+  assert.equal(value.envelope_profile, 2); assert.equal(value.selection_epoch, '0');
+  assert(!('accepted' in value)); assert(!('binding_generation' in value)); assert(Object.isFrozen(value.evidence)); s.client.close();
+});
+
+test('bootstrap refuses scope, profile, frame, digest, counter and late-session substitutions', async () => {
+  const changes = [r => r.envelope_profile = 3, r => r.user_id = id(uuid(141)), r => r.old_binding_generation = '0',
+    r => r.selection_epoch = '00', r => r.selection_epoch = '-1', r => r.trust_generation = '2',
+    r => r.manifest_version = '2', r => r.manifest_digest = b64(new Uint8Array(32).fill(5)),
+    r => r.permission_expires_ms = r.compared_ms, r => r.evidence.prior_accepted_ms = '60001',
+    r => r.evidence.bundle = b64(new Uint8Array(628)), r => r.evidence.registration_evidence = '',
+    r => r.evidence.root_pin = b64(new Uint8Array(94)), r => r.owner_session_digest = b64(new Uint8Array(32).fill(5))];
+  for (const change of changes) {
+    const s = await setup(), r = await original(s); change(r); s.handle(() => data(r));
+    await assert.rejects(s.client.bootstrap(line), error => error instanceof OwnerProfileElectionError03 && error.outcome === 'refused'); s.client.close();
+  }
+  const s = await setup(), response = deferred(); s.handle(() => response.promise);
+  const pending = s.client.bootstrap(line); await new Promise(resolve => setImmediate(resolve)); s.changeCsrf('ztc_' + b64(new Uint8Array(32).fill(12)));
+  response.resolve(data(await original(s))); await assert.rejects(pending, checkError('session_changed')); s.client.close();
 });
