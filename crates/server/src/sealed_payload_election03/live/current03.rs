@@ -8,7 +8,9 @@ use crate::sealed_payload_election03::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B};
 use uuid::Uuid;
+mod permission;
 mod physical;
+pub(crate) use permission::{HeldMessageSelection03, hold_owner_selection, hold_step_up_selection};
 
 struct Current<'held, 'db> {
     reservation: Reservation,
@@ -19,6 +21,9 @@ struct Current<'held, 'db> {
     epoch: u64,
     checked: u64,
     deadline: u64,
+    proof: election::VerifiedElection03,
+    manifest: crypto::VerifiedManifest03,
+    authority: election::CurrentAuthority03,
 }
 impl<'held, 'db> Current<'held, 'db> {
     async fn lock(
@@ -185,7 +190,7 @@ impl<'held, 'db> Current<'held, 'db> {
             return Err(Error::Conflict);
         }
         let deadline = context.lease_deadline_ms().min(roles.expires_ms);
-        election::require_current(
+        let authority = election::require_current(
             &proof,
             &manifest,
             &election::CurrentAuthority03 {
@@ -218,6 +223,9 @@ impl<'held, 'db> Current<'held, 'db> {
             epoch,
             checked: now,
             deadline,
+            proof,
+            manifest,
+            authority,
         })
     }
     async fn original_physical(&self, tx: &Transaction<'_>) -> Result<()> {
