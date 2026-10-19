@@ -4,6 +4,14 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { randomUUID } = require("node:crypto");
 const core = require("./conversation-core.js");
+
+test("the complete-set choice starts unchecked and reaches the real line controller separately",async()=>{
+ let selected,closed=0;
+ const p=await page({adapterAvailable:false,ownerFactory:{create:()=>({close(){}})},lineFactory:{create:options=>({state:()=>({phase:"unprepared"}),onClose(){},close(){closed++;},begin:async()=>{selected=options.readSelection();return {phase:"awaiting_root"};}})}});
+ try{assert.equal(p.element("line-complete-set-consent").checked,undefined);p.element("line-complete-set-consent").checked=true;p.element("line-phone-point-file").files=[{}];await p.click("line-begin");assert.equal(selected.completeSetConsent,true);assert.equal(selected.retentionConsent,undefined);assert.equal(selected.sessionConsent,undefined);await p.click("clear");assert(closed>0);
+  const html=require("node:fs").readFileSync(require("node:path").join(__dirname,"conversation.html"),"utf8");assert.match(html,/<input id="line-complete-set-consent" type="checkbox">/);
+ }finally{p.cleanup();}
+});
 async function page({ expireReview = false, adapterAvailable = true, ownerSetup, ownerFactory, rootFactory, lineFactory, resultStatus = "simulator_accepted", closeError, acceptedError } = {}) {
   const previous = new Map(), elements = new Map(), events = {}, writes = [];
   let time = 0, accepted = 0;
