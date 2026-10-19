@@ -194,6 +194,60 @@ fn exact_public_cross_profile_vectors_verify_in_rust() {
 }
 
 #[test]
+fn election_selects_enrolled_signer_independently_of_conversation_role_four() {
+    let f = Fixture::new();
+    let old = f.manifest(2, 1, 0, [0; 32]);
+    let context = f.context(&old);
+    let manifest02 = sealed_manifest::verify(&f.pin, &old, &context.trust, NOW).unwrap();
+    let (_, _, manifest03) = f.pair();
+    let enrolled = SigningKey::generate_from_rng(&mut rand::rng());
+    let point: [u8; 65] = enrolled
+        .verifying_key()
+        .to_sec1_point(false)
+        .as_bytes()
+        .try_into()
+        .unwrap();
+    let owner: [u8; 65] = f.keys[4]
+        .verifying_key()
+        .to_sec1_point(false)
+        .as_bytes()
+        .try_into()
+        .unwrap();
+    assert_ne!(
+        point.as_slice(),
+        f.keys[3].verifying_key().to_sec1_point(false).as_bytes()
+    );
+    let a = manifest02
+        .profile_election_keys(&f.device, &f.line, &point, &owner, NOW)
+        .unwrap();
+    let b = manifest03
+        .profile_election_keys(&f.device, &f.line, &point, &owner, NOW)
+        .unwrap();
+    assert_eq!(a.device_signer_id, sealed_manifest::key_id(4, &point));
+    assert_eq!(b.device_signer_id, a.device_signer_id);
+    assert_eq!(b.reader_id, a.reader_id);
+    assert_eq!(b.approval_id, a.approval_id);
+    for (device, line, signer, approval, now) in [
+        ([9; 16], f.line, point, owner, NOW),
+        (f.device, [9; 16], point, owner, NOW),
+        (f.device, f.line, [0; 65], owner, NOW),
+        (f.device, f.line, point, point, NOW),
+        (f.device, f.line, point, owner, NOW + 100_000),
+    ] {
+        assert!(
+            manifest02
+                .profile_election_keys(&device, &line, &signer, &approval, now)
+                .is_err()
+        );
+        assert!(
+            manifest03
+                .profile_election_keys(&device, &line, &signer, &approval, now)
+                .is_err()
+        );
+    }
+}
+
+#[test]
 fn actual_anchor_checkpoint_and_original_comparison_are_not_invented() {
     let f = Fixture::new();
     let old = f.manifest(2, 17, 0, [7; 32]);

@@ -42,6 +42,12 @@ pub struct HeldOrdinaryOwner03<'held, 'db> {
     origin_digest: [u8; 32],
 }
 impl HeldOrdinaryOwner03<'_, '_> {
+    pub(crate) fn selected_identity(&self) -> Selector {
+        self.selector
+    }
+    pub(crate) fn uses_transaction(&self, tx: &Transaction<'_>) -> bool {
+        std::ptr::eq(self.tx, tx)
+    }
     pub fn canonical_identity(&self) -> &[u8] {
         self.records.canonical_identity()
     }

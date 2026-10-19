@@ -46,6 +46,11 @@ impl Negotiated {
             Some(preconditions::PROTOCOL_V2) => {
                 (Some(preconditions::PROTOCOL_V2), None, LineProtocol::Legacy)
             }
+            Some(super::payload_profile03::PROTOCOL) => (
+                Some(preconditions::PROTOCOL_V2),
+                Some(3),
+                LineProtocol::Complete,
+            ),
             Some(preconditions::PROTOCOL) => {
                 (Some(preconditions::PROTOCOL), None, LineProtocol::Legacy)
             }

@@ -49,6 +49,7 @@ pub use mms_spike_policy::MmsSpikePolicy;
 mod conversation;
 mod line_activation_v2;
 mod line_readiness;
+mod payload_profile03;
 mod preconditions;
 mod sealed_line_setup;
 mod sealed_session;
@@ -294,6 +295,8 @@ pub struct DeviceSession {
 #[derive(Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 enum ClientFrame {
+    #[serde(skip)]
+    PayloadProfile03(payload_profile03::Incoming),
     #[serde(skip)]
     LineActivationV2(line_activation_v2::Incoming),
     #[serde(rename = "sealed_line_proof")]
@@ -708,6 +711,40 @@ pub fn router_with_sealed_line_setup(
     conversation_router(state, origin, sockets_per_account, true)
 }
 
+/// Explicit library-only profile03 ceremony composition. Existing startup
+/// paths do not call it. Version03 never receives legacy02 execution grants;
+/// current03/admission/fetch/receiver qualification remains required before
+/// production startup can opt in to this protocol.
+pub fn router_with_profile03(
+    state: DeviceSocketState,
+    wss_origin: &str,
+    https_origin: &str,
+    sockets_per_account: usize,
+) -> Result<Router, &'static str> {
+    crate::sealed_payload_election03::adapter_contract::origin_digest(https_origin)?;
+    let a = url::Url::parse(wss_origin).map_err(|_| "profile socket origin invalid")?;
+    let b = url::Url::parse(https_origin).map_err(|_| "profile owner origin invalid")?;
+    if a.host_str() != b.host_str()
+        || a.port_or_known_default() != b.port_or_known_default()
+        || !state.sealed_dispatch_enabled
+        || !state.dispatch_runtime_enabled
+    {
+        return Err("profile socket composition unavailable");
+    }
+    let mut policy = conversation::Policy::new(wss_origin)?;
+    policy.sealed_line_setup = true;
+    policy.profile03_origin = Some(https_origin.to_owned());
+    Ok(Router::new()
+        .route("/v1/device-stream", get(upgrade))
+        .with_state(SocketRoute {
+            state,
+            admission: DEVICE_SOCKET_ADMISSION
+                .clone()
+                .with_account_limit(sockets_per_account),
+            conversation: Some(policy),
+        }))
+}
+
 fn conversation_router(
     state: DeviceSocketState,
     origin: &str,
@@ -766,6 +803,12 @@ async fn upgrade(
         if state.sealed_dispatch_enabled && state.dispatch_runtime_enabled {
             protocols.insert(0, line_activation_v2::SEALED_PROTOCOL);
         }
+    }
+    if conversation
+        .as_ref()
+        .is_some_and(|p| p.profile03_origin.is_some())
+    {
+        protocols.insert(0, payload_profile03::PROTOCOL);
     }
     let frame_limit = socket_frame_limit(conversation.is_some());
     websocket
@@ -898,6 +941,11 @@ async fn receive_frame(socket: &mut WebSocket, budget: &mut FrameBudget) -> Opti
             Message::Text(text) => {
                 if text.len() > MAX_FRAME_BYTES {
                     return None;
+                }
+                match payload_profile03::parse(text.as_str()) {
+                    Ok(Some(frame)) => return Some(ClientFrame::PayloadProfile03(frame)),
+                    Ok(None) => {}
+                    Err(()) => return None,
                 }
                 return match line_activation_v2::parse(text.as_str()) {
                     Ok(Some(frame)) => Some(ClientFrame::LineActivationV2(frame)),
@@ -1153,9 +1201,13 @@ async fn run_socket(
     let line_protocol = negotiated.line;
     let status_protocol = negotiated.status.map(str::to_owned);
     let sealed_v2 = negotiated.sealed_version == Some(2);
+    let profile03_origin = conversation_policy
+        .as_ref()
+        .and_then(|p| p.profile03_origin.as_deref());
+    let profile03_negotiated = negotiated.sealed_version == Some(3) && profile03_origin.is_some();
     let sealed_negotiated = state.sealed_dispatch_enabled
         && state.dispatch_runtime_enabled
-        && negotiated.sealed_version.is_some();
+        && matches!(negotiated.sealed_version, Some(1 | 2));
     let mut status_budget = preconditions::ReportBudget::default();
     let mut frame_budget = FrameBudget::new(Instant::now());
     let authenticated = timeout_at(
@@ -1252,6 +1304,8 @@ async fn run_socket(
     let mut sealed_ready: Option<(crate::sealed_dispatch::wire::Ready, Instant)> = None;
     let mut sealed_ready_used = false;
     let mut sealed_clock = sealed_session::Samples::new();
+    let mut profile_clock = sealed_session::Samples::new();
+    let mut profile_next_poll = tokio::time::Instant::now();
     let mut mms_spike_ready_used = false;
     // Enabled only for controlled local liveness probes. Emit bounded,
     // content-free timing and exit markers, never frames or device IDs.
@@ -1268,6 +1322,10 @@ async fn run_socket(
         tokio::select! {
             message = receive_frame(&mut socket, &mut frame_budget) => {
                 match message {
+                    Some(ClientFrame::PayloadProfile03(frame))=>{
+                        let Some(origin)=profile03_origin.filter(|_|profile03_negotiated) else {close_with_code=Some(close_code::POLICY);break;};
+                        if payload_profile03::dispatch(&mut socket,&state,session,origin,&mut profile_clock,frame).await.is_none() {close_with_code=Some(RETRY_LATER);break;}
+                    }
                     Some(ClientFrame::SealedSessionRequest { v: 1, connection_epoch, challenge }) if sealed_negotiated && sealed_v2 => {
                         if connection_epoch != session.connection_epoch || !sealed_clock.admit(challenge, Instant::now()) {
                             close_with_code = Some(close_code::POLICY); break;
@@ -1914,6 +1972,10 @@ async fn run_socket(
                     sms_line_next_poll = tokio::time::Instant::now();
                     sealed_line_next_poll = tokio::time::Instant::now();
                 }
+            },
+            _ = tokio::time::sleep_until(profile_next_poll), if profile03_negotiated && profile_clock.is_sampled() => {
+                if payload_profile03::push(&mut socket,&state,session,profile03_origin.expect("negotiated configured origin")).await.is_none() {close_with_code=Some(RETRY_LATER);break;}
+                profile_next_poll=tokio::time::Instant::now()+Duration::from_secs(3);
             },
             _ = state.drain_notify.notified() => {
                 close_reason = "site_drain";

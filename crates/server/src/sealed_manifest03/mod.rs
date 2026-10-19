@@ -164,6 +164,49 @@ impl std::fmt::Debug for VerifiedManifest03 {
     }
 }
 impl VerifiedManifest03 {
+    pub(crate) fn profile_election_keys(
+        &self,
+        device: &[u8; 16],
+        line: &[u8; 16],
+        device_point: &[u8; 65],
+        approval_point: &[u8; 65],
+        now: u64,
+    ) -> Check<crate::sealed_manifest::ProfileElectionKeys> {
+        self.identity_at(now)?;
+        VerifyingKey::from_sec1_bytes(device_point).map_err(|_| "enrollment signing point")?;
+        let unique = |role: u8| -> Check<&Role> {
+            let mut found = self.roles.iter().filter(|key| {
+                key.role == role
+                    && key.line == *line
+                    && key.active(now)
+                    && (role == 5 || key.device == *device)
+            });
+            let key = found.next().ok_or("missing selected election role")?;
+            if found.next().is_some() {
+                return Err("ambiguous selected election role");
+            }
+            Ok(key)
+        };
+        let reader = unique(1)?;
+        let approval = unique(5)?;
+        if device_point == approval_point
+            || approval.point != *approval_point
+            || reader.scope != 4
+            || approval.scope != 1
+        {
+            return Err("selected election key mismatch");
+        }
+        Ok(crate::sealed_manifest::ProfileElectionKeys {
+            reader_id: reader.id,
+            device_signer_id: sealed_manifest::key_id(4, device_point),
+            approval_id: approval.id,
+            expires_ms: self
+                .identity
+                .expires_ms
+                .min(reader.until)
+                .min(approval.until),
+        })
+    }
     fn comparison(&self, now: u64) -> Check<()> {
         time(now)?;
         if now < self.identity.comparison_ms {
@@ -217,7 +260,7 @@ impl VerifiedManifest03 {
         if readers.is_empty() || readers.len() > if inbound { 7 } else { 8 } {
             return Err("reader count");
         }
-        let mut deadline = self.identity.expires_ms.min(signer.until);
+        let mut deadline = self.identity.expires_ms;
         let mut not_before = signer.from;
         let (mut devices, mut archives, mut integrations) = (0, 0, 0);
         let mut previous = None;

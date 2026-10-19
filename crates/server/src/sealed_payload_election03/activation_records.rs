@@ -265,4 +265,4 @@ pub(super) async fn read_locked(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
