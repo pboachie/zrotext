@@ -949,6 +949,10 @@ BEGIN
     OR EXISTS(SELECT FROM public.payload_profile_elections e WHERE e.account_id=NEW.account_id)
     OR EXISTS(SELECT FROM public.payload_profile_election_challenges c WHERE c.account_id=NEW.account_id AND c.closed_unaccepted_ms IS NULL AND c.expires_ms>NEW.issued_ms) THEN
     RAISE EXCEPTION 'election reservation row differs' USING ERRCODE='23514'; END IF;
+   -- A lock alone leaves old RR/SSI snapshots usable after this commit.
+   -- Every actual new election mutation versions the retained anchor tuple;
+   -- old-snapshot writers must fail before consulting stale policy rows.
+   UPDATE public.payload_profile_account_anchors a SET account_id=a.account_id WHERE a.account_id=NEW.account_id;
    RETURN NEW;
   END IF;
   IF TG_OP<>'UPDATE' OR(to_jsonb(NEW)-ARRAY['device_signature','device_proof_ms','closed_unaccepted_ms','superseded_by_challenge_id']) IS DISTINCT FROM(to_jsonb(OLD)-ARRAY['device_signature','device_proof_ms','closed_unaccepted_ms','superseded_by_challenge_id']) THEN
@@ -973,6 +977,7 @@ BEGIN
     RAISE EXCEPTION 'election device proof is one-time' USING ERRCODE='23514'; END IF;
    checked:=public.payload_profile_election_scope(OLD.account_id,OLD.initiating_user_id,OLD.initiating_session_id,OLD.core,OLD.accepted_signed_manifest);
   END IF;
+  UPDATE public.payload_profile_account_anchors a SET account_id=a.account_id WHERE a.account_id=NEW.account_id;
   RETURN NEW;
  END IF;
  IF TG_OP<>'INSERT' THEN RAISE EXCEPTION 'accepted election is immutable' USING ERRCODE='23514'; END IF;
@@ -990,6 +995,7 @@ BEGIN
   RAISE EXCEPTION 'accepted election differs from retained original proof' USING ERRCODE='23514'; END IF;
  checked:=public.payload_profile_election_scope(original.account_id,original.initiating_user_id,original.initiating_session_id,original.core,original.accepted_signed_manifest);
  PERFORM public.payload_profile_election_quiescent(NEW.account_id);
+ UPDATE public.payload_profile_account_anchors a SET account_id=a.account_id WHERE a.account_id=NEW.account_id;
  RETURN NEW;
 END;
 $function$;
