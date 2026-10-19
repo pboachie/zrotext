@@ -2,6 +2,7 @@
 //! Historical cryptographic proof relative to explicit authenticated adapter
 //! inputs. This does not prove a commit, sessions/MFA, allocation or permission.
 
+pub mod activation_evidence;
 pub mod adapter_contract;
 pub mod device_context;
 pub mod owner_records;
