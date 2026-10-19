@@ -158,6 +158,7 @@ internal class Profile03CurrentReader(context: Context, private val origin: Stri
             permit.isCurrent() && permit.matches(line) && original.matchesLocal(permit.record) &&
             SimCardContinuity.matches(line.activatedSim(), cards))
         val refreshed = permit.refresh03
+        if (refreshed == null) check(!db.selectionRefreshes03().everSigned(installation.newBindingId, hex(bytes("device_session_digest"))))
         if (deviceOnly) {
             val physical = Profile03Json.nested(f, "physical_selection")
             if (refreshed == null) require(physical.keys == setOf("kind") && physical["kind"] == "original_v2")

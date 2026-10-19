@@ -216,12 +216,12 @@ class AttemptJournalRoomTest {
                 SmsJournalDatabase.MIGRATION_7_8,
                 SmsJournalDatabase.MIGRATION_8_9, SmsJournalDatabase.MIGRATION_9_10,
                 SmsJournalDatabase.MIGRATION_10_11, SmsJournalDatabase.MIGRATION_11_12,
-                SmsJournalDatabase.MIGRATION_12_13, SmsJournalDatabase.MIGRATION_13_14, SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17).build()
+                SmsJournalDatabase.MIGRATION_12_13, SmsJournalDatabase.MIGRATION_13_14, SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17, SmsJournalDatabase.MIGRATION_17_18).build()
         try {
             assertNotNull(migrated.attempts().getAttempt("legacy-attempt"))
             assertEquals(false, migrated.attempts().getAttempt("legacy-attempt")!!.evidenceConflict)
             assertEquals(null, migrated.attempts().getAttempt("legacy-attempt")!!.messageId)
-            assertEquals(17, migrated.openHelper.readableDatabase.version)
+            assertEquals(18, migrated.openHelper.readableDatabase.version)
             val columns = androidx.room.util.TableInfo.read(
                 migrated.openHelper.readableDatabase, "local_line_binding").columns
             val expectedProfileColumns = mapOf(

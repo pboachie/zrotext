@@ -68,7 +68,7 @@ strings. Binary fields use canonical unpadded base64url.
 
 | Type | Other exact fields |
 | --- | --- |
-| `payload_profile_selection_challenge03` | `refresh_id,core,evidence` |
+| `payload_profile_selection_challenge03` | `refresh_id,core,evidence,closed_unaccepted` |
 | `payload_profile_selection_proof03` | `connection_epoch,refresh_id,observation,device_signature` |
 | `payload_profile_selection_approved03` | `refresh_id,bundle,accepted_ms` |
 | `payload_profile_selection_installed03` | `connection_epoch,refresh_id,bundle_sha256,device_signature` |
@@ -110,3 +110,34 @@ retain the exact original opaque permit object and refuse its replacement.
 frames. `vectors/sealed-profile03-selection-refresh-01.json` contains independently
 generated real synthetic P-256 signatures. It asserts grammar/signature parity,
 not operating-system truth, hardware custody or database acceptance.
+
+## Explicit interrupted-refresh recovery
+
+Every owner challenge/status response and phone challenge requires an initially
+empty or at most sixteen-member `closed_unaccepted` array. Each closed member is
+`{opening_id,refresh_id,core,closed_unaccepted_ms,superseded_by_refresh_id}`.
+UUIDs are canonical and nonzero; core is exact canonical unpadded base64url496;
+closure time is a positive canonical decimal string. The entire ancestor chain
+is ordered by strictly increasing issued time. Each closure equals its immediate
+successor's exact issued time, at or after the original expiry, and the last
+member targets the new live refresh. Binding, election, manifest, keys, selection
+epoch and full device lease/origin remain identical. Original owner-session
+digest and nonce may vary with the genuinely new opening.
+
+Only an explicit owner opening with fresh password/MFA may atomically close
+expired never-approved rows and reserve a replacement. Status, timeout and
+unavailable replies never close them. Server acceptance of a closed predecessor
+must remain impossible even on clock regression. Android verifies the complete
+chain under the actual current socket and full original proof/custody checks;
+every known signed predecessor matches exact original core. Unknown intermediate
+entries remain history without invented local observations or signatures.
+
+A different owner challenge only queues a candidate on the phone. Signing also
+requires a genuinely new foreground complete-SIM confirmation after all closed
+predecessors' expiry, with a distinct consent ID. Android commits its closure
+chain and fresh reservation together in schema18 before signing. Accepted rows
+cannot be closed, and late approval/install/signing on closed rows refuses.
+Any ever-signed observation permanently fences original physical fallback for
+that full connection. At most sixteen reservations are retained per binding/full
+lease; histories are not deleted to evade that bound. A new actual connection
+still needs fresh explicit physical approval and cannot translate old messages.

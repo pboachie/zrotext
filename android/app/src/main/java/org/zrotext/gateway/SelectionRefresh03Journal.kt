@@ -70,6 +70,18 @@ abstract class SelectionRefresh03Dao {
     protected abstract fun count(): Int
     @Query("SELECT EXISTS(SELECT 1 FROM selection_refresh03 WHERE bindingId = :binding AND deviceSessionSha256 = :session AND (state != 'retired' OR deviceSignatureB64url IS NOT NULL))")
     protected abstract fun outstanding(binding: String, session: String): Boolean
+    @Query("SELECT EXISTS(SELECT 1 FROM selection_refresh03 WHERE bindingId = :binding AND deviceSessionSha256 = :session AND deviceSignatureB64url IS NOT NULL)")
+    abstract fun everSigned(binding: String, session: String): Boolean
+    @Query("SELECT COUNT(*) FROM selection_refresh03 WHERE bindingId = :binding AND deviceSessionSha256 = :session")
+    protected abstract fun connectionCount(binding: String, session: String): Int
+    @Query("SELECT * FROM selection_refresh03 WHERE bindingId = :binding AND deviceSessionSha256 = :session AND refreshId != :target AND (state != 'retired' OR deviceSignatureB64url IS NOT NULL)")
+    protected abstract fun priorReservations(binding: String, session: String, target: String): List<SelectionRefresh03Record>
+    @Query("SELECT * FROM selection_refresh03_closures WHERE refreshId = :id")
+    abstract fun closure(id: String): SelectionRefresh03ClosureRecord?
+    @Query("SELECT * FROM selection_refresh03_closures")
+    protected abstract fun retainedClosures(): List<SelectionRefresh03ClosureRecord>
+    @Query("SELECT COUNT(*) FROM selection_refresh03_closures")
+    protected abstract fun closureCount(): Int
     @Query("SELECT * FROM local_line_binding WHERE slot = 1")
     protected abstract fun line(): LocalLineBinding?
     @Query("SELECT * FROM profile03_elections WHERE challengeId = :id")
@@ -78,6 +90,8 @@ abstract class SelectionRefresh03Dao {
     protected abstract fun unresolvedEffects(account: String): Int
     @Insert
     protected abstract fun insert(record: SelectionRefresh03Record)
+    @Insert
+    protected abstract fun insertClosure(record: SelectionRefresh03ClosureRecord)
     @Query("UPDATE selection_refresh03 SET state = :state, deviceSignatureB64url = :device, ownerSignatureB64url = :owner, bundleSha256 = :bundle, acceptedMs = :accepted, installedSignatureB64url = :ack, installedMs = :installed WHERE refreshId = :id AND state = :expected")
     protected abstract fun transition(id: String, expected: String, state: String, device: String?, owner: String?,
         bundle: String?, accepted: Long?, ack: String?, installed: Long?): Int
@@ -98,14 +112,67 @@ abstract class SelectionRefresh03Dao {
         current(selected)
     }
 
+    private fun connectionReservations(record: SelectionRefresh03Record, incoming: List<SelectionRefresh03ClosureRecord>): Int {
+        val ids = (retainedClosures() + incoming).filter {
+            val core = it.core()
+            core.binding.toString() == record.bindingId &&
+                Draft02OutboundPreparation.hex(core.deviceSessionDigest) == record.deviceSessionSha256
+        }.map { it.refreshId }.toSet()
+        // Unseen server reservations count toward the same bound without fabricated local rows.
+        return connectionCount(record.bindingId, record.deviceSessionSha256) + ids.count { find(it) == null }
+    }
+
     /** A crash burns this challenge; every released signature keeps its unknown-outcome fence. */
     @Transaction
     open fun reserve(record: SelectionRefresh03Record, current: (LocalLineBinding?) -> Unit): Boolean {
         record.requireShape(); require(record == record.reservation())
         original(record, current)
-        if (count() >= CAPACITY || find(record.refreshId) != null || outstanding(record.bindingId, record.deviceSessionSha256)) return false
+        if (count() >= CAPACITY || connectionReservations(record, emptyList()) >= CONNECTION_CAPACITY ||
+            find(record.refreshId) != null || outstanding(record.bindingId, record.deviceSessionSha256)) return false
         insert(record)
         original(record, current)
+        return find(record.refreshId) == record
+    }
+
+    /** The full authenticated historical proofs/current hardware/actual fresh phone decision
+     * must be checked outside Room first. No timeout or passive status invokes this writer.
+     */
+    @Transaction
+    open fun reserveWithClosures(record: SelectionRefresh03Record, rows: List<SelectionRefresh03ClosureRecord>,
+        now: Long, current: (LocalLineBinding?) -> Unit): Boolean {
+        record.requireShape(); require(record == record.reservation())
+        original(record, current)
+        val target = SelectionRefresh03.Core.decode(Profile03ElectionEncoding.decode(record.coreB64url, 496))
+        SelectionRefresh03Closure.requireChain(target, rows, now)
+        require(rows.all { record.consentConfirmedMs >= it.core().expiresMs })
+        val indexed = rows.associateBy { it.refreshId }
+        for (saved in retainedClosures()) {
+            if (SelectionRefresh03Closure.sameScope(saved.core(), target)) check(indexed[saved.refreshId] == saved)
+        }
+        for (prior in priorReservations(record.bindingId, record.deviceSessionSha256, record.refreshId)) {
+            prior.requireShape()
+            check(prior.ownerSignatureB64url == null && prior.acceptedMs == null && prior.installedMs == null)
+            val row = checkNotNull(indexed[prior.refreshId])
+            check(prior.coreB64url == row.coreB64url && prior.consentId != record.consentId &&
+                prior.connectionEpoch == record.connectionEpoch && prior.deploymentEpoch == record.deploymentEpoch &&
+                prior.originalActivationId == record.originalActivationId && prior.originalGeneration == record.originalGeneration &&
+                prior.electionChallengeId == record.electionChallengeId && prior.electionIdentitySha256 == record.electionIdentitySha256)
+        }
+        for (row in rows) {
+            find(row.refreshId)?.let { prior ->
+                prior.requireShape()
+                check(prior.bindingId == record.bindingId && prior.deviceSessionSha256 == record.deviceSessionSha256 &&
+                    prior.coreB64url == row.coreB64url && prior.ownerSignatureB64url == null && prior.acceptedMs == null && prior.installedMs == null)
+            }
+            val saved = closure(row.refreshId)
+            check(saved == null || saved == row)
+        }
+        if (count() >= CAPACITY || connectionReservations(record, rows) >= CONNECTION_CAPACITY ||
+            closureCount() + rows.count { closure(it.refreshId) == null } > CLOSURE_CAPACITY || find(record.refreshId) != null) return false
+        for (row in rows) if (closure(row.refreshId) == null) insertClosure(row)
+        insert(record)
+        original(record, current)
+        check(rows.all { closure(it.refreshId) == it })
         return find(record.refreshId) == record
     }
 
@@ -123,6 +190,7 @@ abstract class SelectionRefresh03Dao {
         require(expectedState == expected)
         original(record, current)
         val prior = find(record.refreshId) ?: return false
+        if (closure(record.refreshId) != null) return false
         if (prior == record) return true // Exact retry returns original facts, never new timestamps.
         if (prior.state != expected || prior.reservation() != record.reservation()) return false
         if (prior.deviceSignatureB64url != null && prior.deviceSignatureB64url != record.deviceSignatureB64url ||
@@ -136,5 +204,5 @@ abstract class SelectionRefresh03Dao {
         original(record, current)
         return find(record.refreshId) == record
     }
-    companion object { const val CAPACITY = 128 }
+    companion object { const val CAPACITY = 128; const val CONNECTION_CAPACITY = 16; const val CLOSURE_CAPACITY = CAPACITY * 16 }
 }
