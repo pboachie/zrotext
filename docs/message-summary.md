@@ -69,3 +69,9 @@ Readiness checks reject missing, invalid, disabled or differently defined
 indexes and capture triggers. They do not turn an unavailable aggregate into
 an empty result. Apply the complete contiguous migration sequence with the
 normal migrator; do not skip its migration checks.
+
+The readiness check resolves the summary tables through the database session's
+search path, including configurations that put `pg_catalog` first. All three
+summary relations must resolve to the same application schema. A table shadowed
+in another schema returns `503` rather than borrowing healthy metadata from the
+application schema. No change to database role search paths is required.
