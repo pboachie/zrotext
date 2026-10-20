@@ -1327,7 +1327,7 @@ async fn run_socket(
                     Some(ClientFrame::PayloadProfile03(payload_profile03::Incoming::Ready(ready)))=>{
                         if !profile03_negotiated || !profile_clock.is_sampled()
                             || !state.sealed_dispatch_enabled || !state.dispatch_runtime_enabled
-                            || profile_ready.accept(ready,session,state.deployment_epoch).is_none() {
+                            || profile_ready.accept(*ready,session,state.deployment_epoch).is_none() {
                             close_with_code=Some(close_code::POLICY);break;
                         }
                     }

@@ -13,7 +13,7 @@ object_body! {struct Session {v:u8,r#type:String,connection_epoch:i64,challenge:
 object_body! {struct Proof {v:u8,r#type:String,challenge_id:String,device_signature:String}}
 object_body! {struct Current {v:u8,r#type:String,connection_epoch:i64,challenge:String,line_id:String}}
 pub(super) enum Incoming {
-    Ready(crate::sealed_dispatch::wire03::ReadyFrame03),
+    Ready(Box<crate::sealed_dispatch::wire03::ReadyFrame03>),
     Interval(interval::Frame),
     Manifest(manifests::Frame),
     Refresh(selection_refresh::Frame),
@@ -99,7 +99,7 @@ pub(super) fn parse(raw: &str) -> Result<Option<Incoming>, ()> {
             return Ok(None);
         }
         return crate::sealed_dispatch::wire03::ReadyFrame03::parse(raw.as_bytes())
-            .map(|ready| Some(Incoming::Ready(ready)))
+            .map(|ready| Some(Incoming::Ready(Box::new(ready))))
             .map_err(|_| ());
     }
     if !tag.r#type.starts_with("payload_profile_") {
