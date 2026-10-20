@@ -135,10 +135,20 @@ impl Fixture {
 // protected-table/helper resets. Only a freshly generated role identifier is
 // substituted. This does not bypass production validators or require psql.
 async fn provision_runtime(owner: &Client, database: &str, role: &str) {
-    let role = escape_identifier(role);
+    // The stock block uses the role in BOTH SQL identifiers and rolname text
+    // literals. Replacing with a prequoted identifier changes the literal's
+    // value and silently skips the conditional narrow-helper grants.
+    assert!(
+        (1..=63).contains(&role.len())
+            && role.as_bytes()[0].is_ascii_lowercase()
+            && role
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+    );
+    let role_id = escape_identifier(role);
     owner
         .batch_execute(&format!(
-            "REVOKE ALL ON DATABASE {} FROM PUBLIC,{role}; GRANT CONNECT ON DATABASE {} TO {role}",
+            "REVOKE ALL ON DATABASE {} FROM PUBLIC,{role_id}; GRANT CONNECT ON DATABASE {} TO {role_id}",
             escape_identifier(database),
             escape_identifier(database)
         ))
@@ -156,6 +166,6 @@ async fn provision_runtime(owner: &Client, database: &str, role: &str) {
         !body.lines().any(|line| line.starts_with('\\')),
         "unexpected psql instruction in stock ACL block"
     );
-    let acl = format!("BEGIN; {marker}{body} COMMIT;").replace("zrotext_runtime", &role);
+    let acl = format!("BEGIN; {marker}{body} COMMIT;").replace("zrotext_runtime", role);
     owner.batch_execute(&acl).await.unwrap();
 }

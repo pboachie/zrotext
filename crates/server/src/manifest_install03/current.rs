@@ -6,10 +6,7 @@ use super::*;
 use crate::sealed_payload_election03::{
     activation_evidence::ActivationEvidence03,
     device_context,
-    live::{
-        Error,
-        manifest_history::{self, History03},
-    },
+    live::{Error, manifest_history::History03},
 };
 use crate::selection_refresh03::{self, ExpectedRefresh03};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B};

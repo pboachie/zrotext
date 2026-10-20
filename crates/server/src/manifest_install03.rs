@@ -11,7 +11,6 @@ mod records;
 mod selected;
 mod verified_history;
 pub(crate) use selected::{Physical03 as SelectedPhysical03, SelectedManifest03};
-const DOMAIN: &[u8] = b"ZTSE/line/payload-profile/manifest-install03/v1\0";
 
 /// Exact public evidence commitments. These bind cache/snapshot identity only,
 /// never root authenticity, durable acceptance or current permission.
@@ -103,9 +102,6 @@ impl Statement03 {
     pub(crate) fn expires(&self) -> u64 {
         self.numbers[6]
     }
-    pub(crate) fn transcript(&self) -> Vec<u8> {
-        crypto::framed(DOMAIN, &self.bytes).expect("fixed possession")
-    }
 }
 
 /// Internal expected scope must come from actual held owner/root/election and
@@ -130,19 +126,9 @@ pub(crate) use shared::Operation03;
 pub(crate) struct VerifiedInstall03 {
     statement: Statement03,
     successor: VerifiedManifest03,
-    signature: [u8; 64],
     operation: Operation03,
 }
 impl VerifiedInstall03 {
-    pub(crate) fn statement(&self) -> &Statement03 {
-        &self.statement
-    }
-    pub(crate) fn successor(&self) -> &VerifiedManifest03 {
-        &self.successor
-    }
-    pub(crate) fn signature(&self) -> &[u8; 64] {
-        &self.signature
-    }
     pub(crate) fn operation(&self) -> Operation03 {
         self.operation
     }
@@ -280,9 +266,6 @@ pub(crate) fn verify(
     Ok(VerifiedInstall03 {
         statement,
         successor: next,
-        signature: signature
-            .try_into()
-            .map_err(|_| "manifest possession signature width")?,
         operation,
     })
 }
