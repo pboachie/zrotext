@@ -36,6 +36,7 @@ impl BrowserAssets {
             "sdk/accepted-manifest-history03.js".to_owned(),
             "sdk/original-manifest-history03.js".to_owned(),
             "sdk/browser-message-signer-store03.js".to_owned(),
+            "sdk/owner-conversation-interval03.js".to_owned(),
         ];
         let mut visited = BTreeSet::new();
         while let Some(name) = pending.pop() {
@@ -484,6 +485,7 @@ mod tests {
             "accepted-manifest-history03",
             "original-manifest-history03",
             "browser-message-signer-store03",
+            "owner-conversation-interval03",
         ] {
             files.insert(format!("sdk/{name}.js"), Vec::new());
         }
@@ -522,6 +524,7 @@ mod tests {
             "accepted-manifest-history03",
             "original-manifest-history03",
             "browser-message-signer-store03",
+            "owner-conversation-interval03",
         ] {
             let path = format!("sdk/{name}.js");
             let module = files.remove(&path).unwrap();
