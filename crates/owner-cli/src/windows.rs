@@ -29,10 +29,10 @@ mod conversation_refresh;
 mod custody_sign;
 #[cfg(feature = "unlock")]
 mod line_key_registration;
-#[cfg(feature = "unlock")]
-mod payload_profile_upgrade;
 #[cfg(all(test, feature = "unlock"))]
 mod native_fixture_path;
+#[cfg(feature = "unlock")]
+mod payload_profile_upgrade;
 #[cfg(all(test, feature = "unlock"))]
 mod setup_interop;
 
