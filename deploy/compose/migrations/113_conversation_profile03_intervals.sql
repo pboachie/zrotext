@@ -200,7 +200,7 @@ BEGIN
   OR get_byte(manifest,152) NOT BETWEEN 1 AND 64 OR octet_length(manifest)<>217+149*get_byte(manifest,152) OR role NOT BETWEEN 1 AND 5 THEN
   RAISE EXCEPTION 'interval selected manifest shape' USING ERRCODE='23514'; END IF;
  expected_device:=CASE WHEN role IN(1,4) THEN uuid_send(device) ELSE decode(repeat('00',16),'hex') END;
- expected_line:=CASE WHEN role=2 THEN decode(repeat('00',16),'hex') ELSE uuid_send(line) END;
+ expected_line:=CASE WHEN role IN(2,3) THEN decode(repeat('00',16),'hex') ELSE uuid_send(line) END;
  expected_scope:=CASE role WHEN 1 THEN decode('0004','hex') WHEN 2 THEN decode('000c','hex') WHEN 3 THEN decode('000c','hex') WHEN 4 THEN decode('0002','hex') WHEN 5 THEN decode('0001','hex') END;
  FOR i IN 0..get_byte(manifest,152)-1 LOOP
   key:=substring(manifest FROM 154+149*i FOR 149);

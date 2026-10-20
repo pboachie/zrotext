@@ -159,3 +159,88 @@ async fn interval_runtime_cannot_edit_originals_epoch_or_internal_scope_and_acto
     }
     fixture.finish().await;
 }
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE on a disposable PostgreSQL cluster"]
+async fn interval_key_scope_keeps_integration_readers_account_scoped_and_content_roles_line_bound()
+{
+    let fixture = fixture().await;
+    let device = Uuid::new_v4();
+    let line = Uuid::new_v4();
+    let point = p256::ecdsa::SigningKey::from_slice(&[17; 32])
+        .unwrap()
+        .verifying_key()
+        .to_encoded_point(false);
+    for role in 1_i32..=5 {
+        let mut key_id = Sha256::new();
+        key_id.update(b"ZTSE/key/v1");
+        key_id.update(if role <= 3 { [0, 0, 16] } else { [0, 1, 1] });
+        key_id.update(point.as_bytes());
+        let key_id = key_id.finalize().to_vec();
+        // Only this internal structural key helper is exercised here. The fixture
+        // does not turn these unsigned test bytes into root or content authority.
+        let mut manifest = vec![0; 153];
+        manifest[..7].copy_from_slice(b"ZTMA\x03\x03\x03");
+        manifest[152] = 1;
+        manifest.push(role as u8);
+        manifest.extend(&key_id);
+        manifest.extend(point.as_bytes());
+        manifest.extend(if matches!(role, 1 | 4) {
+            *device.as_bytes()
+        } else {
+            [0; 16]
+        });
+        manifest.extend(if matches!(role, 2 | 3) {
+            [0; 16]
+        } else {
+            *line.as_bytes()
+        });
+        let scope: u16 = match role {
+            1 => 4,
+            2 | 3 => 12,
+            4 => 2,
+            5 => 1,
+            _ => unreachable!(),
+        };
+        manifest.extend(scope.to_be_bytes());
+        manifest.extend(1_u64.to_be_bytes());
+        manifest.extend(100_u64.to_be_bytes());
+        manifest.push(1);
+        manifest.extend([0; 64]);
+        let query = "SELECT public.conversation_profile03_key_until($1,$2,$3,$4,$5,10)";
+        assert_eq!(
+            fixture
+                .owner
+                .query_one(query, &[&manifest, &role, &key_id, &device, &line])
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            100
+        );
+        let mut changed_line = manifest.clone();
+        changed_line[153 + 114..153 + 130].copy_from_slice(if matches!(role, 2 | 3) {
+            line.as_bytes()
+        } else {
+            &[0; 16]
+        });
+        let error = fixture
+            .owner
+            .query_one(query, &[&changed_line, &role, &key_id, &device, &line])
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), Some(&SqlState::CHECK_VIOLATION));
+        if role == 3 {
+            for directions in [4_u16, 8] {
+                let mut changed_scope = manifest.clone();
+                changed_scope[153 + 130..153 + 132].copy_from_slice(&directions.to_be_bytes());
+                let error = fixture
+                    .owner
+                    .query_one(query, &[&changed_scope, &role, &key_id, &device, &line])
+                    .await
+                    .unwrap_err();
+                assert_eq!(error.code(), Some(&SqlState::CHECK_VIOLATION));
+            }
+        }
+    }
+    fixture.finish().await;
+}
