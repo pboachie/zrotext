@@ -226,7 +226,9 @@ async fn functions<C: GenericClient + Sync>(db: &C) -> Result<()> {
             .split(", ")
             .filter(|argument| !argument.is_empty())
             .map(|argument| {
-                if argument.starts_with("public.") {
+                if argument == "bigint" {
+                    "pg_catalog.int8".to_owned()
+                } else if argument.starts_with("public.") {
                     argument.to_owned()
                 } else {
                     format!("pg_catalog.{argument}")
