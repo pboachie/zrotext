@@ -186,7 +186,7 @@ END $mutation$"#.to_owned(), original_budget.clone()));
             .last()
             .unwrap()
             .version,
-        115
+        116
     );
     assert!(
         apply_locked(&mut owner, &all_migrations, false)
