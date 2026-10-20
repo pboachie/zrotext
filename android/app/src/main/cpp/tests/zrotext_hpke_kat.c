@@ -542,6 +542,66 @@ int main(void)
         expect(ret < 0, "off-curve ephemeral rejected at open");
     }
 
+    /* 8. Sender-only CEK vector. The ephemeral TEST scalar is1, so its public
+     * point is the standard P256 generator. Recipient is RFC9180 A.3's actual
+     * public/software-test key above. Expected48 bytes were independently
+     * produced with Python cryptography HKDFExpand/AESGCM, explicit RFC9180
+     * labels and CEK00..1f; no production key/entropy override is involved. */
+    {
+        static const char generatorHex[] =
+            "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296"
+            "4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5";
+        static const char expectedHex[] =
+            "3045b55329d3c7b473efbfba42b995f50911fa15a2889f585729eed0fa401f4612"
+            "16494cb656cb977c3fdf804acf0072";
+        unsigned char senderPoint[65], expected[48], bodyKey[32], wrapped[48], opened[32];
+        struct SoftBridge sender;
+        struct zt_hpke_bridge senderBridge;
+        size_t i;
+        memset(&sender, 0, sizeof(sender));
+        sender.scalarHex = "1"; /* Public TEST scalar, never a production identity. */
+        senderBridge.agree = softAgree; senderBridge.ctx = &sender;
+        expect(hexDecode(generatorHex, senderPoint, sizeof(senderPoint)) == 65 &&
+               hexDecode(expectedHex, expected, sizeof(expected)) == 48,
+               "sender independent vector decodes");
+        for (i = 0; i < sizeof(bodyKey); i++) bodyKey[i] = (unsigned char)i;
+        ret = zt_hpke_seal_cek(&senderBridge, senderPoint, 65, pkR, 65, bodyKey, 32,
+            (const unsigned char*)INFO_TEXT, infoSz, (const unsigned char*)AAD_TEXT,
+            aadSz, wrapped, sizeof(wrapped));
+        expect(ret == 0 && memcmp(wrapped, expected, 48) == 0 && sender.calls == 1,
+               "sender matches independent RFC9180 CEK vector with one callback");
+        ret = zt_hpke_open(&bridge, pkR, 65, senderPoint, 65, wrapped, 48,
+            (const unsigned char*)INFO_TEXT, infoSz, (const unsigned char*)AAD_TEXT,
+            aadSz, opened, sizeof(opened));
+        expect(ret == 0 && memcmp(opened, bodyKey, 32) == 0,
+               "sender ciphertext opens using actual reciprocal test key");
+        ret = zt_hpke_open(&bridge, pkR, 65, senderPoint, 65, wrapped, 48,
+            (const unsigned char*)INFO_TEXT, infoSz, (const unsigned char*)AAD_TEXT,
+            aadSz + 1, opened, sizeof(opened));
+        expect(ret < 0, "sender ciphertext binds nonempty AAD");
+        ret = zt_hpke_seal_cek(&senderBridge, senderPoint, 65, pkR, 65, bodyKey, 32,
+            (const unsigned char*)INFO_TEXT, infoSz, (const unsigned char*)AAD_TEXT,
+            0, wrapped, sizeof(wrapped));
+        expect(ret < 0, "sender refuses empty AAD");
+        ret = zt_hpke_seal_cek(&senderBridge, senderPoint, 65, pkR, 65, bodyKey, 32,
+            (const unsigned char*)INFO_TEXT, infoSz, (const unsigned char*)INFO_TEXT,
+            infoSz, wrapped, sizeof(wrapped));
+        expect(ret < 0, "sender refuses indistinguishable info and AAD");
+        ret = zt_hpke_seal_cek(&senderBridge, senderPoint, 65, pkR, 65, bodyKey, 31,
+            (const unsigned char*)INFO_TEXT, infoSz, (const unsigned char*)AAD_TEXT,
+            aadSz, wrapped, sizeof(wrapped));
+        expect(ret < 0, "sender refuses wrong CEK width");
+        sender.forcedError = -333;
+        memset(wrapped, 0xa5, sizeof(wrapped));
+        ret = zt_hpke_seal_cek(&senderBridge, senderPoint, 65, pkR, 65, bodyKey, 32,
+            (const unsigned char*)INFO_TEXT, infoSz, (const unsigned char*)AAD_TEXT,
+            aadSz, wrapped, sizeof(wrapped));
+        expect(ret == -333, "sender callback error propagates without fallback");
+        for (i = 0; i < sizeof(wrapped); i++) if (wrapped[i] != 0) break;
+        expect(i == sizeof(wrapped), "failed sender clears partial ciphertext");
+        wc_ForceZero(bodyKey, sizeof(bodyKey)); wc_ForceZero(opened, sizeof(opened));
+    }
+
     wolfCrypt_Cleanup();
     if (failures != 0) {
         printf("%d test(s) FAILED\n", failures);

@@ -63,6 +63,20 @@ int zt_hpke_open(const struct zt_hpke_bridge* bridge,
                  const unsigned char* aad, size_t aadSz,
                  unsigned char* pt, size_t ptCap);
 
+/* Sender-only CEK wrap with the SAME pinned maintained implementation and
+ * callback-only ECC policy. Both imported keys are public-only. The bridge
+ * answers ECDH with the caller's one-operation ephemeral private object;
+ * no recipient private key or scalar is supplied/exported. Exactly32 plaintext
+ * bytes become48 ciphertext/tag bytes. info/AAD remain nonempty and distinct.
+ * This public encryption primitive creates no identity or capture permission. */
+int zt_hpke_seal_cek(const struct zt_hpke_bridge* bridge,
+                    const unsigned char* ephemeral, size_t ephemeralSz,
+                    const unsigned char* recipient, size_t recipientSz,
+                    const unsigned char* cek, size_t cekSz,
+                    const unsigned char* info, size_t infoSz,
+                    const unsigned char* aad, size_t aadSz,
+                    unsigned char* ct, size_t ctCap);
+
 #ifdef __cplusplus
 }
 #endif

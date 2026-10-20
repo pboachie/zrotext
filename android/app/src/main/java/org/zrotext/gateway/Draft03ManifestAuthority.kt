@@ -193,6 +193,67 @@ internal class Draft03ManifestAuthority private constructor(
         return checked
     }
 
+    /** Additive inbound public routing; no physical capture/interval/upload authority. */
+    class InboundRequest(accountId: ByteArray, eventId: ByteArray, deviceId: ByteArray, lineId: ByteArray,
+        peer: ByteArray, signerKeyId: ByteArray, readers: List<Reader>) {
+        private val account = exactCopy(accountId, 16); private val event = exactCopy(eventId, 16)
+        private val device = exactCopy(deviceId, 16); private val line = exactCopy(lineId, 16)
+        private val peer = peer.also { require(it.size in 3..16) }.copyOf(); private val signer = exactCopy(signerKeyId, 32)
+        private val readers = ArrayList<Reader>().apply {
+            val count = readers.size; require(count in 1..7)
+            for (index in 0 until count) add(readers[index].let { Reader(it.role, it.keyId) })
+        }
+        internal fun account() = account.copyOf()
+        internal fun event() = event.copyOf()
+        internal fun device() = device.copyOf()
+        internal fun line() = line.copyOf()
+        internal fun peer() = peer.copyOf()
+        internal fun signer() = signer.copyOf()
+        internal fun readers() = readers.toList()
+        init {
+            require(listOf(account, event, device, line, signer).none(::zero) && this.readers.size in 1..7)
+            require(this.peer.size in 3..16 && this.peer[0] == 43.toByte() && this.peer[1] in 49.toByte()..57.toByte() &&
+                this.peer.copyOfRange(2, this.peer.size).all { it in 48.toByte()..57.toByte() })
+        }
+    }
+    class InboundContext internal constructor(val request: InboundRequest, val version: Long,
+        digest: ByteArray, signerPoint: ByteArray, val observedMs: Long, val comparedMs: Long,
+        val notAfterMs: Long, val authorityExpiresAtMs: Long) {
+        private val digest = digest.copyOf(); private val signer = signerPoint.copyOf()
+        fun digest() = digest.copyOf()
+        fun signerPoint() = signer.copyOf()
+        override fun toString() = "Profile03InboundPublicContext(no-capture-permission)"
+    }
+    /** Public role/window checks supplement actual current113/physical/capture provenance.
+     * Integration directions12 are deliberate: one consent covers both message directions. */
+    fun inboundContext(request: InboundRequest, observedMs: Long, nowMs: Long, notAfterMs: Long): InboundContext {
+        require(nowMs >= comparisonMs && observedMs in issued..nowMs && notAfterMs > nowMs && notAfterMs <= expires &&
+            same(request.account(), account))
+        window(issued, expires, nowMs)
+        val signer = records.singleOrNull { it.role == 4 && same(it.id, request.signer()) }
+        require(signer != null && signer.scope == 2 && signer.active(observedMs) && signer.active(nowMs) &&
+            same(signer.device, request.device()) && same(signer.line, request.line()) && notAfterMs <= signer.until)
+        var expiresAt = minOf(expires, signer.until)
+        var previous: Reader? = null; var archives = 0
+        for (reader in request.readers()) {
+            previous?.let { require(reader.role > it.role || reader.role == it.role && compare(reader.keyId, it.keyId) > 0) }
+            previous = reader
+            require(reader.role in 2..3)
+            val key = records.singleOrNull { it.role == reader.role && same(it.id, reader.keyId) }
+            require(key != null && key.scope == 12 && key.active(observedMs) && key.active(nowMs) && notAfterMs <= key.until)
+            if (reader.role == 2) archives++
+            expiresAt = minOf(expiresAt, key.until)
+        }
+        require(archives == 1)
+        return InboundContext(request, version, semanticDigest, signer.point, observedMs, nowMs, notAfterMs, expiresAt)
+    }
+    fun inboundReaderPoint(context: InboundContext, reader: Reader, nowMs: Long): ByteArray {
+        require(context.version == version && same(context.digest(), semanticDigest) && nowMs >= context.comparedMs)
+        val checked = inboundContext(context.request, context.observedMs, nowMs, context.notAfterMs)
+        require(checked.request.readers().any { it.role == reader.role && same(it.keyId, reader.keyId) })
+        return records.single { it.role == reader.role && same(it.id, reader.keyId) }.point.copyOf()
+    }
+
     private class Key(val role: Int, val id: ByteArray, val point: ByteArray, val device: ByteArray,
                       val line: ByteArray, val scope: Int, val from: Long, val until: Long, val state: Int) {
         fun active(now: Long) = state == 1 && from <= now && now < until
