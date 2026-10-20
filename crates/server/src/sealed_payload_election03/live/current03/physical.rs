@@ -19,6 +19,13 @@ pub(super) enum Physical {
     },
 }
 impl Physical {
+    pub(super) fn identity(&self) -> (&'static str, Option<Uuid>) {
+        match self {
+            Self::Complete(selected) => selected.identity(),
+            Self::Original { .. } => ("original_v2", None),
+            Self::Refreshed { refresh, .. } => ("owner_refresh03", Some(*refresh)),
+        }
+    }
     pub(super) fn projection(&self) -> serde_json::Value {
         match self {
             Self::Complete(selected) => selected.projection(),

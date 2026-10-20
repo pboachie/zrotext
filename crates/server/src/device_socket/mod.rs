@@ -1306,6 +1306,7 @@ async fn run_socket(
     let mut sealed_clock = sealed_session::Samples::new();
     let mut profile_clock = sealed_session::Samples::new();
     let mut profile_reads = payload_profile03::CurrentReads::new();
+    let mut profile_ready = payload_profile03::grants::Readiness03::new();
     let mut profile_next_poll = tokio::time::Instant::now();
     let mut mms_spike_ready_used = false;
     // Enabled only for controlled local liveness probes. Emit bounded,
@@ -1323,6 +1324,13 @@ async fn run_socket(
         tokio::select! {
             message = receive_frame(&mut socket, &mut frame_budget) => {
                 match message {
+                    Some(ClientFrame::PayloadProfile03(payload_profile03::Incoming::Ready(ready)))=>{
+                        if !profile03_negotiated || !profile_clock.is_sampled()
+                            || !state.sealed_dispatch_enabled || !state.dispatch_runtime_enabled
+                            || profile_ready.accept(*ready,session,state.deployment_epoch).is_none() {
+                            close_with_code=Some(close_code::POLICY);break;
+                        }
+                    }
                     Some(ClientFrame::PayloadProfile03(frame))=>{
                         let Some(origin)=profile03_origin.filter(|_|profile03_negotiated) else {close_with_code=Some(close_code::POLICY);break;};
                         if payload_profile03::dispatch(&mut socket,&state,session,origin,&mut profile_clock,&mut profile_reads,frame).await.is_none() {close_with_code=Some(RETRY_LATER);break;}
@@ -1863,7 +1871,12 @@ async fn run_socket(
                 }
                 session_checks.verified(verified_at);
             }
-            _ = dispatch_checks.tick(), if alpha_ready.is_some() || sealed_ready.is_some() => {
+            _ = dispatch_checks.tick(), if alpha_ready.is_some() || sealed_ready.is_some() || profile_ready.present() => {
+                if profile_ready.present() {
+                    let Some(origin)=profile03_origin.filter(|_|profile03_negotiated) else {close_with_code=Some(close_code::POLICY);break;};
+                    if profile_ready.poll(&mut socket,&state,session,origin).await.is_none() {close_with_code=Some(RETRY_LATER);break;}
+                    continue;
+                }
                 if let Some((ready, armed_at)) = &sealed_ready {
                     if armed_at.elapsed() > Duration::from_secs(ALPHA_READY_SECONDS) {
                         sealed_ready = None;

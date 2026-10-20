@@ -13,7 +13,7 @@ pub(super) struct Packet {
     pub(super) intent: Vec<u8>,
     pub(super) signature: Vec<u8>,
     pub(super) envelope: Vec<u8>,
-    message: Uuid,
+    pub(super) message: Uuid,
 }
 pub(super) async fn active() -> (Case, SigningKey, consent::Statement03) {
     let (mut c, browser, signed) = prepared().await;

@@ -347,3 +347,57 @@ fn wrong_key_domain_and_high_s_signatures_refuse() {
         .is_err()
     );
 }
+
+#[test]
+fn retained_review_uses_original_admission_window_and_present_grant_deadline_independently() {
+    let mut p = Packet::new();
+    let now = NOW + 250;
+    p.current.compared_at_ms = now;
+    // The current held lease covers this grant, even though the original
+    // queued message has a later immutable expiry. Neither is renewed.
+    p.current.permission_expires_at_ms = NOW + 450;
+    assert!(
+        verify(
+            Intent03::decode(&p.intent).unwrap(),
+            &p.signature,
+            &p.envelope,
+            &p.expected(),
+            now
+        )
+        .is_err()
+    );
+    let retained = |admitted_ms, installed_ms, required_until_ms| RetainedTiming03 {
+        admitted_ms,
+        installed_ms,
+        required_until_ms,
+    };
+    verify_retained(
+        Intent03::decode(&p.intent).unwrap(),
+        &p.signature,
+        &p.envelope,
+        &p.expected(),
+        now,
+        retained(NOW + 50, NOW, NOW + 400),
+    )
+    .unwrap();
+    for original in [
+        retained(NOW + 200, NOW, NOW + 400),
+        retained(NOW + 50, NOW + 51, NOW + 400),
+        retained(NOW + 251, NOW, NOW + 400),
+        retained(NOW + 50, NOW, now),
+        retained(NOW + 50, NOW, NOW + 451),
+        retained(NOW + 50, NOW, NOW + 501),
+    ] {
+        assert!(
+            verify_retained(
+                Intent03::decode(&p.intent).unwrap(),
+                &p.signature,
+                &p.envelope,
+                &p.expected(),
+                now,
+                original
+            )
+            .is_err()
+        );
+    }
+}

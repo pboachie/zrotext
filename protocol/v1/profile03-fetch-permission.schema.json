@@ -1,0 +1,386 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zrotext.com/protocol/v1/profile03-fetch-permission.schema.json",
+  "title": "Closed current profile03 ciphertext fetch reply",
+  "description": "Shape only; unmounted optional integration. Runtime separately checks exact retained Grant03/Fetch362 correlation, all original signatures, accepted/current ancestry and owner/physical/interval/mapping records. Both permission ends must equal the exact retained grant expiry and comparison times must match. Schema does not confer authority or verify encoding trailing bits, signatures, ranges, duplicate JSON keys or currentness. Total response is bounded192KiB. Existing current parsers and wire bytes are unchanged.",
+  "allOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "envelope",
+        "reviewed_intent",
+        "reviewed_signature",
+        "accepted_ms",
+        "interval_starts_ms",
+        "interval_expires_ms",
+        "selection_epoch",
+        "current",
+        "interval_permission"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "envelope": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 743,
+          "maxLength": 45618
+        },
+        "reviewed_intent": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 832,
+          "maxLength": 1114
+        },
+        "reviewed_signature": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 86,
+          "maxLength": 86
+        },
+        "accepted_ms": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "interval_starts_ms": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "interval_expires_ms": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "selection_epoch": {
+          "const": "1"
+        },
+        "current": {
+          "$ref": "#/$defs/current"
+        },
+        "interval_permission": {
+          "$ref": "#/$defs/interval_permission"
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "current": {
+      "type": "object",
+      "unevaluatedProperties": false,
+      "allOf": [
+        {
+          "$ref": "https://zrotext.com/protocol/v1/profile03-manifest-transport.schema.json#/$defs/selection_common"
+        },
+        {
+          "required": [
+            "kind",
+            "request_kind",
+            "request_id",
+            "fetch_transcript_sha256",
+            "user_id",
+            "owner_session_id",
+            "owner_session_digest",
+            "permission_expires_ms",
+            "physical_selection"
+          ],
+          "properties": {
+            "kind": {
+              "const": "message_manifest_permission03"
+            },
+            "request_kind": {
+              "const": "fetch"
+            },
+            "request_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "not": {
+                "const": "00000000-0000-0000-0000-000000000000"
+              }
+            },
+            "fetch_transcript_sha256": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "minLength": 43,
+              "maxLength": 43
+            },
+            "user_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "not": {
+                "const": "00000000-0000-0000-0000-000000000000"
+              }
+            },
+            "owner_session_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "not": {
+                "const": "00000000-0000-0000-0000-000000000000"
+              }
+            },
+            "owner_session_digest": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "minLength": 43,
+              "maxLength": 43
+            },
+            "permission_expires_ms": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,18}$"
+            },
+            "physical_selection": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "original_v2"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "refresh_id",
+                    "bundle",
+                    "accepted_ms",
+                    "installed_ms"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "owner_refresh03"
+                    },
+                    "refresh_id": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                      "not": {
+                        "const": "00000000-0000-0000-0000-000000000000"
+                      }
+                    },
+                    "bundle": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_-]+$",
+                      "minLength": 994,
+                      "maxLength": 994
+                    },
+                    "accepted_ms": {
+                      "type": "string",
+                      "pattern": "^[1-9][0-9]{0,18}$"
+                    },
+                    "installed_ms": {
+                      "type": "string",
+                      "pattern": "^[1-9][0-9]{0,18}$"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "interval_permission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "kind",
+        "request_kind",
+        "request_id",
+        "interval_id",
+        "statement_sha256",
+        "statement",
+        "owner_signature",
+        "phone_signature",
+        "installed_signature",
+        "requested_ms",
+        "approved_ms",
+        "installed_ms",
+        "phase",
+        "device_session_digest",
+        "physical_selection_digest",
+        "owner_session_digest",
+        "compared_ms",
+        "permission_expires_ms",
+        "readers"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "kind": {
+          "const": "interval_permission03"
+        },
+        "request_kind": {
+          "const": "fetch"
+        },
+        "request_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "interval_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "statement_sha256": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "statement": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 927,
+          "maxLength": 1456
+        },
+        "owner_signature": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 86,
+          "maxLength": 86
+        },
+        "phone_signature": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 86,
+          "maxLength": 86
+        },
+        "installed_signature": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 86,
+          "maxLength": 86
+        },
+        "requested_ms": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "approved_ms": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "installed_ms": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "phase": {
+          "const": "active"
+        },
+        "device_session_digest": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "physical_selection_digest": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "owner_session_digest": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "compared_ms": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "permission_expires_ms": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "readers": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "$ref": "#/$defs/reader"
+          }
+        }
+      }
+    },
+    "reader": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "connector_id",
+        "read_grant_id",
+        "key_id",
+        "key_point",
+        "manifest_generation",
+        "read_directions",
+        "registration_expires_ms",
+        "grant_expires_ms",
+        "key_valid_from_ms",
+        "key_valid_until_ms"
+      ],
+      "properties": {
+        "connector_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "read_grant_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "key_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 43,
+          "maxLength": 43
+        },
+        "key_point": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 87,
+          "maxLength": 87
+        },
+        "manifest_generation": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "read_directions": {
+          "const": 12
+        },
+        "registration_expires_ms": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "grant_expires_ms": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "key_valid_from_ms": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "key_valid_until_ms": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        }
+      }
+    }
+  }
+}
