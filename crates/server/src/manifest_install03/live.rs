@@ -461,6 +461,48 @@ pub(crate) async fn current_owner(
     );
     Ok(value)
 }
+fn original(h: &History03) -> Result<serde_json::Value> {
+    let value = serde_json::json!({"line_id":h.line,"binding_id":h.binding,"evidence":h.evidence});
+    if serde_json::to_vec(&value)
+        .map_err(|_| Error::Unavailable)?
+        .len()
+        > 191 * 1024
+    {
+        return Err(Error::Unavailable);
+    }
+    Ok(value)
+}
+/// Historical candidates only: no current manifest selection, physical proof
+/// or content permission is needed or returned. Actual ordinary ownership and
+/// the immutable accepted binding association remain independently required.
+pub(crate) async fn original_owner(
+    tx: &Transaction<'_>,
+    owner: &mut HeldOrdinaryOwner03<'_, '_>,
+    line: Uuid,
+    origin: &str,
+) -> Result<serde_json::Value> {
+    ready(tx).await?;
+    if !owner.uses_transaction(tx) {
+        return Err(Error::Authentication);
+    }
+    let who = owner.selected_identity();
+    let h = manifest_history::lock(tx, who.account, line, origin).await?;
+    owner
+        .revalidate()
+        .await
+        .map_err(|_| Error::Authentication)?;
+    if h.epoch != owner.selection_epoch()
+        || &h.accepted.root_fingerprint != owner.root_fingerprint()
+    {
+        return Err(Error::Conflict);
+    }
+    clock(tx, h.checked_ms.max(owner.checked_at_ms())).await?;
+    let mut value = original(&h)?;
+    let fields = value.as_object_mut().ok_or(Error::Unavailable)?;
+    fields.insert("v".into(), serde_json::json!(1));
+    fields.insert("kind".into(), serde_json::json!("manifest_original03"));
+    Ok(value)
+}
 async fn device_scope<'held, 'db>(
     tx: &'held Transaction<'db>,
     h: &History03,
@@ -498,6 +540,21 @@ pub(crate) async fn current_device(
         serde_json::json!(deadline.to_string()),
     );
     Ok(value)
+}
+/// Caller ingress must authenticate the enrolled socket. This additionally
+/// checks the actual full current lease, without requiring a physical handle
+/// that a cold phone cannot restore before independently verifying history.
+pub(crate) async fn original_device(
+    tx: &Transaction<'_>,
+    scope: &crate::sealed_payload_election03::live::SocketSelection03<'_>,
+    line: Uuid,
+) -> Result<serde_json::Value> {
+    ready(tx).await?;
+    let h = manifest_history::lock(tx, scope.session.account_id, line, scope.origin).await?;
+    let mut context = device_scope(tx, &h, scope).await?;
+    context.revalidate().await.map_err(|_| Error::Unavailable)?;
+    clock(tx, h.checked_ms.max(context.checked_primary_ms())).await?;
+    original(&h)
 }
 pub(crate) async fn device_history(
     tx: &Transaction<'_>,

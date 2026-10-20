@@ -49,6 +49,16 @@ hardware custody nor content consent. A phone independently verifies the full
 chain and prepares its durable highwater before matching readback and reader
 availability publication. The server never fabricates that local state.
 
+Cold recovery first reads `/manifests/original` under genuine ordinary owner
+authentication, or `payload_profile_manifest_original03_request` on the actual
+authenticated full device connection. These closed replies contain only the
+unchanged original ten-field evidence and its actual retained line/binding UUID
+association. The browser or phone independently verifies the original proofs
+and derives the base prefix before requesting ancestry. Neither reply selects a
+current manifest or asserts physical/content permission. An owner may read this
+public history while the phone is offline; the device path requires its actual
+current full lease. Existing first-only current consumers stay unchanged.
+
 All existing intervals, messages, attempts and liabilities retain their original
 context. Renewing a manifest or replacing browser custody supplies no new
 content interval, quota, grant, signed fetch or one-use radio authority. Those

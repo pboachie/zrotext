@@ -80,6 +80,31 @@ class ManifestTransportTests(unittest.TestCase):
         request["after_version"] = "02"
         self.assertFalse(check.is_valid(request))
 
+    def test_original_bootstrap_requires_binding_and_has_no_current_permission(self):
+        # Shape-only synthetic strings deliberately confer no signature proof.
+        evidence = {name: "1" if "pattern" in rule and rule["pattern"].startswith("^[1-9]")
+                    else "A" * rule["minLength"]
+                    for name, rule in SCHEMA["$defs"]["evidence"]["properties"].items()}
+        owner = {"v": 1, "kind": "manifest_original03", "line_id": VECTOR["line_id"],
+                 "binding_id": VECTOR["binding_id"], "evidence": evidence}
+        check = validator("owner_original")
+        check.validate(owner)
+        for field in ["binding_id", "evidence"]:
+            changed = copy.deepcopy(owner)
+            del changed[field]
+            self.assertFalse(check.is_valid(changed))
+        for field in ["permission_expires_ms", "physical_selection", "manifest_version"]:
+            changed = copy.deepcopy(owner)
+            changed[field] = "3"
+            self.assertFalse(check.is_valid(changed))
+        device = dict(owner)
+        del device["kind"]
+        device.update(type="payload_profile_manifest_original03", connection_epoch=1,
+                      challenge=VECTOR["election_challenge_id"])
+        validator("device_original").validate(device)
+        device["evidence"]["current_manifest03"] = "AA"
+        self.assertFalse(validator("device_original").is_valid(device))
+
     def test_readback_is_exact_tip_and_different_from_current_or_effect_permission(self):
         digest = encoded(bytes([1]) * 32)
         frame = {"v": 1, "type": "payload_profile_manifest03_installed",

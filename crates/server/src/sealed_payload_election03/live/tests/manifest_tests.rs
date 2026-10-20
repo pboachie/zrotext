@@ -223,7 +223,7 @@ async fn real_four_role_setup_enrolls_renews_and_replaces_browser_without_rewrit
         .unwrap() else {
             panic!("fresh manifest factor")
         };
-        let receipt = service::install(
+        let result = service::install(
             &tx,
             &mut proof,
             service::InstallCommand03 {
@@ -234,8 +234,14 @@ async fn real_four_role_setup_enrolls_renews_and_replaces_browser_without_rewrit
             },
             ORIGIN,
         )
-        .await
-        .unwrap();
+        .await;
+        let receipt = match result {
+            Ok(value) => value,
+            Err(error) => panic!(
+                "{mode} manifest install refused: {error:?}; held factor recheck: {:?}",
+                proof.revalidate().await
+            ),
+        };
         assert_eq!(receipt["operation"], mode);
         drop(proof);
         tx.commit().await.unwrap();

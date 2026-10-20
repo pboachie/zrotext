@@ -30,6 +30,10 @@ pub async fn manifest_router(state: ProfileHttpState) -> Result<Router, &'static
             "/v1/account/sealed/payload-profile/manifests/current",
             post(current),
         )
+        .route(
+            "/v1/account/sealed/payload-profile/manifests/original",
+            post(original),
+        )
         .with_state(Arc::new(state)))
 }
 macro_rules! handler {
@@ -43,6 +47,7 @@ handler!(install, Install);
 handler!(status, Status);
 handler!(history, History);
 handler!(current, Current);
+handler!(original, Original);
 async fn handle(
     s: &ProfileHttpState,
     op: Operation,
@@ -81,6 +86,9 @@ async fn handle(
             .await
             .map_err(|_| StatusCode::FORBIDDEN)?;
     let value = match body {
+        Body::Original(line) => manifests::original_owner(&tx, &mut owner, line, &s.origin)
+            .await
+            .map_err(mapped)?,
         Body::Current(line) => manifests::current_owner(&tx, &mut owner, line, &s.origin)
             .await
             .map_err(mapped)?,

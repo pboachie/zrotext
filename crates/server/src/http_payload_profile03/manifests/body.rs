@@ -11,6 +11,7 @@ pub(super) enum Operation {
     Status,
     History,
     Current,
+    Original,
 }
 object_body! {struct Current{v:u8,line_id:String}}
 object_body! {struct Install{v:u8,opening_id:String,statement:String,signature:String,successor_manifest03:String,password:String,factor:String}}
@@ -33,6 +34,7 @@ pub(super) enum Body {
     },
     History(HistoryCursor03),
     Current(Uuid),
+    Original(Uuid),
 }
 fn number(s: &str) -> Result<u64, StatusCode> {
     let value = s
@@ -92,6 +94,11 @@ pub(super) fn parse(op: Operation, raw: &[u8]) -> Result<Body, StatusCode> {
             request::version(b.v)?;
             Body::Current(request::id(&b.line_id)?)
         }
+        Operation::Original => {
+            let b = body!(Current);
+            request::version(b.v)?;
+            Body::Original(request::id(&b.line_id)?)
+        }
         Operation::Install => {
             let b = body!(Install);
             request::version(b.v)?;
@@ -134,6 +141,27 @@ pub(super) fn parse(op: Operation, raw: &[u8]) -> Result<Body, StatusCode> {
 mod tests {
     use super::*;
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B};
+    #[test]
+    fn historical_original_request_cannot_select_binding_tip_or_permission() {
+        let raw = serde_json::json!({"v":1,"line_id":Uuid::from_u128(3)}).to_string();
+        assert!(matches!(
+            parse(Operation::Original, raw.as_bytes()).unwrap(),
+            Body::Original(_)
+        ));
+        for extra in [
+            ",\"binding_id\":\"candidate\"}",
+            ",\"tip_version\":\"3\"}",
+            ",\"v\":1}",
+        ] {
+            assert!(
+                parse(
+                    Operation::Original,
+                    format!("{}{extra}", &raw[..raw.len() - 1]).as_bytes()
+                )
+                .is_err()
+            );
+        }
+    }
     #[test]
     fn history_requires_all_three_nullable_tip_fields_and_canonical_closed_scope() {
         let digest = B.encode([1u8; 32]);

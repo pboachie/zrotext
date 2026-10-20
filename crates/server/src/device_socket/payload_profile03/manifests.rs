@@ -12,6 +12,7 @@ pub(in crate::device_socket) struct Frame {
     request: Operation,
 }
 enum Operation {
+    Original(Uuid),
     Current(Uuid),
     History(HistoryCursor03),
     Installed {
@@ -41,6 +42,15 @@ fn header(v: u8, kind: &str, tag: &str, epoch: i64, challenge: &str) -> Result<(
 }
 pub(super) fn parse(tag: &str, raw: &str) -> Result<Option<Frame>, ()> {
     Ok(Some(match tag {
+        "payload_profile_manifest_original03_request" => {
+            let b: Current = serde_json::from_str(raw).map_err(|_| ())?;
+            let (epoch, challenge) = header(b.v, &b.r#type, tag, b.connection_epoch, &b.challenge)?;
+            Frame {
+                epoch,
+                challenge,
+                request: Operation::Original(id(&b.line_id)?),
+            }
+        }
         "payload_profile_manifest_current03_request" => {
             let b: Current = serde_json::from_str(raw).map_err(|_| ())?;
             let (epoch, challenge) = header(b.v, &b.r#type, tag, b.connection_epoch, &b.challenge)?;
@@ -129,6 +139,21 @@ pub(super) async fn dispatch(
         origin,
     };
     let reply = match frame.request {
+        Operation::Original(line) => {
+            let mut value = manifests::original_device(&tx, &scope, line).await.ok()?;
+            let fields = value.as_object_mut()?;
+            fields.insert("v".into(), serde_json::json!(1));
+            fields.insert(
+                "type".into(),
+                serde_json::json!("payload_profile_manifest_original03"),
+            );
+            fields.insert(
+                "connection_epoch".into(),
+                serde_json::json!(session.connection_epoch),
+            );
+            fields.insert("challenge".into(), serde_json::json!(frame.challenge));
+            value
+        }
         Operation::Current(line) => {
             serde_json::json!({"v":1,"type":"payload_profile_manifest_current03","connection_epoch":session.connection_epoch,"challenge":frame.challenge,"current":manifests::current_device(&tx,&scope,line).await.ok()?})
         }
@@ -148,6 +173,9 @@ pub(super) async fn dispatch(
             serde_json::json!({"v":1,"type":"payload_profile_manifest03_installed_ack","connection_epoch":session.connection_epoch,"challenge":frame.challenge,"line_id":line,"tip_version":tip.version.to_string(),"tip_digest":b.encode(tip.digest),"tip_ancestry_sha256":b.encode(tip.prefix),"election_digest":b.encode(election),"compared_ms":compared.to_string()})
         }
     };
+    if serde_json::to_vec(&reply).ok()?.len() > 192 * 1024 {
+        return None;
+    }
     // These operations write no server highwater/permission and extend no lease.
     // Readback is exact selected-tip confirmation, not device attestation.
     tx.rollback().await.ok()?;
@@ -171,5 +199,22 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+    #[test]
+    fn original_bootstrap_is_closed_and_cannot_claim_a_current_tip_or_physical_handle() {
+        let tag = "payload_profile_manifest_original03_request";
+        let raw = serde_json::json!({"v":1,"type":tag,"connection_epoch":1,"challenge":Uuid::from_u128(2),"line_id":Uuid::from_u128(3)}).to_string();
+        assert!(matches!(
+            parse(tag, &raw).unwrap().unwrap().request,
+            Operation::Original(_)
+        ));
+        for extra in [
+            ",\"tip_version\":\"2\"}",
+            ",\"physical_selection\":true}",
+            ",\"v\":1}",
+        ] {
+            assert!(parse(tag, &format!("{}{extra}", &raw[..raw.len() - 1])).is_err());
+        }
+        assert!(parse(tag, &format!("[{raw}]")).is_err());
     }
 }
