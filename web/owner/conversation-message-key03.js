@@ -16,7 +16,7 @@
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000) throw Error("Bounded setup operation required");
     const lifetime = new AbortController(), listeners = new Set();
     let closed = !enabled, busy = false, phase = "unprepared", sdk, store, journal, lease, client, selected, token, keyScope, metadata, saved, input, original;
-    let clock = 0n, clockTick = 0, observedClock = 0n, lastTick = 0, timer, confirmed = false, acceptedVerified = false, requestedTarget = null;
+    let clock = 0n, clockTick = 0, observedClock = 0n, lastTick = 0, timer, confirmed = false, acceptedVerified = false, acceptedHistoryConfirmed = false, requestedTarget = null;
     function csrf() {
       const values = document.cookie.split(";").map(s => s.trim()).filter(s => s.startsWith("__Host-zrotext_csrf="));
       if (values.length !== 1) throw Error("Current owner session required");
@@ -50,6 +50,8 @@
     }
     function snapshot() { return Object.freeze({ phase, closed, busy, keyId: metadata?.keyId ?? null, openingId: saved?.original?.opening_id ?? null,
       hasProposal: !!saved, hasOriginal: !!saved?.original, hasReceipt: !!saved?.receipt,
+      canPrepareFresh: !!saved && saved.submitted === false && !saved.receipt,
+      canReplaceMissing: !!saved?.receipt && acceptedHistoryConfirmed && !confirmed && (!metadata || metadata.keyId !== saved.proposal.key_id),
       canResumeInstall: !!saved?.original && saved.submitted === false && !saved.receipt, confirmed }); }
     async function action(run) {
       guard(); if (busy) throw Error("Browser message setup pending"); busy = true;
@@ -100,7 +102,9 @@
       phase = saved ? "saved_attempt" : "key_selected"; return snapshot();
     }); }
     async function prepare({ operation, retain = false, newKey = false } = {}) { return action(async () => {
-      if (!store || saved && !confirmed || !["enroll", "renew", "replace"].includes(operation)) throw Error("Reconcile the saved original attempt first");
+      const unsubmitted = saved && saved.submitted === false && saved.receipt === null;
+      const replacingMissing = saved?.receipt && acceptedHistoryConfirmed && (!metadata || metadata.keyId !== saved.proposal.key_id) && operation === "replace";
+      if (!store || saved && !confirmed && !unsubmitted && !replacingMissing || !["enroll", "renew", "replace"].includes(operation)) throw Error("Reconcile the saved original attempt first");
       const c = await context();
       if (!metadata) {
         if (!retain || !newKey || operation === "renew") throw Error("Explicit new retained key approval required");
@@ -110,7 +114,7 @@
       const candidate = proposalInput(c, p), encoded = await sdk.encodeProfile03ManifestProposal(candidate); guard();
       const record = { v: 1, proposal: { ...p, unsigned: sdk.manifestHistoryBase64url03(encoded.unsigned), packet: sdk.manifestHistoryBase64url03(encoded.proposal) },
         predecessor: wirePosition(c.position), original: null, submitted: false, receipt: null };
-      saved = await journal.compareAndSet(saved, record); guard(); input = candidate; confirmed = acceptedVerified = false; requestedTarget = null; original = null; phase = "awaiting_offline_approval";
+      saved = await journal.compareAndSet(saved, record); guard(); input = candidate; confirmed = acceptedVerified = acceptedHistoryConfirmed = false; requestedTarget = null; original = null; phase = "awaiting_offline_approval";
       return Object.freeze({ proposal: Uint8Array.from(encoded.proposal), keyId: metadata.keyId });
     }); }
     async function resumeProposal() { return action(async () => {
@@ -210,6 +214,7 @@
       if (!requestedTarget) { await history.restart(target); guard(); requestedTarget = target; phase = "history_required"; return snapshot(); }
       const c = await context(true);
       if (!equalPosition(c.position, target) || c.acceptedMs !== BigInt(r.accepted_ms) || !same(c.signedManifest, sdk.manifestHistoryBinary03(r.successor_manifest03, 366, 9753))) throw Error("Exact accepted chain confirmation required");
+      acceptedHistoryConfirmed = true;
       metadata = await store.metadata(keyScope); guard();
       if (!metadata || metadata.keyId !== saved.proposal.key_id) { phase = "accepted_key_missing"; return snapshot(); }
       confirmed = true; phase = "confirmed"; return snapshot();

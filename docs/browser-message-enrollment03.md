@@ -25,6 +25,14 @@ place and has no automatic retry. A definite refused response may enable an
 explicit retry of the same original with new factors. An unsent original can
 resume under its unchanged owner session and deadline without signing again.
 
+An expired unsubmitted proposal can be superseded by an explicit fresh public
+request using the same retained key and verified history. This is available only
+when the committed submission marker is false and no receipt exists. A genuinely
+service-checked, complete-history-confirmed approval whose local private key was
+lost permits explicit replacement with new retention consent; it remains a
+missing-key state until that new proposal is separately approved and accepted.
+Neither recovery action clears a submitted uncertain attempt.
+
 Fresh same-original-user sign-in can reconstruct the saved predecessor inside
 the complete accepted chain and passively check an old attempt. History must
 traverse both the existing durable highwater and this additional exact target,

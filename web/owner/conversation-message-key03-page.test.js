@@ -4,7 +4,7 @@ const test = require("node:test"), assert = require("node:assert/strict"), { mou
 function fixture() {
   const elements = new Map(), calls = []; let closed = false, phase = "key_selected", saved = false, original = false, receipt = false, onClose;
   const el = id => { if (!elements.has(id)) elements.set(id, { value: "", checked: false, files: [{}], hidden: false, disabled: false, events: {}, addEventListener(k, fn) { this.events[k] = fn; }, replaceChildren() {}, append() {} }); return elements.get(id); };
-  const controller = { state: () => ({ phase, closed, hasProposal: saved, hasOriginal: original, hasReceipt: receipt }), onClose: fn => { onClose = fn; }, close() { closed = true; phase = "closed"; onClose?.(); },
+  const controller = { state: () => ({ phase, closed, hasProposal: saved, hasOriginal: original, hasReceipt: receipt, canPrepareFresh: saved && !original && !receipt }), onClose: fn => { onClose = fn; }, close() { closed = true; phase = "closed"; onClose?.(); },
     async open() { calls.push("open"); }, async prepare(d) { calls.push(d); saved = true; phase = "awaiting_offline_approval"; return { proposal: new Uint8Array([1]) }; },
     async authorize() { original = true; phase = "ready_install"; }, async install(f) { calls.push(f); receipt = true; phase = "saved_accepted"; } };
   mount({ getHistory: () => ({ state: () => ({ durable: true, busy: false }) }), document: { getElementById: el, createElement: () => ({}) }, window: { addEventListener() {} },
@@ -15,7 +15,7 @@ test("page starts without actions or retention consent and shows only the curren
   const p = fixture(); assert.deepEqual(p.calls, []); assert.equal(p.el("message-retain").checked, false); assert.equal(p.el("message-install").hidden, true);
   await p.click("message-open"); p.el("message-operation").value = "enroll"; await p.click("message-prepare");
   assert.deepEqual(p.calls[1], { operation: "enroll", retain: false, newKey: false });
-  assert.equal(p.el("message-prepare").hidden, true); assert.equal(p.el("message-authorize").hidden, false);
+  assert.equal(p.el("message-prepare").hidden, false); assert.match(p.el("message-prepare").textContent, /fresh unsubmitted/); assert.equal(p.el("message-authorize").hidden, false);
 });
 test("approval factors clear from the page before the explicit install call and are never used for status automatically", async () => {
   const p = fixture(); await p.click("message-open"); await p.click("message-prepare"); await p.click("message-authorize");

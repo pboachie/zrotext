@@ -87,3 +87,35 @@ test("a definite service refusal permits only an explicit retry of the same save
     await c.install({ password: "synthetic-password", factor: "234567" }); assert.equal(requests, 2); assert.equal(c.state().openingId, id); assert.equal(f.installCount, 1);
   } finally { f.close(); }
 });
+test("expired unsubmitted public request gets an explicit fresh proposal using the same retained key and accepted history", async () => {
+  const f = await fixture(); try {
+    let { c, hc } = await f.create(); const p = await c.prepare(decision), id = c.state().keyId, old = await f.signedOutput(p.proposal);
+    c.close(); hc.close(); f.sessionId = crypto.randomUUID();
+    const page = f.page; f.page = (...args) => { const value = page(...args); value.compared_ms = String(BigInt(value.compared_ms) + 300001n); return value; };
+    ({ c, hc } = await f.create()); await assert.rejects(c.authorize(old));
+    const renewed = await c.prepare(decision); assert.equal(c.state().keyId, id); assert.notDeepEqual(renewed.proposal, p.proposal);
+    await c.authorize(await f.signedOutput(renewed.proposal)); assert.equal(c.state().phase, "ready_install"); assert.equal(f.installCount, 0);
+  } finally { f.close(); }
+});
+test("expired never-submitted possession can explicitly prepare fresh approval without discarding the retained key", async () => {
+  const f = await fixture(); try {
+    const { c } = await f.create(), p = await c.prepare(decision), id = c.state().keyId;
+    await c.authorize(await f.signedOutput(p.proposal)); const oldOpening = c.state().openingId;
+    f.mono = 300001; await assert.rejects(c.resumeInstall()); await c.prepare(decision);
+    assert.equal(c.state().openingId, null); assert.equal(c.state().keyId, id); assert.ok(oldOpening); assert.equal(f.installCount, 0);
+  } finally { f.close(); }
+});
+test("accepted complete history with lost private custody permits only explicit fresh replacement consent", async () => {
+  const f = await fixture(); try {
+    let { c, hc } = await f.create(), p = await c.prepare(decision); const oldId = c.state().keyId;
+    await c.authorize(await f.signedOutput(p.proposal)); await c.install({ password: "synthetic-password", factor: "123456" });
+    await c.confirm(); await hc.next(); await c.confirm(); f.close();
+    await new Promise((resolve, reject) => { const request = indexedDB.deleteDatabase(f.keyDatabaseName); request.onsuccess = resolve; request.onerror = reject; request.onblocked = () => reject(Error("Owned test key database still open")); });
+    ({ c, hc } = await f.create()); await assert.rejects(c.prepare({ operation: "replace", retain: true, newKey: true }));
+    await c.recoverHistory(); await hc.next(); await c.check(); await c.confirm(); await hc.next(); await c.confirm();
+    assert.equal(c.state().phase, "accepted_key_missing"); assert.equal(c.state().confirmed, false); assert.equal(c.state().canReplaceMissing, true);
+    await assert.rejects(c.prepare({ operation: "replace" })); assert.equal(c.state().keyId, null); assert.equal(c.state().canReplaceMissing, true);
+    await c.prepare({ operation: "replace", retain: true, newKey: true }); assert.notEqual(c.state().keyId, oldId);
+    assert.equal(f.installCount, 1); assert.equal(c.state().phase, "awaiting_offline_approval");
+  } finally { f.close(); }
+});

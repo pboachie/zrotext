@@ -42,7 +42,8 @@ async function fixture() {
     else throw Error("Unexpected synthetic route");
     return new Response(JSON.stringify(value), { headers: { "content-type": "application/json" } });
   };
-  f.openKeys = options => custody.BrowserMessageSigner03KeyStore.open({ ...options, name: prefix + "-keys" });
+  f.keyDatabaseName = prefix + "-keys";
+  f.openKeys = options => custody.BrowserMessageSigner03KeyStore.open({ ...options, name: f.keyDatabaseName });
   f.openAttempts = options => attempts.open({ ...options, name: prefix + "-attempts" });
   f.create = async (extra = {}) => {
     const hc = history.create({ enabled: true, readSelection: () => f.selection, document: f.document, window: f.window, fetch: f.fetch, monotonic: () => f.mono,

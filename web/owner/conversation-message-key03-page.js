@@ -22,8 +22,11 @@
       const s = controller?.state(), waiting = busy || !!getHistory()?.state().busy;
       const show = (id, visible, available = true) => { const v = el(id); v.hidden = !visible; v.disabled = waiting || !available; };
       show("message-open", !s || s.closed);
-      show("message-prepare", !!s && !s.closed && (!s.hasProposal || s.confirmed));
-      el("message-options").hidden = !s || s.closed || s.hasProposal && !s.confirmed;
+      const canPrepare = !!s && !s.closed && (!s.hasProposal || s.confirmed || s.canPrepareFresh || s.canReplaceMissing);
+      show("message-prepare", canPrepare);
+      el("message-prepare").textContent = s?.canReplaceMissing ? "Prepare replacement approval" : s?.canPrepareFresh ? "Prepare fresh unsubmitted request" : "Prepare public approval request";
+      el("message-options").hidden = !canPrepare;
+      if (s?.canReplaceMissing) el("message-operation").value = "replace";
       show("message-resume", !!s && !s.closed && s.hasProposal && !s.hasOriginal, !!getHistory()?.state().durable);
       show("message-resume-install", !!s && !s.closed && s.canResumeInstall && s.phase !== "ready_install", !!getHistory()?.state().durable);
       el("message-signed-label").hidden = !s || s.closed || !s.hasProposal || s.hasOriginal;
