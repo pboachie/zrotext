@@ -20,11 +20,22 @@ pub enum SelectionSchemaError {
 }
 type Result<T> = std::result::Result<T, SelectionSchemaError>;
 fn body(name: &str, version: i64) -> Result<&'static str> {
-    let source = if version == 115
+    let source = if version == 116
+        && matches!(
+            name,
+            "payload_profile_writer_version"
+                | "payload_profile_writer_ready"
+                | "payload_profile_writer_guard"
+        ) {
+        include_str!(
+            "../../../deploy/compose/migrations/116_hosted_native_transaction_identity.sql"
+        )
+    } else if matches!(version, 115..=116)
         && matches!(
             name,
             "payload_profile_writer_version" | "payload_profile_writer_ready"
-        ) {
+        )
+    {
         include_str!("../../../deploy/compose/migrations/115_conversation_profile03_grants.sql")
     } else if version == 114
         && matches!(
@@ -40,7 +51,7 @@ fn body(name: &str, version: i64) -> Result<&'static str> {
         )
     {
         include_str!("../../../deploy/compose/migrations/113_conversation_profile03_intervals.sql")
-    } else if matches!(version, 112..=115)
+    } else if matches!(version, 112..=116)
         && matches!(
             name,
             "payload_profile_selection_scope"
@@ -55,12 +66,12 @@ fn body(name: &str, version: i64) -> Result<&'static str> {
     } else {
         MIGRATION
     };
-    source
-        .split_once(&format!("FUNCTION public.{name}("))
-        .and_then(|(_, sql)| sql.split_once("AS $function$"))
-        .and_then(|(_, sql)| sql.split_once("$function$;"))
-        .map(|(body, _)| body)
-        .ok_or(SelectionSchemaError::Invalid)
+    zrotext_delivery_store::hosted_runtime_identity::declared_function_body(
+        source,
+        name,
+        "$function$",
+    )
+    .ok_or(SelectionSchemaError::Invalid)
 }
 async fn functions<C: GenericClient + Sync>(db: &C, version: i64) -> Result<()> {
     for (name, args, result, language, volatility, strict, definer, set, config, names) in [
@@ -246,7 +257,7 @@ async fn functions<C: GenericClient + Sync>(db: &C, version: i64) -> Result<()> 
             || !row.try_get::<_, bool>(2)?
             || row.try_get::<_, String>(3)? != language
             || row.try_get::<_, String>(4)?
-                != if matches!(version, 112..=115) && name == "payload_profile_selection_same_scope"
+                != if matches!(version, 112..=116) && name == "payload_profile_selection_same_scope"
                 {
                     "s"
                 } else {
@@ -255,7 +266,7 @@ async fn functions<C: GenericClient + Sync>(db: &C, version: i64) -> Result<()> 
             || row.try_get::<_, bool>(5)? != strict
             || row.try_get::<_, bool>(6)?
                 != (definer
-                    || matches!(version, 112..=115)
+                    || matches!(version, 112..=116)
                         && name == "payload_profile_selection_same_scope")
             || row.try_get::<_, bool>(7)? != set
             || row.try_get::<_, Option<Vec<String>>>(8)?.as_ref() != Some(&config)
@@ -305,7 +316,7 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
         )
         .await?
         .try_get(0)?;
-    if !matches!(version, 111..=115) {
+    if !matches!(version, 111..=116) {
         return Err(SelectionSchemaError::Invalid);
     }
     functions(db, version).await?;
