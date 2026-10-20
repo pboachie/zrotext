@@ -94,9 +94,9 @@ async fn current_numbered_public_schema_uses_real_ledger_and_stock_ordinary_runt
         .await
         .unwrap();
     assert_eq!(applied.len(), TEST_MIGRATIONS.len());
-    assert_eq!(applied.last().unwrap().version, 114);
+    assert_eq!(applied.last().unwrap().version, 115);
     let ledger = owner.query("SELECT version,filename,checksum_sha256 FROM public.schema_migrations ORDER BY version", &[]).await.unwrap();
-    assert_eq!(ledger.len(), 114);
+    assert_eq!(ledger.len(), 115);
     for (index, (row, (filename, sql))) in ledger.iter().zip(TEST_MIGRATIONS).enumerate() {
         assert_eq!(row.get::<_, i64>(0), (index + 1) as i64);
         assert_eq!(row.get::<_, String>(1), filename);
