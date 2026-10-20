@@ -75,7 +75,13 @@ pub(crate) async fn owner_context<'held, 'db>(
     // The final actual primary comparison supplies every projection below;
     // no awaited work, phase change or renewed timestamp follows it.
     let selection = held.owner_projection(deadline)?;
-    Ok(
-        serde_json::json!({"v":1,"kind":"owner_conversation_context03","request_id":input.request,"opening_id":input.opening,"interval_id":input.interval,"statement_sha256":B.encode(prior.statement.digest()),"selection":selection,"owner_session_expires_ms":held.owner_deadline_ms().to_string(),"physical_selection_digest":B.encode(held.physical_digest()),"compared_ms":held.now_ms().to_string(),"permission_expires_ms":deadline.to_string(),"readers":mappings.projection()}),
-    )
+    let value = serde_json::json!({"v":1,"kind":"owner_conversation_context03","request_id":input.request,"opening_id":input.opening,"interval_id":input.interval,"statement_sha256":B.encode(prior.statement.digest()),"selection":selection,"owner_session_expires_ms":held.owner_deadline_ms().to_string(),"physical_selection_digest":B.encode(held.physical_digest()),"compared_ms":held.now_ms().to_string(),"permission_expires_ms":deadline.to_string(),"readers":mappings.projection()});
+    if serde_json::to_vec(&value)
+        .map_err(|_| Error::Unavailable)?
+        .len()
+        > 192 * 1024
+    {
+        return Err(Error::Unavailable);
+    }
+    Ok(value)
 }
