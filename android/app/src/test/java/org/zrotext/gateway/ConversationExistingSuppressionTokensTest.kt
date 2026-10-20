@@ -17,6 +17,21 @@ class ConversationExistingSuppressionTokensTest {
             .joinToString(""){"%02x".format(it.toInt() and 255)}
         assertEquals(expected,tokens.sender("+123"))
     }
+    @Test fun pduTokenUsesExactLegacyLengthFramingAndRejectsReplacement() {
+        var key = SecretKeySpec(ByteArray(32) { 7 }, "HmacSHA256")
+        val tokens = ConversationExistingSuppressionTokens { key }
+        val sender = tokens.sender("+123")
+        val fingerprint = byteArrayOf(0, 2, 1, 2)
+        val data = java.io.ByteArrayOutputStream()
+        for (field in arrayOf("pdu-v1".toByteArray(Charsets.US_ASCII), sender.toByteArray(Charsets.US_ASCII), fingerprint)) {
+            data.write(ByteBuffer.allocate(4).putInt(field.size).array()); data.write(field)
+        }
+        val expected = Mac.getInstance("HmacSHA256").apply { init(key) }.doFinal(data.toByteArray())
+            .joinToString("") { "%02x".format(it.toInt() and 255) }
+        assertEquals(expected, tokens.pdu(sender, fingerprint))
+        key = SecretKeySpec(ByteArray(32) { 9 }, "HmacSHA256")
+        assertThrows(IllegalStateException::class.java) { tokens.pdu(sender, fingerprint) }
+    }
     @Test fun missingAndReplacementKeysFailClosedWithoutCreatingKey() {
         var reads=0
         val missing=ConversationExistingSuppressionTokens {reads++;error("missing")}

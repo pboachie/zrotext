@@ -29,6 +29,7 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
     private val lineConsumerVersion: () -> Int?, private val socketCurrent: () -> Boolean,
 ) : AutoCloseable {
     private val application = checkNotNull(context.applicationContext)
+    private val protectionEpoch = InboundProtectionHealth.snapshot()
     private val origin = streamUrl.replaceFirst("wss://", "https://").let {
         it.toHttpUrl().let { url ->
             require(url.scheme == "https" && url.username.isEmpty() && url.password.isEmpty())
@@ -42,7 +43,7 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
     private val recipients by lazy {
         DevicePayloadKeyStore(application, ConversationAndroidEnrollment.readerAlias(checkNotNull(db.attempts().currentLineBinding())))
     }
-    private val suppression = ConversationExistingSuppressionTokens()
+    private val suppression = ConversationExistingSuppressionTokens(application)
     private val manifestStore by lazy { Profile03ManifestStore(application, ConversationExistingJournalProtection()) }
     @Volatile private var closed = false
     private val effects = Any()
@@ -81,6 +82,7 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
         keys.signSealedEnvelopeFetch03(grant, keys.existingConversationPublicPoint()) { requireGrantCurrent(grant) }
     }, ::requireGrantCurrent)
     init {
+        InboundProtection.restoreNegative(application)
         Profile03MessagingStatus.open(this)
         Profile03ManifestMount.attach(this, ::current) { manifests.checkSetup() }
         SelectionRefresh03Mount.attach(this, ::current) { decision ->
@@ -98,7 +100,8 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
             { shown -> intervals.stop(shown) })
     }
 
-    private fun current() = !closed && socketCurrent() && lineConsumerVersion() == 2
+    private fun current() = InboundProtectionHealth.current(protectionEpoch) && !closed && socketCurrent() &&
+        lineConsumerVersion() == 2 && InboundProtectionHealth.current(protectionEpoch)
     fun start() = current() && time.request()
     fun tick(): Boolean = current() && time.request().also { available -> if (available) manifests.requestIfDue() }
     fun acceptMetadata(raw: ByteArray) {

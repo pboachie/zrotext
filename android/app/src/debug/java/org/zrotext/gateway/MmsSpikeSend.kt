@@ -277,11 +277,15 @@ internal object MmsSpikeSend {
 
     /** The same keyed STOP lookup as the SMS adapter; the token is only held in memory. */
     private fun isSuppressedLocally(context: Context, recipientE164: String): Boolean {
-        val senderToken = InboundVault.token("sender-v1", recipientE164.toByteArray(Charsets.US_ASCII))
+        val senderToken = InboundVault.token(context, "sender-v1", recipientE164.toByteArray(Charsets.US_ASCII))
         return SmsJournalDatabase.get(context).attempts().isRecipientSuppressed(senderToken)
     }
 
     private fun platformRadio(context: Context, subscriptionId: Int): ((Uri, PendingIntent) -> Unit)? {
+        val health = try {
+            val epoch = InboundProtectionHealth.snapshot()
+            InboundProtection.lease(context, epoch)
+        } catch (_: Exception) { return null }
         val manager = try {
             if (Build.VERSION.SDK_INT >= 31) context.getSystemService(SmsManager::class.java)
                 .createForSubscriptionId(subscriptionId)
@@ -289,7 +293,10 @@ internal object MmsSpikeSend {
         } catch (_: RuntimeException) {
             return null
         }
-        return { uri, sent -> manager.sendMultimediaMessage(context, uri, null, null, sent) }
+        return { uri, sent ->
+            health.requireCurrent()
+            manager.sendMultimediaMessage(context, uri, null, null, sent)
+        }
     }
 
     private fun appendQuietly(journal: File, event: MmsSpikeEvent) {

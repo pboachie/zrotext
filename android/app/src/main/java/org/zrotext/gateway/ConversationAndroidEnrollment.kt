@@ -6,7 +6,6 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.telephony.SubscriptionManager
-import java.security.KeyStore
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** Opens only at the foreground enrollment action; never during pairing or app launch. */
@@ -54,36 +53,12 @@ internal object ConversationAndroidEnrollment {
             return ConversationEnrollmentSession(binding.accountId, ::current, ::ramCurrent,
                 { current(); DevicePayloadKeyStore(app, alias).getOrCreateForEnrollment() }, storage, {
                     current()
-                    database.runInTransaction {
-                        val keys = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-                        ConversationProtectionEnrollment.prepare({
-                            keys.containsAlias(ConversationExistingJournalProtection.ALIAS) &&
-                                keys.containsAlias(ConversationExistingSuppressionTokens.ALIAS)
-                        }, {
-                            // Never recreate protection after retained content or suppression has lost its key.
-                            val files = listOf(ConversationJournalStores.CAPTURE_FILE, ConversationJournalStores.SEND_FILE,
-                                ConversationInterval03Database.FILE, Profile03ManifestDatabase.FILE).any { name ->
-                                val path = app.getDatabasePath(name).path
-                                listOf("", "-wal", "-shm", "-journal").any { java.io.File(path + it).exists() }
-                            }
-                            val rows = listOf("inbound_windows", "inbound_events", "inbound_uploads",
-                                "local_recipient_suppressions", "local_inbound_withdrawals").any { table ->
-                                database.openHelper.readableDatabase.query("SELECT COUNT(*) FROM $table").use {
-                                    check(it.moveToFirst()); it.getLong(0) != 0L
-                                }
-                            }
-                            files || rows
-                        }, {
-                            current()
-                            InboundVault.token("conversation-enrollment-v1", ByteArray(0))
-                            current()
-                            val sealed = InboundVault.seal("", "conversation-enrollment-v1")
-                            sealed.ciphertext.fill(0); sealed.nonce.fill(0)
-                        }, {
-                            ConversationExistingJournalProtection().requireAvailable()
-                            ConversationExistingSuppressionTokens().requireAvailable()
-                        }, ::current)
-                    }
+                    // Explicit first-ever creation/adoption has no safe factory in this slice.
+                    // Existing identity verification stays outside Room/protected storage. Missing
+                    // state is not a reason to create or bless whichever alias is now present.
+                    ConversationExistingJournalProtection().requireAvailable()
+                    ConversationExistingSuppressionTokens(app).requireAvailable()
+                    current()
                 }, {
                     lifetime.close() // Withdraw at entry, before file/Keystore cleanup can wait.
                     java.util.concurrent.ForkJoinPool.commonPool().execute { storage.close() }

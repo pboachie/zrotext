@@ -71,7 +71,17 @@ internal class Profile03ManifestOriginal(private val origin: String, private val
             scope.base(verified.authority, accepted.acceptedAtMs))
         val identity = hex(sha(checkNotNull(original.installation.acceptedEvidenceSha256).toByteArray(Charsets.US_ASCII) +
             Profile03ManifestChain.canonicalEvidence(evidence)))
-        now()
+        // Persist the exact already-verified original bytes for cold negative-only route
+        // exclusion. Protection/key work is outside Room; its callback checks RAM only.
+        Capture03IngressGate.requireOutside()
+        val canonical = Profile03ManifestChain.canonicalEvidence(evidence)
+        val protected = ConversationExistingJournalProtection().seal(
+            canonical.toString(Charsets.UTF_8), "capture03-mode-v1|${challenge}|${identity}")
+        unchanged()
+        db.captures03().retainOriginal(Capture03Mode(challenge.toString(), retained.accountId,
+            retained.deviceId, retained.lineId, retained.newBindingId, identity, hex(sha(canonical)),
+            protected.ciphertext, protected.nonce)) { now() }
+        unchanged()
         return Profile03ManifestChain.Original(challenge.toString(), identity, scope, first, evidence)
     }
     companion object {

@@ -31,7 +31,7 @@ internal class ConversationExecutionComposition(context: Context,
         val radioWire = connection.wire as? ConversationRadioIntentWire ?: return Unavailable
         val inputs = connection.inputs
         val attempts = database.attempts()
-        val suppression = ConversationExistingSuppressionTokens()
+        val suppression = ConversationExistingSuppressionTokens(application)
 
         fun sample(scope: ConversationCaptureScope): Selection? = runCatching {
             fun session() {

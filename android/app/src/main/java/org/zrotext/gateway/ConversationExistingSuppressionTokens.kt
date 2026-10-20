@@ -2,7 +2,6 @@
 package org.zrotext.gateway
 
 import java.io.ByteArrayOutputStream
-import java.security.KeyStore
 import java.security.MessageDigest
 import javax.crypto.Mac
 import javax.crypto.SecretKey
@@ -10,9 +9,8 @@ import javax.crypto.SecretKey
 /** Reads the established suppression key only; never creates/replaces it. Pins its identity for
  * this connection using a domain-separated MAC probe, without exporting key material. */
 internal class ConversationExistingSuppressionTokens internal constructor(private val existingKey:()->SecretKey) {
-    constructor():this({
-        val store=KeyStore.getInstance("AndroidKeyStore").apply {load(null)}
-        checkNotNull(store.getKey(ALIAS,null) as? SecretKey)
+    constructor(context: android.content.Context, receipt: InboundProtectionEpochs.Receipt? = null):this({
+        InboundProtection.key(context, receipt)
     })
     private val lock=Any()
     private var identity:ByteArray?=null
@@ -38,6 +36,11 @@ internal class ConversationExistingSuppressionTokens internal constructor(privat
     fun sender(peer:String):String=synchronized(lock) {
         require(peer.matches(Regex("\\+[1-9][0-9]{1,14}")))
         mac(key(),"sender-v1",arrayOf(peer.toByteArray(Charsets.US_ASCII))).joinToString("") {"%02x".format(it.toInt() and 255)}
+    }
+    fun pdu(senderToken: String, fingerprint: ByteArray): String = synchronized(lock) {
+        require(senderToken.matches(Regex("[0-9a-f]{64}")))
+        mac(key(), "pdu-v1", arrayOf(senderToken.toByteArray(Charsets.US_ASCII), fingerprint))
+            .joinToString("") { "%02x".format(it.toInt() and 255) }
     }
     override fun toString()="ConversationExistingSuppressionTokens(redacted)"
     companion object {const val ALIAS="zt_m1_inbound_hmac_v1"}
