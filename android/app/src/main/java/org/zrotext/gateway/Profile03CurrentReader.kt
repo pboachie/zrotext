@@ -38,9 +38,13 @@ internal class Profile03CurrentReader(context: Context, private val origin: Stri
 
     fun read(packet: Profile03FetchPacket, input: SealedDispatch03Frames.Grant) = read(packet, input, false)
     fun readManifest(packet: Profile03FetchPacket, input: SealedDispatch03Frames.Grant) = read(packet, input, true)
-    private fun read(packet: Profile03FetchPacket, input: SealedDispatch03Frames.Grant, full: Boolean): Draft03OutboundPreparation.Current {
+    fun readMessageManifest(packet: Profile03FetchPacket, input: SealedDispatch03Frames.Grant) = read(packet, input, true, true)
+    private fun read(packet: Profile03FetchPacket, input: SealedDispatch03Frames.Grant, full: Boolean,
+        messageFetch: Boolean = false): Draft03OutboundPreparation.Current {
         val grant = SealedDispatch03Frames.grant(input.json())
-        val value = selection(packet.currentProjection(), grant.lineId, false, false, full)
+        // Correlate this actual fetched attempt before Room, framework or hardware waits.
+        if (messageFetch) Profile03MessagePermission03.requireFetch(packet.currentProjection(), packet.intervalPermission(), grant)
+        val value = selection(packet.currentProjection(), grant.lineId, false, false, full, messageFetch)
         val intervalRamCurrent = requireInterval(packet, grant, value)
         val instant = checkNotNull(clock.nowMs())
         check(instant < grant.expiresAtMs && grant.expiresAtMs <= value.selected.permissionExpiresAtMs)
@@ -73,13 +77,19 @@ internal class Profile03CurrentReader(context: Context, private val origin: Stri
      */
     fun installAccepted(projection: ByteArray, expectedLine: UUID) = selection(projection, expectedLine, true, true)
 
-    private fun selection(projection: ByteArray, expectedLine: UUID, install: Boolean, deviceOnly: Boolean, full: Boolean = false): Selection {
+    private fun selection(projection: ByteArray, expectedLine: UUID, install: Boolean, deviceOnly: Boolean,
+        full: Boolean = false, messageFetch: Boolean = false): Selection {
         val f = Profile03Json.objectValue(projection)
         val expected = if (full) { if (deviceOnly) DEVICE_MANIFEST_KEYS else MESSAGE_MANIFEST_KEYS }
             else if (deviceOnly) DEVICE_SELECTION_KEYS else CURRENT_KEYS
-        require(f.keys == expected && f["v"] == Profile03Json.Integer(1) &&
+        if (messageFetch) {
+            require(full && !deviceOnly && !install)
+            Profile03MessagePermission03.requireShape(f)
+        } else require(f.keys == expected)
+        require(f["v"] == Profile03Json.Integer(1) &&
             f["envelope_profile"] == Profile03Json.Integer(3) && f["manifest_profile"] == Profile03Json.Integer(3))
-        if (full) require(f["kind"] == if (deviceOnly) "device_manifest_selection03" else "message_permission03")
+        if (messageFetch) require(f["kind"] == "message_manifest_permission03")
+        else if (full) require(f["kind"] == if (deviceOnly) "device_manifest_selection03" else "message_permission03")
         else require(!deviceOnly || f["kind"] == "device_selection03")
         fun number(name: String) = Profile03Json.decimal(f, name)
         fun bytes(name: String) = Profile03Json.binary(f, name, 32, 32)
@@ -178,7 +188,7 @@ internal class Profile03CurrentReader(context: Context, private val origin: Stri
         if (refreshed == null) check(!db.selectionRefreshes03().everSigned(installation.newBindingId, hex(bytes("device_session_digest"))))
         if (full && refreshed == null) require(permit.record.proofConnectionEpoch == session.connectionEpoch &&
             installation.connectionEpoch == session.connectionEpoch && installation.deploymentEpoch == session.deploymentEpoch)
-        if (deviceOnly) {
+        if (deviceOnly || messageFetch) {
             val physical = Profile03Json.nested(f, "physical_selection")
             if (refreshed == null) require(physical.keys == setOf("kind") && physical["kind"] == "original_v2")
             else refreshed.requireProjection(physical, number("selection_epoch"), bytes("device_session_digest"), db)
