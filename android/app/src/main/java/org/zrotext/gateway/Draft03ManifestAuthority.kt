@@ -240,6 +240,12 @@ internal class Draft03ManifestAuthority private constructor(
             return value
         }
 
+        /** Root verification at a separately retained historical checkpoint only. A caller must
+         * already verify this exact record's accepted ancestry; this method selects no version,
+         * current permission, hardware or physical handle from its public input. */
+        internal fun verifyHistorical(input: ByteArray, knownRoot: Draft03ManifestAuthority, acceptedMs: Long): Draft03ManifestAuthority =
+            parse(capture(input), knownRoot.account, knownRoot.root, knownRoot.anchor, acceptedMs)
+
         private fun capture(input: ByteArray): ByteArray {
             require(input.size in 366..9753) { "Manifest size" }
             return input.copyOf()

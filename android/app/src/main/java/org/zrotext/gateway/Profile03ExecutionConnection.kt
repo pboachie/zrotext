@@ -43,6 +43,7 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
         DevicePayloadKeyStore(application, ConversationAndroidEnrollment.readerAlias(checkNotNull(db.attempts().currentLineBinding())))
     }
     private val suppression = ConversationExistingSuppressionTokens()
+    private val manifestStore by lazy { Profile03ManifestStore(application, ConversationExistingJournalProtection()) }
     @Volatile private var closed = false
     private val effects = Any()
     private val time = Profile03SessionTime(account, device, epoch,
@@ -53,14 +54,21 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
         java.security.MessageDigest.getInstance("SHA-256").digest(origin.toByteArray(Charsets.UTF_8)),
         ConversationInterval03Store(application, ConversationExistingJournalProtection(), suppression),
         ConversationInterval03HardwareProofSigner(keys) { recipients }, time, ::current,
-        { bytes, line -> reader.deviceSelection(bytes, line) }, socket::send) }
+        { bytes, line -> reader.manifestDeviceSelection(bytes, line) }, socket::send) }
+    private val manifestResolver: Profile03ManifestResolver by lazy { Profile03ManifestResolver({ manifests }, manifestStore, time) }
     private val reader: Profile03CurrentReader by lazy { Profile03CurrentReader(application, origin, db, trust, recipients, keys, time, ::current,
-        { packet, grant, selected -> intervals.requireFetch(packet, grant, selected) }) }
+        { packet, grant, selected -> intervals.requireFetch(packet, grant, selected) }, manifestResolver) }
+    private val manifests: Profile03ManifestRuntime by lazy { Profile03ManifestRuntime(db,
+        Profile03ManifestOriginal(origin, db, trust, { recipients }, keys, time, ::current), manifestStore, time, ::current,
+        keys::existingConversationPublicPoint, socket::send,
+        { intervals.withdrawAuthority(); projection = null },
+        { text -> Profile03MessagingStatus.update(this, text) }, ::publishManifestCurrent) }
     private val setup by lazy { Profile03SetupRuntime(application, origin, db, trust, recipients, keys, time, ::current) }
-    private val refresh = SelectionRefresh03Runtime(origin, db, trust, { recipients }, keys, time, ::current, socket::send) {
+    private val refresh = SelectionRefresh03Runtime(origin, db, trust, { recipients }, keys, time, ::current, socket::send,
+        currentManifest = manifestResolver::refresh) {
         synchronized(effects) { check(current()); projection = null }
         Profile03MessagingStatus.update(this, "SIM approval acknowledged. Checking current messaging availability.")
-        requestCurrentIfDue()
+        manifests.physicalReady()
     }
     private data class Pending(val challenge: UUID, val line: UUID, val started: Long)
     private var pending: Pending? = null
@@ -74,6 +82,7 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
     }, ::requireGrantCurrent)
     init {
         Profile03MessagingStatus.open(this)
+        Profile03ManifestMount.attach(this, ::current) { manifests.checkSetup() }
         SelectionRefresh03Mount.attach(this, ::current) { decision ->
             synchronized(effects) { check(current()); projection = null }
             refresh.acceptDecision(decision)
@@ -91,7 +100,7 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
 
     private fun current() = !closed && socketCurrent() && lineConsumerVersion() == 2
     fun start() = current() && time.request()
-    fun tick(): Boolean = current() && time.request().also { available -> if (available) requestCurrentIfDue() }
+    fun tick(): Boolean = current() && time.request().also { available -> if (available) manifests.requestIfDue() }
     fun acceptMetadata(raw: ByteArray) {
         check(current()); time.accept(raw)
         JournalRuntime.timeouts.schedule({ JournalRuntime.io.execute { runCatching {
@@ -101,7 +110,7 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
                 Profile03BootstrapClock.publish(this, session) { if (current()) time.nowMs() else null }
                 if (projection == null) Profile03MessagingStatus.update(this, "Phone connected. Finish messaging setup in your owner workspace.")
             }
-            requestCurrentIfDue()
+            manifests.requestIfDue()
         }.onFailure { close() } } }, 1, java.util.concurrent.TimeUnit.MILLISECONDS)
     }
     fun challenge(raw: ByteArray) {
@@ -117,7 +126,7 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
                     pollingStopped = false
                 }
                 Profile03MessagingStatus.update(this, "Phone approval saved. Complete approval in your owner workspace.")
-                requestCurrentIfDue()
+                manifests.requestIfDue()
             }.onFailure { close() }
         }
     }
@@ -146,6 +155,22 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
                 else -> error("Interval direction")
             }
         }.onFailure { close() } }
+    }
+    fun manifest(raw: ByteArray) = manifests.accept(raw)
+    private fun publishManifestCurrent(bytes: ByteArray, line: UUID) {
+        val value = reader.manifestDeviceSelection(bytes, line)
+        val c = value.selected
+        val session = checkNotNull(time.snapshot()).first.session
+        val ready = SealedDispatch03Frames.ready(JSONObject().put("v", 1).put("type", "sealed_ready")
+            .put("grant_version", 3).put("envelope_profile", 3).put("manifest_profile", 3)
+            .put("line_id", line).put("connection_epoch", session.connectionEpoch).put("deployment_epoch", session.deploymentEpoch)
+            .put("binding_generation", c.bindingGeneration).put("trust_generation", c.vaultGeneration)
+            .put("manifest_version", c.manifestVersion).put("reader_key_id", b64(c.selectedReaderKeyId))
+            .put("manifest_digest", b64(c.manifestDigest)).put("root_fingerprint", b64(c.rootFingerprint))
+            .put("election_digest", b64(c.electionCommitment)).toString())
+        value.authorityCurrent()
+        synchronized(effects) { check(current()); value.authorityCurrent(); projection = bytes.copyOf(); check(socket.send(ready.json())) }
+        Profile03MessagingStatus.update(this, "Messaging ready. Each message still needs current sending approval.")
     }
     /** Bounded reads only; it never opens/reserves/signs an election. */
     private fun requestCurrentIfDue() {
@@ -226,7 +251,7 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
             grant.connectionEpoch == session.connectionEpoch && grant.deploymentEpoch == session.deploymentEpoch)
         val instant = checkNotNull(time.nowMs())
         check(grant.expiresAtMs - instant in 1..35_000)
-        val selected = reader.deviceSelection(checkNotNull(projection), grant.lineId).selected
+        val selected = reader.manifestDeviceSelection(checkNotNull(projection), grant.lineId).selected
         check(grant.bindingGeneration == selected.bindingGeneration && grant.trustGeneration == selected.vaultGeneration &&
             grant.manifestVersion == selected.manifestVersion && same(grant.readerKeyId, selected.selectedReaderKeyId) &&
             same(grant.rootFingerprint, selected.rootFingerprint) && same(grant.manifestDigest, selected.manifestDigest) &&
@@ -243,7 +268,7 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
         requireGrantCurrent(grant)
         val packet = checkNotNull(fetch.fetch(grant))
         val session = checkNotNull(time.snapshot()).first.session
-        fun live() = reader.read(packet, grant).also {
+        fun live() = reader.readManifest(packet, grant).also {
             requireGrantCurrent(grant)
             check(!db.attempts().isRecipientSuppressed(suppression.sender(it.intent.peer().toString(Charsets.US_ASCII))))
         }
@@ -269,6 +294,8 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
         closed = true
         SelectionRefresh03Mount.detach(this)
         ConversationInterval03Mount.detach(this)
+        Profile03ManifestMount.detach(this)
+        manifests.close()
         refresh.close()
         intervals.close()
         Profile03MessagingStatus.update(this, "Messaging paused. Your pairing and setup history are saved.")

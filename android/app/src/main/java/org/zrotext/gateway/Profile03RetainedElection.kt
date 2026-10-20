@@ -12,7 +12,7 @@ import java.util.UUID
 internal object Profile03RetainedElection {
     class Verified internal constructor(val election: Draft03PayloadElectionProof,
         val authority: Draft03ManifestAuthority, val original: Profile03OriginalBindingProof,
-        private val device: ByteArray) {
+        private val device: ByteArray, val installation: Profile03ElectionRecord) {
         fun devicePoint() = device.copyOf()
         override fun toString() = "VerifiedRetainedElection03(historical-proof-only)"
     }
@@ -21,10 +21,30 @@ internal object Profile03RetainedElection {
 
     fun verify(evidence: Map<String, Any>, installed: Profile03ElectionRecord, activation: LineActivationV2Record,
         trust: Draft02TrustStore, hardware: DevicePayloadPublic, enrollment: ByteArray,
-        origin: String, now: () -> Long): Verified {
+        origin: String, now: () -> Long): Verified = verifyOriginal(evidence, installed, activation, trust, hardware,
+            enrollment, origin, now, false, false)
+
+    /** Original signatures at their retained genuine acceptance checkpoint. This intentionally
+     * does not assert original03 freshness now; only a fully verified successor tip can do so. */
+    fun historical(evidence: Map<String, Any>, installed: Profile03ElectionRecord, activation: LineActivationV2Record,
+        trust: Draft02TrustStore, hardware: DevicePayloadPublic, enrollment: ByteArray,
+        origin: String, now: () -> Long): Verified = verifyOriginal(evidence, installed, activation, trust, hardware,
+            enrollment, origin, now, true, false)
+
+    /** Authenticated history can reconcile only the same already signed original. The returned
+     * candidate must still CAS into the old binding under the existing unresolved-effect fences.
+     * It supplies no physical handle, current manifest acknowledgement or message permission. */
+    fun historicalAcceptance(evidence: Map<String, Any>, signed: Profile03ElectionRecord, activation: LineActivationV2Record,
+        trust: Draft02TrustStore, hardware: DevicePayloadPublic, enrollment: ByteArray,
+        origin: String, now: () -> Long): Verified = verifyOriginal(evidence, signed, activation, trust, hardware,
+            enrollment, origin, now, true, true)
+
+    private fun verifyOriginal(evidence: Map<String, Any>, installed: Profile03ElectionRecord, activation: LineActivationV2Record,
+        trust: Draft02TrustStore, hardware: DevicePayloadPublic, enrollment: ByteArray,
+        origin: String, now: () -> Long, historicalOnly: Boolean, reconcileSigned: Boolean): Verified {
         require(evidence.keys == EVIDENCE_KEYS)
         installed.requireShape(); activation.requireShape()
-        require(installed.state == "installed" && hardware.security in
+        require((installed.state == "installed" || reconcileSigned && installed.state == "signed" && installed.acceptedEvidenceSha256 == null) && hardware.security in
             setOf(PayloadKeySecurity.STRONGBOX, PayloadKeySecurity.TRUSTED_ENVIRONMENT))
         val bundle = Profile03Json.binary(evidence, "bundle", 628, 628)
         val core = Profile03ElectionEncoding.decode(installed.coreB64url, 500)
@@ -41,7 +61,8 @@ internal object Profile03RetainedElection {
             sha(old), number(216), core.copyOfRange(224, 256), sha(successor), sha(core),
             sha(ReviewedIntent03.framed("ZTSE/line/payload-profile/commitment/v1", core)), sha(bundle), acceptedMs)
         // The timestamp from this read is usable only if it is part of the EXACT retained identity.
-        require(installed.acceptedEvidenceSha256 == Draft03OutboundPreparation.acceptedIdentity(accepted) &&
+        val acceptedIdentity = Draft03OutboundPreparation.acceptedIdentity(accepted)
+        require((installed.state == "signed" || installed.acceptedEvidenceSha256 == acceptedIdentity) &&
             installed.readerKeyId == hex(hardware.keyId) && installed.rootFingerprint == hex(accepted.rootFingerprint))
         now()
         val history = trust.retainedElectionHistory(acceptedMs, now)
@@ -57,9 +78,10 @@ internal object Profile03RetainedElection {
         history.requireOriginalReader(uuid(installed.deviceId), uuid(installed.lineId), hardware.keyId, hardware.point)
         val election = Draft03PayloadElectionProof.verifyAccepted(bundle, core, accepted, history.proof, successor,
             enrollment, original.approvalPoint())
-        val authority = history.current03(successor, now())
+        val actualNow = now(); require(actualNow >= acceptedMs)
+        val authority = history.current03(successor, if (historicalOnly) acceptedMs else actualNow)
         now()
-        return Verified(election, authority, original, enrollment.copyOf())
+        return Verified(election, authority, original, enrollment.copyOf(), installed.copy(state = "installed", acceptedEvidenceSha256 = acceptedIdentity))
     }
     internal fun signingId(point: ByteArray) = sha("ZTSE/key/v1\u0000".toByteArray(Charsets.US_ASCII) + byteArrayOf(1, 1) + point)
     private fun uuid(value: String) = ReviewedIntent03.uuid(UUID.fromString(value))

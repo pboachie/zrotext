@@ -27,7 +27,8 @@ class Profile03RetainedElectionTest {
         override fun open(ciphertext: ByteArray) = ciphertext.copyOf()
         override fun write(ciphertext: ByteArray, preCommit: () -> Unit) { preCommit(); value = ciphertext.copyOf() }
     }
-    private class Fixture(distinctEventSigner: Boolean = false, includeEventSigner: Boolean = true) : AutoCloseable {
+    internal class Fixture(distinctEventSigner: Boolean = false, includeEventSigner: Boolean = true,
+        installInitially: Boolean = true) : AutoCloseable {
         val origin = "https://gateway.example.test"
         val f = Profile03ExecutionFixture(canonicalOrigin = origin, distinctEventSigner = distinctEventSigner, includeEventSigner = includeEventSigner)
         val activation = checkNotNull(f.line.db.lineActivationsV2().find("sealed", f.line.challengeId.toString()))
@@ -94,7 +95,7 @@ class Profile03RetainedElectionTest {
             val dao = f.line.db.profile03Elections()
             check(dao.reserve(installed.copy(state = "reserved", deviceSignatureB64url = null, acceptedEvidenceSha256 = null)) {})
             check(dao.recordSigned(installed.copy(state = "signed", acceptedEvidenceSha256 = null)) {})
-            check(dao.install(installed) {})
+            if (installInitially) check(dao.install(installed) {})
         }
         fun verify(input: Map<String, Any> = evidence, selected: Profile03ElectionRecord = installed,
             current: Draft02TrustStore = store, hardware: DevicePayloadPublic = reader) =
@@ -138,5 +139,26 @@ class Profile03RetainedElectionTest {
             assertArrayEquals(v.accepted.electionCommitment, verified.election.acceptedRecord().electionCommitment)
             assertNull(v.f.binding.installedSelectionV2())
         }
+    }
+    @Test fun expiredFirstManifestCanProveOnlyItsOriginalHistoryAtTheRetainedCheckpoint(): Unit = Fixture().use { v ->
+        val now = 900_001L
+        assertThrows(Exception::class.java) { Profile03RetainedElection.verify(v.evidence, v.installed, v.activation,
+            v.store, v.reader, v.devicePoint, v.origin) { now } }
+        val historical = Profile03RetainedElection.historical(v.evidence, v.installed, v.activation,
+            v.store, v.reader, v.devicePoint, v.origin) { now }
+        assertEquals(v.accepted.acceptedAtMs, historical.authority.comparisonMs)
+        assertArrayEquals(v.f.next, historical.authority.signedBytes)
+    }
+    @Test fun lostAcceptanceCanCompleteOnlyTheSameSignedOriginalWithoutRestoringPhysicalPermission(): Unit = Fixture(installInitially = false).use { v ->
+        v.f.line.callback(); assertNull(v.f.binding.installedSelectionV2())
+        val dao = v.f.line.db.profile03Elections(); val signed = checkNotNull(dao.find(v.installed.challengeId))
+        assertEquals("signed", signed.state)
+        val candidate = Profile03RetainedElection.historicalAcceptance(v.evidence, signed, v.activation,
+            v.store, v.reader, v.devicePoint, v.origin) { 900_001L }
+        assertEquals(v.installed, candidate.installation); assertEquals(signed, dao.find(signed.challengeId))
+        assertTrue(dao.install(candidate.installation) { actual -> check(actual == v.f.binding) })
+        assertEquals(v.installed, dao.find(signed.challengeId)); assertNull(v.f.binding.installedSelectionV2())
+        assertThrows(Exception::class.java) { Profile03RetainedElection.historicalAcceptance(v.evidence + ("accepted_ms" to "100011"),
+            v.installed, v.activation, v.store, v.reader, v.devicePoint, v.origin) { 900_001L } }
     }
 }
