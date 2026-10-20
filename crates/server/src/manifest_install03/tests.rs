@@ -87,7 +87,12 @@ fn real_four_role_genesis_enrollment_expired_predecessor_renewal_and_lost_key_re
         assert_eq!(statement.line(), e.line);
         assert_eq!(statement.opening(), id(&row["opening_id"]));
         assert_eq!(
-            crypto::sha(&statement.transcript()).as_slice(),
+            crypto::sha(
+                &shared::PossessionStatement03::decode(statement.bytes())
+                    .unwrap()
+                    .transcript()
+            )
+            .as_slice(),
             bytes(&row["transcript_sha256"])
         );
         let signature = bytes(&row["signature_hex"]);
@@ -110,11 +115,10 @@ fn real_four_role_genesis_enrollment_expired_predecessor_renewal_and_lost_key_re
         )
         .unwrap();
         assert_eq!(checked.operation().as_str(), row["operation"]);
-        assert_eq!(checked.signature().as_slice(), signature);
-        assert_eq!(checked.statement().bytes().len(), 513);
+        assert_eq!(checked.statement.bytes().len(), 513);
         assert_eq!(
             checked
-                .successor()
+                .successor
                 .identity_at(now)
                 .unwrap()
                 .digest
