@@ -192,3 +192,58 @@ fn independently_selected_root_and_historical_checkpoint_cannot_come_from_downlo
         assert!(verify_checkpoint(&prior.pin, &prior.signed, &selected, prior.comparison).is_err());
     }
 }
+
+#[test]
+fn cold_expired_predecessor_reconstructs_from_original_acceptance_before_renewal() {
+    let v = corpus();
+    let enrolled = &v["successors"][0];
+    let renewal = &v["successors"][1];
+    let pin = bytes(&v["root_pin_hex"]);
+    let signed = bytes(&enrolled["successor_signed_hex"]);
+    let now = time(&renewal["accepted_ms"]);
+    assert!(now > number(&signed[47..55]).unwrap());
+    let mut selected = Checkpoint03 {
+        account_id: pin[5..21].try_into().unwrap(),
+        root_fingerprint: bytes(&v["root_fingerprint_hex"]).try_into().unwrap(),
+        version: 3,
+        digest: hash(&signed[..signed.len() - 64]),
+        accepted_ms: time(&enrolled["accepted_ms"]),
+    };
+    let prior = verify_checkpoint(&pin, &signed, &selected, now).unwrap();
+    let packet = PossessionStatement03::decode(&bytes(&renewal["statement_hex"])).unwrap();
+    let next = verify_successor(
+        &prior,
+        &bytes(&renewal["successor_signed_hex"]),
+        &packet.identities()[4],
+        &packet.browser_point(),
+        now,
+    )
+    .unwrap();
+    assert_eq!(next.operation(), Operation03::Renew);
+    assert!(
+        verify_successor(
+            &prior,
+            &bytes(&renewal["successor_signed_hex"]),
+            &packet.identities()[4],
+            &packet.browser_point(),
+            now - 1
+        )
+        .is_err()
+    );
+    // Merely finding an expired signed packet cannot invent valid acceptance.
+    selected.accepted_ms = number(&signed[47..55]).unwrap();
+    assert!(verify_checkpoint(&pin, &signed, &selected, now).is_err());
+}
+
+#[test]
+fn possession_grammar_requires_exact_supported_vault_and_election_epochs() {
+    let v = corpus();
+    let original = bytes(&v["successors"][0]["statement_hex"]);
+    for offset in [144, 152] {
+        for unsupported in [0u64, 2, u64::MAX] {
+            let mut input = original.clone();
+            input[offset..offset + 8].copy_from_slice(&unsupported.to_be_bytes());
+            assert!(PossessionStatement03::decode(&input).is_err());
+        }
+    }
+}
