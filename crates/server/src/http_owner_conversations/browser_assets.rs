@@ -33,6 +33,8 @@ impl BrowserAssets {
             "sdk/draft03-manifest.js".to_owned(),
             "sdk/payload-profile-election03.js".to_owned(),
             "sdk/payload-profile-upgrade-proposal.js".to_owned(),
+            "sdk/accepted-manifest-history03.js".to_owned(),
+            "sdk/original-manifest-history03.js".to_owned(),
         ];
         let mut visited = BTreeSet::new();
         while let Some(name) = pending.pop() {
@@ -478,6 +480,8 @@ mod tests {
             "draft03-manifest",
             "payload-profile-election03",
             "payload-profile-upgrade-proposal",
+            "accepted-manifest-history03",
+            "original-manifest-history03",
         ] {
             files.insert(format!("sdk/{name}.js"), Vec::new());
         }
@@ -513,6 +517,8 @@ mod tests {
             "draft03-manifest",
             "payload-profile-election03",
             "payload-profile-upgrade-proposal",
+            "accepted-manifest-history03",
+            "original-manifest-history03",
         ] {
             let path = format!("sdk/{name}.js");
             let module = files.remove(&path).unwrap();

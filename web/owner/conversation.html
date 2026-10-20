@@ -4,7 +4,7 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex"><title>Conversation simulator · ZROtext</title>
   <link rel="stylesheet" href="devices.css"><link rel="stylesheet" href="conversation.css">
-  <script defer src="conversation-core.js"></script><script defer src="conversation-owner-adapter.js"></script><script defer src="conversation-bootstrap.js"></script><script defer src="conversation-owner-setup.js"></script><script defer src="conversation-root-enrollment.js"></script><script defer src="conversation-line-setup.js"></script><script defer src="conversation-profile03-recovery.js"></script><script defer src="conversation-profile03-setup.js"></script><script defer src="conversation.js"></script><script defer src="conversation-profile03-page.js"></script>
+  <script defer src="conversation-core.js"></script><script defer src="conversation-owner-adapter.js"></script><script defer src="conversation-bootstrap.js"></script><script defer src="conversation-owner-setup.js"></script><script defer src="conversation-root-enrollment.js"></script><script defer src="conversation-line-setup.js"></script><script defer src="conversation-profile03-recovery.js"></script><script defer src="conversation-profile03-setup.js"></script><script defer src="conversation-manifest03-recovery.js"></script><script defer src="conversation-manifest03-history.js"></script><script defer src="conversation.js"></script><script defer src="conversation-profile03-page.js"></script><script defer src="conversation-manifest03-page.js"></script>
 </head>
 <body><main>
   <header><div><p class="eyebrow">ZROtext</p><h1>One conversation</h1></div></header>
@@ -82,6 +82,10 @@
       <label>Existing paired phone public signing point <input id="profile-phone-point" type="file" accept="application/octet-stream"></label>
       <button id="profile-begin" type="button">Prepare same-phone profile upgrade</button>
       <button id="profile-find" type="button">Find saved setup</button>
+      <button id="profile-history-open" type="button">Recover accepted profile history</button>
+      <button id="profile-history-next" type="button" disabled>Continue history check</button>
+      <button id="profile-history-current" type="button" disabled>Check current phone selection</button>
+      <p id="profile-history-status" role="status" aria-live="polite">After a completed upgrade, recover its accepted history using the same compared receipts and phone public point. No setup approval is repeated.</p>
       <div id="profile-artifacts"></div>
       <p>Approve the downloaded public proposal using the existing offline custodian's profile-upgrade command. Select only its signed public manifest output here; root recovery material stays with the custodian.</p>
       <label>Signed public profile upgrade <input id="profile-signed" type="file" accept="application/octet-stream"></label>
