@@ -182,6 +182,34 @@ impl StoredInterval03 {
         let row=tx.query_opt("SELECT * FROM public.conversation_profile03_intervals WHERE account_id=$1 AND interval_id=$2 FOR SHARE NOWAIT",&[&account,&interval]).await?.ok_or(Error::NotFound)?;
         Self::from_row(&row)
     }
+    pub(crate) async fn active(
+        tx: &Transaction<'_>,
+        held: &mut HeldMessageSelection03<'_, '_, '_>,
+        interval: Uuid,
+    ) -> Result<Self> {
+        let value = Self::read(tx, held.selected().account, interval).await?;
+        value.admission_deadline(held).await?;
+        Ok(value)
+    }
+    pub(crate) async fn admission_deadline(
+        &self,
+        held: &mut HeldMessageSelection03<'_, '_, '_>,
+    ) -> Result<u64> {
+        if self.phase != "active" || self.installed_ms.is_none() {
+            return Err(Error::Conflict);
+        }
+        let mappings = self.validate(held, false).await?;
+        let installed = self.installed_ms.ok_or(Error::Conflict)?;
+        let deadline = held
+            .authority()
+            .permission_expires_at_ms
+            .min(self.statement.times().3)
+            .min(mappings.deadline());
+        if held.now_ms() < installed || held.now_ms() >= deadline {
+            return Err(Error::Expired);
+        }
+        Ok(deadline)
+    }
     fn require_owner(&self, held: &HeldMessageSelection03<'_, '_, '_>) -> Result<()> {
         if self.selected_owner() != held.selected() {
             return Err(Error::Authentication);

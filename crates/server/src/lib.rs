@@ -50,6 +50,7 @@ pub mod payload_profile_writer;
 pub mod provider_config;
 pub mod provider_sms;
 pub mod readiness;
+pub mod reviewed_intent03;
 pub mod retention;
 pub use zrotext_root_material::root_backup;
 pub mod conversation_interval03;
