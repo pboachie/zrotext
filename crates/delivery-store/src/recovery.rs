@@ -125,22 +125,26 @@ impl DeliveryStore<'_> {
                 "SELECT \
                  (SELECT count(*) FROM (SELECT 1 FROM dispatch_jobs j JOIN messages m ON m.id=j.message_id \
                    WHERE j.grant_issued_at IS NULL AND j.finished_at IS NULL \
+                     AND m.transport_mode<>'sealed_profile03' \
                      AND m.expires_at<=now() AND m.state IN ('queued','claimed') LIMIT $1) due), \
                  (SELECT floor(extract(epoch FROM now()-m.expires_at))::bigint \
                    FROM dispatch_jobs j JOIN messages m ON m.id=j.message_id \
                    WHERE j.grant_issued_at IS NULL AND j.finished_at IS NULL \
+                     AND m.transport_mode<>'sealed_profile03' \
                      AND m.expires_at<=now() AND m.state IN ('queued','claimed') \
                    ORDER BY m.expires_at LIMIT 1), \
                  (SELECT count(*) FROM (SELECT 1 FROM messages m \
                    JOIN dispatch_fences f ON (f.account_id,f.message_id)=(m.account_id,m.id) \
                    JOIN message_attempts a ON a.id=f.attempt_id \
-                   WHERE (m.state='claimed' AND f.outcome='granted' AND f.grant_expires_at<=now()) \
+                   WHERE m.transport_mode<>'sealed_profile03' AND ( \
+                         (m.state='claimed' AND f.outcome='granted' AND f.grant_expires_at<=now()) \
                       OR (m.state='submitting' AND f.outcome='submitting' \
-                          AND a.updated_at<=now()-interval '2 minutes') LIMIT $1) silent), \
+                          AND a.updated_at<=now()-interval '2 minutes')) LIMIT $1) silent), \
                  (SELECT count(*) FROM (SELECT 1 FROM messages m \
                    JOIN dispatch_fences f ON (f.account_id,f.message_id)=(m.account_id,m.id) \
                    JOIN message_attempts a ON a.id=f.attempt_id \
                    WHERE m.state='submitted' AND f.outcome='submitted' AND a.status='submitted' \
+                     AND m.transport_mode<>'sealed_profile03' \
                      AND m.updated_at<=now()-interval '24 hours' LIMIT $1) timeouts)",
                 &[&cap],
             )
