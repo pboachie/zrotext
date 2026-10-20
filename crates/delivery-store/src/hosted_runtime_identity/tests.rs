@@ -60,11 +60,8 @@ async fn bind(db: &Client, namespace: Uuid, secret: &[u8; 32]) -> Vec<u8> {
     proof
 }
 async fn refused(db: &Client, sql: &str, code: SqlState) {
-    assert_eq!(
-        db.batch_execute(sql).await.unwrap_err().code(),
-        Some(&code),
-        "{sql}"
-    );
+    let error = db.batch_execute(sql).await.unwrap_err();
+    assert_eq!(error.code(), Some(&code), "{sql}: {error:?}");
 }
 
 #[tokio::test]
@@ -280,8 +277,9 @@ async fn native_defaults_cannot_be_supplied_or_protected_proof_rows_copied() {
             refused(&f.runtime,&format!("INSERT INTO public.hosted_runtime_requests(operation,namespace_id,policy_revision,{column}) VALUES('enter','{namespace}',1,{suffix})"),SqlState::INSUFFICIENT_PRIVILEGE).await;
         }
     }
-    let Err(copy_error)=f.runtime.copy_in::<_, &'static [u8]>("COPY public.hosted_runtime_requests(operation,namespace_id,policy_revision,native_start) FROM STDIN").await else {panic!("native COPY override unexpectedly accepted")};
-    assert_eq!(copy_error.code(), Some(&SqlState::INSUFFICIENT_PRIVILEGE));
+    // This command must refuse before COPY mode. Do not create an input sink
+    // whose abort frames can outlive the already-rejected permission check.
+    refused(&f.runtime,"COPY public.hosted_runtime_requests(operation,namespace_id,policy_revision,native_start) FROM STDIN",SqlState::INSUFFICIENT_PRIVILEGE).await;
     for sql in [
         "SELECT * FROM public.hosted_runtime_entries",
         "SELECT * FROM public.hosted_runtime_sessions",
@@ -333,7 +331,9 @@ async fn changed_native_graph_and_column_capability_refuse_then_stock_reset_rest
     // A changed catalog version cannot disguise missing116 objects as an
     // explicit pre-installation fixture while the actual ledger retains116.
     let tx = f.owner.transaction().await.unwrap();
-    tx.batch_execute("DROP TABLE public.hosted_runtime_requests,public.hosted_runtime_entries; DROP FUNCTION public.hosted_runtime_native_start(),public.hosted_runtime_native_schema_valid(),public.hosted_runtime_identity_ready(),public.hosted_runtime_enter(uuid,bigint),public.hosted_runtime_expiry(uuid,bigint),public.hosted_runtime_request_apply(),public.hosted_runtime_request_remove(),public.hosted_runtime_scope(); ALTER TABLE public.payload_profile_writer_catalog DISABLE TRIGGER ALL; UPDATE public.payload_profile_writer_catalog SET migration_version=115").await.unwrap();
+    // Explicit privileged counterfeit, rolled back below: remove the current
+    // CHECK as well as its trigger so the old version reaches the validator.
+    tx.batch_execute("DROP TABLE public.hosted_runtime_requests,public.hosted_runtime_entries; DROP FUNCTION public.hosted_runtime_native_start(),public.hosted_runtime_native_schema_valid(),public.hosted_runtime_identity_ready(),public.hosted_runtime_enter(uuid,bigint),public.hosted_runtime_expiry(uuid,bigint),public.hosted_runtime_request_apply(),public.hosted_runtime_request_remove(),public.hosted_runtime_scope(); ALTER TABLE public.payload_profile_writer_catalog DISABLE TRIGGER ALL; ALTER TABLE public.payload_profile_writer_catalog DROP CONSTRAINT payload_profile_writer_catalog_migration_version_check; UPDATE public.payload_profile_writer_catalog SET migration_version=115").await.unwrap();
     assert!(optional(&tx).await.is_err());
     tx.rollback().await.unwrap();
     require(&f.runtime).await.unwrap();
@@ -733,4 +733,36 @@ fn trigger_calls_comments_unknown_and_duplicate_declarations_never_supply_bodies
         ),
         Some("at-start")
     );
+}
+
+#[test]
+fn explicit_second_intent_native_body_routes_keep_exact_current_pins() {
+    for (name, expected) in [
+        (
+            "hosted_runtime_native_schema_valid",
+            "6fe7bf0ce4d4cb6f4113c45a2397502d99afafec4c4f026a9af6c37c5e610b4e",
+        ),
+        (
+            "hosted_runtime_identity_ready",
+            "7fda07320588b52036fe5002b3c4082f5fce7c19f57d9763ecda85beb02a343f",
+        ),
+        (
+            "hosted_runtime_scope",
+            "5af80385e9460db2d4381a082df2e6a1c63059b66019678518bf4133f5b5673f",
+        ),
+        (
+            "payload_profile_writer_version",
+            "887ad6ecb8df729687fb1ba9d05436eb7511f035f7cafc8b27685d9d5c9b2bc6",
+        ),
+        (
+            "payload_profile_writer_ready",
+            "10d2f8fa9ab50a4440ff98b529637fb92f71b79743a3b23ea763b585e7d98458",
+        ),
+    ] {
+        let actual = Sha256::digest(body_for(name, 117).unwrap().as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(actual, expected, "{name}");
+    }
 }

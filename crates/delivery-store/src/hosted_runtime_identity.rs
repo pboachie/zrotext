@@ -35,7 +35,11 @@ pub fn declared_function_body<'a>(source: &'a str, name: &str, marker: &str) -> 
         .map(|(body, _)| body)
 }
 
+#[cfg(test)]
 fn body(name: &str) -> Result<&'static str> {
+    body_for(name, 116)
+}
+fn body_for(name: &str, version: i64) -> Result<&'static str> {
     // These three applied106 declarations use its original unqualified names
     // and $$ marker. Runtime validation keeps their exact original hash pairs;
     // this narrow source branch lets the regression check those same bytes.
@@ -55,6 +59,23 @@ fn body(name: &str) -> Result<&'static str> {
             .map(|(body, _)| body)
             .ok_or(IdentitySchemaError::Invalid);
     }
+    if version == 117
+        && matches!(
+            name,
+            "hosted_runtime_native_schema_valid"
+                | "hosted_runtime_identity_ready"
+                | "hosted_runtime_scope"
+                | "payload_profile_writer_version"
+                | "payload_profile_writer_ready"
+        )
+    {
+        return declared_function_body(
+            include_str!("../../../deploy/compose/migrations/117_explicit_reviewed_intent_v2.sql"),
+            name,
+            "$function$",
+        )
+        .ok_or(IdentitySchemaError::Invalid);
+    }
     let source = match name {
         "payload_profile_writer_json"
         | "payload_profile_writer_global_guard"
@@ -68,7 +89,7 @@ fn body(name: &str) -> Result<&'static str> {
     };
     declared_function_body(source, name, "$function$").ok_or(IdentitySchemaError::Invalid)
 }
-async fn functions<C: GenericClient + Sync>(db: &C) -> Result<()> {
+async fn functions<C: GenericClient + Sync>(db: &C, version: i64) -> Result<()> {
     for (
         name,
         signature,
@@ -376,7 +397,7 @@ async fn functions<C: GenericClient + Sync>(db: &C) -> Result<()> {
             .collect::<Vec<_>>();
         let names = names.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
         let exact = if original_hashes.is_empty() {
-            source == body(name)?
+            source == body_for(name, version)?
         } else {
             let hash = Sha256::digest(source.as_bytes())
                 .iter()
@@ -484,10 +505,10 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
         )
         .await?
         .try_get(0)?;
-    if version!=116 || db.query_one("SELECT count(*) FROM pg_catalog.pg_proc WHERE pronamespace='public'::pg_catalog.regnamespace AND proname LIKE 'hosted_runtime_%'",&[]).await?.try_get::<_,i64>(0)?!=15 {return Err(IdentitySchemaError::Invalid);}
-    functions(db).await?;
+    if !matches!(version,116..=117) || db.query_one("SELECT count(*) FROM pg_catalog.pg_proc WHERE pronamespace='public'::pg_catalog.regnamespace AND proname LIKE 'hosted_runtime_%'",&[]).await?.try_get::<_,i64>(0)?!=15 {return Err(IdentitySchemaError::Invalid);}
+    functions(db, version).await?;
     tables(db).await?;
-    if !db.query_one("SELECT public.payload_profile_writer_version() AND coalesce((SELECT migration_version=116 AND graph_sha256=public.payload_profile_writer_graph() FROM public.payload_profile_writer_catalog WHERE singleton),false)",&[]).await?.try_get::<_,bool>(0)? {return Err(IdentitySchemaError::Invalid);}
+    if !db.query_one("SELECT public.payload_profile_writer_version() AND coalesce((SELECT migration_version=$1 AND graph_sha256=public.payload_profile_writer_graph() FROM public.payload_profile_writer_catalog WHERE singleton),false)",&[&version]).await?.try_get::<_,bool>(0)? {return Err(IdentitySchemaError::Invalid);}
     Ok(true)
 }
 /// Ordinary runtime schema/column capability only. Actual HMAC bind and native
