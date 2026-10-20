@@ -170,7 +170,7 @@ async fn interval_key_scope_keeps_integration_readers_account_scoped_and_content
     let point = p256::ecdsa::SigningKey::from_slice(&[17; 32])
         .unwrap()
         .verifying_key()
-        .to_encoded_point(false);
+        .to_sec1_point(false);
     for role in 1_i32..=5 {
         let mut key_id = Sha256::new();
         key_id.update(b"ZTSE/key/v1");
