@@ -1562,7 +1562,7 @@ async fn run_socket(
                             segment_index,
                             segment_count,
                         };
-                        let mut store = DeliveryStore::new(&mut client);
+                        let mut store = client.delivery_store();
                         let next = match store.record_radio_event(event).await {
                             Ok(next) => next,
                             Err(error) => {
@@ -2234,12 +2234,12 @@ async fn durable_intent_preflight(
 
 /// One-statement pre-claim filter for an armed dispatch tick; see
 /// [`DeliveryStore::synthetic_grant_may_be_due`].
-async fn grant_may_be_due(
-    client: &mut Client,
+async fn grant_may_be_due<C: crate::runtime_db::NativeConnection>(
+    client: &mut C,
     session: DeviceSession,
     state: &DeviceSocketState,
 ) -> Result<bool, StoreError> {
-    DeliveryStore::new(client)
+    crate::runtime_db::initialized_store(client, None)
         .synthetic_grant_may_be_due(
             session.account_id,
             session.device_id,
@@ -2251,8 +2251,8 @@ async fn grant_may_be_due(
 
 /// Claim only for this authenticated device and issue at most one fenced grant.
 /// A failed frame send leaves the grant unresolved; reconnect never retries it.
-async fn poll_synthetic_grant(
-    client: &mut Client,
+async fn poll_synthetic_grant<C: crate::runtime_db::NativeConnection>(
+    client: &mut C,
     session: DeviceSession,
     state: &DeviceSocketState,
     recipient_digest: &[u8; 32],
@@ -2274,7 +2274,7 @@ async fn poll_synthetic_grant(
     // The claim transaction returns the message content, so it is read once:
     // policy is applied here, and the same content is released only after
     // the grant is confirmed below.
-    let Some((claim, content)) = DeliveryStore::new(client)
+    let Some((claim, content)) = crate::runtime_db::initialized_store(client, None)
         .claim_synthetic_for_device_and_recipient(
             &worker_id,
             session.account_id,
@@ -2292,12 +2292,12 @@ async fn poll_synthetic_grant(
         && state.alpha_policy.allows(claim.account_id, &recipient)
         && body.as_deref().is_some_and(synthetic_body_is_fixed);
     let (true, Some(body)) = (permitted, body) else {
-        DeliveryStore::new(client)
+        crate::runtime_db::initialized_store(client, None)
             .cancel(claim.account_id, claim.message_id)
             .await?;
         return Ok(None);
     };
-    let mut store = DeliveryStore::new(client);
+    let mut store = crate::runtime_db::initialized_store(client, None);
     let record = store_session(session, state);
     let grant = match store.issue_grant(&claim, &record, Uuid::new_v4()).await {
         Ok(grant) => grant,

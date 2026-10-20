@@ -20,7 +20,7 @@ async fn claim(r: &Runtime) -> Result<Option<Job>, Error> {
     let mut conn = crate::runtime_db::connect_worker(&r.auth.database_url)
         .await
         .map_err(|_| Error::Database)?;
-    let tx = conn.transaction().await?;
+    let tx = conn.native_transaction().await?;
     // Candidates are observations, not locks; acquire namespace/account before
     // queue/projection so owner mutations and admissions use one lock order.
     let candidate=tx.query_opt("SELECT c.account_id FROM hosted_billing_customers c JOIN accounts a ON a.id=c.account_id AND a.disabled_at IS NULL WHERE c.namespace_id=$1 AND c.customer_id IS NOT NULL AND c.lease_until<=floor(extract(epoch FROM clock_timestamp())) AND c.next_attempt_at<=floor(extract(epoch FROM clock_timestamp())) ORDER BY c.next_attempt_at,c.account_id LIMIT 1",&[&db::ns(r)]).await?;
@@ -73,7 +73,7 @@ pub(super) async fn run_one(r: &Runtime) -> Result<bool, Error> {
 }
 async fn retry(r: &Runtime, j: &Job) -> Result<(), Error> {
     let mut conn = db::connect(r).await?;
-    let tx = conn.transaction().await?;
+    let tx = conn.native_transaction().await?;
     db::lock(&tx, r, j.account).await?;
     tx.execute("UPDATE hosted_billing_customers SET lease_token=NULL,lease_until=0,next_attempt_at=floor(extract(epoch FROM clock_timestamp()))+30 WHERE namespace_id=$1 AND account_id=$2 AND lease_token=$3",&[&db::ns(r),&j.account,&j.token]).await?;
     // No projection, grace deadline, hold or processed generation is changed.
@@ -96,7 +96,7 @@ async fn observe(r: &Runtime, j: &Job) -> Result<(), Error> {
         provider::validate_invoice(&invoice, &r.options, &j.customer, s)?;
     }
     let mut conn = db::connect(r).await?;
-    let tx = conn.transaction().await?;
+    let tx = conn.native_transaction().await?;
     db::lock(&tx, r, j.account).await?;
     db::require_no_global_review(&tx, r).await?;
     let c = db::customer(&tx, r, j.account, false)

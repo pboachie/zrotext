@@ -24,7 +24,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_postgres::Client;
 use tokio_postgres::types::Type;
 use uuid::Uuid;
-use zrotext_delivery_store::{DeliveryStore, NewMessage, StoreError};
+use zrotext_delivery_store::{NewMessage, StoreError};
 use zrotext_domain::MessageState;
 
 const IDEMPOTENCY_HEADER: &str = "idempotency-key";
@@ -163,9 +163,10 @@ fn map_store(error: StoreError) -> MessageHttpError {
         | StoreError::MessageIdConflict
         | StoreError::InvalidTransition => MessageHttpError::Conflict,
         StoreError::NotFound | StoreError::Revoked => MessageHttpError::NotFound,
-        StoreError::Database(_) | StoreError::DispatchDisabled | StoreError::StaleFence => {
-            MessageHttpError::Unavailable
-        }
+        StoreError::Database(_)
+        | StoreError::DispatchDisabled
+        | StoreError::StaleFence
+        | StoreError::RuntimeIdentityUnavailable => MessageHttpError::Unavailable,
         StoreError::PaymentHold => MessageHttpError::PaymentHold,
         StoreError::QuotaNotConfigured => MessageHttpError::BillingPending,
         StoreError::QuotaExceeded => MessageHttpError::QuotaExceeded,
@@ -342,7 +343,7 @@ async fn accept(
         synthetic_payload: synthetic_body.as_bytes(),
         expires_at_ms: body.expires_at_ms,
     };
-    let mut store = DeliveryStore::with_idempotency_days(&mut client, state.idempotency_days);
+    let mut store = client.delivery_store_with_idempotency_days(state.idempotency_days);
     let outcome = store
         .accept_alpha(input, state.metered)
         .await
@@ -378,7 +379,8 @@ async fn status(
     let principal = auth::authenticate_api_key(&client, &state.hasher, token)
         .await
         .map_err(map_auth)?;
-    let snapshot = DeliveryStore::new(&mut client)
+    let snapshot = client
+        .delivery_store()
         .status(principal.tenant.account_id(), message_id)
         .await
         .map_err(map_store)?
@@ -406,7 +408,8 @@ async fn cancel(
     let principal = auth::authenticate_api_key(&client, &state.hasher, token)
         .await
         .map_err(map_auth)?;
-    let snapshot = DeliveryStore::new(&mut client)
+    let snapshot = client
+        .delivery_store()
         .status(principal.tenant.account_id(), message_id)
         .await
         .map_err(map_store)?
@@ -414,7 +417,8 @@ async fn cancel(
     principal
         .require(Scope::MessagesSend, Some(snapshot.device_id))
         .map_err(map_auth)?;
-    if DeliveryStore::new(&mut client)
+    if client
+        .delivery_store()
         .cancel(principal.tenant.account_id(), message_id)
         .await
         .map_err(map_store)?

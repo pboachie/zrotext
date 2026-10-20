@@ -26,7 +26,7 @@ use tokio::sync::Notify;
 use tokio_postgres::NoTls;
 use uuid::Uuid;
 use zeroize::Zeroizing;
-use zrotext_delivery_store::{DeliveryStore, RECOVERY_BATCH, RECOVERY_BATCHES_PER_TICK};
+use zrotext_delivery_store::{RECOVERY_BATCH, RECOVERY_BATCHES_PER_TICK};
 use zrotext_server::{
     alpha_policy::AlphaPolicy,
     auth::{
@@ -942,7 +942,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 )
                                 .into());
                             }
-                            let mut store = DeliveryStore::new(&mut client);
+                            let mut store = client.delivery_store();
                             // Drain a bounded backlog per tick, as retention does,
                             // so an outage does not leave rows for many ticks.
                             let pass = store.recover_bounded(

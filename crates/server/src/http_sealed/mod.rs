@@ -229,9 +229,10 @@ fn map_store(error: StoreError) -> SealedHttpError {
         | StoreError::DeviceBusy
         | StoreError::EventIdConflict => SealedHttpError::IdempotencyConflict,
         StoreError::NotFound | StoreError::Revoked => SealedHttpError::Forbidden,
-        StoreError::Database(_) | StoreError::DispatchDisabled | StoreError::StaleFence => {
-            SealedHttpError::Unavailable
-        }
+        StoreError::Database(_)
+        | StoreError::DispatchDisabled
+        | StoreError::StaleFence
+        | StoreError::RuntimeIdentityUnavailable => SealedHttpError::Unavailable,
         StoreError::PaymentHold | StoreError::QuotaNotConfigured => SealedHttpError::BillingPending,
         StoreError::QuotaExceeded => SealedHttpError::QuotaExceeded,
         StoreError::RecipientSuppressed => SealedHttpError::Forbidden,
