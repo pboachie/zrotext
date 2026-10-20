@@ -39,6 +39,12 @@ pub(crate) struct History03 {
 pub(crate) async fn exclusive(tx: &Transaction<'_>, proof: &HeldStepUp03<'_, '_>) -> Result<()> {
     super::transition::exclusive(tx, &Owner::StepUp(proof)).await
 }
+pub(crate) async fn exclusive_owner(
+    tx: &Transaction<'_>,
+    owner: &HeldOrdinaryOwner03<'_, '_>,
+) -> Result<()> {
+    super::transition::exclusive(tx, &Owner::Ordinary(owner)).await
+}
 
 pub(crate) async fn lock(
     tx: &Transaction<'_>,

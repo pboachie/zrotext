@@ -5,7 +5,7 @@ use super::*;
 use crate::{conversation_interval03::live as intervals, manifest_install03::live as manifests};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B};
 
-async fn prepared() -> (Case, SigningKey, Vec<u8>) {
+pub(super) async fn prepared() -> (Case, SigningKey, Vec<u8>) {
     let (mut c, _) = elected().await;
     let browser = SigningKey::generate_from_rng(&mut rand::rng());
     let (opening, statement, signed, signature) = packet(&mut c, &browser, false).await;
@@ -37,7 +37,7 @@ async fn prepared() -> (Case, SigningKey, Vec<u8>) {
     tx.commit().await.unwrap();
     (c, browser, signed)
 }
-fn lease(c: &Case) -> intervals::DeviceInterval03<'static> {
+pub(super) fn lease(c: &Case) -> intervals::DeviceInterval03<'static> {
     intervals::DeviceInterval03 {
         session: crate::device_socket::DeviceSession {
             account_id: c.principal.tenant.account_id(),
@@ -50,14 +50,14 @@ fn lease(c: &Case) -> intervals::DeviceInterval03<'static> {
         origin: ORIGIN,
     }
 }
-struct Pending {
+pub(super) struct Pending {
     opening: Uuid,
-    id: Uuid,
-    bytes: Vec<u8>,
-    signature: Vec<u8>,
+    pub(super) id: Uuid,
+    pub(super) bytes: Vec<u8>,
+    pub(super) signature: Vec<u8>,
     expires: u64,
 }
-async fn request(
+pub(super) async fn request(
     c: &mut Case,
     browser: &SigningKey,
     signed: &[u8],
