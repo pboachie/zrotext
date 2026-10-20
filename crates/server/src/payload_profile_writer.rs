@@ -23,11 +23,18 @@ pub enum WriterSchemaError {
 type Result<T> = std::result::Result<T, WriterSchemaError>;
 
 fn body(name: &str, marker: &str, version: i64) -> Result<&'static str> {
-    let source = if version == 112
+    let source = if version == 113
         && matches!(
             name,
             "payload_profile_writer_version" | "payload_profile_writer_ready"
         ) {
+        include_str!("../../../deploy/compose/migrations/113_conversation_profile03_intervals.sql")
+    } else if version == 112
+        && matches!(
+            name,
+            "payload_profile_writer_version" | "payload_profile_writer_ready"
+        )
+    {
         MANIFEST_MIGRATION
     } else if version == 111
         && matches!(
@@ -36,7 +43,7 @@ fn body(name: &str, marker: &str, version: i64) -> Result<&'static str> {
         )
     {
         SELECTION_MIGRATION
-    } else if matches!(version, 110..=112)
+    } else if matches!(version, 110..=113)
         && matches!(
             name,
             "payload_profile_writer_guard"
@@ -46,7 +53,7 @@ fn body(name: &str, marker: &str, version: i64) -> Result<&'static str> {
         )
     {
         ELECTION_MIGRATION
-    } else if matches!(version, 109..=112)
+    } else if matches!(version, 109..=113)
         && matches!(
             name,
             "payload_profile_writer_graph"
@@ -244,7 +251,7 @@ pub(crate) async fn optional<C: GenericClient + Sync>(db: &C, table: &str) -> Re
         )
         .await?
         .try_get(0)?;
-    if !matches!(version, 108..=112) {
+    if !matches!(version, 108..=113) {
         return Err(WriterSchemaError::Invalid);
     }
     functions(db, version).await?;
