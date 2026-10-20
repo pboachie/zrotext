@@ -70,6 +70,37 @@ impl<'held, 'db> SelectedManifest03<'held, 'db> {
         }
         Ok(())
     }
+    /// Current authenticated-ingress selectors are checked separately by the
+    /// caller. This reads actual device rows without demanding a physical
+    /// handle that a reconnect ceremony is meant to restore.
+    pub(crate) async fn device_context(
+        &self,
+        tx: &'held Transaction<'db>,
+    ) -> Result<HeldDeviceContext03<'held, 'db>> {
+        self.revalidate(tx).await?;
+        current::context(tx, &self.history).await
+    }
+    /// Historical material from this exact fully verified immutable prefix.
+    /// It grants no current signer, owner, physical or content permission.
+    pub(crate) async fn retained_material(
+        &self,
+        tx: &Transaction<'_>,
+        version: u64,
+    ) -> Result<(Vec<u8>, u64)> {
+        self.revalidate(tx).await?;
+        let h = &self.history;
+        if version == h.accepted.accepted_manifest_version {
+            return Ok((h.first_signed.clone(), h.accepted.accepted_at_ms));
+        }
+        if version > h.tip_version {
+            return Err(Error::Conflict);
+        }
+        let row = records::by_version(tx, h.account, version)
+            .await?
+            .ok_or(Error::Conflict)?;
+        row.scope(h, &self.origin)?;
+        Ok((row.signed, row.accepted))
+    }
     pub(crate) async fn physical(
         &self,
         tx: &Transaction<'_>,
