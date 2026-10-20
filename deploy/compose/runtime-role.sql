@@ -302,4 +302,25 @@ BEGIN
  END LOOP;
 END;
 $migration$;
+-- Additive installed conversation03 consent, narrow writes only.
+DO $migration$
+DECLARE routine record; columns_sql text;
+BEGIN
+ REVOKE ALL ON TABLE public.conversation_profile03_intervals FROM PUBLIC;
+ SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) INTO columns_sql FROM pg_attribute WHERE attrelid='public.conversation_profile03_intervals'::regclass AND attnum>0 AND NOT attisdropped;
+ EXECUTE format('REVOKE ALL (%s) ON TABLE public.conversation_profile03_intervals FROM PUBLIC',columns_sql);
+ IF EXISTS(SELECT FROM pg_roles WHERE rolname='zrotext_runtime') THEN
+  REVOKE ALL ON TABLE public.conversation_profile03_intervals FROM zrotext_runtime;
+  EXECUTE format('REVOKE ALL (%s) ON TABLE public.conversation_profile03_intervals FROM zrotext_runtime',columns_sql);
+  GRANT SELECT ON TABLE public.conversation_profile03_intervals TO zrotext_runtime;
+ END IF;
+ FOR routine IN SELECT p.oid::regprocedure AS signature,p.proname FROM pg_proc p WHERE p.pronamespace='public'::regnamespace AND p.proname LIKE 'conversation_profile03_%' LOOP
+  EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',routine.signature);
+  IF EXISTS(SELECT FROM pg_roles WHERE rolname='zrotext_runtime') THEN
+   EXECUTE format('REVOKE ALL ON FUNCTION %s FROM zrotext_runtime',routine.signature);
+   IF routine.proname IN('conversation_profile03_interval_reserve','conversation_profile03_interval_request','conversation_profile03_interval_approve','conversation_profile03_interval_install','conversation_profile03_interval_stop','conversation_profile03_interval_device_stop','conversation_profile03_interval_ready') THEN EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO zrotext_runtime',routine.signature); END IF;
+  END IF;
+ END LOOP;
+END;
+$migration$;
 COMMIT;
