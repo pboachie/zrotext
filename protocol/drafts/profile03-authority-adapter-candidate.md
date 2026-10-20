@@ -323,3 +323,13 @@ provenance. It is no authentication or effect witness. Complete ancestry
 verification, bounded transport pages and local highwater, current owner/phone
 adapters and content/effect paths remain separate integration work. See
 [manifest successor storage](../../docs/profile03-manifest-successors.md).
+# Original content consent storage
+
+Migration113 retains additive ZTCA03 consent reservations, exact owner/phone
+proofs, installed acknowledgement and separately attributed owner/device
+withdrawal. Its six narrow methods and closed ordinary-runtime capability
+checks are storage primitives. Genuine authentication, fresh owner request
+step-up, original signatures, local private custody and current physical/source
+selection remain independent adapter obligations. An interval phase does not
+authorize a reviewed send, grant, fetch or radio effect. Those typed paths remain
+separate; no legacy conversation02 permission is inferred or translated.

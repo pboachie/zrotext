@@ -7,6 +7,7 @@ pub mod billing;
 pub mod contact_content_contract;
 pub mod contact_reader_issuer;
 pub mod contact_reader_statement;
+pub mod conversation_profile03_storage;
 pub mod device_socket;
 pub mod encrypted_schedule;
 pub mod enrollment;

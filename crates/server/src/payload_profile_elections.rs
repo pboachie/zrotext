@@ -18,13 +18,20 @@ pub enum ElectionSchemaError {
 }
 type Result<T> = std::result::Result<T, ElectionSchemaError>;
 fn body(name: &str, version: i64) -> Result<&'static str> {
-    let source = if version == 112
+    let source = if version == 113
+        && matches!(
+            name,
+            "payload_profile_writer_version" | "payload_profile_writer_ready"
+        ) {
+        include_str!("../../../deploy/compose/migrations/113_conversation_profile03_intervals.sql")
+    } else if matches!(version, 112..=113)
         && matches!(
             name,
             "payload_profile_writer_version"
                 | "payload_profile_writer_ready"
                 | "payload_profile_writer_policy"
-        ) {
+        )
+    {
         include_str!(
             "../../../deploy/compose/migrations/112_payload_profile_manifest_successors.sql"
         )
@@ -384,7 +391,7 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
         )
         .await?
         .try_get(0)?;
-    if !matches!(version, 110..=112) {
+    if !matches!(version, 110..=113) {
         return Err(ElectionSchemaError::Invalid);
     }
     functions(db, version).await?;
