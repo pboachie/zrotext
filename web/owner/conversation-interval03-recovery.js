@@ -109,10 +109,18 @@
         r.onsuccess = safe(() => { const value = decode(r.result); if (value.command.opening_id !== opening) throw Error("Original head changed"); done(value); });
       });
     });
-    const list = () => transaction("readonly", (_heads, attempts, done, _tx, safe) => {
-      const r = attempts.getAll(IDBKeyRange.bound([key, ""], [key, "\uffff"]), 129);
-      r.onsuccess = safe(() => { if (r.result.length > 128) throw Error("Consent history bounded"); done(Object.freeze(r.result.map(decode))); });
-    });
+    function page(options = { afterOpeningId: null, limit: 32 }) {
+      const o = closed(options, ["afterOpeningId", "limit"]);
+      if (o.afterOpeningId !== null) id(o.afterOpeningId);
+      if (!Number.isInteger(o.limit) || o.limit < 1 || o.limit > 32) throw Error("Bounded history page required");
+      return transaction("readonly", (_heads, attempts, done, _tx, safe) => {
+        const r = attempts.getAll(IDBKeyRange.bound([key, o.afterOpeningId ?? ""], [key, "\uffff"], o.afterOpeningId !== null), o.limit + 1);
+        r.onsuccess = safe(() => {
+          const values = Object.freeze(r.result.slice(0, o.limit).map(decode));
+          done(Object.freeze({ attempts: values, nextOpeningId: r.result.length > o.limit ? values.at(-1).command.opening_id : null }));
+        });
+      });
+    }
     async function compareAndSet(expected, candidate) {
       const before = expected === null ? null : record(expected, scope), after = record(candidate, scope), serialized = JSON.stringify(after);
       if (serialized.length > 32768) throw Error("Consent record bounded");
@@ -121,10 +129,9 @@
           if ((h.result ?? null) !== (before?.command.opening_id ?? null)) { tx.abort(); return; }
           const write = () => {
             if (before && before.command.opening_id === after.command.opening_id) { transition(before, after); attempts.put(serialized, [key, after.command.opening_id]); done(); return; }
-            if (before && !["stopped", "expired"].includes(before.receipt?.phase) || after.original !== null || after.receipt !== null || fields.slice(5).some(k => after[k])) throw Error("Reconcile original consent before a new opening");
-            const count = attempts.count(); count.onsuccess = safe(() => {
-              if (count.result >= 128) { tx.abort(); return; } attempts.add(serialized, [key, after.command.opening_id]); heads.put(after.command.opening_id, key); done();
-            });
+            const neverSubmitted = before && before.original === null && before.receipt === null && fields.slice(5).every(k => !before[k]);
+            if (before && !["stopped", "expired"].includes(before.receipt?.phase) && !neverSubmitted || after.original !== null || after.receipt !== null || fields.slice(5).some(k => after[k])) throw Error("Reconcile original consent before a new opening");
+            attempts.add(serialized, [key, after.command.opening_id]); heads.put(after.command.opening_id, key); done();
           };
           if (before === null) { write(); return; }
           const r = attempts.get([key, before.command.opening_id]); r.onsuccess = safe(() => { if (!equal(decode(r.result), before)) { tx.abort(); return; } write(); });
@@ -134,7 +141,7 @@
     }
     // Records are local recovery only. Callers must freshly verify actual
     // original receipts and current permission; persisted phase proves neither.
-    return Object.freeze({ read, list, compareAndSet, close });
+    return Object.freeze({ read, page, compareAndSet, close });
   }
   const api = Object.freeze({ open }); if (typeof module !== "undefined" && module.exports) module.exports = api; else root.ZtInterval03Recovery = api;
 })(globalThis);

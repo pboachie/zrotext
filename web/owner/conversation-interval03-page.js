@@ -36,8 +36,9 @@
       const s = controller?.state(), waiting = busy || !!getHistory()?.state().busy;
       const show = (id, visible, enabled = true) => { el(id).hidden = !visible; el(id).disabled = waiting || !enabled; };
       show("interval-open", !s || s.closed);
-      show("interval-begin", !!s && !s.closed && (s.phase === "ready" || s.reconciled && ["stopped", "expired"].includes(s.phase)));
-      show("interval-resume", !!s && !s.closed && !!s.openingId && !s.reserveSubmitted && !s.hasReceipt && !s.localStopped);
+      show("interval-begin", !!s && !s.closed && (s.phase === "ready" || s.canPrepareFresh || s.reconciled && ["stopped", "expired"].includes(s.phase)));
+      el("interval-begin").textContent = s?.canPrepareFresh ? "Prepare fresh unsent request" : "Prepare conversation request";
+      show("interval-resume", !!s && !s.closed && !!s.openingId && !s.reserveSubmitted && !s.hasReceipt && !s.localStopped && !s.canPrepareFresh);
       show("interval-check", !!s && !s.closed && s.reserveSubmitted);
       show("interval-review", !!s && !s.closed && s.reconciled && s.phase === "reserved" && !s.originalSaved && !s.historical && !s.localStopped);
       const request = !!s && !s.closed && s.reconciled && s.originalSaved && ["signed_request", "reserved"].includes(s.phase) && !s.historical && !s.localStopped;

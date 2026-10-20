@@ -11,10 +11,10 @@ function fixture() {
     async review(v) { calls.push(v); s = { ...s, phase: "signed_request", originalSaved: true }; },
     async request(v) { assert.equal(el("interval-password").value, ""); assert.equal(el("interval-factor").value, ""); calls.push(v); s = { ...s, phase: "requested" }; },
     async stop() { calls.push("stop"); s = { ...s, phase: "stopping", verifiedActive: false }; }, async check() { calls.push("check"); } };
-  mount({ getHistory: () => ({ state: () => ({ durable: true, busy: false }) }), document: { getElementById: el, createElement: () => ({}) }, window: { addEventListener() {} },
+  const ui = mount({ getHistory: () => ({ state: () => ({ durable: true, busy: false }) }), document: { getElementById: el, createElement: () => ({}) }, window: { addEventListener() {} },
     discover: async () => ({ archives: [{ keyId: "01".repeat(32) }], phones: [{ keyId: "02".repeat(32) }] }), create(o) { s.closed = false; calls.push(o.readSelection()); return controller; } });
   el("owner-peer").value = "+12"; el("interval-duration").value = "300000";
-  return { el, calls, click: id => el(id).events.click() };
+  return { el, calls, click: id => el(id).events.click(), state: value => { s = { ...s, ...value }; ui.render(); } };
 }
 test("conversation page performs no automatic setup and fills already approved key choices", async () => {
   const f = fixture(); assert.deepEqual(f.calls, []); assert.equal(f.el("interval-retain").checked, false); assert.equal(f.el("interval-request").hidden, true);
@@ -36,4 +36,11 @@ test("shipping page includes the exact codec disclosure and fixed packaged setup
   for (const file of ["conversation-interval03-recovery.js", "conversation-interval03.js", "conversation-interval03-page.js"]) {
     assert(html.includes(`src="${file}"`)); assert(fs.readFileSync(path.join(__dirname, "../../crates/server/src/owner_ui.rs"), "utf8").includes(`include_str!("../../../web/owner/${file}")`));
   }
+});
+test("only proven expired unsent state offers a fresh explicit opening without resuming the expired command", async () => {
+  const f = fixture(); await f.click("interval-open");
+  f.state({ phase: "saved_attempt", openingId: "synthetic-opening", canPrepareFresh: true, reserveSubmitted: false, hasReceipt: false });
+  assert.equal(f.el("interval-begin").hidden, false); assert.match(f.el("interval-begin").textContent, /fresh unsent/); assert.equal(f.el("interval-resume").hidden, true);
+  f.state({ phase: "unknown", canPrepareFresh: false, reserveSubmitted: true }); assert.equal(f.el("interval-begin").hidden, true);
+  assert.equal(f.calls.filter(v => v && typeof v === "object" && "durationMs" in v).length, 0);
 });

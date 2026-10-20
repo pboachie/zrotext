@@ -97,3 +97,39 @@ test("verified active display expires with actual current permission and does no
     assert.equal(f.calls.filter(x => x.route.endsWith("/requests")).length, 1);
   } finally { f.close(); }
 });
+test("fresh anchored time permits explicit replacement only of a proven expired never-submitted command", async () => {
+  const f = await fixture(); try {
+    let refuse = true;
+    const { c } = await f.create({ openRecovery: async o => { const j = await f.openAttempts(o); return { ...j, compareAndSet: (a, b) => {
+      if (refuse && b.reserve_submitted) return Promise.reject(Error("Synthetic pre-HTTP commit refusal")); return j.compareAndSet(a, b);
+    } }; } });
+    await assert.rejects(c.begin({ durationMs: 1000 })); const original = await f.read();
+    assert.equal(original.reserve_submitted, false); assert.equal(original.original, null); assert.equal(original.receipt, null);
+    await assert.rejects(c.begin({ durationMs: 1000 })); f.mono += 2000;
+    await assert.rejects(c.resumeReservation()); assert.equal(f.calls.filter(v => v.route.endsWith("/challenges")).length, 0);
+    // Actual primary comparison may trail the parent's conservative local
+    // upper clock slightly; retain separate floors without relaxing expiry.
+    f.mutateContext = v => { v.compared_ms = String(BigInt(v.compared_ms) + 1999n); v.selection.compared_ms = v.compared_ms; return v; };
+    refuse = false; await c.begin({ durationMs: 1000 }); const fresh = await f.read();
+    assert.notEqual(fresh.command.opening_id, original.command.opening_id); assert.equal(fresh.original, null);
+    const journal = await f.openAttempts({ scope: { ...f.scope, peer: f.choice.peer }, currentOrigin: () => f.origin });
+    try { const page = await journal.page(); assert.equal(page.attempts.length, 2); assert.deepEqual(page.attempts.find(v => v.command.opening_id === original.command.opening_id), original); }
+    finally { journal.close(); }
+  } finally { f.close(); }
+});
+test("a primary comparison below the preceding genuine successful comparison still refuses", async () => {
+  const f = await fixture(); try {
+    const { c } = await f.create(); await c.begin({ durationMs: 1000 });
+    f.mutateContext = v => { v.compared_ms = String(BigInt(v.compared_ms) - 1n); v.selection.compared_ms = v.compared_ms; return v; };
+    await assert.rejects(c.review({ disclosure: true })); assert.equal((await f.read()).original, null);
+    assert.equal(f.calls.filter(v => v.route.endsWith("/requests")).length, 0);
+  } finally { f.close(); }
+});
+test("expiry of a submitted UNKNOWN never permits an explicit replacement or signature reset", async () => {
+  const f = await fixture(); try {
+    const { c } = await f.create(); f.loseReserve = true; await assert.rejects(c.begin({ durationMs: 1000 })); const original = await f.read();
+    f.mono += 2000; assert.equal(c.state().canPrepareFresh, false); await assert.rejects(c.begin({ durationMs: 1000 }));
+    await assert.rejects(c.resumeReservation()); assert.deepEqual(await f.read(), original);
+    assert.equal(f.calls.filter(v => v.route.endsWith("/challenges")).length, 1);
+  } finally { f.close(); }
+});

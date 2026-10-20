@@ -38,16 +38,16 @@ test("an actual transaction abort cannot publish a replacement head or lose the 
     const put = IDBObjectStore.prototype.put;
     IDBObjectStore.prototype.put = function (...args) { const r = Reflect.apply(put, this, args); if (this.name === "heads") this.transaction.abort(); return r; };
     try { await assert.rejects(j.compareAndSet(ended, f.make())); } finally { IDBObjectStore.prototype.put = put; }
-    assert.deepEqual(await j.read(), ended); assert.deepEqual(await j.list(), [ended]);
+    assert.deepEqual(await j.read(), ended); assert.deepEqual((await j.page()).attempts, [ended]);
   } finally { f.close(); }
 });
 test("a new terminal replacement retains every original and cannot reuse a prior opening", async () => {
   const f = fixture(); try {
     const j = await f.open(), first = await j.compareAndSet(null, f.make());
     const ended = await j.compareAndSet(first, { ...first, reserve_submitted: true, receipt: f.receipt(first, "stopped") });
-    const second = await j.compareAndSet(ended, f.make()); assert.equal((await j.list()).length, 2);
+    const second = await j.compareAndSet(ended, f.make()); assert.equal((await j.page()).attempts.length, 2);
     const endSecond = await j.compareAndSet(second, { ...second, reserve_submitted: true, receipt: f.receipt(second, "expired") });
-    await assert.rejects(j.compareAndSet(endSecond, first)); assert.deepEqual(await j.read(), endSecond); assert.equal((await j.list()).length, 2);
+    await assert.rejects(j.compareAndSet(endSecond, first)); assert.deepEqual(await j.read(), endSecond); assert.equal((await j.page()).attempts.length, 2);
   } finally { f.close(); }
 });
 test("lost reservation responses retain their original opening and cannot become a new attempt", async () => {
@@ -74,10 +74,32 @@ test("saved signatures and later receipt proofs are immutable across explicit re
 test("scope isolation, withdrawal and malformed recovery cannot supply authority", async () => {
   const f = fixture(); try {
     const j = await f.open(), original = await j.compareAndSet(null, f.make()), other = await f.open({ scope: { ...f.scope, peer: "+" + "987654321" } });
-    assert.equal(await other.read(), null); assert.deepEqual(await other.list(), []);
+    assert.equal(await other.read(), null); assert.deepEqual((await other.page()).attempts, []);
     await assert.rejects(j.compareAndSet(original, { ...original, request_submitted: true }));
     await assert.rejects(j.compareAndSet(original, { ...original, receipt: f.receipt(original) }));
     await assert.rejects(j.compareAndSet(original, { ...original, command: { ...original.command, interval_expires_ms: "00" } }));
-    f.abort.abort(); await assert.rejects(async () => j.read()); await assert.rejects(async () => j.list());
+    f.abort.abort(); await assert.rejects(async () => j.read()); await assert.rejects(async () => j.page());
+  } finally { f.close(); }
+});
+test("retained history cannot impose a global lifetime cap and every scoped page stays bounded", async () => {
+  const f = fixture(); try {
+    const j = await f.open(), originals = new Map(); let head = null;
+    for (let i = 0; i < 130; i++) {
+      head = await j.compareAndSet(head, f.make());
+      head = await j.compareAndSet(head, { ...head, reserve_submitted: true, receipt: f.receipt(head, "expired") });
+      originals.set(head.command.opening_id, head);
+    }
+    const otherScope = { ...f.scope, accountId: crypto.randomUUID(), originalUserId: crypto.randomUUID(), peer: "+" + "987654321" };
+    const other = await f.open({ scope: otherScope }), fresh = f.make(); fresh.command.peer = otherScope.peer;
+    assert.equal(await other.read(), null); await other.compareAndSet(null, fresh);
+    assert.equal((await other.read()).command.opening_id, fresh.command.opening_id);
+    let afterOpeningId = null; const seen = new Set();
+    do {
+      const page = await j.page({ afterOpeningId, limit: 17 }); assert(page.attempts.length <= 17);
+      for (const r of page.attempts) { assert.deepEqual(r, originals.get(r.command.opening_id)); assert(!seen.has(r.command.opening_id)); seen.add(r.command.opening_id); }
+      afterOpeningId = page.nextOpeningId;
+    } while (afterOpeningId !== null);
+    assert.equal(seen.size, 130); assert.deepEqual(await j.read(), head);
+    assert.throws(() => j.page({ afterOpeningId: null, limit: 1000 })); assert.throws(() => j.page({ afterOpeningId: "invalid", limit: 1 }));
   } finally { f.close(); }
 });

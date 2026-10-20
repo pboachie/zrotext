@@ -35,7 +35,7 @@
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000) throw Error("Bounded consent action required");
     const lifetime = new AbortController(), listeners = new Set();
     let closedState = !enabled, busy = false, phase = "unprepared", sdk, selected, choice, checkpoint, token, store, journal, client, saved, lease, keyScope;
-    let tick = 0, primary = 0n, primaryTick = 0, observed = 0n, timer, reconciled = false, verified = false, verifiedDeadline = 0n, localStopped = false, transportAbort, activeDone, stopping;
+    let tick = 0, primary = 0n, primaryTick = 0, observed = 0n, parentObserved = 0n, timer, reconciled = false, verified = false, verifiedDeadline = 0n, localStopped = false, transportAbort, activeDone, stopping;
     const position = p => JSON.stringify([String(p.position.version), hex(p.position.digest), hex(p.position.ancestry)]);
     function capture() {
       const s = closed(readSelection(), ["peer", "archiveReaderKeyId", "phoneSignerKeyId", "integrationReaders", "retentionConsent"]);
@@ -73,8 +73,14 @@
     const hidden = () => { if (document.hidden) close(); };
     if (enabled) { history.onClose(close); window.addEventListener?.("pagehide", close); document.addEventListener?.("visibilitychange", hidden); }
     function now() { guard(); if (!primary) throw Error("Current service time required"); return primary + BigInt(Math.floor(monotonic() - primaryTick)); }
-    function observe(value, started) {
-      const before = primary ? now() : 0n; if (value < observed) throw Error("Current time regressed"); observed = value; primary = value; primaryTick = started;
+    function observe(value, started, comparison = false) {
+      const before = primary ? now() : 0n;
+      // A parent's elapsed/RTT-conservative clock can be ahead of a later
+      // actual primary comparison. Keep both monotone floors independently;
+      // neither source may lower the conservative local expiry clock.
+      if (comparison) { if (value < observed) throw Error("Primary time regressed"); observed = value; }
+      else { if (value < parentObserved) throw Error("Parent clock regressed"); parentObserved = value; }
+      primary = value; primaryTick = started;
       if (now() < before) { primary = before; primaryTick = monotonic(); }
     }
     async function actualScope() {
@@ -84,10 +90,13 @@
     }
     function snapshot() {
       if (verified) try { if (now() >= verifiedDeadline) { verified = false; phase = "permission_expired"; } } catch { verified = false; }
+      let canPrepareFresh = false;
+      if (saved && !closedState && !saved.reserve_submitted && !saved.original && !saved.receipt) try { canPrepareFresh = now() >= BigInt(saved.command.interval_expires_ms); } catch {}
       return Object.freeze({ phase, closed: closedState, busy, openingId: saved?.command.opening_id ?? null,
       intervalId: saved?.receipt?.interval_id ?? null, originalSaved: !!saved?.original, submitted: !!saved?.request_submitted,
       reserveSubmitted: !!saved?.reserve_submitted, hasReceipt: !!saved?.receipt, localStopped,
       peer: choice?.peer ?? null, expiresMs: saved?.command.interval_expires_ms ?? null, readerCount: choice?.integrationReaders.length ?? 0,
+      canPrepareFresh,
       historical: !!saved && saved.owner_session_id !== selected?.session, reconciled, verifiedActive: verified }); }
     async function action(run) {
       guard(); if (busy) throw Error("Consent action pending"); busy = true;
@@ -133,7 +142,7 @@
       await actualScope(); const started = monotonic();
       const checked = await history.conversationContext({ openingId: r.opening_id, intervalId: r.interval_id,
         statement: sdk.manifestHistoryBinary03(r.statement, 695, 1092), selection: selection() }); guard();
-      observe(checked.comparedMs, started);
+      observe(checked.comparedMs, started, true);
       const at = now(); if (at >= checked.permissionExpiresMs || pending && at >= checked.statement.setupExpiresMs) throw Error("Current consent window ended");
       return checked;
     }
@@ -166,10 +175,13 @@
       phase = saved ? "saved_attempt" : "ready"; return snapshot();
     }); }
     async function begin({ durationMs } = {}) { return action(async () => {
-      if (!journal || saved && !(reconciled && ["stopped", "expired"].includes(saved.receipt?.phase))) throw Error("Reconcile original consent first");
+      if (!journal) throw Error("Original consent journal required");
+      await actualScope();
+      const expiredUnsent = saved && !saved.reserve_submitted && !saved.original && !saved.receipt && now() >= BigInt(saved.command.interval_expires_ms);
+      if (saved && !(expiredUnsent || reconciled && ["stopped", "expired"].includes(saved.receipt?.phase))) throw Error("Reconcile original consent first");
       if (!Number.isSafeInteger(durationMs) || durationMs < 1000 || durationMs > 86400000) throw Error("Explicit bounded interval required");
       localStopped = false;
-      await actualScope(); const metadata = await store.metadata(keyScope); guard(); if (!metadata) throw Error("Recover existing browser message key first");
+      const metadata = await store.metadata(keyScope); guard(); if (!metadata) throw Error("Recover existing browser message key first");
       const b64 = sdk.manifestHistoryBase64url03;
       const command = { v: 1, opening_id: crypto.randomUUID(), line_id: selected.line, peer: choice.peer, archive_reader_key_id: b64(bytes(choice.archiveReaderKeyId)),
         phone_signer_key_id: b64(bytes(choice.phoneSignerKeyId)), browser_signer_key_id: b64(bytes(metadata.keyId)), interval_expires_ms: String(now() + BigInt(durationMs)),
@@ -183,8 +195,10 @@
     }); }
     async function resumeReservation() { return action(async () => {
       if (!saved || saved.reserve_submitted || saved.receipt || localStopped || saved.owner_session_id !== selected.session) throw Error("Check the original submitted reservation first");
-      await actualScope(); const metadata = await store.metadata(keyScope); writable();
+      await actualScope(); if (now() >= BigInt(saved.command.interval_expires_ms)) throw Error("Prepare a fresh explicit request for the expired unsent reservation");
+      const metadata = await store.metadata(keyScope); writable();
       if (!metadata || sdk.manifestHistoryBase64url03(bytes(metadata.keyId)) !== saved.command.browser_signer_key_id) throw Error("Original retained browser key required");
+      if (now() >= BigInt(saved.command.interval_expires_ms)) throw Error("Original unsent reservation expired");
       reconciled = false; const r = await client.reserve(saved.command); guard(); return accept(r);
     }); }
     async function review({ disclosure = false } = {}) { return action(async () => {

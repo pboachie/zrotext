@@ -86,10 +86,19 @@ Original signatures and submitted markers cannot reset. An uncertain first
 response is reconciled by its original opening; an unsent saved command can be
 explicitly resumed without a new UUID. A submitted request never repeats on
 reload. The user checks its original status before any explicit continuation.
+History has no software lifetime-count cap: explicit scoped pages return at
+most32 records with an original-opening cursor. Appending another request does
+not delete earlier attempts or block an unrelated peer after a global row count.
 
 Fresh same-user sign-in observes old-session history without adopting it. A new
-opening requires explicit action after an actual terminal service response; the
-old attempt stays retained. Stop withdraws local approval immediately, including
+opening requires explicit action after an actual terminal service response. A
+proven never-submitted, unsigned, receipt-free command can also be replaced
+explicitly after the genuine anchored parent clock proves its expiry. Its exact
+old record stays retained; an expired submitted/UNKNOWN command never receives
+this exception, and an already expired unsent command is not sent again. Parent
+conservative elapsed time and actual primary comparison have separate monotone
+floors; neither can lower the conservative local expiry clock.
+Stop withdraws local approval immediately, including
 during signing, and aborts pending transport before its separate original Stop
 call. Late crypto cannot publish a new signed request. If the original interval
 identity or session is unavailable, the page asks for reconciliation rather than
