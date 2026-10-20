@@ -26,6 +26,7 @@ fn device(c: &Case) -> intervals::DeviceInterval03<'static> {
 #[ignore = "requires disposable ZT_AUTH_TEST_DATABASE_URL administrator; actual ordinary runtime conversation schema"]
 async fn genuine_owner_request_and_phone_install_activate_then_device_stop_preserves_originals() {
     let (mut c, _) = elected().await;
+    let lease = device(&c);
     let browser = SigningKey::generate_from_rng(&mut rand::rng());
     let (opening, statement, signed, signature) = packet(&mut c, &browser, false).await;
     let tx = c.db.reader.transaction().await.unwrap();
@@ -95,7 +96,7 @@ async fn genuine_owner_request_and_phone_install_activate_then_device_stop_prese
     let owner_sig = sign(&browser, b"zrotext/conversation/request03/v1\0", &bytes);
     let tx = c.db.reader.transaction().await.unwrap();
     assert!(
-        intervals::device_challenge(&tx, device(&c))
+        intervals::device_challenge(&tx, lease)
             .await
             .unwrap()
             .is_none()
@@ -121,7 +122,7 @@ async fn genuine_owner_request_and_phone_install_activate_then_device_stop_prese
     drop(proof);
     tx.commit().await.unwrap();
     let tx = c.db.reader.transaction().await.unwrap();
-    let challenge = intervals::device_challenge(&tx, device(&c))
+    let challenge = intervals::device_challenge(&tx, lease)
         .await
         .unwrap()
         .unwrap();
@@ -145,24 +146,24 @@ async fn genuine_owner_request_and_phone_install_activate_then_device_stop_prese
         .concat(),
     );
     let tx = c.db.reader.transaction().await.unwrap();
-    intervals::device_approve(&tx, device(&c), id, &parsed.digest(), &phone_sig)
+    intervals::device_approve(&tx, lease, id, &parsed.digest(), &phone_sig)
         .await
         .unwrap();
     tx.commit().await.unwrap();
     let tx = c.db.reader.transaction().await.unwrap();
-    let status = intervals::device_status(&tx, device(&c), id, Uuid::new_v4())
+    let status = intervals::device_status(&tx, lease, id, Uuid::new_v4())
         .await
         .unwrap();
     assert_eq!(status["interval_permission"]["phase"], "install_pending");
     assert!(status["interval_permission"]["installed_signature"].is_null());
     tx.rollback().await.unwrap();
     let tx = c.db.reader.transaction().await.unwrap();
-    intervals::device_install(&tx, device(&c), id, &parsed.digest(), &installed_sig)
+    intervals::device_install(&tx, lease, id, &parsed.digest(), &installed_sig)
         .await
         .unwrap();
     tx.commit().await.unwrap();
     let tx = c.db.reader.transaction().await.unwrap();
-    let active = intervals::device_status(&tx, device(&c), id, Uuid::new_v4())
+    let active = intervals::device_status(&tx, lease, id, Uuid::new_v4())
         .await
         .unwrap();
     assert_eq!(active["interval_permission"]["phase"], "active");
@@ -172,7 +173,7 @@ async fn genuine_owner_request_and_phone_install_activate_then_device_stop_prese
     );
     tx.rollback().await.unwrap();
     let tx = c.db.reader.transaction().await.unwrap();
-    let stopped = intervals::device_stop(&tx, device(&c), id, &parsed.digest())
+    let stopped = intervals::device_stop(&tx, lease, id, &parsed.digest())
         .await
         .unwrap();
     assert_eq!(stopped["type"], "conversation_interval_stopped03");
@@ -193,7 +194,7 @@ async fn genuine_owner_request_and_phone_install_activate_then_device_stop_prese
     tx.rollback().await.unwrap();
     let tx = c.db.reader.transaction().await.unwrap();
     assert!(matches!(
-        intervals::device_status(&tx, device(&c), id, Uuid::new_v4()).await,
+        intervals::device_status(&tx, lease, id, Uuid::new_v4()).await,
         Err(Error::Expired)
     ));
     tx.rollback().await.unwrap();
