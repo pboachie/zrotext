@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
 use crate::sealed_manifest03::tests::hex;
+use p256::ecdsa::{Signature, SigningKey, signature::Signer};
+
+fn sign(key: &SigningKey, domain: &[u8], payload: &[u8]) -> Vec<u8> {
+    let signature: Signature = key.sign(&crypto::framed(domain, payload).unwrap());
+    signature.normalize_s().to_bytes().to_vec()
+}
 
 #[test]
 fn exact_independent_android_vector_checks_all_three_original_signatures() {
@@ -10,10 +16,74 @@ fn exact_independent_android_vector_checks_all_three_original_signatures() {
         "../../../../protocol/v1/vectors/sealed-profile03-selection-refresh-01.json"
     ))
     .unwrap();
-    let bundle = hex(&v["bundle"]);
+    let original = hex(&v["bundle"]);
+    let original_point: [u8; 65] = hex(&v["device_signing_point"]).try_into().unwrap();
+    let original_owner: [u8; 65] = hex(&v["owner_approval_point"]).try_into().unwrap();
+    let original_installed = hex(&v["installed_signature"]);
+    // The independent vector deliberately uses epoch7. Verify all original
+    // published signatures, while keeping the actual runtime's epoch1 refusal.
+    for (point, signature, transcript) in [
+        (
+            &original_point,
+            &original[617..681],
+            hex(&v["device_transcript"]),
+        ),
+        (
+            &original_owner,
+            &original[681..745],
+            hex(&v["owner_transcript"]),
+        ),
+        (
+            &original_point,
+            original_installed.as_slice(),
+            hex(&v["installed_transcript"]),
+        ),
+    ] {
+        crypto::signature(point, signature, &transcript).unwrap();
+    }
+    assert!(matches!(
+        core::Core03::decode(&original[..496]),
+        Err("refresh unsupported generation/epoch")
+    ));
+
+    // Exercise the supported production parser/phases with real fresh keys and
+    // signatures. No source-owned independent vector or history is rewritten.
+    let device_key = SigningKey::generate_from_rng(&mut rand::rng());
+    let owner_key = SigningKey::generate_from_rng(&mut rand::rng());
+    let point: [u8; 65] = device_key
+        .verifying_key()
+        .to_sec1_point(false)
+        .as_bytes()
+        .try_into()
+        .unwrap();
+    let owner: [u8; 65] = owner_key
+        .verifying_key()
+        .to_sec1_point(false)
+        .as_bytes()
+        .try_into()
+        .unwrap();
+    let mut bundle = original[..617].to_vec();
+    bundle[112..120].copy_from_slice(&1_u64.to_be_bytes());
+    bundle[216..248].copy_from_slice(&crate::sealed_manifest::key_id(4, &point));
+    bundle[248..280].copy_from_slice(&crate::sealed_manifest::key_id(4, &owner));
+    let device_signature = sign(
+        &device_key,
+        b"ZTSE/line/payload-profile/selection-refresh/device/v1\0",
+        &bundle,
+    );
+    let owner_signature = sign(
+        &owner_key,
+        b"ZTSE/line/payload-profile/selection-refresh/owner/v1\0",
+        &[bundle.as_slice(), &crypto::sha(&device_signature)].concat(),
+    );
+    bundle.extend(device_signature);
+    bundle.extend(owner_signature);
+    let installed = sign(
+        &device_key,
+        b"ZTSE/line/payload-profile/selection-refresh/installed/v1\0",
+        &[&bundle[56..72], &crypto::sha(&bundle), &bundle[344..376]].concat(),
+    );
     let core = &bundle[..496];
-    let point: [u8; 65] = hex(&v["device_signing_point"]).try_into().unwrap();
-    let owner: [u8; 65] = hex(&v["owner_approval_point"]).try_into().unwrap();
     let digest = |at| core[at..at + 32].try_into().unwrap();
     let number = |at| crypto::number(&core[at..at + 8]).unwrap();
     let uuid = |at| Uuid::from_slice(&core[at..at + 16]).unwrap();
@@ -46,7 +116,6 @@ fn exact_independent_android_vector_checks_all_three_original_signatures() {
         origin: &origin,
         original_subscription: 8,
     };
-    let installed = hex(&v["installed_signature"]);
     let issued = number(472);
     let expires = number(480);
     verify_installed(&bundle, issued + 1, issued + 2, &installed, &e).unwrap();
