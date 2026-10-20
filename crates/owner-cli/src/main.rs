@@ -23,6 +23,7 @@ fn main() -> std::process::ExitCode {
             help.push_str("archive-init --account UUID --origin HTTPS_ORIGIN --bundle PUBLIC_ID --archive-output FILE --receipt-output FILE --recovery-output FILE\nExplicit archive creation with authenticated root recovery, separate protected raw32 recovery-file consent and verified create-new publication.\n");
             help.push_str("conversation-genesis (explicit unlock build only): independently expected --account --origin --bundle --proposal --output --session --device --line --device-signing-fingerprint --generation --peer --phone-reader-point --archive-reader-point --phone-signer-point --issued --expires, in that order. First four-role manifest only; requires independent public point comparison.\n");
             help.push_str("conversation-activation (explicit unlock build only): --account --origin --bundle --proposal --output --session --device --line --generation --peer --manifest-version --manifest-digest --phone-reader --archive-reader --phone-signer --issued, in that order. Preserved-record successor only; no root-signed peer/session consent or network activation.\n");
+            help.push_str("payload-profile-upgrade (explicit unlock build only): independently expected --account --origin --bundle --proposal --output --device --line --manifest-version --manifest-digest --phone-reader --phone-signer --issued, in that order. First same-root03 successor only; original keys and expiry stay exact.\n");
             help.push_str("conversation-refresh (explicit unlock build only): independently expected --account --origin --bundle --proposal --output --session --interval --device --line --generation --peer --manifest-version --manifest-digest --phone-reader --archive-reader --signer --signer-point --until, in that order. One typed role-5 manifest refresh; archive records remain exact.\n");
             help
         };
@@ -59,6 +60,7 @@ fn main() -> std::process::ExitCode {
         args.first().map(String::as_str),
         Some(
             "line-key-registration"
+                | "payload-profile-upgrade"
                 | "conversation-refresh"
                 | "conversation-activation"
                 | "custody-sign"
