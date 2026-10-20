@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Decoded structural companion for reviewed intent03 V2",
+  "description": "Hex byte fields and exact decimal strings for component interoperability, not an HTTP request. Binary canonical order, recipient uniqueness, cross-field timing, signatures, actual current authority and original interval provenance require the codec/verifier and adapters. V1 is a separate historical format.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "accountId",
+    "deviceId",
+    "lineId",
+    "bindingId",
+    "ownerUserId",
+    "ownerSessionId",
+    "intervalId",
+    "messageId",
+    "bindingGeneration",
+    "vaultGeneration",
+    "manifestVersion",
+    "accountSelectionEpoch",
+    "observedMs",
+    "messageExpiresMs",
+    "reviewIssuedMs",
+    "reviewExpiresMs",
+    "selectedReaderKeyId",
+    "rootFingerprint",
+    "manifestDigest",
+    "electionCommitment",
+    "electionBundleSha256",
+    "ownerSessionDigest",
+    "originDigest",
+    "signerKeyId",
+    "envelopeDigest",
+    "unsignedDigest",
+    "peer",
+    "recipients",
+    "smsCeiling"
+  ],
+  "properties": {
+    "accountId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "deviceId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "lineId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "bindingId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "ownerUserId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "ownerSessionId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "intervalId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "messageId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "bindingGeneration": {
+      "$ref": "#/$defs/positive63"
+    },
+    "vaultGeneration": {
+      "const": "1"
+    },
+    "manifestVersion": {
+      "$ref": "#/$defs/positive63"
+    },
+    "accountSelectionEpoch": {
+      "const": "1"
+    },
+    "observedMs": {
+      "$ref": "#/$defs/positive63"
+    },
+    "messageExpiresMs": {
+      "$ref": "#/$defs/positive63"
+    },
+    "reviewIssuedMs": {
+      "$ref": "#/$defs/positive63"
+    },
+    "reviewExpiresMs": {
+      "$ref": "#/$defs/positive63"
+    },
+    "selectedReaderKeyId": {
+      "$ref": "#/$defs/digest"
+    },
+    "rootFingerprint": {
+      "$ref": "#/$defs/digest"
+    },
+    "manifestDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "electionCommitment": {
+      "$ref": "#/$defs/digest"
+    },
+    "electionBundleSha256": {
+      "$ref": "#/$defs/digest"
+    },
+    "ownerSessionDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "originDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "signerKeyId": {
+      "$ref": "#/$defs/digest"
+    },
+    "envelopeDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "unsignedDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "peer": {
+      "type": "string",
+      "pattern": "^2b3[1-9](?:3[0-9]){1,14}$"
+    },
+    "recipients": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 8,
+      "prefixItems": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "role",
+            "keyId"
+          ],
+          "properties": {
+            "role": {
+              "const": 1
+            },
+            "keyId": {
+              "$ref": "#/$defs/digest"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "role",
+            "keyId"
+          ],
+          "properties": {
+            "role": {
+              "const": 2
+            },
+            "keyId": {
+              "$ref": "#/$defs/digest"
+            }
+          }
+        }
+      ],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "role",
+          "keyId"
+        ],
+        "properties": {
+          "role": {
+            "const": 3
+          },
+          "keyId": {
+            "$ref": "#/$defs/digest"
+          }
+        }
+      }
+    },
+    "smsCeiling": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 6
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^(?!0{32}$)[0-9a-f]{32}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^(?!0{64}$)[0-9a-f]{64}$"
+    },
+    "positive63": {
+      "type": "string",
+      "pattern": "^(?:[1-9][0-9]{0,17}|(?:[1-8][0-9]{18}|9(?:[0-1][0-9]{17}|2(?:[0-1][0-9]{16}|2(?:[0-2][0-9]{15}|3(?:[0-2][0-9]{14}|3(?:[0-6][0-9]{13}|7(?:[0-1][0-9]{12}|20(?:[0-2][0-9]{10}|3(?:[0-5][0-9]{9}|6(?:[0-7][0-9]{8}|8(?:[0-4][0-9]{7}|5(?:[0-3][0-9]{6}|4(?:[0-6][0-9]{5}|7(?:[0-6][0-9]{4}|7(?:[0-4][0-9]{3}|5(?:[0-7][0-9]{2}|80[0-7])))))))))))))))))$"
+    }
+  }
+}
