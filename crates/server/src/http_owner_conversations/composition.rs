@@ -217,6 +217,16 @@ mod tests {
             "conversation-activation-proposal",
             "conversation-genesis-proposal",
             "owner-context-authoring",
+            "sealed-approval-key-store",
+            "owner-profile-election-client",
+            "original-line-evidence03",
+            "draft03-manifest",
+            "payload-profile-election03",
+            "payload-profile-upgrade-proposal",
+            "accepted-manifest-history03",
+            "original-manifest-history03",
+            "browser-message-signer-store03",
+            "owner-conversation-interval03",
         ] {
             package
                 .write(&format!("sdk/{name}.js"), b"export const fixture = true;")
@@ -279,6 +289,9 @@ mod tests {
             "/owner/conversation",
             "/owner/conversation-owner-setup.js",
             "/v1/owner/conversation-sdk/sdk/draft02-manifest.js",
+            "/v1/owner/conversation-sdk/sdk/accepted-manifest-history03.js",
+            "/v1/owner/conversation-sdk/sdk/browser-message-signer-store03.js",
+            "/v1/owner/conversation-sdk/sdk/owner-conversation-interval03.js",
         ] {
             let response = router
                 .clone()
