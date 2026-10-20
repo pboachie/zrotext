@@ -82,6 +82,19 @@ impl HeldOwnerRecords03<'_, '_> {
         let (records, checked) =
             read_records(self.tx, self.records.selector, self.checked_ms).await?;
         if records != self.records {
+            #[cfg(test)]
+            eprintln!(
+                "held owner changed: selector={} epoch={} root={} credential_state={} expiry={} activity={} times={} identity={}",
+                records.selector != self.records.selector,
+                records.selection_epoch != self.records.selection_epoch,
+                records.root_fingerprint != self.records.root_fingerprint,
+                records.credential_state != self.records.credential_state,
+                records.expiry_ms != self.records.expiry_ms,
+                records.activity_ms != self.records.activity_ms,
+                records.times != self.records.times,
+                records.canonical != self.records.canonical
+                    || records.digest != self.records.digest,
+            );
             return Err(OwnerRecordsError::Refused);
         }
         self.checked_ms = checked;
@@ -121,6 +134,13 @@ async fn clock(tx: &Transaction<'_>, floor: u64) -> Result<u64> {
     let r=tx.query_one("SELECT pg_catalog.pg_is_in_recovery(),pg_catalog.floor(extract(epoch FROM pg_catalog.clock_timestamp())*1000)::bigint",&[]).await?;
     let now = positive(r.try_get(1)?)?;
     if r.try_get::<_, bool>(0)? || now < floor {
+        #[cfg(test)]
+        eprintln!(
+            "owner primary clock refused: recovery={} regressed={} shortfall_ms={}",
+            r.try_get::<_, bool>(0)?,
+            now < floor,
+            floor.saturating_sub(now)
+        );
         return Err(OwnerRecordsError::Refused);
     }
     Ok(now)
