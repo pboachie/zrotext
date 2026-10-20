@@ -345,7 +345,7 @@ async fn functions<C: GenericClient + Sync>(db: &C, version: i64) -> Result<()> 
 /// upgrade promise; missing, partial, altered and polluted110 always refuse.
 pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
     let namespace:String=db.query_one("SELECT coalesce((SELECT n.nspname::text FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE c.oid=pg_catalog.to_regclass('line_activation_v2_pending')),'public')",&[]).await?.try_get(0)?;
-    let present=db.query_one("SELECT pg_catalog.to_regclass(pg_catalog.format('%I.payload_profile_election_challenges',$1)) IS NOT NULL,pg_catalog.to_regclass(pg_catalog.format('%I.payload_profile_elections',$1)) IS NOT NULL,EXISTS(SELECT FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname=$1 AND(p.proname LIKE 'payload_profile_election_%' OR p.proname IN('payload_profile_epoch_valid','payload_profile_writer_policy')))",&[&namespace]).await?;
+    let present=db.query_one("SELECT pg_catalog.to_regclass(pg_catalog.format('%I.payload_profile_election_challenges',$1::text)) IS NOT NULL,pg_catalog.to_regclass(pg_catalog.format('%I.payload_profile_elections',$1::text)) IS NOT NULL,EXISTS(SELECT FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname::text=$1::text AND(p.proname LIKE 'payload_profile_election_%' OR p.proname IN('payload_profile_epoch_valid','payload_profile_writer_policy')))",&[&namespace]).await?;
     let challenge: bool = present.try_get(0)?;
     let accepted: bool = present.try_get(1)?;
     let helper: bool = present.try_get(2)?;

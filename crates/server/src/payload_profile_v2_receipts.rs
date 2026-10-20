@@ -139,7 +139,7 @@ async fn functions<C: GenericClient + Sync>(db: &C) -> Result<()> {
 /// never a Profile03 upgrade promise. Partial or changed109 installations refuse.
 pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
     let resolved = db.query_one("SELECT coalesce((SELECT n.nspname::text FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE c.oid=pg_catalog.to_regclass('line_activation_v2_pending')),'public')", &[]).await?.try_get::<_,String>(0)?;
-    let row=db.query_one("SELECT pg_catalog.to_regclass(pg_catalog.format('%I.payload_profile_v2_activation_receipts',$1)) IS NOT NULL,EXISTS(SELECT FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname=$1 AND p.proname LIKE 'payload_profile_v2_%')", &[&resolved]).await?;
+    let row=db.query_one("SELECT pg_catalog.to_regclass(pg_catalog.format('%I.payload_profile_v2_activation_receipts',$1::text)) IS NOT NULL,EXISTS(SELECT FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname::text=$1::text AND p.proname LIKE 'payload_profile_v2_%')", &[&resolved]).await?;
     if !row.try_get::<_, bool>(0)? {
         if row.try_get::<_, bool>(1)? {
             return Err(ReceiptSchemaError::Invalid);
