@@ -220,7 +220,22 @@ async fn functions<C: GenericClient + Sync>(db: &C) -> Result<()> {
             (&[] as &[&str]),
         ),
     ] {
-        let rows=db.query("SELECT p.prosrc,pg_catalog.oidvectortypes(p.proargtypes),p.prorettype=$2::text::pg_catalog.regtype,l.lanname,p.provolatile::text,p.proisstrict,p.prosecdef,p.proretset,p.proconfig,p.proargnames,p.proargmodes IS NULL,p.proallargtypes IS NULL,p.proparallel='u',p.prokind='f',p.pronargdefaults=0,p.proowner=c.relowner FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_language l ON l.oid=p.prolang JOIN pg_catalog.pg_class c ON c.oid='public.accounts'::pg_catalog.regclass WHERE p.pronamespace='public'::pg_catalog.regnamespace AND p.proname=$1",&[&name,&result]).await?;
+        // Composite argument display names depend on the caller's search_path.
+        // Resolve the exact qualified signature instead of trusting that display.
+        let args = args
+            .split(", ")
+            .filter(|argument| !argument.is_empty())
+            .map(|argument| {
+                if argument.starts_with("public.") {
+                    argument.to_owned()
+                } else {
+                    format!("pg_catalog.{argument}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let signature = format!("public.{name}({args})");
+        let rows=db.query("SELECT p.prosrc,coalesce(p.oid=pg_catalog.to_regprocedure($3::text),false),p.prorettype=$2::text::pg_catalog.regtype,l.lanname,p.provolatile::text,p.proisstrict,p.prosecdef,p.proretset,p.proconfig,p.proargnames,p.proargmodes IS NULL,p.proallargtypes IS NULL,p.proparallel='u',p.prokind='f',p.pronargdefaults=0,p.proowner=c.relowner FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_language l ON l.oid=p.prolang JOIN pg_catalog.pg_class c ON c.oid='public.accounts'::pg_catalog.regclass WHERE p.pronamespace='public'::pg_catalog.regnamespace AND p.proname=$1",&[&name,&result,&signature]).await?;
         if rows.len() != 1 {
             return Err(ReviewedSendSchemaError::Invalid);
         }
@@ -228,7 +243,7 @@ async fn functions<C: GenericClient + Sync>(db: &C) -> Result<()> {
         let config = config.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
         let names = names.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
         if row.try_get::<_, String>(0)? != body(name)?
-            || row.try_get::<_, String>(1)? != args
+            || !row.try_get::<_, bool>(1)?
             || !row.try_get::<_, bool>(2)?
             || row.try_get::<_, String>(3)? != language
             || row.try_get::<_, String>(4)? != volatility

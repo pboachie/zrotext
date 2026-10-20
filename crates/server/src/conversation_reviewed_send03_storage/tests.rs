@@ -129,6 +129,14 @@ async fn actual_queue_metadata_constraint_rejects_null_or_out_of_range_profile03
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE on a disposable PostgreSQL cluster"]
 async fn reviewed_admission_storage_refuses_missing_disabled_unknown_and_substituted_graph() {
     let mut fixture = fixture().await;
+    for search_path in ["pg_catalog", "pg_catalog, public", "public"] {
+        let tx = fixture.db.transaction().await.unwrap();
+        tx.batch_execute(&format!("SET LOCAL search_path TO {search_path}"))
+            .await
+            .unwrap();
+        require(&tx).await.unwrap();
+        tx.rollback().await.unwrap();
+    }
     for sql in [
         "ALTER TABLE public.conversation_reviewed_sends03 DISABLE TRIGGER conversation_reviewed_send03_before_change",
         "ALTER TABLE public.conversation_reviewed_sends03 DISABLE TRIGGER conversation_reviewed_send03_after_change",
@@ -139,6 +147,7 @@ async fn reviewed_admission_storage_refuses_missing_disabled_unknown_and_substit
         "DROP TABLE public.conversation_reviewed_sends03 CASCADE",
         "CREATE OR REPLACE FUNCTION public.conversation_reviewed_send03_ready() RETURNS boolean LANGUAGE sql STABLE SET search_path TO pg_catalog AS 'SELECT true'",
         "ALTER FUNCTION public.conversation_reviewed_send03_admit(uuid,uuid,uuid,bytea,bytea,bytea,bigint) SECURITY INVOKER",
+        "CREATE FUNCTION public.conversation_reviewed_send03_envelope(bytea,bytea) RETURNS void LANGUAGE plpgsql AS 'BEGIN RETURN; END'",
         "GRANT EXECUTE ON FUNCTION public.conversation_reviewed_send03_scope(uuid,bytea,bytea,bigint,bigint) TO PUBLIC",
     ] {
         let tx = fixture.owner.transaction().await.unwrap();
