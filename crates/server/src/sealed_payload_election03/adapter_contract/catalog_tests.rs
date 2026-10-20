@@ -146,12 +146,20 @@ async fn candidate_inventory_covers_exact_numbered_schema_relations_columns_fk_a
                 ) | (
                     "messages",
                     Some(
-                        "exact_reviewed03_admission_or_retention_without_implicit_effect_permission"
+                        "exact_reviewed03_admission_or_one_use_grant_claim_without_submit_permission"
                     )
                 ) | (
                     "dispatch_jobs",
                     Some(
-                        "exact_reviewed03_initial_job_or_real_erasure_without_claim_or_grant_permission"
+                        "exact_reviewed03_initial_job_or_one_use_grant_claim_without_retry_permission"
+                    )
+                ) | (
+                    "message_attempts" | "dispatch_fences",
+                    Some("exact_initial03_granted_effect_only_no_submit_or_unknown_reset")
+                ) | (
+                    "conversation_profile03_grants",
+                    Some(
+                        "one_attempt_lifetime_nonpersonal_tombstone_not_current_effect_permission"
                     )
                 )
             ),
