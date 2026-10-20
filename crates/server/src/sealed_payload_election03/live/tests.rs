@@ -78,15 +78,17 @@ async fn real_opening_burns_once_distinct_factors_commit_and_exact_retry_stays_h
     let tx = c.db.reader.transaction().await.unwrap();
     device_proof(
         &tx,
-        crate::device_socket::DeviceSession {
-            account_id: c.principal.tenant.account_id(),
-            device_id: c.device,
-            connection_epoch: 1,
+        SocketSelection03 {
+            session: crate::device_socket::DeviceSession {
+                account_id: c.principal.tenant.account_id(),
+                device_id: c.device,
+                connection_epoch: 1,
+            },
+            site: "activation-test",
+            instance: "fixture",
+            deployment: 1,
+            origin: ORIGIN,
         },
-        "activation-test",
-        "fixture",
-        1,
-        ORIGIN,
         challenge,
         &device_signature,
     )
@@ -224,15 +226,17 @@ async fn wrong_owner_signature_rolls_back_new_factor_and_entire_epoch_transition
     let tx = c.db.reader.transaction().await.unwrap();
     device_proof(
         &tx,
-        crate::device_socket::DeviceSession {
-            account_id: c.principal.tenant.account_id(),
-            device_id: c.device,
-            connection_epoch: 1,
+        SocketSelection03 {
+            session: crate::device_socket::DeviceSession {
+                account_id: c.principal.tenant.account_id(),
+                device_id: c.device,
+                connection_epoch: 1,
+            },
+            site: "activation-test",
+            instance: "fixture",
+            deployment: 1,
+            origin: ORIGIN,
         },
-        "activation-test",
-        "fixture",
-        1,
-        ORIGIN,
         r.challenge,
         &device_signature,
     )

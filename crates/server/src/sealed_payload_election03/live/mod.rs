@@ -38,6 +38,16 @@ pub enum Error {
 }
 type Result<T> = std::result::Result<T, Error>;
 
+/// Source-owned socket selectors only; construction authenticates nothing.
+/// Actual enrolled signatures and held live records are still mandatory.
+pub(crate) struct SocketSelection03<'a> {
+    pub session: crate::device_socket::DeviceSession,
+    pub site: &'a str,
+    pub instance: &'a str,
+    pub deployment: u64,
+    pub origin: &'a str,
+}
+
 // Authenticated browser variants borrow genuine proofs; Reserved is explicitly
 // read-only selected records for a prior authorized challenge. No selector or
 // digest constructor upgrades received identities to current owner/factor proof.
