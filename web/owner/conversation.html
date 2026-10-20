@@ -4,7 +4,7 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex"><title>Conversation simulator · ZROtext</title>
   <link rel="stylesheet" href="devices.css"><link rel="stylesheet" href="conversation.css">
-  <script defer src="conversation-core.js"></script><script defer src="conversation-owner-adapter.js"></script><script defer src="conversation-bootstrap.js"></script><script defer src="conversation-owner-setup.js"></script><script defer src="conversation-root-enrollment.js"></script><script defer src="conversation-line-setup.js"></script><script defer src="conversation-profile03-recovery.js"></script><script defer src="conversation-profile03-setup.js"></script><script defer src="conversation-manifest03-recovery.js"></script><script defer src="conversation-manifest03-history.js"></script><script defer src="conversation-message-key03-recovery.js"></script><script defer src="conversation-message-key03.js"></script><script defer src="conversation-message-key03-page.js"></script><script defer src="conversation.js"></script><script defer src="conversation-profile03-page.js"></script><script defer src="conversation-manifest03-page.js"></script>
+  <script defer src="conversation-core.js"></script><script defer src="conversation-owner-adapter.js"></script><script defer src="conversation-bootstrap.js"></script><script defer src="conversation-owner-setup.js"></script><script defer src="conversation-root-enrollment.js"></script><script defer src="conversation-line-setup.js"></script><script defer src="conversation-profile03-recovery.js"></script><script defer src="conversation-profile03-setup.js"></script><script defer src="conversation-manifest03-recovery.js"></script><script defer src="conversation-manifest03-history.js"></script><script defer src="conversation-message-key03-recovery.js"></script><script defer src="conversation-message-key03.js"></script><script defer src="conversation-message-key03-page.js"></script><script defer src="conversation-interval03-recovery.js"></script><script defer src="conversation-interval03.js"></script><script defer src="conversation-interval03-page.js"></script><script defer src="conversation.js"></script><script defer src="conversation-profile03-page.js"></script><script defer src="conversation-manifest03-page.js"></script>
 </head>
 <body><main>
   <header><div><p class="eyebrow">ZROtext</p><h1>One conversation</h1></div></header>
@@ -124,6 +124,29 @@
       <button id="message-confirm" type="button" hidden>Confirm approval in accepted history</button>
       <button id="message-close" type="button" hidden>Close browser setup</button>
       <p id="message-status" role="status" aria-live="polite">Browser setup continues from the same saved request and key. No approval or message is sent automatically.</p>
+    </fieldset>
+    <fieldset id="conversation-interval03"><legend>Approve this conversation</legend>
+      <p>Continue with the selected phone and peer above. Existing approved keys are filled from your verified profile history. Your original request stays saved if setup is interrupted.</p>
+      <label><input id="interval-retain" type="checkbox"> Save this conversation's public setup requests and recovery history in this browser.</label>
+      <button id="interval-open" type="button">Continue conversation setup</button>
+      <label>Approved archive <select id="interval-archive"></select></label>
+      <label>Selected phone's content signer <select id="interval-phone"></select></label>
+      <label>Consent duration <select id="interval-duration"><option value="300000">5 minutes</option><option value="900000">15 minutes</option><option value="3600000">1 hour</option></select></label>
+      <button id="interval-begin" type="button" hidden>Prepare conversation request</button>
+      <button id="interval-resume" type="button" hidden>Continue saved reservation</button>
+      <p id="interval-summary"></p>
+      <p id="interval-disclosure-text">With your approval, ZROtext sends and receives SMS for this selected phone line and conversation, and transfers encrypted message content to your paired browser and the explicitly listed customer-controlled readers. Stop closes new sending, capture and transfer; retained encrypted content is deleted separately.</p>
+      <label><input id="interval-disclosure" type="checkbox"> I approve this exact conversation and the readers selected above, with separate confirmation on my phone.</label>
+      <button id="interval-review" type="button" hidden>Review and save exact approval</button>
+      <div id="interval-factors" hidden>
+        <label>Current password <input id="interval-password" type="password" autocomplete="current-password" maxlength="1024"></label>
+        <label>Fresh authenticator or recovery code <input id="interval-factor" type="password" autocomplete="off" maxlength="26"></label>
+      </div>
+      <button id="interval-request" type="button" hidden>Confirm and request phone approval</button>
+      <button id="interval-check" type="button" hidden>Check original request</button>
+      <button id="interval-stop" type="button" hidden>Stop this consent</button>
+      <button id="interval-close" type="button" hidden>Close setup</button>
+      <p id="interval-status" role="status" aria-live="polite">Recover verified profile history and browser key approval above, then continue here. No request is repeated automatically.</p>
     </fieldset>
     <div id="custody-artifacts"></div>
   </fieldset>
