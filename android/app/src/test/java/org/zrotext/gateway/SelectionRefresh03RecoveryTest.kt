@@ -196,10 +196,11 @@ class SelectionRefresh03RecoveryTest {
         assertNull(r.dao.find(target.refreshId))
         for (row in rows) { assertNull(r.dao.find(row.refreshId)); assertNull(r.dao.closure(row.refreshId)) }
     }
-    @Test fun schemaSeventeenUpgradePreservesActualOriginalJournalsSignedRefreshAndUnknownEffect(): Unit = Fixture().use { r ->
+    @Test fun schemaSeventeenUpgradeRetainsSignedAndUnknownHistory(): Unit = Fixture().use { r ->
         r.retainSigned()
         val context = org.robolectric.RuntimeEnvironment.getApplication()
         val name = "refresh-closure-${UUID.randomUUID()}.db"
+        check(context.getDatabasePath(name).parentFile?.mkdirs() == true || context.getDatabasePath(name).parentFile?.isDirectory == true)
         val unknown = SmsAttempt(UUID(0, 94).toString(), r.v.f.line.selected, 1, AttemptState.UNKNOWN, 1, 1)
         try {
             androidx.room.Room.databaseBuilder(context, SmsJournalDatabase::class.java, name).allowMainThreadQueries().build().let { saved ->

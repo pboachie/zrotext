@@ -28,15 +28,17 @@ class ConversationInterval03RuntimeTest {
         val base = Profile03ExecutionFixture(distinctEventSigner = true)
         private val metadata = mutableListOf<String>()
         private val live = AtomicBoolean(true)
+        private var elapsed = 100L
         val time = Profile03SessionTime(base.line.account, base.line.device, base.line.epoch, base.session.originHash,
-            { 100L }, live::get, { 2 }, { metadata.add(it); true }).also { clock ->
+            { elapsed }, live::get, { 2 }, { metadata.add(it); true }).also { clock ->
             check(clock.request())
             val request = JSONObject(metadata.single())
             clock.accept(JSONObject().put("v", 1).put("type", "payload_profile_session03")
                 .put("challenge", request.getString("challenge")).put("account_id", base.line.account)
                 .put("device_id", base.line.device).put("connection_epoch", base.line.epoch).put("deployment_epoch", 1)
-                .put("session_id", base.session.sessionId).put("server_time_ms", base.now).put("site_id", "synthetic-site")
+                .put("session_id", base.session.sessionId).put("server_time_ms", base.now - 1).put("site_id", "synthetic-site")
                 .put("instance_id", "synthetic-instance").put("line_activation_version", 2).toString().toByteArray())
+            elapsed++ // The real clock refuses a snapshot at or below its anchor; never weaken it.
         }
         val f = ConversationInterval03TestFixture(base, checkNotNull(time.snapshot()).first
             .deviceSessionDigest(Profile03ExecutionFixture.point(base.enrollment)))
