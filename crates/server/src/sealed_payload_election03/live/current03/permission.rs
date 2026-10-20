@@ -11,7 +11,8 @@ enum Proof<'a, 'held, 'db> {
     IntervalRecords {
         tx: &'held Transaction<'db>,
         selector: super::super::Selector,
-        records: crate::sealed_payload_election03::owner_records::HeldOwnerRecords03<'held, 'db>,
+        records:
+            Box<crate::sealed_payload_election03::owner_records::HeldOwnerRecords03<'held, 'db>>,
     },
 }
 impl Proof<'_, '_, '_> {
@@ -115,7 +116,7 @@ pub(crate) async fn hold_interval_selection<'held, 'db>(
         Proof::IntervalRecords {
             tx,
             selector,
-            records,
+            records: Box::new(records),
         },
         interval.statement().line_id(),
         origin,
@@ -191,9 +192,6 @@ impl HeldMessageSelection03<'_, '_, '_> {
     }
     pub(crate) fn now_ms(&self) -> u64 {
         self.current.checked
-    }
-    pub(crate) fn selection_epoch(&self) -> u64 {
-        self.current.epoch
     }
     pub(crate) fn device_session_digest(&self) -> &[u8; 32] {
         self.current.context.identity_digest()

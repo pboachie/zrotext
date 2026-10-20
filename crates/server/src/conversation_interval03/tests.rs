@@ -84,15 +84,15 @@ fn expected<'a>(p: &'a Packet, s: &'a Statement03) -> ExpectedConsent03<'a> {
     }
 }
 fn signatures(p: &Packet, s: &Statement03) -> ([u8; 64], [u8; 64], [u8; 64]) {
-    let owner = sign(&p.f.keys[4], REQUEST, s.bytes()).try_into().unwrap();
-    let phone = sign(
+    let owner: [u8; 64] = sign(&p.f.keys[4], REQUEST, s.bytes()).try_into().unwrap();
+    let phone: [u8; 64] = sign(
         &p.f.keys[3],
         APPROVE,
         &[s.bytes(), &crypto::sha(&owner)].concat(),
     )
     .try_into()
     .unwrap();
-    let installed = sign(
+    let installed: [u8; 64] = sign(
         &p.f.keys[3],
         INSTALL,
         &[s.bytes(), &crypto::sha(&owner), &crypto::sha(&phone)].concat(),
@@ -184,7 +184,7 @@ fn composed_original_bytes_are_exact_and_cannot_select_an_unverified_role_or_dea
     };
     let made = compose(&e, make(s.interval_id(), NOW + 500)).unwrap();
     assert_eq!(made.bytes(), bytes);
-    assert!(compose(&e, make(s.binding_id(), NOW + 500)).is_err());
+    assert!(compose(&e, make(Uuid::from_bytes(s.ids[3]), NOW + 500)).is_err());
     assert!(compose(&e, make(s.interval_id(), NOW + 80_001)).is_err());
 }
 #[test]

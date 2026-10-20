@@ -162,9 +162,6 @@ impl Statement03 {
     pub(crate) fn line_id(&self) -> Uuid {
         Uuid::from_bytes(self.ids[2])
     }
-    pub(crate) fn binding_id(&self) -> Uuid {
-        Uuid::from_bytes(self.ids[3])
-    }
     pub(crate) fn owner(&self) -> (Uuid, Uuid) {
         (Uuid::from_bytes(self.ids[6]), Uuid::from_bytes(self.ids[7]))
     }
@@ -187,12 +184,6 @@ impl Statement03 {
     }
     pub(crate) fn owner_digest(&self) -> &[u8; 32] {
         &self.digests[8]
-    }
-    pub(crate) fn device_digest(&self) -> &[u8; 32] {
-        &self.digests[10]
-    }
-    pub(crate) fn physical_digest(&self) -> &[u8; 32] {
-        &self.digests[11]
     }
     pub fn digest(&self) -> [u8; 32] {
         crypto::sha(&self.bytes)

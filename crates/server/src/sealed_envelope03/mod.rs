@@ -54,12 +54,6 @@ impl VerifiedEnvelope03 {
     pub fn envelope_digest(&self) -> &[u8; 32] {
         &self.envelope_digest
     }
-    pub(crate) fn matches_review(&self, signer: &[u8; 32], observed: u64, expires: u64) -> bool {
-        self.parsed.kind == 1
-            && self.parsed.signer == *signer
-            && self.parsed.observed == observed
-            && self.parsed.expires == Some(expires)
-    }
     pub fn body_aad(&self) -> Vec<u8> {
         [
             b"ZTSE/body/v3\0".as_slice(),
@@ -243,4 +237,4 @@ pub fn verify(
 }
 
 #[cfg(test)]
-pub(crate) mod tests;
+mod tests;
