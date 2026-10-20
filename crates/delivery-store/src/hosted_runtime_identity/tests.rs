@@ -280,7 +280,7 @@ async fn native_defaults_cannot_be_supplied_or_protected_proof_rows_copied() {
             refused(&f.runtime,&format!("INSERT INTO public.hosted_runtime_requests(operation,namespace_id,policy_revision,{column}) VALUES('enter','{namespace}',1,{suffix})"),SqlState::INSUFFICIENT_PRIVILEGE).await;
         }
     }
-    let Err(copy_error)=f.runtime.copy_in("COPY public.hosted_runtime_requests(operation,namespace_id,policy_revision,native_start) FROM STDIN").await else {panic!("native COPY override unexpectedly accepted")};
+    let Err(copy_error)=f.runtime.copy_in::<_, &'static [u8]>("COPY public.hosted_runtime_requests(operation,namespace_id,policy_revision,native_start) FROM STDIN").await else {panic!("native COPY override unexpectedly accepted")};
     assert_eq!(copy_error.code(), Some(&SqlState::INSUFFICIENT_PRIVILEGE));
     for sql in [
         "SELECT * FROM public.hosted_runtime_entries",
@@ -459,7 +459,7 @@ async fn manual_namespace_absence_holds_real_configuration_tuple_in_both_transit
         // Commit the genuine existing configuration transition AFTER both
         // snapshots observed absence, without changing their isolation/clock.
         namespace(&f.owner).await;
-        if isolation == IsolationLevel::ReadCommitted {
+        if matches!(isolation, IsolationLevel::ReadCommitted) {
             entry
                 .query_one("SELECT public.hosted_runtime_scope()", &[])
                 .await
@@ -505,7 +505,7 @@ async fn manual_namespace_absence_holds_real_configuration_tuple_in_both_transit
             )
             .await
             .unwrap();
-        let code = if isolation == IsolationLevel::ReadCommitted {
+        let code = if matches!(isolation, IsolationLevel::ReadCommitted) {
             SqlState::CHECK_VIOLATION
         } else {
             SqlState::T_R_SERIALIZATION_FAILURE
@@ -696,7 +696,10 @@ fn every_native_required_body_matches_the_independent_closed_stock_pins() {
         ),
     ] {
         let extracted = body(name).unwrap();
-        let actual = format!("{:x}", Sha256::digest(extracted.as_bytes()));
+        let actual = Sha256::digest(extracted.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
         assert!(
             pins.contains(&actual.as_str()),
             "wrong declared body for {name}"
