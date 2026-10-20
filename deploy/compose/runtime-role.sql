@@ -282,4 +282,24 @@ BEGIN
 END;
 $migration$;
 
+-- Same-root03 successor rows are immutable and narrow-write only.
+DO $migration$
+DECLARE routine record; columns_sql text;
+BEGIN
+ REVOKE ALL ON TABLE public.payload_profile_manifest_successors FROM PUBLIC;
+ IF EXISTS(SELECT FROM pg_roles WHERE rolname='zrotext_runtime') THEN
+  SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) INTO columns_sql FROM pg_attribute WHERE attrelid='public.payload_profile_manifest_successors'::regclass AND attnum>0 AND NOT attisdropped;
+  REVOKE ALL ON TABLE public.payload_profile_manifest_successors FROM zrotext_runtime;
+  EXECUTE format('REVOKE ALL (%s) ON TABLE public.payload_profile_manifest_successors FROM PUBLIC,zrotext_runtime',columns_sql);
+  GRANT SELECT ON TABLE public.payload_profile_manifest_successors TO zrotext_runtime;
+ END IF;
+ FOR routine IN SELECT p.oid::regprocedure AS signature,p.proname FROM pg_proc p WHERE p.pronamespace='public'::regnamespace AND p.proname LIKE 'payload_profile_manifest_%' LOOP
+  EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',routine.signature);
+  IF EXISTS(SELECT FROM pg_roles WHERE rolname='zrotext_runtime') THEN
+   EXECUTE format('REVOKE ALL ON FUNCTION %s FROM zrotext_runtime',routine.signature);
+   IF routine.proname IN('payload_profile_manifest_install','payload_profile_manifest_retention','payload_profile_manifest_ready') THEN EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO zrotext_runtime',routine.signature); END IF;
+  END IF;
+ END LOOP;
+END;
+$migration$;
 COMMIT;
