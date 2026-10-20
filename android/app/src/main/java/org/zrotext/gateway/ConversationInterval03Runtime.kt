@@ -35,6 +35,7 @@ internal class ConversationInterval03Runtime(private val owner: Any, private val
     private fun ram(w: Work, setup: Boolean = true, foreground: Boolean = true,
         decision: ConversationInterval03Foreground.Decision? = w.foreground) {
         check(!closed && current() && !w.stopped && time.snapshot()?.first?.session === w.session && w.selected.physical.isCurrent())
+        w.selected.authorityCurrent()
         val instant = now(); w.permission.statement.requireIntervalCurrent(instant)
         check(instant < w.selected.selected.permissionExpiresAtMs)
         if (setup) { check((!foreground || decision?.isCurrent() == true) && instant < w.permission.permissionExpiresMs)
@@ -237,6 +238,11 @@ internal class ConversationInterval03Runtime(private val owner: Any, private val
             if (!closed && current()) check(send(JSONObject().put("v", 1).put("type", "conversation_interval_stop03")
                 .put("interval_id", shown.interval).put("statement_sha256", b64(w.permission.statement.sha256())).toString()))
         } }
+    }
+    /** A manifest writer withdraws every old content lifetime at entry, before Room/key waits.
+     * Original phase/proof history remains exact; this does not claim remote Stop or deletion. */
+    fun withdrawAuthority() {
+        works.values.forEach { it.stopped = true; it.active = false }
     }
     /** Actual device-signed fetch source invokes this for every full preparation/effect recheck. */
     fun requireFetch(packet: Profile03FetchPacket, grant: SealedDispatch03Frames.Grant,

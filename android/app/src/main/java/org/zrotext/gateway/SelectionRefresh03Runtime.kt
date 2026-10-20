@@ -50,12 +50,14 @@ internal class SelectionRefresh03Runtime(private val origin: String, private val
     private val trust: Draft02TrustStore, private val readers: () -> DevicePayloadKeyStore,
     private val signer: DeviceSigningKeyStore, private val clock: Profile03SessionTime,
     private val socketCurrent: () -> Boolean, private val send: (String) -> Boolean,
+    private val currentManifest: ((Map<String, Any>, Profile03RetainedElection.Verified, SelectionRefresh03.Core) -> Profile03ManifestResolver.Authority)? = null,
     private val installed: () -> Unit,
 ) : AutoCloseable {
     private class Work(val decision: SamePhoneSelectionReview.Pending, val core: SelectionRefresh03.Core,
         val evidence: Map<String, Any>, val observation: ByteArray, var row: SelectionRefresh03Record,
         val identity: Profile03SessionTime.Identity) {
         var accepted: SelectionRefresh03.Bundle? = null
+        var manifestCurrent: (() -> Unit)? = null
     }
     private class Publication(override val lease: SelectedLineLeaseV2, override val record: LineActivationV2Record,
         override val refresh03: InstalledSelectionRefresh03, private val publish: () -> Boolean,
@@ -120,26 +122,36 @@ internal class SelectionRefresh03Runtime(private val origin: String, private val
         val hardware = readers().existingPublic()
         val point = signer.existingConversationPublicPoint()
         require(same(point, retained.point()))
-        val proofs = Profile03RetainedElection.verify(w.evidence, retained.election, retained.activation, trust,
+        val proofs = if (currentManifest == null) Profile03RetainedElection.verify(w.evidence, retained.election, retained.activation, trust,
             hardware, point, origin) { ram(w); now() }
+        else Profile03RetainedElection.historical(w.evidence, retained.election, retained.activation, trust,
+            hardware, point, origin) { ram(w); now() }
+        val manifest = currentManifest?.invoke(w.evidence, proofs, w.core)
+        if (manifest != null) {
+            w.manifestCurrent?.invoke()
+            if (w.manifestCurrent == null) w.manifestCurrent = manifest.ramCurrent
+            manifest.ramCurrent()
+        }
+        val authority = manifest?.authority ?: proofs.authority
         val a = proofs.election.acceptedRecord()
         val c = w.core
         require(c.account.toString() == retained.binding.accountId && c.device.toString() == retained.binding.deviceId &&
             c.line.toString() == retained.binding.lineId && c.binding.toString() == retained.election.newBindingId &&
             c.bindingGeneration == a.newBindingGeneration && c.vaultGeneration == a.vaultGeneration &&
-            c.manifestVersion == proofs.authority.version && same(c.manifestDigest, proofs.authority.digest) &&
+            c.manifestVersion == authority.version && same(c.manifestDigest, authority.digest) &&
             same(c.electionDigest, a.electionCommitment) && same(c.electionBundleSha256, a.electionBundleSha256) &&
             same(c.readerKeyId, hardware.keyId) && same(c.rootFingerprint, a.rootFingerprint) &&
             same(c.deviceSigningKeyId, Profile03RetainedElection.signingId(point)) &&
             same(c.approvalKeyId, Profile03RetainedElection.signingId(proofs.original.approvalPoint())) &&
             same(c.deviceSessionDigest, w.identity.deviceSessionDigest(point)) &&
             same(c.originDigest, sha(origin.toByteArray(Charsets.UTF_8))))
-        proofs.authority.requireSelectedReader(a.deviceId, a.lineId, hardware.keyId, hardware.point, now(), c.expiresMs)
+        authority.requireSelectedReader(a.deviceId, a.lineId, hardware.keyId, hardware.point, now(), c.expiresMs)
         w.decision.requireCurrent(); ram(w)
         return proofs
     }
     private fun ram(w: Work) {
         check(!closed && socketCurrent() && clock.snapshot()?.first?.session === w.identity.session)
+        w.manifestCurrent?.invoke()
         w.decision.requireRamCurrent()
         w.core.requireCurrent(now())
     }

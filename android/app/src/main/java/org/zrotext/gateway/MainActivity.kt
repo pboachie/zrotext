@@ -560,6 +560,8 @@ class MainActivity : ComponentActivity() {
                         GatewayButton(onClick = { startHeartbeat(rebootResume = false, profile03 = true) }) {
                             Text("Connect for encrypted messaging")
                         }
+                        OutlinedButton(onClick = { runCatching { Profile03ManifestMount.checkSetup() } },
+                            modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Check and resume messaging setup") }
                         OutlinedButton(onClick = { startSamePhoneReview() },
                             modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Review this phone's SIM again") }
                         SamePhoneReviewContent()
