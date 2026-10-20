@@ -362,14 +362,17 @@ pub(crate) async fn device_challenge(
 /// current owner/lease records are independently required here.
 pub(crate) async fn device_proof(
     tx: &Transaction<'_>,
-    session: crate::device_socket::DeviceSession,
-    site: &str,
-    instance: &str,
-    deployment: u64,
-    origin: &str,
+    socket: SocketSelection03<'_>,
     challenge: Uuid,
     signature: &[u8],
 ) -> Result<()> {
+    let SocketSelection03 {
+        session,
+        site,
+        instance,
+        deployment,
+        origin,
+    } = socket;
     ready(tx).await?;
     let opening:Uuid=tx.query_opt("SELECT opening_id FROM public.payload_profile_election_challenges WHERE account_id=$1 AND challenge_id=$2",&[&session.account_id,&challenge]).await?.ok_or(Error::NotFound)?.try_get(0)?;
     let r = Reservation::read(tx, session.account_id, opening)

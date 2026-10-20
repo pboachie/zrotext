@@ -230,11 +230,13 @@ pub(super) async fn dispatch(
             }
             live::device_proof(
                 &tx,
-                session,
-                &state.site_id,
-                &state.instance_id,
-                deployment,
-                origin,
+                live::SocketSelection03 {
+                    session,
+                    site: &state.site_id,
+                    instance: &state.instance_id,
+                    deployment,
+                    origin,
+                },
                 challenge,
                 &signature,
             )

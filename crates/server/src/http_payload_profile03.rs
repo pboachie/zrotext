@@ -163,12 +163,11 @@ fn source(headers: &HeaderMap) -> Result<ordinary_owner03::RequestSource<'_>, St
         let mut found = None;
         for line in headers.get_all(header::COOKIE) {
             for part in line.to_str().map_err(|_| StatusCode::FORBIDDEN)?.split(';') {
-                if let Some((key, value)) = part.trim().split_once('=') {
-                    if key == name {
-                        if found.replace(value).is_some() {
-                            return Err(StatusCode::FORBIDDEN);
-                        }
-                    }
+                if let Some((key, value)) = part.trim().split_once('=')
+                    && key == name
+                    && found.replace(value).is_some()
+                {
+                    return Err(StatusCode::FORBIDDEN);
                 }
             }
         }
