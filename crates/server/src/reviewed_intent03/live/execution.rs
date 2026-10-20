@@ -23,6 +23,9 @@ pub(crate) async fn lock<'held, 'db>(
     // interval/line/device locks; the actual locked row is compared afterward.
     let row = tx.query_opt("SELECT * FROM public.conversation_reviewed_sends03 WHERE account_id=$1 AND message_id=$2", &[&actor.session.account_id,&message]).await?.ok_or(Error::NotFound)?;
     let hint = StoredSend03::from_row(&row)?;
+    if hint.intent_version != 2 {
+        return Err(Error::Unsupported);
+    }
     let selector = owner_records::Selector {
         account: hint.ids[0],
         user: hint.ids[4],
@@ -49,6 +52,7 @@ pub(crate) async fn lock<'held, 'db>(
         .await?
         .ok_or(Error::NotFound)?;
     if stored.ids != hint.ids
+        || stored.intent_version != 2
         || stored.intent_hash != hint.intent_hash
         || stored.signature_hash != hint.signature_hash
         || stored.admitted != hint.admitted
@@ -98,7 +102,7 @@ impl<'held, 'db> HeldReviewed03<'held, 'db> {
                 != Some(s.digests[7].as_slice())
             || row.try_get::<_, Option<i16>>("sealed_segment_limit")? != Some(i16::from(s.ceiling))
             || row.try_get::<_, Vec<u8>>("request_digest")? != s.digests[9]
-            || peer.as_bytes() != originals.0.peer
+            || peer.as_bytes() != originals.0.common().peer
             || time(row.try_get("expires_ms")?)? != s.numbers[5]
             || crypto::sha(&envelope) != s.digests[8]
             || (!self.envelope.is_empty() && self.envelope != envelope)
@@ -131,7 +135,8 @@ impl<'held, 'db> HeldReviewed03<'held, 'db> {
     }
     fn verify_current(&self, required_until: u64) -> Result<()> {
         let s = &self.stored;
-        if required_until <= self.held.now_ms()
+        if s.intent_version != 2
+            || required_until <= self.held.now_ms()
             || s.device_session != *self.held.device_session_digest()
             || s.physical != *self.held.physical_digest()
             || s.interval_digest != self.interval.statement().digest()
@@ -153,8 +158,8 @@ impl<'held, 'db> HeldReviewed03<'held, 'db> {
             signer,
             &recipients,
         );
-        verify_retained(
-            Intent03::decode(intent.bytes()).map_err(|_| Error::Unsupported)?,
+        v2::verify_retained(
+            v2::Intent03V2::decode(intent.bytes()).map_err(|_| Error::Unsupported)?,
             signature,
             &self.envelope,
             &expected,

@@ -54,6 +54,9 @@ impl<'held, 'db> Mode03<'held, 'db> {
         crate::conversation_profile03_grant_storage::require(tx)
             .await
             .map_err(|_| Error::Unavailable)?;
+        crate::conversation_reviewed_send03_storage::require_v2(tx)
+            .await
+            .map_err(|_| Error::Unavailable)?;
         let rows = tx
             .query(
                 "SELECT * FROM public.conversation_profile03_grant_lock($1,$2,$3,$4,$5,$6,$7)",
