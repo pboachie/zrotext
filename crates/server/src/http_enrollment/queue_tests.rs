@@ -183,7 +183,7 @@ macro_rules! queue_schema {
         [$(($name, include_str!(concat!("../../../../deploy/compose/migrations/", $name)))),+]
     };
 }
-const QUEUE_SCHEMA: [(&str, &str); 107] = queue_schema!(
+const LEGACY_QUEUE_SCHEMA: [(&str, &str); 107] = queue_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -293,29 +293,13 @@ const QUEUE_SCHEMA: [(&str, &str); 107] = queue_schema!(
     "107_registration_browser_intents.sql",
 );
 #[test]
-fn queue_fixture_includes_every_checked_in_migration() {
-    let directory =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
-    let mut names = std::fs::read_dir(directory)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "sql"))
-        .map(|path| path.file_name().unwrap().to_str().unwrap().to_owned())
-        .collect::<Vec<_>>();
-    names.sort();
-    assert_eq!(
-        names,
-        QUEUE_SCHEMA
-            .into_iter()
-            .filter(|(name, _)| !name.starts_with("../migration-candidates/"))
-            .map(|(name, _)| name)
-            .collect::<Vec<_>>()
-    );
+fn queue_fixture_retains_exact_legacy107_prefix() {
+    crate::test_migration_inventory::assert_legacy107_fixture(&LEGACY_QUEUE_SCHEMA);
 }
 
 // Exercise production index choices, including online preparation.
 async fn apply_queue_schema(db: &Client) {
-    for (name, sql) in QUEUE_SCHEMA {
+    for (name, sql) in LEGACY_QUEUE_SCHEMA {
         if name == "070_message_summary_metadata.sql" {
             db.batch_execute("CREATE INDEX CONCURRENTLY messages_summary_queue ON messages(account_id,state,created_at) WHERE state IN ('accepted','queued','claimed','submitting','submitted')").await.unwrap();
             db.batch_execute("BEGIN").await.unwrap();

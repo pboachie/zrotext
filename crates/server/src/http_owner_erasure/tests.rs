@@ -25,7 +25,7 @@ const ORIGIN: &str = "https://test.example";
 /// the Compose runner applies it to a fresh database. Nothing is skipped:
 /// the erasure's blocked-table and delete plans must stay honest against the
 /// schema production actually runs.
-const MIGRATIONS: &[(&str, &str)] = &[
+const LEGACY_MIGRATIONS: &[(&str, &str)] = &[
     (
         "001_foundation.sql",
         include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
@@ -546,32 +546,16 @@ const PREPARED_INDEXES: &[(&str, &str)] = &[
     ),
 ];
 
-/// The fixture above must name every checked-in migration, in order. A
-/// skipped file lets the erasure plans drift from the schema production runs
-/// (054 dropped a table the delete plan still named, and no test noticed).
+/// This isolated schema deliberately retains the exact107 prefix. The shared
+/// inventory separately pins every current migration's name and bytes; current
+/// public-schema role coverage is exercised below, without replaying108+ here.
 #[test]
-fn migrations_fixture_is_every_checked_in_migration() {
-    let directory =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
-    let mut discovered = std::fs::read_dir(directory)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .filter(|name| name.ends_with(".sql"))
-        .collect::<Vec<_>>();
-    discovered.sort();
-    let embedded = MIGRATIONS
-        .iter()
-        .filter(|(name, _)| !name.starts_with("../migration-candidates/"))
-        .map(|(name, _)| name.to_string())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        discovered, embedded,
-        "add every migration file to MIGRATIONS, in order"
-    );
+fn erasure_fixture_retains_exact_legacy107_prefix() {
+    crate::test_migration_inventory::assert_legacy107_fixture(LEGACY_MIGRATIONS);
 }
 
-/// Every table the erasure deletes from or counts as blocking exists in the
-/// fully migrated schema. A migration that drops or renames one of them makes
+/// Every legacy plan table exists in the isolated107 fixture. A migration that
+/// drops or renames one of them makes
 /// every erasure fail with 42P01, roll back and return 503.
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
@@ -637,7 +621,7 @@ async fn migrated_schema_with_execution(
 }
 
 // Upgrade compatibility controls omit sealed setup and its dependent exchanges.
-// Ordinary fixtures always replay the complete migration inventory.
+// Ordinary isolated fixtures replay the complete legacy107 inventory.
 async fn migrated_schema_with_optional_setup(
     label: &str,
     execution: bool,
@@ -661,7 +645,7 @@ async fn migrated_schema_with_optional_setup(
     let database_url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
     let (db, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
-    for (file, migration) in MIGRATIONS {
+    for (file, migration) in LEGACY_MIGRATIONS {
         if !setup
             && matches!(
                 *file,
@@ -2379,16 +2363,9 @@ async fn mfa_enabled_erasure_requires_code() {
         .unwrap();
 }
 
-/// The runtime database role provisioner cannot run inside an isolated test
-/// schema: it drives psql meta-commands (`\getenv`, `\gset`, `\if`,
-/// `\gexec`) that tokio-postgres cannot execute, and it issues cluster-level
-/// `CREATE ROLE`/`ALTER ROLE` statements plus database-wide ACLs that are
-/// not schema-scopable. The honest repository-level proof is parsing: every
-/// table the erasure plan deletes (plus `users` and `accounts`) must be
-/// covered by the role's schema-wide DML grant, and none may appear in the
-/// file's per-table revocation exceptions. The schema coverage itself is
-/// proven for real by the PostgreSQL tests above, which apply the identical
-/// migration set before the plan's deletes run.
+/// Static contract for directly named runtime revocations. PUBLIC-only revokes
+/// do not revoke the runtime's grant. Dynamic stock ACL blocks are exercised by
+/// the genuine public-schema ordinary-role test below, not inferred by parsing.
 #[test]
 fn runtime_role_covers_every_erased_table() {
     let role_sql = include_str!("../../../../deploy/compose/runtime-role.sql");
@@ -2398,19 +2375,32 @@ fn runtime_role_covers_every_erased_table() {
         ),
         "the runtime role must hold DELETE on the erasure plan's public tables"
     );
-    let revoked: Vec<&str> = role_sql
+    let mut revoked: Vec<&str> = role_sql
         .lines()
         .filter_map(|line| line.trim().strip_prefix("REVOKE ALL ON TABLE public."))
-        .map(|rest| {
-            rest.split_whitespace()
-                .next()
-                .expect("a table name follows every table revocation")
+        .filter_map(|rest| {
+            let (table, subjects) = rest.split_once(" FROM ")?;
+            subjects
+                .trim_end_matches(';')
+                .split(',')
+                .any(|role| role.trim() == "zrotext_runtime")
+                .then_some(table)
         })
         .collect();
+    revoked.sort_unstable();
+    revoked.dedup();
     assert_eq!(
         revoked.as_slice(),
-        ["schema_migrations", "payload_profile_account_anchors"],
-        "new table exceptions would silently deny the runtime role's erasure access"
+        [
+            "conversation_profile03_grants",
+            "conversation_profile03_intervals",
+            "conversation_reviewed_sends03",
+            "payload_profile_account_anchors",
+            "payload_profile_manifest_successors",
+            "payload_profile_v2_activation_receipts",
+            "schema_migrations"
+        ],
+        "evolve the explicit named protected-table contract; never restore generic DML to history"
     );
     for table in DELETE_PLAN
         .iter()
@@ -2422,6 +2412,62 @@ fn runtime_role_covers_every_erased_table() {
             "runtime-role.sql revokes {table}, which the erasure deletes"
         );
     }
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE on a disposable cluster"]
+async fn current_public_runtime_preserves_plan_acl_and_protected_history_exceptions() {
+    let f = crate::payload_profile_writer::tests::Fixture::new().await;
+    crate::hosted_runtime_identity::require(&f.db)
+        .await
+        .unwrap();
+    for table in DELETE_PLAN
+        .iter()
+        .map(|(table, _)| *table)
+        .chain(["users", "accounts"])
+    {
+        if table == OBSERVER_USERS_TABLE {
+            continue;
+        }
+        let row=f.db.query_one("SELECT pg_catalog.to_regclass(pg_catalog.format('public.%I',$1::text))::pg_catalog.oid",&[&table]).await.unwrap();
+        let Some(relation) = row.get::<_, Option<u32>>(0) else {
+            assert!(
+                crate::managed_ai::lifecycle::TABLES.contains(&table)
+                    || ["provider_receipt_events", "provider_receipt_attempts"].contains(&table),
+                "unrecognized missing plan table {table}"
+            );
+            continue;
+        };
+        assert!(
+            f.db.query_one(
+                "SELECT pg_catalog.has_table_privilege(CURRENT_USER,$1::oid,'DELETE')",
+                &[&relation]
+            )
+            .await
+            .unwrap()
+            .get::<_, bool>(0),
+            "actual ordinary plan ACL refuses {table}"
+        );
+    }
+    for table in [
+        "payload_profile_account_anchors",
+        "payload_profile_writer_catalog",
+        "payload_profile_writer_global_fences",
+        "payload_profile_v2_activation_receipts",
+        "payload_profile_election_challenges",
+        "payload_profile_elections",
+        "payload_profile_selection_challenges",
+        "payload_profile_selection_receipts",
+        "payload_profile_manifest_successors",
+        "conversation_profile03_intervals",
+        "conversation_reviewed_sends03",
+        "conversation_profile03_grants",
+        "hosted_runtime_entries",
+        "hosted_runtime_requests",
+    ] {
+        assert!(!f.db.query_one("SELECT pg_catalog.has_table_privilege(CURRENT_USER,pg_catalog.to_regclass(pg_catalog.format('public.%I',$1::text)),'UPDATE,DELETE,TRUNCATE') OR pg_catalog.has_any_column_privilege(CURRENT_USER,pg_catalog.to_regclass(pg_catalog.format('public.%I',$1::text)),'UPDATE')",&[&table]).await.unwrap().get::<_,bool>(0),"protected history unexpectedly permits direct mutation: {table}");
+    }
+    f.finish().await;
 }
 
 // ---------------------------------------------------------------------------
