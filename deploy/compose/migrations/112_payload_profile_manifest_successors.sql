@@ -182,6 +182,19 @@ LANGUAGE sql STABLE STRICT SECURITY DEFINER SET search_path TO pg_catalog AS $fu
     AND r.predecessor_ancestry_sha256=public.payload_profile_manifest_base($1,$2))))
 $function$;
 
+-- Read-only cache provenance, never current owner/content/physical permission.
+-- Every warm reuse still recomputes exact retained linkage and received hashes.
+CREATE FUNCTION public.payload_profile_manifest_retention(account uuid,election uuid,version bigint,digest bytea,manifest bytea,accepted_ms bigint,ancestry_sha256 bytea) RETURNS boolean
+LANGUAGE sql STABLE STRICT SECURITY DEFINER SET search_path TO pg_catalog AS $function$
+ SELECT octet_length($7)=32 AND (
+  EXISTS(SELECT FROM public.payload_profile_elections e JOIN public.payload_profile_election_challenges c ON(c.account_id,c.challenge_id)=(e.account_id,e.challenge_id)
+   WHERE e.account_id=$1 AND e.challenge_id=$2 AND e.accepted_manifest_version=$3 AND e.accepted_manifest_digest=$4
+    AND c.accepted_signed_manifest=$5 AND e.accepted_at_ms=$6 AND public.payload_profile_manifest_base($1,$2)=$7)
+  OR EXISTS(SELECT FROM public.payload_profile_manifest_successors r WHERE r.account_id=$1 AND r.election_challenge_id=$2
+   AND r.successor_version=$3 AND r.successor_digest=$4 AND r.successor_signed_manifest=$5 AND r.accepted_ms=$6 AND r.ancestry_sha256=$7))
+  AND public.payload_profile_manifest_ancestry($1,$2,$3,$4,$5,$6)
+$function$;
+
 -- One deliberate record-diff policy, not a generic root-signed update escape.
 CREATE FUNCTION public.payload_profile_manifest_keys(prior bytea,successor bytea,line uuid,point bytea,key_id bytea,checked_ms bigint) RETURNS text
 LANGUAGE plpgsql IMMUTABLE STRICT SET search_path TO pg_catalog AS $function$
@@ -726,8 +739,9 @@ LANGUAGE sql STABLE SET search_path TO pg_catalog AS $function$
   AND NOT has_table_privilege(current_user,'public.payload_profile_manifest_successors','INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
   AND NOT has_any_column_privilege(current_user,'public.payload_profile_manifest_successors','INSERT,UPDATE,REFERENCES')
   AND has_function_privilege(current_user,'public.payload_profile_manifest_install(uuid,uuid,uuid,uuid,bytea,bytea,bytea,bigint)','EXECUTE')
+  AND has_function_privilege(current_user,'public.payload_profile_manifest_retention(uuid,uuid,bigint,bytea,bytea,bigint,bytea)','EXECUTE')
   AND NOT EXISTS(SELECT FROM pg_proc p WHERE p.pronamespace='public'::regnamespace AND p.proname LIKE 'payload_profile_manifest_%'
-   AND p.proname NOT IN('payload_profile_manifest_install','payload_profile_manifest_ready') AND has_function_privilege(current_user,p.oid,'EXECUTE'))
+   AND p.proname NOT IN('payload_profile_manifest_install','payload_profile_manifest_retention','payload_profile_manifest_ready') AND has_function_privilege(current_user,p.oid,'EXECUTE'))
   AND NOT EXISTS(SELECT FROM pg_proc p CROSS JOIN LATERAL aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
    WHERE p.pronamespace='public'::regnamespace AND p.proname LIKE 'payload_profile_manifest_%' AND a.grantee=0)
 $function$;
@@ -746,7 +760,7 @@ BEGIN
   EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',routine.signature);
   IF EXISTS(SELECT FROM pg_roles WHERE rolname='zrotext_runtime') THEN
    EXECUTE format('REVOKE ALL ON FUNCTION %s FROM zrotext_runtime',routine.signature);
-   IF routine.proname IN('payload_profile_manifest_install','payload_profile_manifest_ready') THEN EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO zrotext_runtime',routine.signature); END IF;
+   IF routine.proname IN('payload_profile_manifest_install','payload_profile_manifest_retention','payload_profile_manifest_ready') THEN EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO zrotext_runtime',routine.signature); END IF;
   END IF;
  END LOOP;
 END;

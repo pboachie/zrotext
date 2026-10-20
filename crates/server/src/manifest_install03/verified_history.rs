@@ -198,6 +198,50 @@ pub(super) async fn warm(
         .map_err(|_| Error::Unavailable)?;
     let start = Instant::now();
     let initial = base(h)?;
+    // Cache reuse binds the complete ACTUAL retained prefix, not merely a
+    // tip's unchanged stored hash. This structural read does not verify a root
+    // or possession signature; cached crypto and new suffix checks stay below.
+    let prefix = if h.tip_version == initial.version {
+        if h.tip_signed != initial.signed
+            || h.tip_digest != initial.digest
+            || h.tip_accepted_ms != initial.accepted
+        {
+            return Err(Error::Conflict);
+        }
+        initial.prefix
+    } else {
+        let tip = records::by_version(tx, h.account, h.tip_version)
+            .await?
+            .ok_or(Error::Conflict)?;
+        tip.scope(h, origin)?;
+        if tip.signed != h.tip_signed
+            || tip.accepted != h.tip_accepted_ms
+            || crypto::sha(&tip.signed[..tip.signed.len() - 64]) != h.tip_digest
+        {
+            return Err(Error::Conflict);
+        }
+        tip.prefix
+    };
+    let version = i64::try_from(h.tip_version).map_err(|_| Error::Unsupported)?;
+    let accepted = i64::try_from(h.tip_accepted_ms).map_err(|_| Error::Unsupported)?;
+    let prefix_retained: bool = tx
+        .query_one(
+            "SELECT public.payload_profile_manifest_retention($1,$2,$3,$4,$5,$6,$7)",
+            &[
+                &h.account,
+                &h.challenge,
+                &version,
+                &&h.tip_digest[..],
+                &h.tip_signed,
+                &accepted,
+                &&prefix[..],
+            ],
+        )
+        .await?
+        .try_get(0)?;
+    if !prefix_retained {
+        return Err(Error::Conflict);
+    }
     let key = crypto::sha(&[h.original_identity.as_slice(), &initial.prefix].concat());
     let mut progress = match get(&key)? {
         Some(value) => {
@@ -231,7 +275,8 @@ pub(super) async fn warm(
     if progress.version != h.tip_version {
         return Err(Error::Unavailable);
     }
-    if progress.signed != h.tip_signed
+    if progress.prefix != prefix
+        || progress.signed != h.tip_signed
         || progress.digest != h.tip_digest
         || progress.accepted != h.tip_accepted_ms
     {

@@ -5,7 +5,7 @@
 use super::*;
 use crate::manifest_install03::live as service;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B};
-async fn elected() -> (Case, Vec<u8>) {
+pub(super) async fn elected() -> (Case, Vec<u8>) {
     let (mut c, signed) = fixture::prepared_actual_genesis().await;
     let opening = Uuid::new_v4();
     let tx = c.db.reader.transaction().await.unwrap();
@@ -81,7 +81,7 @@ async fn elected() -> (Case, Vec<u8>) {
     tx.commit().await.unwrap();
     (c, signed)
 }
-async fn packet(
+pub(super) async fn packet(
     c: &mut Case,
     key: &SigningKey,
     replace: bool,
