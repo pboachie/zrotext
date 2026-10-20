@@ -1,7 +1,8 @@
 # Candidate profile03 conversation interval
 
-This additive source dependency under #1566/#1054 preserves all ZTCA01/02
-bytes and domains. It is neither mounted consent nor current send permission.
+This additive source dependency under #1594/#1566/#1054 preserves all ZTCA01/02
+bytes and domains. The optional library integration remains absent from main
+startup; this contract is not current send permission.
 
 The exact ZTCA03 header is `ZTCA || 03 || 03 || 03 || 00`. Follow it with
 nine nonzero UUIDs: account, device, line, immutable binding, interval, receipt,

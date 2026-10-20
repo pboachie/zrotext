@@ -26,6 +26,14 @@ message and consent signer roles still require their independent root-selected
 role, scope, lifetime and custody checks. No old interval or admitted message is
 translated into renewed permission.
 
-The library integration is source work pending its closed interval/admission
-storage dependencies and actual execution qualification. It grants no live
-sending, deployment, phone, carrier or release readiness.
+The optional interval library router provides reservation, authenticated request,
+passive status and owner Stop. Its device hooks provide the exact phone approval,
+installed acknowledgement, status and device Stop. It uses the closed interval
+storage and separately verifies each original signature. Reservation alone never
+discloses a request to the phone or activates content permission. Only the exact
+installed acknowledgement completes activation; a received phase is not proof.
+
+The router is absent from main startup. Actual PostgreSQL ceremony qualification
+and browser/device acceptance remain separate requirements. This slice does not
+queue messages, issue dispatch grants, fetch ciphertext or execute radio work.
+It grants no live sending, deployment, carrier or release readiness.

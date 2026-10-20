@@ -7,6 +7,7 @@ use crate::sealed_payload_election03::live::{self as selected, Error, HeldMessag
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B};
 use tokio_postgres::{Row, Transaction};
 mod mappings;
+mod pending;
 mod service;
 pub(crate) use service::{
     DeviceInterval03, Reserve03, device_approve, device_challenge, device_install, device_status,

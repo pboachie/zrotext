@@ -292,14 +292,13 @@ pub(crate) async fn device_challenge(
     ready(tx).await?;
     // Only a previously owner-signed request on the ACTUAL full connection may
     // reach the phone. A reservation alone is not content disclosure consent.
-    let rows=tx.query("SELECT interval_id FROM public.conversation_profile03_intervals WHERE account_id=$1 AND device_id=$2 AND proof_site_id=$3 AND proof_instance_id=$4 AND proof_connection_epoch=$5 AND proof_deployment_epoch=$6 AND phase IN ('requested','install_pending') ORDER BY issued_ms LIMIT 2",&[&device.session.account_id,&device.session.device_id,&device.site,&device.instance,&device.session.connection_epoch,&dbtime(device.deployment)?]).await?;
-    if rows.len() > 1 {
-        return Err(Error::Conflict);
-    }
-    let Some(row) = rows.first() else {
+    // Several peers may have genuine pending requests. Offer the oldest
+    // still-actionable one deterministically; an elapsed request for another
+    // peer must not monopolize delivery. This read neither expires that row
+    // nor renews any consent or acknowledgement.
+    let Some(id) = pending::next(tx, device).await? else {
         return Ok(None);
     };
-    let id: Uuid = row.try_get(0)?;
     let prior = StoredInterval03::read(tx, device.session.account_id, id).await?;
     let mut held = device.hold(tx, &prior).await?;
     let current = StoredInterval03::read(tx, device.session.account_id, id).await?;
