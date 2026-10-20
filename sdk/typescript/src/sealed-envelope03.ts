@@ -51,11 +51,16 @@ function draw(length: number): Uint8Array {
 }
 async function sha(a: Uint8Array): Promise<Uint8Array> { return new Uint8Array(await crypto.subtle.digest("SHA-256", buffer(a))); }
 const domain = (label: string) => enc.encode(label + "\0");
-function closed(input: object, names: readonly string[]): void {
+function closed<T extends object>(input: T, names: readonly string[]): T {
   if (!input || Object.getPrototypeOf(input) !== Object.prototype) fail("closed record type");
   const descriptors = Object.getOwnPropertyDescriptors(input), keys = Reflect.ownKeys(descriptors);
   if (keys.length !== names.length || keys.some(k => typeof k !== "string" || !names.includes(k))) fail("closed record fields");
-  for (const n of names) if (!descriptors[n] || !("value" in descriptors[n])) fail("record accessor");
+  const captured: Record<string, unknown> = {};
+  for (const n of names) {
+    const d = descriptors[n]; if (!d || !("value" in d)) fail("record accessor");
+    captured[n] = d.value;
+  }
+  return captured as T;
 }
 function preparedState(handle: PreparedOutboundEnvelope03): Prepared {
   const p = prepared.get(handle); if (!p) fail("requires prepared unsigned envelope handle"); return p;
@@ -66,7 +71,7 @@ function preparedState(handle: PreparedOutboundEnvelope03): Prepared {
  * Independently authenticated current adapter data is an explicit trust input,
  * not a locally minted permission. No deterministic key override is accepted. */
 export async function prepareSealedOutboundEnvelope03(input: UnsignedOutboundInput03): Promise<PreparedOutboundEnvelope03> {
-  closed(input, ["manifest", "acceptedElection", "currentAuthority", "nowMs", "messageId", "observedMs", "expiresMs", "peer", "content", "signerPublicPoint", "recipients"]);
+  input = closed(input, ["manifest", "acceptedElection", "currentAuthority", "nowMs", "messageId", "observedMs", "expiresMs", "peer", "content", "signerPublicPoint", "recipients"]);
   const manifest = input.manifest, election = input.acceptedElection;
   const current = captureCurrentElectionAuthority03(input.currentAuthority);
   const now = input.nowMs, observed = input.observedMs, expires = input.expiresMs;
@@ -156,7 +161,7 @@ export function preparedOutboundEnvelopeSnapshot03(handle: PreparedOutboundEnvel
 export async function completeSealedOutboundEnvelope03(input: Readonly<{
   prepared: PreparedOutboundEnvelope03; signature: Uint8Array; nowMs: bigint;
 }>): Promise<OutboundComposition03> {
-  closed(input, ["prepared", "signature", "nowMs"]);
+  input = closed(input, ["prepared", "signature", "nowMs"]);
   const p = preparedState(input.prepared), signature = captureElectionBytes03(input.signature, 64), now = input.nowMs;
   electionTime03(now);
   if (now < p.now || now >= p.expires) fail("prepared comparison/deadline");

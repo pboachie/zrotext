@@ -94,3 +94,24 @@ test("preparation/completion capture caller values before waits and accept no se
   const s = await signature(f, preparedOutboundEnvelopeSnapshot03(preparation).transcript);
   await assert.rejects(completeSealedOutboundEnvelope03({ prepared: preparation, signature: s, nowMs: present, retry: true }), /closed/);
 });
+
+test("descriptor snapshots never reread Proxy fields during actual encryption or signature completion", async () => {
+  const f = await fixture(), original = input(f); let prepareReads = 0, completeReads = 0;
+  const hostile = new Proxy(original, { get(target, name) {
+    prepareReads++;
+    return name === "content" ? "Substituted synthetic body" : Reflect.get(target, name);
+  } });
+  const a = await prepareSealedOutboundEnvelope03(hostile);
+  assert.equal(prepareReads, 0);
+  const b = await prepareSealedOutboundEnvelope03(input(f));
+  const sa = preparedOutboundEnvelopeSnapshot03(a), sb = preparedOutboundEnvelopeSnapshot03(b);
+  const sigA = await signature(f, sa.transcript), sigB = await signature(f, sb.transcript);
+  const request = new Proxy({ prepared: a, signature: sigA, nowMs: present }, { get(target, name) {
+    completeReads++;
+    return name === "prepared" ? b : name === "signature" ? sigB : Reflect.get(target, name);
+  } });
+  const completed = await completeSealedOutboundEnvelope03(request);
+  assert.equal(completeReads, 0); assert.deepEqual(completed.envelope.subarray(0, -64), sa.unsignedEnvelope);
+  assert.notDeepEqual(completed.envelope.subarray(0, -64), sb.unsignedEnvelope);
+  await verifyAndOpen(f, completed, original.content);
+});
