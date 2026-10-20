@@ -128,6 +128,12 @@ async fn candidate_inventory_covers_exact_numbered_schema_relations_columns_fk_a
                         "one_accepted_per_full_connection_historical_receipt_not_message_permission"
                     )
                 )
+            ) || matches!(
+                (table.as_str(), policy["current_profile"].as_str()),
+                (
+                    "payload_profile_manifest_successors",
+                    Some("immutable_same_root03_successor_receipt_without_content_permission")
+                )
             ),
             "{table}: unknown current-profile writer policy"
         );
