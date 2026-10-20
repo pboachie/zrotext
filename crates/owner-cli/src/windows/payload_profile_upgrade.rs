@@ -208,7 +208,7 @@ mod tests {
         let mut args = vec!["payload-profile-upgrade".into()];
         for (flag, value) in FLAGS.into_iter().zip(values) {
             args.push(flag.into());
-            args.push(value.into());
+            args.push(value);
         }
         args
     }
