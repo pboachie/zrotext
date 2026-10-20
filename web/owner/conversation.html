@@ -4,7 +4,7 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex"><title>Conversation simulator · ZROtext</title>
   <link rel="stylesheet" href="devices.css"><link rel="stylesheet" href="conversation.css">
-  <script defer src="conversation-core.js"></script><script defer src="conversation-owner-adapter.js"></script><script defer src="conversation-bootstrap.js"></script><script defer src="conversation-owner-setup.js"></script><script defer src="conversation-root-enrollment.js"></script><script defer src="conversation-line-setup.js"></script><script defer src="conversation-profile03-recovery.js"></script><script defer src="conversation-profile03-setup.js"></script><script defer src="conversation-manifest03-recovery.js"></script><script defer src="conversation-manifest03-history.js"></script><script defer src="conversation.js"></script><script defer src="conversation-profile03-page.js"></script><script defer src="conversation-manifest03-page.js"></script>
+  <script defer src="conversation-core.js"></script><script defer src="conversation-owner-adapter.js"></script><script defer src="conversation-bootstrap.js"></script><script defer src="conversation-owner-setup.js"></script><script defer src="conversation-root-enrollment.js"></script><script defer src="conversation-line-setup.js"></script><script defer src="conversation-profile03-recovery.js"></script><script defer src="conversation-profile03-setup.js"></script><script defer src="conversation-manifest03-recovery.js"></script><script defer src="conversation-manifest03-history.js"></script><script defer src="conversation-message-key03-recovery.js"></script><script defer src="conversation-message-key03.js"></script><script defer src="conversation-message-key03-page.js"></script><script defer src="conversation.js"></script><script defer src="conversation-profile03-page.js"></script><script defer src="conversation-manifest03-page.js"></script>
 </head>
 <body><main>
   <header><div><p class="eyebrow">ZROtext</p><h1>One conversation</h1></div></header>
@@ -98,6 +98,32 @@
       <button id="profile-recover" type="button" disabled>Load saved attempt</button>
       <button id="profile-close" type="button">Close setup</button>
       <p id="profile-status" role="status" aria-live="polite">Prepare the same-phone upgrade, or recover the original saved attempt after an interruption. No automatic approval or retry occurs.</p>
+    </fieldset>
+    <fieldset id="browser-message-key03"><legend>Approve this browser for messaging</legend>
+      <p>Recover the accepted profile history above, then continue here. Public approval requests are saved before download. Your existing offline custodian approves changes; private root material stays there.</p>
+      <button id="message-open" type="button">Continue browser setup</button>
+      <div id="message-options" hidden>
+        <label>Browser approval <select id="message-operation"><option value="enroll">Add this browser</option><option value="renew">Extend this browser's approval</option><option value="replace">Replace a missing browser key</option></select></label>
+        <label><input id="message-retain" type="checkbox"> Create and save a new nonexportable message key here if this browser has none. Existing keys remain unchanged.</label>
+        <p>The public request extends active key windows for up to 24 hours. Review the complete change with the existing offline custodian before approving it.</p>
+      </div>
+      <button id="message-prepare" type="button" hidden>Prepare public approval request</button>
+      <button id="message-resume" type="button" hidden>Download original saved request</button>
+      <button id="message-resume-install" type="button" hidden>Continue saved browser approval</button>
+      <div id="message-artifacts"></div>
+      <label id="message-signed-label" hidden>Signed public manifest from the existing custodian <input id="message-signed" type="file" accept="application/octet-stream"></label>
+      <button id="message-authorize" type="button" hidden>Check signed approval</button>
+      <div id="message-factors" hidden>
+        <label>Current password <input id="message-password" type="password" autocomplete="current-password" maxlength="1024"></label>
+        <label>Fresh authenticator or recovery code <input id="message-factor" type="password" autocomplete="off" maxlength="26"></label>
+      </div>
+      <button id="message-install" type="button" hidden>Approve this browser</button>
+      <button id="message-recover" type="button" hidden>Recover this request's history</button>
+      <button id="message-next-history" type="button" hidden>Continue saved history check</button>
+      <button id="message-check" type="button" hidden>Check original approval status</button>
+      <button id="message-confirm" type="button" hidden>Confirm approval in accepted history</button>
+      <button id="message-close" type="button" hidden>Close browser setup</button>
+      <p id="message-status" role="status" aria-live="polite">Browser setup continues from the same saved request and key. No approval or message is sent automatically.</p>
     </fieldset>
     <div id="custody-artifacts"></div>
   </fieldset>
