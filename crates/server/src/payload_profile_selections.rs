@@ -240,7 +240,7 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
         if namespace=="public" && db.query_one("SELECT pg_catalog.to_regclass('public.payload_profile_writer_catalog') IS NOT NULL",&[]).await?.try_get::<_,bool>(0)? {
    crate::payload_profile_writer::optional(db,"public.line_activation_v2_pending").await?;
    let version:i64=db.query_one("SELECT migration_version FROM public.payload_profile_writer_catalog WHERE singleton",&[]).await?.try_get(0)?;
-   if !matches!(version,108|109|110){return Err(SelectionSchemaError::Invalid);}
+   if !matches!(version,108..=110){return Err(SelectionSchemaError::Invalid);}
   }
         return Ok(false);
     }

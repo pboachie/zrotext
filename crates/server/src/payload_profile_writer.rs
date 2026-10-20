@@ -37,7 +37,7 @@ fn body(name: &str, marker: &str, version: i64) -> Result<&'static str> {
         )
     {
         ELECTION_MIGRATION
-    } else if matches!(version, 109 | 110 | 111)
+    } else if matches!(version, 109..=111)
         && matches!(
             name,
             "payload_profile_writer_graph"
@@ -235,7 +235,7 @@ pub(crate) async fn optional<C: GenericClient + Sync>(db: &C, table: &str) -> Re
         )
         .await?
         .try_get(0)?;
-    if !matches!(version, 108 | 109 | 110 | 111) {
+    if !matches!(version, 108..=111) {
         return Err(WriterSchemaError::Invalid);
     }
     functions(db, version).await?;
