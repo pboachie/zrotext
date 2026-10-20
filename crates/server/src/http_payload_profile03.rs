@@ -25,8 +25,12 @@ mod conversation;
 mod manifests;
 mod request;
 mod reviewed_send;
+mod selection_refresh;
 pub use conversation::router as conversation_router;
 pub use manifests::manifest_router;
+pub async fn selection_refresh_router(state: ProfileHttpState) -> Result<Router, &'static str> {
+    selection_refresh::router(state).await
+}
 use request::{Body, Operation};
 pub use reviewed_send::router as reviewed_send_router;
 
