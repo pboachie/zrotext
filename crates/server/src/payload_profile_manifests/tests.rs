@@ -145,7 +145,7 @@ async fn expired_same_key_renewal_and_explicit_replacement_preserve_original_rec
 
 async fn fixture() -> Fixture {
     let fixture = Fixture::new().await;
-    fixture.owner.batch_execute(&format!("GRANT EXECUTE ON FUNCTION public.payload_profile_v2_capture(uuid,uuid,bytea,bytea,bytea,bytea,bytea,bytea),public.payload_profile_v2_ready(),public.payload_profile_election_reserve(uuid,uuid,uuid,uuid,uuid,bytea,bytea,bigint),public.payload_profile_election_device_proof(uuid,uuid,bytea),public.payload_profile_election_accept(uuid,uuid,uuid,bytea,bigint),public.payload_profile_election_ready(),public.payload_profile_selection_reserve(uuid,uuid,uuid,uuid,bytea,bigint),public.payload_profile_selection_device_proof(uuid,uuid,bytea,bytea),public.payload_profile_selection_approve(uuid,uuid,uuid,bytea,bigint),public.payload_profile_selection_install(uuid,uuid,bytea,bytea),public.payload_profile_selection_ready(),public.payload_profile_manifest_install(uuid,uuid,uuid,uuid,bytea,bytea,bytea,bigint),public.payload_profile_manifest_ready() TO {}",escape_identifier(&fixture.runtime_role))).await.unwrap();
+    fixture.owner.batch_execute(&format!("GRANT EXECUTE ON FUNCTION public.payload_profile_v2_capture(uuid,uuid,bytea,bytea,bytea,bytea,bytea,bytea),public.payload_profile_v2_ready(),public.payload_profile_election_reserve(uuid,uuid,uuid,uuid,uuid,bytea,bytea,bigint),public.payload_profile_election_device_proof(uuid,uuid,bytea),public.payload_profile_election_accept(uuid,uuid,uuid,bytea,bigint),public.payload_profile_election_ready(),public.payload_profile_selection_reserve(uuid,uuid,uuid,uuid,bytea,bigint),public.payload_profile_selection_device_proof(uuid,uuid,bytea,bytea),public.payload_profile_selection_approve(uuid,uuid,uuid,bytea,bigint),public.payload_profile_selection_install(uuid,uuid,bytea,bytea),public.payload_profile_selection_ready(),public.payload_profile_manifest_install(uuid,uuid,uuid,uuid,bytea,bytea,bytea,bigint),public.payload_profile_manifest_retention(uuid,uuid,bigint,bytea,bytea,bigint,bytea),public.payload_profile_manifest_ready() TO {}",escape_identifier(&fixture.runtime_role))).await.unwrap();
     require(&fixture.db).await.unwrap();
     assert!(require(&fixture.owner).await.is_err());
     fixture
@@ -166,6 +166,7 @@ async fn manifest_successors_refuse_partial_disabled_rewritten_policy_and_helper
         "DROP TABLE public.payload_profile_manifest_successors CASCADE",
         "CREATE OR REPLACE FUNCTION public.payload_profile_manifest_ancestry(account uuid,election uuid,version bigint,digest bytea,manifest bytea,accepted_ms bigint) RETURNS boolean LANGUAGE sql STABLE STRICT SECURITY DEFINER SET search_path TO pg_catalog AS 'SELECT true'",
         "CREATE OR REPLACE FUNCTION public.payload_profile_manifest_ready() RETURNS boolean LANGUAGE sql STABLE SET search_path TO pg_catalog AS 'SELECT true'",
+        "CREATE OR REPLACE FUNCTION public.payload_profile_manifest_retention(account uuid,election uuid,version bigint,digest bytea,manifest bytea,accepted_ms bigint,ancestry_sha256 bytea) RETURNS boolean LANGUAGE sql STABLE STRICT SECURITY DEFINER SET search_path TO pg_catalog AS 'SELECT true'",
         "CREATE OR REPLACE FUNCTION public.payload_profile_manifest_rows_guard() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path TO pg_catalog SET lock_timeout TO '3s' AS 'BEGIN RETURN NEW; END'",
         "GRANT EXECUTE ON FUNCTION public.payload_profile_manifest_scope(uuid,uuid,uuid,bytea,bytea) TO PUBLIC",
     ] {
@@ -175,6 +176,31 @@ async fn manifest_successors_refuse_partial_disabled_rewritten_policy_and_helper
         tx.rollback().await.unwrap();
         require(&fixture.db).await.unwrap();
     }
+    fixture.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE on a disposable PostgreSQL cluster"]
+async fn runtime_retention_projection_refuses_unretained_checkpoint_and_missing_capability() {
+    let fixture = fixture().await;
+    let account = Uuid::new_v4();
+    let election = Uuid::new_v4();
+    let digest = vec![1_u8; 32];
+    let manifest = vec![2_u8; 366];
+    let row = fixture
+        .db
+        .query_one(
+            "SELECT public.payload_profile_manifest_retention($1,$2,$3,$4,$5,$6,$7)",
+            &[
+                &account, &election, &1_i64, &digest, &manifest, &1_i64, &digest,
+            ],
+        )
+        .await
+        .unwrap();
+    assert!(!row.get::<_, bool>(0));
+    let role = escape_identifier(&fixture.runtime_role);
+    fixture.owner.batch_execute(&format!("REVOKE EXECUTE ON FUNCTION public.payload_profile_manifest_retention(uuid,uuid,bigint,bytea,bytea,bigint,bytea) FROM {role}")).await.unwrap();
+    assert!(require(&fixture.db).await.is_err());
     fixture.finish().await;
 }
 
