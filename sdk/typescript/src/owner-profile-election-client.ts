@@ -3,6 +3,21 @@
  * current device permission, an installed reader, or authority to send. */
 import { captureElectionBytes03 } from './payload-profile-election03.js';
 import { isCanonicalP256Signature } from './draft01.js';
+import { verifyManifestInstallPossession03 } from './manifest-install03.js';
+
+/** Public exact recovery only; factors and private keys are never included. */
+export type ManifestInstallRecovery03 = Readonly<{
+  v: 1; origin: string; account_id: string; user_id: string; owner_session_id: string;
+  device_id: string; root_fingerprint: string; opening_id: string; line_id: string;
+  statement: string; signature: string; successor_manifest03: string;
+}>;
+export type ManifestInstallReceiptCandidate03 = Readonly<{
+  v: 1; opening_id: string; line_id: string; binding_id: string; election_digest: string;
+  statement: string; signature: string; successor_manifest03: string; accepted_ms: string;
+  predecessor_version: string; predecessor_digest: string; successor_version: string;
+  successor_digest: string; operation: 'enroll' | 'renew' | 'replace';
+  predecessor_ancestry_sha256: string; ancestry_sha256: string;
+}>;
 
 export type ElectionRecovery03 = Readonly<{
   v: 1; origin: string; account_id: string; user_id: string; owner_session_id: string;
@@ -63,6 +78,7 @@ const MAX = (1n << 63n) - 1n, RESPONSE_MAX = 192 * 1024, REQUEST_MAX = 96 * 1024
 const basePath = '/v1/account/sealed/payload-profile', enc = new TextEncoder();
 const recoveryNames = ['v', 'origin', 'account_id', 'user_id', 'owner_session_id', 'device_id',
   'root_fingerprint', 'opening_id', 'line_id', 'successor_manifest03'];
+const manifestRecoveryNames = [...recoveryNames, 'statement', 'signature'];
 function fail(code = 'invalid'): never { throw new OwnerProfileElectionError03(code); }
 function record(value: unknown, keys: readonly string[]): Record<string, unknown> {
   if (!value || typeof value !== 'object' || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) fail();
@@ -181,6 +197,7 @@ export class OwnerProfileElectionClient03 {
   readonly #device: string; readonly #root: string; readonly #csrfValue: string; readonly #options: OwnerProfileElectionOptions03;
   readonly #abort = new AbortController(); readonly #parentAbort: () => void;
   #busy = false; #closed = false; #lastCompared = 0n; #opening: ElectionRecovery03 | null = null;
+  #manifestOpening: ManifestInstallRecovery03 | null = null;
   constructor(options: OwnerProfileElectionOptions03) {
     const o = record(options, ['origin', 'accountId', 'userId', 'ownerSessionId', 'deviceId', 'rootFingerprint',
       'currentCsrf', 'saveRecovery', 'signal', ...['timeoutMs', 'fetchImpl'].filter(k => Object.hasOwn(options, k))]);
@@ -266,15 +283,18 @@ export class OwnerProfileElectionClient03 {
     }
   }
   async #request<T>(path: string, body: object, mutation: boolean, statuses: readonly number[],
-    parse: (value: unknown) => Promise<T> | T, recovery?: ElectionRecovery03): Promise<T> {
+    parse: (value: unknown) => Promise<T> | T, recovery?: ElectionRecovery03,
+    beforeSend?: () => Promise<void>, operationDeadline?: number): Promise<T> {
     this.#live(); if (this.#busy) fail('busy'); this.#busy = true;
-    const deadline = performance.now() + this.#options.timeoutMs!; let sent = false, knownRefusal = false, response: Response | undefined;
+    const deadline = Math.min(performance.now() + this.#options.timeoutMs!, operationDeadline ?? Infinity); let sent = false, knownRefusal = false, response: Response | undefined;
     try {
+      if (performance.now() >= deadline) fail('timeout');
       const encoded = JSON.stringify(body); if (enc.encode(encoded).length > REQUEST_MAX) fail();
       if (recovery) { await wait(Promise.resolve().then(() => this.#options.saveRecovery(recovery)), this.#abort.signal, deadline); this.#live(); }
-      const request = this.#options.fetchImpl ?? globalThis.fetch; this.#live(); sent = true;
+      if (beforeSend) { await wait(Promise.resolve().then(beforeSend), this.#abort.signal, deadline); this.#live(); }
+      const request = this.#options.fetchImpl ?? globalThis.fetch; this.#live(); if (performance.now() >= deadline) fail('timeout'); sent = true;
       const url = this.#origin + basePath + path;
-      response = await wait(Promise.resolve().then(() => { this.#live(); return request(url, {
+      response = await wait(Promise.resolve().then(() => { this.#live(); if (performance.now() >= deadline) fail('timeout'); return request(url, {
         method: 'POST', credentials: 'same-origin', mode: 'same-origin', redirect: 'error', cache: 'no-store', referrerPolicy: 'no-referrer',
         headers: { 'content-type': 'application/json', accept: 'application/json', 'x-zrotext-csrf': this.#csrfValue },
         body: encoded, signal: this.#abort.signal,
@@ -294,6 +314,91 @@ export class OwnerProfileElectionClient03 {
       if (sent && !knownRefusal) this.close();
       throw new OwnerProfileElectionError03(code, mutation && sent && !knownRefusal ? 'unknown' : 'refused');
     } finally { if (response?.body && !response.body.locked) void response.body.cancel().catch(() => {}); this.#busy = false; }
+  }
+  async #manifestRecovery(value: ManifestInstallRecovery03, historical: boolean, deadline: number): Promise<ManifestInstallRecovery03> {
+    try { return await wait(this.#captureManifestRecovery(value, historical), this.#abort.signal, deadline, true); }
+    catch (error) { this.close(); throw new OwnerProfileElectionError03(error instanceof OwnerProfileElectionError03 ? error.code : 'invalid'); }
+  }
+  async #captureManifestRecovery(value: ManifestInstallRecovery03, historical: boolean): Promise<ManifestInstallRecovery03> {
+    this.#live();
+    const r = record(value, manifestRecoveryNames);
+    if (r.v !== 1 || r.origin !== this.#origin || r.account_id !== this.#account || r.user_id !== this.#user
+        || !historical && r.owner_session_id !== this.#session || r.device_id !== this.#device || r.root_fingerprint !== this.#root) fail('scope');
+    const selectedSession = uuid(r.owner_session_id), opening = uuid(r.opening_id), line = uuid(r.line_id);
+    const bytes = binary(r.statement, 513), signature = binary(r.signature, 64), signed = binary(r.successor_manifest03, 366, 9753);
+    const statement = await verifyManifestInstallPossession03(bytes, signature), expected = await this.#digests(selectedSession);
+    this.#live();
+    for (const [key, actual] of [['accountId', this.#account], ['ownerUserId', this.#user], ['ownerSessionId', selectedSession],
+      ['deviceId', this.#device], ['lineId', line], ['openingId', opening]] as const) if (uuidText(statement[key]) !== actual) fail('scope');
+    if (b64(statement.rootFingerprint) !== this.#root || !same(statement.originDigest, expected.origin)
+        || !same(statement.ownerSessionDigest, expected.session) || !same(statement.signedSuccessorSha256, await sha(signed))) fail('scope');
+    const view = new DataView(signed.buffer), count = signed[152];
+    if (!same(signed.subarray(0, 7), Uint8Array.of(90, 84, 77, 65, 3, 3, 3)) || count < 1 || count > 64
+        || signed.length !== 153 + count * 149 + 64 || uuidText(signed.subarray(7, 23)) !== this.#account
+        || view.getBigUint64(23) !== 1n || view.getBigUint64(31) !== statement.successorVersion
+        || !same(signed.subarray(55, 87), statement.predecessorDigest) || !isCanonicalP256Signature(signed.subarray(-64))) fail('scope');
+    const selected = Array.from({ length: count }, (_, i) => signed.subarray(153 + i * 149, 153 + (i + 1) * 149))
+      .filter(r => r[0] === 5 && r[148] === 1 && same(r.subarray(114, 130), statement.lineId));
+    if (selected.length !== 1) fail('scope');
+    const key = selected[0], keyView = new DataView(key.buffer, key.byteOffset, key.byteLength);
+    if (!same(key.subarray(1, 33), statement.signerKeyId) || !same(key.subarray(33, 98), statement.signerPoint)
+        || key.subarray(98, 114).some(v => v !== 0) || keyView.getUint16(130) !== 1
+        || keyView.getBigUint64(132) > statement.issuedMs || keyView.getBigUint64(140) <= statement.issuedMs) fail('scope');
+    const pin = new Uint8Array(94); pin.set([90, 84, 82, 80, 2]); pin.set(uuidBytes(this.#account), 5);
+    new DataView(pin.buffer).setBigUint64(21, 1n); pin.set(signed.subarray(87, 152), 29);
+    const label = enc.encode('ZTSE/root-pin/v2\0'), rootInput = new Uint8Array(label.length + 94); rootInput.set(label); rootInput.set(pin, label.length);
+    if (b64(await sha(rootInput)) !== this.#root) fail('scope');
+    const root = await crypto.subtle.importKey('raw', Uint8Array.from(signed.subarray(87, 152)).buffer, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+    if (!await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, root, Uint8Array.from(signed.subarray(-64)).buffer,
+      Uint8Array.from(frame('ZTSE/manifest/v3', signed.subarray(0, -64))).buffer)) fail('scope');
+    this.#live();
+    if (this.#manifestOpening && manifestRecoveryNames.some(k => r[k] !== this.#manifestOpening![k as keyof ManifestInstallRecovery03])) fail('opening_conflict');
+    const captured = Object.freeze({ ...r }) as ManifestInstallRecovery03; this.#manifestOpening = captured; return captured;
+  }
+  async #manifestReceipt(value: unknown, original: ManifestInstallRecovery03): Promise<ManifestInstallReceiptCandidate03> {
+    const r = record(value, ['v', 'opening_id', 'line_id', 'binding_id', 'election_digest', 'statement', 'signature', 'successor_manifest03',
+      'accepted_ms', 'predecessor_version', 'predecessor_digest', 'successor_version', 'successor_digest', 'operation', 'predecessor_ancestry_sha256', 'ancestry_sha256']);
+    const s = await verifyManifestInstallPossession03(binary(original.statement, 513), binary(original.signature, 64));
+    const successor = binary(original.successor_manifest03, 366, 9753), accepted = decimal(r.accepted_ms);
+    if (r.v !== 1 || r.opening_id !== original.opening_id || r.line_id !== original.line_id || r.binding_id !== uuidText(s.bindingId)
+        || r.election_digest !== b64(s.electionCommitment) || ['statement', 'signature', 'successor_manifest03'].some(k => r[k] !== original[k as keyof ManifestInstallRecovery03])
+        || decimal(r.predecessor_version) !== s.predecessorVersion || r.predecessor_digest !== b64(s.predecessorDigest)
+        || decimal(r.successor_version) !== s.successorVersion || r.successor_digest !== b64(await sha(successor.subarray(0, -64)))
+        || accepted < s.issuedMs || accepted >= s.expiresMs || !['enroll', 'renew', 'replace'].includes(r.operation as string)) fail('scope');
+    const issued = new DataView(successor.buffer).getBigUint64(39), until = new DataView(successor.buffer).getBigUint64(47);
+    if (issued > accepted || accepted >= until || until <= issued || until - issued > 86400000n) fail('scope');
+    const prior = binary(r.predecessor_ancestry_sha256, 32, 32, true), wanted = binary(r.ancestry_sha256, 32, 32, true);
+    const step = new Uint8Array(152); step.set(prior); step.set(uuidBytes(original.opening_id), 32);
+    step.set(await sha(binary(original.statement, 513)), 48); step.set(await sha(binary(original.signature, 64)), 80);
+    step.set(await sha(successor), 112); new DataView(step.buffer).setBigUint64(144, accepted);
+    if (!same(await sha(frame('ZTSE/line/payload-profile/manifest-ancestry-step03/v1', step)), wanted)) fail('scope');
+    this.#live(); return Object.freeze({ ...r }) as ManifestInstallReceiptCandidate03;
+  }
+  /** Actual install transport only. Root signature and possession are checked;
+   * full predecessor policy/current authority remain independent obligations.
+   * The trusted embedding must durably retain PUBLIC original bytes before IO. */
+  async installManifest(original: ManifestInstallRecovery03, factor: ElectionCredentials03,
+    persist: (record: ManifestInstallRecovery03) => Promise<void>): Promise<ManifestInstallReceiptCandidate03> {
+    if (typeof persist !== 'function') fail();
+    const deadline = performance.now() + this.#options.timeoutMs!;
+    const captured = await this.#manifestRecovery(original, false, deadline), c = credentials(factor);
+    return this.#request('/manifests', { v: 1, opening_id: captured.opening_id, statement: captured.statement,
+      signature: captured.signature, successor_manifest03: captured.successor_manifest03, ...c }, true, [200, 201],
+      value => this.#manifestReceipt(value, captured), undefined, () => persist(captured), deadline);
+  }
+  /** Same-original-user passive observation after fresh sign-in, never replay. */
+  async manifestStatus(original: ManifestInstallRecovery03): Promise<ManifestInstallReceiptCandidate03> {
+    const deadline = performance.now() + this.#options.timeoutMs!;
+    const captured = await this.#manifestRecovery(original, true, deadline);
+    try {
+      const body = await wait(Promise.resolve().then(async () => ({ v: 1, opening_id: captured.opening_id,
+        statement_sha256: b64(await sha(binary(captured.statement, 513))), successor_sha256: b64(await sha(binary(captured.successor_manifest03, 366, 9753))),
+        signature_sha256: b64(await sha(binary(captured.signature, 64))) })), this.#abort.signal, deadline, true);
+      return await this.#request('/manifests/status', body, false, [200], value => this.#manifestReceipt(value, captured), undefined, undefined, deadline);
+    } catch (error) {
+      if (performance.now() >= deadline) this.close();
+      throw new OwnerProfileElectionError03(error instanceof OwnerProfileElectionError03 ? error.code : 'unavailable', 'unknown');
+    }
   }
   async #reservation(value: unknown, opening: ElectionRecovery03): Promise<ElectionReservationCandidate03> {
     const r = record(value, ['v', 'opening_id', 'challenge_id', 'new_binding_id', 'core', 'successor_manifest03', 'issued_ms', 'expires_ms', 'status', 'closed_unaccepted']);
