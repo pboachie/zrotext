@@ -235,19 +235,28 @@ impl<'held, 'db> Scope<'held, 'db> {
         )
         .map_err(|_| Error::Unsupported)?;
         let at = receipt.installed.map_or(receipt.accepted, |v| v.0);
-        let manifest = crypto::verify_current(&row.manifest, &checkpoint, at)
-            .map_err(|_| Error::Unsupported)?;
-        let keys = manifest
-            .profile_election_keys(
-                h.device.as_bytes(),
-                h.line.as_bytes(),
-                &h.device_point,
-                &h.approval_point,
-                at,
-            )
-            .map_err(|_| Error::Unsupported)?;
-        if keys.reader_id != h.accepted.selected_reader_key_id
-            || at >= keys.expires_ms
+        // The shared verifier authenticates the exact historical root-signed
+        // bytes. Its checkpoint is not the server's CURRENT manifest type.
+        // Check the original physical reader's full accepted/install interval;
+        // present continuous identity/lifetime is checked by Scope separately.
+        let readers: Vec<_> = row.manifest[153..row.manifest.len() - 64]
+            .chunks_exact(149)
+            .filter(|r| {
+                r[0] == 1
+                    && r[1..33] == h.accepted.selected_reader_key_id
+                    && r[98..114] == *h.device.as_bytes()
+                    && r[114..130] == *h.line.as_bytes()
+                    && r[148] == 1
+            })
+            .collect();
+        if checkpoint.digest() != &row.core.digests[6]
+            || readers.len() != 1
+            || crypto::number(&row.manifest[39..47]).map_err(|_| Error::Unsupported)?
+                > receipt.accepted
+            || crypto::number(&row.manifest[47..55]).map_err(|_| Error::Unsupported)? <= at
+            || crypto::number(&readers[0][132..140]).map_err(|_| Error::Unsupported)?
+                > receipt.accepted
+            || crypto::number(&readers[0][140..148]).map_err(|_| Error::Unsupported)? <= at
             || row.core.issued < row.manifest_accepted
         {
             return Err(Error::Conflict);

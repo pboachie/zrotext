@@ -530,5 +530,6 @@ pub(crate) async fn device_challenge(
     };
     scope.revalidate().await?;
     scope.socket(socket)?;
+    row.core.fresh(scope.checked).map_err(|_| Error::Expired)?;
     Ok(Some(value))
 }
