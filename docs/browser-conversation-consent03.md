@@ -37,6 +37,37 @@ original time or turn an expired permission into a new one. A returned statement
 is owned public crypto metadata, never a durable install ACK, restored key or
 local interval handle, reader Ready state, or authorization for a message.
 
-Current browser transport, original-request persistence, fresh-factor handling,
-foreground phone consent, actual durable install correlation and integrated
-server/device execution remain separate requirements before mounting this path.
+## Checked owner context and exact recovery transport
+
+The separate `OwnerManifestHistoryClient03.conversationContext` read requires
+complete original history and the exact retained unsigned reservation. It uses
+a fresh request UUID and the fixed authenticated owner context endpoint. It
+verifies the same complete current selection as the existing current method,
+with independently held physical/session facts, actual original owner deadline
+and the exact current registry reader projection. Original independent UI
+peer/key/mapping choices are checked separately from the unsigned statement.
+Both reply comparison times and permission deadlines must match. The actual
+owner deadline can outlast the short current physical lease; it never extends
+that lease. Current key, registry, owner, interval and permission bounds are
+checked through the final cryptographic wait before returning metadata.
+
+`OwnerConversationIntervalClient03` provides explicit reservation, request,
+passive status and Stop calls at fixed same-origin paths. Before each mutation,
+its callback must commit the exact public recovery record. A request record
+contains the original statement and role05 signature; password and fresh factor
+are passed only to that explicit request in memory. The callback never receives
+those credentials. No method retries, creates a key or signs another original.
+
+An interrupted first reservation may have no interval UUID yet. The distinct
+opening-status read resolves its retained opening UUID without reserving again.
+Fresh same-user sign-in may observe the original public receipt but cannot adopt
+its old session as new consent. Requests retain the original actual session.
+An uncertain commit503, malformed success, post-admission session withdrawal or
+lost response remains UNKNOWN. A definite refusal requires the closed known
+typed error body. Neither outcome erases a saved opening or original signature.
+
+These modules remain unmounted SDK prerequisites. Actual browser durable
+storage/controller, disclosure and fresh-factor UI, foreground phone consent,
+durable install correlation and integrated server/device execution remain
+separate requirements before enabling messaging. A phase label or downloaded
+receipt is public metadata and cannot restore local custody or send permission.
