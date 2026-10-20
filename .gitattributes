@@ -8,3 +8,4 @@ deploy/compose/migrations/110_payload_profile_elections.sql text eol=lf
 deploy/compose/migrations/111_payload_profile_selection_refresh.sql text eol=lf
 deploy/compose/migrations/112_payload_profile_manifest_successors.sql text eol=lf
 deploy/compose/migrations/113_conversation_profile03_intervals.sql text eol=lf
+deploy/compose/migrations/114_conversation_reviewed_sends03.sql text eol=lf
