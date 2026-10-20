@@ -205,6 +205,24 @@ impl VerifiedManifest03 {
     pub(crate) fn signed_sha256(&self) -> [u8; 32] {
         self.signed_sha256
     }
+    /// Exact current role3 material only. Mutable connector/read-grant rows are
+    /// a separate held predicate; a manifest never establishes their state.
+    pub(crate) fn integration_reader03(
+        &self,
+        id: &[u8; 32],
+        now: u64,
+    ) -> Check<([u8; 65], u64, u64)> {
+        self.identity_at(now)?;
+        let r = self
+            .roles
+            .iter()
+            .find(|r| r.role == 3 && r.id == *id)
+            .ok_or("missing integration reader")?;
+        if !r.active(now) || r.scope != 12 {
+            return Err("integration both-direction authority");
+        }
+        Ok((r.point, r.from, r.until.min(self.identity.expires_ms)))
+    }
     pub(crate) fn authorize(
         &self,
         request: &Authorization03<'_>,

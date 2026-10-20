@@ -4,7 +4,12 @@ use crate::sealed_manifest::{ChainPosition, ManifestTrust};
 use crate::sealed_manifest03::tests::{Fixture, NOW, corpus, hex, sign};
 use crate::sealed_manifest03::{AuthenticatedCheckpoint02, verify_checkpoint02, verify_successor};
 
-fn accepted(core: &[u8], old: &[u8], next: &[u8], bundle: &[u8]) -> DurableAcceptedElection03 {
+pub(crate) fn accepted(
+    core: &[u8],
+    old: &[u8],
+    next: &[u8],
+    bundle: &[u8],
+) -> DurableAcceptedElection03 {
     let uuid = |at| core[at..at + 16].try_into().unwrap();
     let digest = |at| core[at..at + 32].try_into().unwrap();
     let integer = |at| number(&core[at..at + 8]).unwrap();
