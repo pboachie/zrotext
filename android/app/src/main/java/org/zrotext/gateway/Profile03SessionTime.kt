@@ -66,6 +66,17 @@ internal class Profile03SessionTime(account: UUID, device: UUID, epoch: Long, or
         return if (time.first === current.session) current to time.second else null
     }
     fun nowMs(): Long? = if (closed) null else original.trustedNow()
+    /** Only an already-live first-receipt issuer may use this metadata. All
+     * current permission and expiry checks still use nowMs(), the upper bound. */
+    class CaptureBounds internal constructor(val identity: Identity, val lowerMs: Long,
+        val upperMs: Long, val elapsedMs: Long)
+    @Synchronized fun captureBounds(): CaptureBounds? {
+        if (closed) return null
+        val actual = identity ?: return null
+        val bounds = original.captureBounds() ?: return null
+        if (bounds.session !== actual.session) return null
+        return CaptureBounds(actual, bounds.lowerMs, bounds.upperMs, bounds.elapsedMs)
+    }
     @Synchronized fun close() { closed = true; identity = null; original.close() }
     override fun toString() = "Profile03SessionTime(redacted)"
     companion object {
