@@ -78,7 +78,7 @@
       const paired = new Uint8Array(await file.arrayBuffer()); guard();
       if (paired.length !== 65 || paired[0] !== 4 || hex(await sha(paired)) !== selected.pairedFingerprint) throw Error("Independently paired phone changed"); guard();
       owner = await session();
-      const parts = await Promise.all(["accepted-manifest-history03", "original-manifest-history03"].map(importSdk)); guard(); sdk = Object.assign({}, ...parts);
+      const parts = await Promise.all(["accepted-manifest-history03", "original-manifest-history03", "payload-profile-election03"].map(importSdk)); guard(); sdk = Object.assign({}, ...parts);
       client = new sdk.OwnerManifestHistoryClient03({ origin: selected.origin, accountId: selected.account, userId: owner.user, ownerSessionId: owner.session,
         currentCsrf: csrf, signal: abort.signal, fetchImpl: fetch, timeoutMs });
       const candidate = await client.original(selected.line); guard(); bindingId = candidate.binding_id;
@@ -108,7 +108,21 @@
       const value = await client.current(history, now); guard(); phase = "current_selection"; return value;
     }); }
     function checkpoint() { guard(); if (!durable || !history) throw Error("Committed complete history required"); return sdk.acceptedManifestHistoryCheckpoint03(history); }
-    return Object.freeze({ open, next, current, checkpoint, state: snapshot, close, onClose: fn => { if (typeof fn !== "function") throw Error("Close callback required"); listeners.add(fn); } });
+    async function proposalContext(target = false) { return operation(async () => {
+      checkpoint(); await session(); guard();
+      const value = target ? sdk.acceptedManifestHistoryRequiredCheckpoint03(history) : checkpoint();
+      return Object.freeze({ ...value, nowMs: now(), scope: Object.freeze({ ...selected, user: owner.user, session: owner.session }),
+        election: sdk.verifiedAcceptedElectionIdentity03(original.seed.acceptedElection),
+        electionChallengeId: sdk.manifestHistoryBinary03(original.seed.originalEvidence.bundle, 628).slice(56, 72) });
+    }); }
+    async function restart(required) { return operation(async () => {
+      checkpoint(); await session(); guard();
+      const next = await sdk.startAcceptedManifestHistory03({ ...original.seed,
+        minimum: { version: number(retained.version), digest: bytes(retained.digest), ancestry: bytes(retained.ancestry_sha256) },
+        ...(required ? { required } : {}) }); guard();
+      history = next; durable = false; phase = "reading_history"; return snapshot();
+    }); }
+    return Object.freeze({ open, next, current, checkpoint, proposalContext, restart, assertOpen: guard, state: snapshot, close, onClose: fn => { if (typeof fn !== "function") throw Error("Close callback required"); listeners.add(fn); } });
   }
   const api = Object.freeze({ create }); if (typeof module !== "undefined" && module.exports) module.exports = api; else root.ZtManifest03History = api;
 })(globalThis);
