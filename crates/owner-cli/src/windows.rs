@@ -31,6 +31,8 @@ mod custody_sign;
 mod line_key_registration;
 #[cfg(all(test, feature = "unlock"))]
 mod native_fixture_path;
+#[cfg(feature = "unlock")]
+mod payload_profile_upgrade;
 #[cfg(all(test, feature = "unlock"))]
 mod setup_interop;
 
@@ -531,6 +533,10 @@ fn run_unlock(
 }
 
 pub(super) fn run(args: &[String]) -> Result<()> {
+    #[cfg(feature = "unlock")]
+    if args.first().map(String::as_str) == Some("payload-profile-upgrade") {
+        return payload_profile_upgrade::run(args, local_store_parent()?);
+    }
     #[cfg(feature = "unlock")]
     if args.first().map(String::as_str) == Some("contact-reader-sign") {
         return contact_reader_signing::run(args, local_store_parent()?);
