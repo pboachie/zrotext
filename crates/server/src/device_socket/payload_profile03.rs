@@ -6,10 +6,12 @@ use crate::sealed_inbound::line_activation::v2_runtime::object_body;
 use crate::sealed_payload_election03::{device_context, live};
 mod manifests;
 pub(super) const PROTOCOL: &str = "zrotext-device-status-v2+sealed-dispatch-v3";
+mod interval;
 object_body! {struct Session {v:u8,r#type:String,connection_epoch:i64,challenge:String}}
 object_body! {struct Proof {v:u8,r#type:String,challenge_id:String,device_signature:String}}
 object_body! {struct Current {v:u8,r#type:String,connection_epoch:i64,challenge:String,line_id:String}}
 pub(super) enum Incoming {
+    Interval(interval::Frame),
     Manifest(manifests::Frame),
     Session {
         epoch: i64,
@@ -74,6 +76,12 @@ pub(super) fn parse(raw: &str) -> Result<Option<Incoming>, ()> {
         decoder.end().map_err(|_| ())?;
         tag
     };
+    if tag.r#type.starts_with("conversation_interval_") {
+        if raw.len() > MAX_FRAME_BYTES {
+            return Err(());
+        }
+        return interval::parse(&tag.r#type, raw).map(|frame| Some(Incoming::Interval(frame)));
+    }
     if !tag.r#type.starts_with("payload_profile_") {
         return Ok(None);
     }
@@ -134,6 +142,12 @@ pub(super) async fn dispatch(
     reads: &mut CurrentReads,
     frame: Incoming,
 ) -> Option<()> {
+    if let Incoming::Interval(frame) = frame {
+        if !samples.is_sampled() {
+            return None;
+        }
+        return interval::dispatch(socket, state, session, origin, reads, frame).await;
+    }
     if let Incoming::Manifest(frame) = frame {
         return manifests::dispatch(socket, state, session, origin, samples, reads, frame).await;
     }
@@ -148,6 +162,7 @@ pub(super) async fn dispatch(
         .ok()
         .filter(|v| *v > 0)?;
     match frame {
+        Incoming::Interval(_) => return None,
         Incoming::Manifest(_) => return None,
         Incoming::Current {
             epoch,
@@ -287,7 +302,7 @@ pub(super) async fn push(
     if let Some(reply) = reply {
         send(socket, reply).await?
     }
-    Some(())
+    interval::push(socket, state, session, origin).await
 }
 
 #[cfg(test)]

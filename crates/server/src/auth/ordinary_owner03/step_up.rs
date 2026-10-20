@@ -50,6 +50,9 @@ impl HeldStepUp03<'_, '_> {
     pub(crate) fn checked_primary_ms(&self) -> u64 {
         self.checked_ms
     }
+    pub(crate) fn owner_session_deadline_ms(&self) -> u64 {
+        self.owner.session_deadline_ms()
+    }
     pub fn owner_identity(&self) -> &[u8] {
         self.owner.canonical_identity()
     }

@@ -1,0 +1,131 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+//! Exact-transaction complete ancestry for content adapters. Public history
+//! candidates and SQL structural retention cannot construct this held proof.
+use super::*;
+use crate::conversation_interval03::{self, PhysicalSource03};
+use crate::sealed_payload_election03::{
+    device_context::HeldDeviceContext03,
+    live::{
+        Error,
+        manifest_history::{self, History03},
+    },
+};
+use std::sync::Arc;
+use tokio_postgres::Transaction;
+type Result<T> = std::result::Result<T, Error>;
+
+pub(crate) struct SelectedManifest03<'held, 'db> {
+    tx: &'held Transaction<'db>,
+    history: History03,
+    progress: Arc<verified_history::Progress>,
+    origin: String,
+}
+impl<'held, 'db> SelectedManifest03<'held, 'db> {
+    pub(crate) async fn lock(
+        tx: &'held Transaction<'db>,
+        account: Uuid,
+        line: Uuid,
+        origin: &str,
+    ) -> Result<Self> {
+        let history = manifest_history::lock(tx, account, line, origin).await?;
+        let progress = verified_history::warm(tx, &history, origin).await?;
+        Ok(Self {
+            tx,
+            history,
+            progress,
+            origin: origin.to_owned(),
+        })
+    }
+    pub(crate) fn history(&self) -> &History03 {
+        &self.history
+    }
+    pub(crate) fn prefix(&self) -> &[u8; 32] {
+        &self.progress.prefix
+    }
+    pub(crate) fn manifest_at(&self, now: u64) -> Result<crypto::VerifiedManifest03> {
+        if now < self.history.checked_ms {
+            return Err(Error::Unavailable);
+        }
+        crypto::verify_current(&self.history.tip_signed, &self.progress.verified, now)
+            .map_err(|_| Error::Expired)
+    }
+    pub(crate) async fn revalidate(&self, tx: &Transaction<'_>) -> Result<()> {
+        if !std::ptr::eq(self.tx, tx) {
+            return Err(Error::Authentication);
+        }
+        let actual =
+            manifest_history::lock(tx, self.history.account, self.history.line, &self.origin)
+                .await?;
+        let progress = verified_history::warm(tx, &actual, &self.origin).await?;
+        if actual.original_identity != self.history.original_identity
+            || actual.binding != self.history.binding
+            || actual.epoch != self.history.epoch
+            || actual.tip_signed != self.history.tip_signed
+            || actual.tip_version != self.history.tip_version
+            || actual.tip_digest != self.history.tip_digest
+            || actual.tip_accepted_ms != self.history.tip_accepted_ms
+            || progress.prefix != self.progress.prefix
+        {
+            return Err(Error::Conflict);
+        }
+        Ok(())
+    }
+    pub(crate) async fn physical(
+        &self,
+        tx: &Transaction<'_>,
+        context: &HeldDeviceContext03<'_, '_>,
+    ) -> Result<Physical03> {
+        self.revalidate(tx).await?;
+        let lease = context.selected_identity();
+        if lease.account != self.history.account
+            || lease.device != self.history.device
+            || context.selection_epoch() != self.history.epoch
+            || context.root_fingerprint() != &self.history.accepted.root_fingerprint
+        {
+            return Err(Error::Conflict);
+        }
+        let source = current::physical(tx, &self.history, context, &self.origin).await?;
+        let original_binding = Uuid::from_bytes(self.history.accepted.old_binding_id);
+        let source_bytes = match &source {
+            current::Physical03::Original => PhysicalSource03::OriginalV2 {
+                original_binding,
+                activation_evidence: self.history.activation.canonical_evidence(),
+            },
+            current::Physical03::Refreshed {
+                refresh,
+                bundle,
+                accepted,
+                installed,
+            } => PhysicalSource03::OwnerRefresh03 {
+                refresh_id: *refresh,
+                bundle,
+                accepted_ms: *accepted,
+                installed_ms: *installed,
+            },
+        };
+        let digest = conversation_interval03::physical_digest(
+            self.history.account,
+            self.history.device,
+            self.history.line,
+            self.history.binding,
+            &self.history.accepted.election_commitment,
+            context.identity_digest(),
+            source_bytes,
+        )
+        .map_err(|_| Error::Unsupported)?;
+        Ok(Physical03 { source, digest })
+    }
+}
+
+pub(crate) struct Physical03 {
+    source: current::Physical03,
+    digest: [u8; 32],
+}
+impl Physical03 {
+    pub(crate) fn projection(&self) -> serde_json::Value {
+        self.source.projection()
+    }
+    pub(crate) fn digest(&self) -> &[u8; 32] {
+        &self.digest
+    }
+}
