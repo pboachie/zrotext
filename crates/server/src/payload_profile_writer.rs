@@ -4,6 +4,8 @@ use tokio_postgres::GenericClient;
 
 const MIGRATION: &str =
     include_str!("../../../deploy/compose/migrations/108_payload_profile_writer_fences.sql");
+const SELECTION_MIGRATION: &str =
+    include_str!("../../../deploy/compose/migrations/111_payload_profile_selection_refresh.sql");
 const ELECTION_MIGRATION: &str =
     include_str!("../../../deploy/compose/migrations/110_payload_profile_elections.sql");
 const RECEIPT_MIGRATION: &str =
@@ -19,16 +21,23 @@ pub enum WriterSchemaError {
 type Result<T> = std::result::Result<T, WriterSchemaError>;
 
 fn body(name: &str, marker: &str, version: i64) -> Result<&'static str> {
-    let source = if version == 110
+    let source = if version == 111
+        && matches!(
+            name,
+            "payload_profile_writer_version" | "payload_profile_writer_ready"
+        ) {
+        SELECTION_MIGRATION
+    } else if matches!(version, 110 | 111)
         && matches!(
             name,
             "payload_profile_writer_guard"
                 | "user_membership_freshness_guard"
                 | "payload_profile_writer_version"
                 | "payload_profile_writer_ready"
-        ) {
+        )
+    {
         ELECTION_MIGRATION
-    } else if matches!(version, 109 | 110)
+    } else if matches!(version, 109..=111)
         && matches!(
             name,
             "payload_profile_writer_graph"
@@ -226,7 +235,7 @@ pub(crate) async fn optional<C: GenericClient + Sync>(db: &C, table: &str) -> Re
         )
         .await?
         .try_get(0)?;
-    if !matches!(version, 108 | 109 | 110) {
+    if !matches!(version, 108..=111) {
         return Err(WriterSchemaError::Invalid);
     }
     functions(db, version).await?;
