@@ -297,7 +297,7 @@ BEGIN
   EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',routine.signature);
   IF EXISTS(SELECT FROM pg_roles WHERE rolname='zrotext_runtime') THEN
    EXECUTE format('REVOKE ALL ON FUNCTION %s FROM zrotext_runtime',routine.signature);
-   IF routine.proname IN('payload_profile_manifest_install','payload_profile_manifest_ready') THEN EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO zrotext_runtime',routine.signature); END IF;
+   IF routine.proname IN('payload_profile_manifest_install','payload_profile_manifest_retention','payload_profile_manifest_ready') THEN EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO zrotext_runtime',routine.signature); END IF;
   END IF;
  END LOOP;
 END;
