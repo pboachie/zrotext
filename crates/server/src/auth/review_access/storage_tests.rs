@@ -73,7 +73,7 @@ impl Fixture {
         let applied = zrotext_migrator::apply(&mut owner, &directory, false)
             .await
             .unwrap();
-        assert_eq!(applied.last().unwrap().version, 114);
+        assert_eq!(applied.last().unwrap().version, 115);
         let realm = Uuid::new_v4();
         let database_identity = Uuid::new_v4();
         let principal = Uuid::new_v4();

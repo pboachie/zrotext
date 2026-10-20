@@ -4,7 +4,7 @@ use super::*;
 // delivery fixtures deliberately stop at107; actual108+ public/ledger/runtime
 // coverage lives in current_schema_tests and uses the genuine migrator.
 const LEGACY_ISOLATED_MIGRATIONS: usize = 107;
-const TEST_MIGRATIONS: [(&str, &str); 114] = [
+const TEST_MIGRATIONS: [(&str, &str); 115] = [
     (
         "001_foundation.sql",
         include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -477,6 +477,10 @@ const TEST_MIGRATIONS: [(&str, &str); 114] = [
         "114_conversation_reviewed_sends03.sql",
         include_str!("../../../deploy/compose/migrations/114_conversation_reviewed_sends03.sql"),
     ),
+    (
+        "115_conversation_profile03_grants.sql",
+        include_str!("../../../deploy/compose/migrations/115_conversation_profile03_grants.sql"),
+    ),
 ];
 
 #[path = "current_schema_tests.rs"]
@@ -632,7 +636,7 @@ fn admission_fixture_tracks_numbered_migrations() {
         .map(|(name, _)| name.to_string())
         .collect::<Vec<_>>();
     assert_eq!(discovered, embedded, "update the embedded migration list");
-    assert_eq!(TEST_MIGRATIONS.len(), 114);
+    assert_eq!(TEST_MIGRATIONS.len(), 115);
     assert_eq!(
         TEST_MIGRATIONS[LEGACY_ISOLATED_MIGRATIONS - 1].0,
         "107_registration_browser_intents.sql"
