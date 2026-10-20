@@ -41,6 +41,27 @@ async fn ready(tx: &Transaction<'_>) -> Result<()> {
         .await
         .map_err(|_| Error::Unavailable)
 }
+/// Select the mutation lock mode before reading any history or device witness.
+/// The account is selected by the authenticated ingress, but these locks alone
+/// authenticate neither the socket nor its original proof or current lease.
+async fn device_mutation_mode(tx: &Transaction<'_>, account: Uuid) -> Result<()> {
+    ready(tx).await?;
+    tx.query_opt("SELECT account_id FROM public.sealed_manifest_authorities WHERE account_id=$1 AND revoked_at IS NULL FOR UPDATE NOWAIT", &[&account]).await?.ok_or(Error::Unsupported)?;
+    let key =
+        adapter_contract::account_fence_key(account.as_bytes()).map_err(|_| Error::Unsupported)?;
+    if !tx
+        .query_one("SELECT pg_catalog.pg_try_advisory_xact_lock($1)", &[&key])
+        .await?
+        .try_get::<_, bool>(0)?
+    {
+        return Err(Error::Conflict);
+    }
+    let anchor = tx.query_opt("SELECT state,selection_epoch FROM public.payload_profile_account_anchors WHERE account_id=$1 FOR UPDATE NOWAIT", &[&account]).await?.ok_or(Error::Unsupported)?;
+    if anchor.try_get::<_, String>(0)? != "live" || anchor.try_get::<_, i64>(1)? != 1 {
+        return Err(Error::Conflict);
+    }
+    Ok(())
+}
 async fn clock(tx: &Transaction<'_>, floor: u64) -> Result<u64> {
     let r = tx.query_one("SELECT pg_catalog.pg_is_in_recovery(),pg_catalog.floor(extract(epoch FROM pg_catalog.clock_timestamp())*1000)::bigint", &[]).await?;
     let now = scalar(r.try_get(1)?)?;

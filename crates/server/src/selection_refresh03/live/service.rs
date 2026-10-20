@@ -359,7 +359,7 @@ pub(crate) async fn device_proof(
     observation: &[u8],
     signature: &[u8],
 ) -> Result<()> {
-    ready(tx).await?;
+    device_mutation_mode(tx, socket.session.account_id).await?;
     let row = records::by_id(tx, socket.session.account_id, refresh).await?;
     let mut scope = Scope::lock(
         tx,
@@ -412,7 +412,7 @@ pub(crate) async fn device_installed(
     bundle_sha: &[u8; 32],
     signature: &[u8],
 ) -> Result<serde_json::Value> {
-    ready(tx).await?;
+    device_mutation_mode(tx, socket.session.account_id).await?;
     let row = records::by_id(tx, socket.session.account_id, refresh).await?;
     let receipt = records::Receipt::lookup(tx, socket.session.account_id, refresh)
         .await?
