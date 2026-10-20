@@ -289,5 +289,6 @@ pub(crate) fn verify(
     })
 }
 
+pub(crate) mod live;
 #[cfg(test)]
 pub(crate) mod tests;

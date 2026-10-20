@@ -5,13 +5,12 @@ use super::*;
 use crate::auth::ordinary_owner03::{HeldOrdinaryOwner03, step_up::HeldStepUp03};
 use crate::sealed_payload_election03::live::{self as selected, Error, HeldMessageSelection03};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B};
-use rand::{RngCore, rngs::OsRng};
 use tokio_postgres::{Row, Transaction};
 mod mappings;
 mod service;
 pub(crate) use service::{
     DeviceInterval03, Reserve03, device_approve, device_challenge, device_install, device_status,
-    owner_status, request, reserve, stop,
+    device_stop, historical_request, owner_status, request, reserve, stop,
 };
 type Result<T> = std::result::Result<T, Error>;
 
@@ -26,6 +25,7 @@ pub(crate) struct StoredInterval03 {
     requested_ms: Option<u64>,
     approved_ms: Option<u64>,
     installed_ms: Option<u64>,
+    stopped_ms: Option<u64>,
 }
 fn scalar(value: i64) -> Result<u64> {
     u64::try_from(value)
@@ -150,6 +150,7 @@ impl StoredInterval03 {
             requested_ms: time(row, "requested_ms")?,
             approved_ms: time(row, "approved_ms")?,
             installed_ms: time(row, "installed_ms")?,
+            stopped_ms: time(row, "stopped_ms")?,
         };
         let owner = value.owner.is_some() && value.requested_ms.is_some();
         let phone = value.phone.is_some() && value.approved_ms.is_some();
@@ -237,12 +238,33 @@ impl StoredInterval03 {
         held: &mut HeldMessageSelection03<'a, '_, '_>,
         interval: Uuid,
     ) -> Result<Self> {
+        if !std::ptr::eq(tx, held.tx()) {
+            return Err(Error::Authentication);
+        }
         let value = Self::read(tx, held.selected().account, interval).await?;
         if value.phase != "active" {
             return Err(Error::Conflict);
         }
         value.validate(held, false).await?;
         Ok(value)
+    }
+    pub(crate) async fn admission_deadline(
+        &self,
+        held: &mut HeldMessageSelection03<'_, '_, '_>,
+    ) -> Result<u64> {
+        if self.phase != "active" {
+            return Err(Error::Conflict);
+        }
+        let mapping = self.validate(held, false).await?;
+        let deadline = held
+            .authority()
+            .permission_expires_at_ms
+            .min(self.statement.times().3)
+            .min(mapping.deadline());
+        if held.now_ms() >= deadline {
+            return Err(Error::Expired);
+        }
+        Ok(deadline)
     }
     pub(crate) async fn permission(
         &self,

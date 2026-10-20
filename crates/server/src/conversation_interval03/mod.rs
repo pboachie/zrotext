@@ -413,16 +413,25 @@ pub(crate) fn verify_retained(
 
 /// The only production caller supplies actual held owner/current/physical and
 /// registry selection. Public routing inputs cannot construct that witness.
-pub(crate) fn compose(
-    e: &ExpectedConsent03<'_>,
-    interval: Uuid,
-    receipt: Uuid,
-    opening: Uuid,
-    issued: u64,
-    setup: u64,
-    expires: u64,
-    nonce: [u8; 32],
-) -> Check<Statement03> {
+pub(crate) struct Reservation03 {
+    pub interval: Uuid,
+    pub receipt: Uuid,
+    pub opening: Uuid,
+    pub issued: u64,
+    pub setup: u64,
+    pub expires: u64,
+    pub nonce: [u8; 32],
+}
+pub(crate) fn compose(e: &ExpectedConsent03<'_>, reservation: Reservation03) -> Check<Statement03> {
+    let Reservation03 {
+        interval,
+        receipt,
+        opening,
+        issued,
+        setup,
+        expires,
+        nonce,
+    } = reservation;
     let c = election::require_current(e.election, e.manifest, e.current, issued)?;
     let owner = election::adapter_contract::OwnerSessionIdentity03 {
         account_id: c.account_id,

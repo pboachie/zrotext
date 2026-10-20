@@ -45,14 +45,14 @@ pub(super) enum Body {
         factor: String,
     },
 }
-fn id(s: &str) -> Result<Uuid, StatusCode> {
+pub(super) fn id(s: &str) -> Result<Uuid, StatusCode> {
     let v = Uuid::parse_str(s).map_err(|_| StatusCode::BAD_REQUEST)?;
     if v.is_nil() || v.to_string() != s {
         return Err(StatusCode::BAD_REQUEST);
     }
     Ok(v)
 }
-fn binary(s: &str, min: usize, max: usize) -> Result<Vec<u8>, StatusCode> {
+pub(super) fn binary(s: &str, min: usize, max: usize) -> Result<Vec<u8>, StatusCode> {
     if s.len() > max.div_ceil(3) * 4
         || s.is_empty()
         || !s
@@ -67,13 +67,13 @@ fn binary(s: &str, min: usize, max: usize) -> Result<Vec<u8>, StatusCode> {
     }
     Ok(bytes)
 }
-fn version(v: u8) -> Result<(), StatusCode> {
+pub(super) fn version(v: u8) -> Result<(), StatusCode> {
     if v != 1 {
         return Err(StatusCode::BAD_REQUEST);
     }
     Ok(())
 }
-fn credentials(password: &str, factor: &str) -> Result<(), StatusCode> {
+pub(super) fn credentials(password: &str, factor: &str) -> Result<(), StatusCode> {
     if password.is_empty() || password.len() > 1024 || factor.is_empty() || factor.len() > 26 {
         return Err(StatusCode::BAD_REQUEST);
     }

@@ -55,10 +55,7 @@ pub(crate) async fn reserve<'held, 'db>(
         .ok_or(Error::Unsupported)?
         .min(input.expires_ms)
         .min(held.authority().permission_expires_at_ms);
-    let mut nonce = [0; 32];
-    OsRng
-        .try_fill_bytes(&mut nonce)
-        .map_err(|_| Error::Unavailable)?;
+    let nonce: [u8; 32] = rand::random();
     let interval = Uuid::new_v4();
     let receipt = Uuid::new_v4();
     let expected = held.consent_context(
@@ -70,13 +67,15 @@ pub(crate) async fn reserve<'held, 'db>(
     );
     let statement = compose(
         &expected,
-        interval,
-        receipt,
-        input.opening,
-        issued,
-        setup,
-        input.expires_ms,
-        nonce,
+        Reservation03 {
+            interval,
+            receipt,
+            opening: input.opening,
+            issued,
+            setup,
+            expires: input.expires_ms,
+            nonce,
+        },
     )
     .map_err(|_| Error::Unsupported)?;
     let mapping = mappings::read(&held, &statement).await?;
@@ -109,6 +108,43 @@ pub(crate) async fn reserve<'held, 'db>(
     Ok((true, stored.receipt()))
 }
 
+pub(crate) async fn historical_request(
+    tx: &Transaction<'_>,
+    owner: &mut HeldOrdinaryOwner03<'_, '_>,
+    opening: Uuid,
+    interval: Uuid,
+    statement: &[u8],
+    signature: &[u8],
+) -> Result<Option<serde_json::Value>> {
+    if !owner.uses_transaction(tx) {
+        return Err(Error::Authentication);
+    }
+    owner
+        .revalidate()
+        .await
+        .map_err(|_| Error::Authentication)?;
+    let who = owner.selected_identity();
+    let prior = StoredInterval03::read(tx, who.account, interval).await?;
+    if prior.selected_owner().user != who.user
+        || prior.statement.opening_id() != opening
+        || prior.statement.bytes() != statement
+    {
+        return Err(Error::Conflict);
+    }
+    let Some(original) = prior.owner else {
+        return Ok(None);
+    };
+    if original.as_slice() != signature {
+        return Err(Error::Conflict);
+    }
+    owner
+        .revalidate()
+        .await
+        .map_err(|_| Error::Authentication)?;
+    // Exact committed evidence only. A fresh cookie may observe it, but no new
+    // factor, current permission, timestamp or signature is manufactured.
+    Ok(Some(prior.receipt()))
+}
 pub(crate) async fn request<'held, 'db>(
     tx: &'held Transaction<'db>,
     proof: &mut HeldStepUp03<'held, 'db>,
@@ -320,6 +356,46 @@ pub(crate) async fn device_install(
     signature: &[u8],
 ) -> Result<serde_json::Value> {
     device_transition(tx, device, interval, digest, signature, true).await
+}
+pub(crate) async fn device_stop(
+    tx: &Transaction<'_>,
+    device: DeviceInterval03<'_>,
+    interval: Uuid,
+    digest: &[u8; 32],
+) -> Result<serde_json::Value> {
+    use crate::sealed_payload_election03::device_context;
+    ready(tx).await?;
+    let selector = device_context::Selector {
+        account: device.session.account_id,
+        device: device.session.device_id,
+        site: device.site.to_owned(),
+        instance: device.instance.to_owned(),
+        connection_epoch: scalar(device.session.connection_epoch)?,
+        deployment_epoch: device.deployment,
+    };
+    let mut context = device_context::lock(tx, &selector)
+        .await
+        .map_err(|_| Error::Authentication)?;
+    let prior = StoredInterval03::read(tx, selector.account, interval).await?;
+    if prior.statement.device_id() != selector.device || prior.statement.digest() != *digest {
+        return Err(Error::Authentication);
+    }
+    context
+        .revalidate()
+        .await
+        .map_err(|_| Error::Authentication)?;
+    let rows=tx.query("SELECT * FROM public.conversation_profile03_interval_device_stop($1,$2,$3,$4,$5,$6,$7,$8)",&[&selector.account,&interval,&selector.device,&selector.site,&selector.instance,&device.session.connection_epoch,&dbtime(selector.deployment_epoch)?,&digest.as_slice()]).await?;
+    let stopped = only_row(rows)?;
+    if stopped.statement.bytes() != prior.statement.bytes() || stopped.phase != "stopped" {
+        return Err(Error::Conflict);
+    }
+    context
+        .revalidate()
+        .await
+        .map_err(|_| Error::Authentication)?;
+    Ok(
+        serde_json::json!({"v":1,"type":"conversation_interval_stopped03","interval_id":interval,"statement_sha256":B.encode(digest),"stopped_ms":stopped.stopped_ms.ok_or(Error::Conflict)?.to_string(),"device_session_digest":B.encode(context.identity_digest())}),
+    )
 }
 async fn device_transition(
     tx: &Transaction<'_>,

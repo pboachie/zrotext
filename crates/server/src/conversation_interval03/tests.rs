@@ -172,44 +172,19 @@ fn composed_original_bytes_are_exact_and_cannot_select_an_unverified_role_or_dea
     let bytes = statement(&p);
     let s = Statement03::decode(&bytes).unwrap();
     let e = expected(&p, &s);
-    let made = compose(
-        &e,
-        Uuid::from_bytes([20; 16]),
-        Uuid::from_bytes([21; 16]),
-        Uuid::from_bytes([22; 16]),
-        NOW,
-        NOW + 100,
-        NOW + 500,
-        [26; 32],
-    )
-    .unwrap();
+    let make = |interval, expires| Reservation03 {
+        interval,
+        receipt: s.receipt_id(),
+        opening: s.opening_id(),
+        issued: NOW,
+        setup: NOW + 100,
+        expires,
+        nonce: [26; 32],
+    };
+    let made = compose(&e, make(s.interval_id(), NOW + 500)).unwrap();
     assert_eq!(made.bytes(), bytes);
-    assert!(
-        compose(
-            &e,
-            s.binding_id(),
-            s.receipt_id(),
-            s.opening_id(),
-            NOW,
-            NOW + 100,
-            NOW + 500,
-            [26; 32]
-        )
-        .is_err()
-    );
-    assert!(
-        compose(
-            &e,
-            s.interval_id(),
-            s.receipt_id(),
-            s.opening_id(),
-            NOW,
-            NOW + 100,
-            NOW + 80_001,
-            [26; 32]
-        )
-        .is_err()
-    );
+    assert!(compose(&e, make(s.binding_id(), NOW + 500)).is_err());
+    assert!(compose(&e, make(s.interval_id(), NOW + 80_001)).is_err());
 }
 #[test]
 fn disclosure_original_scope_and_prior_proof_hashes_cannot_be_replaced() {
