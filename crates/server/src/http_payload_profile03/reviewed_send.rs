@@ -139,8 +139,8 @@ async fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uuid::Uuid;
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B};
+    use uuid::Uuid;
     #[test]
     fn reviewed_bodies_cannot_import_owner_ceiling_or_alternative_profile_authority() {
         let raw=serde_json::json!({"v":1,"envelope":B.encode([1;557]),"reviewed_intent":B.encode([2;624]),"reviewed_signature":B.encode([3;64])}).to_string();
