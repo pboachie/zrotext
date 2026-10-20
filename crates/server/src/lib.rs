@@ -41,6 +41,7 @@ pub mod owner_ui;
 mod parent_account_mirror_tests;
 pub(crate) mod payload_profile_anchor;
 pub mod payload_profile_elections;
+pub mod payload_profile_selections;
 pub mod payload_profile_v2_receipts;
 pub mod payload_profile_writer;
 pub mod provider_config;

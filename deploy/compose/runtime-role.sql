@@ -257,4 +257,29 @@ BEGIN
 END;
 $migration$;
 
+-- Same-phone physical receipts are narrow writes, never message permission.
+DO $migration$
+DECLARE routine record; relation_name text; columns_sql text;
+BEGIN
+ FOREACH relation_name IN ARRAY ARRAY['payload_profile_selection_challenges','payload_profile_selection_receipts'] LOOP
+  EXECUTE format('REVOKE ALL ON TABLE public.%I FROM PUBLIC',relation_name);
+  IF EXISTS(SELECT FROM pg_roles WHERE rolname='zrotext_runtime') THEN
+   SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) INTO columns_sql FROM pg_attribute WHERE attrelid=to_regclass(format('public.%I',relation_name)) AND attnum>0 AND NOT attisdropped;
+   EXECUTE format('REVOKE ALL ON TABLE public.%I FROM zrotext_runtime',relation_name);
+   EXECUTE format('REVOKE ALL (%s) ON TABLE public.%I FROM PUBLIC,zrotext_runtime',columns_sql,relation_name);
+   EXECUTE format('GRANT SELECT ON TABLE public.%I TO zrotext_runtime',relation_name);
+  END IF;
+ END LOOP;
+ FOR routine IN SELECT p.oid::regprocedure AS signature,p.proname FROM pg_proc p WHERE p.pronamespace='public'::regnamespace AND p.proname LIKE 'payload_profile_selection_%' LOOP
+  EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',routine.signature);
+  IF EXISTS(SELECT FROM pg_roles WHERE rolname='zrotext_runtime') THEN
+   EXECUTE format('REVOKE ALL ON FUNCTION %s FROM zrotext_runtime',routine.signature);
+   IF routine.proname IN('payload_profile_selection_reserve','payload_profile_selection_device_proof','payload_profile_selection_approve','payload_profile_selection_install','payload_profile_selection_ready') THEN
+    EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO zrotext_runtime',routine.signature);
+   END IF;
+  END IF;
+ END LOOP;
+END;
+$migration$;
+
 COMMIT;
