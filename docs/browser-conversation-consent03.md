@@ -1,8 +1,9 @@
 # Browser conversation consent crypto
 
 The separate SDK module `conversation-interval03` verifies public ZTCA03
-statements. It is an unmounted prerequisite for browser content consent. It
-does not activate conversations or change existing profile02 APIs.
+statements. The explicit browser consent controller uses it with retained
+role05 custody and the checked ordinary-owner transport. Existing profile02
+APIs are unchanged; server feature mounting remains a separate decision.
 
 The statement carries nine identities, eight positive signed-storage-range
 counters and times, thirteen commitments, the exact disclosure, an E.164 peer
@@ -66,8 +67,40 @@ An uncertain commit503, malformed success, post-admission session withdrawal or
 lost response remains UNKNOWN. A definite refusal requires the closed known
 typed error body. Neither outcome erases a saved opening or original signature.
 
-These modules remain unmounted SDK prerequisites. Actual browser durable
-storage/controller, disclosure and fresh-factor UI, foreground phone consent,
-durable install correlation and integrated server/device execution remain
-separate requirements before enabling messaging. A phase label or downloaded
-receipt is public metadata and cannot restore local custody or send permission.
+## Browser continuation and interruption
+
+The conversation page fills archive and selected-phone signer choices from its
+complete root-verified public manifest. This discovery supplies no physical
+lease or content permission. The owner chooses the exact peer and any additional
+readers, a bounded duration and the displayed disclosure. The controller checks
+those choices independently against the newly reserved statement and genuine
+current context before using the existing nonexportable role05 key. It never
+creates a missing key. Password and fresh factor clear from the page before the
+explicit request call and never enter durable recovery.
+
+Two IndexedDB stores atomically retain the current opening and all prior public
+attempts. Closed records contain no private key, factors or message body. Exact
+compare-and-set and committed readback precede mutation HTTP; stale tabs,
+aborted commits and late operations cannot overwrite an original signed request.
+Original signatures and submitted markers cannot reset. An uncertain first
+response is reconciled by its original opening; an unsent saved command can be
+explicitly resumed without a new UUID. A submitted request never repeats on
+reload. The user checks its original status before any explicit continuation.
+
+Fresh same-user sign-in observes old-session history without adopting it. A new
+opening requires explicit action after an actual terminal service response; the
+old attempt stays retained. Stop withdraws local approval immediately, including
+during signing, and aborts pending transport before its separate original Stop
+call. Late crypto cannot publish a new signed request. If the original interval
+identity or session is unavailable, the page asks for reconciliation rather than
+claiming service-side Stop succeeded. Leaving, hiding, CSRF/session/selection
+change, parent checkpoint withdrawal, clock regression or timeout closes the
+local operation without deleting its history.
+
+All three independent request/phone/install signatures and actual current
+context are checked before showing verified active consent. That display loses
+current permission at its original deadline. It remains public consent evidence,
+not a phone-local durable handle, Ready state or permission for a message. The
+existing composer is not unlocked by this controller. Integrated server/browser/
+foreground phone, durable install correlation and message execution still need
+qualification before enabling messaging.

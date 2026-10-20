@@ -107,6 +107,11 @@
       if (!history || !durable) throw Error("Committed complete history required"); await session(); guard();
       const value = await client.current(history, now); guard(); phase = "current_selection"; return value;
     }); }
+    async function conversationContext(input) { return operation(async () => {
+      checkpoint(); await session(); guard();
+      const value = await client.conversationContext(history, input, now); guard();
+      phase = "current_selection"; return value;
+    }); }
     function checkpoint() { guard(); if (!durable || !history) throw Error("Committed complete history required"); return sdk.acceptedManifestHistoryCheckpoint03(history); }
     async function proposalContext(target = false) { return operation(async () => {
       checkpoint(); await session(); guard();
@@ -122,7 +127,7 @@
         ...(required ? { required } : {}) }); guard();
       history = next; durable = false; phase = "reading_history"; return snapshot();
     }); }
-    return Object.freeze({ open, next, current, checkpoint, proposalContext, restart, assertOpen: guard, state: snapshot, close, onClose: fn => { if (typeof fn !== "function") throw Error("Close callback required"); listeners.add(fn); } });
+    return Object.freeze({ open, next, current, conversationContext, checkpoint, proposalContext, restart, assertOpen: guard, state: snapshot, close, onClose: fn => { if (typeof fn !== "function") throw Error("Close callback required"); listeners.add(fn); } });
   }
   const api = Object.freeze({ create }); if (typeof module !== "undefined" && module.exports) module.exports = api; else root.ZtManifest03History = api;
 })(globalThis);
