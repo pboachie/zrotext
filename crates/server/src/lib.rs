@@ -51,6 +51,7 @@ pub mod provider_config;
 pub mod provider_sms;
 pub mod readiness;
 pub mod retention;
+pub mod reviewed_intent03;
 pub use zrotext_root_material::root_backup;
 pub mod conversation_interval03;
 pub(crate) mod manifest_install03;
