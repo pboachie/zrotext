@@ -35,6 +35,24 @@ and browser mounting are separate composition work. No retained private key is
 exported as a recovery file. Tests use actual WebCrypto keys and simulated
 IndexedDB; they do not establish persistent storage in a real browser.
 
+`OwnerProfileElectionClient03.installManifest` provides the fixed same-origin
+installation request. It verifies the independently pinned root signature,
+the exact successor commitment and its selected active role05 possession key
+before passing a public recovery record to a required durable-storage callback.
+Only after that callback completes can the single request carry the transient
+password and factor. Preparation, storage, transport and response verification
+share one absolute deadline; no automatic retry occurs. The callback is trusted
+application code and must actually persist the record before resolving.
+
+An uncertain reply preserves the original bytes. `manifestStatus` permits a
+fresh sign-in by the same original user to observe that exact opening without
+replaying credentials or mutating it through the new session. A missing or
+unverifiable observation remains unknown. Returned receipts are candidates:
+their exact proof, acceptance window and ancestry-prefix commitment are checked,
+but full predecessor policy, accepted ancestry, current permission and actual
+server installation remain separate verification obligations. Tests use signed
+public vectors and a simulated HTTP endpoint, not a live authenticated server.
+
 `manifest-install03.ts` separately encodes and verifies the exact513-byte public
 possession statement. It binds the original owner/session, selected election and
 binding, predecessor and exact signed successor commitments, five-minute
