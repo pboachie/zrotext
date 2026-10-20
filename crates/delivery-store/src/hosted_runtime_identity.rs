@@ -36,6 +36,25 @@ pub fn declared_function_body<'a>(source: &'a str, name: &str, marker: &str) -> 
 }
 
 fn body(name: &str) -> Result<&'static str> {
+    // These three applied106 declarations use its original unqualified names
+    // and $$ marker. Runtime validation keeps their exact original hash pairs;
+    // this narrow source branch lets the regression check those same bytes.
+    if matches!(
+        name,
+        "hosted_runtime_schema_ready" | "hosted_runtime_role_safe" | "hosted_runtime_projection"
+    ) {
+        let original = include_str!("../../../deploy/compose/migrations/106_hosted_runtime.sql");
+        let declaration = format!("\nCREATE FUNCTION {name}(");
+        if original.matches(&declaration).count() != 1 {
+            return Err(IdentitySchemaError::Invalid);
+        }
+        return original
+            .split_once(&declaration)
+            .and_then(|(_, sql)| sql.split_once("AS $$"))
+            .and_then(|(_, sql)| sql.split_once("$$;"))
+            .map(|(body, _)| body)
+            .ok_or(IdentitySchemaError::Invalid);
+    }
     let source = match name {
         "payload_profile_writer_json"
         | "payload_profile_writer_global_guard"
@@ -45,11 +64,6 @@ fn body(name: &str) -> Result<&'static str> {
         "payload_profile_writer_graph" => include_str!(
             "../../../deploy/compose/migrations/109_original_sealed_activation_receipts.sql"
         ),
-        "hosted_runtime_schema_ready"
-        | "hosted_runtime_role_safe"
-        | "hosted_runtime_projection" => {
-            include_str!("../../../deploy/compose/migrations/106_hosted_runtime.sql")
-        }
         _ => MIGRATION,
     };
     declared_function_body(source, name, "$function$").ok_or(IdentitySchemaError::Invalid)
