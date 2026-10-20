@@ -4,7 +4,6 @@
 use super::*;
 use crate::reviewed_intent03::live as reviewed;
 use crate::sealed_inbound::line_activation::v2_runtime::object_body;
-use uuid::Uuid;
 object_body! {struct Send{v:u8,envelope:String,reviewed_intent:String,reviewed_signature:String}}
 object_body! {struct Status{v:u8,message_id:String,interval_id:String,envelope_sha256:String,reviewed_intent_sha256:String,reviewed_signature_sha256:String}}
 enum Input {
@@ -141,6 +140,7 @@ async fn handle(
 mod tests {
     use super::*;
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B};
+    use uuid::Uuid;
     #[test]
     fn reviewed_bodies_cannot_import_owner_ceiling_or_alternative_profile_authority() {
         let raw=serde_json::json!({"v":1,"envelope":B.encode([1;557]),"reviewed_intent":B.encode([2;624]),"reviewed_signature":B.encode([3;64])}).to_string();
