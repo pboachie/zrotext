@@ -24,6 +24,7 @@ fn main() -> std::process::ExitCode {
             help.push_str("conversation-genesis (explicit unlock build only): independently expected --account --origin --bundle --proposal --output --session --device --line --device-signing-fingerprint --generation --peer --phone-reader-point --archive-reader-point --phone-signer-point --issued --expires, in that order. First four-role manifest only; requires independent public point comparison.\n");
             help.push_str("conversation-activation (explicit unlock build only): --account --origin --bundle --proposal --output --session --device --line --generation --peer --manifest-version --manifest-digest --phone-reader --archive-reader --phone-signer --issued, in that order. Preserved-record successor only; no root-signed peer/session consent or network activation.\n");
             help.push_str("payload-profile-upgrade (explicit unlock build only): independently expected --account --origin --bundle --proposal --output --device --line --manifest-version --manifest-digest --phone-reader --phone-signer --issued, in that order. First same-root03 successor only; original keys and expiry stay exact.\n");
+            help.push_str("profile03-manifest (explicit unlock build only): independently expected --account --origin --bundle --proposal --output --operation --device --line --manifest-version --manifest-digest --manifest-accepted --phone-reader --browser-point --browser-key --issued --expires, in that order. One exact existing-root browser signer enrollment, renewal or explicit replacement.\n");
             help.push_str("conversation-refresh (explicit unlock build only): independently expected --account --origin --bundle --proposal --output --session --interval --device --line --generation --peer --manifest-version --manifest-digest --phone-reader --archive-reader --signer --signer-point --until, in that order. One typed role-5 manifest refresh; archive records remain exact.\n");
             help
         };
@@ -61,6 +62,7 @@ fn main() -> std::process::ExitCode {
         Some(
             "line-key-registration"
                 | "payload-profile-upgrade"
+                | "profile03-manifest"
                 | "conversation-refresh"
                 | "conversation-activation"
                 | "custody-sign"
