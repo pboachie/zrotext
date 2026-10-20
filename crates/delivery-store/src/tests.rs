@@ -4,7 +4,7 @@ use super::*;
 // delivery fixtures deliberately stop at107; actual108+ public/ledger/runtime
 // coverage lives in current_schema_tests and uses the genuine migrator.
 const LEGACY_ISOLATED_MIGRATIONS: usize = 107;
-const TEST_MIGRATIONS: [(&str, &str); 116] = [
+const TEST_MIGRATIONS: [(&str, &str); 117] = [
     (
         "001_foundation.sql",
         include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
