@@ -12,7 +12,7 @@ pub(crate) struct Packet {
     pub(crate) current: CurrentAuthority03,
     intent: Vec<u8>,
     signature: Vec<u8>,
-    envelope: Vec<u8>,
+    pub(super) envelope: Vec<u8>,
     readers: Vec<(u8, [u8; 32])>,
     signer: [u8; 32],
 }
@@ -162,7 +162,7 @@ impl Packet {
             signer,
         }
     }
-    fn expected(&self) -> ExpectedReview03<'_> {
+    pub(super) fn expected(&self) -> ExpectedReview03<'_> {
         ExpectedReview03 {
             current: &self.current,
             election: &self.proof,

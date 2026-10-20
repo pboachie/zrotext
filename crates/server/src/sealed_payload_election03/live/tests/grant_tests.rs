@@ -94,6 +94,11 @@ async fn actual_grant_fetch_preserves_originals_one_attempt_and_refuses_owner_wi
         B.decode(first["envelope"].as_str().unwrap()).unwrap(),
         p.envelope
     );
+    let original_review = B
+        .decode(first["reviewed_intent"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(&original_review[..8], b"ZTRI\x02\x03\x03\0");
+    assert_eq!(original_review, p.intent);
     assert_eq!(first["current"]["kind"], "message_manifest_permission03");
     assert_eq!(
         first["current"]["request_id"],
