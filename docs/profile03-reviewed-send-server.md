@@ -25,6 +25,15 @@ account refuses rather than queueing without a reserve. Customer locking uses
 the actual customer row before the account row upgrade; advisory participation
 does not substitute for that tuple ordering.
 
+The genuine owner path pins `pg_catalog`. Only the unchanged legacy billing
+calls temporarily use the exact validated installation path
+`pg_catalog,public,pg_temp`; temporary objects are explicitly last. The bridge
+requires the stock narrow runtime and no CREATE privilege in public, and
+restores `pg_catalog` immediately before held authority rechecks. Namespace
+settings grant no authentication. Every SQL failure rolls back the transaction;
+the bridge never continues an aborted transaction or changes installed billing
+function definitions.
+
 The original short review window bounds initial admission. It does not renew
 current owner permission or become a later grant deadline. The server repeats
 actual current records, signatures, physical/mapping deadlines and the original

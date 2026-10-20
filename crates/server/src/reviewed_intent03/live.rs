@@ -12,6 +12,7 @@ use zrotext_delivery_store::{
     sealed::{self, Profile03QueueInput},
 };
 type Result<T> = std::result::Result<T, Error>;
+mod billing;
 
 /// Immutable replay identity survives permitted content redaction. These
 /// structural fields grant no permission and cannot restore erased originals.
@@ -231,9 +232,7 @@ pub(crate) async fn admit<'held, 'db>(
     selected::manifest_history::exclusive_owner(tx, owner).await?;
     // Trusted profile policy requires a real configured quota. Hosted protected
     // triggers keep their own reserve path; manual self-hosted quotas are valid.
-    let account = sealed::lock_account(tx, who.account, true)
-        .await
-        .map_err(store_error)?;
+    let account = billing::lock(tx, who.account).await?;
     let mut held = selected::hold_owner_selection(tx, owner, candidate.line_id(), origin).await?;
     let interval = StoredInterval03::active(tx, &mut held, candidate.interval_id()).await?;
     let current_deadline = interval.admission_deadline(&mut held).await?;
@@ -279,7 +278,7 @@ pub(crate) async fn admit<'held, 'db>(
     stored.matches(intent, signature, envelope)?;
     let candidate = verified.intent();
     let queued = account
-        .enqueue_profile03(&Profile03QueueInput {
+        .enqueue(&Profile03QueueInput {
             message_id: candidate.message_id(),
             device_id: Uuid::from_bytes(candidate.ids[1]),
             line_id: candidate.line_id(),
@@ -294,8 +293,7 @@ pub(crate) async fn admit<'held, 'db>(
             expires_at_ms: sqltime(candidate.numbers[5])?,
             segment_limit: candidate.ceiling,
         })
-        .await
-        .map_err(store_error)?;
+        .await?;
     if !queued.created {
         return Err(Error::Conflict);
     }
