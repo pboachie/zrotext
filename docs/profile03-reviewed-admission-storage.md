@@ -53,7 +53,7 @@ no authenticated segment ceiling do not become03 authority. Real adapter,
 billing, maintained receiver and integrated no-radio qualification remain
 separate from SQL structural qualification.
 
-The delivery test inventory includes all114 numbered files and checks their
+The delivery test inventory includes all115 numbered files and checks their
 filenames. Historical isolated-schema delivery cases explicitly retain the107
 prefix:108 requires exact `public` and a real migration ledger. A separate
 disposable public-database test uses the genuine migrator, distinct ordinary
