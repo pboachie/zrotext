@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
 use crate::sealed_manifest03::tests::hex;
+use aes_gcm::aead::Generate;
 use p256::ecdsa::{Signature, SigningKey, signature::Signer};
 
 fn sign(key: &SigningKey, domain: &[u8], payload: &[u8]) -> Vec<u8> {
