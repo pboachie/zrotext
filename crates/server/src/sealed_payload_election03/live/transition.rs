@@ -13,7 +13,7 @@ async fn ready(tx: &Transaction<'_>) -> Result<()> {
         .map_err(|_| Error::Unavailable)
 }
 
-async fn exclusive(tx: &Transaction<'_>, owner: &Owner<'_, '_, '_>) -> Result<()> {
+pub(super) async fn exclusive(tx: &Transaction<'_>, owner: &Owner<'_, '_, '_>) -> Result<()> {
     if !owner.uses(tx) {
         return Err(Error::Authentication);
     }

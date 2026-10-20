@@ -13,6 +13,7 @@ use p256::{
 use uuid::Uuid;
 const ORIGIN: &str = "https://activation.example";
 mod fixture;
+mod manifest_tests;
 use fixture::{prepared, sign, source};
 
 #[tokio::test]
