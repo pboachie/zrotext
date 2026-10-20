@@ -73,6 +73,14 @@ class Draft03OutboundPreparationTest {
         assertEquals(Draft03OutboundPreparation.Rejected, run(f))
         assertEquals(0, f.line.db.sealedPreparations().count())
     }
+    @Test fun stoppedConversationRamLeaseRefusesBeforeJournalAndRemainsAnIndependentGuard() = Profile03ExecutionFixture().use { f ->
+        f.install(); val c = f.current(); c.intervalRamCurrent()
+        f.intervalCurrent = false
+        assertThrows(Exception::class.java) { c.intervalRamCurrent() }
+        assertEquals(Draft03OutboundPreparation.Rejected, run(f))
+        assertEquals(0, f.line.db.sealedPreparations().count())
+        assertTrue(f.binding.liveContinuity()) // Physical reader availability does not replace content consent.
+    }
     @Test fun verifiedReaderDeadlineIsIndependentOfALongerAdapterPermissionLease() {
         Profile03ExecutionFixture(selectedReaderUntilMs = 100_600).use { f ->
             val c = f.current()

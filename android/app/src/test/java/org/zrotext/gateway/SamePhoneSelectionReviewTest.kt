@@ -28,7 +28,7 @@ class SamePhoneSelectionReviewTest {
                 checkNotNull(f.line.db.profile03Elections().find(f.record.challengeId)), f.line.point)
         }
     }
-    @Test fun freshExplicitReviewRetainsOriginalHistoryAndNeverReconstructsAnInstalledPermit() = Profile03ExecutionFixture().use { f ->
+    @Test fun freshExplicitReviewRetainsOriginalHistoryAndNeverReconstructsAnInstalledPermit(): Unit = Profile03ExecutionFixture().use { f ->
         f.install()
         val original = f.line.db.lineActivationsV2().find("sealed", f.line.challengeId.toString())!!
         val election = f.line.db.profile03Elections().find(f.record.challengeId)
@@ -106,7 +106,7 @@ class SamePhoneSelectionReviewTest {
             } finally { controller.close() }
         }
     }
-    @Test fun cancellationAtAnIdentityWaitCannotPublishALateReviewOrConsent() = Profile03ExecutionFixture().use { f ->
+    @Test fun cancellationAtAnIdentityWaitCannotPublishALateReviewOrConsent(): Unit = Profile03ExecutionFixture().use { f ->
         f.install(); f.line.callback()
         val inputs = Inputs(f)
         SamePhoneSelectionReview(inputs).use { controller ->

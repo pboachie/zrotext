@@ -49,7 +49,13 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
         EvidenceIdentity.fromStream(account, device, streamUrl).originHash, SystemClock::elapsedRealtime,
         ::current, lineConsumerVersion, socket::send)
     private val wire = ConversationSocketWire(socket, { time.snapshot()?.first?.session?.let(ConversationPhoneSession::from) })
-    private val reader by lazy { Profile03CurrentReader(application, origin, db, trust, recipients, keys, time, ::current) }
+    private val intervals: ConversationInterval03Runtime by lazy { ConversationInterval03Runtime(this,
+        java.security.MessageDigest.getInstance("SHA-256").digest(origin.toByteArray(Charsets.UTF_8)),
+        ConversationInterval03Store(application, ConversationExistingJournalProtection(), suppression),
+        ConversationInterval03HardwareProofSigner(keys) { recipients }, time, ::current,
+        { bytes, line -> reader.deviceSelection(bytes, line) }, socket::send) }
+    private val reader: Profile03CurrentReader by lazy { Profile03CurrentReader(application, origin, db, trust, recipients, keys, time, ::current,
+        { packet, grant, selected -> intervals.requireFetch(packet, grant, selected) }) }
     private val setup by lazy { Profile03SetupRuntime(application, origin, db, trust, recipients, keys, time, ::current) }
     private val refresh = SelectionRefresh03Runtime(origin, db, trust, { recipients }, keys, time, ::current, socket::send) {
         synchronized(effects) { check(current()); projection = null }
@@ -73,6 +79,14 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
             refresh.acceptDecision(decision)
             Profile03MessagingStatus.update(this, "Fresh SIM review saved. Approve this selection in your owner workspace.")
         }
+        ConversationInterval03Mount.attach(this, ::current,
+            { shown, foreground -> JournalRuntime.io.execute { runCatching { intervals.approve(shown, foreground) }
+                .onFailure { ConversationInterval03Mount.update(this, shown, "Approval paused. Original records are retained; no new signature was requested") } } },
+            { shown, foreground -> JournalRuntime.io.execute { runCatching { intervals.retry(shown, foreground) }
+                .onFailure { ConversationInterval03Mount.update(this, shown, "Retry paused. Check the original setup and current connection; history is retained") } } },
+            { shown -> JournalRuntime.io.execute { runCatching { intervals.requestStatus(shown) }
+                .onFailure { ConversationInterval03Mount.update(this, shown, "Status unavailable. Original records remain unchanged") } } },
+            { shown -> intervals.stop(shown) })
     }
 
     private fun current() = !closed && socketCurrent() && lineConsumerVersion() == 2
@@ -116,6 +130,20 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
                 "payload_profile_selection_approved03" -> refresh.approved(owned)
                 "payload_profile_selection_install_ack03" -> refresh.installedAck(owned)
                 else -> error("Refresh direction")
+            }
+        }.onFailure { close() } }
+    }
+    fun conversationInterval(raw: ByteArray) {
+        val owned = raw.copyOf()
+        JournalRuntime.io.execute { runCatching {
+            check(current())
+            when (Profile03Json.objectValue(owned)["type"]) {
+                "conversation_interval_challenge03" -> intervals.challenge(owned)
+                "conversation_interval_approved03" -> intervals.approved(owned)
+                "conversation_interval_installed03" -> intervals.installed(owned)
+                "conversation_interval_status03" -> intervals.status(owned)
+                "conversation_interval_stopped03" -> intervals.stopped(owned)
+                else -> error("Interval direction")
             }
         }.onFailure { close() } }
     }
@@ -240,7 +268,9 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
         // Withdraw before acquiring a lock that a blocked preparation/radio operation may hold.
         closed = true
         SelectionRefresh03Mount.detach(this)
+        ConversationInterval03Mount.detach(this)
         refresh.close()
+        intervals.close()
         Profile03MessagingStatus.update(this, "Messaging paused. Your pairing and setup history are saved.")
         Profile03BootstrapClock.withdraw(this)
         time.close(); wire.invalidate()

@@ -61,7 +61,8 @@ internal object ConversationAndroidEnrollment {
                                 keys.containsAlias(ConversationExistingSuppressionTokens.ALIAS)
                         }, {
                             // Never recreate protection after retained content or suppression has lost its key.
-                            val files = listOf(ConversationJournalStores.CAPTURE_FILE, ConversationJournalStores.SEND_FILE).any { name ->
+                            val files = listOf(ConversationJournalStores.CAPTURE_FILE, ConversationJournalStores.SEND_FILE,
+                                ConversationInterval03Database.FILE).any { name ->
                                 val path = app.getDatabasePath(name).path
                                 listOf("", "-wal", "-shm", "-journal").any { java.io.File(path + it).exists() }
                             }

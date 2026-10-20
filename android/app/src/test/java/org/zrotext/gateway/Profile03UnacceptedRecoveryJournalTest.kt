@@ -131,9 +131,10 @@ class Profile03UnacceptedRecoveryJournalTest {
         assertThrows(IllegalStateException::class.java) { r.dao.requireClosureHistory(r.third, replaced, r.now) {} }
         assertEquals(r.closures.last(), r.dao.closedUnaccepted(r.second.challengeId))
     }
-    @Test fun schemaSixteenUpgradePreservesReleasedProofAndUnknownRadioHistoryWithoutCurrentAuthority() {
+    @Test fun schemaSixteenUpgradeRetainsSignedProofAndUnknownRadio() {
         val context = RuntimeEnvironment.getApplication()
         val name = "unaccepted-${UUID.randomUUID()}.db"
+        check(context.getDatabasePath(name).parentFile?.mkdirs() == true || context.getDatabasePath(name).parentFile?.isDirectory == true)
         Profile03RecoveryFixture().use { r ->
             val signed = r.signed(r.first)
             val unknown = SmsAttempt(UUID(0, 93).toString(), r.f.line.selected, 1, AttemptState.UNKNOWN, 1, 1)

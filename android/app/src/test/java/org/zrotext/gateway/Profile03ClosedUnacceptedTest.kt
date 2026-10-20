@@ -29,7 +29,7 @@ class Profile03ClosedUnacceptedTest {
         Profile03ClosedUnaccepted.requireChain(target, rows, vector.getString("authenticated_now_ms").toLong())
         assertEquals(2, rows.size)
     }
-    @Test fun completeLinkedChainAcceptsUnknownIntermediateAndDifferentFreshSessionWithoutInventingAcceptance() = Profile03RecoveryFixture().use { r ->
+    @Test fun completeLinkedChainAcceptsUnknownIntermediateAndDifferentFreshSessionWithoutInventingAcceptance(): Unit = Profile03RecoveryFixture().use { r ->
         val parsed = Profile03ClosedUnaccepted.decode(Profile03Json.objectValue(Profile03Json.render(r.wire())))
         assertEquals(r.closures, parsed)
         Profile03ClosedUnaccepted.requireChain(r.third, parsed, r.now)
@@ -37,7 +37,7 @@ class Profile03ClosedUnacceptedTest {
         assertNull(r.dao.find(r.second.challengeId))
         assertEquals("Profile03UnacceptedClosureRecord(server-history-only)", parsed.first().toString())
     }
-    @Test fun allOriginalScopeFieldsMustMatchDespiteStructurallyValidNewCores() = Profile03RecoveryFixture().use { r ->
+    @Test fun allOriginalScopeFieldsMustMatchDespiteStructurallyValidNewCores(): Unit = Profile03RecoveryFixture().use { r ->
         // Account/device/line, original binding/generation, proof/root/vault/02 manifest,
         // next version, reader/enrollment/original approval key and canonical origin.
         for (at in listOf(8, 24, 40, 72, 88, 104, 136, 168, 176, 184, 216, 256, 288, 320, 400)) {
@@ -54,7 +54,7 @@ class Profile03ClosedUnacceptedTest {
         val fresh = r.mutateCore(r.third) { it[224] = (it[224].toInt() xor 1).toByte() }
         Profile03ClosedUnaccepted.requireChain(fresh, r.closures, r.now)
     }
-    @Test fun closureMustBeExactSuccessorIssuedTimeAfterOriginalExpiryAndTargetMustBeLive() = Profile03RecoveryFixture().use { r ->
+    @Test fun closureMustBeExactSuccessorIssuedTimeAfterOriginalExpiryAndTargetMustBeLive(): Unit = Profile03RecoveryFixture().use { r ->
         val first = r.closures.first()
         for (bad in listOf(first.copy(closedUnacceptedMs = first.closedUnacceptedMs - 1),
             first.copy(closedUnacceptedMs = first.closedUnacceptedMs + 1),
@@ -70,7 +70,7 @@ class Profile03ClosedUnacceptedTest {
         for (now in listOf(102_999L, 104_000L, 104_001L))
             assertThrows(IllegalArgumentException::class.java) { Profile03ClosedUnaccepted.requireChain(r.third, r.closures, now) }
     }
-    @Test fun duplicateReorderedDecreasingOrForeignChainsRefuse() = Profile03RecoveryFixture().use { r ->
+    @Test fun duplicateReorderedDecreasingOrForeignChainsRefuse(): Unit = Profile03RecoveryFixture().use { r ->
         val a = r.closures.first(); val b = r.closures.last()
         for (rows in listOf(listOf(b, a), listOf(a, a), List(17) { a },
             listOf(a, b.copy(openingId = a.openingId)), listOf(a, b.copy(newBindingId = a.newBindingId)),
@@ -82,7 +82,7 @@ class Profile03ClosedUnacceptedTest {
         assertThrows(IllegalArgumentException::class.java) { Profile03ClosedUnaccepted.requireChain(r.third,
             listOf(Profile03RecoveryFixture.close(r.first, decreasing, 30), Profile03RecoveryFixture.close(decreasing, r.third, 31)), r.now) }
     }
-    @Test fun wireRequiresClosedCanonicalSixFieldsAndNoCoercedCountersOrUuid() = Profile03RecoveryFixture().use { r ->
+    @Test fun wireRequiresClosedCanonicalSixFieldsAndNoCoercedCountersOrUuid(): Unit = Profile03RecoveryFixture().use { r ->
         val item = Profile03Json.closedUnaccepted(r.wire()).first()
         val invalid = listOf(item - "opening_id", item + ("accepted" to "yes"),
             item + ("opening_id" to UUID(0, 0).toString()), item + ("new_binding_id" to "1-1-1-1-1"),

@@ -93,10 +93,12 @@ internal class Profile03ExecutionFixture(private val selectedReaderUntilMs: Long
         .put("envelope_sha256", b64(sha(envelope))).put("unsigned_sha256", b64(unsigned(envelope)))
         .put("manifest_digest", b64(authority.digest)).put("root_fingerprint", b64(fingerprint))
         .put("election_digest", b64(accepted.electionCommitment)).toString())
+    var intervalCurrent = true
     fun current(selected: Draft03PayloadElectionProof.CurrentAuthority03 = currentSelection,
         reviewed: ReviewedIntent03 = intent, signature: ByteArray = intentSignature,
         epoch: Long = 3, acceptedMs: Long = admittedAt) = Draft03OutboundPreparation.Current(election, authority, selected,
-        installed, binding, reviewed, signature, acceptedMs, epoch, ownerUser, ownerSession, 1, 200_000, line.selected, line.cards())
+        installed, binding, reviewed, signature, acceptedMs, epoch, ownerUser, ownerSession, 1, 200_000, line.selected, line.cards(),
+        intervalRamCurrent = { check(intervalCurrent) })
     fun install() {
         val dao = line.db.profile03Elections()
         check(dao.reserve(record) {})

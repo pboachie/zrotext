@@ -278,6 +278,18 @@ class DeviceSigningKeyStore(
         expectedPoint: ByteArray, current: () -> Unit): ByteArray = signExistingRefreshTranscript(
         SelectionRefresh03.installedTranscript(bundle, actualDeviceSessionDigest), expectedPoint, current)
 
+    /** Actual selected manifest role04, independently compared to this existing hardware key.
+     * Reader availability and the separately enrolled socket key never supply that selection.
+     * The caller must commit the distinct one-use phase before either operation.
+     */
+    internal fun signConversationApproval03(statement: ConversationInterval03.Statement, ownerSignature: ByteArray,
+        expectedRole04: ByteArray, current: () -> Unit): ByteArray = signExistingRefreshTranscript(
+        ConversationInterval03.approvalTranscript(statement, ownerSignature), expectedRole04, current)
+
+    internal fun signConversationInstalled03(statement: ConversationInterval03.Statement, ownerSignature: ByteArray,
+        phoneSignature: ByteArray, expectedRole04: ByteArray, current: () -> Unit): ByteArray = signExistingRefreshTranscript(
+        ConversationInterval03.installedTranscript(statement, ownerSignature, phoneSignature), expectedRole04, current)
+
     private fun signExistingRefreshTranscript(transcript: ByteArray, expectedPoint: ByteArray, current: () -> Unit): ByteArray {
         val point = expectedPoint.copyOf()
         current()
