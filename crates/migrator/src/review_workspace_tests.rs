@@ -72,7 +72,7 @@ impl Fixture {
         let directory =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
         let applied = apply(&mut db, &directory, false).await.unwrap();
-        assert_eq!(applied.last().unwrap().version, 110);
+        assert_eq!(applied.last().unwrap().version, 111);
         let ledger: String = db.query_one("SELECT json_agg(json_build_array(version,checksum_sha256,applied_at::text) ORDER BY version)::text FROM schema_migrations", &[]).await.unwrap().get(0);
         assert!(apply(&mut db, &directory, false).await.unwrap().is_empty());
         let replay: String = db.query_one("SELECT json_agg(json_build_array(version,checksum_sha256,applied_at::text) ORDER BY version)::text FROM schema_migrations", &[]).await.unwrap().get(0);
