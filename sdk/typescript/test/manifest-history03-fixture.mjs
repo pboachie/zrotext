@@ -17,7 +17,7 @@ export const frame = (label, bytes) => join(enc.encode(label + '\0'), num(BigInt
 export const hash = async (label, ...parts) => sha(frame(label, join(...parts)));
 export async function key() { const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']); return { pair, point: new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey)) }; }
 export const sign = async (k, bytes) => canonicalP256Signature(new Uint8Array(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, k.pair.privateKey, bytes)));
-export async function fixture() {
+export async function fixture({ originalProofs = false } = {}) {
   const f = { root: await key(), phone: await key(), approval: await key(), origin: 'https://owner.invalid', account: uuid(1), device: uuid(20), line: uuid(40),
     challenge: uuid(60), oldBinding: uuid(80), binding: uuid(100), user: uuid(140), session: uuid(160), acceptedMs: 10000n };
   const records = [];
@@ -39,13 +39,15 @@ export async function fixture() {
   const prior = await verifyManifest02(old.signed, trust, f.acceptedMs), first = await manifest(3, 2n, old.digest);
   f.first = await verifyManifest03From02(first.signed, prior, old.signed, f.acceptedMs);
   const digest = n => new Uint8Array(32).fill(n);
-  f.core = join(enc.encode('ZTPE'), Uint8Array.of(3, 1, 2, 3), f.account, f.device, f.line, f.challenge, f.oldBinding, num(4n), num(7n), digest(1),
+  const originals = originalProofs ? await (await import('./original-history03-fixture.mjs')).originals(f) : null;
+  const oldProof = originals?.oldProof ?? digest(1);
+  f.core = join(enc.encode('ZTPE'), Uint8Array.of(3, 1, 2, 3), f.account, f.device, f.line, f.challenge, f.oldBinding, num(4n), num(7n), oldProof,
     f.fingerprint, num(1n), num(1n), old.digest, num(2n), first.digest, f.reader,
-    await keyId(0x101, f.phone.point), await keyId(0x101, f.approval.point), digest(2), num(9000n), num(20000n), digest(3), digest(4), digest(5), new Uint8Array(4));
+    await keyId(0x101, f.phone.point), await keyId(0x101, f.approval.point), digest(2), num(9000n), num(20000n), originals ? await sha(enc.encode(f.origin)) : digest(3), digest(4), digest(5), new Uint8Array(4));
   const ds = await sign(f.phone, frame('ZTSE/line/payload-profile/device/v1', f.core));
   f.bundle = join(f.core, ds, await sign(f.approval, frame('ZTSE/line/payload-profile/owner/v1', join(f.core, await sha(ds)))));
   f.accepted = { accountId: f.account, deviceId: f.device, lineId: f.line, rootFingerprint: f.fingerprint, vaultGeneration: 1n,
-    oldBindingId: f.oldBinding, oldBindingGeneration: 4n, oldBindingProofDigest: digest(1), newBindingId: f.binding, newBindingGeneration: 7n,
+    oldBindingId: f.oldBinding, oldBindingGeneration: 4n, oldBindingProofDigest: oldProof, newBindingId: f.binding, newBindingGeneration: 7n,
     selectedReaderKeyId: f.reader, priorManifestVersion: 1n, priorManifestDigest: old.digest, priorSignedManifestSha256: await sha(old.signed),
     acceptedManifestVersion: 2n, acceptedManifestDigest: first.digest, acceptedSignedManifestSha256: await sha(first.signed), electionCoreSha256: await sha(f.core),
     electionCommitment: await hash('ZTSE/line/payload-profile/commitment/v1', f.core), electionBundleSha256: await sha(f.bundle), acceptedAtMs: f.acceptedMs };
@@ -54,7 +56,9 @@ export async function fixture() {
     deviceSigningPointAtAcceptance: f.phone.point, ownerApprovalPointAtAcceptance: f.approval.point });
   f.evidence = { root_pin: b64(f.pin), prior_manifest02: b64(old.signed), prior_accepted_ms: '10000', accepted_manifest03: b64(first.signed),
     accepted_ms: '10000', bundle: b64(f.bundle), device_signing_point: b64(f.phone.point), owner_approval_point: b64(f.approval.point),
-    registration_evidence: 'AQ', activation_evidence: 'AQ' };
+    registration_evidence: originals ? b64(originals.registration) : 'AQ', activation_evidence: originals ? b64(originals.activation) : 'AQ' };
+  f.compared = { accountId: f.account, deviceId: f.device, lineId: f.line, rootFingerprint: f.fingerprint,
+    pairedSigningPoint: f.phone.point, origin: f.origin, priorVersion: 1n, priorDigest: old.digest };
   f.seed = { acceptedElection: f.proof, firstManifest: f.first, originalEvidence: f.evidence, origin: f.origin };
   f.signed = first.signed; f.current = f.first; f.version = 2n; f.digest = first.digest;
   f.prefix = await hash('ZTSE/line/payload-profile/manifest-ancestry-base03/v1', f.account, f.challenge, f.binding, await sha(first.signed), num(f.acceptedMs), f.accepted.electionBundleSha256);

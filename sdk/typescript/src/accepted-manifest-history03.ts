@@ -27,6 +27,7 @@ type State = Readonly<{
   signed: Uint8Array; acceptedMs: bigint; position: ManifestPosition03;
   tip: (ManifestPosition03 & Readonly<{ acceptedMs: bigint }>) | null;
   comparedMs: bigint; complete: boolean;
+  minimum: ManifestPosition03 | null; minimumSeen: boolean;
 }>;
 const histories = new WeakMap<VerifiedManifestHistory03, State>(), enc = new TextEncoder();
 const max = (1n << 63n) - 1n;
@@ -104,8 +105,18 @@ function equalPosition(a: ManifestPosition03, b: ManifestPosition03): boolean {
 export async function startAcceptedManifestHistory03(input: Readonly<{
   acceptedElection: VerifiedAcceptedElection03; firstManifest: VerifiedManifest03;
   originalEvidence: OriginalManifestEvidence03; origin: string;
+  /** Previously committed local checkpoint; history must pass through it. */
+  minimum?: ManifestPosition03;
 }>): Promise<VerifiedManifestHistory03> {
-  const r = record(input, ['acceptedElection', 'firstManifest', 'originalEvidence', 'origin']);
+  const r = record(input, ['acceptedElection', 'firstManifest', 'originalEvidence', 'origin',
+    ...(Object.hasOwn(input, 'minimum') ? ['minimum'] : [])]);
+  let minimum: ManifestPosition03 | null = null;
+  if (Object.hasOwn(r, 'minimum')) {
+    const m = record(r.minimum, ['version', 'digest', 'ancestry']); electionTime03(m.version as bigint);
+    minimum = { version: m.version as bigint, digest: captureElectionBytes03(m.digest as Uint8Array, 32),
+      ancestry: captureElectionBytes03(m.ancestry as Uint8Array, 32) };
+    if (!minimum.digest.some(v => v !== 0) || !minimum.ancestry.some(v => v !== 0)) fail();
+  }
   const proof = r.acceptedElection as VerifiedAcceptedElection03, a = verifiedAcceptedElectionIdentity03(proof);
   const first = r.firstManifest as VerifiedManifest03, e = evidence(r.originalEvidence), origin = r.origin;
   if (typeof origin !== 'string' || enc.encode(origin).length > 512) fail();
@@ -121,8 +132,21 @@ export async function startAcceptedManifestHistory03(input: Readonly<{
   if (!challenge.some(v => v !== 0)) fail();
   const ancestry = await commitment('ZTSE/line/payload-profile/manifest-ancestry-base03/v1', a.accountId,
     challenge, a.newBindingId, await sha(signed), n64(acceptedMs), a.electionBundleSha256);
+  const initial = { version: id.version, digest: id.digest, ancestry };
+  if (minimum && (minimum.version < initial.version || minimum.version === initial.version && !equalPosition(minimum, initial))) fail();
   return save({ proof, accepted: a, origin, challenge, evidence: e, manifest, signed, acceptedMs,
-    position: { version: id.version, digest: id.digest, ancestry }, tip: null, comparedMs: acceptedMs, complete: false });
+    position: initial, tip: null, comparedMs: acceptedMs, complete: false, minimum,
+    minimumSeen: minimum === null || equalPosition(minimum, initial) });
+}
+/** Owned historical proposal inputs and progress only. No current permission,
+ * persistence or physical/key custody follows from this public checkpoint. */
+export function acceptedManifestHistoryCheckpoint03(handle: VerifiedManifestHistory03): Readonly<{
+  position: ManifestPosition03; acceptedMs: bigint; comparedMs: bigint;
+  signedManifest: Uint8Array; historicalManifest: VerifiedManifest03;
+}> {
+  const s = state(handle);
+  return Object.freeze({ position: { version: s.position.version, digest: Uint8Array.from(s.position.digest), ancestry: Uint8Array.from(s.position.ancestry) },
+    acceptedMs: s.acceptedMs, comparedMs: s.comparedMs, signedManifest: Uint8Array.from(s.signed), historicalManifest: s.manifest });
 }
 /** Owned request cursor only, not a signed checkpoint or permission. */
 export function acceptedManifestHistoryCursor03(handle: VerifiedManifestHistory03): Readonly<{
@@ -156,7 +180,7 @@ export async function continueAcceptedManifestHistory03(handle: VerifiedManifest
       || !equalPosition(after, s.position) || s.tip && (!equalPosition(tip, s.tip) || tip.acceptedMs !== s.tip.acceptedMs)
       || tip.version < s.position.version || tip.acceptedMs < s.acceptedMs || comparedMs < s.comparedMs
       || comparedMs < tip.acceptedMs || entries.reduce((n, v) => n + 16 + v.statement.length + v.signature.length + v.signed.length + 8, 0) > 65536) fail();
-  let manifest = s.manifest, signed = s.signed, acceptedMs = s.acceptedMs, p = s.position;
+  let manifest = s.manifest, signed = s.signed, acceptedMs = s.acceptedMs, p = s.position, minimumSeen = s.minimumSeen;
   const originDigest = await sha(enc.encode(s.origin));
   for (const row of entries) {
     const f = await verifyManifestInstallPossession03(row.statement, row.signature);
@@ -184,11 +208,14 @@ export async function continueAcceptedManifestHistory03(handle: VerifiedManifest
     if (id.version !== f.successorVersion) fail();
     p = { version: id.version, digest: id.digest, ancestry: await commitment('ZTSE/line/payload-profile/manifest-ancestry-step03/v1',
       p.ancestry, row.opening, await sha(row.statement), await sha(row.signature), await sha(row.signed), n64(row.acceptedMs)) };
+    if (s.minimum && p.version === s.minimum.version) {
+      if (!equalPosition(p, s.minimum)) fail(); minimumSeen = true;
+    }
     signed = row.signed; acceptedMs = row.acceptedMs;
   }
   if (!equalPosition(p, next) || r.complete !== equalPosition(p, tip) || r.complete && acceptedMs !== tip.acceptedMs
-      || !r.complete && entries.length === 0) fail();
-  return save({ ...s, manifest, signed, acceptedMs, position: p, tip, comparedMs, complete: r.complete });
+      || !r.complete && entries.length === 0 || r.complete && !minimumSeen) fail();
+  return save({ ...s, manifest, signed, acceptedMs, position: p, tip, comparedMs, complete: r.complete, minimumSeen });
 }
 /** Final genuine crypto token checked against a SEPARATE trusted present read.
  * No raw DTO is converted to authority here; original source/auth/physical
