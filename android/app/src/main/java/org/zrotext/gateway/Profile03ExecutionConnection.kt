@@ -268,7 +268,7 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
         requireGrantCurrent(grant)
         val packet = checkNotNull(fetch.fetch(grant))
         val session = checkNotNull(time.snapshot()).first.session
-        fun live() = reader.readManifest(packet, grant).also {
+        fun live() = reader.readMessageManifest(packet, grant).also {
             requireGrantCurrent(grant)
             check(!db.attempts().isRecipientSuppressed(suppression.sender(it.intent.peer().toString(Charsets.US_ASCII))))
         }
