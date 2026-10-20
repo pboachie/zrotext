@@ -99,7 +99,16 @@ impl Case {
         let issued = root::issue_challenge(&mut db.reader, &hasher, &principal, ORIGIN, pin)
             .await
             .unwrap();
-        let signature: Signature = root_key.sign(&issued.unsigned);
+        let transcript =
+            zrotext_root_material::sealed_root_enrollment::transcript(&issued.unsigned).unwrap();
+        let signature: Signature = root_key.sign(&transcript);
+        // Genuine genesis possession has its own exact framed domain. A raw
+        // candidate signature is not interchangeable with that transcript.
+        let raw: Signature = root_key.sign(&issued.unsigned);
+        assert!(
+            p256::ecdsa::signature::Verifier::verify(root_key.verifying_key(), &transcript, &raw)
+                .is_err()
+        );
         root::complete_genesis(
             &mut db.reader,
             &hasher,

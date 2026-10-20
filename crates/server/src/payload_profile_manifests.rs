@@ -32,6 +32,26 @@ fn body(name: &str) -> Result<&'static str> {
 async fn functions<C: GenericClient + Sync>(db: &C) -> Result<()> {
     for (name, args, result, language, volatility, strict, definer, set, config, names) in [
         (
+            "payload_profile_manifest_retention",
+            "uuid, uuid, bigint, bytea, bytea, bigint, bytea",
+            "boolean",
+            "sql",
+            "s",
+            true,
+            true,
+            false,
+            (&["search_path=pg_catalog"] as &[&str]),
+            (&[
+                "account",
+                "election",
+                "version",
+                "digest",
+                "manifest",
+                "accepted_ms",
+                "ancestry_sha256",
+            ] as &[&str]),
+        ),
+        (
             "payload_profile_manifest_base",
             "uuid, uuid",
             "bytea",

@@ -28,7 +28,8 @@ versions the actual account anchor at unchanged epoch1, so old repeatable-read
 and serializable snapshots cannot silently retain the previous selection.
 Exact historical retries return the original receipt without renewing its time
 or touching that tuple. The ordinary runtime can read receipts and call the
-narrow install operation; it cannot mutate rows, epochs or internal helpers.
+narrow install and read-only retention operations; it cannot mutate rows,
+epochs or internal scope helpers.
 
 All accepted ancestry remains available. The exact prefix commitment includes
 original signed manifest bytes, possession signatures and acceptance times,
@@ -49,3 +50,13 @@ original context. A new signer or renewal does not translate, retry, cancel or
 delete that work. Legacy02 writers remain fenced after election, and current
 phone, content consent, quota, grant, fetch and one-use effect checks remain
 independent requirements.
+
+# Read-only cache retention
+
+`payload_profile_manifest_retention` matches an exact retained checkpoint and
+prefix commitment, then recomputes the entire original retained ancestry on
+every call. A warm signature cache must use this capability before reuse;
+rereading only the tip's stored prefix cannot detect changed intermediate
+received bytes. The capability exposes no mutation and proves no current owner,
+device, physical or content permission. Independent original signature checks
+and all actual current selection records remain mandatory.
