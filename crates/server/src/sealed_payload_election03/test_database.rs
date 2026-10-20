@@ -21,12 +21,12 @@ async fn close(client: Client, driver: Driver) {
 // Administrative access creates only disposable LOGIN roles/database. All
 // migrations and data writes use their ordinary owner; reads use a different
 // ordinary role with narrow SELECT and the column privilege required by SHARE.
-pub(super) struct Fixture {
+pub(crate) struct Fixture {
     admin: Client,
     admin_driver: Driver,
     pub(super) owner: Client,
     owner_driver: Driver,
-    pub(super) reader: Client,
+    pub(crate) reader: Client,
     reader_driver: Driver,
     database: String,
     owner_role: String,
@@ -37,7 +37,7 @@ impl Fixture {
     pub(super) async fn new() -> Self {
         Self::build(false).await
     }
-    pub(super) async fn runtime() -> Self {
+    pub(crate) async fn runtime() -> Self {
         Self::build(true).await
     }
     // Privileged-negative tests may corrupt data in an owner transaction, then
@@ -111,7 +111,7 @@ impl Fixture {
             reader_config: config,
         }
     }
-    pub(super) async fn finish(self) {
+    pub(crate) async fn finish(self) {
         close(self.reader, self.reader_driver).await;
         close(self.owner, self.owner_driver).await;
         self.admin
