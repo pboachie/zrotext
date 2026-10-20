@@ -334,3 +334,25 @@ The proposal is the exact bounded `ZTSE/line/owner-key/register/v1` transcript i
 The private console displays the full grant and requires `REGISTER-LINE-KEY` consent, then authenticates the existing protected root backup with no-echo independent root recovery. The same eligible console session remains held across recovery, signing and publication; fresh scope/time and cancellation checks precede signing, file output and displayed signature. Declining performs no root recovery. The selected new output file contains exactly 64 raw low-s P1363 signature bytes; the console also displays the public signature as 128 lowercase hexadecimal characters under `RootLineRegister signature (raw64 lowercase hex)`. Existing output files are never overwritten. I/O failure may leave a partial public artifact, so separately inspect it before retrying. No private key is created or persisted, and no network or registration action occurs.
 
 Phone line setup requires a separate explicit review under Advanced pilots. The phone displays the authenticated account/device, entered browser line ID and generation, and selected SIM subscription before approval. Approval is process-only and bound to the exact originating authenticated connection and existing hardware signing identity. Editing, cancelling, leaving the foreground or losing that connection withdraws admission; a replacement connection requires a fresh review. Local approval does not establish server acceptance or installation, body-transfer consent or reply authority. The server setup and custody configuration remain disabled by default, and this review neither creates a device key nor sends an SMS.
+
+## Offline browser message-key manifest (explicit `unlock` build)
+
+`profile03-manifest` accepts, in order: `--account --origin --bundle --proposal
+--output --operation --device --line --manifest-version --manifest-digest
+--manifest-accepted --phone-reader --browser-point --browser-key --issued
+--expires`. The operation is exactly `enroll`, `renew` or `replace`. Independently
+select the existing root identity, original accepted checkpoint, phone reader and
+compared browser public key. The closed public
+[ZTMU01 proposal](../protocol/drafts/profile03-manifest-proposal.md) supplies the
+exact signed predecessor and unsigned successor for inspection.
+
+The eligible private console displays the account/origin/root, exact high-water,
+phone/line, browser point and identity, operation, new validity window and every
+changed retained key's expiry/state. `APPROVE-MANIFEST03` approves this single
+typed signature. Only then is the existing encrypted root recovered with no echo.
+The same console stays held across recovery, fresh clock/process checks, signing
+and create-new public output. No root is generated, no secret is exported and no
+network installation occurs. A failed write may leave a partial public artifact;
+inspect it separately and never silently overwrite or sign again after an
+uncertain installation. Accepted ancestry, browser mounting, phone consent and
+content intervals remain separate integration work.

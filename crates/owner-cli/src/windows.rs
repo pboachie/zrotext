@@ -33,6 +33,8 @@ mod line_key_registration;
 mod native_fixture_path;
 #[cfg(feature = "unlock")]
 mod payload_profile_upgrade;
+#[cfg(feature = "unlock")]
+mod profile03_manifest;
 #[cfg(all(test, feature = "unlock"))]
 mod setup_interop;
 
@@ -536,6 +538,10 @@ pub(super) fn run(args: &[String]) -> Result<()> {
     #[cfg(feature = "unlock")]
     if args.first().map(String::as_str) == Some("payload-profile-upgrade") {
         return payload_profile_upgrade::run(args, local_store_parent()?);
+    }
+    #[cfg(feature = "unlock")]
+    if args.first().map(String::as_str) == Some("profile03-manifest") {
+        return profile03_manifest::run(args, local_store_parent()?);
     }
     #[cfg(feature = "unlock")]
     if args.first().map(String::as_str) == Some("contact-reader-sign") {
