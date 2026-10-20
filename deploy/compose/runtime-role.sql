@@ -339,7 +339,7 @@ BEGIN
   EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',routine.signature);
   IF EXISTS(SELECT FROM pg_roles WHERE rolname='zrotext_runtime') THEN
    EXECUTE format('REVOKE ALL ON FUNCTION %s FROM zrotext_runtime',routine.signature);
-   IF routine.proname IN('conversation_reviewed_send03_admit','conversation_reviewed_send03_ready') THEN EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO zrotext_runtime',routine.signature); END IF;
+   IF routine.proname IN('conversation_reviewed_send03_admit','conversation_reviewed_send03_ready','conversation_reviewed_send03_v2_ready') THEN EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO zrotext_runtime',routine.signature); END IF;
   END IF;
  END LOOP;
 END;
@@ -361,6 +361,35 @@ BEGIN
   IF EXISTS(SELECT FROM pg_roles WHERE rolname='zrotext_runtime') THEN
    EXECUTE format('REVOKE ALL ON FUNCTION %s FROM zrotext_runtime',routine.signature);
    IF routine.proname IN('conversation_profile03_grant_issue','conversation_profile03_grant_lock','conversation_profile03_grant_ready') THEN EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO zrotext_runtime',routine.signature); END IF;
+  END IF;
+ END LOOP;
+END;
+$migration$;
+-- Native backend inputs are computed by defaults, never runtime-writable.
+DO $migration$
+DECLARE relation_name text; columns_sql text; routine record;
+BEGIN
+ FOREACH relation_name IN ARRAY ARRAY['hosted_runtime_entries','hosted_runtime_requests'] LOOP
+  SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) INTO columns_sql FROM pg_attribute
+   WHERE attrelid=to_regclass(format('public.%I',relation_name)) AND attnum>0 AND NOT attisdropped;
+  EXECUTE format('REVOKE ALL ON TABLE public.%I FROM PUBLIC',relation_name);
+  EXECUTE format('REVOKE ALL (%s) ON TABLE public.%I FROM PUBLIC',columns_sql,relation_name);
+  IF EXISTS(SELECT FROM pg_roles WHERE rolname='zrotext_runtime') THEN
+   EXECUTE format('REVOKE ALL ON TABLE public.%I FROM zrotext_runtime',relation_name);
+   EXECUTE format('REVOKE ALL (%s) ON TABLE public.%I FROM zrotext_runtime',columns_sql,relation_name);
+  END IF;
+ END LOOP;
+ IF EXISTS(SELECT FROM pg_roles WHERE rolname='zrotext_runtime') THEN
+  GRANT INSERT(operation,namespace_id,policy_revision,proof),SELECT(result) ON public.hosted_runtime_requests TO zrotext_runtime;
+ END IF;
+ FOR routine IN SELECT p.oid::regprocedure AS signature,p.proname FROM pg_proc p
+  WHERE p.pronamespace='public'::regnamespace AND p.proname LIKE 'hosted_runtime_%' LOOP
+  EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',routine.signature);
+  IF EXISTS(SELECT FROM pg_roles WHERE rolname='zrotext_runtime') THEN
+   EXECUTE format('REVOKE ALL ON FUNCTION %s FROM zrotext_runtime',routine.signature);
+   IF routine.proname IN('hosted_runtime_role_safe','hosted_runtime_challenge','hosted_runtime_bind','hosted_runtime_verified','hosted_runtime_marker','hosted_runtime_projection','hosted_runtime_native_start','hosted_runtime_enter','hosted_runtime_identity_ready','hosted_runtime_scope') THEN
+    EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO zrotext_runtime',routine.signature);
+   END IF;
   END IF;
  END LOOP;
 END;

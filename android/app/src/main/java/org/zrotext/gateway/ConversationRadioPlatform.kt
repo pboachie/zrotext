@@ -87,7 +87,7 @@ internal class ConversationRadioPlatform internal constructor(
         submitJournaled(context, prepared, eventId, dao) { requireCurrent(context) }
 
     /** The ordinary sealed stream uses the same ACK, selected-card, suppression and one-use CAS path. */
-    internal fun submitJournaled(context:JournaledRadioContext, prepared:Draft02OutboundPreparation.Prepared,
+    internal fun submitJournaled(context:JournaledRadioScope, prepared:Draft02OutboundPreparation.Prepared,
                eventId:String, dao:SmsAttemptDao, requireCurrent:()->Long):ConversationSubmission {
         if(!enabled)return ConversationSubmission.UNKNOWN
         var started=false
@@ -97,12 +97,8 @@ internal class ConversationRadioPlatform internal constructor(
             val now=requireCurrent()
             check(now>0 && now>=lastNow && now<context.deadlineMs)
             lastNow=now
-            val grant=context.grant
-            check(context.deadlineMs<=grant.expiresAtMs && grant.expiresAtMs<=context.originalDeadlineMs &&
-                grant.attemptId.toString()==context.attempt && grant.messageId.toString()==context.message &&
-                grant.accountId.toString()==context.accountId && grant.deviceId.toString()==context.deviceId &&
-                grant.lineId.toString()==binding.lineId && grant.bindingGeneration==binding.generation &&
-                context.local.binding==binding && context.peer.matches(Regex("\\+[1-9][0-9]{1,14}")))
+            context.requireGrantBinding(binding)
+            check(context.peer.matches(Regex("\\+[1-9][0-9]{1,14}")))
             selected()
             suppression.requireAvailable()
             // Selected-card and Keystore providers may block. Time is sampled after them.
@@ -126,7 +122,7 @@ internal class ConversationRadioPlatform internal constructor(
             prepared.consume { chars ->
                 fresh()
                 val parts=driver.divide(String(chars))
-                check(parts.size in 1..context.grant.segmentCount && parts.size==prepared.segmentCount)
+                check(parts.size in 1..context.segmentCeiling && parts.size==prepared.segmentCount)
                 driver.prepare(context.attempt,parts)
                 val now=fresh() // Manager/division/callback providers can wait.
                 check(dao.consumeRadioStart(context.attempt,context.message,binding.subscriptionId,parts.size,now)==1)

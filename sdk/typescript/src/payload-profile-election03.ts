@@ -160,6 +160,13 @@ export async function verifyAcceptedPayloadProfileElection03(input: Readonly<{
   proofs.set(handle, { accepted: accepted(a), rootPoint: Uint8Array.from(identity.rootPoint) }); return handle;
 }
 
+/** Owned historical metadata from a genuine proof handle. This accessor proves
+ * no server acceptance provenance, current selection, permission or custody. */
+export function verifiedAcceptedElectionIdentity03(handle: VerifiedAcceptedElection03): DurableAcceptedElection03 {
+  const p = proofs.get(handle); if (!p) fail("requires exact election proof handle");
+  return accepted(p.accepted);
+}
+
 /** Present comparison relative to independently authenticated durable tuples.
  * No historical signature creates present permission, global high-water or CAS.
  * A later03 token is selected by the trusted adapter, not by version arithmetic. */

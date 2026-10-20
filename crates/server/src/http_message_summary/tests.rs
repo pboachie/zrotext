@@ -408,6 +408,56 @@ async fn summaries_enforce_owner_csrf_device_binding_and_account_isolation() {
 
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
+async fn hardened_search_path_checks_resolved_application_metadata() {
+    let mut f = Fixture::new().await;
+    f.install().await;
+    f.url = f.url.replace(
+        "options=-csearch_path%3D",
+        "options=-csearch_path%3Dpg_catalog%2C",
+    );
+    assert_eq!(
+        f.app()
+            .oneshot(owner_request("/v1/owner/message-summary", &f.session))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+
+    // Resolving a probe table in an earlier schema must not validate the
+    // healthy metadata in the later application schema.
+    let shadow = format!("summary_shadow_{}", Uuid::new_v4().simple());
+    f.db.batch_execute(&format!("CREATE SCHEMA {shadow}"))
+        .await
+        .unwrap();
+    f.url = f
+        .url
+        .replace("pg_catalog%2C", &format!("pg_catalog%2C{shadow}%2C"));
+    for table in ["messages", "message_submission_receipts", "message_events"] {
+        f.db.batch_execute(&format!("CREATE TABLE {shadow}.{table} (LIKE {table})"))
+            .await
+            .unwrap();
+        assert_eq!(
+            f.app()
+                .oneshot(owner_request("/v1/owner/message-summary", &f.session))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "a shadow {table} must not borrow another schema's metadata"
+        );
+        f.db.batch_execute(&format!("DROP TABLE {shadow}.{table}"))
+            .await
+            .unwrap();
+    }
+    f.db.batch_execute(&format!("DROP SCHEMA {shadow} CASCADE"))
+        .await
+        .unwrap();
+    f.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; run the documented PostgreSQL test command"]
 async fn indexed_probes_cap_counts_and_refuse_missing_or_disabled_metadata() {
     let mut f = Fixture::new().await;
     f.install().await;

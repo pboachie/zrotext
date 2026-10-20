@@ -71,6 +71,12 @@ This slice supplies no financial release authority for a granted or UNKNOWN
 message; a future release needs separate typed evidence. Normal account erasure
 keeps its existing lifecycle, and the one-attempt identity never rearms.
 
+Migration116 replaces the masked backend-statistics lookup with a private
+same-transaction native identity reader. Its original backend proof expiry still
+caps the grant, independently of the protected projection and current payment
+policy. The namespace scope fence also covers manual absence; it does not grant
+an attempt or renew a backend proof.
+
 The ordinary runtime receives SELECT and only the narrow issue, lock and
 readiness methods. Internal predicates and direct grant DML remain denied.
 Closed function declarations, exact bodies, ownership, ACLs and the complete190
