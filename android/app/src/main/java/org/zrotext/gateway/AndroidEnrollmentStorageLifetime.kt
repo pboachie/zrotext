@@ -3,10 +3,8 @@ package org.zrotext.gateway
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.content.pm.PackageManager
 import android.os.Handler
 import android.os.Looper
-import android.os.Process
 import android.telephony.SubscriptionManager
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
@@ -18,9 +16,9 @@ import java.util.concurrent.atomic.AtomicReference
  * performed by the RAM guard used under storage. A failed/late registration cannot leak a lease.
  */
 internal class AndroidEnrollmentStorageLifetime private constructor(
-    private val lifetime: EnrollmentStorageLifetime, private val release: () -> Unit,
+    private val lifetime: EnrollmentStorageLifetime, private val permissionModes: () -> Unit, private val release: () -> Unit,
 ) : AutoCloseable {
-    fun validateOutsideStorage(full: () -> Unit) = lifetime.validateOutsideStorage(full)
+    fun validateOutsideStorage(full: () -> Unit) = lifetime.validateOutsideStorage { permissionModes(); full(); permissionModes() }
     fun requireCurrent() = lifetime.requireCurrent()
     override fun close() { lifetime.close(); release() }
     companion object {
@@ -53,22 +51,20 @@ internal class AndroidEnrollmentStorageLifetime private constructor(
                         if (registered.get() && !closing.get()) ready.complete(Unit)
                     }
                 }
-                val permissions = PackageManager.OnPermissionsChangedListener { uid -> if (uid == Process.myUid()) lifetime.changed() }
-                val selection = SharedPreferences.OnSharedPreferenceChangeListener { _, key -> if (key == "subscription_id") lifetime.changed() }
+                val selection = SharedPreferences.OnSharedPreferenceChangeListener { _, key -> if (key == null || key == "subscription_id") lifetime.changed() }
                 var subscriptionAdded = false
-                var permissionAdded = false
+                var permissions: AutoCloseable? = null
                 var selectionAdded = false
                 val owned = AutoCloseable {
                     if (selectionAdded) runCatching { preferences.unregisterOnSharedPreferenceChangeListener(selection) }
-                    if (permissionAdded) runCatching { app.packageManager.removeOnPermissionsChangeListener(permissions) }
+                    runCatching { permissions?.close() }
                     if (subscriptionAdded) runCatching { manager.removeOnSubscriptionsChangedListener(subscriptions) }
                 }
                 try {
                     check(!closing.get())
                     subscriptionAdded = true
                     manager.addOnSubscriptionsChangedListener(java.util.concurrent.Executor { it.run() }, subscriptions)
-                    permissionAdded = true
-                    app.packageManager.addOnPermissionsChangeListener(permissions)
+                    permissions = AndroidEnrollmentAppOpsWatch.open(app, lifetime::changed)
                     selectionAdded = true
                     preferences.registerOnSharedPreferenceChangeListener(selection)
                     cleanup.set(owned)
@@ -83,7 +79,7 @@ internal class AndroidEnrollmentStorageLifetime private constructor(
             try {
                 ready.get(2, TimeUnit.SECONDS) // Actual first subscription callback, never a synthetic current flag.
                 check(!closing.get() && registered.get() && initialCallback.get())
-                return AndroidEnrollmentStorageLifetime(lifetime, ::release)
+                return AndroidEnrollmentStorageLifetime(lifetime, { AndroidEnrollmentAppOpsWatch.requireAllowed(app) }, ::release)
             } catch (failure: Exception) { release(); throw failure }
         }
     }

@@ -16,17 +16,19 @@ internal class Profile03FetchPacket private constructor(
     private val ciphertext: ByteArray, private val review: ByteArray, private val signature: ByteArray,
     val acceptedMs: Long, val intervalStartsMs: Long, val intervalExpiresMs: Long, val selectionEpoch: Long,
     private val projection: ByteArray,
+    private val interval: ConversationInterval03Permission,
 ) {
     fun envelope() = ciphertext.copyOf()
     fun intent() = review.copyOf()
     fun signature() = signature.copyOf()
     fun currentProjection() = projection.copyOf()
+    fun intervalPermission() = interval
     override fun toString() = "Profile03FetchPacket(unverified-public-evidence)"
     companion object {
         fun decode(bytes: ByteArray, grant: SealedDispatch03Frames.Grant): Profile03FetchPacket {
             val f = Profile03Json.objectValue(bytes)
             require(f.keys == setOf("v", "envelope", "reviewed_intent", "reviewed_signature", "accepted_ms",
-                "interval_starts_ms", "interval_expires_ms", "selection_epoch", "current") && f["v"] == Profile03Json.Integer(1))
+                "interval_starts_ms", "interval_expires_ms", "selection_epoch", "current", "interval_permission") && f["v"] == Profile03Json.Integer(1))
             val envelope = Profile03Json.binary(f, "envelope", 557, 34_213)
             require(MessageDigest.isEqual(MessageDigest.getInstance("SHA-256").digest(envelope), grant.envelopeSha256))
             val intent = Profile03Json.binary(f, "reviewed_intent", 624, 835)
@@ -34,7 +36,10 @@ internal class Profile03FetchPacket private constructor(
             return Profile03FetchPacket(envelope, intent, Profile03Json.binary(f, "reviewed_signature", 64, 64),
                 Profile03Json.decimal(f, "accepted_ms"), Profile03Json.decimal(f, "interval_starts_ms"),
                 Profile03Json.decimal(f, "interval_expires_ms"), Profile03Json.decimal(f, "selection_epoch"),
-                Profile03Json.render(Profile03Json.nested(f, "current")))
+                Profile03Json.render(Profile03Json.nested(f, "current")),
+                ConversationInterval03Permission.decode(Profile03Json.nested(f, "interval_permission")).also {
+                    it.requireRequest("fetch", grant.attemptId)
+                })
         }
     }
 }

@@ -64,6 +64,44 @@ internal class Draft03ManifestAuthority private constructor(
             same(key.device, device) && same(key.line, line) && same(key.point, readerPoint)) { "Selected device reader" }
     }
 
+    /** Public role/lifetime verification for a distinct03 content ceremony. This cannot grant
+     * owner/session/MFA, connector mappings, phone consent, custody or installed permission.
+     * Device authentication and original SEALED signing keys never substitute for these roles.
+     */
+    internal class IntervalKeys(phonePoint: ByteArray, browserPoint: ByteArray, integrationPoints: Map<String, ByteArray>) {
+        private val phone = phonePoint.copyOf(); private val browser = browserPoint.copyOf()
+        private val integrations = integrationPoints.mapValues { it.value.copyOf() }
+        fun phonePoint() = phone.copyOf()
+        fun browserPoint() = browser.copyOf()
+        fun integrationPoint(keyId: ByteArray) = checkNotNull(integrations[Draft02OutboundPreparation.hex(keyId)]).copyOf()
+        override fun toString() = "Draft03ConversationPublicRoles"
+    }
+    internal fun intervalKeys(statement: ConversationInterval03.Statement, physicalReaderPoint: ByteArray, now: Long): IntervalKeys {
+        require(now >= comparisonMs && statement.account.let { same(ReviewedIntent03.uuid(it), account) } &&
+            statement.vaultGeneration == generation && statement.manifestVersion == version && same(statement.manifestDigest, semanticDigest))
+        statement.requireIntervalCurrent(now)
+        window(issued, expires, now)
+        require(statement.intervalExpiresMs <= expires)
+        fun key(role: Int, id: ByteArray): Key {
+            val record = records.singleOrNull { it.role == role && same(it.id, id) }
+            require(record != null && record.active(now) && record.active(statement.issuedMs) &&
+                statement.intervalExpiresMs <= record.until) { "Conversation selected role/lifetime" }
+            return record
+        }
+        val device = ReviewedIntent03.uuid(statement.device); val line = ReviewedIntent03.uuid(statement.line)
+        val reader = key(1, statement.readerKeyId)
+        require(reader.scope == 4 && same(reader.device, device) && same(reader.line, line) && same(reader.point, physicalReaderPoint))
+        require(key(2, statement.archiveReaderKeyId).scope == 12)
+        val phone = key(4, statement.phoneSignerKeyId)
+        val browser = key(5, statement.browserSignerKeyId)
+        require(phone.scope == 2 && same(phone.device, device) && same(phone.line, line) && browser.scope == 1 && same(browser.line, line))
+        val integrations = statement.integrations().associate { mapping ->
+            val selected = key(3, mapping.keyId()); require(selected.scope == 12)
+            Draft02OutboundPreparation.hex(mapping.keyId()) to selected.point
+        }
+        return IntervalKeys(phone.point, browser.point, integrations)
+    }
+
     /** Independently selected routing and readers; never inferred as permission from ciphertext. */
     class Request(accountId: ByteArray, messageId: ByteArray, deviceId: ByteArray, lineId: ByteArray,
                   peer: ByteArray, signerKeyId: ByteArray, readers: List<Reader>) {
@@ -201,6 +239,12 @@ internal class Draft03ManifestAuthority private constructor(
                 same(value.semanticDigest, current.semanticDigest)) { "Current fork/rollback" }
             return value
         }
+
+        /** Root verification at a separately retained historical checkpoint only. A caller must
+         * already verify this exact record's accepted ancestry; this method selects no version,
+         * current permission, hardware or physical handle from its public input. */
+        internal fun verifyHistorical(input: ByteArray, knownRoot: Draft03ManifestAuthority, acceptedMs: Long): Draft03ManifestAuthority =
+            parse(capture(input), knownRoot.account, knownRoot.root, knownRoot.anchor, acceptedMs)
 
         private fun capture(input: ByteArray): ByteArray {
             require(input.size in 366..9753) { "Manifest size" }

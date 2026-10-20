@@ -555,10 +555,13 @@ class MainActivity : ComponentActivity() {
                     if (page == GatewayPage.CONNECTION) {
                         GatewaySectionTitle("Hosted encrypted messaging")
                         GatewayStatusText("Messaging", Profile03MessagingStatus.value)
+                        ConversationInterval03Content(lifecycle)
                         Text("Use your paired owner workspace to compare the account root, enroll this phone's reader and approve its selected SIM. Each signed message still requires current server, phone and line approval.")
                         GatewayButton(onClick = { startHeartbeat(rebootResume = false, profile03 = true) }) {
                             Text("Connect for encrypted messaging")
                         }
+                        OutlinedButton(onClick = { runCatching { Profile03ManifestMount.checkSetup() } },
+                            modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Check and resume messaging setup") }
                         OutlinedButton(onClick = { startSamePhoneReview() },
                             modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Review this phone's SIM again") }
                         SamePhoneReviewContent()

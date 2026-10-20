@@ -54,7 +54,7 @@ class SelectionRefresh03RecoveryTest {
         fun reserve() = dao.reserveWithClosures(target, closures, now) { check(it == v.f.binding) }
         override fun close() = v.close()
     }
-    @Test fun immutableCompleteChainCommitsWithFreshObservationWithoutInventingIntermediateProofs() = Fixture().use { r ->
+    @Test fun immutableCompleteChainCommitsWithFreshObservationWithoutInventingIntermediateProofs(): Unit = Fixture().use { r ->
         val signed = r.retainSigned()
         assertFalse(r.observation.contentEquals(Profile03ElectionEncoding.decode(signed.observationB64url, 121)))
         assertTrue(r.reserve())
@@ -67,7 +67,7 @@ class SelectionRefresh03RecoveryTest {
         assertNull(r.v.f.binding.installedSelectionV2()) // No original physical fallback.
         assertEquals(r.v.f.installed, r.v.f.line.db.profile03Elections().find(r.v.f.installed.challengeId))
     }
-    @Test fun retiredSignedHistoryRequiresExplicitClosureAndForeverFencesOriginalConnectionFallback() = Fixture().use { r ->
+    @Test fun retiredSignedHistoryRequiresExplicitClosureAndForeverFencesOriginalConnectionFallback(): Unit = Fixture().use { r ->
         val retired = r.retainSigned(true)
         assertFalse(r.dao.reserve(r.target) {})
         assertThrows(IllegalStateException::class.java) { r.dao.reserveWithClosures(r.target, emptyList(), r.now) {} }
@@ -96,7 +96,7 @@ class SelectionRefresh03RecoveryTest {
             assertNull(r.dao.closure(r.first.refreshId))
         }
     }
-    @Test fun closedUnsignedPredecessorCannotReleaseALateSignatureAndFreshReviewCannotReuseOldConsent() = Fixture().use { r ->
+    @Test fun closedUnsignedPredecessorCannotReleaseALateSignatureAndFreshReviewCannotReuseOldConsent(): Unit = Fixture().use { r ->
         assertTrue(r.dao.reserve(r.first) {})
         assertThrows(IllegalStateException::class.java) {
             r.dao.reserveWithClosures(r.target.copy(consentId = r.first.consentId), r.closures, r.now) {}
@@ -109,7 +109,7 @@ class SelectionRefresh03RecoveryTest {
         assertFalse(r.dao.everSigned(r.first.bindingId, r.first.deviceSessionSha256))
         assertEquals(r.first, r.dao.find(r.first.refreshId))
     }
-    @Test fun guardWithdrawalRollsBackWholeChainAndTargetBeforeAnyNewProof() = Fixture().use { r ->
+    @Test fun guardWithdrawalRollsBackWholeChainAndTargetBeforeAnyNewProof(): Unit = Fixture().use { r ->
         val signed = r.retainSigned()
         var calls = 0
         assertThrows(IllegalStateException::class.java) {
@@ -119,7 +119,7 @@ class SelectionRefresh03RecoveryTest {
         assertNull(r.dao.find(r.target.refreshId))
         for (row in r.closures) assertNull(r.dao.closure(row.refreshId))
     }
-    @Test fun strictChainRejectsWrongCurrentScopeTimeLinkOrderAndDuplicateHistory() = Fixture().use { r ->
+    @Test fun strictChainRejectsWrongCurrentScopeTimeLinkOrderAndDuplicateHistory(): Unit = Fixture().use { r ->
         SelectionRefresh03Closure.requireChain(r.targetCore, r.closures, r.now)
         for (offset in listOf(8, 24, 40, 72, 88, 96, 104, 112, 120, 152, 184, 216, 248, 280, 312, 344, 408)) {
             val changed = r.v.core.bytes().also { it[offset] = (it[offset].toInt() xor 1).toByte() }
@@ -133,7 +133,7 @@ class SelectionRefresh03RecoveryTest {
             assertThrows(IllegalArgumentException::class.java) { SelectionRefresh03Closure.requireChain(r.targetCore, rows, r.now) }
         assertThrows(IllegalArgumentException::class.java) { SelectionRefresh03Closure.requireChain(r.targetCore, r.closures, r.targetCore.expiresMs) }
     }
-    @Test fun closureWireIsClosedCanonicalAndCannotUseElectionReceipts() = Fixture().use { r ->
+    @Test fun closureWireIsClosedCanonicalAndCannotUseElectionReceipts(): Unit = Fixture().use { r ->
         val row = r.closures.first()
         val fields = mapOf("opening_id" to row.openingId, "refresh_id" to row.refreshId, "core" to row.coreB64url,
             "closed_unaccepted_ms" to row.closedUnacceptedMs.toString(), "superseded_by_refresh_id" to row.supersededByRefreshId)
@@ -143,7 +143,7 @@ class SelectionRefresh03RecoveryTest {
             fields + ("closed_unaccepted_ms" to "01"), fields + ("refresh_id" to UUID(0, 0).toString())))
             assertThrows(Exception::class.java) { SelectionRefresh03Closure.decode(mapOf("closed_unaccepted" to listOf(bad))) }
     }
-    @Test fun genuinelyNewForegroundDecisionAfterExpiryIsRequiredAndCancellationStillWithdrawsIt() = Fixture().use { r ->
+    @Test fun genuinelyNewForegroundDecisionAfterExpiryIsRequiredAndCancellationStillWithdrawsIt(): Unit = Fixture().use { r ->
         var instant = r.now
         val inputs = object : SamePhoneSelectionReview.Inputs {
             override fun withdrawInstalled() = r.v.f.line.owner.retireInstalled()
@@ -172,7 +172,7 @@ class SelectionRefresh03RecoveryTest {
             assertThrows(IllegalStateException::class.java) { SelectionRefresh03Closure.requireFreshDecision(r.v.signed, early, r.now) }
         }
     }
-    @Test fun sixteenRetainedReservationsBoundOneConnectionEvenWhenUnsignedOnesWereRetired() = Fixture().use { r ->
+    @Test fun sixteenRetainedReservationsBoundOneConnectionEvenWhenUnsignedOnesWereRetired(): Unit = Fixture().use { r ->
         for (index in 0 until SelectionRefresh03Dao.CONNECTION_CAPACITY) {
             val id = UUID(0, 200L + index)
             val core = r.v.core.bytes().also { ReviewedIntent03.uuid(id).copyInto(it, 56) }
@@ -185,7 +185,7 @@ class SelectionRefresh03RecoveryTest {
         assertFalse(r.dao.everSigned(r.first.bindingId, r.first.deviceSessionSha256))
         assertNull(r.dao.find(r.target.refreshId))
     }
-    @Test fun unseenServerReservationsCountTowardTheSameSixteenBoundWithoutFakeLocalRows() = Fixture().use { r ->
+    @Test fun unseenServerReservationsCountTowardTheSameSixteenBoundWithoutFakeLocalRows(): Unit = Fixture().use { r ->
         val cores = (0..16).map { r.successor(300L + it, 400_000L + it * 2_000L) }
         val rows = cores.dropLast(1).mapIndexed { i, old -> close(old, cores[i + 1], 400L + i) }
         val last = cores.last()
@@ -196,10 +196,11 @@ class SelectionRefresh03RecoveryTest {
         assertNull(r.dao.find(target.refreshId))
         for (row in rows) { assertNull(r.dao.find(row.refreshId)); assertNull(r.dao.closure(row.refreshId)) }
     }
-    @Test fun schemaSeventeenUpgradePreservesActualOriginalJournalsSignedRefreshAndUnknownEffect() = Fixture().use { r ->
+    @Test fun schemaSeventeenUpgradeRetainsSignedAndUnknownHistory(): Unit = Fixture().use { r ->
         r.retainSigned()
         val context = org.robolectric.RuntimeEnvironment.getApplication()
         val name = "refresh-closure-${UUID.randomUUID()}.db"
+        check(context.getDatabasePath(name).parentFile?.mkdirs() == true || context.getDatabasePath(name).parentFile?.isDirectory == true)
         val unknown = SmsAttempt(UUID(0, 94).toString(), r.v.f.line.selected, 1, AttemptState.UNKNOWN, 1, 1)
         try {
             androidx.room.Room.databaseBuilder(context, SmsJournalDatabase::class.java, name).allowMainThreadQueries().build().let { saved ->
