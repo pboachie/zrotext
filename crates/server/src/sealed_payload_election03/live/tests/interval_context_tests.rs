@@ -30,7 +30,7 @@ async fn unsigned() -> (Case, Uuid, Uuid, serde_json::Value) {
             archive: key(2),
             phone: key(4),
             browser: key(5),
-            expires_ms: now as u64 + 300_000,
+            expires_ms: now as u64 + 480_000,
             integrations: &[],
         },
         ORIGIN,
