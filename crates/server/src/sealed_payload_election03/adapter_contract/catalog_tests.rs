@@ -138,6 +138,21 @@ async fn candidate_inventory_covers_exact_numbered_schema_relations_columns_fk_a
                     Some(
                         "original_content_consent_requires_live_independent_owner_device_custody_and_installed_ACK"
                     )
+                ) | (
+                    "conversation_reviewed_sends03",
+                    Some(
+                        "retained_reviewed03_originals_require_complete_same_transaction_queue_quota_or_one_way_content_erasure"
+                    )
+                ) | (
+                    "messages",
+                    Some(
+                        "exact_reviewed03_admission_or_retention_without_implicit_effect_permission"
+                    )
+                ) | (
+                    "dispatch_jobs",
+                    Some(
+                        "exact_reviewed03_initial_job_or_real_erasure_without_claim_or_grant_permission"
+                    )
                 )
             ),
             "{table}: unknown current-profile writer policy"

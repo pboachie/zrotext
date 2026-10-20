@@ -22,11 +22,18 @@ pub enum ManifestSchemaError {
 }
 type Result<T> = std::result::Result<T, ManifestSchemaError>;
 fn body(name: &str, version: i64) -> Result<&'static str> {
-    let source = if version == 113
+    let source = if version == 114
         && matches!(
             name,
             "payload_profile_writer_version" | "payload_profile_writer_ready"
         ) {
+        include_str!("../../../deploy/compose/migrations/114_conversation_reviewed_sends03.sql")
+    } else if version == 113
+        && matches!(
+            name,
+            "payload_profile_writer_version" | "payload_profile_writer_ready"
+        )
+    {
         include_str!("../../../deploy/compose/migrations/113_conversation_profile03_intervals.sql")
     } else {
         MIGRATION
@@ -353,7 +360,7 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
         )
         .await?
         .try_get(0)?;
-    if !matches!(version, 112..=113) {
+    if !matches!(version, 112..=114) {
         return Err(ManifestSchemaError::Invalid);
     }
     functions(db, version).await?;
