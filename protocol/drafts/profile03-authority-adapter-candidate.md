@@ -333,3 +333,18 @@ step-up, original signatures, local private custody and current physical/source
 selection remain independent adapter obligations. An interval phase does not
 authorize a reviewed send, grant, fetch or radio effect. Those typed paths remain
 separate; no legacy conversation02 permission is inferred or translated.
+
+## Original reviewed-message admission storage
+
+Migration114 adds a distinct `sealed_profile03` initial queue path coupled to an
+immutable reviewed-intent sidecar, exact installed interval, sole ciphertext,
+authenticated segment ceiling and one actual existing outbound quota reservation.
+Deferred checks require the complete same-transaction queue and initial job;
+NULL or substituted ceilings refuse. Configured finite manual self-hosted quotas
+remain supported without a hosted paid subscription. Genuine owner/current
+selection, role5 and envelope verification and the actual billing adapter remain
+independent obligations. Admission does not unlock claim, grant, fetch or effects.
+Exact historical retries never requeue or renew authority. Actual content erasure
+clears the personal original intent/signature/peer together and retains replay
+hashes and original context. See
+[reviewed admission storage](../../docs/profile03-reviewed-admission-storage.md).
