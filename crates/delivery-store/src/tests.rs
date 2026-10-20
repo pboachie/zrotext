@@ -487,6 +487,10 @@ const TEST_MIGRATIONS: [(&str, &str); 116] = [
             "../../../deploy/compose/migrations/116_hosted_native_transaction_identity.sql"
         ),
     ),
+    (
+        "117_explicit_reviewed_intent_v2.sql",
+        include_str!("../../../deploy/compose/migrations/117_explicit_reviewed_intent_v2.sql"),
+    ),
 ];
 
 #[path = "current_schema_tests.rs"]
@@ -642,7 +646,7 @@ fn admission_fixture_tracks_numbered_migrations() {
         .map(|(name, _)| name.to_string())
         .collect::<Vec<_>>();
     assert_eq!(discovered, embedded, "update the embedded migration list");
-    assert_eq!(TEST_MIGRATIONS.len(), 116);
+    assert_eq!(TEST_MIGRATIONS.len(), 117);
     assert_eq!(
         TEST_MIGRATIONS[LEGACY_ISOLATED_MIGRATIONS - 1].0,
         "107_registration_browser_intents.sql"
