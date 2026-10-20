@@ -104,6 +104,27 @@ class CaptureBootstrapContract(unittest.TestCase):
             wrong = copy.deepcopy(frame); wrong["receipt"]["accepted_ms"] = bad
             self.denied(wrong)
 
+    def test_every_decimal_checkpoint_obeys_the_exact_positive_signed63_range(self):
+        decimal = Draft202012Validator(SCHEMA["$defs"]["decimal"])
+        maximum = 2**63 - 1
+        boundaries = {1, maximum - 1, maximum, maximum + 1, 10**19 - 1}
+        for power in range(1, 20):
+            boundaries.update((10**power - 1, 10**power, 10**power + 1))
+        for number in boundaries:
+            self.assertEqual(1 <= number <= maximum, decimal.is_valid(str(number)), number)
+        for wrong in (0, 1, True, "0", "01", "+1", "-1", "1e3", "1.0", "", " ", "\n1"):
+            self.assertFalse(decimal.is_valid(wrong))
+        for value, accepted in ((str(maximum), True), (str(maximum + 1), False)):
+            frames = self.frames()
+            frames["ack"]["receipt"]["accepted_ms"] = value
+            frames["attempt"]["attempt"]["created_ms"] = value
+            frames["opened"]["opening"]["created_ms"] = value
+            for name in ("ack", "attempt", "opened"):
+                self.assertEqual(accepted, VALIDATOR.is_valid(frames[name]), name)
+            for name in ("prior_accepted_ms", "accepted_ms"):
+                frames = self.frames(); frames["opened"]["opening"]["evidence"][name] = value
+                self.assertEqual(accepted, VALIDATOR.is_valid(frames["opened"]), name)
+
     def test_canonical_binary_lengths_reject_padding_and_old_601_packet(self):
         frame = self.frames()["submit"]
         for field in ("attempt_nonce", "bundle"):
@@ -127,6 +148,11 @@ class CaptureBootstrapContract(unittest.TestCase):
         # Opening may have accepted a DIFFERENT successor. Syntax never equates that receipt
         # with a missing queried command; actual source must compare exact immutable IDs/hashes.
         self.valid(dict(empty, receipt=f["ack"]["receipt"]))
+        # An opened QUERY record and actual accepted OPENING receipt are independent.
+        opened = dict(f["attempt_status"], status="opened")
+        self.valid(opened)
+        self.valid(dict(opened, receipt=None))
+        self.denied(dict(opened, attempt=None))
 
     def test_reconnect_changes_only_outer_epoch_not_the_original_opening(self):
         frame = self.frames()["opening_status"]
