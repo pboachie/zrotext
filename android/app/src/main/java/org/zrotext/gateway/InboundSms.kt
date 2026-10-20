@@ -74,25 +74,21 @@ internal object InboundVault {
     data class Sealed(val ciphertext: ByteArray, val nonce: ByteArray)
 
     @Synchronized private fun key(alias: String, algorithm: String): SecretKey {
+        require(algorithm == KeyProperties.KEY_ALGORITHM_AES)
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (store.getKey(alias, null) as? SecretKey)?.let { return it }
         val generator = KeyGenerator.getInstance(algorithm, "AndroidKeyStore")
-        val spec = if (algorithm == KeyProperties.KEY_ALGORITHM_AES) {
-            KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
-                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build()
-        } else {
-            KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY)
-                .setDigests(KeyProperties.DIGEST_SHA256).build()
-        }
+        val spec = KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build()
         generator.init(spec)
         return generator.generateKey()
     }
 
     /** Domain-separated, length-delimited HMAC avoids a guessable plaintext/PDU hash in Room. */
-    fun token(domain: String, vararg fields: ByteArray): String {
+    fun token(context: Context, domain: String, vararg fields: ByteArray): String {
         val mac = Mac.getInstance("HmacSHA256")
-        mac.init(key("zt_m1_inbound_hmac_v1", KeyProperties.KEY_ALGORITHM_HMAC_SHA256))
+        mac.init(InboundProtection.key(context))
         val data = ByteArrayOutputStream()
         for (field in arrayOf(domain.toByteArray(Charsets.US_ASCII), *fields)) {
             require(field.size <= 8192)
@@ -172,6 +168,7 @@ class InboundSmsReceiver : BroadcastReceiver() {
         val app = context.applicationContext
         io.execute {
             try { ConversationProcessMount.runtime.prepareAndReceive { capture(app, intent, conversationReceipt) } } catch (_: Exception) {
+                runCatching { InboundProtection.failed(app, null, System.currentTimeMillis(), "storage_unavailable") }
                 ConversationProcessMount.runtime.pause(ConversationStopReason.WORKER_SHUTDOWN)
                 // No body, sender, PDU, or exception message is written to a log.
             } finally { pending.finish() }
@@ -184,24 +181,27 @@ class InboundSmsReceiver : BroadcastReceiver() {
             return
         }
         val now = System.currentTimeMillis()
-        val db = SmsJournalDatabase.get(context)
+        // Classify/withdraw before every key/storage wait. Failure cannot invent original
+        // sender/PDU tokens or silently lose an OPT classification.
+        val prepared = InboundProtectionIngress.prepare(message.body,
+            beforeWait = { InboundProtectionHealth.beforeProtectionWait(context, it) }, tokens = { negative ->
+            val db = SmsJournalDatabase.get(context)
+            val existingTokens = ConversationExistingSuppressionTokens(context, negative)
+            val sender = existingTokens.sender(message.senderE164)
+            val fingerprint = ByteArrayOutputStream().apply {
+                for (pdu in pdus) { write((pdu.size ushr 8) and 0xff); write(pdu.size and 0xff); write(pdu) }
+            }.toByteArray()
+            Triple(db, sender, existingTokens.pdu(sender, fingerprint))
+        }, failed = { action, failure ->
+            runCatching { InboundProtection.failed(context, action, now,
+                (failure as? InboundProtection.Unavailable)?.reason ?: "key_unavailable") }
+            ConversationProcessMount.runtime.pause(ConversationStopReason.WITHDRAWAL)
+            AuthenticatedGatewayStatus.value = "SMS paused: protection identity requires recovery; consent reporting pending"
+        }) ?: return
+        val optAction = prepared.optAction
+        val negative = prepared.receipt
+        val (db, senderToken, dedupeToken) = prepared.value
         val dao = db.attempts()
-        // Retained03 history may never generate a replacement HMAC identity. A lost key
-        // refuses content; it cannot turn this same PDU into a new token/allocator receipt.
-        val existingTokens = if (db.captures03().releasedElections().isNotEmpty() || db.captures03().modes().isNotEmpty())
-            ConversationExistingSuppressionTokens() else null
-        val senderToken = existingTokens?.sender(message.senderE164)
-            ?: InboundVault.token("sender-v1", message.senderE164.toByteArray(Charsets.US_ASCII))
-        val pduFingerprint = ByteArrayOutputStream().apply {
-            for (pdu in pdus) {
-                write((pdu.size ushr 8) and 0xff)
-                write(pdu.size and 0xff)
-                write(pdu)
-            }
-        }.toByteArray()
-        val dedupeToken = existingTokens?.pdu(senderToken, pduFingerprint)
-            ?: InboundVault.token("pdu-v1", senderToken.toByteArray(Charsets.US_ASCII), pduFingerprint)
-        val optAction = OptOutParser.classify(message.body)
         // SMS_RECEIVED does not promise a subscription extra. Never infer one from the
         // default SIM or the owner's saved selection.
         val rawSub = intent.extras?.get("subscription")
@@ -214,6 +214,7 @@ class InboundSmsReceiver : BroadcastReceiver() {
                 dao.recordLocalWithdrawal(dedupeToken, senderToken, checkNotNull(optAction), observedSub,
                     SimCardContinuity.observe(context), now, sealedSender?.ciphertext, sealedSender?.nonce)
             }
+            negative?.completeKnownWithdrawal()
         }, reserve = {
             // All actual old02/metadata/new03 content entry first commits this shared route.
             // No provider/crypto/network wait occurs inside the short ingress reservation.

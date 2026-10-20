@@ -139,6 +139,22 @@ abstract class Capture03Dao {
         if (prior == null) insertMode(row) else require(prior.sameIdentity(row))
         current()
     }
+    @Query("SELECT * FROM inbound_protection_state WHERE slot = 1") abstract fun protection(): InboundProtectionRecord?
+    @Query("SELECT EXISTS(SELECT 1 FROM capture03_routes WHERE route != 'legacy') OR EXISTS(SELECT 1 FROM capture03_records) OR EXISTS(SELECT 1 FROM capture03_counters)")
+    abstract fun hasCapture03History(): Boolean
+    @Insert(onConflict = OnConflictStrategy.ABORT) protected abstract fun insertProtection(row: InboundProtectionRecord)
+    @Query("UPDATE inbound_protection_state SET blocked = 1, reason = :reason, debtMask = debtMask | :mask WHERE slot = 1")
+    protected abstract fun blockProtection(reason: String, mask: Int): Int
+    /** Aggregate debt states only that an OPT classification was seen. No original token,
+     * unique PDU count, sender, line approval or recipient-specific upload is fabricated. */
+    @Transaction open fun quarantineProtection(reason: String, mask: Int, at: Long) {
+        require(mask in 0..7 && at > 0 && reason in setOf("key_unavailable", "identity_changed", "continuity_missing", "storage_unavailable"))
+        val old = protection()
+        if (old == null) insertProtection(InboundProtectionRecord(expectedTag = null, originId = null,
+            blocked = true, reason = reason, debtMask = mask, firstObservedMs = at))
+        else { old.requireShape(); check(blockProtection(reason, mask) == 1) }
+        checkNotNull(protection()).requireShape()
+    }
     @Insert(onConflict = OnConflictStrategy.ABORT) protected abstract fun insertRoute(row: Capture03Route)
     @Insert(onConflict = OnConflictStrategy.ABORT) protected abstract fun insertRecord(row: Capture03Record)
     @Update protected abstract fun updateRecord(row: Capture03Record): Int

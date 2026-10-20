@@ -145,7 +145,7 @@ class Capture03IngressTest {
                 db.attempts().insertAttempt(SmsAttempt(id(91), 3, 1, AttemptState.UNKNOWN, 1000, 1000))
                 // Exact parent18 tables are unchanged. Remove ONLY new19 tables to construct
                 // the immediate predecessor, then require Room's independent schema check.
-                for (table in listOf("capture03_routes", "capture03_records", "capture03_counters", "capture03_modes"))
+                for (table in listOf("capture03_routes", "capture03_records", "capture03_counters", "capture03_modes", "inbound_protection_state"))
                     db.openHelper.writableDatabase.execSQL("DROP TABLE $table")
                 db.openHelper.writableDatabase.execSQL("DROP TABLE room_master_table")
                 db.openHelper.writableDatabase.version = 18

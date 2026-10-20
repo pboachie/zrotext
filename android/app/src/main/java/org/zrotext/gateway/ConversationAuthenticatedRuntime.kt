@@ -20,6 +20,7 @@ internal class ConversationAuthenticatedRuntime(
     exchangeAcceptanceInstall: (ConversationRecoveryRequest) -> ByteArray,
     worker: Executor, private val delivery: Executor
 ) {
+    private val protectionEpoch = InboundProtectionHealth.snapshot()
     private val blocked = AtomicBoolean(true)
     private val epoch = AtomicLong(0)
     private val selected = AtomicReference<ConversationPhoneSession?>(null)
@@ -54,6 +55,7 @@ internal class ConversationAuthenticatedRuntime(
         check(wire.currentSession() == value.session) { "Authenticated session changed" }
     }
     private fun current(scope: ConversationCaptureScope) {
+        check(InboundProtectionHealth.current(protectionEpoch))
         Capture03LegacyFence.requireLegacy(scope)
         check(!blocked.get()) { "Admission suspended" }
         val witness = checkNotNull(timeWitness.get())
@@ -65,6 +67,7 @@ internal class ConversationAuthenticatedRuntime(
         requireWitness(witness)
         Capture03LegacyFence.requireLegacy(scope)
         check(!blocked.get() && wire.currentSession() == session)
+        check(InboundProtectionHealth.current(protectionEpoch))
     }
     private val guarded = object : ConversationActivationVerifier {
         override fun verifiedPreparation(evidence: ByteArray) = verifier.verifiedPreparation(evidence).also(::current)
@@ -260,7 +263,7 @@ internal class ConversationAuthenticatedRuntime(
         admission.withCurrentScope(scope) { fresh ->
             fresh(); check(!blocked.get()); action()
         }
-    internal fun requireExecutionOpen() { check(!blocked.get()) }
+    internal fun requireExecutionOpen() { check(InboundProtectionHealth.current(protectionEpoch) && !blocked.get()) }
     internal fun trustedNowMs():Long? = clock.nowMs()
     /** Uses this runtime's actual admission/clock; no second lease or wall-clock authority. */
     internal fun executionDeadline(scope: ConversationCaptureScope): Long? = runCatching {

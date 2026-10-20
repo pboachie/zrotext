@@ -622,7 +622,7 @@ class AuthenticatedGatewayService : Service() {
                                         grant.attemptId.toString(), grant.messageId.toString(),
                                         grant.subscriptionId, 1, UUID.randomUUID().toString(),
                                         System.currentTimeMillis(),
-                                        InboundVault.token("sender-v1",
+                                        InboundVault.token(applicationContext, "sender-v1",
                                             grant.recipientE164.toByteArray(Charsets.US_ASCII)),
                                         identity)
                                     AuthenticatedGatewayStatus.value = "Grant reserved; waiting for writer ack"
@@ -946,7 +946,7 @@ class AuthenticatedGatewayService : Service() {
                 signingFence.requireCurrent()
                 // Open the E.164 sender only at the signing boundary. It never enters Room/logs.
                 val recipient = LineOptOutSender.recover(pending, InboundVault::openSender) {
-                    InboundVault.token("sender-v1", it.toByteArray(Charsets.US_ASCII))
+                    InboundVault.token(applicationContext, "sender-v1", it.toByteArray(Charsets.US_ASCII))
                 }
                 if (recipient == null) {
                     pauseLineOptOutUpload()

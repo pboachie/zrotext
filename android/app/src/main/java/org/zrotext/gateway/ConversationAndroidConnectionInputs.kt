@@ -42,6 +42,7 @@ internal class ConversationAndroidConnectionInputs(
                                   review: ConversationPhoneReview, observedVersion: Long,
                                   bindings: () -> ConversationConnectionBindings): Owned {
         check(currentSession() == session)
+        InboundProtection.restoreNegative(application)
         // Cold history can only exclude the old protocol. Missing/partial storage throws;
         // this read cannot reconstruct a03 reader, physical handle or content interval.
         val history = SmsJournalDatabase.get(application).captures03()
@@ -89,6 +90,10 @@ internal class ConversationAndroidConnectionInputs(
         private fun binding(): LocalLineBinding? = try { lines.currentLineBinding() } catch (_: Exception) { null }
         internal fun loss(): ConversationStopReason? {
             lost.get()?.let { return it }
+            if (!InboundProtectionHealth.available()) {
+                lost.compareAndSet(null, ConversationStopReason.WITHDRAWAL)
+                return lost.get()
+            }
             if (runCatching { Capture03LegacyFence.requireLegacy(scope) }.isFailure) {
                 lost.compareAndSet(null, ConversationStopReason.READER_CHANGED)
                 return lost.get()

@@ -2,7 +2,6 @@
 package org.zrotext.gateway
 
 import java.io.ByteArrayOutputStream
-import java.security.KeyStore
 import java.security.MessageDigest
 import javax.crypto.Mac
 import javax.crypto.SecretKey
@@ -10,9 +9,8 @@ import javax.crypto.SecretKey
 /** Reads the established suppression key only; never creates/replaces it. Pins its identity for
  * this connection using a domain-separated MAC probe, without exporting key material. */
 internal class ConversationExistingSuppressionTokens internal constructor(private val existingKey:()->SecretKey) {
-    constructor():this({
-        val store=KeyStore.getInstance("AndroidKeyStore").apply {load(null)}
-        checkNotNull(store.getKey(ALIAS,null) as? SecretKey)
+    constructor(context: android.content.Context, receipt: InboundProtectionEpochs.Receipt? = null):this({
+        InboundProtection.key(context, receipt)
     })
     private val lock=Any()
     private var identity:ByteArray?=null

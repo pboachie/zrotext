@@ -881,7 +881,7 @@ private const val PRUNE_BATCH = 500
     LocalInboundWithdrawal::class, LocalWithdrawalSequence::class, SealedPreparationRecord::class,
     LineActivationV2Record::class, Profile03ElectionRecord::class, SelectionRefresh03Record::class,
     Profile03UnacceptedClosureRecord::class, SelectionRefresh03ClosureRecord::class,
-    Capture03Route::class, Capture03Counter::class, Capture03Record::class, Capture03Mode::class], version = 19, exportSchema = false)
+    Capture03Route::class, Capture03Counter::class, Capture03Record::class, Capture03Mode::class, InboundProtectionRecord::class], version = 19, exportSchema = false)
 abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun attempts(): SmsAttemptDao
     abstract fun sealedPreparations(): SealedPreparationDao
@@ -910,7 +910,8 @@ abstract class SmsJournalDatabase : RoomDatabase() {
 
         internal val MIGRATION_18_19 = object : Migration(18, 19) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                // No allocator row or sequence-zero inference is created by migration.
+                // No allocator/ready-protection row or first-ever inference is created by migration.
+                db.execSQL("CREATE TABLE IF NOT EXISTS inbound_protection_state (slot INTEGER NOT NULL, expectedTag TEXT, originId TEXT, blocked INTEGER NOT NULL, reason TEXT, debtMask INTEGER NOT NULL, firstObservedMs INTEGER NOT NULL, PRIMARY KEY(slot))")
                 db.execSQL("CREATE TABLE IF NOT EXISTS capture03_routes (token TEXT NOT NULL, route TEXT NOT NULL, provenanceSha256 TEXT, captureId TEXT, recordedMs INTEGER NOT NULL, PRIMARY KEY(token))")
                 db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_capture03_routes_captureId ON capture03_routes(captureId)")
                 db.execSQL("CREATE TABLE IF NOT EXISTS capture03_counters (accountId TEXT NOT NULL, deviceId TEXT NOT NULL, bootstrapId TEXT NOT NULL, openingId TEXT NOT NULL, associationSha256 TEXT NOT NULL, receiptSha256 TEXT NOT NULL, canaryKeyId TEXT NOT NULL, enrolledSigningKeyId TEXT NOT NULL, lastSequence INTEGER NOT NULL, protectedOrigin BLOB NOT NULL, nonce BLOB NOT NULL, PRIMARY KEY(accountId, deviceId))")

@@ -32,9 +32,38 @@ ambiguous opt-out review and opt-in reporting remain independent of that content
 choice. Local withdrawal is recorded before content reservation. The default SMS
 application still owns inbox writes and notification.
 
+The receiver classifies consent actions before HMAC or Room access. STOP and
+ambiguous withdrawal synchronously invalidate every older suppression-health RAM
+epoch, then create a content-free negative crash marker before waiting for keys.
+Only a durably recorded original recipient withdrawal may complete that marker.
+Completion cannot restore an older effect lease. A key or storage failure instead
+keeps installation-wide quarantine and aggregate opt-out, review or opt-in debt.
+The independent negative filesystem journal also survives a Room failure. A cold
+or partially written withdrawal marker is uncertainty and cannot be adopted by a
+new process. If the filesystem itself is unavailable, successful durable retention
+is not claimed. No original sender/PDU identity or recipient-specific report is
+invented after protection loss.
+
+Actual SMS, sealed messaging and debug MMS platform paths check the same health
+lifetime after blocking work and immediately before their platform call. Runtime
+guards use retained epochs, so a temporary withdrawal followed by a successful
+read cannot revive old authority. Cold setup reads negative state outside storage
+writers. Those reads neither require a content key merely to inspect setup history
+nor establish a positive capture or radio permission.
+
 Room version19 adds separate route, immutable original-mode, capture-phase and
 first-ever counter tables. It migrates existing version18 state without creating
-any counter row. There is deliberately **no usable counter-initialization API**.
+any counter or ready protection row. A separate negative protection-state table
+retains quarantine and aggregate consent debt. All production HMAC callers use
+one existing-only continuity reader; receiving, grant reservation, suppression
+lookup and radio entry never create a missing HMAC alias. Explicit setup no longer
+creates protection keys from inside a Room transaction. Genuine first provisioning
+and pre-pin legacy adoption still need their own verified once-only contract;
+this slice has no ready/pin insertion or usable positive provisioning factory.
+Every positive HMAC read requires its retained expected identity and origin; absent
+state refuses even when an alias or an otherwise empty database exists. Therefore
+this draft is not complete default legacy support or an available first setup.
+There is deliberately **no usable counter-initialization API**.
 The actual two-sided bootstrap, hardware canary and original matching committed
 receipt must be implemented and installed before a producer can use this counter.
 Empty tables, database maxima, a downloaded response and missing legacy files are

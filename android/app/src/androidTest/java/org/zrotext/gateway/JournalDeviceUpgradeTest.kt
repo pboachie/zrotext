@@ -174,7 +174,7 @@ class JournalDeviceUpgradeTest {
                 if (isApplicationTable(table)) tables.add(table)
             }
         }
-        assertEquals(legacyColumns(11).keys + setOf("sealed_preparations", "line_activation_v2", "profile03_elections", "selection_refresh03", "profile03_unaccepted_closures", "selection_refresh03_closures", "capture03_routes", "capture03_counters", "capture03_records", "capture03_modes"), tables)
+        assertEquals(legacyColumns(11).keys + setOf("sealed_preparations", "line_activation_v2", "profile03_elections", "selection_refresh03", "profile03_unaccepted_closures", "selection_refresh03_closures", "capture03_routes", "capture03_counters", "capture03_records", "capture03_modes", "inbound_protection_state"), tables)
         val indexes = mutableSetOf<String>()
         db.query("SELECT name FROM sqlite_master WHERE type = 'index'").use { cursor ->
             while (cursor.moveToNext()) {

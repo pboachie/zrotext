@@ -19,11 +19,12 @@ internal interface ConversationRadioDriver {
 }
 internal class ConversationRadioPlatform internal constructor(
     private val binding:LocalLineBinding, private val driver:ConversationRadioDriver,
-    private val suppression:ConversationExistingSuppressionTokens, private val enabled:Boolean=false
+    private val suppression:ConversationExistingSuppressionTokens, private val enabled:Boolean=false,
+    private val healthCurrent: () -> Unit = InboundProtectionHealth::requireNotRevoked
 ) {
     constructor(context:Context,binding:LocalLineBinding,enabled:Boolean=false):this(
         binding,AndroidDriver(checkNotNull(context.applicationContext),binding),
-        ConversationExistingSuppressionTokens(),enabled)
+        ConversationExistingSuppressionTokens(context),enabled)
     constructor(context:Context,binding:LocalLineBinding,suppression:ConversationExistingSuppressionTokens,
                 enabled:Boolean=false):this(binding,AndroidDriver(checkNotNull(context.applicationContext),binding),suppression,enabled)
     private val installedProfile = binding.installedProfile()
@@ -36,11 +37,14 @@ internal class ConversationRadioPlatform internal constructor(
             binding.continuityKind == "esim" && installedProfile?.isCurrent() == true &&
                 binding.installedProfile() === installedProfile
     }
-    private fun selected() {check(enabled && liveProfile());driver.requireSelected()}
+    private fun selected() {healthCurrent(); check(enabled && liveProfile());driver.requireSelected(); healthCurrent()}
     private class AndroidDriver(private val application:Context,private val binding:LocalLineBinding):ConversationRadioDriver {
         private val installedSelectionV2 = binding.installedSelectionV2()
         private val installedProfile = binding.installedProfile()
+        private val healthEpoch = InboundProtectionHealth.snapshot()
+        private var health: InboundProtectionEpochs.Lease? = null
         override fun requireSelected() {
+            health = InboundProtection.lease(application, healthEpoch)
             check(SmsAttemptAdapter.hasSelectedSim(application,binding.subscriptionId))
             check(SimCardContinuity.matches(binding.activatedSim(),SimCardContinuity.observe(application)))
         }
@@ -78,6 +82,7 @@ internal class ConversationRadioPlatform internal constructor(
             preparedAttempt=null;preparedParts=null
             val selectedRadio=checkNotNull(radio);val sentCallbacks=checkNotNull(sent);val deliveredCallbacks=checkNotNull(delivered)
             radio=null;sent=null;delivered=null
+            checkNotNull(health).requireCurrent() // No provider or storage call after this.
             if(parts.size==1)selectedRadio.sendTextMessage(peer,null,parts.single(),sentCallbacks.single(),deliveredCallbacks.single())
             else selectedRadio.sendMultipartTextMessage(peer,null,parts,sentCallbacks,deliveredCallbacks)
         }
@@ -141,6 +146,7 @@ internal class ConversationRadioPlatform internal constructor(
                     val token=suppression.sender(context.peer)
                     check(!dao.isRecipientSuppressed(token))
                     fresh() // The durable CAS and suppression lookup may wait.
+                    healthCurrent()
                     invoked=true // A throw after invocation can represent a partial carrier action.
                     driver.send(context.peer,context.attempt,parts)
                 }
