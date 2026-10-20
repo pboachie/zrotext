@@ -36,6 +36,8 @@ fn readiness_survives_distinct_grants_without_resetting_publication_or_attempt_b
     assert_eq!(state.publications, 2);
     assert!(!state.due(now));
     state.issued = 1024;
+    assert!(!state.exhausted(now));
+    assert!(state.exhausted(now + Duration::from_secs(MIN_SECONDS_BETWEEN_GRANTS)));
     assert!(!state.due(now + Duration::from_secs(3600)));
     state
         .accept(ready.clone(), actor, ready.claims().deployment_epoch)

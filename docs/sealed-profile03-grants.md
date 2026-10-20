@@ -27,6 +27,9 @@ The socket conservatively spaces grants by at least sixty seconds, limits new
 grants to 1024 per connection and readiness publications to 64 per connection. A
 publication cannot reset either budget. These are overload limits, never a
 history-erasure or unknown-attempt recovery mechanism.
+The attempt budget closes the connection after the last grant's complete
+bounded lifetime, requiring a reconnect rather than silently stopping its queue.
+The original durable fence survives that reconnect.
 
 `POST /v1/sealed/dispatch/envelope03` accepts only the existing closed Fetch03
 object and strict device-enrolled signature over its unchanged362-byte

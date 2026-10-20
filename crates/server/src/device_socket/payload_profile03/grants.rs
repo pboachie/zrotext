@@ -53,6 +53,13 @@ impl Readiness03 {
         // Keep readiness for a different explicit reviewed message. Neither
         // a new publication nor a failed write resets this connection budget.
     }
+    fn exhausted(&self, now: Instant) -> bool {
+        self.issued >= 1024
+            && self.last_grant.is_some_and(|last| {
+                now.checked_duration_since(last)
+                    .is_some_and(|age| age >= Duration::from_secs(MIN_SECONDS_BETWEEN_GRANTS))
+            })
+    }
     pub(in crate::device_socket) async fn poll(
         &mut self,
         socket: &mut WebSocket,
@@ -60,6 +67,12 @@ impl Readiness03 {
         session: DeviceSession,
         origin: &str,
     ) -> Option<()> {
+        // Explicit reconnect after the last grant's entire bounded lifetime,
+        // rather than silently stranding new messages at a lifetime counter.
+        // Any unresolved attempt remains durably fenced across that reconnect.
+        if self.exhausted(Instant::now()) {
+            return None;
+        }
         if !self.due(Instant::now()) {
             return Some(());
         }
