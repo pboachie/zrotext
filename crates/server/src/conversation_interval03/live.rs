@@ -7,6 +7,8 @@ use crate::sealed_payload_election03::live::{self as selected, Error, HeldMessag
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B};
 use tokio_postgres::{Row, Transaction};
 mod mappings;
+mod owner_context;
+pub(crate) use owner_context::{ContextRead03, opening_status, owner_context};
 mod pending;
 mod service;
 pub(crate) use service::{

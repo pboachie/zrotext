@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zrotext.com/protocol/v1/profile03-owner-consent-read.schema.json",
+  "title": "Distinct owner conversation03 read requests",
+  "description": "Closed read-request syntax only. Authenticated same-held current context and passive historical receipts remain distinct. No identifier, schema or unsigned statement grants authority.",
+  "oneOf": [
+    {"$ref": "#/$defs/context_request"},
+    {"$ref": "#/$defs/opening_status_request"}
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "not": {"const": "00000000-0000-0000-0000-000000000000"}
+    },
+    "context_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "request_id", "opening_id", "interval_id"],
+      "properties": {
+        "v": {"const": 1},
+        "request_id": {"$ref": "#/$defs/uuid"},
+        "opening_id": {"$ref": "#/$defs/uuid"},
+        "interval_id": {"$ref": "#/$defs/uuid"}
+      }
+    },
+    "opening_status_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "opening_id"],
+      "properties": {
+        "v": {"const": 1},
+        "opening_id": {"$ref": "#/$defs/uuid"}
+      }
+    }
+  }
+}
