@@ -1,0 +1,3 @@
+## 2024-05-19 - Fast template literal parsing
+**Learning:** In Javascript environments (like Node.js or browsers), character-by-character string building within a `for` loop is extremely slow and acts as a significant bottleneck when rendering large text blocks.
+**Action:** Replace single-character iteration and concatenation with `indexOf` to find the next structural boundary, then use `String.prototype.slice` to extract large string segments at once. When parsing token delimiters, always safely bound the `indexOf` lookup with the current index appropriately so an unmatched delimiter doesn't result in an infinite loop.
