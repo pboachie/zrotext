@@ -210,16 +210,19 @@ Content/state rules must distinguish effect creation from invalidation:
 
 ## Required inventory and acceptance before mounting
 
-`profile03-writer-inventory-candidate.json` pins the numbered migration110
-catalog:184 public relations, each with an extraction class and explicit
+`profile03-writer-inventory-candidate.json` pins the numbered migration111
+catalog:186 public relations, each with an extraction class and explicit
 operation policy. Migrations108/109 provide mandatory writer participation and
 original activation retention;110 adds the narrow first-election ledger and
-positive-epoch policy. Its fixture runs the actual migrator in a unique database
+positive-epoch policy;111 retains separate same-phone physical approval and
+installation without changing that epoch or permitting message effects.
+Its fixture runs the actual migrator in a unique database
 and compares column shape, FK edges and trigger definitions. Separate closed
 validators pin bodies, declarations, rules, inheritance, RLS and privileges.
 These structural checks do not replace cryptographic authentication or current
 permission. See `docs/profile03-atomic-election-storage.md` for the bounded
-initial selection and independently qualified production-adapter obligations.
+initial selection and `docs/profile03-selection-refresh-storage.md` for the
+separate physical selection and production-adapter obligations.
 
 | Extraction class | Required treatment before installation |
 |---|---|
