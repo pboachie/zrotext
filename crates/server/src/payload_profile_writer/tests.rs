@@ -63,7 +63,7 @@ impl Fixture {
         let applied = zrotext_migrator::apply(&mut owner, &directory, false)
             .await
             .unwrap();
-        assert_eq!(applied.last().unwrap().version, 114);
+        assert_eq!(applied.last().unwrap().version, 115);
         let snapshot: Vec<u8> = owner
             .query_one("SELECT public.payload_profile_writer_graph()", &[])
             .await
@@ -93,7 +93,7 @@ impl Fixture {
              GRANT UPDATE(account_id) ON public.payload_profile_account_anchors TO {role};
              GRANT UPDATE(review_required) ON public.hosted_billing_namespaces TO {role};
              GRANT INSERT,UPDATE,DELETE ON public.accounts,public.users,public.memberships,public.devices,public.device_sessions,public.auth_abuse_counters TO {role};
-             GRANT EXECUTE ON FUNCTION public.payload_profile_account_fence_key(uuid),public.payload_profile_writer_json(json),public.payload_profile_writer_graph(),public.payload_profile_writer_version(),public.payload_profile_writer_ready(),public.auth_abuse_consume(text,bytea,bytea,integer,integer,integer,integer) TO {role};"
+             GRANT EXECUTE ON FUNCTION public.payload_profile_account_fence_key(uuid),public.payload_profile_writer_json(json),public.payload_profile_writer_graph(),public.payload_profile_writer_version(),public.payload_profile_writer_ready(),public.auth_abuse_consume(text,bytea,bytea,integer,integer,integer,integer),public.conversation_profile03_grant_issue(uuid,uuid,uuid,uuid,text,text,bigint,bigint,bigint),public.conversation_profile03_grant_lock(uuid,uuid,uuid,text,text,bigint,bigint),public.conversation_profile03_grant_ready() TO {role};"
         )).await.unwrap();
         config.user(&runtime_role).password(&password);
         let (db, driver) = connect(&config).await;
