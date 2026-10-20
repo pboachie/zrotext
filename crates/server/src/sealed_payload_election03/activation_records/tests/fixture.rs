@@ -15,7 +15,7 @@ use p256::{
 use sha2::{Digest, Sha256};
 
 pub(crate) struct Case {
-    pub db: Fixture,
+    pub(in crate::sealed_payload_election03) db: Fixture,
     pub principal: auth::SessionPrincipal,
     pub device: Uuid,
     pub line: Uuid,
