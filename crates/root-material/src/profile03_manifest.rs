@@ -93,6 +93,8 @@ impl PossessionStatement03 {
         VerifyingKey::from_sec1_bytes(&point).map_err(|_| "possession curve")?;
         if point[0] != 4
             || key_id(5, &point) != digests[7]
+            || numbers[1] != 1
+            || numbers[2] != 1
             || numbers[3].checked_add(1) != Some(numbers[4])
             || numbers[6] <= numbers[5]
             || numbers[6] - numbers[5] > 300_000
@@ -300,12 +302,10 @@ pub fn verify_checkpoint(
     }
     let unsigned = &signed[..signed.len() - 64];
     let original = parse_unsigned(unsigned, selected.accepted_ms)?;
-    let current = parse_unsigned(unsigned, comparison_ms)?;
     if original.account != selected.account_id
         || original.root != pin[29..94]
         || original.version != selected.version
         || original.digest != selected.digest
-        || original.digest != current.digest
     {
         return Err("manifest selected identity");
     }
@@ -314,6 +314,9 @@ pub fn verify_checkpoint(
         &signed[unsigned.len()..],
         &framed(b"ZTSE/manifest/v3\0", unsigned)?,
     )?;
+    // This is historical public evidence, not current availability. Retain the
+    // independently monotonic comparison, but verify original validity at the
+    // actual accepted checkpoint so a cold process may renew expired history.
     Ok(VerifiedCheckpoint03 {
         pin: pin.try_into().map_err(|_| "root pin length")?,
         signed: signed.to_vec(),
