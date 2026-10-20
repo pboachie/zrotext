@@ -56,6 +56,12 @@ async fn ready(tx: &Transaction<'_>) -> Result<()> {
         .map_err(|_| Error::Unavailable)
 }
 impl StoredInterval03 {
+    pub(crate) fn original_installed_ms(&self) -> Result<u64> {
+        if self.phase != "active" {
+            return Err(Error::Conflict);
+        }
+        self.installed_ms.ok_or(Error::Conflict)
+    }
     pub(crate) fn statement(&self) -> &Statement03 {
         &self.statement
     }
@@ -291,6 +297,34 @@ impl StoredInterval03 {
         Ok(
             serde_json::json!({"v":1,"kind":"interval_permission03","request_kind":kind,"request_id":id,"interval_id":self.statement.interval_id(),"statement_sha256":B.encode(self.statement.digest()),"statement":B.encode(self.statement.bytes()),"owner_signature":self.owner.map(|s|B.encode(s)),"phone_signature":self.phone.map(|s|B.encode(s)),"installed_signature":self.installed.map(|s|B.encode(s)),"requested_ms":self.requested_ms.map(|v|v.to_string()),"approved_ms":self.approved_ms.map(|v|v.to_string()),"installed_ms":self.installed_ms.map(|v|v.to_string()),"phase":self.phase,"device_session_digest":B.encode(held.device_session_digest()),"physical_selection_digest":B.encode(held.physical_digest()),"owner_session_digest":B.encode(self.statement.owner_digest()),"compared_ms":held.now_ms().to_string(),"permission_expires_ms":deadline.to_string(),"readers":mapping.projection()}),
         )
+    }
+    /// The retained grant is never shortened or renewed by a fetch. Both
+    /// receiver permissions must cover its exact original expiry.
+    pub(crate) async fn fetch_permission(
+        &self,
+        held: &mut HeldMessageSelection03<'_, '_, '_>,
+        attempt: Uuid,
+        grant_expires: u64,
+    ) -> Result<serde_json::Value> {
+        let deadline = self.admission_deadline(held).await?;
+        if grant_expires <= held.now_ms() || grant_expires > deadline {
+            return Err(Error::Expired);
+        }
+        let mut value = self.permission(held, "fetch", attempt).await?;
+        let final_deadline = self.admission_deadline(held).await?;
+        if grant_expires <= held.now_ms() || grant_expires > final_deadline {
+            return Err(Error::Expired);
+        }
+        let object = value.as_object_mut().ok_or(Error::Unavailable)?;
+        object.insert(
+            "compared_ms".into(),
+            serde_json::json!(held.now_ms().to_string()),
+        );
+        object.insert(
+            "permission_expires_ms".into(),
+            serde_json::json!(grant_expires.to_string()),
+        );
+        Ok(value)
     }
 }
 

@@ -13,6 +13,7 @@ use zrotext_delivery_store::{
 };
 type Result<T> = std::result::Result<T, Error>;
 mod billing;
+pub(crate) mod execution;
 
 /// Immutable replay identity survives permitted content redaction. These
 /// structural fields grant no permission and cannot restore erased originals.

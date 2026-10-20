@@ -106,6 +106,7 @@ limits! {
     ReviewRootManage,
     PayloadProfileManage,
     PayloadProfileRead,
+    PayloadProfileFetch,
 }
 
 impl Limit {
@@ -214,6 +215,7 @@ impl Limit {
             Self::SmsLineActivation => ("sms_line_activation", 120, 60, Some((30, 900))),
             Self::PayloadProfileManage => ("payload_profile_manage", 60, 900, Some((60, 900))),
             Self::PayloadProfileRead => ("payload_profile_read", 120, 60, Some((120, 60))),
+            Self::PayloadProfileFetch => ("payload_profile_fetch", 600, 60, Some((60, 60))),
             // One MMS spike grant per device and recipient per window: the
             // subject budget of 1 is the server-side one-use gate for #438.
             Self::MmsSpikeGrant => ("mms_spike_grant", 300, 7_776_000, Some((1, 7_776_000))),
@@ -317,6 +319,54 @@ pub(crate) async fn consume_payload_profile(
         Lane::Anonymous,
     )
     .await
+}
+
+/// Profile03 fetch uses only the closed public installation. The anonymous
+/// route has no device subject: public UUIDs cannot spend a real device's
+/// share. Only a separately verified enrolled signature may name that subject.
+/// Autocommit callers retain this debit when later current permission refuses.
+pub(crate) async fn consume_profile_fetch(
+    client: &Client,
+    hasher: &TokenHasher,
+    verified_subject: Option<&str>,
+) -> Result<bool, tokio_postgres::Error> {
+    let limit = Limit::PayloadProfileFetch;
+    let (scope, maximum, seconds, _) = limit.policy();
+    let lane = if verified_subject.is_some() {
+        Lane::Verified
+    } else {
+        Lane::Anonymous
+    };
+    let route = hasher.digest(
+        if verified_subject.is_some() {
+            b"abuse-verified-v1"
+        } else {
+            b"abuse-global-v1"
+        },
+        scope,
+    );
+    let subject = verified_subject.and_then(|subject| subject_hash(hasher, limit, subject, lane));
+    let (subject_max, subject_seconds) = limit.subject_policy(lane).unwrap_or((0, 0));
+    let route_max = if verified_subject.is_some() {
+        maximum * VERIFIED_CEILING_FACTOR
+    } else {
+        maximum
+    };
+    let row = client
+        .query_typed_one(
+            "SELECT public.auth_abuse_consume($1,$2,$3,$4,$5,$6,$7)",
+            &[
+                (&scope, Type::TEXT),
+                (&&route[..], Type::BYTEA),
+                (&subject.as_ref().map(|hash| &hash[..]), Type::BYTEA),
+                (&route_max, Type::INT4),
+                (&seconds, Type::INT4),
+                (&subject_max, Type::INT4),
+                (&subject_seconds, Type::INT4),
+            ],
+        )
+        .await?;
+    Ok(row.get(0))
 }
 
 pub(crate) async fn held_factor_budget_open(
