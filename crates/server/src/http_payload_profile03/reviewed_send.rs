@@ -4,7 +4,6 @@
 use super::*;
 use crate::reviewed_intent03::live as reviewed;
 use crate::sealed_inbound::line_activation::v2_runtime::object_body;
-use uuid::Uuid;
 object_body! {struct Send{v:u8,envelope:String,reviewed_intent:String,reviewed_signature:String}}
 object_body! {struct Status{v:u8,message_id:String,interval_id:String,envelope_sha256:String,reviewed_intent_sha256:String,reviewed_signature_sha256:String}}
 enum Input {
@@ -140,6 +139,7 @@ async fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uuid::Uuid;
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B};
     #[test]
     fn reviewed_bodies_cannot_import_owner_ceiling_or_alternative_profile_authority() {
