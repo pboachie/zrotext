@@ -3,7 +3,7 @@ use super::super::test_database::Fixture;
 use super::*;
 use crate::sealed_inbound::line_activation::{v2, v2_runtime as run};
 use tokio_postgres::error::SqlState;
-mod fixture;
+pub(crate) mod fixture;
 use fixture::Case;
 const ORIGIN: &str = "https://activation.example";
 

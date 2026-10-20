@@ -542,10 +542,12 @@ async fn naturally_expired_lease_is_refused_even_while_every_tuple_stays_locked(
     f.owner.execute("UPDATE public.device_sessions SET lease_until=clock_timestamp()+interval '10 seconds' WHERE device_id=$1",&[&s.selector.device]).await.unwrap();
     let tx = f.reader.transaction().await.unwrap();
     let mut held = lock(&tx, &s.selector).await.unwrap();
-    let settings=tx.query_one("SELECT pg_catalog.current_setting('idle_in_transaction_session_timeout'),pg_catalog.current_setting('transaction_timeout'),pg_catalog.current_setting('statement_timeout')",&[]).await.unwrap();
+    // transaction_timeout was added after PG16. This optional diagnostic must
+    // not abort the real lease-expiry test on an otherwise supported backend.
+    let settings=tx.query_one("SELECT pg_catalog.current_setting('idle_in_transaction_session_timeout'),pg_catalog.current_setting('transaction_timeout',true),pg_catalog.current_setting('statement_timeout')",&[]).await.unwrap();
     let limits = (
         settings.get::<_, String>(0),
-        settings.get::<_, String>(1),
+        settings.get::<_, Option<String>>(1),
         settings.get::<_, String>(2),
     );
     let initial_clock = held.checked_ms;

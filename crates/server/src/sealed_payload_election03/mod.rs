@@ -6,6 +6,7 @@ pub mod activation_evidence;
 pub mod activation_records;
 pub mod adapter_contract;
 pub mod device_context;
+pub mod live;
 pub mod owner_records;
 pub mod registration_reader;
 

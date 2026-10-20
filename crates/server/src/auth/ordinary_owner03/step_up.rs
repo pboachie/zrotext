@@ -41,6 +41,15 @@ pub struct HeldStepUp03<'held, 'db> {
 }
 
 impl HeldStepUp03<'_, '_> {
+    pub(crate) fn selected_identity(&self) -> super::Selector {
+        self.owner.selected_identity()
+    }
+    pub(crate) fn uses_transaction(&self, tx: &tokio_postgres::Transaction<'_>) -> bool {
+        self.owner.uses_transaction(tx)
+    }
+    pub(crate) fn checked_primary_ms(&self) -> u64 {
+        self.checked_ms
+    }
     pub fn owner_identity(&self) -> &[u8] {
         self.owner.canonical_identity()
     }

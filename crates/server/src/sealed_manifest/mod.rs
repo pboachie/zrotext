@@ -93,6 +93,15 @@ pub struct VerifiedManifest {
     roles: Vec<RoleRecord>,
 }
 
+/// Exact unique active keys selected from an already verified signed manifest.
+/// This supplies no enrollment, local hardware, session or effect authority.
+pub(crate) struct ProfileElectionKeys {
+    pub reader_id: [u8; 32],
+    pub device_signer_id: [u8; 32],
+    pub approval_id: [u8; 32],
+    pub expires_ms: u64,
+}
+
 pub(crate) struct AccountArchiveStatementRecords {
     pub account: [u8; 16],
     pub generation: u64,
@@ -321,6 +330,34 @@ pub(crate) struct ConversationKeys {
 }
 
 impl VerifiedManifest {
+    pub(crate) fn profile_election_keys(
+        &self,
+        device: &[u8; 16],
+        line: &[u8; 16],
+        device_point: &[u8; 65],
+        approval_point: &[u8; 65],
+        now: u64,
+    ) -> Result<ProfileElectionKeys, &'static str> {
+        freshness(self.issued, self.expires, now)?;
+        VerifyingKey::from_sec1_bytes(device_point).map_err(|_| "enrollment signing point")?;
+        VerifyingKey::from_sec1_bytes(approval_point).map_err(|_| "registered approval point")?;
+        let mut selected = self.roles.iter().filter(|key| {
+            key.role == 1 && key.line == *line && key.device == *device && key.active(now)
+        });
+        let reader = selected.next().ok_or("missing selected election reader")?;
+        if selected.next().is_some() || device_point == approval_point || reader.scope != 4 {
+            return Err("selected election key mismatch");
+        }
+        Ok(ProfileElectionKeys {
+            reader_id: reader.id,
+            device_signer_id: key_id(4, device_point),
+            // Both election signers are independently enrolled/registered
+            // signing keys (purpose4). Manifest role5 is outbound content
+            // authority and is neither required nor selected by this helper.
+            approval_id: key_id(4, approval_point),
+            expires_ms: self.expires.min(reader.until),
+        })
+    }
     /// Owned historical public records only; no installed contact permission.
     pub(crate) fn account_archive_statement_records(
         &self,
