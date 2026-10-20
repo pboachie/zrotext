@@ -17,7 +17,7 @@ internal object Draft03OutboundPreparation {
         val election: Draft03PayloadElectionProof, val authority: Draft03ManifestAuthority,
         val selection: Draft03PayloadElectionProof.CurrentAuthority03,
         val installation: Profile03ElectionRecord, val baseBinding: LocalLineBinding,
-        val intent: ReviewedIntent03, intentSignature: ByteArray, val acceptedMs: Long,
+        val intent: ReviewedIntent03V2, intentSignature: ByteArray, val acceptedMs: Long,
         val selectionEpoch: Long, val ownerUserId: UUID, val ownerSessionId: UUID,
         val intervalStartsMs: Long, val intervalExpiresMs: Long,
         val selectedSubscriptionId: Int, activeCards: List<ActiveSimCard>?,
@@ -168,10 +168,9 @@ internal object Draft03OutboundPreparation {
                 clear = Draft03Body.open(proof, after.authority, after.intent.request(), lastNow, cek)
             } finally { cek.fill(0) }
             val body = checkNotNull(clear)
-            val encoded = Charsets.UTF_8.newEncoder().encode(java.nio.CharBuffer.wrap(body))
-            val bodyBytes = ByteArray(encoded.remaining()).also(encoded::get)
-            try { check(same(MessageDigest.getInstance("SHA-256").digest(bodyBytes), fresh().intent.bodySha256)) }
-            finally { bodyBytes.fill(0); if (encoded.hasArray()) encoded.array().fill(0) }
+            // The exact reviewed final/unsigned ciphertext and both real role5 signatures
+            // were verified above. Draft03Body performs strict authenticated UTF-8 decoding.
+            // V2 deliberately has no plaintext hash, including no temporary comparison hash.
             val live = fresh()
             val manager = SmsManager.getSmsManagerForSubscriptionId(live.selectedSubscriptionId)
             val count = Draft02OutboundPreparation.segmentCount(body, manager::divideMessage)

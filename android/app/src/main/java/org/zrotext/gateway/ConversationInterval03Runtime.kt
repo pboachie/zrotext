@@ -257,8 +257,9 @@ internal class ConversationInterval03Runtime(private val owner: Any, private val
             p.requestedMs == proof.requestedMs && p.approvedMs == proof.approvedMs && p.installedMs == proof.installedMs)
         require(packet.acceptedMs in checkNotNull(proof.installedMs)..now())
         p.verifyCurrent(selected, signer.readerPoint(), originDigest, now())
-        val intent = ReviewedIntent03.decode(packet.intent()); val s = proof.statement
+        val intent = ReviewedIntent03V2.decode(packet.intent()); val s = proof.statement
         require(intent.intervalId == s.interval && intent.ownerUserId == s.ownerUser && intent.ownerSessionId == s.ownerSession &&
+            intent.selectionEpoch == s.selectionEpoch && packet.selectionEpoch == s.selectionEpoch &&
             intent.signerKeyId.contentEquals(s.browserSignerKeyId) && intent.peer().toString(Charsets.US_ASCII) == s.peer &&
             packet.intervalStartsMs == s.intervalStartsMs && packet.intervalExpiresMs == s.intervalExpiresMs &&
             grant.expiresAtMs <= p.permissionExpiresMs)

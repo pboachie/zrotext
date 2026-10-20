@@ -102,10 +102,10 @@ class ConversationInterval03RuntimeTest {
             .put("interval_id", statement.interval).put("statement_sha256", b64(statement.sha256())).put("installed_ms", base.now.toString())
             .put("device_session_digest", b64(f.deviceSession)).toString().toByteArray())
         fun packet(proof: ConversationInterval03Proof, acceptedMs: Long = base.now): Profile03FetchPacket = Profile03FetchPacket.decode(JSONObject()
-            .put("v", 1).put("envelope", b64(base.envelope)).put("reviewed_intent", b64(base.intentBytes))
-            .put("reviewed_signature", b64(base.intentSignature)).put("accepted_ms", acceptedMs.toString())
+            .put("v", 1).put("envelope", b64(base.envelope)).put("reviewed_intent", b64(base.intentV2Bytes))
+            .put("reviewed_signature", b64(base.intentV2Signature)).put("accepted_ms", acceptedMs.toString())
             .put("interval_starts_ms", statement.intervalStartsMs.toString()).put("interval_expires_ms", statement.intervalExpiresMs.toString())
-            .put("selection_epoch", "3").put("current", JSONObject().put("v", 1))
+            .put("selection_epoch", "1").put("current", JSONObject().put("v", 1))
             .put("interval_permission", f.permission(proof)).toString().toByteArray(), base.grant)
         fun activeStatus(shown: ConversationInterval03Mount.Review, proof: ConversationInterval03Proof) {
             runtime.requestStatus(shown)
