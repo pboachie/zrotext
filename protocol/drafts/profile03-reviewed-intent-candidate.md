@@ -1,5 +1,11 @@
 # Candidate reviewed-send authorization for profile03
 
+This describes the historical ZTRI01 component. The explicit
+[V2 component](profile03-reviewed-intent-v2-candidate.md) has a separate header,
+signature domain and no plaintext commitment. V1 APIs and vectors retain their
+exact historical grammar; corrected production composition must refuse new V1
+effects rather than reinterpret these bytes.
+
 This additive, unmounted dependency addresses #1475 under #1054. It specifies a
 reviewed intent, not a new envelope, election, dispatch grant or live permission.
 Existing ZTCS01, profile02, E500, envelope03, CurrentAuthority03 and the closed
