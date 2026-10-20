@@ -33,7 +33,7 @@ impl Core03 {
         }
         let digests =
             std::array::from_fn(|i| bytes[120 + 32 * i..152 + 32 * i].try_into().unwrap());
-        if digests.iter().any(|d| *d == [0; 32]) {
+        if digests.contains(&[0; 32]) {
             return Err("refresh selected digest");
         }
         let issued = crypto::number(&bytes[472..480])?;
