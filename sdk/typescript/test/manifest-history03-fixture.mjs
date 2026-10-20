@@ -17,15 +17,15 @@ export const frame = (label, bytes) => join(enc.encode(label + '\0'), num(BigInt
 export const hash = async (label, ...parts) => sha(frame(label, join(...parts)));
 export async function key() { const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']); return { pair, point: new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey)) }; }
 export const sign = async (k, bytes) => canonicalP256Signature(new Uint8Array(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, k.pair.privateKey, bytes)));
-export async function fixture({ originalProofs = false } = {}) {
+export async function fixture({ originalProofs = false, includeIntegration = false } = {}) {
   const f = { root: await key(), phone: await key(), approval: await key(), origin: 'https://owner.invalid', account: uuid(1), device: uuid(20), line: uuid(40),
     challenge: uuid(60), oldBinding: uuid(80), binding: uuid(100), user: uuid(140), session: uuid(160), acceptedMs: 10000n };
   const records = [];
-  for (const role of [1, 2, 4, 6]) {
+  for (const role of [1, 2, ...(includeIntegration ? [3] : []), 4, 6]) {
     const k = role === 6 ? f.root : role === 4 ? f.phone : await key();
     records.push(join(Uint8Array.of(role), await keyId(role <= 3 ? 0x10 : 0x101, k.point), k.point,
       [1, 4].includes(role) ? f.device : zero16, [1, 4].includes(role) ? f.line : zero16,
-      num(BigInt({ 1: 4, 2: 12, 4: 2, 6: 0 }[role]), 2), num(9000n), num(2000000n), Uint8Array.of(1)));
+      num(BigInt({ 1: 4, 2: 12, 3: 12, 4: 2, 6: 0 }[role]), 2), num(9000n), num(2000000n), Uint8Array.of(1)));
   }
   f.reader = records[0].slice(1, 33);
   const manifest = async (profile, version, previous) => {

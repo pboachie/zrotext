@@ -9,8 +9,10 @@ import {
   captureCurrentElectionAuthority03, type CurrentElectionAuthority03,
 } from './payload-profile-election03.js';
 import {
-  verifyManifest03Current, verifiedManifestIdentity03, type VerifiedManifest03,
+  verifyManifest03Current, verifiedManifestIdentity03, authorizeInbound03, type VerifiedManifest03,
 } from './draft03-manifest.js';
+import { captureConversationContext03, decodeConversationStatement03, verifyConversationReceipts03,
+  type ConversationContext03, type ConversationIntegration03, type ConversationStatement03 } from './conversation-interval03.js';
 import { verifyManifestInstallPossession03 } from './manifest-install03.js';
 import { verifyProfile03ManifestOutput } from './profile03-manifest-proposal.js';
 
@@ -287,9 +289,15 @@ function parse(raw: string): unknown {
     for (const [word, result] of [['true', true], ['false', false], ['null', null]] as const) {
       if (raw.startsWith(word, at)) { at += word.length; return result; }
     }
+    if (raw.startsWith('12', at)) { at += 2; return 12; }
     if (raw[at] === '1' || raw[at] === '3') return Number(raw[at++]); return fail();
   }
   const out = value(0); space(); if (at !== raw.length) fail(); return out;
+}
+/** Bounded JSON grammar only; decoded records still require their own closed
+ * field/type validation and authenticated source. No DTO becomes authority. */
+export function decodeOwnerProfileJson03(input: Uint8Array): unknown {
+  return parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(captureElectionBytes03(input, 1, 192 * 1024)));
 }
 const currentNames = ['v', 'kind', 'envelope_profile', 'manifest_profile', 'account_id', 'user_id', 'owner_session_id',
   'device_id', 'line_id', 'selection_epoch', 'origin_digest', 'owner_session_digest', 'device_session_digest', 'site_id', 'instance_id',
@@ -304,6 +312,9 @@ export type OwnerManifestHistoryOptions03 = Readonly<{
 export type OriginalManifestBootstrapCandidate03 = Readonly<{
   v: 1; kind: 'manifest_original03'; line_id: string; binding_id: string; evidence: OriginalManifestEvidence03;
 }>;
+export type OwnerConsentSelection03 = Readonly<{ peer: Uint8Array; archiveReaderKeyId: Uint8Array;
+  phoneSignerKeyId: Uint8Array; browserSignerKeyId: Uint8Array; integrationReaders: readonly ConversationIntegration03[] }>;
+export type OwnerConsentContextRequest03 = Readonly<{ openingId: string; intervalId: string; statement: Uint8Array; selection: OwnerConsentSelection03 }>;
 /** Actual fixed same-origin owner transport. Reads one bounded history page per
  * explicit call; no automatic mutation, new key, renewal, retry or factor use.
  * These reads still depend on the configured service's real cookie auth and
@@ -349,14 +360,15 @@ export class OwnerManifestHistoryClient03 {
     } catch { throw Error('Owner manifest read unavailable'); }
     finally { clearTimeout(timer); this.#options.signal.removeEventListener('abort', close); abort.abort(); this.#busy = false; }
   }
-  async #request(path: 'original' | 'history' | 'current', body: object, signal: AbortSignal): Promise<unknown> {
+  async #request(path: 'original' | 'history' | 'current' | 'interval_context', body: object, signal: AbortSignal): Promise<unknown> {
     this.#check(); if (signal.aborted) fail();
-    const response = await (this.#options.fetchImpl ?? fetch)(this.#options.origin + '/v1/account/sealed/payload-profile/manifests/' + path, {
+    const url = this.#options.origin + (path === 'interval_context' ? '/v1/owner/conversation/interval03/context' : '/v1/account/sealed/payload-profile/manifests/' + path);
+    const response = await (this.#options.fetchImpl ?? fetch)(url, {
       method: 'POST', mode: 'same-origin', credentials: 'same-origin', redirect: 'error', cache: 'no-store', referrerPolicy: 'no-referrer', signal,
       headers: { 'content-type': 'application/json', accept: 'application/json', 'x-zrotext-csrf': this.#csrf }, body: JSON.stringify(body),
     });
     this.#check(); if (signal.aborted || response.status !== 200 || response.redirected
-        || response.url && response.url !== this.#options.origin + '/v1/account/sealed/payload-profile/manifests/' + path
+        || response.url && response.url !== url
         || response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json' || !response.body) fail();
     const reader = response.body.getReader(), chunks: Uint8Array[] = []; let size = 0;
     const cancel = () => { void reader.cancel().catch(() => {}); }; signal.addEventListener('abort', cancel, { once: true });
@@ -365,7 +377,7 @@ export class OwnerManifestHistoryClient03 {
         const chunk = await reader.read(); this.#check(); if (signal.aborted) fail(); if (chunk.done) break;
         size += chunk.value.byteLength; if (size > 192 * 1024) fail(); chunks.push(Uint8Array.from(chunk.value));
       }
-      return parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(join(...chunks)));
+      return decodeOwnerProfileJson03(join(...chunks));
     } finally { signal.removeEventListener('abort', cancel); cancel(); reader.releaseLock(); }
   }
   /** Cold bootstrap candidates only, BEFORE a history handle exists. The caller
@@ -401,7 +413,11 @@ export class OwnerManifestHistoryClient03 {
     return this.#run(handle, async (s, signal) => {
       if (!s.complete || typeof nowMs !== 'function') fail(); const started = nowMs(); electionTime03(started);
       if (started < this.#lastLocalMs) fail();
-      const r = record(await this.#request('current', { v: 1, line_id: uuidText(s.accepted.lineId) }, signal), currentNames), a = s.accepted;
+      return this.#verifyCurrentValue(handle, s, await this.#request('current', { v: 1, line_id: uuidText(s.accepted.lineId) }, signal), nowMs, started);
+    });
+  }
+  async #verifyCurrentValue(handle: VerifiedManifestHistory03, s: State, value: unknown, nowMs: () => bigint, started: bigint) {
+      const r = record(value, currentNames), a = s.accepted;
       const currentMs = nowMs(); electionTime03(currentMs); if (currentMs < started) fail();
       const original = evidence(r.evidence);
       if (r.v !== 1 || r.kind !== 'owner_manifest_selection03' || r.envelope_profile !== 3 || r.manifest_profile !== 3
@@ -448,6 +464,75 @@ export class OwnerManifestHistoryClient03 {
       this.#lastLocalMs = releasedMs;
       this.#lastCompared = authority.comparedAtMs;
       return Object.freeze({ manifest: fresh, acceptedElection: s.proof, currentAuthority: captureCurrentElectionAuthority03(authority) });
+  }
+  /** Distinct authenticated read AFTER retaining the exact unsigned reservation.
+   * Facts come from the actual held service context, independently of unsigned
+   * statement fields. No receipt, installed handle or message permission follows. */
+  async conversationContext(handle: VerifiedManifestHistory03, input: OwnerConsentContextRequest03, nowMs: () => bigint): Promise<Readonly<{
+    context: ConversationContext03; statement: ConversationStatement03; comparedMs: bigint; permissionExpiresMs: bigint;
+  }>> {
+    const request = record(input, ['openingId', 'intervalId', 'statement', 'selection']);
+    const opening = uuid(request.openingId), interval = uuid(request.intervalId), raw = captureElectionBytes03(request.statement as Uint8Array, 695, 1092);
+    const choice = record(request.selection, ['peer', 'archiveReaderKeyId', 'phoneSignerKeyId', 'browserSignerKeyId', 'integrationReaders']);
+    for (const n of ['archiveReaderKeyId', 'phoneSignerKeyId', 'browserSignerKeyId']) choice[n] = captureElectionBytes03(choice[n] as Uint8Array, 32);
+    choice.peer = captureElectionBytes03(choice.peer as Uint8Array, 3, 16);
+    choice.integrationReaders = array(choice.integrationReaders).map(v => {
+      const r = record(v, ['connectorId', 'readGrantId', 'keyId']);
+      return { connectorId: captureElectionBytes03(r.connectorId as Uint8Array, 16), readGrantId: captureElectionBytes03(r.readGrantId as Uint8Array, 16), keyId: captureElectionBytes03(r.keyId as Uint8Array, 32) };
+    });
+    const selected = choice as OwnerConsentSelection03;
+    return this.#run(handle, async (s, signal) => {
+      if (!s.complete || typeof nowMs !== 'function' || selected.integrationReaders.length > 6) fail();
+      let last = nowMs(); electionTime03(last); if (last < this.#lastLocalMs) fail();
+      const clock = () => { const n = nowMs(); electionTime03(n); if (n < last) fail(); last = n; return n; };
+      const started = last, nonce = crypto.randomUUID(), expected = await decodeConversationStatement03(raw);
+      if (!same(expected.openingId, opening) || !same(expected.intervalId, interval)) fail();
+      const r = record(await this.#request('interval_context', { v: 1, request_id: nonce, opening_id: uuidText(opening), interval_id: uuidText(interval) }, signal),
+        ['v', 'kind', 'request_id', 'opening_id', 'interval_id', 'statement_sha256', 'selection', 'owner_session_expires_ms', 'physical_selection_digest', 'compared_ms', 'permission_expires_ms', 'readers']);
+      if (r.v !== 1 || r.kind !== 'owner_conversation_context03' || r.request_id !== nonce || !same(uuid(r.opening_id), opening)
+          || !same(uuid(r.interval_id), interval) || !same(manifestHistoryBinary03(r.statement_sha256, 32), await sha(raw))) fail();
+      const current = record(r.selection, currentNames), primary = manifestHistoryDecimal03(r.compared_ms), expires = manifestHistoryDecimal03(r.permission_expires_ms);
+      if (current.compared_ms !== r.compared_ms || current.permission_expires_ms !== r.permission_expires_ms) fail();
+      const verified = await this.#verifyCurrentValue(handle, s, current, clock, started), a = verified.currentAuthority;
+      const ownerDeadline = manifestHistoryDecimal03(r.owner_session_expires_ms), physical = record(current.physical_selection,
+        current.physical_selection && Object.getOwnPropertyDescriptor(current.physical_selection, 'kind')?.value === 'owner_refresh03'
+          ? ['kind', 'refresh_id', 'bundle', 'accepted_ms', 'installed_ms'] : ['kind']);
+      if (expires > ownerDeadline || expires > expected.intervalUntilMs || primary < s.comparedMs) fail();
+      let tag: number, source: Uint8Array;
+      if (physical.kind === 'original_v2') { tag = 1; source = join(s.accepted.oldBindingId, await sha(manifestHistoryBinary03(s.evidence.activation_evidence, 1, 4096))); }
+      else if (physical.kind === 'owner_refresh03') {
+        tag = 2; source = join(uuid(physical.refresh_id), await sha(manifestHistoryBinary03(physical.bundle, 745)),
+          n64(manifestHistoryDecimal03(physical.accepted_ms)), n64(manifestHistoryDecimal03(physical.installed_ms)));
+      } else fail();
+      const deviceSession = manifestHistoryBinary03(current.device_session_digest, 32), physicalDigest = await commitment('ZTSE/line/payload-profile/physical-selection/v1',
+        Uint8Array.of(tag), a.accountId, a.deviceId, a.lineId, a.bindingId, a.electionCommitment, deviceSession, source);
+      if (!same(physicalDigest, manifestHistoryBinary03(r.physical_selection_digest, 32))) fail();
+      const inbound = authorizeInbound03(verified.manifest, { accountId: a.accountId, deviceId: a.deviceId, lineId: a.lineId,
+        generation: a.vaultGeneration, version: a.manifestVersion, digest: a.manifestDigest, signerKeyId: selected.phoneSignerKeyId,
+        wraps: [{ role: 2, keyId: selected.archiveReaderKeyId }, ...selected.integrationReaders.map(v => ({ role: 3, keyId: v.keyId }))] }, clock());
+      const readers = array(r.readers); if (readers.length !== selected.integrationReaders.length) fail();
+      for (let i = 0; i < readers.length; i++) {
+        const value = record(readers[i], ['connector_id', 'read_grant_id', 'key_id', 'key_point', 'manifest_generation', 'read_directions',
+          'registration_expires_ms', 'grant_expires_ms', 'key_valid_from_ms', 'key_valid_until_ms']);
+        const chosen = selected.integrationReaders[i], keyId = manifestHistoryBinary03(value.key_id, 32);
+        const actual = inbound.recipients.find(v => v.role === 3 && same(v.keyId, keyId));
+        if (!same(uuid(value.connector_id), chosen.connectorId) || !same(uuid(value.read_grant_id), chosen.readGrantId)
+            || !same(keyId, chosen.keyId) || !actual || !same(actual.point, manifestHistoryBinary03(value.key_point, 65))
+            || manifestHistoryDecimal03(value.manifest_generation) !== a.vaultGeneration || value.read_directions !== 12
+            || manifestHistoryDecimal03(value.key_valid_from_ms) > primary) fail();
+        for (const name of ['registration_expires_ms', 'grant_expires_ms', 'key_valid_until_ms'])
+          if (expected.intervalUntilMs > manifestHistoryDecimal03(value[name])) fail();
+      }
+      const context = await captureConversationContext03({ ...selected, currentAuthority: a, acceptedElection: verified.acceptedElection, manifest: verified.manifest,
+        selectionEpoch: manifestHistoryDecimal03(current.selection_epoch), ownerUserId: uuid(this.#options.userId), ownerSessionId: uuid(this.#options.ownerSessionId),
+        canonicalOrigin: this.#options.origin, deviceSessionDigest: deviceSession, physicalSelectionDigest: physicalDigest, ownerDeadlineMs: ownerDeadline, nowMs: clock() });
+      const statement = await verifyConversationReceipts03({ context, statement: raw, request: null, approval: null, installed: null, nowMs: clock(), pending: false });
+      // Last release is synchronous: no crypto await may outlive current
+      // permission, the actual interval or the request's monotonic clock floor.
+      const released = clock(); requireCurrentElection03(verified.acceptedElection, verified.manifest, a, released);
+      if (released >= statement.intervalUntilMs || released >= ownerDeadline) fail();
+      this.#lastLocalMs = released;
+      return Object.freeze({ context, statement, comparedMs: primary, permissionExpiresMs: expires });
     });
   }
 }
