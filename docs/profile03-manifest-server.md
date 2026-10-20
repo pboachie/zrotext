@@ -26,7 +26,12 @@ verified cryptographic prefix progress, with at most eight pages and two
 seconds of work per call. Incomplete verification refuses current effects and
 can resume on the next call. Cache entries are reselected against actual
 immutable rows, exact original evidence, current root/binding and the closed
-schema/runtime checks. They contain no owner, factor, lease or effect permission.
+schema/runtime checks. Before cache reuse, a narrow read recomputes the complete
+retained prefix against the exact selected tip; changing an intermediate
+received signature refuses even if the tip and stored prefix remain unchanged.
+This structural retention check supplies no cryptographic authority. Cached
+signatures were independently verified, and every new suffix is verified before
+publication. Entries contain no owner, factor, lease or effect permission.
 Newly inserted uncommitted manifest progress is never published to the cache.
 
 The original first-only current endpoint retains its fieldset and refuses a

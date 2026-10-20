@@ -40,6 +40,19 @@ impl Fixture {
     pub(super) async fn runtime() -> Self {
         Self::build(true).await
     }
+    // Privileged-negative tests may corrupt data in an owner transaction, then
+    // SET LOCAL ROLE to the genuine narrow runtime and roll the whole operation
+    // back. The runtime role itself gets no membership or additional privilege.
+    pub(super) async fn enable_negative_runtime_role_switch(&self) {
+        self.admin
+            .batch_execute(&format!(
+                "GRANT {} TO {}",
+                escape_identifier(&self.read_role),
+                escape_identifier(&self.owner_role)
+            ))
+            .await
+            .unwrap();
+    }
     async fn build(runtime: bool) -> Self {
         let raw = std::env::var("ZT_AUTH_TEST_DATABASE_URL").expect("disposable test cluster");
         let mut config: Config = raw.parse().unwrap();
