@@ -192,7 +192,7 @@ async fn real_opening_burns_once_distinct_factors_commit_and_exact_retry_stays_h
         base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &bundle)
     );
     tx.rollback().await.unwrap();
-    c.db.close().await;
+    c.db.finish().await;
 }
 
 #[tokio::test]
@@ -285,5 +285,5 @@ async fn wrong_owner_signature_rolls_back_new_factor_and_entire_epoch_transition
         step_up::Outcome::Verified(_)
     ));
     tx.rollback().await.unwrap();
-    c.db.close().await;
+    c.db.finish().await;
 }
