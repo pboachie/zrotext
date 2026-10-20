@@ -4,7 +4,6 @@ package org.zrotext.gateway
 import android.os.SystemClock
 import java.security.MessageDigest
 import java.util.UUID
-import java.util.concurrent.atomic.AtomicBoolean
 import org.json.JSONObject
 
 /** Shipping consent is separate from Ready03. Only the same original live foreground ceremony,
@@ -20,7 +19,7 @@ internal class ConversationInterval03Runtime(private val owner: Any, private val
         val projection: ByteArray, val selected: Profile03CurrentReader.Selection,
         val session: SealedDispatchExecutor.Session) {
         @Volatile var stopped = false
-        var foreground: AtomicBoolean? = null
+        var foreground: ConversationInterval03Foreground.Decision? = null
         @Volatile var dao: ConversationInterval03Dao? = null
         @Volatile var row: ConversationInterval03Record? = null
         @Volatile var proof: ConversationInterval03Proof? = null
@@ -33,20 +32,22 @@ internal class ConversationInterval03Runtime(private val owner: Any, private val
     private var lastStatus = -1L
     private var statusCount = 0
     private fun now() = checkNotNull(time.nowMs()).also { check(!closed && current()) }
-    private fun ram(w: Work, setup: Boolean = true, foreground: Boolean = true) {
+    private fun ram(w: Work, setup: Boolean = true, foreground: Boolean = true,
+        decision: ConversationInterval03Foreground.Decision? = w.foreground) {
         check(!closed && current() && !w.stopped && time.snapshot()?.first?.session === w.session && w.selected.physical.isCurrent())
         val instant = now(); w.permission.statement.requireIntervalCurrent(instant)
         check(instant < w.selected.selected.permissionExpiresAtMs)
-        if (setup) { check((!foreground || w.foreground?.get() == true) && instant < w.permission.permissionExpiresMs)
+        if (setup) { check((!foreground || decision?.isCurrent() == true) && instant < w.permission.permissionExpiresMs)
             w.permission.statement.requireSetupCurrent(instant) }
     }
     /** Room/framework/Keystore access is outside the interval writer and hardware callbacks. */
-    private fun verify(w: Work, setup: Boolean = true, foreground: Boolean = true): Draft03ManifestAuthority.IntervalKeys {
-        ram(w, setup, foreground)
+    private fun verify(w: Work, setup: Boolean = true, foreground: Boolean = true,
+        decision: ConversationInterval03Foreground.Decision? = w.foreground): Draft03ManifestAuthority.IntervalKeys {
+        ram(w, setup, foreground, decision)
         val selected = selection(w.projection, w.permission.statement.line)
         val roles = w.permission.verifyCurrent(selected, signer.readerPoint(), originDigest, now())
         check(same(roles.phonePoint(), signer.phonePoint()))
-        ram(w, setup, foreground)
+        ram(w, setup, foreground, decision)
         return roles
     }
     fun challenge(raw: ByteArray) = synchronized(lock) {
@@ -78,13 +79,12 @@ internal class ConversationInterval03Runtime(private val owner: Any, private val
         }
         check(works.size < 64)
         val s = p.statement
-        val shown = ConversationInterval03Mount.Review(s.interval, s.peer, s.line, hex(s.archiveReaderKeyId),
-            hex(s.phoneSignerKeyId), hex(s.browserSignerKeyId), s.integrations().size, s.intervalExpiresMs)
+        val shown = ConversationInterval03Mount.Review.from(s)
         val w = Work(shown, p, bytes, selected, checkNotNull(time.snapshot()).first.session)
         works[s.interval] = w
         ConversationInterval03Mount.publish(owner, shown, "Review the conversation and encrypted-content disclosure before approving")
     }
-    fun approve(shown: ConversationInterval03Mount.Review, foreground: AtomicBoolean) = synchronized(lock) {
+    fun approve(shown: ConversationInterval03Mount.Review, foreground: ConversationInterval03Foreground.Decision) = synchronized(lock) {
         val w = checkNotNull(works[shown.interval]); check(w.shown === shown && (w.row == null || w.row?.state == "approved"))
         w.foreground = foreground
         if (w.row?.state == "approved") {
@@ -113,8 +113,9 @@ internal class ConversationInterval03Runtime(private val owner: Any, private val
         checkNotNull(w.dao).advance(before, next) { ram(w, foreground = foreground) }
         w.row = next; w.proof = proof
     }
-    private fun sendProof(w: Work, type: String, signature: ByteArray) {
-        ram(w)
+    private fun sendProof(w: Work, type: String, signature: ByteArray,
+        decision: ConversationInterval03Foreground.Decision? = w.foreground) {
+        ram(w, decision = decision)
         check(send(JSONObject().put("v", 1).put("type", type).put("interval_id", w.shown.interval)
             .put("statement_sha256", b64(w.permission.statement.sha256())).put("signature", b64(signature)).toString()))
     }
@@ -126,7 +127,7 @@ internal class ConversationInterval03Runtime(private val owner: Any, private val
         if (w.row?.state != "approval_signed") { require(proof.approvedMs == at); return@synchronized }
         verify(w, foreground = false); require(at >= proof.requestedMs && at <= now())
         advance(w, proof.approved(at), "approved", foreground = false)
-        if (w.foreground?.get() == true) installOnce(w)
+        if (w.foreground?.isCurrent() == true) installOnce(w)
         else ConversationInterval03Mount.update(owner, w.shown, "Original approval acknowledged. Review and approve again in the foreground to continue the unused installation phase")
     }
     private fun installOnce(w: Work) {
@@ -161,14 +162,15 @@ internal class ConversationInterval03Runtime(private val owner: Any, private val
             require(same(Profile03Json.binary(f, "statement_sha256", 32, 32), w.permission.statement.sha256())) }
     }
     /** User initiated exact retained retry only; a reserved/lost hardware result cannot be retried. */
-    fun retry(shown: ConversationInterval03Mount.Review, foreground: AtomicBoolean) = synchronized(lock) {
-        val w = checkNotNull(works[shown.interval]); check(w.shown === shown); w.foreground = foreground
-        verify(w)
+    fun retry(shown: ConversationInterval03Mount.Review, foreground: ConversationInterval03Foreground.Decision) = synchronized(lock) {
+        val w = checkNotNull(works[shown.interval]); check(w.shown === shown)
+        // Retransmission does not renew the affirmative decision for any unused hardware phase.
+        verify(w, decision = foreground)
         val proof = checkNotNull(w.proof)
         check(checkNotNull(w.dao).find(shown.interval.toString())?.same(checkNotNull(w.row)) == true)
         when (w.row?.state) {
-            "approval_signed" -> sendProof(w, "conversation_interval_approve03", checkNotNull(proof.phoneSignature()))
-            "install_signed" -> sendProof(w, "conversation_interval_install03", checkNotNull(proof.installedSignature()))
+            "approval_signed" -> sendProof(w, "conversation_interval_approve03", checkNotNull(proof.phoneSignature()), foreground)
+            "install_signed" -> sendProof(w, "conversation_interval_install03", checkNotNull(proof.installedSignature()), foreground)
             else -> error("Original signature outcome cannot be retried")
         }
     }

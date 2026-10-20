@@ -79,6 +79,7 @@ class ConversationInterval03RuntimeTest {
             }, { sent.add(it); true })
         private fun attach() = ConversationInterval03Mount.attach(owner, live::get, runtime::approve, runtime::retry,
             runtime::requestStatus, runtime::stop)
+        fun decision() = ConversationInterval03Foreground().apply { update(true) }.decision()
         fun restart() { runtime.close(); ConversationInterval03Mount.detach(owner); owner = Any(); store = newStore(); runtime = newRuntime(); attach() }
         fun <T> io(action: () -> T): T {
             val future = CompletableFuture<T>()
@@ -120,22 +121,22 @@ class ConversationInterval03RuntimeTest {
         private fun b64(bytes: ByteArray) = Profile03ElectionEncoding.encode(bytes)
     }
     @Test fun backgroundApprovalAckNeedsFreshForegroundBeforeUnusedInstallPhase(): Unit = Fixture().use { v ->
-        val shown = v.challenge(); val foreground = AtomicBoolean(true)
-        v.io { v.runtime.approve(shown, foreground) }; foreground.set(false)
+        val shown = v.challenge(); val foreground = ConversationInterval03Foreground().apply { update(true) }
+        v.io { v.runtime.approve(shown, foreground.decision()) }; foreground.update(false)
         v.io { v.approved(); assertEquals("approved", v.row().state) }
         assertEquals(1, v.approvals); assertEquals(0, v.installations)
-        v.io { v.runtime.approve(shown, AtomicBoolean(true)); assertEquals("install_signed", v.row().state) }
+        v.io { v.runtime.approve(shown, v.decision()); assertEquals("install_signed", v.row().state) }
         assertEquals(1, v.approvals); assertEquals(1, v.installations)
     }
     @Test fun activeStatusCannotReplaceOriginalAckAndRetryNeverResigns(): Unit = Fixture().use { v ->
-        val shown = v.challenge(); v.io { v.runtime.approve(shown, AtomicBoolean(true)); v.approved() }
+        val shown = v.challenge(); v.io { v.runtime.approve(shown, v.decision()); v.approved() }
         val original = v.sent.last()
         val proof = v.io { v.proof().installed(v.base.now) }
         v.io {
             v.activeStatus(shown, proof)
             assertEquals("install_signed", v.row().state)
             assertThrows(Exception::class.java) { v.runtime.requireFetch(v.packet(proof), v.base.grant, v.f.selected()) }
-            v.runtime.retry(shown, AtomicBoolean(true))
+            v.runtime.retry(shown, v.decision())
             assertEquals(original, v.sent.last())
             v.installed(); assertEquals("active", v.row().state)
             assertThrows(Exception::class.java) { v.runtime.requireFetch(v.packet(proof, v.base.now - 1), v.base.grant, v.f.selected()) }
@@ -145,7 +146,7 @@ class ConversationInterval03RuntimeTest {
     }
     @Test fun stopWithdrawsRamBeforeQueuedDurableWriterAndRetainsEveryOriginal(): Unit = Fixture().use { v ->
         val shown = v.challenge(); val guard = v.io {
-            v.runtime.approve(shown, AtomicBoolean(true)); v.approved(); v.installed()
+            v.runtime.approve(shown, v.decision()); v.approved(); v.installed()
             v.runtime.requireFetch(v.packet(v.proof()), v.base.grant, v.f.selected())
         }
         val bytes = v.io { v.proof().bytes() }
@@ -157,30 +158,61 @@ class ConversationInterval03RuntimeTest {
         val shown = v.challenge(); val entered = CountDownLatch(1); val release = CountDownLatch(1)
         v.approvalWait = { entered.countDown(); check(release.await(3, TimeUnit.SECONDS)) }
         val pending = CompletableFuture<Boolean>()
-        JournalRuntime.io.execute { pending.complete(runCatching { v.runtime.approve(shown, AtomicBoolean(true)) }.isFailure) }
+        JournalRuntime.io.execute { pending.complete(runCatching { v.runtime.approve(shown, v.decision()) }.isFailure) }
         try { assertTrue(entered.await(3, TimeUnit.SECONDS)); v.runtime.stop(shown) } finally { release.countDown() }
         assertTrue(pending.get(5, TimeUnit.SECONDS))
         v.io { assertEquals("stopped", v.row().state); assertNull(v.proof().phoneSignature())
-            assertThrows(Exception::class.java) { v.runtime.retry(shown, AtomicBoolean(true)) } }
+            assertThrows(Exception::class.java) { v.runtime.retry(shown, v.decision()) } }
         assertEquals(1, v.approvals); assertEquals(0, v.installations)
         assertTrue(v.sent.none { JSONObject(it).getString("type") == "conversation_interval_approve03" })
     }
     @Test fun coldJournalAndDownloadedProofsCannotReconstructOrRepeatTheOriginal(): Unit = Fixture().use { v ->
-        val shown = v.challenge(); v.io { v.runtime.approve(shown, AtomicBoolean(true)); v.approved() }
+        val shown = v.challenge(); v.io { v.runtime.approve(shown, v.decision()); v.approved() }
         val full = v.io { v.proof().installed(v.base.now) }
         v.restart(); val cold = v.challenge()
         v.io {
             assertThrows(Exception::class.java) { v.activeStatus(cold, full) }
             assertThrows(Exception::class.java) { v.runtime.requireFetch(v.packet(full), v.base.grant, v.f.selected()) }
-            assertThrows(Exception::class.java) { v.runtime.approve(cold, AtomicBoolean(true)) }
+            assertThrows(Exception::class.java) { v.runtime.approve(cold, v.decision()) }
             assertEquals("install_signed", v.row().state)
         }
         assertEquals(1, v.approvals); assertEquals(1, v.installations)
     }
     @Test fun selectedRoleFourMustMatchActualSignerBeforeAnyReservation(): Unit = Fixture().use { v ->
         val shown = v.challenge(); v.wrongPhone = true
-        v.io { assertThrows(Exception::class.java) { v.runtime.approve(shown, AtomicBoolean(true)) }
+        v.io { assertThrows(Exception::class.java) { v.runtime.approve(shown, v.decision()) }
             assertNull(v.store.openForDecision().find(v.statement.interval.toString())) }
         assertEquals(0, v.approvals); assertEquals(0, v.installations)
+    }
+    @Test fun pauseAndResumeDuringBlockedSigningCannotReviveTheOriginalDecision(): Unit = Fixture().use { v ->
+        val shown = v.challenge(); val foreground = ConversationInterval03Foreground().apply { update(true) }
+        val original = foreground.decision(); val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        v.approvalWait = { entered.countDown(); check(release.await(3, TimeUnit.SECONDS)) }
+        val pending = CompletableFuture<Boolean>()
+        JournalRuntime.io.execute { pending.complete(runCatching { v.runtime.approve(shown, original) }.isFailure) }
+        try {
+            assertTrue(entered.await(3, TimeUnit.SECONDS)); foreground.update(false); foreground.update(true)
+            assertFalse(original.isCurrent()); assertTrue(foreground.decision().isCurrent())
+        } finally { release.countDown() }
+        assertTrue(pending.get(5, TimeUnit.SECONDS))
+        v.io {
+            assertEquals("approval_reserved", v.row().state); assertNull(v.proof().phoneSignature())
+            assertThrows(Exception::class.java) { v.runtime.approve(shown, foreground.decision()) }
+            assertThrows(Exception::class.java) { v.runtime.retry(shown, foreground.decision()) }
+        }
+        assertEquals(1, v.approvals); assertEquals(0, v.installations)
+        assertTrue(v.sent.none { JSONObject(it).getString("type") == "conversation_interval_approve03" })
+    }
+    @Test fun retryingOriginalApprovalAfterResumeCannotAuthorizeUnusedInstallSigning(): Unit = Fixture().use { v ->
+        val shown = v.challenge(); val foreground = ConversationInterval03Foreground().apply { update(true) }
+        v.io { v.runtime.approve(shown, foreground.decision()) }
+        val original = v.sent.last(); foreground.update(false); foreground.update(true)
+        v.io {
+            v.runtime.retry(shown, foreground.decision()); assertEquals(original, v.sent.last())
+            v.approved(); assertEquals("approved", v.row().state)
+        }
+        assertEquals(1, v.approvals); assertEquals(0, v.installations)
+        v.io { v.runtime.approve(shown, foreground.decision()); assertEquals("install_signed", v.row().state) }
+        assertEquals(1, v.approvals); assertEquals(1, v.installations)
     }
 }

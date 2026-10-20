@@ -49,14 +49,18 @@ big-endian u32 payload length and exact payload. Received bytes are never normal
 - Phone role4 approval: `L(zrotext/conversation/approve03/v1, statement || SHA256(owner signature))`.
 - Phone role4 installation: `L(zrotext/conversation/install03/v1, statement || SHA256(owner signature) || SHA256(phone approval))`.
 
-The phone displays the peer, line, content signers, archive, additional reader count, deadline
-and disclosure. An affirmative foreground action reserves the one-use approval phase before
+The phone displays the peer, line, content signers, archive, deadline and disclosure. Each
+additional reader is listed with its full key fingerprint, connector ID and read grant ID,
+derived from the exact verified signed selection. An affirmative foreground action reserves the one-use approval phase before
 hardware signing. A matching service approval commits its original time before a separate
 one-use installation reservation and signature. Only the original matching install ACK can
 issue the active RAM handle. Foreground loss, callback loss, missing custody or expired
-authority refuses further setup. A cold journal and a passive active status cannot issue a
+authority refuses further setup. Every pause or display disposal permanently invalidates that
+action's foreground ticket; resuming enables a fresh affirmative action without reviving a
+blocked signing operation. A cold journal and a passive active status cannot issue a
 handle. Explicit Retry sends only already durable original bytes, within the same live
-pending ceremony and original setup window. A lost signing outcome is never regenerated.
+pending ceremony and original setup window. Retry does not renew consent for unused hardware
+signing. A lost signing outcome is never regenerated.
 If the original approval ACK was committed locally but installation was never reserved, another
 affirmative foreground approval can continue that unused installation phase. It cannot revisit
 an installation reservation or replace an unknown signing result.
