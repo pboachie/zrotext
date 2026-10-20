@@ -5,7 +5,7 @@ use super::*;
 use crate::{conversation_interval03::live as intervals, manifest_install03::live as manifests};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B};
 
-async fn prepared() -> (Case, SigningKey, Vec<u8>) {
+pub(super) async fn prepared() -> (Case, SigningKey, Vec<u8>) {
     let (mut c, _) = elected().await;
     let browser = SigningKey::generate_from_rng(&mut rand::rng());
     let (opening, statement, signed, signature) = packet(&mut c, &browser, false).await;

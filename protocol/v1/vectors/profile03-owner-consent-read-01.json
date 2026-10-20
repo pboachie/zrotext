@@ -1,0 +1,13 @@
+{
+  "description": "Public synthetic shape examples only, without authentication, accepted history, cryptographic proof or current permission.",
+  "context_request": {
+    "v": 1,
+    "request_id": "00000000-0000-0000-0000-000000000001",
+    "opening_id": "00000000-0000-0000-0000-000000000002",
+    "interval_id": "00000000-0000-0000-0000-000000000003"
+  },
+  "opening_status_request": {
+    "v": 1,
+    "opening_id": "00000000-0000-0000-0000-000000000002"
+  }
+}
