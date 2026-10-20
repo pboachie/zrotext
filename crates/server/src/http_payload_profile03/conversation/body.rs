@@ -6,16 +6,12 @@ pub(super) enum Operation {
     Request,
     Status,
     Stop,
-    Send,
-    SendStatus,
 }
 object_body! {struct Mapping{connector_id:String,read_grant_id:String,key_id:String}}
 object_body! {struct Reserve{v:u8,opening_id:String,line_id:String,peer:String,archive_reader_key_id:String,phone_signer_key_id:String,browser_signer_key_id:String,interval_expires_ms:String,integration_readers:Vec<Mapping>}}
 object_body! {struct Request03{v:u8,opening_id:String,interval_id:String,statement:String,owner_signature:String,password:String,factor:String}}
 object_body! {struct Status{v:u8,opening_id:String,interval_id:String}}
 object_body! {struct Stop{v:u8,interval_id:String}}
-object_body! {struct Send{v:u8,envelope:String,reviewed_intent:String,reviewed_signature:String}}
-object_body! {struct SendStatus{v:u8,message_id:String,interval_id:String,envelope_sha256:String,reviewed_intent_sha256:String,reviewed_signature_sha256:String}}
 pub(super) enum Body {
     Reserve {
         opening: Uuid,
@@ -42,12 +38,6 @@ pub(super) enum Body {
     Stop {
         interval: Uuid,
     },
-    Send {
-        intent: Vec<u8>,
-        signature: Vec<u8>,
-        envelope: Vec<u8>,
-    },
-    SendStatus(crate::reviewed_intent03::live::Status03),
 }
 fn key(raw: &str) -> Result<[u8; 32], StatusCode> {
     let value: [u8; 32] = super::super::request::binary(raw, 32, 32)?
@@ -145,26 +135,6 @@ pub(super) fn parse(op: Operation, bytes: &[u8]) -> Result<Body, StatusCode> {
             Body::Stop {
                 interval: id(&b.interval_id)?,
             }
-        }
-        Operation::Send => {
-            let b = read!(Send);
-            version(b.v)?;
-            Body::Send {
-                intent: binary(&b.reviewed_intent, 624, 835)?,
-                signature: binary(&b.reviewed_signature, 64, 64)?,
-                envelope: binary(&b.envelope, 557, 34213)?,
-            }
-        }
-        Operation::SendStatus => {
-            let b = read!(SendStatus);
-            version(b.v)?;
-            Body::SendStatus(crate::reviewed_intent03::live::Status03 {
-                message: id(&b.message_id)?,
-                interval: id(&b.interval_id)?,
-                envelope: key(&b.envelope_sha256)?,
-                intent: key(&b.reviewed_intent_sha256)?,
-                signature: key(&b.reviewed_signature_sha256)?,
-            })
         }
     })
 }

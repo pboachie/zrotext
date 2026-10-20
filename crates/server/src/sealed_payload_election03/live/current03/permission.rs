@@ -4,7 +4,6 @@
 //! owner becomes present HTTP authorization through this type.
 use super::*;
 use crate::conversation_interval03::{ExpectedConsent03, IntegrationReader03};
-use crate::reviewed_intent03::ExpectedReview03;
 
 enum Proof<'a, 'held, 'db> {
     Ordinary(&'a mut HeldOrdinaryOwner03<'held, 'db>),
@@ -260,32 +259,6 @@ impl HeldMessageSelection03<'_, '_, '_> {
             owner_deadline_ms: self.proof.owner_deadline(),
             peer,
             integrations,
-        }
-    }
-    pub(crate) fn review_context<'a>(
-        &'a self,
-        interval: Uuid,
-        starts: u64,
-        expires: u64,
-        peer: &'a [u8],
-        signer: &'a [u8; 32],
-        recipients: &'a [(u8, [u8; 32])],
-    ) -> ExpectedReview03<'a> {
-        let owner = self.proof.selector();
-        ExpectedReview03 {
-            current: &self.current.authority,
-            election: &self.current.proof,
-            manifest: &self.current.manifest,
-            selection_epoch: self.current.epoch,
-            user: owner.user,
-            session: owner.session,
-            canonical_origin: &self.origin,
-            interval,
-            interval_starts_ms: starts,
-            interval_expires_ms: expires,
-            peer,
-            signer,
-            recipients,
         }
     }
 }

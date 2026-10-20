@@ -233,39 +233,6 @@ impl StoredInterval03 {
     fn receipt(&self) -> serde_json::Value {
         serde_json::json!({"v":1,"opening_id":self.statement.opening_id(),"interval_id":self.statement.interval_id(),"receipt_id":self.statement.receipt_id(),"statement":B.encode(self.statement.bytes()),"phase":self.phase,"owner_signature":self.owner.map(|s|B.encode(s)),"phone_signature":self.phone.map(|s|B.encode(s)),"installed_signature":self.installed.map(|s|B.encode(s)),"requested_ms":self.requested_ms.map(|v|v.to_string()),"approved_ms":self.approved_ms.map(|v|v.to_string()),"installed_ms":self.installed_ms.map(|v|v.to_string())})
     }
-    pub(crate) async fn active<'a>(
-        tx: &Transaction<'_>,
-        held: &mut HeldMessageSelection03<'a, '_, '_>,
-        interval: Uuid,
-    ) -> Result<Self> {
-        if !std::ptr::eq(tx, held.tx()) {
-            return Err(Error::Authentication);
-        }
-        let value = Self::read(tx, held.selected().account, interval).await?;
-        if value.phase != "active" {
-            return Err(Error::Conflict);
-        }
-        value.validate(held, false).await?;
-        Ok(value)
-    }
-    pub(crate) async fn admission_deadline(
-        &self,
-        held: &mut HeldMessageSelection03<'_, '_, '_>,
-    ) -> Result<u64> {
-        if self.phase != "active" {
-            return Err(Error::Conflict);
-        }
-        let mapping = self.validate(held, false).await?;
-        let deadline = held
-            .authority()
-            .permission_expires_at_ms
-            .min(self.statement.times().3)
-            .min(mapping.deadline());
-        if held.now_ms() >= deadline {
-            return Err(Error::Expired);
-        }
-        Ok(deadline)
-    }
     pub(crate) async fn permission(
         &self,
         held: &mut HeldMessageSelection03<'_, '_, '_>,

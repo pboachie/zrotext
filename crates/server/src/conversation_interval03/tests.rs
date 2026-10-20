@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
-use crate::reviewed_intent03::tests::Packet;
+mod fixture;
 use crate::sealed_manifest03::tests::{NOW, sign};
+use fixture::Packet;
 
 fn statement(p: &Packet) -> Vec<u8> {
     let mut b = HEADER.to_vec();

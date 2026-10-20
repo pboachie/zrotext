@@ -25,21 +25,6 @@ pub async fn router(state: ProfileHttpState) -> Result<Router, &'static str> {
         .route("/v1/owner/conversation/interval03/stop", post(stop))
         .with_state(Arc::new(state)))
 }
-pub async fn send_router(state: ProfileHttpState) -> Result<Router, &'static str> {
-    let db = crate::runtime_db::connect(&state.database_url)
-        .await
-        .map_err(|_| "reviewed admission database unavailable")?;
-    crate::conversation_profile03_storage::require(&*db)
-        .await
-        .map_err(|_| "interval schema unavailable")?;
-    crate::conversation_reviewed_send03_storage::require(&*db)
-        .await
-        .map_err(|_| "reviewed admission schema unavailable")?;
-    Ok(Router::new()
-        .route("/v1/owner/conversation/send03", post(send))
-        .route("/v1/owner/conversation/send03/status", post(send_status))
-        .with_state(Arc::new(state)))
-}
 macro_rules! route {
     ($name:ident,$op:ident) => {
         async fn $name(State(state): State<Arc<ProfileHttpState>>, request: Request) -> Response {
@@ -63,20 +48,13 @@ route!(reserve, Reserve);
 route!(request, Request);
 route!(status, Status);
 route!(stop, Stop);
-route!(send, Send);
-route!(send_status, SendStatus);
 async fn handle(
     s: &ProfileHttpState,
     op: Operation,
     request: Request,
 ) -> Result<(StatusCode, serde_json::Value), StatusCode> {
     let (parts, stream) = request.into_parts();
-    preflight(
-        s,
-        &parts.headers,
-        !matches!(op, Operation::Status | Operation::SendStatus),
-    )
-    .await?;
+    preflight(s, &parts.headers, !matches!(op, Operation::Status)).await?;
     if parts.headers.get_all(header::CONTENT_TYPE).iter().count() != 1
         || parts
             .headers
@@ -156,31 +134,6 @@ async fn handle(
                 .map_err(mapped)?;
             (StatusCode::NO_CONTENT, serde_json::Value::Null)
         }
-        Body::Send {
-            intent,
-            signature,
-            envelope,
-        } => {
-            let (new, reply) = crate::reviewed_intent03::live::admit(
-                &tx, &mut owner, &intent, &signature, &envelope, &s.origin,
-            )
-            .await
-            .map_err(mapped)?;
-            (
-                if new {
-                    StatusCode::CREATED
-                } else {
-                    StatusCode::OK
-                },
-                reply,
-            )
-        }
-        Body::SendStatus(expected) => (
-            StatusCode::OK,
-            crate::reviewed_intent03::live::status(&tx, &mut owner, expected)
-                .await
-                .map_err(mapped)?,
-        ),
         Body::Request {
             opening,
             interval,
