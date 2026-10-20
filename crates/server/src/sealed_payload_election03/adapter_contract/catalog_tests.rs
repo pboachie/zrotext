@@ -133,6 +133,11 @@ async fn candidate_inventory_covers_exact_numbered_schema_relations_columns_fk_a
                 (
                     "payload_profile_manifest_successors",
                     Some("immutable_same_root03_successor_receipt_without_content_permission")
+                ) | (
+                    "conversation_profile03_intervals",
+                    Some(
+                        "original_content_consent_requires_live_independent_owner_device_custody_and_installed_ACK"
+                    )
                 )
             ),
             "{table}: unknown current-profile writer policy"

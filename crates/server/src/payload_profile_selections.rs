@@ -20,14 +20,21 @@ pub enum SelectionSchemaError {
 }
 type Result<T> = std::result::Result<T, SelectionSchemaError>;
 fn body(name: &str, version: i64) -> Result<&'static str> {
-    let source = if version == 112
+    let source = if version == 113
+        && matches!(
+            name,
+            "payload_profile_writer_version" | "payload_profile_writer_ready"
+        ) {
+        include_str!("../../../deploy/compose/migrations/113_conversation_profile03_intervals.sql")
+    } else if matches!(version, 112..=113)
         && matches!(
             name,
             "payload_profile_selection_scope"
                 | "payload_profile_selection_same_scope"
                 | "payload_profile_writer_version"
                 | "payload_profile_writer_ready"
-        ) {
+        )
+    {
         include_str!(
             "../../../deploy/compose/migrations/112_payload_profile_manifest_successors.sql"
         )
@@ -225,14 +232,17 @@ async fn functions<C: GenericClient + Sync>(db: &C, version: i64) -> Result<()> 
             || !row.try_get::<_, bool>(2)?
             || row.try_get::<_, String>(3)? != language
             || row.try_get::<_, String>(4)?
-                != if version == 112 && name == "payload_profile_selection_same_scope" {
+                != if matches!(version, 112..=113) && name == "payload_profile_selection_same_scope"
+                {
                     "s"
                 } else {
                     volatility
                 }
             || row.try_get::<_, bool>(5)? != strict
             || row.try_get::<_, bool>(6)?
-                != (definer || version == 112 && name == "payload_profile_selection_same_scope")
+                != (definer
+                    || matches!(version, 112..=113)
+                        && name == "payload_profile_selection_same_scope")
             || row.try_get::<_, bool>(7)? != set
             || row.try_get::<_, Option<Vec<String>>>(8)?.as_ref() != Some(&config)
             || row.try_get::<_, Option<Vec<String>>>(9)?.as_deref()
@@ -281,7 +291,7 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
         )
         .await?
         .try_get(0)?;
-    if !matches!(version, 111..=112) {
+    if !matches!(version, 111..=113) {
         return Err(SelectionSchemaError::Invalid);
     }
     functions(db, version).await?;
