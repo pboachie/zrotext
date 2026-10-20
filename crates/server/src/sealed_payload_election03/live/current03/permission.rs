@@ -143,7 +143,7 @@ async fn hold<'a, 'held, 'db>(
         return Err(Error::Authentication);
     }
     proof.revalidate().await?;
-    let current = Current::lock(tx, proof.selector().account, line, origin).await?;
+    let current = Current::lock_ancestry(tx, proof.selector().account, line, origin).await?;
     let physical = current.physical(tx).await?;
     let mut held = HeldMessageSelection03 {
         tx,
@@ -224,7 +224,10 @@ impl HeldMessageSelection03<'_, '_, '_> {
     pub(crate) fn device_projection(&self) -> Result<serde_json::Value> {
         let mut value = self.current.projection(&self.origin)?;
         let object = value.as_object_mut().ok_or(Error::Unavailable)?;
-        object.insert("kind".into(), serde_json::json!("device_selection03"));
+        object.insert(
+            "kind".into(),
+            serde_json::json!("device_manifest_selection03"),
+        );
         object.insert(
             "selection_expires_ms".into(),
             serde_json::json!(self.current.deadline.to_string()),

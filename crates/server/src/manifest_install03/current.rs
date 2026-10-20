@@ -67,12 +67,36 @@ async fn material(
     row.scope(h, origin)?;
     Ok((row.signed, row.accepted))
 }
-async fn physical(
+pub(super) enum Physical03 {
+    Original,
+    Refreshed {
+        refresh: Uuid,
+        bundle: Vec<u8>,
+        accepted: u64,
+        installed: u64,
+    },
+}
+impl Physical03 {
+    pub(super) fn projection(&self) -> serde_json::Value {
+        match self {
+            Self::Original => serde_json::json!({"kind":"original_v2"}),
+            Self::Refreshed {
+                refresh,
+                bundle,
+                accepted,
+                installed,
+            } => {
+                serde_json::json!({"kind":"owner_refresh03","refresh_id":refresh,"bundle":B.encode(bundle),"accepted_ms":accepted.to_string(),"installed_ms":installed.to_string()})
+            }
+        }
+    }
+}
+pub(super) async fn physical(
     tx: &Transaction<'_>,
     h: &History03,
     context: &device_context::HeldDeviceContext03<'_, '_>,
     origin: &str,
-) -> Result<serde_json::Value> {
+) -> Result<Physical03> {
     crate::payload_profile_selections::require(tx)
         .await
         .map_err(|_| Error::Unavailable)?;
@@ -184,9 +208,12 @@ async fn physical(
             },
         )
         .map_err(|_| Error::Unsupported)?;
-        return Ok(
-            serde_json::json!({"kind":"owner_refresh03","refresh_id":refresh,"bundle":B.encode(bundle),"accepted_ms":accepted.to_string(),"installed_ms":installed.to_string()}),
-        );
+        return Ok(Physical03::Refreshed {
+            refresh,
+            bundle,
+            accepted,
+            installed,
+        });
     }
     // A signed refresh is a permanent withdrawal for this full connection,
     // including after expiry/closure. Time alone cannot resurrect old custody.
@@ -201,7 +228,7 @@ async fn physical(
         return Err(Error::Unsupported);
     }
     tx.query_opt("SELECT challenge_id FROM public.line_activation_v2_pending WHERE account_id=$1 AND challenge_id=$2 AND protocol_version=2 AND purpose='sealed' AND approved_at IS NOT NULL AND installed_at IS NOT NULL AND retired_at IS NULL AND nonce IS NULL FOR SHARE NOWAIT",&[&h.account,&h.activation.activation_challenge_id()]).await?.ok_or(Error::Unsupported)?;
-    Ok(serde_json::json!({"kind":"original_v2"}))
+    Ok(Physical03::Original)
 }
 pub(super) async fn projection(
     tx: &Transaction<'_>,
@@ -228,7 +255,7 @@ pub(super) async fn projection(
     if roles.reader_id != h.accepted.selected_reader_key_id {
         return Err(Error::Conflict);
     }
-    let physical = physical(tx, h, context, origin).await?;
+    let physical = physical(tx, h, context, origin).await?.projection();
     context.revalidate().await.map_err(|_| Error::Unavailable)?;
     let now = context.checked_primary_ms().max(now);
     let deadline = roles.expires_ms.min(context.lease_deadline_ms());

@@ -8,7 +8,9 @@ use zrotext_root_material::profile03_manifest as shared;
 mod current;
 pub(crate) mod live;
 mod records;
+mod selected;
 mod verified_history;
+pub(crate) use selected::{Physical03 as SelectedPhysical03, SelectedManifest03};
 const DOMAIN: &[u8] = b"ZTSE/line/payload-profile/manifest-install03/v1\0";
 
 /// Exact public evidence commitments. These bind cache/snapshot identity only,

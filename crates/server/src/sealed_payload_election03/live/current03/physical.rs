@@ -6,6 +6,7 @@ use crate::conversation_interval03::{self, PhysicalSource03};
 use crate::selection_refresh03::{self, ExpectedRefresh03};
 
 pub(super) enum Physical {
+    Complete(crate::manifest_install03::SelectedPhysical03),
     Original {
         digest: [u8; 32],
     },
@@ -20,6 +21,7 @@ pub(super) enum Physical {
 impl Physical {
     pub(super) fn projection(&self) -> serde_json::Value {
         match self {
+            Self::Complete(selected) => selected.projection(),
             Self::Original { .. } => serde_json::json!({"kind":"original_v2"}),
             Self::Refreshed {
                 refresh,
@@ -34,6 +36,7 @@ impl Physical {
     }
     pub(super) fn digest(&self) -> &[u8; 32] {
         match self {
+            Self::Complete(selected) => selected.digest(),
             Self::Original { digest } | Self::Refreshed { digest, .. } => digest,
         }
     }
@@ -53,6 +56,11 @@ impl Current<'_, '_> {
         .map_err(|_| Error::Unsupported)
     }
     pub(super) async fn physical(&self, tx: &Transaction<'_>) -> Result<Physical> {
+        if let Some(selected) = &self.selected_manifest {
+            return Ok(Physical::Complete(
+                selected.physical(tx, &self.context).await?,
+            ));
+        }
         let r = &self.reservation;
         let lease = self.context.selected_identity();
         if crate::payload_profile_selections::optional(tx)

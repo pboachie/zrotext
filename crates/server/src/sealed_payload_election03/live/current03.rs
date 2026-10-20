@@ -26,6 +26,7 @@ struct Current<'held, 'db> {
     proof: election::VerifiedElection03,
     manifest: crypto::VerifiedManifest03,
     authority: election::CurrentAuthority03,
+    selected_manifest: Option<crate::manifest_install03::SelectedManifest03<'held, 'db>>,
 }
 impl<'held, 'db> Current<'held, 'db> {
     async fn lock(
@@ -33,6 +34,25 @@ impl<'held, 'db> Current<'held, 'db> {
         account: Uuid,
         line: Uuid,
         origin: &str,
+    ) -> Result<Self> {
+        Self::lock_selected(tx, account, line, origin, None).await
+    }
+    async fn lock_ancestry(
+        tx: &'held Transaction<'db>,
+        account: Uuid,
+        line: Uuid,
+        origin: &str,
+    ) -> Result<Self> {
+        let selected =
+            crate::manifest_install03::SelectedManifest03::lock(tx, account, line, origin).await?;
+        Self::lock_selected(tx, account, line, origin, Some(selected)).await
+    }
+    async fn lock_selected(
+        tx: &'held Transaction<'db>,
+        account: Uuid,
+        line: Uuid,
+        origin: &str,
+        selected_manifest: Option<crate::manifest_install03::SelectedManifest03<'held, 'db>>,
     ) -> Result<Self> {
         crate::payload_profile_elections::require(tx)
             .await
@@ -157,19 +177,49 @@ impl<'held, 'db> Current<'held, 'db> {
             context
                 .checked_primary_ms()
                 .max(positive(root.try_get(8)?)?)
-                .max(history.registration().checked_primary_ms()),
+                .max(history.registration().checked_primary_ms())
+                .max(
+                    selected_manifest
+                        .as_ref()
+                        .map_or(0, |s| s.history().checked_ms),
+                ),
         )
         .await?;
-        // The bounded first deployment supports the exact accepted03 selection.
-        // A later, unproven ancestry or alternate signed packet is not inferred.
         let current_bytes: Vec<u8> = root.try_get(6)?;
-        if current_bytes != reservation.successor
-            || positive(root.try_get(7)?)? != accepted.accepted_at_ms
-        {
-            return Err(Error::Unsupported);
-        }
-        let manifest = crypto::verify_current(&current_bytes, &original03, now)
-            .map_err(|_| Error::Unsupported)?;
+        let manifest = if let Some(selected) = &selected_manifest {
+            let held = selected.history();
+            if held.account != account
+                || held.device != device
+                || held.line != line
+                || held.binding != reservation.new_binding
+                || held.challenge != reservation.challenge
+                || held.generation != generation
+                || held.epoch != epoch
+                || held.pin != pin
+                || held.first_signed != reservation.successor
+                || held.tip_signed != current_bytes
+                || held.tip_accepted_ms != positive(root.try_get(7)?)?
+                || held.core != reservation.core
+                || held.accepted.accepted_at_ms != accepted.accepted_at_ms
+                || held.accepted.election_commitment != accepted.election_commitment
+                || held.accepted.election_bundle_sha256 != crypto::sha(&bundle)
+                || held.device_point != reservation.device_point
+                || held.approval_point != reservation.owner_point
+            {
+                return Err(Error::Conflict);
+            }
+            selected.manifest_at(now)?
+        } else {
+            // Preserve the original first-only contract. Only an opaque held
+            // complete-ancestry producer can select later accepted material.
+            if current_bytes != reservation.successor
+                || positive(root.try_get(7)?)? != accepted.accepted_at_ms
+            {
+                return Err(Error::Unsupported);
+            }
+            crypto::verify_current(&current_bytes, &original03, now)
+                .map_err(|_| Error::Unsupported)?
+        };
         let identity = manifest.identity_at(now).map_err(|_| Error::Unsupported)?;
         let roles = manifest
             .profile_election_keys(
@@ -228,6 +278,7 @@ impl<'held, 'db> Current<'held, 'db> {
             proof,
             manifest,
             authority,
+            selected_manifest,
         })
     }
     async fn original_physical(&self, tx: &Transaction<'_>) -> Result<()> {
@@ -248,9 +299,28 @@ impl<'held, 'db> Current<'held, 'db> {
         let r = &self.reservation;
         let a = &self.accepted;
         let device = self.context.selected_identity();
-        Ok(
-            serde_json::json!({"v":1,"envelope_profile":3,"manifest_profile":3,"account_id":r.account,"device_id":r.device,"line_id":r.line,"selection_epoch":self.epoch.to_string(),"origin_digest":B.encode(super::super::adapter_contract::origin_digest(origin).map_err(|_|Error::Unavailable)?),"device_session_digest":B.encode(self.context.identity_digest()),"site_id":device.site,"instance_id":device.instance,"connection_epoch":device.connection_epoch.to_string(),"deployment_epoch":device.deployment_epoch.to_string(),"old_binding_id":r.old_binding,"old_binding_generation":r.old_generation.to_string(),"old_binding_proof_digest":B.encode(a.old_binding_proof_digest),"binding_id":r.new_binding,"binding_generation":r.new_generation.to_string(),"reader_key_id":B.encode(a.selected_reader_key_id),"device_signing_key_id":B.encode(&r.core[288..320]),"approval_key_id":B.encode(&r.core[320..352]),"root_fingerprint":B.encode(a.root_fingerprint),"trust_generation":"1","manifest_version":a.accepted_manifest_version.to_string(),"manifest_digest":B.encode(a.accepted_manifest_digest),"election_digest":B.encode(a.election_commitment),"election_bundle_sha256":B.encode(a.election_bundle_sha256),"compared_ms":self.checked.to_string(),"evidence":{"root_pin":B.encode(r.pin),"prior_manifest02":B.encode(&r.prior),"prior_accepted_ms":r.prior_accepted.to_string(),"accepted_manifest03":B.encode(&r.successor),"accepted_ms":a.accepted_at_ms.to_string(),"bundle":B.encode(&self.bundle),"device_signing_point":B.encode(r.device_point),"owner_approval_point":B.encode(r.owner_point),"registration_evidence":B.encode(self.history.registration().canonical_evidence()),"activation_evidence":B.encode(self.history.canonical_evidence())}}),
-        )
+        let mut value = serde_json::json!({"v":1,"envelope_profile":3,"manifest_profile":3,"account_id":r.account,"device_id":r.device,"line_id":r.line,"selection_epoch":self.epoch.to_string(),"origin_digest":B.encode(super::super::adapter_contract::origin_digest(origin).map_err(|_|Error::Unavailable)?),"device_session_digest":B.encode(self.context.identity_digest()),"site_id":device.site,"instance_id":device.instance,"connection_epoch":device.connection_epoch.to_string(),"deployment_epoch":device.deployment_epoch.to_string(),"old_binding_id":r.old_binding,"old_binding_generation":r.old_generation.to_string(),"old_binding_proof_digest":B.encode(a.old_binding_proof_digest),"binding_id":r.new_binding,"binding_generation":r.new_generation.to_string(),"reader_key_id":B.encode(a.selected_reader_key_id),"device_signing_key_id":B.encode(&r.core[288..320]),"approval_key_id":B.encode(&r.core[320..352]),"root_fingerprint":B.encode(a.root_fingerprint),"trust_generation":"1","manifest_version":a.accepted_manifest_version.to_string(),"manifest_digest":B.encode(a.accepted_manifest_digest),"election_digest":B.encode(a.election_commitment),"election_bundle_sha256":B.encode(a.election_bundle_sha256),"compared_ms":self.checked.to_string(),"evidence":{"root_pin":B.encode(r.pin),"prior_manifest02":B.encode(&r.prior),"prior_accepted_ms":r.prior_accepted.to_string(),"accepted_manifest03":B.encode(&r.successor),"accepted_ms":a.accepted_at_ms.to_string(),"bundle":B.encode(&self.bundle),"device_signing_point":B.encode(r.device_point),"owner_approval_point":B.encode(r.owner_point),"registration_evidence":B.encode(self.history.registration().canonical_evidence()),"activation_evidence":B.encode(self.history.canonical_evidence())}});
+        if let Some(selected) = &self.selected_manifest {
+            let h = selected.history();
+            let object = value.as_object_mut().ok_or(Error::Unavailable)?;
+            object.insert(
+                "manifest_version".into(),
+                serde_json::json!(h.tip_version.to_string()),
+            );
+            object.insert(
+                "manifest_digest".into(),
+                serde_json::json!(B.encode(h.tip_digest)),
+            );
+            object.insert(
+                "current_manifest03".into(),
+                serde_json::json!(B.encode(&h.tip_signed)),
+            );
+            object.insert(
+                "manifest_ancestry_sha256".into(),
+                serde_json::json!(B.encode(selected.prefix())),
+            );
+        }
+        Ok(value)
     }
 }
 
