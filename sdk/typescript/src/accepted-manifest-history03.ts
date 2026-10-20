@@ -339,6 +339,7 @@ export class OwnerManifestHistoryClient03 {
     manifestHistoryBinary03(c.slice(4), 32); return c;
   }
   #check(): void { if (this.#options.signal.aborted || this.#readCsrf() !== this.#csrf) fail(); }
+  #live(signal: AbortSignal): void { this.#check(); if (signal.aborted) fail(); }
   async #run<T>(handle: VerifiedManifestHistory03, op: (s: State, signal: AbortSignal) => Promise<T>): Promise<T> {
     this.#check(); const s = state(handle);
     if (s.origin !== this.#options.origin || !same(s.accepted.accountId, uuid(this.#options.accountId))) fail();
@@ -404,6 +405,7 @@ export class OwnerManifestHistoryClient03 {
         after_ancestry_sha256: b(p.ancestry), tip_version: t ? String(t.version) : null, tip_digest: t ? b(t.digest) : null,
         tip_ancestry_sha256: t ? b(t.ancestry) : null }, signal);
       const verified = await continueAcceptedManifestHistory03(handle, value), compared = state(verified).comparedMs;
+      this.#live(signal);
       if (compared < this.#lastCompared) fail(); this.#lastCompared = compared; return verified;
     });
   }
@@ -413,10 +415,11 @@ export class OwnerManifestHistoryClient03 {
     return this.#run(handle, async (s, signal) => {
       if (!s.complete || typeof nowMs !== 'function') fail(); const started = nowMs(); electionTime03(started);
       if (started < this.#lastLocalMs) fail();
-      return this.#verifyCurrentValue(handle, s, await this.#request('current', { v: 1, line_id: uuidText(s.accepted.lineId) }, signal), nowMs, started);
+      return this.#verifyCurrentValue(handle, s, await this.#request('current', { v: 1, line_id: uuidText(s.accepted.lineId) }, signal), nowMs, started, signal);
     });
   }
-  async #verifyCurrentValue(handle: VerifiedManifestHistory03, s: State, value: unknown, nowMs: () => bigint, started: bigint) {
+  async #verifyCurrentValue(handle: VerifiedManifestHistory03, s: State, value: unknown, nowMs: () => bigint, started: bigint, signal: AbortSignal) {
+      this.#live(signal);
       const r = record(value, currentNames), a = s.accepted;
       const currentMs = nowMs(); electionTime03(currentMs); if (currentMs < started) fail();
       const original = evidence(r.evidence);
@@ -459,8 +462,11 @@ export class OwnerManifestHistoryClient03 {
       const fresh = await verifyManifest03Current(s.signed, manifest, finishedMs);
       // A verifier wait can cross expiry or a clock boundary. Make the last
       // permission check synchronous AFTER that wait, immediately before release.
+      this.#live(signal);
       const releasedMs = nowMs(); electionTime03(releasedMs); if (releasedMs < finishedMs) fail();
       requireCurrentElection03(s.proof, fresh, authority, releasedMs);
+      this.#live(signal);
+      if (releasedMs < this.#lastLocalMs || authority.comparedAtMs < this.#lastCompared) fail();
       this.#lastLocalMs = releasedMs;
       this.#lastCompared = authority.comparedAtMs;
       return Object.freeze({ manifest: fresh, acceptedElection: s.proof, currentAuthority: captureCurrentElectionAuthority03(authority) });
@@ -493,7 +499,7 @@ export class OwnerManifestHistoryClient03 {
           || !same(uuid(r.interval_id), interval) || !same(manifestHistoryBinary03(r.statement_sha256, 32), await sha(raw))) fail();
       const current = record(r.selection, currentNames), primary = manifestHistoryDecimal03(r.compared_ms), expires = manifestHistoryDecimal03(r.permission_expires_ms);
       if (current.compared_ms !== r.compared_ms || current.permission_expires_ms !== r.permission_expires_ms) fail();
-      const verified = await this.#verifyCurrentValue(handle, s, current, clock, started), a = verified.currentAuthority;
+      const verified = await this.#verifyCurrentValue(handle, s, current, clock, started, signal), a = verified.currentAuthority;
       const ownerDeadline = manifestHistoryDecimal03(r.owner_session_expires_ms), physical = record(current.physical_selection,
         current.physical_selection && Object.getOwnPropertyDescriptor(current.physical_selection, 'kind')?.value === 'owner_refresh03'
           ? ['kind', 'refresh_id', 'bundle', 'accepted_ms', 'installed_ms'] : ['kind']);
@@ -529,8 +535,11 @@ export class OwnerManifestHistoryClient03 {
       const statement = await verifyConversationReceipts03({ context, statement: raw, request: null, approval: null, installed: null, nowMs: clock(), pending: false });
       // Last release is synchronous: no crypto await may outlive current
       // permission, the actual interval or the request's monotonic clock floor.
+      this.#live(signal);
       const released = clock(); requireCurrentElection03(verified.acceptedElection, verified.manifest, a, released);
       if (released >= statement.intervalUntilMs || released >= ownerDeadline) fail();
+      this.#live(signal);
+      if (released < this.#lastLocalMs || primary < this.#lastCompared) fail();
       this.#lastLocalMs = released;
       return Object.freeze({ context, statement, comparedMs: primary, permissionExpiresMs: expires });
     });

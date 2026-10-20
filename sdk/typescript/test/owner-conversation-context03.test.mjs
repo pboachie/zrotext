@@ -126,3 +126,33 @@ test('public originals and independent selection are owned before awaiting the s
   release();const result=await read;assert.deepEqual(result.statement.peer,f.input.selection.peer);
   await checkConversationStatement03(f.input.statement,result.context,f.now);
 });
+
+test('timed-out genuine root verification cannot publish a late clock floor over a newer successful read',async()=>{
+  const f=await setup(),{c,history}=await f.make({timeoutMs:200}),base=f.initialNow,verify=crypto.subtle.verify,digest=crypto.subtle.digest;
+  let manifests=0,releaseOld,entered,digested,late=false,lateClockCalls=0;
+  const blocked=new Promise(resolve=>{entered=resolve;}),returned=new Promise(resolve=>{digested=resolve;});
+  crypto.subtle.verify=async(...args)=>{
+    const result=await Reflect.apply(verify,crypto.subtle,args);
+    if(Buffer.from(args[3]).subarray(0,17).toString()==='ZTSE/manifest/v3\0'&&++manifests===2){
+      entered();await new Promise(resolve=>{releaseOld=resolve;});late=true;
+    }
+    return result;
+  };
+  crypto.subtle.digest=async(...args)=>{
+    const result=await Reflect.apply(digest,crypto.subtle,args);
+    if(late&&Buffer.from(args[1]).equals(Buffer.from(f.signed.slice(0,-64))))digested();
+    return result;
+  };
+  let timer;
+  try{
+    const old=c.conversationContext(history,f.input,()=>{if(late)lateClockCalls++;return f.now;}).then(()=>false,()=>true);
+    await Promise.race([blocked,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Actual root verification was not reached')),2000);})]);
+    clearTimeout(timer);assert.equal(await old,true);
+    f.now=base+100n;f.body=r=>{r.compared_ms=String(base+80n);r.selection.compared_ms=r.compared_ms;return r;};
+    const newer=await c.conversationContext(history,f.input,()=>f.now);assert.equal(newer.comparedMs,base+80n);
+    releaseOld();await returned;await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(lateClockCalls,0,'Abandoned proof must stop before any final clock publication');
+    f.body=r=>{r.compared_ms=String(base+40n);r.selection.compared_ms=r.compared_ms;return r;};
+    await assert.rejects(c.conversationContext(history,f.input,()=>f.now));
+  }finally{clearTimeout(timer);crypto.subtle.verify=verify;crypto.subtle.digest=digest;releaseOld?.();}
+});
