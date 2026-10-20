@@ -212,3 +212,63 @@ async fn naturally_expired_other_peer_does_not_block_or_rewrite_live_request() {
     assert_retained(&mut c, &live, "requested").await;
     c.db.finish().await;
 }
+
+#[tokio::test]
+#[ignore = "requires disposable ZT_AUTH_TEST_DATABASE_URL administrator; genuine owner sign-in recovery queue"]
+async fn revoked_original_session_does_not_starve_request_from_genuine_fresh_sign_in() {
+    let (mut c, browser, signed) = prepared().await;
+    let device = lease(&c);
+    let old = request(&mut c, &browser, &signed, b"+12", 300_000, 5).await;
+    let original_session = c.principal.session_id;
+    assert!(
+        crate::auth::revoke_session(&c.db.reader, &c.principal, original_session)
+            .await
+            .unwrap()
+    );
+    assert!(matches!(
+        crate::auth::login(
+            &c.db.reader,
+            &c.hasher,
+            "activation-owner@example.test",
+            &c.password
+        )
+        .await,
+        Err(crate::auth::AuthError::MfaRequired { .. })
+    ));
+    let challenge = crate::auth::mfa::begin_login_challenge(
+        &c.db.reader,
+        &c.hasher,
+        c.principal.tenant.account_id(),
+        c.principal.user_id,
+        &c.password,
+    )
+    .await
+    .unwrap();
+    c.credentials = crate::auth::mfa::complete_login(
+        &mut c.db.reader,
+        Some(&c.cipher),
+        &c.hasher,
+        &challenge,
+        &c.recovery[6],
+    )
+    .await
+    .unwrap();
+    c.principal = crate::auth::authenticate_session(&c.db.reader, &c.hasher, &c.credentials.token)
+        .await
+        .unwrap();
+    assert_ne!(c.principal.session_id, original_session);
+    let fresh = request(&mut c, &browser, &signed, b"+13", 300_000, 7).await;
+    let tx = c.db.reader.transaction().await.unwrap();
+    let offered = intervals::device_challenge(&tx, device)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(offered["interval_id"], fresh.id.to_string());
+    assert_eq!(offered["statement"], B.encode(&fresh.bytes));
+    tx.rollback().await.unwrap();
+    // Fresh sign-in is an observer of the old same-user originals. Queue
+    // selection did not stop, re-sign or otherwise mutate the stale request.
+    assert_retained(&mut c, &old, "requested").await;
+    assert_retained(&mut c, &fresh, "requested").await;
+    c.db.finish().await;
+}

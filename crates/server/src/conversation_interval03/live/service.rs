@@ -296,11 +296,9 @@ pub(crate) async fn device_challenge(
     // still-actionable one deterministically; an elapsed request for another
     // peer must not monopolize delivery. This read neither expires that row
     // nor renews any consent or acknowledgement.
-    let row=tx.query_opt("SELECT interval_id FROM public.conversation_profile03_intervals WHERE account_id=$1 AND device_id=$2 AND proof_site_id=$3 AND proof_instance_id=$4 AND proof_connection_epoch=$5 AND proof_deployment_epoch=$6 AND phase IN ('requested','install_pending') AND setup_expires_ms>pg_catalog.floor(extract(epoch FROM pg_catalog.clock_timestamp())*1000)::bigint AND interval_expires_ms>pg_catalog.floor(extract(epoch FROM pg_catalog.clock_timestamp())*1000)::bigint ORDER BY issued_ms,interval_id LIMIT 1",&[&device.session.account_id,&device.session.device_id,&device.site,&device.instance,&device.session.connection_epoch,&dbtime(device.deployment)?]).await?;
-    let Some(row) = row else {
+    let Some(id) = pending::next(tx, device).await? else {
         return Ok(None);
     };
-    let id: Uuid = row.try_get(0)?;
     let prior = StoredInterval03::read(tx, device.session.account_id, id).await?;
     let mut held = device.hold(tx, &prior).await?;
     let current = StoredInterval03::read(tx, device.session.account_id, id).await?;
