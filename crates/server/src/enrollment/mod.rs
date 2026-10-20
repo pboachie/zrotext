@@ -636,17 +636,19 @@ pub async fn list_account_devices(
 
 /// The owner must compare both values as shown on the phone and in the browser.
 /// Five failed approvals lock the pairing. Returns the new tenant-owned device.
-pub async fn approve_pairing(
-    client: &mut Client,
+pub async fn approve_pairing<C: crate::runtime_db::NativeConnection>(
+    client: &mut C,
     principal: &SessionPrincipal,
     pairing_id: Uuid,
     comparison_code: &str,
     key_fingerprint: &str,
 ) -> Result<Uuid, EnrollmentError> {
-    if !owner_session_active(client, principal).await? {
+    if !owner_session_active(client.native_client(), principal).await? {
         return Err(EnrollmentError::Unauthorized);
     }
-    let tx = client.transaction().await?;
+    let tx = crate::runtime_db::begin_native(client)
+        .await
+        .map_err(|_| EnrollmentError::AuthorityUnavailable)?;
     // Serialize approvals and subscription cap changes for this account.
     tx.query_one(
         "SELECT id FROM accounts WHERE id=$1 FOR UPDATE",
@@ -842,15 +844,17 @@ pub async fn device_still_active(
 /// verify against the enrolled key at proof time) and removes the current
 /// database session lease. Socket handlers must check active state before
 /// accepting events or issuing dispatch grants.
-pub async fn revoke_device(
-    client: &mut Client,
+pub async fn revoke_device<C: crate::runtime_db::NativeConnection>(
+    client: &mut C,
     principal: &SessionPrincipal,
     device_id: Uuid,
 ) -> Result<bool, EnrollmentError> {
-    if !owner_session_active(client, principal).await? {
+    if !owner_session_active(client.native_client(), principal).await? {
         return Err(EnrollmentError::Unauthorized);
     }
-    let tx = client.transaction().await?;
+    let tx = crate::runtime_db::begin_native(client)
+        .await
+        .map_err(|_| EnrollmentError::AuthorityUnavailable)?;
     let updated = tx.execute(
         "UPDATE devices SET revoked_at=now() WHERE id=$1 AND account_id=$2 AND revoked_at IS NULL",
         &[&device_id, &principal.tenant.account_id()],

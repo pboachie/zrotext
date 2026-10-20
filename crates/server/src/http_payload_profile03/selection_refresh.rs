@@ -172,7 +172,7 @@ async fn handle(
         .await
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     let tx = db
-        .build_transaction()
+        .native_build_transaction()
         .isolation_level(IsolationLevel::ReadCommitted)
         .start()
         .await
