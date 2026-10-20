@@ -68,7 +68,8 @@ pub(crate) async fn owner_context<'held, 'db>(
         .authority()
         .permission_expires_at_ms
         .min(end)
-        .min(mappings.deadline());
+        .min(mappings.deadline())
+        .min(if pending { setup } else { end });
     if held.now_ms() >= deadline || pending && held.now_ms() >= setup {
         return Err(Error::Expired);
     }

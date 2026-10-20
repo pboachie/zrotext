@@ -17,6 +17,8 @@ The closed response is
 `{v:1,kind:"owner_conversation_context03",request_id,opening_id,interval_id,statement_sha256,selection,owner_session_expires_ms,physical_selection_digest,compared_ms,permission_expires_ms,readers}`.
 `selection` retains the complete `owner_manifest_selection03` grammar. Both
 comparison times and permission bounds are equal across that same held read.
+Pending signing context also ends at its immutable original setup deadline;
+renewing the same phone lease cannot extend that signing window.
 The actual original owner-session deadline is separate from the shorter live
 phone permission. Selected connector/read-grant rows retain their exact keys,
 both-direction scope and lifetimes. A signed interval's end must fit the owner,
