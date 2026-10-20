@@ -161,6 +161,11 @@ async fn candidate_inventory_covers_exact_numbered_schema_relations_columns_fk_a
                     Some(
                         "one_attempt_lifetime_nonpersonal_tombstone_not_current_effect_permission"
                     )
+                ) | (
+                    "usage_ledger" | "usage_periods",
+                    Some(
+                        "ordinary_other_message_accounting_preserves_retained03_reserve_and_aggregate_floor"
+                    )
                 )
             ),
             "{table}: unknown current-profile writer policy"

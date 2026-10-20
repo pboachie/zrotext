@@ -26,7 +26,8 @@ The nonpersonal grant identity survives message/content and attempt erasure unti
 actual account erasure. It duplicates no recipient, ciphertext, intent or
 signature. Terminal content erasure remains coupled to original114 personal
 proof erasure; unresolved granted, submitting and UNKNOWN liabilities refuse
-retention. Existing billing foreign keys remain intact. Losing personal originals
+retention, including deletion of its dispatch job. Existing billing foreign keys
+remain intact. Losing personal originals
 cannot reconstruct them, reset one-use uniqueness or readmit a reused message ID.
 
 Both issue and fetch select root, exclusive account fence, actual stable anchor
@@ -51,9 +52,24 @@ current payment risk, holds, reconciliation and invoice-bound grace without a
 second debit or new-admission capacity test. A configured manual self-hosted
 quota needs no hosted subscription. For an isolated hosted installation, NOWAIT
 prelocks precede the qualified existing106 protected projection helper. Its
-backend identity verification and pinned installation path are preserved;
+backend identity verification and pinned installation path are preserved. The
+expiry of that exact verified backend session also caps the grant; reading it
+does not create or renew a backend proof. The protected check repeats on each
+current read, so replacing a proof cannot extend an already issued grant;
 migration106 is unchanged. A retained reserve alone is not current permission
 after a new payment hold.
+
+After grant issuance, mandatory writers freeze both old and new ledger identities
+for that message. Direct refunds, reassignment and deletion cannot release its
+charged reserve. The original usage period retains a net reserved-unit floor
+derived from its actual reserves and immutable grants; its counters cannot be
+reset or decreased around that floor. Genuine reserves and refunds for other
+messages in the same period remain available. Before issuing a new grant, the
+current predicate also checks the already reserved candidate exactly once, so a
+prior aggregate reset refuses without a second debit or a new capacity test.
+This slice supplies no financial release authority for a granted or UNKNOWN
+message; a future release needs separate typed evidence. Normal account erasure
+keeps its existing lifecycle, and the one-attempt identity never rearms.
 
 The ordinary runtime receives SELECT and only the narrow issue, lock and
 readiness methods. Internal predicates and direct grant DML remain denied.

@@ -48,6 +48,10 @@ async fn grant_schema_rejects_changed_bodies_declarations_acl_rules_and_trigger_
         "CREATE FUNCTION public.conversation_profile03_grant_same_scope(bytea,bytea) RETURNS boolean LANGUAGE sql AS 'SELECT true'",
         "GRANT EXECUTE ON FUNCTION public.conversation_profile03_grant_mode(uuid) TO PUBLIC",
         "ALTER FUNCTION public.alpha_message_effect_guard() SET search_path TO public",
+        "CREATE OR REPLACE FUNCTION public.conversation_profile03_grant_usage_writer(account uuid,relation_name text,operation text,old_row jsonb,new_row jsonb) RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path TO pg_catalog SET lock_timeout TO '3s' AS 'BEGIN RETURN; END'",
+        "GRANT EXECUTE ON FUNCTION public.conversation_profile03_grant_usage_writer(uuid,text,text,jsonb,jsonb) TO PUBLIC",
+        "ALTER TABLE public.usage_ledger DISABLE TRIGGER zz_payload_profile_writer_before_change",
+        "ALTER TABLE public.usage_periods DISABLE TRIGGER zz_payload_profile_writer_before_change",
     ] {
         let tx = fixture.owner.transaction().await.unwrap();
         tx.batch_execute(sql).await.unwrap();
@@ -68,6 +72,7 @@ async fn ordinary_runtime_cannot_write_grants_or_invoke_internal_claim_and_billi
         "UPDATE public.conversation_profile03_grants SET authenticated_segment_ceiling=NULL",
         "SELECT public.conversation_profile03_grant_mode(NULL)",
         "SELECT public.conversation_profile03_grant_billing(NULL,NULL)",
+        "SELECT public.conversation_profile03_grant_usage_writer(NULL,'usage_ledger','INSERT',NULL,NULL)",
         "SELECT public.conversation_profile03_grant_scope(NULL,NULL,NULL,NULL,NULL,NULL,NULL)",
         "SELECT public.conversation_profile03_grant_writer(NULL,'message_attempts','INSERT',NULL,NULL)",
         "SELECT public.conversation_profile03_grant_issued(NULL,NULL)",
