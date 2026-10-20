@@ -349,9 +349,12 @@ exact signed predecessor and unsigned successor for inspection.
 The eligible private console displays the account/origin/root, exact high-water,
 phone/line, browser point and identity, operation, new validity window and every
 changed retained key's expiry/state. `APPROVE-MANIFEST03` approves this single
-typed signature. Only then is the existing encrypted root recovered with no echo.
-The same console stays held across recovery, fresh clock/process checks, signing
-and create-new public output. No root is generated, no secret is exported and no
+typed signature. Fingerprint, approval and recovery-token input each use the
+existing consuming no-echo console read, restoring modes and discarding queued
+tail input after that phase. A fresh eligible output session is then held before
+root decryption through fresh clock/process checks, signing and create-new public
+output. The latest successful clock observation is retained across approval and
+signing; regression refuses. No root is generated, no secret is exported and no
 network installation occurs. A failed write may leave a partial public artifact;
 inspect it separately and never silently overwrite or sign again after an
 uncertain installation. Accepted ancestry, browser mounting, phone consent and

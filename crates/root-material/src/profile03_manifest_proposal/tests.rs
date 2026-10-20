@@ -105,7 +105,7 @@ fn fixture(index: usize) -> (Proposal, Expected, Vec<u8>, u64) {
 fn independently_signed_enrollment_expired_renewal_and_replacement_are_exact_public_proposals() {
     for index in 0..3 {
         let (proposal, expected, signed, now) = fixture(index);
-        let reviewed = inspect(&proposal, &expected, now).unwrap();
+        let mut reviewed = inspect(&proposal, &expected, now).unwrap();
         assert_eq!(reviewed.scope().operation, expected.scope.operation);
         assert_eq!(reviewed.unsigned(), &signed[..signed.len() - 64]);
         reviewed.recheck(now + 1).unwrap();
@@ -162,7 +162,9 @@ fn short_long_trailing_unknown_and_mutated_unsigned_candidates_refuse() {
 #[test]
 fn late_or_regressing_clock_and_changed_returned_unsigned_or_signature_cannot_publish() {
     let (proposal, expected, signed, now) = fixture(0);
-    let reviewed = inspect(&proposal, &expected, now).unwrap();
+    let mut reviewed = inspect(&proposal, &expected, now).unwrap();
+    reviewed.recheck(now + 10).unwrap();
+    assert!(reviewed.recheck(now + 5).is_err());
     assert!(reviewed.recheck(now - 1).is_err());
     assert!(
         reviewed
@@ -234,6 +236,9 @@ fn typed_one_use_signing_requires_the_genuinely_matching_recovered_root_and_fres
     let reviewed = inspect(&proposal, &expected, now).unwrap();
     let signed = sign(&root, reviewed, now).unwrap();
     verify_signed(&proposal, &expected, &signed, now).unwrap();
+    let mut later = inspect(&proposal, &expected, now).unwrap();
+    later.recheck(now + 10).unwrap();
+    assert!(sign(&root, later, now + 5).is_err());
     let wrong = SecretKey::try_generate_from_rng(&mut SysRng).unwrap();
     let wrong = RootSecret::new(Zeroizing::new(wrong.to_bytes().into())).unwrap();
     assert!(sign(&wrong, inspect(&proposal, &expected, now).unwrap(), now).is_err());

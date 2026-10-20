@@ -144,7 +144,10 @@ pub(super) fn run(args: &[String], parent: PathBuf) -> Result<()> {
         scope: input.scope,
     };
     let proposal = manifest::decode(&read_proposal(&input.proposal)?).map_err(|_| ())?;
-    let reviewed = manifest::inspect(&proposal, &expected, now_millis()?).map_err(|_| ())?;
+    let mut reviewed = manifest::inspect(&proposal, &expected, now_millis()?).map_err(|_| ())?;
+    // Each legacy read consumes and restores its console session. Acquire a
+    // fresh eligible empty-input session for the independently reviewed text.
+    let mut session = Session::acquire().map_err(|_| ())?;
     let scope = reviewed.scope();
     public(
         &mut session,
@@ -205,13 +208,13 @@ pub(super) fn run(args: &[String], parent: PathBuf) -> Result<()> {
     drop(approval);
     reviewed.recheck(now_millis()?).map_err(|_| ())?;
     let kit = KitContext::new(identity.clone(), card.root_pin(), input.bundle).map_err(|_| ())?;
-    session
-        .write_public_prompt("Enter recovery token from your independent kit: ")
-        .map_err(|_| ())?;
-    let token = session.read(79, TIMEOUT).map_err(|_| ())?;
+    let token = prompt("Enter recovery token from your independent kit: ", 79)?;
     let recovery = recovery_kit::decode_token(token.expose_ascii(), &kit).map_err(|_| ())?;
     drop(token);
     verify_process_eligibility().map_err(|_| ())?;
+    // Hold this output session before opening the root until publication;
+    // never reacquire or transfer console ownership while root is recovered.
+    let mut session = Session::acquire().map_err(|_| ())?;
     session.write_public_prompt("").map_err(|_| ())?;
     let root =
         root_backup::open(bundle.encrypted_backup(), &recovery, &identity).map_err(|_| ())?;
@@ -221,10 +224,15 @@ pub(super) fn run(args: &[String], parent: PathBuf) -> Result<()> {
     }
     verify_process_eligibility().map_err(|_| ())?;
     session.write_public_prompt("").map_err(|_| ())?;
-    let signed = manifest::sign(&root, reviewed, now_millis()?).map_err(|_| ())?;
+    let signed_ms = now_millis()?;
+    let signed = manifest::sign(&root, reviewed, signed_ms).map_err(|_| ())?;
     drop(root);
     verify_process_eligibility().map_err(|_| ())?;
-    manifest::verify_signed(&proposal, &expected, &signed, now_millis()?).map_err(|_| ())?;
+    let publish_ms = now_millis()?;
+    if publish_ms < signed_ms {
+        return Err(());
+    }
+    manifest::verify_signed(&proposal, &expected, &signed, publish_ms).map_err(|_| ())?;
     session.write_public_prompt("").map_err(|_| ())?;
     write_public(&input.output, &signed)?;
     session.write_public_prompt("Public manifest written once. Verify the exact proposal before the separate authenticated install. No network operation or persistent unlock was created.\r\n").map_err(|_| ())?;

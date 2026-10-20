@@ -62,7 +62,7 @@ impl Proposal {
 pub struct Reviewed {
     proposal: Proposal,
     expected: Expected,
-    reviewed_ms: u64,
+    last_checked_ms: u64,
 }
 impl Reviewed {
     pub fn scope(&self) -> &Scope {
@@ -72,11 +72,13 @@ impl Reviewed {
         self.proposal.unsigned()
     }
     /// Fresh post-consent clock check; never supplies signing permission.
-    pub fn recheck(&self, now: u64) -> Result<()> {
-        if now < self.reviewed_ms {
+    pub fn recheck(&mut self, now: u64) -> Result<()> {
+        if now < self.last_checked_ms {
             return Err(Error);
         }
-        verify(&self.proposal, &self.expected, now).map(|_| ())
+        verify(&self.proposal, &self.expected, now)?;
+        self.last_checked_ms = now;
+        Ok(())
     }
 }
 fn positive(value: u64) -> Result<()> {
@@ -263,7 +265,7 @@ pub fn inspect(proposal: &Proposal, expected: &Expected, now: u64) -> Result<Rev
     Ok(Reviewed {
         proposal: proposal.clone(),
         expected: expected.clone(),
-        reviewed_ms: now,
+        last_checked_ms: now,
     })
 }
 /// Public returned artifact verification against the exact reviewed unsigned
@@ -298,7 +300,7 @@ pub fn verify_signed(
 #[cfg(feature = "unlock")]
 pub fn sign(
     root: &crate::root_backup::RootSecret,
-    reviewed: Reviewed,
+    mut reviewed: Reviewed,
     now: u64,
 ) -> Result<Vec<u8>> {
     use p256::ecdsa::{Signature, SigningKey, signature::Signer};
