@@ -50,6 +50,85 @@ internal class Draft02TrustStore(private val storage: Storage) {
         result
     }
 
+    /** Genuine retained02 acceptance only. Downloaded metadata cannot supply the original clock,
+     * pin or chain position. The store accepted genesis with zero original anchor and verified
+     * every later02 successor before writing this record. Present time still comes from the
+     * authenticated socket clock; no stored time is promoted to current permission.
+     */
+    fun historicalElectionCheckpoint(trustedNow: () -> Long): Draft03PayloadElectionProof.VerifiedHistorical02 =
+        storage.locked {
+            val result = readState()
+            check(result.status == Status.NEEDS_FRESHNESS)
+            val saved = checkNotNull(result.snapshot)
+            val record = decode(saved.bytes())
+            check(record.version > 0 && record.time > 0)
+            val now = trustedNow()
+            check(now >= record.time && now > 0)
+            val checkpoint = Draft03ManifestAuthority.Accepted02Checkpoint(record.pin,
+                record.pin.copyOfRange(5, 21), Draft02RootComparison.fingerprint(record.pin), 1,
+                record.version, digest(record.manifest), ByteArray(32),
+                MessageDigest.getInstance("SHA-256").digest(record.manifest), record.time)
+            val proof = Draft03PayloadElectionProof.verifyHistorical02(record.manifest, checkpoint, record.time, now)
+            val completed = trustedNow()
+            check(completed >= now)
+            Draft03PayloadElectionProof.verifyHistorical02(record.manifest, checkpoint, record.time, completed)
+            proof
+        }
+
+    /** Genuine retained state, checked at the immutable original election time. It may outlive
+     * its02 manifest, but supplies HISTORY only. Caller must first match that election's exact
+     * durable local record; current03/session/lease permission is verified at actual now.
+     */
+    fun retainedElectionHistory(acceptedMs: Long, trustedNow: () -> Long): RetainedElectionHistory =
+        storage.locked { retainedHistory(acceptedMs, trustedNow) }
+
+    /** Before a first election, the original02 must be fresh at actual independently trusted now. */
+    fun currentElectionHistory(trustedNow: () -> Long): RetainedElectionHistory =
+        storage.locked { retainedHistory(null, trustedNow) }
+
+    private fun Session.retainedHistory(originalAcceptedMs: Long?, trustedNow: () -> Long): RetainedElectionHistory {
+        val result = readState()
+        check(result.status == Status.NEEDS_FRESHNESS)
+        val record = decode(checkNotNull(result.snapshot).bytes())
+        val now = trustedNow()
+        val acceptedMs = originalAcceptedMs ?: now
+        check(record.version > 0 && acceptedMs >= record.time && now >= acceptedMs && now > 0)
+        val checkpoint = Draft03ManifestAuthority.Accepted02Checkpoint(record.pin,
+            record.pin.copyOfRange(5, 21), Draft02RootComparison.fingerprint(record.pin), 1,
+            record.version, digest(record.manifest), ByteArray(32),
+            MessageDigest.getInstance("SHA-256").digest(record.manifest), record.time)
+        val proof = Draft03PayloadElectionProof.verifyHistorical02(record.manifest, checkpoint, record.time, acceptedMs)
+        val completed = trustedNow()
+        check(completed >= now)
+        return RetainedElectionHistory(record.pin, record.manifest, checkpoint, proof, acceptedMs)
+    }
+
+    class RetainedElectionHistory internal constructor(pin: ByteArray, signed: ByteArray,
+        private val checkpoint: Draft03ManifestAuthority.Accepted02Checkpoint,
+        val proof: Draft03PayloadElectionProof.VerifiedHistorical02, val electionAcceptedMs: Long) {
+        private val root = pin.copyOf()
+        private val prior = signed.copyOf()
+        fun pin() = root.copyOf()
+        fun requireExactEvidence(pin: ByteArray, manifest: ByteArray, originalAcceptedMs: Long) {
+            check(MessageDigest.isEqual(root, pin) && MessageDigest.isEqual(prior, manifest) &&
+                originalAcceptedMs > 0 && originalAcceptedMs <= electionAcceptedMs)
+            val trust = Draft02ManifestAuthority.Trust(checkpoint.account(), checkpoint.fingerprint(), 1,
+                Draft02ManifestAuthority.Position.current(checkpoint.version, checkpoint.digest()))
+            // Server acceptance and the phone's independent comparison/acceptance are distinct
+            // historical checkpoints. Exact signed bytes must be valid at both original times.
+            Draft02ManifestAuthority.verify(root, prior, trust, originalAcceptedMs)
+        }
+        fun requireOriginalReader(device: ByteArray, line: ByteArray, readerId: ByteArray, readerPoint: ByteArray) {
+            val trust = Draft02ManifestAuthority.Trust(checkpoint.account(), checkpoint.fingerprint(), 1,
+                Draft02ManifestAuthority.Position.current(checkpoint.version, checkpoint.digest()))
+            Draft02ManifestAuthority.verify(root, prior, trust, electionAcceptedMs)
+                .requireElectionReader(device, line, readerId, readerPoint, electionAcceptedMs)
+        }
+        fun current03(signed: ByteArray, now: Long) =
+            Draft03ManifestAuthority.verifyFrom02(signed, prior, checkpoint, now)
+        override fun toString() = "RetainedElectionHistory(historical-only)"
+    }
+
     fun enroll(receipt: Draft02RootComparison.Receipt): Result = guarded {
         // Consume even on conflict/failure: retry requires a new deliberate comparison.
         val pin = receipt.consume()
@@ -103,6 +182,44 @@ internal class Draft02TrustStore(private val storage: Storage) {
             }
             Result(Status.NEEDS_FRESHNESS, Snapshot(encoded))
         }
+    }
+
+    /** Initial chain only, one atomic old-or-final write. No interrupted prefix is published.
+     * trustedNow and requireFinal must use RAM/public crypto only while storage is locked.
+     * Existing accepted history cannot be advanced by this bootstrap entry point.
+     */
+    fun acceptInitialManifestChain(expected: Snapshot, chain: List<ByteArray>, trustedNow: () -> Long,
+        requireFinal: (Draft02ManifestAuthority, Long) -> Unit): Result = guarded {
+        require(chain.size in 1..64)
+        val copies = chain.map { require(it.size in 364..9751); it.copyOf() }
+        try { storage.locked {
+            val current = readState()
+            val snapshot = current.snapshot ?: return@locked current
+            if (!MessageDigest.isEqual(snapshot.bytes(), expected.bytes())) return@locked Result(Status.STALE)
+            val old = decode(snapshot.bytes())
+            require(old.version == 0L && old.time == 0L && old.revision < Long.MAX_VALUE)
+            fun verifyAt(now: Long): Draft02ManifestAuthority {
+                require(now > 0)
+                var position = Draft02ManifestAuthority.Position.genesis(ByteArray(32))
+                var final: Draft02ManifestAuthority? = null
+                for (bytes in copies) {
+                    val value = Draft02ManifestAuthority.verify(old.pin, bytes,
+                        Draft02ManifestAuthority.Trust(old.pin.copyOfRange(5, 21), Draft02RootComparison.fingerprint(old.pin), 1, position), now)
+                    position = Draft02ManifestAuthority.Position.after(value.version, value.digest)
+                    final = value
+                }
+                return checkNotNull(final).also { requireFinal(it, now) }
+            }
+            val now = trustedNow()
+            val verified = verifyAt(now)
+            val encoded = encode(old.revision + 1, verified.version, now, old.pin, copies.last())
+            write(seal(encoded)) {
+                val completed = trustedNow()
+                require(completed >= now)
+                verifyAt(completed)
+            }
+            Result(Status.NEEDS_FRESHNESS, Snapshot(encoded))
+        } } finally { copies.forEach { it.fill(0) } }
     }
 
     private fun Session.readState(): Result {

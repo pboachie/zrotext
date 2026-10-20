@@ -8,6 +8,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.nio.ByteBuffer
+import java.security.MessageDigest
 import java.util.Base64
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -65,6 +66,84 @@ class Draft02TrustStoreTest {
         var calls=0;denied {store.currentAuthority {if(calls++==0)now else now-1}}
         memory.key=Draft02TrustStore.KeyState.ABSENT;denied {store.currentAuthority {now}}
         assertEquals(1,memory.creations)
+    }
+
+    @Test fun electionHistoryComesOnlyFromTheComparedAcceptedStoreAndNeverCreatesOrAdvancesIt() {
+        val memory = Memory()
+        val store = Draft02TrustStore(memory)
+        denied { store.historicalElectionCheckpoint { now } }
+        assertEquals(0, memory.creations)
+        val enrolled = store.enroll(receipt())
+        denied { store.historicalElectionCheckpoint { now } }
+        assertEquals(Draft02TrustStore.Status.NEEDS_FRESHNESS,
+            store.acceptManifest(checkNotNull(enrolled.snapshot), manifest) { now }.status)
+        val before = checkNotNull(store.inspect().snapshot)
+        val history = store.historicalElectionCheckpoint { now }
+        assertEquals(before.version, history.version())
+        assertArrayEquals(MessageDigest.getInstance("SHA-256").digest(manifest), history.signedSha256())
+        assertArrayEquals(before.bytes(), checkNotNull(store.inspect().snapshot).bytes())
+        denied { store.historicalElectionCheckpoint { now - 1 } }
+        var calls = 0
+        denied { store.historicalElectionCheckpoint { if (calls++ == 0) now else now - 1 } }
+        memory.key = Draft02TrustStore.KeyState.ABSENT
+        denied { store.historicalElectionCheckpoint { now } }
+        assertEquals(1, memory.creations)
+    }
+
+    @Test fun expiredRetained02CanProveOriginalElectionHistoryWithoutBecomingPresentPermission() {
+        val memory = Memory(); val store = Draft02TrustStore(memory)
+        denied { store.retainedElectionHistory(now) { now + 1 } }
+        assertEquals(0, memory.creations)
+        val enrolled = store.enroll(receipt())
+        check(store.acceptManifest(checkNotNull(enrolled.snapshot), manifest) { now }.status == Draft02TrustStore.Status.NEEDS_FRESHNESS)
+        val before = checkNotNull(store.inspect().snapshot).bytes()
+        val expires = ByteBuffer.wrap(manifest, 45, 8).long
+        val accepted = now + 3
+        val history = store.retainedElectionHistory(accepted) { expires + 1000 }
+        assertEquals(accepted, history.electionAcceptedMs)
+        // The phone accepted at now; the authenticated server receipt has its distinct timestamp.
+        history.requireExactEvidence(pin, manifest, now + 1)
+        assertArrayEquals(pin, history.pin())
+        assertArrayEquals(before, checkNotNull(store.inspect().snapshot).bytes())
+        denied { store.currentAuthority { expires + 1000 } }
+        denied { store.currentElectionHistory { expires + 1000 } }
+        denied { store.retainedElectionHistory(expires) { expires + 1000 } }
+        denied { store.retainedElectionHistory(now - 1) { expires + 1000 } }
+        denied { history.requireExactEvidence(pin, manifest, accepted + 1) }
+        denied { history.requireExactEvidence(pin, manifest.copyOf().apply { this[lastIndex] = 0 }, now + 1) }
+        var calls = 0
+        denied { store.retainedElectionHistory(accepted) { if (calls++ == 0) expires + 1000 else expires + 999 } }
+        memory.key = Draft02TrustStore.KeyState.ABSENT
+        denied { store.retainedElectionHistory(accepted) { expires + 1000 } }
+        assertEquals(1, memory.creations)
+    }
+
+    @Test fun initialChainPublishesOnlyTheFinalAcceptedPositionAndCannotAdvanceExistingHistory() = Profile03ExecutionFixture().use { f ->
+        val memory = Memory(); val store = Draft02TrustStore(memory)
+        val comparison = Draft02RootComparison()
+        val display = comparison.begin(f.pin, f.account)
+        val saved = store.enroll(comparison.confirm(display.fingerprintHex, true))
+        val snapshot = checkNotNull(saved.snapshot)
+        val before = checkNotNull(memory.data).copyOf()
+        val chain = listOf(f.old, f.successor02())
+        var clock = f.now
+        memory.beforeCommit = { clock = 900_001 }
+        assertEquals(Draft02TrustStore.Status.REJECTED, store.acceptInitialManifestChain(snapshot, chain, { clock }) { _, _ -> }.status)
+        assertArrayEquals(before, memory.data)
+        assertEquals(0L, store.inspect().snapshot!!.version)
+        memory.beforeCommit = {}; clock = f.now
+        var finalChecks = 0
+        val accepted = store.acceptInitialManifestChain(snapshot, chain, { clock }) { authority, instant ->
+            assertEquals(2L, authority.version); assertEquals(f.now, instant); finalChecks++
+        }
+        assertEquals(Draft02TrustStore.Status.NEEDS_FRESHNESS, accepted.status)
+        assertEquals(2L, accepted.snapshot!!.version)
+        assertEquals(snapshot.revision + 1, accepted.snapshot!!.revision)
+        assertEquals(2, finalChecks)
+        assertEquals(Draft02TrustStore.Status.STALE, store.acceptInitialManifestChain(snapshot, chain, { clock }) { _, _ -> }.status)
+        assertEquals(Draft02TrustStore.Status.REJECTED,
+            store.acceptInitialManifestChain(accepted.snapshot!!, chain, { clock }) { _, _ -> }.status)
+        assertEquals(1, memory.creations)
     }
 
     @Test fun fullDeliberateAccountBoundComparisonIsRequiredAndOneUse() {

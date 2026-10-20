@@ -58,7 +58,7 @@ class JournaledPreparedRadioSubmissionTest {
             override val deadlineMs = candidate.expiresAtMs
             override val grant get() = SealedEnvelopeFetch.snapshot(fields)
             override val session = this@Harness.session
-            override val local = SealedDispatchExecutor.Local(binding, fields.readerKeyId,
+            override val local = SealedDispatchExecutor.Local(this@Harness.binding, fields.readerKeyId,
                 candidate.manifestGeneration, candidate.manifestVersion, candidate.manifestDigest,
                 candidate.recipientDigest)
         }

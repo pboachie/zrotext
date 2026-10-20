@@ -1,6 +1,6 @@
 {
-  "status": "typed-one-use03-grant-storage-candidate-no-submit-or-radio-acceptance",
-  "migration_version": 115,
+  "status": "explicit-reviewed-intent-v2-with-passive-v1-originals-candidate",
+  "migration_version": 117,
   "row_columns": [
     "relation",
     "account_extraction_review_class",
@@ -54,7 +54,7 @@
     ["conversation_intervals","column:account_id","df33ed25894f9e5dd6d7bc60dcde3848f2828fff8c6775d0b6b7f48534c5aca4","f9edecbd8d565428e25857c908fd2329447efea9f00bcb926297f7c1e0623b4b","e24e6992e6946c2a2acef4c65e3c5db1a8bdaf1b184aeae345fab14ce4cebdd1"],
     ["conversation_profile03_grants","narrow_one_attempt_grant_claim_and_retained_nonpersonal_replay_identity","39d2233b8e77d1498d62d1d2018e2df946d0678cdc5de08f88ea11e7a55578c0","79e2de2c31c3f1f8a0f14dc825dd05f0e526df3195fb1d42c897e20d973753ab","81d97219160a1a01decfda1addf3998902479cdc4ee9c541089df70361fcecea"],
     ["conversation_profile03_intervals","narrow_original_consent_phase_or_real_actor_withdrawal","6a3c066f3f98e0bc3561a14ceb8c1c2c2b3517ed0c086b4e2a6e0c8717246e49","39f28046379fb02f8e1f60b925be35e618a6cda6a84d82020d44fe2bd77f8f7f","1bfd2f80216ab13029962893dacfb0fa24eb558eef1c8080d8ca955a3000a6fe"],
-    ["conversation_reviewed_sends03","narrow_original_reviewed_admission_and_coupled_content_erasure","a37e25ab09f337a5a7c2e3079c2a4cfc4ffb0f163be7c16f42be2faa151557cb","244fcb9ba1ea85272305ced478cf732631b7c3639eecfa9705937bac976ae42f","008f13a0f2255b464bcee0c62b4644a29ed1f2663dedc5c4ff353b7d2afd4885"],
+    ["conversation_reviewed_sends03","narrow_original_reviewed_admission_and_coupled_content_erasure","07dd908f1e9824b8458b23c87850c21ecd8f24c30d4b55e4cf627cca53cb102e","244fcb9ba1ea85272305ced478cf732631b7c3639eecfa9705937bac976ae42f","008f13a0f2255b464bcee0c62b4644a29ed1f2663dedc5c4ff353b7d2afd4885"],
     ["deployment_authority","global_current_authority","02df41059097b9fea8cfe7e81a853abe40e3bd8d40158eda2af87039c514fea6","4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","93da30a4530526f09c26c6fb0516158c57550b8398c702b80974950edc609ea2"],
     ["device_keys","column:account_id","786b26a721c4b92a2b484b03f5448957448ac557afe25b15c7c9e6d824c1de36","0d7e93c93f0b7c6daf79aaf8ecf7bf0e27822466a3c883cfd5a31d5c2a6446a2","9e74c01da6a4df7878efd33c14e7c9b56c47c885430dc8dd9da162ede5f5cc62"],
     ["device_line_bindings","column:account_id","4df362f9060343ad39e69f7626b138ee71ce277a61cb10f1f456a25111d57806","fa9e152970cd2129b75b7f003f0bafb849936b15bf49a4fa0697c950958286a8","f2d880c600a6bea91ebd3c112172259ddabf0a1ade979a146a6edffed608c58c"],
@@ -80,6 +80,8 @@
     ["hosted_billing_projections","column:account_id","a8a16a62ef86d6af39f3e5f44950f5f3b8485c4659ad525cc5059daeda6a8cac","1520ff1b62c69631037bc4f27d41df554529473953003e10c0cd96a7f1deb226","caec2177757ccb0c1da0fc0c7be59e5646553d08c705e27bbfdeee68c4916382"],
     ["hosted_billing_resolutions","nullable:account_id","ef7084bb8ab7ecfae536571577bf15e40055c531a76dca7f35c82afd288b49ec","f28f9f6ab7b30a01186cd1155f10e50836097ab467af747ab89b950c08bd1959","148abbf08c7103f0a45ddcd2e8bb191b7809507859bb59fe3f9c1de2da17632d"],
     ["hosted_billing_usage","column:account_id","81feb5d52f7505cc2a64c6022b4ff30899c1d470fa0ac18a2f3793af2da9240b","fa63a816d76e1d456dae1ca0916912455332560b9f86f4c26e9218ebeeb80531","5ee0983e4742bd48b256888d3a66be718a89edf07af4f4f3f345bd4a7bf9b4b5"],
+    ["hosted_runtime_entries","global_hosted_runtime_backend_proof","8b47274b2b956b571d3442f5dbce8b24d33908a81546ce194842124bf29f9bda","a8393da07a442c49b7fd36e488b53df1ef6f38183972ef0eb4be11b5bfc6aa58","39d87a3676d7a088885c580226b8d8e4d75fd988e3c4b588561c2b4682321a38"],
+    ["hosted_runtime_requests","global_hosted_runtime_backend_proof","da595f68d53f711fb89b058a4c056c36842b6ae0cf7f44659986f746e46b3adc","4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","2c4982a7ada1afafd9bd6c518ca4660f927bc9ad19edccd2ee24d748c87f5904"],
     ["hosted_runtime_secrets","global_hosted_namespace_secret","1f36664c069622aab5c22b55264442c3db265868c55127beb57b5f9db8872114","a8393da07a442c49b7fd36e488b53df1ef6f38183972ef0eb4be11b5bfc6aa58","0d6b040c4a60b2d3db28e89b8ee969bc1580d56512e36dfb7b1582f6a977cd90"],
     ["hosted_runtime_sessions","global_hosted_runtime_backend_proof","59a12d962b211a78d6c799db37ad65b4e41271ebde107ff94c4e66f0f9673367","a8393da07a442c49b7fd36e488b53df1ef6f38183972ef0eb4be11b5bfc6aa58","e4367e99c2191ecee5b9aca01a38a37b055d87697fd2b3114e73641b762edc24"],
     ["idempotency_keys","column:account_id","d33bacb550409b92f10b8e5d30a4f1bdc3a3797bc8fdf26bdec11302a54004ec","263fb7fc25c0a45537bc9ee5cda8087c6cb1fc11435480af0e05edfd22eeec7d","208f08e21551123c576dbe9556f1fe73ab98f3047119de8683f35e145b77c9b2"],
@@ -272,6 +274,8 @@
     {"relation":"hosted_billing_projections","insert":"new_live_epoch0_preserving_same_invariants_at_proven_epoch1","update":"old_and_new_live_epoch0_preserving_same_invariants_at_proven_epoch1","delete":"old_live_epoch0_or_deleted_anchor_preserving_same_invariants_at_proven_epoch1","current_profile":"ordinary_state_or_actual_accepted_epoch1_with_explicit_operation_policy"},
     {"relation":"hosted_billing_resolutions","insert":"new_bound_account_or_typed_unbound_class_preserving_same_invariants_at_proven_epoch1","update":"old_and_new_bound_accounts_or_typed_unbound_class_preserving_same_invariants_at_proven_epoch1","delete":"old_bound_account_or_typed_unbound_class_preserving_same_invariants_at_proven_epoch1","current_profile":"ordinary_state_or_actual_accepted_epoch1_with_explicit_operation_policy"},
     {"relation":"hosted_billing_usage","insert":"new_live_epoch0_preserving_same_invariants_at_proven_epoch1","update":"old_and_new_live_epoch0_preserving_same_invariants_at_proven_epoch1","delete":"old_live_epoch0_or_deleted_anchor_preserving_same_invariants_at_proven_epoch1","current_profile":"ordinary_state_or_actual_accepted_epoch1_with_explicit_operation_policy"},
+    {"relation":"hosted_runtime_entries","insert":"closed_native_defaults_and_genuine_HMAC_exact_transaction_only","update":"never_extend_or_rewrite_an_existing_entry_from_runtime","delete":"bounded_expired_ephemeral_identity_cleanup_or_current_backend_invalidation","current_profile":"ordinary_state_or_actual_accepted_epoch1_with_explicit_operation_policy"},
+    {"relation":"hosted_runtime_requests","insert":"actual_invoker_native_DEFAULTs_before_closed_protected_request_trigger","update":"never_runtime_native_or_result_column_override","delete":"closed_AFTER_trigger_removes_same_ephemeral_staging_tuple","current_profile":"ordinary_state_or_actual_accepted_epoch1_with_explicit_operation_policy"},
     {"relation":"hosted_runtime_secrets","insert":"exclusive_class_and_actual_global_row_version:global_hosted_namespace_secret_preserving_same_invariants_at_proven_epoch1","update":"exclusive_class_and_actual_global_row_version:global_hosted_namespace_secret_preserving_same_invariants_at_proven_epoch1","delete":"exclusive_class_and_actual_global_row_version:global_hosted_namespace_secret_preserving_same_invariants_at_proven_epoch1","current_profile":"ordinary_state_or_actual_accepted_epoch1_with_explicit_operation_policy"},
     {"relation":"hosted_runtime_sessions","insert":"shared_class_and_actual_stable_row:global_hosted_runtime_backend_proof_preserving_same_invariants_at_proven_epoch1","update":"shared_class_and_actual_stable_row:global_hosted_runtime_backend_proof_preserving_same_invariants_at_proven_epoch1","delete":"shared_class_and_actual_stable_row:global_hosted_runtime_backend_proof_preserving_same_invariants_at_proven_epoch1","current_profile":"ordinary_state_or_actual_accepted_epoch1_with_explicit_operation_policy"},
     {"relation":"idempotency_keys","insert":"new_live_epoch0","update":"old_and_new_live_epoch0","delete":"old_live_epoch0_or_deleted_anchor","current_profile":"relation_specific_legacy02_fence_and_typed_initial03_or_monotone_security_policy"},
@@ -393,6 +397,7 @@
     {"relation":"workflow_schedule_series","insert":"new_live_epoch0_refuse_after_any_device_signed_election_except_actual_erasure","update":"old_and_new_live_epoch0_refuse_after_any_device_signed_election_except_actual_erasure","delete":"old_live_epoch0_or_deleted_anchor_refuse_after_any_device_signed_election_except_actual_erasure","current_profile":"ordinary_state_or_actual_accepted_epoch1_with_explicit_operation_policy"}
   ],
   "epoch03_policy_classes": {
+    "native_backend_proof": ["hosted_runtime_entries","hosted_runtime_requests"],
     "metadata": [
       "accounts",
       "api_keys",

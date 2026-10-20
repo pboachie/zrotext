@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use tokio_postgres::Client;
 
-/// Apply actual migrations and their required autocommit index preparation.
-/// The caller must provide a connection to a unique disposable schema.
+/// Apply the actual prefix through107 and its autocommit index preparation.
+/// The caller must provide a unique disposable schema. Tests of108+ require
+/// the genuine public installation and separate ordinary runtime fixture.
 pub(crate) async fn apply(db: &Client) {
-    apply_selected(db, MIGRATIONS, false, None).await;
+    apply_selected(db, LEGACY_MIGRATIONS, false, None).await;
 }
 
 /// Preserve the summary tests' explicit index and migration validation gates.
 pub(crate) async fn apply_without_summary(db: &Client) {
-    apply_selected(db, MIGRATIONS, true, None).await;
+    apply_selected(db, LEGACY_MIGRATIONS, true, None).await;
 }
 
 /// Observe trusted phase metadata without changing migration SQL or deadlines.
@@ -17,17 +18,21 @@ pub(crate) async fn apply_with_progress(
     db: &Client,
     observer: &mut (dyn FnMut(MigrationProgress) + Send),
 ) {
-    apply_selected(db, MIGRATIONS, false, Some(observer)).await;
+    apply_selected(db, LEGACY_MIGRATIONS, false, Some(observer)).await;
 }
 
 /// Historical, unmounted invoice/admission contract only. Migration 106
 /// deliberately forbids its legacy-ledger mixture. Runtime and ordinary
-/// application tests must use `apply`, which retains the complete inventory.
+/// isolated application tests must use `apply`, which retains the complete107
+/// prefix. Current installation tests use an actual public database instead.
 pub(crate) async fn apply_pre_runtime_invoice_contract(db: &Client) {
     const PREFIX: usize = 105;
-    assert_eq!(MIGRATIONS[PREFIX - 1].0, "105_device_pairing_bindings.sql");
-    assert_eq!(MIGRATIONS[PREFIX].0, "106_hosted_runtime.sql");
-    apply_selected(db, &MIGRATIONS[..PREFIX], false, None).await;
+    assert_eq!(
+        LEGACY_MIGRATIONS[PREFIX - 1].0,
+        "105_device_pairing_bindings.sql"
+    );
+    assert_eq!(LEGACY_MIGRATIONS[PREFIX].0, "106_hosted_runtime.sql");
+    apply_selected(db, &LEGACY_MIGRATIONS[..PREFIX], false, None).await;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,7 +89,7 @@ async fn run_phase(
 }
 
 // Compile trusted SQL into the test executable; directory names are inventory only.
-const MIGRATIONS: &[(&str, &str)] = &[
+const LEGACY_MIGRATIONS: &[(&str, &str)] = &[
     (
         "001_foundation.sql",
         include_str!("../../../../deploy/compose/migrations/001_foundation.sql"),
@@ -596,23 +601,8 @@ async fn apply_selected(
 }
 
 #[test]
-fn agent_auth_schema_includes_every_checked_in_migration() {
-    let directory =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
-    let mut files = std::fs::read_dir(directory)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .filter(|name| name.ends_with(".sql"))
-        .collect::<Vec<_>>();
-    files.sort();
-    assert_eq!(
-        files,
-        MIGRATIONS
-            .iter()
-            .map(|(name, _)| name.to_string())
-            .collect::<Vec<_>>(),
-        "update the compiled migration inventory"
-    );
+fn auth_fixture_retains_exact_legacy107_prefix() {
+    crate::test_migration_inventory::assert_legacy107_fixture(LEGACY_MIGRATIONS);
 }
 
 /// Mirror the migrator's autocommit preparation on this unique test schema.

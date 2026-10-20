@@ -41,7 +41,7 @@ use tokio::{
 };
 use tokio_postgres::{Client, types::Type};
 use uuid::Uuid;
-use zrotext_delivery_store::{DeliveryStore, GrantRecord, RadioEvent, SessionRecord, StoreError};
+use zrotext_delivery_store::{GrantRecord, RadioEvent, SessionRecord, StoreError};
 use zrotext_domain::{Evidence, MessageState};
 
 mod mms_spike_policy;

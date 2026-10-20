@@ -355,3 +355,93 @@ async fn old_repeatable_snapshot_cannot_enter_manual_after_namespace_transition(
         f.finish().await;
     }
 }
+
+#[tokio::test]
+#[ignore = "requires ZT_AUTH_TEST_DATABASE_URL; full public ordinary-runtime erasure entry"]
+async fn actual_erasure_begin_enters_hosted_before_billing_and_preserves_final_owner_fence() {
+    use crate::auth::{self, TokenHasher, account};
+
+    let mut f = Fixture::runtime().await;
+    let hasher = TokenHasher::new(crate::test_keys::key(181)).unwrap();
+    let password = crate::test_keys::password(181);
+    let signup = auth::register(
+        &mut f.owner,
+        &hasher,
+        "native-erasure@example.test",
+        &password,
+    )
+    .await
+    .unwrap();
+    auth::verify_email(&mut f.owner, &hasher, &signup.verification_token)
+        .await
+        .unwrap();
+    let credentials = auth::login(&f.reader, &hasher, "native-erasure@example.test", &password)
+        .await
+        .unwrap();
+    let principal = auth::authenticate_session(&f.reader, &hasher, &credentials.token)
+        .await
+        .unwrap();
+    let verified_hash = account::verify_current_password(&f.reader, &principal, &password)
+        .await
+        .unwrap();
+    let namespace = Uuid::new_v4();
+    let key = [71; 32];
+    seed(&f, namespace, &key).await;
+    let url = runtime_url(&f);
+    runtime_db::register_hosted(&url, binding(namespace, key)).unwrap();
+    let mut db = runtime_db::fixture_connection(&url).await.unwrap();
+
+    // This is the SAME production BEGIN used by the erasure handler, not a
+    // caller-selected native witness or a test replacement of the SQL helper.
+    let tx = crate::http_owner_erasure::begin_erasure_transaction(&mut db)
+        .await
+        .unwrap();
+    assert!(verified(&tx, namespace).await);
+    let _admission = zrotext_delivery_store::sealed::lock_account(&tx, signup.account_id, false)
+        .await
+        .unwrap();
+    assert!(matches!(
+        account::fence_owner_mutation(&tx, None, &hasher, &principal, &verified_hash, None)
+            .await
+            .unwrap(),
+        account::OwnerMutationFence::Cleared
+    ));
+    tx.rollback().await.unwrap();
+
+    // A genuine initialized backend and the unchanged protected billing lock
+    // cannot make a revoked original owner session authorize destruction.
+    f.owner
+        .execute(
+            "UPDATE public.sessions SET revoked_at=clock_timestamp() WHERE id=$1",
+            &[&principal.session_id],
+        )
+        .await
+        .unwrap();
+    let tx = crate::http_owner_erasure::begin_erasure_transaction(&mut db)
+        .await
+        .unwrap();
+    assert!(verified(&tx, namespace).await);
+    let _admission = zrotext_delivery_store::sealed::lock_account(&tx, signup.account_id, false)
+        .await
+        .unwrap();
+    assert!(matches!(
+        account::fence_owner_mutation(&tx, None, &hasher, &principal, &verified_hash, None).await,
+        Err(auth::AuthError::Unauthorized)
+    ));
+    tx.rollback().await.unwrap();
+    assert_eq!(
+        f.owner
+            .query_one(
+                "SELECT count(*) FROM public.accounts WHERE id=$1",
+                &[&signup.account_id],
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        1
+    );
+    // Whole HTTP erasure still has its stock operator-only blocker ACL. This
+    // proves entry/billing/final-owner composition, not successful deletion.
+    close(db, &f.owner).await;
+    f.finish().await;
+}

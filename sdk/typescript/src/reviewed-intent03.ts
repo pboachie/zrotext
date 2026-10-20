@@ -174,14 +174,14 @@ export function reviewedIntentTranscript03(input: Uint8Array): Uint8Array {
 function context(handle: ReviewContext03): Context {
   const c = contexts.get(handle); if (!c) fail("requires captured trusted context handle"); return c;
 }
-function timing(f: ReviewedIntentFields03, c: Context, now: bigint) {
+function timing(f: Omit<ReviewedIntentFields03, "bodyDigest">, c: Context, now: bigint) {
   const a = authorized(c, now);
   if (f.reviewIssuedMs > now || now >= f.reviewExpiresMs || f.observedMs < a.validFromMs || f.observedMs < c.intervalFromMs
       || f.messageExpiresMs > a.expiresMs || f.messageExpiresMs > c.currentAuthority.permissionExpiresAtMs
       || f.messageExpiresMs > c.intervalUntilMs) fail("current review/whole-message permission");
   return a;
 }
-function bind(f: ReviewedIntentFields03, c: Context): void {
+function bind(f: Omit<ReviewedIntentFields03, "bodyDigest">, c: Context): void {
   const a = c.currentAuthority;
   for (const name of ["accountId", "deviceId", "lineId", "bindingId", "selectedReaderKeyId", "rootFingerprint", "manifestDigest", "electionCommitment", "electionBundleSha256"] as const)
     if (!same(f[name], a[name])) fail("immutable selection mismatch");
@@ -198,7 +198,7 @@ async function verifySignature(point: Uint8Array, signature: Uint8Array, transcr
   if (!await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, ab(signature), ab(transcript))) fail("signature verification");
 }
 /** Public structural and signature checks; no HPKE opening/plaintext claim. */
-async function envelopeMatches(bytes: Uint8Array, f: ReviewedIntentFields03, signerPoint: Uint8Array): Promise<void> {
+async function envelopeMatches(bytes: Uint8Array, f: Omit<ReviewedIntentFields03, "bodyDigest">, signerPoint: Uint8Array): Promise<void> {
   if (!same(bytes.subarray(0, 8), Uint8Array.of(90, 84, 83, 69, 3, 1, 0, 0))) fail("outbound envelope03 header");
   const v = new DataView(bytes.buffer), length = v.getUint16(8, false), end = 10 + length;
   if (length !== 154 + f.peer.length || bytes.length < end + 16 + 17 + 1 + 292 + 64) fail("envelope protected/body bounds");
@@ -289,4 +289,99 @@ export function verifiedReviewedIntentSnapshot03(handle: VerifiedReviewedIntent0
 }> {
   const p = proofs.get(handle); if (!p) fail("requires verified reviewed intent handle");
   return { fields: fields(p.fields), intent: Uint8Array.from(p.intent), signature: Uint8Array.from(p.signature), envelope: Uint8Array.from(p.envelope) };
+}
+
+/** Explicit ZTRI02; no plaintext commitment is accepted, calculated or encoded.
+ * The original ZTRI01 APIs above retain their exact historical grammar/domain.
+ * The UI/composer must independently pin the body the owner actually reviewed. */
+export type ReviewedIntentFields03V2 = Omit<ReviewedIntentFields03, "bodyDigest">;
+const headerV2 = Uint8Array.of(90, 84, 82, 73, 2, 3, 3, 0);
+const digestFieldsV2 = ["selectedReaderKeyId", "rootFingerprint", "manifestDigest", "electionCommitment", "electionBundleSha256", "ownerSessionDigest", "originDigest", "signerKeyId", "envelopeDigest", "unsignedDigest"] as const;
+function fieldsV2(input: ReviewedIntentFields03V2): ReviewedIntentFields03V2 {
+  const p = closed(input, [...uuidFields, ...numberFields, ...digestFieldsV2, "peer", "recipients", "smsCeiling"]);
+  for (const name of uuidFields) p[name] = nonzero(p[name] as Uint8Array, 16);
+  for (const name of digestFieldsV2) p[name] = nonzero(p[name] as Uint8Array, 32);
+  for (const name of numberFields) electionTime03(p[name] as bigint);
+  if (p.vaultGeneration !== 1n || p.accountSelectionEpoch !== 1n) fail("unsupported V2 vault/selection generation");
+  const ceiling = p.smsCeiling;
+  if (typeof ceiling !== "number" || !Number.isInteger(ceiling) || ceiling < 1 || ceiling > 6) fail("canonical SMS ceiling1..6");
+  p.peer = peerBytes(p.peer as Uint8Array); p.recipients = recipients(p.recipients as Recipient03[]);
+  const f = p as ReviewedIntentFields03V2;
+  if (!(f.observedMs <= f.reviewIssuedMs && f.reviewIssuedMs < f.reviewExpiresMs && f.reviewExpiresMs <= f.messageExpiresMs)
+      || f.reviewExpiresMs - f.reviewIssuedMs > 30_000n || f.messageExpiresMs - f.observedMs > 900_000n) fail("review/message lifetime");
+  if (!f.recipients.some(r => r.role === 1 && same(r.keyId, f.selectedReaderKeyId))) fail("selected reader commitment");
+  return f;
+}
+function encodeV2(f: ReviewedIntentFields03V2): Uint8Array {
+  return concat(headerV2, ...uuidFields.map(n => f[n]), ...numberFields.map(n => u64(f[n])), ...digestFieldsV2.map(n => f[n]),
+    Uint8Array.of(f.peer.length), f.peer, Uint8Array.of(f.recipients.length),
+    ...f.recipients.map(r => concat(Uint8Array.of(r.role), r.keyId)), Uint8Array.of(f.smsCeiling));
+}
+/** Closed structural grammar only, never authority or a V1 conversion. */
+export function encodeReviewedIntent03V2(input: ReviewedIntentFields03V2): Uint8Array { return encodeV2(fieldsV2(input)); }
+export function decodeReviewedIntent03V2(input: Uint8Array): ReviewedIntentFields03V2 {
+  const bytes = captureElectionBytes03(input, 592, 803), view = new DataView(bytes.buffer);
+  if (!same(bytes.subarray(0, 8), headerV2)) fail("V2 intent framing/profile/reserved");
+  const p: Record<string, unknown> = {}; let at = 8;
+  for (const name of uuidFields) { p[name] = bytes.slice(at, at + 16); at += 16; }
+  for (const name of numberFields) { p[name] = view.getBigUint64(at, false); at += 8; }
+  for (const name of digestFieldsV2) { p[name] = bytes.slice(at, at + 32); at += 32; }
+  const peerLength = bytes[at++]; p.peer = bytes.slice(at, at + peerLength); at += peerLength;
+  const count = bytes[at++];
+  if (count < 2 || count > 8 || at + count * 33 + 1 !== bytes.length) fail("V2 intent recipient/trailing framing");
+  const rs: Recipient03[] = [];
+  for (let i = 0; i < count; i++) { rs.push({ role: bytes[at++] as 1 | 2 | 3, keyId: bytes.slice(at, at + 32) }); at += 32; }
+  p.recipients = rs; p.smsCeiling = bytes[at];
+  const f = fieldsV2(p as ReviewedIntentFields03V2);
+  if (!same(encodeV2(f), bytes)) fail("noncanonical V2 intent"); return f;
+}
+/** The V2 signature domain never falls back to the historical V1 domain. */
+export function reviewedIntentTranscript03V2(input: Uint8Array): Uint8Array {
+  return framed("zrotext/conversation/reviewed-send03/v2", encodeV2(decodeReviewedIntent03V2(input)));
+}
+/** Local ciphertext-bound preparation. No body, body digest, factor or cached
+ * permission is accepted. The same private captured context is mandatory. */
+export async function prepareReviewedIntent03V2(input: Readonly<{
+  context: ReviewContext03; envelope: Uint8Array;
+  reviewIssuedMs: bigint; reviewExpiresMs: bigint; smsCeiling: number; nowMs: bigint;
+}>): Promise<Uint8Array> {
+  const p = closed(input, ["context", "envelope", "reviewIssuedMs", "reviewExpiresMs", "smsCeiling", "nowMs"]);
+  const c = context(p.context as ReviewContext03), a = c.currentAuthority;
+  const envelope = captureElectionBytes03(p.envelope as Uint8Array, 557, 34_213);
+  const now = p.nowMs as bigint, issued = p.reviewIssuedMs as bigint, expiry = p.reviewExpiresMs as bigint;
+  electionTime03(now); electionTime03(issued); electionTime03(expiry);
+  const messageId = envelope.slice(26, 42), v = new DataView(envelope.buffer);
+  const envelopeDigest = await sha(envelope), unsignedDigest = await sha(envelope.subarray(0, -64));
+  const f = fieldsV2({ accountId: a.accountId, deviceId: a.deviceId, lineId: a.lineId, bindingId: a.bindingId,
+    ownerUserId: c.ownerUserId, ownerSessionId: c.ownerSessionId, intervalId: c.intervalId, messageId,
+    bindingGeneration: a.bindingGeneration, vaultGeneration: a.vaultGeneration, manifestVersion: a.manifestVersion,
+    accountSelectionEpoch: c.accountSelectionEpoch, observedMs: v.getBigUint64(146, false), messageExpiresMs: v.getBigUint64(154, false),
+    reviewIssuedMs: issued, reviewExpiresMs: expiry, selectedReaderKeyId: a.selectedReaderKeyId, rootFingerprint: a.rootFingerprint,
+    manifestDigest: a.manifestDigest, electionCommitment: a.electionCommitment, electionBundleSha256: a.electionBundleSha256,
+    ownerSessionDigest: c.ownerSessionDigest, originDigest: c.originDigest, signerKeyId: c.signerKeyId,
+    envelopeDigest, unsignedDigest, peer: c.peer, recipients: c.recipients, smsCeiling: p.smsCeiling as number });
+  const selected = timing(f, c, now);
+  await envelopeMatches(envelope, f, selected.signerPoint); return encodeV2(f);
+}
+declare const proofV2Brand: unique symbol;
+export type VerifiedReviewedIntent03V2 = Readonly<{ [proofV2Brand]: true }>;
+type VerifiedV2 = Readonly<{ fields: ReviewedIntentFields03V2; intent: Uint8Array; signature: Uint8Array; envelope: Uint8Array }>;
+const proofsV2 = new WeakMap<VerifiedReviewedIntent03V2, VerifiedV2>();
+/** Component V2 crypto proof at the ORIGINAL review/admission comparison time.
+ * No current DB read, nonce, quota, commit, grant, custody or radio permission is
+ * created here; later delivery still requires its actual retained receipt. */
+export async function verifyReviewedIntent03V2(input: Readonly<{
+  context: ReviewContext03; intent: Uint8Array; signature: Uint8Array; envelope: Uint8Array; nowMs: bigint;
+}>): Promise<VerifiedReviewedIntent03V2> {
+  const p = closed(input, ["context", "intent", "signature", "envelope", "nowMs"]), c = context(p.context as ReviewContext03);
+  const intent = captureElectionBytes03(p.intent as Uint8Array, 592, 803), signature = captureElectionBytes03(p.signature as Uint8Array, 64);
+  const envelope = captureElectionBytes03(p.envelope as Uint8Array, 557, 34_213), now = p.nowMs as bigint;
+  const f = decodeReviewedIntent03V2(intent); bind(f, c); const selected = timing(f, c, now);
+  await envelopeMatches(envelope, f, selected.signerPoint);
+  await verifySignature(selected.signerPoint, signature, reviewedIntentTranscript03V2(intent));
+  const handle = Object.freeze({}) as VerifiedReviewedIntent03V2; proofsV2.set(handle, { fields: f, intent, signature, envelope }); return handle;
+}
+export function verifiedReviewedIntentSnapshot03V2(handle: VerifiedReviewedIntent03V2): VerifiedV2 {
+  const p = proofsV2.get(handle); if (!p) fail("requires verified V2 reviewed intent handle");
+  return { fields: fieldsV2(p.fields), intent: Uint8Array.from(p.intent), signature: Uint8Array.from(p.signature), envelope: Uint8Array.from(p.envelope) };
 }

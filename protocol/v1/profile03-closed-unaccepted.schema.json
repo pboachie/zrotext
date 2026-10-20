@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:zrotext:profile03-closed-unaccepted:1",
+  "title": "Bounded profile03 server closure projection",
+  "description": "Shape only. Actual authenticated original02 authority, immutable SQL closure, original proof composition and local journal checks remain mandatory.",
+  "type": "object",
+  "required": ["closed_unaccepted"],
+  "properties": {
+    "closed_unaccepted": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {"$ref": "#/$defs/closure"}
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$",
+      "not": {"const": "00000000-0000-0000-0000-000000000000"}
+    },
+    "closure": {
+      "type": "object",
+      "required": ["opening_id", "challenge_id", "new_binding_id", "core", "closed_unaccepted_ms", "superseded_by_challenge_id"],
+      "properties": {
+        "opening_id": {"$ref": "#/$defs/uuid"},
+        "challenge_id": {"$ref": "#/$defs/uuid"},
+        "new_binding_id": {"$ref": "#/$defs/uuid"},
+        "core": {"type": "string", "pattern": "^[A-Za-z0-9_-]{667}$"},
+        "closed_unaccepted_ms": {"type": "string", "pattern": "^[1-9][0-9]{0,18}$"},
+        "superseded_by_challenge_id": {"$ref": "#/$defs/uuid"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

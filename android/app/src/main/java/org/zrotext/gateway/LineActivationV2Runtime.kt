@@ -18,6 +18,7 @@ internal class SignedLineActivationV2(statement: ByteArray, signature: ByteArray
 internal sealed interface LineActivationV2PublicationPermit {
     val lease: SelectedLineLeaseV2
     val record: LineActivationV2Record
+    val refresh03: InstalledSelectionRefresh03? get() = null
     fun publicationCurrent(): Boolean
     fun installationCurrent(): Boolean
     fun publicationComplete()
