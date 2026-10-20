@@ -19,6 +19,10 @@ export const manifestEvidenceFields03 = ['root_pin', 'prior_manifest02', 'prior_
   'registration_evidence', 'activation_evidence'] as const;
 export type OriginalManifestEvidence03 = Readonly<Record<typeof manifestEvidenceFields03[number], string>>;
 export type ManifestPosition03 = Readonly<{ version: bigint; digest: Uint8Array; ancestry: Uint8Array }>;
+export type ManifestHistoryCheckpoint03 = Readonly<{
+  position: ManifestPosition03; acceptedMs: bigint; comparedMs: bigint;
+  signedManifest: Uint8Array; historicalManifest: VerifiedManifest03;
+}>;
 declare const historyBrand: unique symbol;
 export type VerifiedManifestHistory03 = Readonly<{ [historyBrand]: true }>;
 type State = Readonly<{
@@ -28,6 +32,7 @@ type State = Readonly<{
   tip: (ManifestPosition03 & Readonly<{ acceptedMs: bigint }>) | null;
   comparedMs: bigint; complete: boolean;
   minimum: ManifestPosition03 | null; minimumSeen: boolean;
+  required: ManifestPosition03 | null; requiredCheckpoint: ManifestHistoryCheckpoint03 | null;
 }>;
 const histories = new WeakMap<VerifiedManifestHistory03, State>(), enc = new TextEncoder();
 const max = (1n << 63n) - 1n;
@@ -107,16 +112,20 @@ export async function startAcceptedManifestHistory03(input: Readonly<{
   originalEvidence: OriginalManifestEvidence03; origin: string;
   /** Previously committed local checkpoint; history must pass through it. */
   minimum?: ManifestPosition03;
+  /** Exact public attempt checkpoint to recover in addition to the saved highwater. */
+  required?: ManifestPosition03;
 }>): Promise<VerifiedManifestHistory03> {
   const r = record(input, ['acceptedElection', 'firstManifest', 'originalEvidence', 'origin',
-    ...(Object.hasOwn(input, 'minimum') ? ['minimum'] : [])]);
-  let minimum: ManifestPosition03 | null = null;
-  if (Object.hasOwn(r, 'minimum')) {
-    const m = record(r.minimum, ['version', 'digest', 'ancestry']); electionTime03(m.version as bigint);
-    minimum = { version: m.version as bigint, digest: captureElectionBytes03(m.digest as Uint8Array, 32),
+    ...['minimum', 'required'].filter(k => Object.hasOwn(input, k))]);
+  function selected(name: string): ManifestPosition03 | null {
+    if (!Object.hasOwn(r, name)) return null;
+    const m = record(r[name], ['version', 'digest', 'ancestry']); electionTime03(m.version as bigint);
+    const result = { version: m.version as bigint, digest: captureElectionBytes03(m.digest as Uint8Array, 32),
       ancestry: captureElectionBytes03(m.ancestry as Uint8Array, 32) };
-    if (!minimum.digest.some(v => v !== 0) || !minimum.ancestry.some(v => v !== 0)) fail();
+    if (!result.digest.some(v => v !== 0) || !result.ancestry.some(v => v !== 0)) fail();
+    return result;
   }
+  const minimum = selected('minimum'), required = selected('required');
   const proof = r.acceptedElection as VerifiedAcceptedElection03, a = verifiedAcceptedElectionIdentity03(proof);
   const first = r.firstManifest as VerifiedManifest03, e = evidence(r.originalEvidence), origin = r.origin;
   if (typeof origin !== 'string' || enc.encode(origin).length > 512) fail();
@@ -133,20 +142,26 @@ export async function startAcceptedManifestHistory03(input: Readonly<{
   const ancestry = await commitment('ZTSE/line/payload-profile/manifest-ancestry-base03/v1', a.accountId,
     challenge, a.newBindingId, await sha(signed), n64(acceptedMs), a.electionBundleSha256);
   const initial = { version: id.version, digest: id.digest, ancestry };
-  if (minimum && (minimum.version < initial.version || minimum.version === initial.version && !equalPosition(minimum, initial))) fail();
+  for (const p of [minimum, required]) if (p && (p.version < initial.version || p.version === initial.version && !equalPosition(p, initial))) fail();
   return save({ proof, accepted: a, origin, challenge, evidence: e, manifest, signed, acceptedMs,
     position: initial, tip: null, comparedMs: acceptedMs, complete: false, minimum,
-    minimumSeen: minimum === null || equalPosition(minimum, initial) });
+    minimumSeen: minimum === null || equalPosition(minimum, initial), required,
+    requiredCheckpoint: required && equalPosition(required, initial)
+      ? { position: initial, acceptedMs, comparedMs: acceptedMs, signedManifest: signed, historicalManifest: manifest } : null });
 }
 /** Owned historical proposal inputs and progress only. No current permission,
  * persistence or physical/key custody follows from this public checkpoint. */
-export function acceptedManifestHistoryCheckpoint03(handle: VerifiedManifestHistory03): Readonly<{
-  position: ManifestPosition03; acceptedMs: bigint; comparedMs: bigint;
-  signedManifest: Uint8Array; historicalManifest: VerifiedManifest03;
-}> {
+export function acceptedManifestHistoryCheckpoint03(handle: VerifiedManifestHistory03): ManifestHistoryCheckpoint03 {
   const s = state(handle);
   return Object.freeze({ position: { version: s.position.version, digest: Uint8Array.from(s.position.digest), ancestry: Uint8Array.from(s.position.ancestry) },
     acceptedMs: s.acceptedMs, comparedMs: s.comparedMs, signedManifest: Uint8Array.from(s.signed), historicalManifest: s.manifest });
+}
+/** Historical target recovered inside a fully verified snapshot, never present permission. */
+export function acceptedManifestHistoryRequiredCheckpoint03(handle: VerifiedManifestHistory03): ManifestHistoryCheckpoint03 {
+  const s = state(handle), c = s.requiredCheckpoint;
+  if (!s.complete || !c) fail();
+  return Object.freeze({ ...c, position: { version: c.position.version, digest: Uint8Array.from(c.position.digest), ancestry: Uint8Array.from(c.position.ancestry) },
+    signedManifest: Uint8Array.from(c.signedManifest) });
 }
 /** Owned request cursor only, not a signed checkpoint or permission. */
 export function acceptedManifestHistoryCursor03(handle: VerifiedManifestHistory03): Readonly<{
@@ -180,7 +195,8 @@ export async function continueAcceptedManifestHistory03(handle: VerifiedManifest
       || !equalPosition(after, s.position) || s.tip && (!equalPosition(tip, s.tip) || tip.acceptedMs !== s.tip.acceptedMs)
       || tip.version < s.position.version || tip.acceptedMs < s.acceptedMs || comparedMs < s.comparedMs
       || comparedMs < tip.acceptedMs || entries.reduce((n, v) => n + 16 + v.statement.length + v.signature.length + v.signed.length + 8, 0) > 65536) fail();
-  let manifest = s.manifest, signed = s.signed, acceptedMs = s.acceptedMs, p = s.position, minimumSeen = s.minimumSeen;
+  let manifest = s.manifest, signed = s.signed, acceptedMs = s.acceptedMs, p = s.position, minimumSeen = s.minimumSeen,
+    requiredCheckpoint = s.requiredCheckpoint;
   const originDigest = await sha(enc.encode(s.origin));
   for (const row of entries) {
     const f = await verifyManifestInstallPossession03(row.statement, row.signature);
@@ -212,10 +228,14 @@ export async function continueAcceptedManifestHistory03(handle: VerifiedManifest
       if (!equalPosition(p, s.minimum)) fail(); minimumSeen = true;
     }
     signed = row.signed; acceptedMs = row.acceptedMs;
+    if (s.required && p.version === s.required.version) {
+      if (!equalPosition(p, s.required)) fail();
+      requiredCheckpoint = { position: p, acceptedMs, comparedMs, signedManifest: signed, historicalManifest: manifest };
+    }
   }
   if (!equalPosition(p, next) || r.complete !== equalPosition(p, tip) || r.complete && acceptedMs !== tip.acceptedMs
-      || !r.complete && entries.length === 0 || r.complete && !minimumSeen) fail();
-  return save({ ...s, manifest, signed, acceptedMs, position: p, tip, comparedMs, complete: r.complete, minimumSeen });
+      || !r.complete && entries.length === 0 || r.complete && (!minimumSeen || s.required !== null && requiredCheckpoint === null)) fail();
+  return save({ ...s, manifest, signed, acceptedMs, position: p, tip, comparedMs, complete: r.complete, minimumSeen, requiredCheckpoint });
 }
 /** Final genuine crypto token checked against a SEPARATE trusted present read.
  * No raw DTO is converted to authority here; original source/auth/physical

@@ -35,6 +35,7 @@ impl BrowserAssets {
             "sdk/payload-profile-upgrade-proposal.js".to_owned(),
             "sdk/accepted-manifest-history03.js".to_owned(),
             "sdk/original-manifest-history03.js".to_owned(),
+            "sdk/browser-message-signer-store03.js".to_owned(),
         ];
         let mut visited = BTreeSet::new();
         while let Some(name) = pending.pop() {
@@ -482,6 +483,7 @@ mod tests {
             "payload-profile-upgrade-proposal",
             "accepted-manifest-history03",
             "original-manifest-history03",
+            "browser-message-signer-store03",
         ] {
             files.insert(format!("sdk/{name}.js"), Vec::new());
         }
@@ -519,6 +521,7 @@ mod tests {
             "payload-profile-upgrade-proposal",
             "accepted-manifest-history03",
             "original-manifest-history03",
+            "browser-message-signer-store03",
         ] {
             let path = format!("sdk/{name}.js");
             let module = files.remove(&path).unwrap();

@@ -216,6 +216,27 @@ pub fn conversation_router() -> Router {
             ),
         )
         .route(
+            "/owner/conversation-message-key03-recovery.js",
+            asset(
+                include_str!("../../../web/owner/conversation-message-key03-recovery.js"),
+                "text/javascript; charset=utf-8",
+            ),
+        )
+        .route(
+            "/owner/conversation-message-key03.js",
+            asset(
+                include_str!("../../../web/owner/conversation-message-key03.js"),
+                "text/javascript; charset=utf-8",
+            ),
+        )
+        .route(
+            "/owner/conversation-message-key03-page.js",
+            asset(
+                include_str!("../../../web/owner/conversation-message-key03-page.js"),
+                "text/javascript; charset=utf-8",
+            ),
+        )
+        .route(
             "/owner/conversation-line-setup.js",
             asset(
                 include_str!("../../../web/owner/conversation-line-setup.js"),
