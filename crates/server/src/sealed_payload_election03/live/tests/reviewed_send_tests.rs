@@ -167,6 +167,9 @@ async fn genuine_review_queues_once_reserves_once_and_signout_preserves_only_his
     let account = c.principal.tenant.account_id();
     c.db.owner.execute("INSERT INTO public.usage_quota_policies(account_id,metric,limit_units,source) VALUES($1,'outbound_message',10,'operator')",&[&account]).await.unwrap();
     let p = packet(&mut c, &browser, &statement).await;
+    // These real temporary shadows must not replace the stock public account,
+    // quota or queue. The explicit legacy bridge places pg_temp last.
+    c.db.reader.batch_execute("CREATE TEMP TABLE accounts(id uuid,disabled_at timestamptz); CREATE TEMP TABLE messages(id uuid,account_id uuid); CREATE TEMP TABLE usage_quota_policies(account_id uuid,metric text,limit_units bigint,source text)").await.unwrap();
     let tx = c.db.reader.transaction().await.unwrap();
     let mut owner = ordinary_owner03::authenticate(&tx, &c.hasher, ORIGIN, source(&c.credentials))
         .await
@@ -182,6 +185,13 @@ async fn genuine_review_queues_once_reserves_once_and_signout_preserves_only_his
     .await
     .unwrap();
     assert!(new);
+    assert_eq!(
+        tx.query_one("SHOW search_path", &[])
+            .await
+            .unwrap()
+            .get::<_, String>(0),
+        "pg_catalog"
+    );
     drop(owner);
     tx.commit().await.unwrap();
     let tx = c.db.reader.transaction().await.unwrap();
@@ -209,6 +219,14 @@ async fn genuine_review_queues_once_reserves_once_and_signout_preserves_only_his
     assert_eq!(row.get::<_, i64>(3), 1);
     assert_eq!(row.get::<_, i64>(4), 1);
     assert_eq!(row.get::<_, i64>(5), 0);
+    assert_eq!(
+        c.db.reader
+            .query_one("SELECT count(*) FROM pg_temp.messages", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
     let tx = c.db.reader.transaction().await.unwrap();
     let mut owner = ordinary_owner03::authenticate(&tx, &c.hasher, ORIGIN, source(&c.credentials))
         .await
@@ -241,12 +259,77 @@ async fn genuine_review_queues_once_reserves_once_and_signout_preserves_only_his
     assert_eq!(row.get::<_, Vec<u8>>(2), crypto::sha(&p.envelope));
     c.db.finish().await;
 }
+
+#[tokio::test]
+#[ignore = "requires disposable ZT_AUTH_TEST_DATABASE_URL administrator; actual stock-runtime public namespace privilege refusal"]
+async fn operator_widened_public_creation_refuses_before_billing_queue() {
+    let (mut c, browser, statement) = active().await;
+    let account = c.principal.tenant.account_id();
+    c.db.owner.execute("INSERT INTO public.usage_quota_policies(account_id,metric,limit_units,source) VALUES($1,'outbound_message',10,'operator')",&[&account]).await.unwrap();
+    let p = packet(&mut c, &browser, &statement).await;
+    let tx = c.db.reader.transaction().await.unwrap();
+    let mut owner = ordinary_owner03::authenticate(&tx, &c.hasher, ORIGIN, source(&c.credentials))
+        .await
+        .unwrap();
+    let role = postgres_protocol::escape::escape_identifier(&c.db.read_role);
+    c.db.owner
+        .batch_execute(&format!("GRANT CREATE ON SCHEMA public TO {role}"))
+        .await
+        .unwrap();
+    assert!(
+        reviewed::admit(
+            &tx,
+            &mut owner,
+            &p.intent,
+            &p.signature,
+            &p.envelope,
+            ORIGIN
+        )
+        .await
+        .is_err()
+    );
+    drop(owner);
+    tx.rollback().await.unwrap();
+    c.db.owner
+        .batch_execute(&format!("REVOKE CREATE ON SCHEMA public FROM {role}"))
+        .await
+        .unwrap();
+    let row=c.db.reader.query_one("SELECT (SELECT count(*) FROM public.messages WHERE account_id=$1),(SELECT count(*) FROM public.conversation_reviewed_sends03 WHERE account_id=$1)",&[&account]).await.unwrap();
+    assert_eq!(row.get::<_, i64>(0), 0);
+    assert_eq!(row.get::<_, i64>(1), 0);
+    c.db.finish().await;
+}
 #[tokio::test]
 #[ignore = "requires disposable ZT_AUTH_TEST_DATABASE_URL administrator; additive configured quota requirement"]
 async fn unconfigured_selfhosted_review_refuses_without_partial_sidecar_message_job_or_reserve() {
     let (mut c, browser, statement) = active().await;
     let account = c.principal.tenant.account_id();
     let p = packet(&mut c, &browser, &statement).await;
+    // A favorable operator-owned schema is not this installation. Its actual
+    // quota row must never satisfy the real public account's missing policy.
+    let role = postgres_protocol::escape::escape_identifier(&c.db.read_role);
+    c.db.owner
+        .batch_execute(&format!(
+            "CREATE SCHEMA billing_shadow; CREATE TABLE billing_shadow.usage_quota_policies (LIKE public.usage_quota_policies INCLUDING ALL); GRANT USAGE ON SCHEMA billing_shadow TO {role}; GRANT SELECT ON billing_shadow.usage_quota_policies TO {role}"
+        ))
+        .await
+        .unwrap();
+    c.db.owner.execute("INSERT INTO billing_shadow.usage_quota_policies(account_id,metric,limit_units,source) VALUES($1,'outbound_message',10,'operator')",&[&account]).await.unwrap();
+    c.db.reader
+        .batch_execute("SET search_path TO billing_shadow,pg_temp,public")
+        .await
+        .unwrap();
+    assert_eq!(
+        c.db.reader
+            .query_one(
+                "SELECT count(*) FROM billing_shadow.usage_quota_policies WHERE account_id=$1",
+                &[&account]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        1
+    );
     let tx = c.db.reader.transaction().await.unwrap();
     let mut owner = ordinary_owner03::authenticate(&tx, &c.hasher, ORIGIN, source(&c.credentials))
         .await
