@@ -27,6 +27,7 @@ async fn atomic_election_graph_refuses_partial_disabled_rewritten_policy_and_hel
         "DROP TABLE public.payload_profile_elections CASCADE",
         "CREATE OR REPLACE FUNCTION public.payload_profile_epoch_valid(account uuid,epoch bigint) RETURNS boolean LANGUAGE sql STABLE STRICT SECURITY DEFINER SET search_path TO pg_catalog AS 'SELECT true'",
         "CREATE OR REPLACE FUNCTION public.payload_profile_election_ready() RETURNS boolean LANGUAGE sql STABLE SET search_path TO pg_catalog AS 'SELECT true'",
+        "CREATE OR REPLACE FUNCTION public.payload_profile_election_rows_guard() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path TO pg_catalog SET lock_timeout TO '3s' AS 'BEGIN RETURN NEW; END'",
         "GRANT EXECUTE ON FUNCTION public.payload_profile_election_scope(uuid,uuid,uuid,bytea,bytea) TO PUBLIC",
     ] {
         let tx = fixture.owner.transaction().await.unwrap();
