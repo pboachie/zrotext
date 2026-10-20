@@ -27,6 +27,16 @@ impl BrowserAssets {
             "sdk/conversation-activation-proposal.js".to_owned(),
             "sdk/conversation-genesis-proposal.js".to_owned(),
             "sdk/owner-context-authoring.js".to_owned(),
+            "sdk/sealed-approval-key-store.js".to_owned(),
+            "sdk/owner-profile-election-client.js".to_owned(),
+            "sdk/original-line-evidence03.js".to_owned(),
+            "sdk/draft03-manifest.js".to_owned(),
+            "sdk/payload-profile-election03.js".to_owned(),
+            "sdk/payload-profile-upgrade-proposal.js".to_owned(),
+            "sdk/accepted-manifest-history03.js".to_owned(),
+            "sdk/original-manifest-history03.js".to_owned(),
+            "sdk/browser-message-signer-store03.js".to_owned(),
+            "sdk/owner-conversation-interval03.js".to_owned(),
         ];
         let mut visited = BTreeSet::new();
         while let Some(name) = pending.pop() {
@@ -466,6 +476,16 @@ mod tests {
             "conversation-activation-proposal",
             "conversation-genesis-proposal",
             "owner-context-authoring",
+            "sealed-approval-key-store",
+            "owner-profile-election-client",
+            "original-line-evidence03",
+            "draft03-manifest",
+            "payload-profile-election03",
+            "payload-profile-upgrade-proposal",
+            "accepted-manifest-history03",
+            "original-manifest-history03",
+            "browser-message-signer-store03",
+            "owner-conversation-interval03",
         ] {
             files.insert(format!("sdk/{name}.js"), Vec::new());
         }
@@ -491,6 +511,29 @@ mod tests {
         assert!(assets(files.clone()).require_owner_setup().is_err());
         files.insert("sdk/owner-context-authoring.js".into(), author);
         assert!(assets(files.clone()).require_owner_setup().is_ok());
+        let approval = files.remove("sdk/sealed-approval-key-store.js").unwrap();
+        assert!(assets(files.clone()).require_owner_setup().is_err());
+        files.insert("sdk/sealed-approval-key-store.js".into(), approval);
+        assert!(assets(files.clone()).require_owner_setup().is_ok());
+        for name in [
+            "owner-profile-election-client",
+            "original-line-evidence03",
+            "draft03-manifest",
+            "payload-profile-election03",
+            "payload-profile-upgrade-proposal",
+            "accepted-manifest-history03",
+            "original-manifest-history03",
+            "browser-message-signer-store03",
+            "owner-conversation-interval03",
+        ] {
+            let path = format!("sdk/{name}.js");
+            let module = files.remove(&path).unwrap();
+            assert!(
+                assets(files.clone()).require_owner_setup().is_err(),
+                "{name}"
+            );
+            files.insert(path, module);
+        }
         let genesis = files
             .remove("sdk/conversation-genesis-proposal.js")
             .unwrap();

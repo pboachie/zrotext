@@ -28,6 +28,7 @@ HPKE_METHODS = frozenset({
     "crossClientSealOpensThroughNativeBridgeAndRejectsTampering",
     "lostRecipientKeyRefusesWithoutRegeneration",
     "revokedRecipientKeyRefusesLaterOpens",
+    "currentAdmissionRefusesAtEveryHardwareWaitAndCannotLeakTheGuardIntoAnotherOpen",
 })
 CUSTODY_METHOD = "payloadCustodyReloadNeverRecreatesLostOrRevokedIdentity"
 CUSTODY_TEST = TEST + "#" + CUSTODY_METHOD
@@ -227,7 +228,7 @@ def validate_custody_stage(output, baseline=False):
 
 def validate_maintained_provider(output):
     """Accept only the four selected provider completions, with no failures/skips."""
-    verify_results(output, {HPKE_TEST: 4})
+    verify_results(output, {HPKE_TEST: len(HPKE_METHODS)})
     methods = set(re.findall(r"^INSTRUMENTATION_STATUS: test=(.+)$", output, re.MULTILINE))
     if methods != HPKE_METHODS:
         raise ValueError("Wrong maintained provider methods")

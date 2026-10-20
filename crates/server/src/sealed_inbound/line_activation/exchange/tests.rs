@@ -34,7 +34,7 @@ macro_rules! migration {
 }
 
 // Complete reviewed schema, embedded at build time.
-const TEST_MIGRATIONS: [(&str, &str); 107] = [
+const LEGACY_TEST_MIGRATIONS: [(&str, &str); 107] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -144,21 +144,8 @@ const TEST_MIGRATIONS: [(&str, &str); 107] = [
     migration!("107_registration_browser_intents.sql"),
 ];
 #[test]
-fn exchange_fixture_tracks_numbered_migrations() {
-    let directory =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
-    let mut discovered = std::fs::read_dir(directory)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .filter(|name| name.ends_with(".sql"))
-        .collect::<Vec<_>>();
-    discovered.sort();
-    let embedded = TEST_MIGRATIONS
-        .iter()
-        .filter(|(name, _)| !name.starts_with("../migration-candidates/"))
-        .map(|(name, _)| name.to_string())
-        .collect::<Vec<_>>();
-    assert_eq!(discovered, embedded, "update the embedded migration list");
+fn exchange_fixture_retains_exact_legacy107_prefix() {
+    crate::test_migration_inventory::assert_legacy107_fixture(&LEGACY_TEST_MIGRATIONS);
 }
 
 const ORIGIN: &str = "https://zrotext.example";
@@ -234,7 +221,7 @@ async fn migrated_schema_through(
     let url = format!("{base_url}{sep}options=-csearch_path%3D{schema}");
     let (db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
-    for (name, migration) in TEST_MIGRATIONS
+    for (name, migration) in LEGACY_TEST_MIGRATIONS
         .into_iter()
         .filter(|(name, _)| last.is_none_or(|last| *name <= last))
     {

@@ -9,6 +9,7 @@ use uuid::Uuid;
 use zrotext_domain::{Evidence, MessageState};
 
 pub mod exposure;
+pub mod hosted_runtime_identity;
 mod hosted_transaction;
 pub use hosted_transaction::{HostedBackendCandidate, enter_hosted_transaction};
 
@@ -2044,3 +2045,6 @@ mod usage_projection_tests;
 
 #[cfg(test)]
 mod alpha_id_tests;
+
+#[cfg(test)]
+mod test_database;

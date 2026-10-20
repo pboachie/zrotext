@@ -8,7 +8,7 @@ use uuid::Uuid;
 async fn fixture() -> Fixture {
     let fixture = Fixture::new().await;
     let role = escape_identifier(&fixture.runtime_role);
-    fixture.owner.batch_execute(&format!("GRANT EXECUTE ON FUNCTION public.payload_profile_v2_capture(uuid,uuid,bytea,bytea,bytea,bytea,bytea,bytea),public.payload_profile_v2_ready(),public.payload_profile_election_reserve(uuid,uuid,uuid,uuid,uuid,bytea,bytea,bigint),public.payload_profile_election_device_proof(uuid,uuid,bytea),public.payload_profile_election_accept(uuid,uuid,uuid,bytea,bigint),public.payload_profile_election_ready(),public.payload_profile_selection_reserve(uuid,uuid,uuid,uuid,bytea,bigint),public.payload_profile_selection_device_proof(uuid,uuid,bytea,bytea),public.payload_profile_selection_approve(uuid,uuid,uuid,bytea,bigint),public.payload_profile_selection_install(uuid,uuid,bytea,bytea),public.payload_profile_selection_ready(),public.payload_profile_manifest_install(uuid,uuid,uuid,uuid,bytea,bytea,bytea,bigint),public.payload_profile_manifest_retention(uuid,uuid,bigint,bytea,bytea,bigint,bytea),public.payload_profile_manifest_ready(),public.conversation_profile03_interval_reserve(uuid,uuid,uuid,uuid,uuid,uuid,bytea,bigint),public.conversation_profile03_interval_request(uuid,uuid,uuid,bytea,bigint),public.conversation_profile03_interval_approve(uuid,uuid,bytea),public.conversation_profile03_interval_install(uuid,uuid,bytea),public.conversation_profile03_interval_stop(uuid,uuid,uuid,uuid),public.conversation_profile03_interval_device_stop(uuid,uuid,uuid,text,text,bigint,bigint,bytea),public.conversation_profile03_interval_ready(),public.conversation_reviewed_send03_admit(uuid,uuid,uuid,bytea,bytea,bytea,bigint),public.conversation_reviewed_send03_ready() TO {role}")).await.unwrap();
+    fixture.owner.batch_execute(&format!("GRANT EXECUTE ON FUNCTION public.payload_profile_v2_capture(uuid,uuid,bytea,bytea,bytea,bytea,bytea,bytea),public.payload_profile_v2_ready(),public.payload_profile_election_reserve(uuid,uuid,uuid,uuid,uuid,bytea,bytea,bigint),public.payload_profile_election_device_proof(uuid,uuid,bytea),public.payload_profile_election_accept(uuid,uuid,uuid,bytea,bigint),public.payload_profile_election_ready(),public.payload_profile_selection_reserve(uuid,uuid,uuid,uuid,bytea,bigint),public.payload_profile_selection_device_proof(uuid,uuid,bytea,bytea),public.payload_profile_selection_approve(uuid,uuid,uuid,bytea,bigint),public.payload_profile_selection_install(uuid,uuid,bytea,bytea),public.payload_profile_selection_ready(),public.payload_profile_manifest_install(uuid,uuid,uuid,uuid,bytea,bytea,bytea,bigint),public.payload_profile_manifest_retention(uuid,uuid,bigint,bytea,bytea,bigint,bytea),public.payload_profile_manifest_ready(),public.conversation_profile03_interval_reserve(uuid,uuid,uuid,uuid,uuid,uuid,bytea,bigint),public.conversation_profile03_interval_request(uuid,uuid,uuid,bytea,bigint),public.conversation_profile03_interval_approve(uuid,uuid,bytea),public.conversation_profile03_interval_install(uuid,uuid,bytea),public.conversation_profile03_interval_stop(uuid,uuid,uuid,uuid),public.conversation_profile03_interval_device_stop(uuid,uuid,uuid,text,text,bigint,bigint,bytea),public.conversation_profile03_interval_ready(),public.conversation_reviewed_send03_admit(uuid,uuid,uuid,bytea,bytea,bytea,bigint),public.conversation_reviewed_send03_ready(),public.conversation_reviewed_send03_v2_ready() TO {role}")).await.unwrap();
     require(&fixture.db).await.unwrap();
     assert!(require(&fixture.owner).await.is_err());
     fixture
@@ -126,4 +126,105 @@ async fn absent_attempt_is_not_authority_and_copied_context_cannot_select_a_posi
         0
     );
     fixture.finish().await;
+}
+
+#[test]
+fn every_current_grant_required_declaration_uses_its_independent_stock_pin() {
+    use sha2::{Digest, Sha256};
+    let expected = [
+        (
+            "conversation_profile03_grant_mode",
+            "88cc435625b02027cf88e09b93a5ece91be164073876b837750c6232d211c4f3",
+        ),
+        (
+            "conversation_profile03_grant_issued",
+            "660270fb3f84cc662d67a8734c49b254e460d82f3535975970c133aa8f73626e",
+        ),
+        (
+            "conversation_profile03_grant_lock",
+            "35544e458bd295ea65c292f85c165f7a68ab54833f39005fa6eb9072f97c4b1d",
+        ),
+        (
+            "conversation_profile03_grant_issue",
+            "9d16e12ae65072a8eaefaa43ab17b14b360ed914f2c90c03af83e15a8538fc32",
+        ),
+        (
+            "conversation_profile03_grant_rows_guard",
+            "b3a9375ed664177dfb032755071667fa3ceb14dac1ce5e37c1712bb2f31cd427",
+        ),
+        (
+            "conversation_profile03_grant_complete",
+            "027bcdfb9e932d3b00efde8cef3bafe6859d1681d82568b0b09bb42ab9085964",
+        ),
+        (
+            "conversation_profile03_grant_billing",
+            "2e9f58851146928cebfe79ec54160f0718d6cdd6ed05b3fcec29e414c84e7bf3",
+        ),
+        (
+            "conversation_profile03_grant_usage_writer",
+            "686ac7d0916e22b825e233f9dec01e38b5cf0bdbae7225e704ed44c18f2271ed",
+        ),
+        (
+            "conversation_profile03_grant_scope",
+            "7f4861c2b72b04b787fbe03dba9ea0df1b453dd90fc63181ed37b707d081231b",
+        ),
+        (
+            "conversation_profile03_grant_same_scope",
+            "89ee126bc416034db17eaf5596ce622dd651524f741b0012d7987e202d30b523",
+        ),
+        (
+            "conversation_profile03_grant_writer",
+            "fcaf2e8c7e8f74f1a492c1d55c2b569470d40009c431a28e5e1b4cbb40756a60",
+        ),
+        (
+            "payload_profile_writer_policy",
+            "1f0acf81fd7550826184f8627c50095b9fb17678b12725106c143f765b929300",
+        ),
+        (
+            "conversation_reviewed_send03_admit",
+            "b7376d9339996f1ee35d3c4d786abd4507098c9fa8d4f2aa874eee797db985cb",
+        ),
+        (
+            "alpha_message_effect_guard",
+            "f875332d9ad2bb15cf348ef422176e65bc6d74974f27766a38b0c7513dd63bda",
+        ),
+        (
+            "conversation_profile03_interval_ready",
+            "e097ea53760cb750baef4ef1df7208f548db98791845d2daf36f396598f41b3f",
+        ),
+        (
+            "payload_profile_writer_version",
+            "887ad6ecb8df729687fb1ba9d05436eb7511f035f7cafc8b27685d9d5c9b2bc6",
+        ),
+        (
+            "payload_profile_writer_ready",
+            "10d2f8fa9ab50a4440ff98b529637fb92f71b79743a3b23ea763b585e7d98458",
+        ),
+        (
+            "conversation_profile03_grant_ready",
+            "7a7920d347bb93453f6d11c2044060ba46642135f41dab8223446cafee017448",
+        ),
+    ];
+    assert_eq!(REQUIRED_FUNCTIONS.len(), expected.len());
+    let names = REQUIRED_FUNCTIONS
+        .iter()
+        .map(|entry| entry.0)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        names.len(),
+        expected.len(),
+        "duplicate required declaration"
+    );
+    for &(name, _, _, _, _, _, _, _, _, _) in REQUIRED_FUNCTIONS {
+        let expected = expected
+            .iter()
+            .find(|(required, _)| *required == name)
+            .expect("unreviewed required declaration")
+            .1;
+        let actual = Sha256::digest(body(name, 117).unwrap().as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(actual, expected, "{name}");
+    }
 }

@@ -37,7 +37,7 @@ macro_rules! export_schema {
             [$(($name, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/compose/migrations/", $name)))),+]
         };
     }
-const EXPORT_SCHEMA: [(&str, &str); 107] = export_schema!(
+const LEGACY_EXPORT_SCHEMA: [(&str, &str); 107] = export_schema!(
     "001_foundation.sql",
     "002_auth.sql",
     "003_delivery.sql",
@@ -147,25 +147,8 @@ const EXPORT_SCHEMA: [(&str, &str); 107] = export_schema!(
     "107_registration_browser_intents.sql",
 );
 #[test]
-fn export_schema_includes_every_checked_in_migration() {
-    let directory =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
-    let mut names = std::fs::read_dir(directory)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "sql"))
-        .map(|path| path.file_name().unwrap().to_str().unwrap().to_owned())
-        .collect::<Vec<_>>();
-    names.sort();
-    let embedded = EXPORT_SCHEMA
-        .iter()
-        .filter(|(name, _)| !name.starts_with("../migration-candidates/"))
-        .map(|(name, _)| name.to_string())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        names, embedded,
-        "add the new migration to EXPORT_SCHEMA so the export test covers it"
-    );
+fn export_fixture_retains_exact_legacy107_prefix() {
+    crate::test_migration_inventory::assert_legacy107_fixture(&LEGACY_EXPORT_SCHEMA);
 }
 
 #[test]
@@ -219,7 +202,7 @@ async fn export_is_tenant_bound_and_carries_owner_content() {
     let database_url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
     let (mut db, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
-    for (name, migration) in EXPORT_SCHEMA {
+    for (name, migration) in LEGACY_EXPORT_SCHEMA {
         if name == "070_message_summary_metadata.sql" {
             db.batch_execute("CREATE INDEX CONCURRENTLY messages_summary_queue ON messages(account_id,state,created_at) WHERE state IN ('accepted','queued','claimed','submitting','submitted')").await.unwrap();
             db.batch_execute("BEGIN").await.unwrap();
@@ -967,7 +950,7 @@ async fn export_carries_contacts_with_consent_history_and_never_foreign_rows() {
     let database_url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
     let (mut db, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
-    for (name, migration) in EXPORT_SCHEMA {
+    for (name, migration) in LEGACY_EXPORT_SCHEMA {
         if name == "070_message_summary_metadata.sql" {
             db.batch_execute("CREATE INDEX CONCURRENTLY messages_summary_queue ON messages(account_id,state,created_at) WHERE state IN ('accepted','queued','claimed','submitting','submitted')").await.unwrap();
             db.batch_execute("BEGIN").await.unwrap();

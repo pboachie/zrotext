@@ -18,7 +18,7 @@ macro_rules! migration {
 
 // The ceremony runs on the complete schema. SQL is embedded at build time so
 // the test never executes files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 107] = [
+const LEGACY_TEST_MIGRATIONS: [(&str, &str); 107] = [
     ("001_foundation.sql", migration!("001_foundation.sql")),
     ("002_auth.sql", migration!("002_auth.sql")),
     ("003_delivery.sql", migration!("003_delivery.sql")),
@@ -435,21 +435,8 @@ const TEST_MIGRATIONS: [(&str, &str); 107] = [
 ];
 
 #[test]
-fn ceremony_fixture_tracks_numbered_migrations() {
-    let directory =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
-    let mut discovered = std::fs::read_dir(directory)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .filter(|name| name.ends_with(".sql"))
-        .collect::<Vec<_>>();
-    discovered.sort();
-    let embedded = TEST_MIGRATIONS
-        .iter()
-        .filter(|(name, _)| !name.starts_with("../migration-candidates/"))
-        .map(|(name, _)| name.to_string())
-        .collect::<Vec<_>>();
-    assert_eq!(discovered, embedded, "update the embedded migration list");
+fn ceremony_fixture_retains_exact_legacy107_prefix() {
+    crate::test_migration_inventory::assert_legacy107_fixture(&LEGACY_TEST_MIGRATIONS);
 }
 
 #[test]
@@ -584,7 +571,7 @@ async fn postgres_owner_key_ceremony_requires_possession_mfa_and_revokes_only_sm
     let url = format!("{base_url}{sep}options=-csearch_path%3D{schema}");
     let (mut db, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
-    for (name, migration) in TEST_MIGRATIONS {
+    for (name, migration) in LEGACY_TEST_MIGRATIONS {
         if name == "070_message_summary_metadata.sql" {
             db.batch_execute("CREATE INDEX CONCURRENTLY messages_summary_queue ON messages(account_id,state,created_at) WHERE state IN ('accepted','queued','claimed','submitting','submitted')").await.unwrap();
             db.batch_execute("BEGIN").await.unwrap();

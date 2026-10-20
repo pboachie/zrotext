@@ -33,6 +33,12 @@ abstract class SealedPreparationDao {
     @Query("SELECT * FROM local_line_binding WHERE slot = 1")
     protected abstract fun line(): LocalLineBinding?
 
+    @Query("SELECT EXISTS(SELECT 1 FROM profile03_elections WHERE accountId = :account AND (state IN ('reserved','signed','installed') OR deviceSignatureB64url IS NOT NULL OR acceptedEvidenceSha256 IS NOT NULL))")
+    protected abstract fun hasProfile03Fence(account: String): Boolean
+
+    @Query("SELECT * FROM profile03_elections WHERE challengeId = :challenge")
+    protected abstract fun profile03Installation(challenge: String): Profile03ElectionRecord?
+
     @Insert
     protected abstract fun insert(record: SealedPreparationRecord)
 
@@ -46,6 +52,24 @@ abstract class SealedPreparationDao {
     /** Transaction acquisition can block. Revalidate only after it has completed. Never evict. */
     @Transaction
     open fun reserve(record: SealedPreparationRecord, checkCurrentLine: (LocalLineBinding?) -> Unit) {
+        check(!hasProfile03Fence(record.accountId)) { "Profile02 is unavailable during or after election03" }
+        reserveChecked(record, checkCurrentLine)
+    }
+
+    /** The installed03 selection and one-use preparation commit under the same Room writer.
+     * No boolean/profile flag allows the old02 entry point past an installed election.
+     */
+    @Transaction
+    open fun reserve03(record: SealedPreparationRecord, installation: Profile03ElectionRecord,
+        checkCurrentLine: (LocalLineBinding?) -> Unit) {
+        installation.requireShape()
+        require(installation.state == "installed" && installation.accountId == record.accountId)
+        check(profile03Installation(installation.challengeId) == installation)
+        reserveChecked(record, checkCurrentLine)
+        check(profile03Installation(installation.challengeId) == installation)
+    }
+
+    private fun reserveChecked(record: SealedPreparationRecord, checkCurrentLine: (LocalLineBinding?) -> Unit) {
         checkCurrentLine(line())
         require(record.state == "preparing" && record.segmentCount == null &&
             listOf(record.accountId, record.messageId, record.attemptId).all { id ->

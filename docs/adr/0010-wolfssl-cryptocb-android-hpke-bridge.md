@@ -87,6 +87,13 @@ unchanged. Obligations recorded here per review condition 6:
 
 ## What remains open
 
+The additive [profile03 inbound sealer](../android-profile03-inbound-sealing.md)
+also uses this pinned library for public-recipient encryption. Its callback
+answers one transient JCA sender-key ECDH; recipient opens retain the existing
+Keystore custody boundary. Both native entries share a process gate because
+the library is built `SINGLE_THREADED`. This prerequisite does not mount capture,
+upload or conversation permission.
+
 The physical API 31+ key-lifecycle gate from #1003 (enrollment, existing-key
 operation, hardware-backed claims, reboot, key loss/revocation, no accidental
 regeneration on supported hardware) is untouched by this ADR and stays open.
