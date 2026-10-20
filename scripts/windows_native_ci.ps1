@@ -140,6 +140,8 @@ function Test-UnlockOutput([string[]]$Lines) {
     if(-not (Test-UnlockOutput $unlockGood)){throw 'Unlock summary acceptance regression.'}
     $unlockBeforeManifestSuccessor=@('test result: ok. 40 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 123 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured')
     if(Test-UnlockOutput $unlockBeforeManifestSuccessor){throw 'Missing manifest successor signing suite regression.'}
+    $unlockBeforeOfflineApproval=@('test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 125 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured')
+    if(Test-UnlockOutput $unlockBeforeOfflineApproval){throw 'Missing offline manifest approval suite regression.'}
     $unlockBeforePayloadUpgrade=@('test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 118 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured')
     if(Test-UnlockOutput $unlockBeforePayloadUpgrade){throw 'Missing first profile upgrade suite regression.'}
     $unlockBeforeReviewResume=@('test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 106 passed; 0 failed; 0 ignored; 0 measured','test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured')
