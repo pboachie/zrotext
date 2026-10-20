@@ -15,7 +15,9 @@ mod transition;
 pub use challenge::Reservation;
 pub use current03::current;
 pub(crate) use current03::device_current;
-pub(crate) use current03::{HeldMessageSelection03, hold_owner_selection, hold_step_up_selection};
+pub(crate) use current03::{
+    HeldMessageSelection03, hold_interval_selection, hold_owner_selection, hold_step_up_selection,
+};
 pub(crate) use transition::device_challenge;
 pub(crate) use transition::device_proof;
 pub use transition::{accept, bootstrap, historical_accept, reserve, status};

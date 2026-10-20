@@ -119,6 +119,99 @@ fn actual_distinct_role_five_request_and_role_four_phone_proofs_verify_exact_sta
     context(&s, &e, NOW + 100, false).unwrap();
 }
 #[test]
+fn retained_original_install_remains_verifiable_after_setup_without_renewing_any_time() {
+    let p = Packet::new();
+    let s = Statement03::decode(&statement(&p)).unwrap();
+    let e = expected(&p, &s);
+    let (owner, phone, installed) = signatures(&p, &s);
+    verify_retained(
+        &s,
+        Some((&owner, NOW)),
+        Some((&phone, NOW + 1)),
+        Some((&installed, NOW + 2)),
+        &e,
+        NOW + 100,
+    )
+    .unwrap();
+    for (requested, approved, installed_at, now) in [
+        (NOW - 1, NOW + 1, NOW + 2, NOW + 100),
+        (NOW, NOW - 1, NOW + 2, NOW + 100),
+        (NOW, NOW + 1, NOW, NOW + 100),
+        (NOW, NOW + 1, NOW + 100, NOW + 101),
+        (NOW, NOW + 1, NOW + 2, NOW + 1),
+        (NOW, NOW + 1, NOW + 2, NOW + 500),
+    ] {
+        assert!(
+            verify_retained(
+                &s,
+                Some((&owner, requested)),
+                Some((&phone, approved)),
+                Some((&installed, installed_at)),
+                &e,
+                now
+            )
+            .is_err()
+        );
+    }
+    assert!(verify_retained(&s, None, Some((&phone, NOW)), None, &e, NOW).is_err());
+    assert!(
+        verify_retained(
+            &s,
+            Some((&owner, NOW)),
+            None,
+            Some((&installed, NOW)),
+            &e,
+            NOW
+        )
+        .is_err()
+    );
+}
+#[test]
+fn composed_original_bytes_are_exact_and_cannot_select_an_unverified_role_or_deadline() {
+    let p = Packet::new();
+    let bytes = statement(&p);
+    let s = Statement03::decode(&bytes).unwrap();
+    let e = expected(&p, &s);
+    let made = compose(
+        &e,
+        Uuid::from_bytes([20; 16]),
+        Uuid::from_bytes([21; 16]),
+        Uuid::from_bytes([22; 16]),
+        NOW,
+        NOW + 100,
+        NOW + 500,
+        [26; 32],
+    )
+    .unwrap();
+    assert_eq!(made.bytes(), bytes);
+    assert!(
+        compose(
+            &e,
+            s.binding_id(),
+            s.receipt_id(),
+            s.opening_id(),
+            NOW,
+            NOW + 100,
+            NOW + 500,
+            [26; 32]
+        )
+        .is_err()
+    );
+    assert!(
+        compose(
+            &e,
+            s.interval_id(),
+            s.receipt_id(),
+            s.opening_id(),
+            NOW,
+            NOW + 100,
+            NOW + 80_001,
+            [26; 32]
+        )
+        .is_err()
+    );
+}
+#[test]
 fn disclosure_original_scope_and_prior_proof_hashes_cannot_be_replaced() {
     let p = Packet::new();
     let bytes = statement(&p);

@@ -156,6 +156,44 @@ impl Statement03 {
     pub fn opening_id(&self) -> Uuid {
         Uuid::from_bytes(self.ids[8])
     }
+    pub(crate) fn device_id(&self) -> Uuid {
+        Uuid::from_bytes(self.ids[1])
+    }
+    pub(crate) fn line_id(&self) -> Uuid {
+        Uuid::from_bytes(self.ids[2])
+    }
+    pub(crate) fn binding_id(&self) -> Uuid {
+        Uuid::from_bytes(self.ids[3])
+    }
+    pub(crate) fn owner(&self) -> (Uuid, Uuid) {
+        (Uuid::from_bytes(self.ids[6]), Uuid::from_bytes(self.ids[7]))
+    }
+    pub(crate) fn times(&self) -> (u64, u64, u64, u64) {
+        (
+            self.numbers[4],
+            self.numbers[5],
+            self.numbers[6],
+            self.numbers[7],
+        )
+    }
+    pub(crate) fn keys(&self) -> (&[u8; 32], &[u8; 32], &[u8; 32]) {
+        (&self.digests[1], &self.digests[2], &self.digests[3])
+    }
+    pub(crate) fn peer(&self) -> &[u8] {
+        &self.peer
+    }
+    pub(crate) fn integrations(&self) -> &[IntegrationReader03] {
+        &self.integrations
+    }
+    pub(crate) fn owner_digest(&self) -> &[u8; 32] {
+        &self.digests[8]
+    }
+    pub(crate) fn device_digest(&self) -> &[u8; 32] {
+        &self.digests[10]
+    }
+    pub(crate) fn physical_digest(&self) -> &[u8; 32] {
+        &self.digests[11]
+    }
     pub fn digest(&self) -> [u8; 32] {
         crypto::sha(&self.bytes)
     }
@@ -329,6 +367,128 @@ pub(crate) fn verify_install(
     )
 }
 
+/// Reverify exact original receipts while checking present authority separately.
+/// Original setup timestamps are historical facts, never a renewed deadline.
+pub(crate) fn verify_retained(
+    s: &Statement03,
+    owner: Option<(&[u8; 64], u64)>,
+    phone: Option<(&[u8; 64], u64)>,
+    installed: Option<(&[u8; 64], u64)>,
+    e: &ExpectedConsent03<'_>,
+    now: u64,
+) -> Check<()> {
+    let keys = context(s, e, now, false)?;
+    let (_, setup, _, _) = s.times();
+    let issued = s.numbers[4];
+    let mut prior = issued;
+    if let Some((signature, time)) = owner {
+        if time < prior || time >= setup || time > now {
+            return Err("consent original request time");
+        }
+        crypto::signature(&keys.browser, signature, &s.request_transcript())?;
+        prior = time;
+    }
+    if let Some((signature, time)) = phone {
+        let (owner, _) = owner.ok_or("consent approval without request")?;
+        if time < prior || time >= setup || time > now {
+            return Err("consent original approval time");
+        }
+        crypto::signature(&keys.phone, signature, &s.approval_transcript(owner))?;
+        prior = time;
+    }
+    if let Some((signature, time)) = installed {
+        let (owner, _) = owner.ok_or("consent install without request")?;
+        let (phone, _) = phone.ok_or("consent install without approval")?;
+        if time < prior || time >= setup || time > now {
+            return Err("consent original install time");
+        }
+        crypto::signature(
+            &keys.phone,
+            signature,
+            &s.installation_transcript(owner, phone),
+        )?;
+    }
+    Ok(())
+}
+
+/// The only production caller supplies actual held owner/current/physical and
+/// registry selection. Public routing inputs cannot construct that witness.
+pub(crate) fn compose(
+    e: &ExpectedConsent03<'_>,
+    interval: Uuid,
+    receipt: Uuid,
+    opening: Uuid,
+    issued: u64,
+    setup: u64,
+    expires: u64,
+    nonce: [u8; 32],
+) -> Check<Statement03> {
+    let c = election::require_current(e.election, e.manifest, e.current, issued)?;
+    let owner = election::adapter_contract::OwnerSessionIdentity03 {
+        account_id: c.account_id,
+        user_id: *e.user.as_bytes(),
+        session_id: *e.session.as_bytes(),
+    }
+    .digest()?;
+    let mut bytes = HEADER.to_vec();
+    for id in [
+        c.account_id,
+        c.device_id,
+        c.line_id,
+        c.binding_id,
+        *interval.as_bytes(),
+        *receipt.as_bytes(),
+        *e.user.as_bytes(),
+        *e.session.as_bytes(),
+        *opening.as_bytes(),
+    ] {
+        bytes.extend(id);
+    }
+    for value in [
+        c.binding_generation,
+        c.vault_generation,
+        c.manifest_version,
+        e.selection_epoch,
+        issued,
+        setup,
+        issued,
+        expires,
+    ] {
+        bytes.extend(value.to_be_bytes());
+    }
+    for digest in [
+        c.selected_reader_key_id,
+        *e.archive_reader,
+        *e.phone_signer,
+        *e.browser_signer,
+        c.root_fingerprint,
+        c.manifest_digest,
+        c.election_commitment,
+        c.election_bundle_sha256,
+        owner,
+        election::adapter_contract::origin_digest(e.canonical_origin)?,
+        *e.device_session_digest,
+        *e.physical_digest,
+        nonce,
+    ] {
+        bytes.extend(digest);
+    }
+    bytes.push(DISCLOSURE_VERSION.len() as u8);
+    bytes.extend(DISCLOSURE_VERSION.as_bytes());
+    bytes.extend(crypto::sha(DISCLOSURE.as_bytes()));
+    bytes.push(u8::try_from(e.peer.len()).map_err(|_| "consent peer width")?);
+    bytes.extend(e.peer);
+    bytes.push(u8::try_from(e.integrations.len()).map_err(|_| "consent integrations width")?);
+    for r in e.integrations {
+        bytes.extend(r.connector_id.as_bytes());
+        bytes.extend(r.read_grant_id.as_bytes());
+        bytes.extend(r.key_id);
+    }
+    let statement = Statement03::decode(&bytes)?;
+    context(&statement, e, issued, true)?;
+    Ok(statement)
+}
+
 /// A commitment to independently authenticated physical evidence, not a permit.
 pub enum PhysicalSource03<'a> {
     OriginalV2 {
@@ -412,5 +572,6 @@ pub fn physical_digest(
     )?))
 }
 
+pub(crate) mod live;
 #[cfg(test)]
 mod tests;

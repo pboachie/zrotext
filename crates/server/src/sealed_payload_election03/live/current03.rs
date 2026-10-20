@@ -10,7 +10,9 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B};
 use uuid::Uuid;
 mod permission;
 mod physical;
-pub(crate) use permission::{HeldMessageSelection03, hold_owner_selection, hold_step_up_selection};
+pub(crate) use permission::{
+    HeldMessageSelection03, hold_interval_selection, hold_owner_selection, hold_step_up_selection,
+};
 
 struct Current<'held, 'db> {
     reservation: Reservation,
