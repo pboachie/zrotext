@@ -25,6 +25,8 @@ pub mod contact_reader_signing;
 pub mod conversation_genesis;
 /// Cryptographic stage-root evidence only; signing is offline unlock-only.
 pub mod preaccount_root_evidence;
+/// Public03 possession and narrow unsigned/signed successor review. No signing.
+pub mod profile03_manifest;
 pub mod recovery_kit;
 /// Closed public-only phase packets and continuity review; no signing or authority.
 pub mod registered_root_packets;
