@@ -15,6 +15,7 @@ const ORIGIN: &str = "https://activation.example";
 mod fixture;
 mod interval_tests;
 mod manifest_cache_tests;
+mod manifest_original_tests;
 mod manifest_permission_tests;
 mod manifest_tests;
 use fixture::{prepared, sign, source};
