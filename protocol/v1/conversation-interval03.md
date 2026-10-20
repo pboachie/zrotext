@@ -84,7 +84,8 @@ content has a separate deletion lifecycle.
 Every challenge, passive status and signed fetch includes a closed `interval_permission`.
 Its request ID is the signed receipt for a challenge, the actual pending nonce for status,
 or the signed grant attempt ID for fetch. Fetch requires all three original signatures and
-times, exact active local journal evidence and the same live RAM installation. The selected
+times, exact active local journal evidence and the same live RAM installation. Original message
+admission must be at or after the original installation time and no later than actual now. The selected
 peer, owner session, signers, interval bounds and complete outbound recipient set must match
 the reviewed intent. The after-wait maintained-recipient guard also checks an interval-specific
 RAM withdrawal/deadline guard, without Room, framework or key access under custody.

@@ -94,13 +94,13 @@ class ConversationInterval03RuntimeTest {
         fun row() = checkNotNull(store.openForDecision().find(statement.interval.toString()))
         fun proof() = store.proof(row())
         fun approved() = runtime.approved(JSONObject().put("v", 1).put("type", "conversation_interval_approved03")
-            .put("interval_id", statement.interval).put("statement_sha256", b64(statement.sha256())).put("approved_ms", "100002").toString().toByteArray())
+            .put("interval_id", statement.interval).put("statement_sha256", b64(statement.sha256())).put("approved_ms", base.now.toString()).toString().toByteArray())
         fun installed() = runtime.installed(JSONObject().put("v", 1).put("type", "conversation_interval_installed03")
-            .put("interval_id", statement.interval).put("statement_sha256", b64(statement.sha256())).put("installed_ms", "100003")
+            .put("interval_id", statement.interval).put("statement_sha256", b64(statement.sha256())).put("installed_ms", base.now.toString())
             .put("device_session_digest", b64(f.deviceSession)).toString().toByteArray())
-        fun packet(proof: ConversationInterval03Proof): Profile03FetchPacket = Profile03FetchPacket.decode(JSONObject()
+        fun packet(proof: ConversationInterval03Proof, acceptedMs: Long = base.now): Profile03FetchPacket = Profile03FetchPacket.decode(JSONObject()
             .put("v", 1).put("envelope", b64(base.envelope)).put("reviewed_intent", b64(base.intentBytes))
-            .put("reviewed_signature", b64(base.intentSignature)).put("accepted_ms", base.admittedAt.toString())
+            .put("reviewed_signature", b64(base.intentSignature)).put("accepted_ms", acceptedMs.toString())
             .put("interval_starts_ms", statement.intervalStartsMs.toString()).put("interval_expires_ms", statement.intervalExpiresMs.toString())
             .put("selection_epoch", "3").put("current", JSONObject().put("v", 1))
             .put("interval_permission", f.permission(proof)).toString().toByteArray(), base.grant)
@@ -128,7 +128,7 @@ class ConversationInterval03RuntimeTest {
     @Test fun activeStatusCannotReplaceOriginalAckAndRetryNeverResigns(): Unit = Fixture().use { v ->
         val shown = v.challenge(); v.io { v.runtime.approve(shown, AtomicBoolean(true)); v.approved() }
         val original = v.sent.last()
-        val proof = v.io { v.proof().installed(100_003) }
+        val proof = v.io { v.proof().installed(v.base.now) }
         v.io {
             v.activeStatus(shown, proof)
             assertEquals("install_signed", v.row().state)
@@ -136,6 +136,7 @@ class ConversationInterval03RuntimeTest {
             v.runtime.retry(shown, AtomicBoolean(true))
             assertEquals(original, v.sent.last())
             v.installed(); assertEquals("active", v.row().state)
+            assertThrows(Exception::class.java) { v.runtime.requireFetch(v.packet(proof, v.base.now - 1), v.base.grant, v.f.selected()) }
             v.runtime.requireFetch(v.packet(proof), v.base.grant, v.f.selected()).invoke()
         }
         assertEquals(1, v.approvals); assertEquals(1, v.installations)
@@ -164,7 +165,7 @@ class ConversationInterval03RuntimeTest {
     }
     @Test fun coldJournalAndDownloadedProofsCannotReconstructOrRepeatTheOriginal(): Unit = Fixture().use { v ->
         val shown = v.challenge(); v.io { v.runtime.approve(shown, AtomicBoolean(true)); v.approved() }
-        val full = v.io { v.proof().installed(100_003) }
+        val full = v.io { v.proof().installed(v.base.now) }
         v.restart(); val cold = v.challenge()
         v.io {
             assertThrows(Exception::class.java) { v.activeStatus(cold, full) }

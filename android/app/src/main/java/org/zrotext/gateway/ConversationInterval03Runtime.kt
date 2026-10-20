@@ -247,6 +247,7 @@ internal class ConversationInterval03Runtime(private val owner: Any, private val
             same(checkNotNull(p.phoneSignature()), checkNotNull(proof.phoneSignature())) &&
             same(checkNotNull(p.installedSignature()), checkNotNull(proof.installedSignature())) &&
             p.requestedMs == proof.requestedMs && p.approvedMs == proof.approvedMs && p.installedMs == proof.installedMs)
+        require(packet.acceptedMs in checkNotNull(proof.installedMs)..now())
         p.verifyCurrent(selected, signer.readerPoint(), originDigest, now())
         val intent = ReviewedIntent03.decode(packet.intent()); val s = proof.statement
         require(intent.intervalId == s.interval && intent.ownerUserId == s.ownerUser && intent.ownerSessionId == s.ownerSession &&
