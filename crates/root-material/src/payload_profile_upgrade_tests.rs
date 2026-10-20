@@ -21,7 +21,7 @@ fn fixture() -> (RootSecret, Proposal, Expected) {
         // Independent enrollment identity, deliberately different from role4.
         phone_signer: key_id(
             4,
-            &SigningKey::from_slice(&[27; 32])
+            SigningKey::from_slice(&[27; 32])
                 .unwrap()
                 .verifying_key()
                 .to_sec1_point(false)
