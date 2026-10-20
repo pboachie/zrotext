@@ -42,6 +42,15 @@
     },
     {
       "$ref": "#/$defs/device_installed_ack"
+    },
+    {
+      "$ref": "#/$defs/owner_original"
+    },
+    {
+      "$ref": "#/$defs/device_original_request"
+    },
+    {
+      "$ref": "#/$defs/device_original"
     }
   ],
   "$defs": {
@@ -1307,6 +1316,130 @@
           "pattern": "^[A-Za-z0-9_-]+$",
           "minLength": 43,
           "maxLength": 43
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        }
+      }
+    },
+    "owner_original": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "kind",
+        "line_id",
+        "binding_id",
+        "evidence"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "kind": {
+          "const": "manifest_original03"
+        },
+        "line_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "binding_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        }
+      }
+    },
+    "device_original_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "type",
+        "connection_epoch",
+        "challenge",
+        "line_id"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "payload_profile_manifest_original03_request"
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "challenge": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "line_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        }
+      }
+    },
+    "device_original": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "type",
+        "connection_epoch",
+        "challenge",
+        "line_id",
+        "binding_id",
+        "evidence"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "payload_profile_manifest_original03"
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "challenge": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "line_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        "binding_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
         },
         "evidence": {
           "$ref": "#/$defs/evidence"
