@@ -23,6 +23,13 @@ proof conflicts. Any retained device signature permanently fences legacy02
 sealed effect fallback, including after expiry or an interrupted response.
 Ordinary SMS remains distinct and retains its existing invariants.
 
+Each new reservation, device proof, irreversible closure and accepted ledger
+insert versions the retained account-anchor tuple inside the mandatory row
+guard. This also serializes writers whose repeatable-read or serializable
+snapshot predates that mutation while the selection epoch is still zero.
+Exact historical retries and unchanged rows leave that tuple and all original
+times untouched. The tuple update grants no new epoch or authority.
+
 An explicit fresh higher reservation can close expired unaccepted predecessors
 under the unchanged02 root/binding and actual exclusive account fence. Closure
 time equals the new core's issued time, with old expiry at or before that time
