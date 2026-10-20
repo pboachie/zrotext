@@ -306,3 +306,20 @@ same-root manifest successor. Password login or one phone's acceptance does not
 qualify a different reviewer's nonexportable key or current line. This first
 upgrade contract cannot supply that operation by widening E500 or resetting
 authority.
+
+
+### Retained same-root03 successor storage
+
+The112 candidate storage retains exact signed successor ancestry after the
+original election. Browser role5 enrollment, same-point signed key-window
+renewal and explicit current-line browser replacement share one narrow receipt
+factory. Receipt, authority tip, accepted history, purpose-separated unique
+signing-point claim and actual stable-anchor tuple version commit together.
+Original historical bytes and current content contexts never translate.
+
+A full-prefix commitment binds original root-signature bytes, possession
+signatures and actual acceptance checkpoints for independently verified cache
+provenance. It is no authentication or effect witness. Complete ancestry
+verification, bounded transport pages and local highwater, current owner/phone
+adapters and content/effect paths remain separate integration work. See
+[manifest successor storage](../../docs/profile03-manifest-successors.md).

@@ -6,3 +6,4 @@ deploy/compose/migrations/108_payload_profile_writer_fences.sql text eol=lf
 deploy/compose/migrations/109_original_sealed_activation_receipts.sql text eol=lf
 deploy/compose/migrations/110_payload_profile_elections.sql text eol=lf
 deploy/compose/migrations/111_payload_profile_selection_refresh.sql text eol=lf
+deploy/compose/migrations/112_payload_profile_manifest_successors.sql text eol=lf
