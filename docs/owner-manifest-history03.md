@@ -13,6 +13,15 @@ The caller must independently verify the original compared root, registration,
 activation and actual retained acceptance provenance. A parsed record cannot
 replace either private proof token.
 
+For a fresh browser without an original local journal, the client's explicit
+`original(lineId)` reads the additive `/manifests/original` route before any
+history token exists. It returns only closed historical candidates and their
+actual retained binding UUID. That UUID is absent from signed E500 bytes but
+needed for the base prefix. The response does not create a proof token. The
+controller must verify the independently compared root and original evidence
+before constructing the genuine first-election inputs. A physical/current
+permission is neither required for this public history read nor inferred from it.
+
 `continueAcceptedManifestHistory03` captures one closed page before asynchronous
 crypto. It verifies contiguous original root signatures, the role05 possession
 signature and full stated owner/election/origin scope, original proof windows,

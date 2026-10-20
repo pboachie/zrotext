@@ -254,6 +254,9 @@ export type OwnerManifestHistoryOptions03 = Readonly<{
   origin: string; accountId: string; userId: string; ownerSessionId: string;
   currentCsrf: () => string; signal: AbortSignal; timeoutMs?: number; fetchImpl?: typeof fetch;
 }>;
+export type OriginalManifestBootstrapCandidate03 = Readonly<{
+  v: 1; kind: 'manifest_original03'; line_id: string; binding_id: string; evidence: OriginalManifestEvidence03;
+}>;
 /** Actual fixed same-origin owner transport. Reads one bounded history page per
  * explicit call; no automatic mutation, new key, renewal, retry or factor use.
  * These reads still depend on the configured service's real cookie auth and
@@ -279,13 +282,17 @@ export class OwnerManifestHistoryClient03 {
   }
   #check(): void { if (this.#options.signal.aborted || this.#readCsrf() !== this.#csrf) fail(); }
   async #run<T>(handle: VerifiedManifestHistory03, op: (s: State, signal: AbortSignal) => Promise<T>): Promise<T> {
-    this.#check(); if (this.#busy) fail(); const s = state(handle);
+    this.#check(); const s = state(handle);
     if (s.origin !== this.#options.origin || !same(s.accepted.accountId, uuid(this.#options.accountId))) fail();
+    return this.#operation(signal => op(s, signal));
+  }
+  async #operation<T>(op: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    this.#check(); if (this.#busy) fail();
     this.#busy = true; const abort = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const close = () => abort.abort(); this.#options.signal.addEventListener('abort', close, { once: true });
     try {
-      return await Promise.race([op(s, abort.signal).then(v => { this.#check(); if (abort.signal.aborted) fail(); return v; }),
+      return await Promise.race([op(abort.signal).then(v => { this.#check(); if (abort.signal.aborted) fail(); return v; }),
         new Promise<never>((_, reject) => {
           const refuse = () => reject(Error('Owner manifest read unavailable'));
           abort.signal.addEventListener('abort', refuse, { once: true });
@@ -295,7 +302,7 @@ export class OwnerManifestHistoryClient03 {
     } catch { throw Error('Owner manifest read unavailable'); }
     finally { clearTimeout(timer); this.#options.signal.removeEventListener('abort', close); abort.abort(); this.#busy = false; }
   }
-  async #request(path: 'history' | 'current', body: object, signal: AbortSignal): Promise<unknown> {
+  async #request(path: 'original' | 'history' | 'current', body: object, signal: AbortSignal): Promise<unknown> {
     this.#check(); if (signal.aborted) fail();
     const response = await (this.#options.fetchImpl ?? fetch)(this.#options.origin + '/v1/account/sealed/payload-profile/manifests/' + path, {
       method: 'POST', mode: 'same-origin', credentials: 'same-origin', redirect: 'error', cache: 'no-store', referrerPolicy: 'no-referrer', signal,
@@ -313,6 +320,23 @@ export class OwnerManifestHistoryClient03 {
       }
       return parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(join(...chunks)));
     } finally { signal.removeEventListener('abort', cancel); cancel(); reader.releaseLock(); }
+  }
+  /** Cold bootstrap candidates only, BEFORE a history handle exists. The caller
+   * must independently verify compared root, original proofs and historical
+   * acceptance before startAcceptedManifestHistory03. No current tuple/physical
+   * handle is created from this historical public response. */
+  async original(lineId: string): Promise<OriginalManifestBootstrapCandidate03> {
+    uuid(lineId);
+    return this.#operation(async signal => {
+      const r = record(await this.#request('original', { v: 1, line_id: lineId }, signal), ['v', 'kind', 'line_id', 'binding_id', 'evidence']);
+      const e = evidence(r.evidence), pin = manifestHistoryBinary03(e.root_pin, 94), bundle = manifestHistoryBinary03(e.bundle, 628);
+      if (r.v !== 1 || r.kind !== 'manifest_original03' || r.line_id !== lineId
+          || !same(pin.subarray(0, 5), Uint8Array.of(90, 84, 82, 80, 2))
+          || !same(pin.subarray(5, 21), uuid(this.#options.accountId))
+          || !same(bundle.subarray(8, 24), uuid(this.#options.accountId)) || !same(bundle.subarray(40, 56), uuid(lineId))) fail();
+      uuid(r.binding_id);
+      return Object.freeze({ v: 1, kind: 'manifest_original03', line_id: lineId, binding_id: r.binding_id as string, evidence: e });
+    });
   }
   async next(handle: VerifiedManifestHistory03): Promise<VerifiedManifestHistory03> {
     return this.#run(handle, async (s, signal) => {

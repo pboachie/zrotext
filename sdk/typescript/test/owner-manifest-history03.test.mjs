@@ -11,6 +11,28 @@ function client(f, fetchImpl, extra = {}) {
     currentCsrf: () => csrf, signal: new AbortController().signal, fetchImpl, ...extra });
 }
 
+test('cold original read works before a history token and returns exact historical candidates with retained binding only', async () => {
+  const f = await fixture(), calls = [];
+  const c = client(f, async (url, options) => { calls.push({ url, options }); return response({ v: 1, kind: 'manifest_original03', line_id: text(f.line), binding_id: text(f.binding), evidence: f.evidence }); });
+  const candidate = await c.original(text(f.line));
+  assert.equal(calls.length, 1); assert.equal(calls[0].url.endsWith('/manifests/original'), true);
+  assert.deepEqual(JSON.parse(calls[0].options.body), { v: 1, line_id: text(f.line) });
+  assert.deepEqual(candidate.evidence, f.evidence); assert.equal(candidate.binding_id, text(f.binding));
+  assert.equal(Object.hasOwn(candidate, 'currentAuthority'), false); assert.equal(Object.hasOwn(candidate, 'physical_selection'), false);
+  await assert.rejects(start({ ...f.seed, acceptedElection: candidate }));
+});
+
+test('original bootstrap refuses injected current claims wrong account line and missing retained binding without retry', async () => {
+  const f = await fixture(), base = { v: 1, kind: 'manifest_original03', line_id: text(f.line), binding_id: text(f.binding), evidence: f.evidence };
+  const wrongPin = Uint8Array.from(Buffer.from(f.evidence.root_pin, 'base64url')); wrongPin[5] ^= 1;
+  const wrongBundle = Uint8Array.from(Buffer.from(f.evidence.bundle, 'base64url')); wrongBundle[40] ^= 1;
+  for (const mutate of [r => delete r.binding_id, r => r.kind = 'owner_manifest_selection03', r => r.line_id = text(f.device),
+    r => r.permission_expires_ms = '3', r => r.evidence.root_pin = b64(wrongPin), r => r.evidence.bundle = b64(wrongBundle)]) {
+    const value = structuredClone(base); mutate(value); let calls = 0;
+    const c = client(f, async () => { calls++; return response(value); }); await assert.rejects(c.original(text(f.line))); assert.equal(calls, 1);
+  }
+});
+
 test('actual fixed transport reads exact cursor then genuine complete current with cookie CSRF and separate newkind', async () => {
   const f = await fixture(), k = await key(); await f.step(k); await f.step(k);
   const calls = [], wire = await f.wireCurrent();
