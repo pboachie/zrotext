@@ -48,7 +48,7 @@ internal class Profile03CurrentReader(context: Context, private val origin: Stri
         val intervalRamCurrent = requireInterval(packet, grant, value)
         val instant = checkNotNull(clock.nowMs())
         check(instant < grant.expiresAtMs && grant.expiresAtMs <= value.selected.permissionExpiresAtMs)
-        val intent = ReviewedIntent03.decode(packet.intent())
+        val intent = ReviewedIntent03V2.decode(packet.intent())
         intent.requireGrant(grant)
         require(intent.ownerUserId == value.user && intent.ownerSessionId == value.ownerSession && packet.selectionEpoch == value.epoch)
         val compared = value.election.requireCurrent(value.authority, value.selected, instant)

@@ -32,6 +32,23 @@ class Draft03OutboundPreparationTest {
         assertEquals(saved, f.line.db.sealedPreparations().find(f.line.account.toString(), f.message.toString()))
         assertNull(f.line.db.attempts().getAttempt(f.attempt.toString()))
     }
+    @Test fun v2UpdateNeverRearmsOriginalPreparingPreparedOrAbortedMessageHistory() {
+        for (state in listOf("preparing", "prepared", "aborted")) Profile03ExecutionFixture().use { f ->
+            f.install()
+            val old = SealedPreparationRecord(f.line.account.toString(), f.message.toString(), f.attempt.toString(),
+                Profile03ExecutionFixture.hex(Profile03ExecutionFixture.unsigned(f.envelope)), "ab".repeat(32))
+            val dao = f.line.db.sealedPreparations()
+            dao.reserve03(old, f.installed) { check(it == f.binding) }
+            if (state == "prepared") dao.finish(old, 1) { check(it == f.binding) }
+            if (state == "aborted") dao.abort(old.accountId, old.messageId, old.attemptId)
+            val retained = dao.find(old.accountId, old.messageId)
+            assertEquals(state, retained?.state)
+            assertEquals(Draft03OutboundPreparation.Rejected, run(f))
+            assertEquals(retained, dao.find(old.accountId, old.messageId))
+            assertEquals(1, dao.count())
+            assertNull(f.line.db.attempts().getAttempt(f.attempt.toString()))
+        }
+    }
     @Test fun aComparedHistoricalElectionCannotReplaceTheSameRoomInstallation() = Profile03ExecutionFixture().use { f ->
         assertEquals(Draft03OutboundPreparation.Rejected, run(f))
         assertEquals(0, f.line.db.sealedPreparations().count())
