@@ -62,3 +62,27 @@ test('abort CSRF replacement deadline and parallel read refuse with no hidden re
   const timeout = client(f, async () => new Promise(() => {}), { timeoutMs: 10 });
   await assert.rejects(timeout.next(seed));
 });
+
+test('expiry and clock regression during the final actual cryptographic wait cannot release current authority', async () => {
+  const f = await fixture(); await f.step(await key()); const wire = await f.wireCurrent();
+  for (const jump of [BigInt(wire.permission_expires_ms), f.acceptedMs + 99n]) {
+    let now = f.acceptedMs + 100n, verifies = 0;
+    const c = client(f, async url => response(url.endsWith('/history') ? f.page() : wire));
+    const complete = await c.next(await start(f.seed)), original = crypto.subtle.verify;
+    crypto.subtle.verify = async (...args) => {
+      const result = await Reflect.apply(original, crypto.subtle, args);
+      if (++verifies === 2) now = jump;
+      return result;
+    };
+    try { await assert.rejects(c.current(complete, () => now)); assert.equal(verifies, 2); }
+    finally { crypto.subtle.verify = original; }
+  }
+});
+
+test('a later successful current clock is retained across explicit reads and cannot regress to the earlier observation', async () => {
+  const f = await fixture(); await f.step(await key()); const wire = await f.wireCurrent();
+  const c = client(f, async url => response(url.endsWith('/history') ? f.page() : wire)), complete = await c.next(await start(f.seed));
+  let samples = 0;
+  await c.current(complete, () => f.acceptedMs + (++samples === 4 ? 200n : 100n));
+  await assert.rejects(c.current(complete, () => f.acceptedMs + 150n));
+});

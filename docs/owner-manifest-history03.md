@@ -36,7 +36,9 @@ endpoint. That response must match the actual configured owner/session,
 original evidence, selected binding and full verified manifest/prefix. Current
 server selection and physical-source metadata remain trusted adapter inputs,
 not client cryptographic proof of hardware or a new effect permit. Fresh trusted
-time is checked again after validation. A historical signature or matching
+time is checked synchronously after the final cryptographic wait, immediately
+before release, and the last successful local clock is retained across reads.
+A historical signature or matching
 public digest never creates current owner, factor, device or content permission.
 
 The returned crypto token and current tuple are inputs to later message review.

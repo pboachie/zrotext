@@ -260,7 +260,7 @@ export type OwnerManifestHistoryOptions03 = Readonly<{
  * selected records. They do not attest browser/phone private-key custody. */
 export class OwnerManifestHistoryClient03 {
   readonly #options: OwnerManifestHistoryOptions03; readonly #csrf: string;
-  #busy = false; #lastCompared = 0n;
+  #busy = false; #lastCompared = 0n; #lastLocalMs = 0n;
   constructor(options: OwnerManifestHistoryOptions03) {
     const r = record(options, ['origin', 'accountId', 'userId', 'ownerSessionId', 'currentCsrf', 'signal',
       ...['timeoutMs', 'fetchImpl'].filter(k => Object.hasOwn(options, k))]);
@@ -329,6 +329,7 @@ export class OwnerManifestHistoryClient03 {
   }>> {
     return this.#run(handle, async (s, signal) => {
       if (!s.complete || typeof nowMs !== 'function') fail(); const started = nowMs(); electionTime03(started);
+      if (started < this.#lastLocalMs) fail();
       const r = record(await this.#request('current', { v: 1, line_id: uuidText(s.accepted.lineId) }, signal), currentNames), a = s.accepted;
       const currentMs = nowMs(); electionTime03(currentMs); if (currentMs < started) fail();
       const original = evidence(r.evidence);
@@ -369,6 +370,11 @@ export class OwnerManifestHistoryClient03 {
       const finishedMs = nowMs(); electionTime03(finishedMs); if (finishedMs < currentMs) fail();
       requireCurrentElection03(s.proof, manifest, authority, finishedMs);
       const fresh = await verifyManifest03Current(s.signed, manifest, finishedMs);
+      // A verifier wait can cross expiry or a clock boundary. Make the last
+      // permission check synchronous AFTER that wait, immediately before release.
+      const releasedMs = nowMs(); electionTime03(releasedMs); if (releasedMs < finishedMs) fail();
+      requireCurrentElection03(s.proof, fresh, authority, releasedMs);
+      this.#lastLocalMs = releasedMs;
       this.#lastCompared = authority.comparedAtMs;
       return Object.freeze({ manifest: fresh, acceptedElection: s.proof, currentAuthority: captureCurrentElectionAuthority03(authority) });
     });
