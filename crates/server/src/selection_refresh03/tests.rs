@@ -50,6 +50,12 @@ fn exact_independent_android_vector_checks_all_three_original_signatures() {
     let issued = number(472);
     let expires = number(480);
     verify_installed(&bundle, issued + 1, issued + 2, &installed, &e).unwrap();
+    let parsed = core::Core03::decode(&bundle[..496]).unwrap();
+    parsed.fresh(issued).unwrap();
+    parsed
+        .verify_device(&bundle[496..617], &bundle[617..681], &e)
+        .unwrap();
+    core::approved(&bundle, issued + 1, &e).unwrap();
     for at in [
         0, 4, 5, 6, 7, 8, 24, 40, 56, 72, 88, 96, 104, 112, 120, 152, 184, 216, 248, 280, 312, 344,
         376, 408, 440, 472, 480, 488, 496, 504, 617, 681,

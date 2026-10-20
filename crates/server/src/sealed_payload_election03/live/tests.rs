@@ -18,6 +18,7 @@ mod manifest_cache_tests;
 mod manifest_original_tests;
 mod manifest_permission_tests;
 mod manifest_tests;
+mod selection_refresh_tests;
 use fixture::{prepared, sign, source};
 
 #[tokio::test]

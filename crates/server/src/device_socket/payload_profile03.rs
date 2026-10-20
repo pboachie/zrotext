@@ -5,6 +5,7 @@ use super::*;
 use crate::sealed_inbound::line_activation::v2_runtime::object_body;
 use crate::sealed_payload_election03::{device_context, live};
 mod manifests;
+mod selection_refresh;
 pub(super) const PROTOCOL: &str = "zrotext-device-status-v2+sealed-dispatch-v3";
 mod interval;
 object_body! {struct Session {v:u8,r#type:String,connection_epoch:i64,challenge:String}}
@@ -13,6 +14,7 @@ object_body! {struct Current {v:u8,r#type:String,connection_epoch:i64,challenge:
 pub(super) enum Incoming {
     Interval(interval::Frame),
     Manifest(manifests::Frame),
+    Refresh(selection_refresh::Frame),
     Session {
         epoch: i64,
         challenge: Uuid,
@@ -91,6 +93,9 @@ pub(super) fn parse(raw: &str) -> Result<Option<Incoming>, ()> {
     if let Some(frame) = manifests::parse(&tag.r#type, raw)? {
         return Ok(Some(Incoming::Manifest(frame)));
     }
+    if let Some(frame) = selection_refresh::parse(&tag.r#type, raw)? {
+        return Ok(Some(Incoming::Refresh(frame)));
+    }
     Ok(Some(match tag.r#type.as_str() {
         "payload_profile_current03_request" => {
             let b: Current = serde_json::from_str(raw).map_err(|_| ())?;
@@ -151,6 +156,9 @@ pub(super) async fn dispatch(
     if let Incoming::Manifest(frame) = frame {
         return manifests::dispatch(socket, state, session, origin, samples, reads, frame).await;
     }
+    if let Incoming::Refresh(frame) = frame {
+        return selection_refresh::dispatch(socket, state, session, origin, samples, frame).await;
+    }
     let mut db = runtime_db::connect_device(&state.database_url).await.ok()?;
     let tx = db
         .build_transaction()
@@ -164,6 +172,7 @@ pub(super) async fn dispatch(
     match frame {
         Incoming::Interval(_) => return None,
         Incoming::Manifest(_) => return None,
+        Incoming::Refresh(_) => return None,
         Incoming::Current {
             epoch,
             challenge,
@@ -302,6 +311,7 @@ pub(super) async fn push(
     if let Some(reply) = reply {
         send(socket, reply).await?
     }
+    selection_refresh::push(socket, state, session, origin).await?;
     interval::push(socket, state, session, origin).await
 }
 

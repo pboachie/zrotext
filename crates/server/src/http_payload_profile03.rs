@@ -24,8 +24,12 @@ use tokio_postgres::IsolationLevel;
 mod conversation;
 mod manifests;
 mod request;
+mod selection_refresh;
 pub use conversation::router as conversation_router;
 pub use manifests::manifest_router;
+pub async fn selection_refresh_router(state: ProfileHttpState) -> Result<Router, &'static str> {
+    selection_refresh::router(state).await
+}
 use request::{Body, Operation};
 
 #[derive(Clone)]
