@@ -42,12 +42,12 @@ fn body(name: &str, version: i64) -> Result<&'static str> {
     } else {
         MIGRATION
     };
-    source
-        .split_once(&format!("FUNCTION public.{name}("))
-        .and_then(|(_, sql)| sql.split_once("AS $function$"))
-        .and_then(|(_, sql)| sql.split_once("$function$;"))
-        .map(|(body, _)| body)
-        .ok_or(GrantSchemaError::Invalid)
+    zrotext_delivery_store::hosted_runtime_identity::declared_function_body(
+        source,
+        name,
+        "$function$",
+    )
+    .ok_or(GrantSchemaError::Invalid)
 }
 async fn functions<C: GenericClient + Sync>(db: &C, version: i64) -> Result<()> {
     for (name, args, result, language, volatility, strict, definer, set, config, names) in [

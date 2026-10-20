@@ -90,11 +90,7 @@ fn body(name: &str, marker: &str, version: i64) -> Result<&'static str> {
     } else {
         MIGRATION
     };
-    source
-        .split_once(&format!("FUNCTION public.{name}("))
-        .and_then(|(_, sql)| sql.split_once(&format!("AS {marker}")))
-        .and_then(|(_, sql)| sql.split_once(&format!("{marker};")))
-        .map(|(body, _)| body)
+    zrotext_delivery_store::hosted_runtime_identity::declared_function_body(source, name, marker)
         .ok_or(WriterSchemaError::Invalid)
 }
 

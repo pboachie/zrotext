@@ -12,6 +12,29 @@ pub enum IdentitySchemaError {
     Database(#[from] tokio_postgres::Error),
 }
 type Result<T> = std::result::Result<T, IdentitySchemaError>;
+/// Extract one canonical, line-anchored SQL function declaration from reviewed
+/// migration source. This is source metadata only, never runtime authority.
+#[doc(hidden)]
+pub fn declared_function_body<'a>(source: &'a str, name: &str, marker: &str) -> Option<&'a str> {
+    let plain = format!("CREATE FUNCTION public.{name}(");
+    let replacement = format!("CREATE OR REPLACE FUNCTION public.{name}(");
+    let mut declaration = None;
+    let mut offset = 0;
+    for line in source.split_inclusive('\n') {
+        if line.starts_with(&plain) || line.starts_with(&replacement) {
+            if declaration.is_some() {
+                return None;
+            }
+            declaration = Some(offset);
+        }
+        offset += line.len();
+    }
+    source[declaration?..]
+        .split_once(&format!("AS {marker}"))
+        .and_then(|(_, after)| after.split_once(&format!("{marker};")))
+        .map(|(body, _)| body)
+}
+
 fn body(name: &str) -> Result<&'static str> {
     let source = match name {
         "payload_profile_writer_json"
@@ -22,14 +45,14 @@ fn body(name: &str) -> Result<&'static str> {
         "payload_profile_writer_graph" => include_str!(
             "../../../deploy/compose/migrations/109_original_sealed_activation_receipts.sql"
         ),
+        "hosted_runtime_schema_ready"
+        | "hosted_runtime_role_safe"
+        | "hosted_runtime_projection" => {
+            include_str!("../../../deploy/compose/migrations/106_hosted_runtime.sql")
+        }
         _ => MIGRATION,
     };
-    source
-        .split_once(&format!("FUNCTION public.{name}("))
-        .and_then(|(_, s)| s.split_once("AS $function$"))
-        .and_then(|(_, s)| s.split_once("$function$;"))
-        .map(|(s, _)| s)
-        .ok_or(IdentitySchemaError::Invalid)
+    declared_function_body(source, name, "$function$").ok_or(IdentitySchemaError::Invalid)
 }
 async fn functions<C: GenericClient + Sync>(db: &C) -> Result<()> {
     for (
