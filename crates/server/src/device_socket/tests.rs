@@ -11,7 +11,7 @@ use p256::ecdsa::{Signature, SigningKey, signature::Signer};
 use p256::elliptic_curve::Generate;
 use rand::rng;
 use sha2::{Digest, Sha256};
-use zrotext_delivery_store::NewMessage;
+use zrotext_delivery_store::{DeliveryStore, NewMessage};
 
 #[test]
 fn enrollment_rejections_and_storage_failures_have_distinct_close_codes() {
