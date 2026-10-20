@@ -34,3 +34,19 @@ durable accepted ancestry, offline root authorization, foreground phone consent
 and browser mounting are separate composition work. No retained private key is
 exported as a recovery file. Tests use actual WebCrypto keys and simulated
 IndexedDB; they do not establish persistent storage in a real browser.
+
+`manifest-install03.ts` separately encodes and verifies the exact513-byte public
+possession statement. It binds the original owner/session, selected election and
+binding, predecessor and exact signed successor commitments, five-minute
+ceremony and actual role05 point/key ID. Received signatures must already be
+canonical low-S. The returned decoded data proves that stated key's signature;
+it does not authenticate a user, verify the root-signed successor or commit it.
+The embedding application must verify all those independent inputs first.
+
+The shared synthetic vector starts with the actual four-role initial manifest
+shape, then exercises enrollment, renewal after prior expiry and replacement of
+a lost browser key with a root-signed successor. It contains genuine public
+signatures, while its timestamps and routing/election commitments are synthetic
+inputs. It supplies no accepted database, original election, MFA or local custody
+evidence. Every old content interval and admitted message must remain pinned to
+its original manifest; a newer key never translates or retries that work.
