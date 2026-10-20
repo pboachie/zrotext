@@ -39,6 +39,11 @@ internal class ConversationExistingSuppressionTokens internal constructor(privat
         require(peer.matches(Regex("\\+[1-9][0-9]{1,14}")))
         mac(key(),"sender-v1",arrayOf(peer.toByteArray(Charsets.US_ASCII))).joinToString("") {"%02x".format(it.toInt() and 255)}
     }
+    fun pdu(senderToken: String, fingerprint: ByteArray): String = synchronized(lock) {
+        require(senderToken.matches(Regex("[0-9a-f]{64}")))
+        mac(key(), "pdu-v1", arrayOf(senderToken.toByteArray(Charsets.US_ASCII), fingerprint))
+            .joinToString("") { "%02x".format(it.toInt() and 255) }
+    }
     override fun toString()="ConversationExistingSuppressionTokens(redacted)"
     companion object {const val ALIAS="zt_m1_inbound_hmac_v1"}
 }

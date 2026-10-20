@@ -54,6 +54,7 @@ internal class ConversationAuthenticatedRuntime(
         check(wire.currentSession() == value.session) { "Authenticated session changed" }
     }
     private fun current(scope: ConversationCaptureScope) {
+        Capture03LegacyFence.requireLegacy(scope)
         check(!blocked.get()) { "Admission suspended" }
         val witness = checkNotNull(timeWitness.get())
         requireWitness(witness)
@@ -62,6 +63,7 @@ internal class ConversationAuthenticatedRuntime(
             session.device.toString() == scope.deviceId) { "Authenticated session changed" }
         requireAuthority(scope, checkNotNull(clock.nowMs()) { "Authenticated time unavailable" })
         requireWitness(witness)
+        Capture03LegacyFence.requireLegacy(scope)
         check(!blocked.get() && wire.currentSession() == session)
     }
     private val guarded = object : ConversationActivationVerifier {

@@ -184,8 +184,14 @@ class InboundSmsReceiver : BroadcastReceiver() {
             return
         }
         val now = System.currentTimeMillis()
-        val senderToken = InboundVault.token("sender-v1", message.senderE164.toByteArray(Charsets.US_ASCII))
-        val dao = SmsJournalDatabase.get(context).attempts()
+        val db = SmsJournalDatabase.get(context)
+        val dao = db.attempts()
+        // Retained03 history may never generate a replacement HMAC identity. A lost key
+        // refuses content; it cannot turn this same PDU into a new token/allocator receipt.
+        val existingTokens = if (db.captures03().releasedElections().isNotEmpty() || db.captures03().modes().isNotEmpty())
+            ConversationExistingSuppressionTokens() else null
+        val senderToken = existingTokens?.sender(message.senderE164)
+            ?: InboundVault.token("sender-v1", message.senderE164.toByteArray(Charsets.US_ASCII))
         val pduFingerprint = ByteArrayOutputStream().apply {
             for (pdu in pdus) {
                 write((pdu.size ushr 8) and 0xff)
@@ -193,37 +199,45 @@ class InboundSmsReceiver : BroadcastReceiver() {
                 write(pdu)
             }
         }.toByteArray()
-        val dedupeToken = InboundVault.token("pdu-v1", senderToken.toByteArray(Charsets.US_ASCII),
-            pduFingerprint)
+        val dedupeToken = existingTokens?.pdu(senderToken, pduFingerprint)
+            ?: InboundVault.token("pdu-v1", senderToken.toByteArray(Charsets.US_ASCII), pduFingerprint)
         val optAction = OptOutParser.classify(message.body)
         // SMS_RECEIVED does not promise a subscription extra. Never infer one from the
         // default SIM or the owner's saved selection.
         val rawSub = intent.extras?.get("subscription")
         val observedSub = (rawSub as? Number)?.toLong()
             ?.takeIf { it in 0..Int.MAX_VALUE.toLong() }?.toInt()
-        // An absent subscription never becomes the owner's/default SIM. Conversation authority is separate.
-        try { ConversationProcessMount.runtime.receive(conversationReceipt, observedSub, dedupeToken,
-            message.senderE164, message.body) } catch (_: Exception) {
-            ConversationProcessMount.runtime.pause(ConversationStopReason.WORKER_SHUTDOWN)
-        }
-
-        if (optAction == OptOutParser.OPT_OUT || optAction == OptOutParser.OPT_OUT_REVIEW) {
-            // A failed Keystore operation must not prevent the local radio block.
+        Capture03Ingress.deliver(optAction, withdraw = {
+            // A failed sender-protection operation must not prevent the local radio block.
             val sealedSender = InboundVault.sealSenderOrNull(message.senderE164, dedupeToken)
-            // The same lock fences a concurrent final radio preflight. An unknown or
-            // changed line still blocks the recipient globally on this phone.
             synchronized(LocalSuppressionGate.lock) {
-                dao.recordLocalWithdrawal(dedupeToken, senderToken, optAction, observedSub,
-                    SimCardContinuity.observe(context), now,
-                    sealedSender?.ciphertext, sealedSender?.nonce)
+                dao.recordLocalWithdrawal(dedupeToken, senderToken, checkNotNull(optAction), observedSub,
+                    SimCardContinuity.observe(context), now, sealedSender?.ciphertext, sealedSender?.nonce)
             }
-        }
-        val window = dao.activeInboundWindows(senderToken, now).singleOrNull() ?: return
-        if (observedSub != null && observedSub != window.subscriptionId) return
-        val sealed = if (optAction == null) try { InboundVault.seal(message.body, dedupeToken) }
-            catch (_: Exception) { null } else null
-        dao.recordInbound(window, dedupeToken, observedSub, message.partCount, now,
-            sealed?.ciphertext, sealed?.nonce, optAction)
+        }, reserve = {
+            // All actual old02/metadata/new03 content entry first commits this shared route.
+            // No provider/crypto/network wait occurs inside the short ingress reservation.
+            try { Capture03Ingress.exclude(context, db, dedupeToken, now, observedSub).firstLegacy }
+            catch (_: Exception) {
+                ConversationProcessMount.runtime.pause(ConversationStopReason.WORKER_SHUTDOWN)
+                throw IllegalStateException("Inbound content route unavailable")
+            }
+        }, legacyContent = {
+            Capture03IngressGate.requireOutside()
+            try { ConversationProcessMount.runtime.receive(conversationReceipt, observedSub, dedupeToken,
+                message.senderE164, message.body) } catch (_: Exception) {
+                ConversationProcessMount.runtime.pause(ConversationStopReason.WORKER_SHUTDOWN)
+            }
+        }, metadata = { firstLegacy ->
+            // OPT_* reporting survives cold/Stop/drop and even a failed content route.
+            val window = dao.activeInboundWindows(senderToken, now).singleOrNull()
+            if (window != null && (observedSub == null || observedSub == window.subscriptionId)) {
+                val sealed = if (firstLegacy && optAction == null) try { InboundVault.seal(message.body, dedupeToken) }
+                    catch (_: Exception) { null } else null
+                dao.recordInbound(window, dedupeToken, observedSub, message.partCount, now,
+                    sealed?.ciphertext, sealed?.nonce, optAction)
+            }
+        })
     }
 
     companion object {
