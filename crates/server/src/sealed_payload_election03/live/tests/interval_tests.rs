@@ -78,7 +78,7 @@ async fn genuine_owner_request_and_phone_install_activate_then_device_stop_prese
             archive: key(2),
             phone: key(4),
             browser: key(5),
-            expires_ms: now as u64 + 60_000,
+            expires_ms: now as u64 + 300_000,
             integrations: &[],
         },
         ORIGIN,
