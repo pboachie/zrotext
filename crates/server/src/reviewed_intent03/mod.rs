@@ -189,6 +189,47 @@ pub(crate) fn verify(
     expected: &ExpectedReview03<'_>,
     now: u64,
 ) -> Check<VerifiedReview03> {
+    verify_timed(intent, signature, envelope, expected, now, None)
+}
+
+/// Original accepted times are selected by the closed actual admission reader,
+/// never imported from a fetch request or constructed by a dispatcher caller.
+pub(super) struct RetainedTiming03 {
+    admitted_ms: u64,
+    installed_ms: u64,
+    required_until_ms: u64,
+}
+pub(super) fn verify_retained(
+    intent: Intent03,
+    signature: &[u8],
+    envelope: &[u8],
+    expected: &ExpectedReview03<'_>,
+    now: u64,
+    original: RetainedTiming03,
+) -> Check<VerifiedReview03> {
+    for n in [
+        original.admitted_ms,
+        original.installed_ms,
+        original.required_until_ms,
+    ] {
+        crypto::time(n)?;
+    }
+    if original.installed_ms < expected.interval_starts_ms
+        || original.admitted_ms < original.installed_ms
+        || original.admitted_ms > now
+    {
+        return Err("review original installed/admitted times");
+    }
+    verify_timed(intent, signature, envelope, expected, now, Some(original))
+}
+fn verify_timed(
+    intent: Intent03,
+    signature: &[u8],
+    envelope: &[u8],
+    expected: &ExpectedReview03<'_>,
+    now: u64,
+    original: Option<RetainedTiming03>,
+) -> Check<VerifiedReview03> {
     let c = election::require_current(expected.election, expected.manifest, expected.current, now)?;
     crypto::time(expected.selection_epoch)?;
     crypto::time(expected.interval_starts_ms)?;
@@ -253,12 +294,16 @@ pub(crate) fn verify(
         now,
     )?;
     let [_, _, _, _, observed, expires, issued, review_expires] = intent.numbers;
-    if issued > now
-        || now >= review_expires
+    let (review_at, required_until) =
+        original.map_or((now, expires), |v| (v.admitted_ms, v.required_until_ms));
+    if issued > review_at
+        || review_at >= review_expires
+        || required_until <= now
+        || required_until > expires
         || observed < from
         || observed < expected.interval_starts_ms
         || expires > deadline
-        || expires > c.permission_expires_at_ms
+        || required_until > c.permission_expires_at_ms
         || expires > expected.interval_expires_ms
     {
         return Err("review current timing");

@@ -156,6 +156,9 @@ async fn hold<'a, 'held, 'db>(
     Ok(held)
 }
 impl HeldMessageSelection03<'_, '_, '_> {
+    pub(crate) fn physical_identity(&self) -> (&'static str, Option<Uuid>) {
+        self.physical.identity()
+    }
     pub(crate) async fn revalidate(&mut self) -> Result<()> {
         self.proof.revalidate().await?;
         self.current
@@ -254,6 +257,70 @@ impl HeldMessageSelection03<'_, '_, '_> {
         object.insert(
             "selection_expires_ms".into(),
             serde_json::json!(self.current.deadline.to_string()),
+        );
+        object.insert("physical_selection".into(), self.physical.projection());
+        Ok(value)
+    }
+    pub(crate) fn enrolled_signing_key(&self) -> Result<p256::ecdsa::VerifyingKey> {
+        if crate::sealed_manifest::key_id(4, &self.current.reservation.device_point)
+            != *self.current.context.enrollment_signing_key_id()
+        {
+            return Err(Error::Conflict);
+        }
+        p256::ecdsa::VerifyingKey::from_sec1_bytes(&self.current.reservation.device_point)
+            .map_err(|_| Error::Unsupported)
+    }
+    pub(crate) fn original_binding_ids(&self) -> (Uuid, Uuid) {
+        (
+            self.current.reservation.challenge,
+            self.current.reservation.old_binding,
+        )
+    }
+    /// A separate full message projection, selected by a retained issued grant.
+    /// Old first-only and reader-only JSON contracts are left unchanged.
+    pub(crate) fn message_projection(
+        &self,
+        attempt: Uuid,
+        fetch_transcript: &[u8; 362],
+        grant_expires: u64,
+    ) -> Result<serde_json::Value> {
+        if attempt.is_nil()
+            || self.current.selected_manifest.is_none()
+            || grant_expires <= self.now_ms()
+            || grant_expires > self.authority().permission_expires_at_ms
+        {
+            return Err(Error::Expired);
+        }
+        let who = self.selected();
+        let owner_digest =
+            crate::sealed_payload_election03::adapter_contract::OwnerSessionIdentity03 {
+                account_id: *who.account.as_bytes(),
+                user_id: *who.user.as_bytes(),
+                session_id: *who.session.as_bytes(),
+            }
+            .digest()
+            .map_err(|_| Error::Unsupported)?;
+        let mut value = self.current.projection(&self.origin)?;
+        let object = value.as_object_mut().ok_or(Error::Unavailable)?;
+        object.insert(
+            "kind".into(),
+            serde_json::json!("message_manifest_permission03"),
+        );
+        object.insert("request_kind".into(), serde_json::json!("fetch"));
+        object.insert("request_id".into(), serde_json::json!(attempt));
+        object.insert(
+            "fetch_transcript_sha256".into(),
+            serde_json::json!(B.encode(crypto::sha(fetch_transcript))),
+        );
+        object.insert("user_id".into(), serde_json::json!(who.user));
+        object.insert("owner_session_id".into(), serde_json::json!(who.session));
+        object.insert(
+            "owner_session_digest".into(),
+            serde_json::json!(B.encode(owner_digest)),
+        );
+        object.insert(
+            "permission_expires_ms".into(),
+            serde_json::json!(grant_expires.to_string()),
         );
         object.insert("physical_selection".into(), self.physical.projection());
         Ok(value)

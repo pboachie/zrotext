@@ -4,6 +4,7 @@
 use super::*;
 use crate::sealed_inbound::line_activation::v2_runtime::object_body;
 use crate::sealed_payload_election03::{device_context, live};
+pub(super) mod grants;
 mod manifests;
 mod selection_refresh;
 pub(super) const PROTOCOL: &str = "zrotext-device-status-v2+sealed-dispatch-v3";
@@ -12,6 +13,7 @@ object_body! {struct Session {v:u8,r#type:String,connection_epoch:i64,challenge:
 object_body! {struct Proof {v:u8,r#type:String,challenge_id:String,device_signature:String}}
 object_body! {struct Current {v:u8,r#type:String,connection_epoch:i64,challenge:String,line_id:String}}
 pub(super) enum Incoming {
+    Ready(crate::sealed_dispatch::wire03::ReadyFrame03),
     Interval(interval::Frame),
     Manifest(manifests::Frame),
     Refresh(selection_refresh::Frame),
@@ -83,6 +85,22 @@ pub(super) fn parse(raw: &str) -> Result<Option<Incoming>, ()> {
             return Err(());
         }
         return interval::parse(&tag.r#type, raw).map(|frame| Some(Incoming::Interval(frame)));
+    }
+    if tag.r#type == "sealed_ready" {
+        if raw.len() > MAX_FRAME_BYTES {
+            return Err(());
+        }
+        #[derive(serde::Deserialize)]
+        struct Version {
+            grant_version: u8,
+        }
+        let version: Version = serde_json::from_str(raw).map_err(|_| ())?;
+        if version.grant_version != 3 {
+            return Ok(None);
+        }
+        return crate::sealed_dispatch::wire03::ReadyFrame03::parse(raw.as_bytes())
+            .map(|ready| Some(Incoming::Ready(ready)))
+            .map_err(|_| ());
     }
     if !tag.r#type.starts_with("payload_profile_") {
         return Ok(None);
@@ -170,6 +188,7 @@ pub(super) async fn dispatch(
         .ok()
         .filter(|v| *v > 0)?;
     match frame {
+        Incoming::Ready(_) => return None,
         Incoming::Interval(_) => return None,
         Incoming::Manifest(_) => return None,
         Incoming::Refresh(_) => return None,

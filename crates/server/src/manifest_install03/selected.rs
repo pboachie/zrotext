@@ -153,6 +153,12 @@ pub(crate) struct Physical03 {
     digest: [u8; 32],
 }
 impl Physical03 {
+    pub(crate) fn identity(&self) -> (&'static str, Option<Uuid>) {
+        match &self.source {
+            current::Physical03::Original => ("original_v2", None),
+            current::Physical03::Refreshed { refresh, .. } => ("owner_refresh03", Some(*refresh)),
+        }
+    }
     pub(crate) fn projection(&self) -> serde_json::Value {
         self.source.projection()
     }
