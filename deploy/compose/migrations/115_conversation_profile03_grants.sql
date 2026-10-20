@@ -377,12 +377,23 @@ CREATE FUNCTION public.conversation_profile03_grant_billing(account uuid,message
 LANGUAGE plpgsql SECURITY DEFINER SET search_path TO pg_catalog SET lock_timeout TO '3s' AS $function$
 DECLARE namespace public.hosted_billing_namespaces%ROWTYPE; projection public.hosted_billing_projections%ROWTYPE;
  customer public.billing_customers%ROWTYPE; policy public.usage_quota_policies%ROWTYPE; subscription public.billing_subscriptions%ROWTYPE;
- now_ms bigint; deadline bigint:=9223372036854775807; bound boolean; recon_total bigint; recon_clean bigint;
+ original_reserve public.usage_ledger%ROWTYPE; period public.usage_periods%ROWTYPE;
+ protected_units bigint; candidate_units bigint;
+ now_ms bigint; backend_until bigint; deadline bigint:=9223372036854775807; bound boolean; recon_total bigint; recon_clean bigint;
 BEGIN
- PERFORM 1 FROM public.usage_ledger u WHERE u.account_id=account AND u.message_id=message
+ SELECT * INTO original_reserve FROM public.usage_ledger u WHERE u.account_id=account AND u.message_id=message
   AND u.metric='outbound_message' AND u.entry_kind='reserve' AND u.units=1 FOR SHARE NOWAIT;
  IF NOT FOUND OR EXISTS(SELECT FROM public.usage_ledger u WHERE u.account_id=account AND u.message_id=message AND u.entry_kind='refund') THEN
   RAISE EXCEPTION 'grant original reservation unavailable' USING ERRCODE='23514'; END IF;
+ SELECT * INTO period FROM public.usage_periods p WHERE(p.account_id,p.metric,p.period_start)=
+  (original_reserve.account_id,original_reserve.metric,original_reserve.period_start) FOR SHARE NOWAIT;
+ IF NOT FOUND THEN RAISE EXCEPTION 'grant original reservation period unavailable' USING ERRCODE='23514'; END IF;
+ SELECT count(*) INTO protected_units FROM public.conversation_profile03_grants g JOIN public.usage_ledger u
+  ON(u.account_id,u.message_id)=(g.account_id,g.message_id) WHERE u.account_id=account AND u.metric=period.metric
+   AND u.period_start=period.period_start AND u.entry_kind='reserve' AND u.units=1;
+ candidate_units:=CASE WHEN EXISTS(SELECT FROM public.conversation_profile03_grants g WHERE g.account_id=account AND g.message_id=message) THEN 0 ELSE 1 END;
+ IF period.reserved_units-period.refunded_units<protected_units+candidate_units THEN
+  RAISE EXCEPTION 'grant original reservation aggregate was released' USING ERRCODE='23514'; END IF;
  SELECT * INTO namespace FROM public.hosted_billing_namespaces FOR SHARE NOWAIT;
  IF FOUND THEN
   PERFORM 1 FROM public.hosted_billing_customers c WHERE c.namespace_id=namespace.namespace_id AND c.account_id=account
@@ -395,13 +406,20 @@ BEGIN
   -- row it locks is first acquired NOWAIT here under the chosen account mode.
   PERFORM 1 FROM public.accounts a WHERE a.id=account AND a.disabled_at IS NULL FOR NO KEY UPDATE NOWAIT;
   IF NOT FOUND THEN RAISE EXCEPTION 'grant hosted account unavailable' USING ERRCODE='23514'; END IF;
+  SELECT floor(extract(epoch FROM s.expires_at)*1000)::bigint INTO backend_until
+   FROM public.hosted_runtime_sessions s JOIN pg_catalog.pg_stat_activity a ON(a.pid,a.backend_start)=(s.backend_pid,s.backend_start)
+   WHERE s.backend_pid=pg_backend_pid() AND s.namespace_id=namespace.namespace_id AND s.policy_revision=namespace.policy_revision
+    AND s.verified AND s.expires_at>clock_timestamp() FOR SHARE OF s NOWAIT;
+  IF NOT FOUND THEN RAISE EXCEPTION 'grant actual hosted backend window unavailable' USING ERRCODE='23514'; END IF;
+  -- The stored expiry is only an additional temporal ceiling. The unchanged
+  -- protected106 helper below must independently authenticate this backend.
   projection:=public.hosted_runtime_projection(account);
   IF projection.namespace_id IS DISTINCT FROM namespace.namespace_id OR projection.account_id IS DISTINCT FROM account
    OR projection.period_end>9223372036854775 OR projection.valid_until>9223372036854775 THEN
    RAISE EXCEPTION 'grant protected hosted projection differs' USING ERRCODE='23514'; END IF;
   PERFORM 1 FROM public.hosted_billing_usage u WHERE u.namespace_id=namespace.namespace_id AND u.account_id=account AND u.message_id=message FOR SHARE NOWAIT;
   IF NOT FOUND THEN RAISE EXCEPTION 'grant original hosted attribution unavailable' USING ERRCODE='23514'; END IF;
-  RETURN least(projection.period_end,projection.valid_until)*1000;
+  RETURN least(least(projection.period_end,projection.valid_until)*1000,backend_until);
  END IF;
  SELECT * INTO customer FROM public.billing_customers c WHERE c.account_id=account FOR SHARE NOWAIT;
  bound:=FOUND;
@@ -439,6 +457,51 @@ BEGIN
  now_ms:=floor(extract(epoch FROM clock_timestamp())*1000)::bigint;
  IF now_ms>=deadline THEN RAISE EXCEPTION 'grant current payment grace expired' USING ERRCODE='23514'; END IF;
  RETURN deadline;
+END;
+$function$;
+
+-- The one-use grant retains a charged unit until a future separately typed
+-- financial release. Other messages keep their real legacy billing writers.
+-- Mandatory OLD/NEW account participation happens before this narrow policy;
+-- repeat its shared stable-anchor lock without upgrading billing lock order.
+CREATE FUNCTION public.conversation_profile03_grant_usage_writer(account uuid,relation_name text,operation text,old_row jsonb,new_row jsonb) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path TO pg_catalog SET lock_timeout TO '3s' AS $function$
+DECLARE state text; epoch bigint; period record; protected_units bigint;
+BEGIN
+ IF account IS NULL OR relation_name NOT IN('usage_ledger','usage_periods') OR operation NOT IN('INSERT','UPDATE','DELETE') THEN
+  RAISE EXCEPTION 'grant usage writer input differs' USING ERRCODE='23514'; END IF;
+ IF operation='DELETE' AND NOT EXISTS(SELECT FROM public.accounts a WHERE a.id=account) THEN RETURN; END IF;
+ IF NOT pg_try_advisory_xact_lock_shared(public.payload_profile_account_fence_key(account)) THEN
+  RAISE EXCEPTION 'grant usage writer account busy' USING ERRCODE='55P03'; END IF;
+ SELECT a.state,a.selection_epoch INTO state,epoch FROM public.payload_profile_account_anchors a WHERE a.account_id=account FOR SHARE NOWAIT;
+ IF NOT FOUND OR state<>'live' OR epoch<>1 OR NOT public.payload_profile_epoch_valid(account,epoch) THEN
+  RAISE EXCEPTION 'grant usage writer actual anchor unavailable' USING ERRCODE='23514'; END IF;
+ IF relation_name='usage_ledger' THEN
+  IF EXISTS(SELECT FROM public.conversation_profile03_grants g CROSS JOIN LATERAL jsonb_array_elements(jsonb_build_array(old_row,new_row)) r(value)
+   WHERE g.account_id=account AND(r.value->>'account_id')::uuid=account AND g.message_id=(r.value->>'message_id')::uuid) THEN
+   RAISE EXCEPTION 'grant charged reserve identity cannot be released or reassigned' USING ERRCODE='23514'; END IF;
+  RETURN;
+ END IF;
+ FOR period IN SELECT DISTINCT r.value->>'metric' AS metric,(r.value->>'period_start')::date AS period_start
+  FROM jsonb_array_elements(jsonb_build_array(old_row,new_row)) r(value) WHERE(r.value->>'account_id')::uuid=account LOOP
+  SELECT count(*) INTO protected_units FROM public.conversation_profile03_grants g JOIN public.usage_ledger u
+   ON(u.account_id,u.message_id)=(g.account_id,g.message_id) WHERE u.account_id=account AND u.metric=period.metric
+    AND u.period_start=period.period_start AND u.entry_kind='reserve' AND u.units=1;
+  -- Stock reserve_outbound uses INSERT ON CONFLICT DO UPDATE. PostgreSQL runs
+  -- BEFORE INSERT on its discarded candidate first. Only an existing exact
+  -- protected parent permits that provisional row; its immutable unique key
+  -- forces the conflict, then the actual UPDATE below checks the real counters.
+  IF protected_units>0 AND operation='INSERT' AND EXISTS(SELECT FROM public.usage_periods p
+   WHERE(p.account_id,p.metric,p.period_start,p.period_end)=
+    (account,new_row->>'metric',(new_row->>'period_start')::date,(new_row->>'period_end')::date)) THEN CONTINUE; END IF;
+  IF protected_units>0 AND(operation<>'UPDATE' OR old_row IS NULL OR new_row IS NULL
+   OR(old_row->>'account_id',old_row->>'metric',old_row->>'period_start',old_row->>'period_end')
+    IS DISTINCT FROM(new_row->>'account_id',new_row->>'metric',new_row->>'period_start',new_row->>'period_end')
+   OR(new_row->>'reserved_units')::bigint<(old_row->>'reserved_units')::bigint
+   OR(new_row->>'refunded_units')::bigint<(old_row->>'refunded_units')::bigint
+   OR(new_row->>'reserved_units')::bigint-(new_row->>'refunded_units')::bigint<protected_units) THEN
+   RAISE EXCEPTION 'grant charged aggregate floor cannot be released or reset' USING ERRCODE='23514'; END IF;
+ END LOOP;
 END;
 $function$;
 
@@ -539,7 +602,7 @@ BEGIN
  SELECT * INTO row FROM public.conversation_profile03_grants g WHERE g.account_id=account AND g.message_id=wanted;
  IF NOT FOUND THEN RAISE EXCEPTION 'grant typed original unavailable' USING ERRCODE='23514'; END IF;
  IF operation='DELETE' THEN
-  IF relation_name IN('messages','message_attempts','dispatch_fences') AND EXISTS(SELECT FROM public.messages m WHERE m.account_id=account AND m.id=wanted)
+  IF relation_name IN('messages','dispatch_jobs','message_attempts','dispatch_fences') AND EXISTS(SELECT FROM public.messages m WHERE m.account_id=account AND m.id=wanted)
    AND(NOT EXISTS(SELECT FROM public.messages m WHERE m.account_id=account AND m.id=wanted AND m.state IN('delivered','failed','cancelled','expired'))
     OR EXISTS(SELECT FROM public.dispatch_fences f WHERE f.account_id=account AND f.message_id=wanted AND f.outcome IN('granted','submitting','unknown'))
     OR EXISTS(SELECT FROM public.message_attempts a WHERE a.account_id=account AND a.message_id=wanted AND a.status IN('granted','submitting','unknown'))) THEN
@@ -615,6 +678,9 @@ BEGIN
 
  -- An immutable03 grant may authorize only its exact initial claim/effects.
  -- Existing114 admission/redaction and every legacy policy remain separate.
+ IF epoch=1 AND relation_name IN('usage_ledger','usage_periods') THEN
+  PERFORM public.conversation_profile03_grant_usage_writer(account,relation_name,operation,old_row,new_row);RETURN;
+ END IF;
  IF epoch=1 AND relation_name IN('messages','dispatch_jobs','message_attempts','dispatch_fences') AND EXISTS(
   SELECT FROM public.conversation_profile03_grants g WHERE g.account_id=account AND g.message_id=
    CASE WHEN relation_name='messages' THEN coalesce((new_row->>'id')::uuid,(old_row->>'id')::uuid)
