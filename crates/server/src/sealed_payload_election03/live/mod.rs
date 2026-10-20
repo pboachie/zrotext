@@ -7,6 +7,7 @@ use tokio_postgres::{Row, Transaction};
 
 mod challenge;
 mod current03;
+pub(crate) mod manifest_history;
 mod state02;
 #[cfg(test)]
 mod tests;

@@ -4,11 +4,13 @@
 use super::*;
 use crate::sealed_inbound::line_activation::v2_runtime::object_body;
 use crate::sealed_payload_election03::{device_context, live};
+mod manifests;
 pub(super) const PROTOCOL: &str = "zrotext-device-status-v2+sealed-dispatch-v3";
 object_body! {struct Session {v:u8,r#type:String,connection_epoch:i64,challenge:String}}
 object_body! {struct Proof {v:u8,r#type:String,challenge_id:String,device_signature:String}}
 object_body! {struct Current {v:u8,r#type:String,connection_epoch:i64,challenge:String,line_id:String}}
 pub(super) enum Incoming {
+    Manifest(manifests::Frame),
     Session {
         epoch: i64,
         challenge: Uuid,
@@ -78,6 +80,9 @@ pub(super) fn parse(raw: &str) -> Result<Option<Incoming>, ()> {
     if raw.len() > MAX_FRAME_BYTES {
         return Err(());
     }
+    if let Some(frame) = manifests::parse(&tag.r#type, raw)? {
+        return Ok(Some(Incoming::Manifest(frame)));
+    }
     Ok(Some(match tag.r#type.as_str() {
         "payload_profile_current03_request" => {
             let b: Current = serde_json::from_str(raw).map_err(|_| ())?;
@@ -129,6 +134,9 @@ pub(super) async fn dispatch(
     reads: &mut CurrentReads,
     frame: Incoming,
 ) -> Option<()> {
+    if let Incoming::Manifest(frame) = frame {
+        return manifests::dispatch(socket, state, session, origin, samples, reads, frame).await;
+    }
     let mut db = runtime_db::connect_device(&state.database_url).await.ok()?;
     let tx = db
         .build_transaction()
@@ -140,6 +148,7 @@ pub(super) async fn dispatch(
         .ok()
         .filter(|v| *v > 0)?;
     match frame {
+        Incoming::Manifest(_) => return None,
         Incoming::Current {
             epoch,
             challenge,

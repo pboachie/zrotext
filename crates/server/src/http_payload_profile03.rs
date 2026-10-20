@@ -21,7 +21,9 @@ use axum::{
 use std::{sync::Arc, time::Duration};
 use tokio_postgres::IsolationLevel;
 
+mod manifests;
 mod request;
+pub use manifests::manifest_router;
 use request::{Body, Operation};
 
 #[derive(Clone)]

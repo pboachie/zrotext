@@ -13,6 +13,12 @@ pub(super) fn sign(key: &SigningKey, label: &[u8], bytes: &[u8]) -> Vec<u8> {
     s.normalize_s().to_bytes().to_vec()
 }
 pub(super) async fn prepared() -> (Case, Vec<u8>) {
+    prepared_with_keys(false).await
+}
+pub(super) async fn prepared_actual_genesis() -> (Case, Vec<u8>) {
+    prepared_with_keys(true).await
+}
+async fn prepared_with_keys(actual_genesis: bool) -> (Case, Vec<u8>) {
     let mut c = Case::new().await;
     c.approve().await;
     let lease = c.lease();
@@ -31,12 +37,17 @@ pub(super) async fn prepared() -> (Case, Vec<u8>) {
     let archive = SigningKey::generate_from_rng(&mut rand::rng());
     let outbound = SigningKey::generate_from_rng(&mut rand::rng());
     let mut roles = Vec::new();
+    let phone_role = if actual_genesis {
+        (4, &c.phone_key, c.device, c.line, 2)
+    } else {
+        (5, &outbound, Uuid::nil(), c.line, 1)
+    };
     for (role, key, device, line, scope) in [
         (1, &payload, c.device, c.line, 4u16),
         (2, &archive, Uuid::nil(), Uuid::nil(), 12),
         // Content outbound custody is distinct from the original SEALED
         // activation/election approval key retained by this real ceremony.
-        (5, &outbound, Uuid::nil(), c.line, 1),
+        phone_role,
         (6, &c.root_key, Uuid::nil(), Uuid::nil(), 0),
     ] {
         let point = key.verifying_key().to_sec1_point(false);
