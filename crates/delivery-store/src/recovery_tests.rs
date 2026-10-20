@@ -30,7 +30,7 @@ impl TestDb {
             "{root_url}{separator}options=-csearch_path%3D{schema}"
         ))
         .await;
-        crate::tests::apply_test_migrations(&client).await;
+        crate::tests::apply_legacy_isolated_test_migrations(&client).await;
         Self {
             admin,
             client,

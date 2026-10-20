@@ -122,7 +122,7 @@ impl Db {
             ))
             .await
             .unwrap();
-        crate::tests::apply_test_migrations(&client).await;
+        crate::tests::apply_legacy_isolated_test_migrations(&client).await;
         let account = Uuid::new_v4();
         let device = Uuid::new_v4();
         let customer = format!("cus_Synthetic{}", account.simple());

@@ -32,7 +32,7 @@ async fn alpha_client_message_ids_are_scoped_per_account() {
         ))
         .await
         .unwrap();
-    crate::tests::apply_test_migrations(&client).await;
+    crate::tests::apply_legacy_isolated_test_migrations(&client).await;
     let (account_a, device_a) = (Uuid::new_v4(), Uuid::new_v4());
     let (account_b, device_b) = (Uuid::new_v4(), Uuid::new_v4());
     for (account, device) in [(account_a, device_a), (account_b, device_b)] {

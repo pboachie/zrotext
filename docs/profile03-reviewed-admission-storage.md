@@ -52,3 +52,13 @@ separately typed03 provenance. Existing02 authorization records and callers with
 no authenticated segment ceiling do not become03 authority. Real adapter,
 billing, maintained receiver and integrated no-radio qualification remain
 separate from SQL structural qualification.
+
+The delivery test inventory includes all114 numbered files and checks their
+filenames. Historical isolated-schema delivery cases explicitly retain the107
+prefix:108 requires exact `public` and a real migration ledger. A separate
+disposable public-database test uses the genuine migrator, distinct ordinary
+owner/runtime, every ledger checksum, stock ACL reset and verifier, injected
+column-privilege refusal/reset and actual account tombstones. Only generated
+fixture role identities replace the stock role names; production preflight and
+schema rules are not weakened. This fixture proves schema/runtime boundaries,
+not genuine application login, cryptographic admission or delivery.

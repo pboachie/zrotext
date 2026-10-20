@@ -249,8 +249,8 @@ async fn functions<C: GenericClient + Sync>(db: &C) -> Result<()> {
     }
     Ok(())
 }
-/// Availability/schema only. A resolved legacy fixture without113 has no03
-/// reviewed admission storage promise; missing, partial, altered and polluted113 always refuse.
+/// Availability/schema only. A resolved legacy fixture without114 has no03
+/// reviewed admission storage promise; missing, partial, altered and polluted114 always refuse.
 pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
     let namespace:String=db.query_one("SELECT coalesce((SELECT n.nspname::text FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE c.oid=pg_catalog.to_regclass('line_activation_v2_pending')),'public')",&[]).await?.try_get(0)?;
     let present=db.query_one("SELECT pg_catalog.to_regclass(pg_catalog.format('%I.conversation_reviewed_sends03',$1::text)) IS NOT NULL,EXISTS(SELECT FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname::text=$1::text AND p.proname LIKE 'conversation_reviewed_send03_%')",&[&namespace]).await?;

@@ -31,9 +31,9 @@ impl TestDb {
             .batch_execute(&format!("SET search_path TO {schema}"))
             .await
             .unwrap();
-        // The shared reviewed fixture applies every numbered migration in
-        // order, including the metering tables this projection reads.
-        tests::apply_test_migrations(&client).await;
+        // Retain the legacy107 isolated prefix, including the metering tables
+        // this projection reads. Real public114 coverage is separate.
+        tests::apply_legacy_isolated_test_migrations(&client).await;
         Self {
             admin,
             client,
