@@ -22,6 +22,7 @@ internal object Draft03OutboundPreparation {
         val intervalStartsMs: Long, val intervalExpiresMs: Long,
         val selectedSubscriptionId: Int, activeCards: List<ActiveSimCard>?,
         internal val physicalSelection: InstalledSelectedLineV2? = baseBinding.installedSelectionV2(),
+        internal val intervalRamCurrent: () -> Unit,
     ) {
         private val signature = intentSignature.copyOf()
         private val cards = activeCards?.toList()
@@ -82,6 +83,7 @@ internal object Draft03OutboundPreparation {
         fun fresh(): Current {
             now()
             val c = checkNotNull(current())
+            c.intervalRamCurrent()
             val row = c.installation
             row.requireShape()
             check(row.state == "installed" && row.accountId == session.accountId.toString() &&
@@ -120,6 +122,7 @@ internal object Draft03OutboundPreparation {
             val completed = now()
             c.election.requireCurrent(c.authority, c.selection, completed)
             selected(c, c.baseBinding) // RAM-only permit; no platform call after the final clock.
+            c.intervalRamCurrent()
             return c
         }
         fun line(binding: LocalLineBinding?) { val c = fresh(); selected(c, binding) }
@@ -129,6 +132,7 @@ internal object Draft03OutboundPreparation {
             val instant = now()
             check(instant >= c.selection.comparedAtMs && instant < authorityDeadline)
             selected(c, c.baseBinding)
+            c.intervalRamCurrent()
         }
         try {
             if (current() == null || trustedNow() == null) return Unavailable

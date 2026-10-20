@@ -23,8 +23,9 @@ class SealedEnvelope03ClientTest {
         .put("envelope", Profile03ExecutionFixture.b64(f.envelope))
         .put("reviewed_intent", Profile03ExecutionFixture.b64(f.intentBytes))
         .put("reviewed_signature", Profile03ExecutionFixture.b64(f.intentSignature))
-        .put("accepted_ms", f.admittedAt.toString()).put("interval_starts_ms", "1")
-        .put("interval_expires_ms", "200000").put("selection_epoch", "3")
+        .put("accepted_ms", f.admittedAt.toString()).put("interval_starts_ms", "100000")
+        .put("interval_expires_ms", "100800").put("selection_epoch", "3")
+        .put("interval_permission", ConversationInterval03TestFixture(f).permission())
         .put("current", JSONObject().put("v", 1)) // Deliberately unverified projection, never a current authority handle.
     private fun signature(f: Profile03ExecutionFixture, grant: SealedDispatch03Frames.Grant): ByteArray {
         val raw = Profile03ExecutionFixture.rawSign(f.enrollment, SealedEnvelopeFetch03.transcript(grant))
@@ -69,6 +70,9 @@ class SealedEnvelope03ClientTest {
             packet(f).put("reviewed_signature", Profile03ExecutionFixture.b64(ByteArray(63))).toString(),
             packet(f).put("envelope", Profile03ExecutionFixture.b64(ByteArray(557))).toString(),
             packet(f).put("reviewed_intent", Profile03ExecutionFixture.b64(f.intentBytes.copyOf().apply { this[lastIndex] = 6 })).toString(),
+            packet(f).apply { remove("interval_permission") }.toString(),
+            packet(f).put("interval_permission", JSONObject.NULL).toString(),
+            packet(f).apply { getJSONObject("interval_permission").put("request_id", java.util.UUID(0, 999)) }.toString(),
             original + "{}",
         )
         for (variant in variants) assertThrows(Exception::class.java) {

@@ -119,7 +119,11 @@ class Profile03RetainedElectionTest {
     }
     @Test fun originalProofAndHardwareSubstitutionRefusesEvenWithMatchingServerDigestFields() = Fixture().use { v ->
         for (name in listOf("registration_evidence", "activation_evidence", "bundle", "owner_approval_point", "root_pin", "prior_manifest02", "accepted_manifest03")) {
-            val bytes = java.util.Base64.getUrlDecoder().decode(v.evidence[name] as String).apply { this[lastIndex] = (this[lastIndex].toInt() xor 1).toByte() }
+            val bytes = java.util.Base64.getUrlDecoder().decode(v.evidence[name] as String).apply { val index = if (name == "activation_evidence")
+                "ZTSE/line/payload-profile/activation-evidence/v1".length + 5 + 162 + 100 else lastIndex
+                // The final activation timestamp is durable metadata, not a signed byte. Mutate
+                // the original signed device statement for the original-proof negative control.
+                this[index] = (this[index].toInt() xor 1).toByte() }
             assertTrue(name, runCatching { v.verify(v.evidence + (name to Profile03ElectionEncoding.encode(bytes))) }.isFailure)
         }
         val wrong = DevicePayloadPublic(Profile03ExecutionFixture.point(v.f.archive), Profile03ExecutionFixture.keyId(v.f.archive, false), PayloadKeySecurity.TRUSTED_ENVIRONMENT)

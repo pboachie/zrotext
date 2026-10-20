@@ -6,6 +6,8 @@ import java.nio.ByteBuffer
 /** Bounded strict wire decoder, before JSONObject can erase duplicate names or coerce numbers. */
 internal object Profile03Json {
     data class Integer(val value: Long)
+    data object Null
+    private val nullableIntervalFields = setOf("owner_signature", "phone_signature", "installed_signature", "requested_ms", "approved_ms", "installed_ms")
     const val MAX_BYTES = 192 * 1024
     fun objectValue(bytes: ByteArray): Map<String, Any> {
         require(bytes.size in 2..MAX_BYTES)
@@ -13,16 +15,21 @@ internal object Profile03Json {
         return Reader(text).read()
     }
     fun render(fields: Map<String, Any>): ByteArray {
-        fun value(node: Any, field: String? = null, depth: Int = 0): String = when (node) {
+        fun value(node: Any, field: String? = null, depth: Int = 0, parent: String? = null): String = when (node) {
             is String -> org.json.JSONObject.quote(node)
             is Integer -> node.value.toString()
+            Null -> { require(parent == "interval_permission" && field in nullableIntervalFields && depth == 2 ||
+                depth == 1 && field in setOf("approved_ms", "installed_ms")); "null" }
             is Map<*, *> -> node.entries.joinToString(",", "{", "}") {
                 require(depth <= 4 && it.key is String && it.value != null)
-                org.json.JSONObject.quote(it.key as String) + ":" + value(checkNotNull(it.value), it.key as String, depth + 1)
+                org.json.JSONObject.quote(it.key as String) + ":" + value(checkNotNull(it.value), it.key as String, depth + 1, field)
             }
             is List<*> -> {
-                require(field == "closed_unaccepted" && depth == 1 && node.size <= 16 && node.all { it is Map<*, *> })
-                node.joinToString(",", "[", "]") { value(checkNotNull(it), depth = depth) }
+                val max = if (field == "closed_unaccepted" && depth == 1) 16 else {
+                    require(field == "readers" && parent == "interval_permission" && depth == 2); 6
+                }
+                require(node.size <= max && node.all { it is Map<*, *> })
+                node.joinToString(",", "[", "]") { value(checkNotNull(it), depth = depth, parent = field) }
             }
             else -> error("Profile03 scalar")
         }
@@ -60,10 +67,18 @@ internal object Profile03Json {
             value.entries.associate { (key, field) -> (key as? String ?: error("Closure key")) to checkNotNull(field) }
         }
     }
+    fun intervalReaders(fields: Map<String, Any>): List<Map<String, Any>> {
+        val raw = fields["readers"] as? List<*> ?: error("Interval readers required")
+        require(raw.size <= 6)
+        return raw.map { item ->
+            val value = item as? Map<*, *> ?: error("Interval reader object required")
+            value.entries.associate { (key, field) -> (key as? String ?: error("Interval reader key")) to checkNotNull(field) }
+        }
+    }
     private class Reader(private val raw: String) {
         private var at = 0
         fun read(): Map<String, Any> { val result = obj(0); whitespace(); require(at == raw.length); return result }
-        private fun obj(depth: Int): Map<String, Any> {
+        private fun obj(depth: Int, parent: String? = null): Map<String, Any> {
             require(depth <= 4); take('{')
             val fields = LinkedHashMap<String, Any>()
             whitespace()
@@ -75,8 +90,18 @@ internal object Profile03Json {
                 take(':'); whitespace()
                 fields[name] = when {
                     peek('"') -> string()
-                    peek('{') -> obj(depth + 1)
-                    peek('[') -> { require(name == "closed_unaccepted" && depth == 0); closureArray(depth + 1) }
+                    peek('{') -> obj(depth + 1, name)
+                    peek('[') -> {
+                        val max = if (name == "closed_unaccepted" && depth == 0) 16 else {
+                            require(name == "readers" && parent == "interval_permission" && depth == 1); 6
+                        }
+                        objectArray(depth + 1, name, max)
+                    }
+                    peek('n') -> {
+                        require((parent == "interval_permission" && name in nullableIntervalFields && depth == 1 ||
+                            depth == 0 && name in setOf("approved_ms", "installed_ms")) && raw.startsWith("null", at))
+                        at += 4; Null
+                    }
                     at < raw.length && raw[at] in '0'..'9' -> integer()
                     else -> throw IllegalArgumentException("Unsupported Profile03 JSON value")
                 }
@@ -85,13 +110,13 @@ internal object Profile03Json {
                 take(',')
             }
         }
-        private fun closureArray(depth: Int): List<Map<String, Any>> {
+        private fun objectArray(depth: Int, parent: String, max: Int): List<Map<String, Any>> {
             take('['); whitespace()
             val values = ArrayList<Map<String, Any>>()
             if (peek(']')) { at++; return values }
             while (true) {
-                require(values.size < 16 && peek('{'))
-                values.add(obj(depth)); whitespace()
+                require(values.size < max && peek('{'))
+                values.add(obj(depth, parent)); whitespace()
                 if (peek(']')) { at++; return values }
                 take(','); whitespace()
             }

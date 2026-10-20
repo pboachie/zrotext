@@ -17,6 +17,7 @@ internal class Profile03CurrentReader(context: Context, private val origin: Stri
     private val db: SmsJournalDatabase, private val trust: Draft02TrustStore,
     private val payloadKeys: DevicePayloadKeyStore, private val signingKeys: DeviceSigningKeyStore,
     private val clock: Profile03SessionTime, private val socketCurrent: () -> Boolean,
+    private val requireInterval: (Profile03FetchPacket, SealedDispatch03Frames.Grant, Selection) -> (() -> Unit),
 ) {
     private val application = checkNotNull(context.applicationContext)
     private val originDigest = sha(origin.toByteArray(Charsets.UTF_8))
@@ -24,7 +25,12 @@ internal class Profile03CurrentReader(context: Context, private val origin: Stri
     class Selection internal constructor(val election: Draft03PayloadElectionProof, val authority: Draft03ManifestAuthority,
         val selected: Draft03PayloadElectionProof.CurrentAuthority03, val installation: Profile03ElectionRecord,
         val baseBinding: LocalLineBinding, val user: UUID?, val ownerSession: UUID?, val epoch: Long,
-        val selectedSubscription: Int, private val activeCards: List<ActiveSimCard>?, val physical: InstalledSelectedLineV2) {
+        val selectedSubscription: Int, private val activeCards: List<ActiveSimCard>?, val physical: InstalledSelectedLineV2,
+        deviceSessionDigest: ByteArray, physicalDigest: ByteArray) {
+        private val sessionIdentity = deviceSessionDigest.copyOf()
+        private val physicalIdentity = physicalDigest.copyOf()
+        fun deviceSessionDigest() = sessionIdentity.copyOf()
+        fun physicalDigest() = physicalIdentity.copyOf()
         fun cards() = activeCards?.toList()
         override fun toString() = "Profile03CurrentSelection(verified-local-evidence)"
     }
@@ -32,6 +38,7 @@ internal class Profile03CurrentReader(context: Context, private val origin: Stri
     fun read(packet: Profile03FetchPacket, input: SealedDispatch03Frames.Grant): Draft03OutboundPreparation.Current {
         val grant = SealedDispatch03Frames.grant(input.json())
         val value = selection(packet.currentProjection(), grant.lineId, false, false)
+        val intervalRamCurrent = requireInterval(packet, grant, value)
         val instant = checkNotNull(clock.nowMs())
         check(instant < grant.expiresAtMs && grant.expiresAtMs <= value.selected.permissionExpiresAtMs)
         val intent = ReviewedIntent03.decode(packet.intent())
@@ -48,7 +55,8 @@ internal class Profile03CurrentReader(context: Context, private val origin: Stri
         check(socketCurrent() && value.baseBinding.installedSelectionV2()?.isCurrent() == true)
         return Draft03OutboundPreparation.Current(value.election, value.authority, value.selected, value.installation,
             value.baseBinding, intent, packet.signature(), packet.acceptedMs, packet.selectionEpoch, intent.ownerUserId,
-            intent.ownerSessionId, packet.intervalStartsMs, packet.intervalExpiresMs, value.selectedSubscription, value.cards(), value.physical)
+            intent.ownerSessionId, packet.intervalStartsMs, packet.intervalExpiresMs, value.selectedSubscription, value.cards(),
+            value.physical, intervalRamCurrent)
     }
 
     /** Only a nonce-matched authenticated current socket reply or device fetch may call this.
@@ -177,9 +185,15 @@ internal class Profile03CurrentReader(context: Context, private val origin: Stri
         } else check(db.profile03Elections().find(challenge.toString()) == installation)
         election.requireCurrent(authority, selected, now())
         check(permit.isCurrent())
+        val physicalDigest = if (refreshed == null) ConversationInterval03.originalPhysicalDigest(session.accountId,
+            session.deviceId, expectedLine, id(accepted.newBindingId), accepted.electionCommitment, bytes("device_session_digest"),
+            id(accepted.oldBindingId), Profile03Json.binary(evidence, "activation_evidence", 1, 2048))
+        else ConversationInterval03.refreshedPhysicalDigest(session.accountId, session.deviceId, expectedLine,
+            id(accepted.newBindingId), accepted.electionCommitment, bytes("device_session_digest"), refreshed)
+        check(permit.isCurrent())
         return Selection(election, authority, selected, installation, line,
             if (deviceOnly) null else fieldId("user_id"), if (deviceOnly) null else fieldId("owner_session_id"),
-            number("selection_epoch"), selectedSubscription, cards, permit)
+            number("selection_epoch"), selectedSubscription, cards, permit, bytes("device_session_digest"), physicalDigest)
     }
     override fun toString() = "Profile03CurrentReader(local-and-authenticated-device-evidence)"
     companion object {

@@ -50,7 +50,7 @@ class SelectionRefresh03JournalTest {
         }
         override fun close() = f.close()
     }
-    @Test fun reservationBurnsChallengeAndEveryStageRequiresItsOriginalDurablePredecessor() = Fixture().use { v ->
+    @Test fun reservationBurnsChallengeAndEveryStageRequiresItsOriginalDurablePredecessor(): Unit = Fixture().use { v ->
         assertTrue(v.dao.reserve(v.reserved) {})
         assertFalse(v.dao.reserve(v.reserved) {})
         assertFalse(v.dao.advance(v.installed, "ack_signed") {})
@@ -67,7 +67,7 @@ class SelectionRefresh03JournalTest {
         assertEquals(v.f.installed, v.f.line.db.profile03Elections().find(v.f.record.challengeId))
         assertEquals(v.f.binding, v.f.line.db.attempts().currentLineBinding())
     }
-    @Test fun retirementOfReleasedDeviceProofKeepsItsUnknownOutcomeFenceAndRejectsLateAcceptance() = Fixture().use { v ->
+    @Test fun retirementOfReleasedDeviceProofKeepsItsUnknownOutcomeFenceAndRejectsLateAcceptance(): Unit = Fixture().use { v ->
         assertTrue(v.dao.reserve(v.reserved) {})
         assertTrue(v.dao.advance(v.signed, "reserved") {})
         assertEquals(1, v.dao.retire(v.reserved.refreshId))
@@ -76,7 +76,7 @@ class SelectionRefresh03JournalTest {
         assertFalse(v.dao.advance(v.accepted, "signed") {})
         assertNull(v.dao.find(v.next().refreshId))
     }
-    @Test fun unsignedAbandonmentDoesNotEraseHistoryAndCannotBeMistakenForAnInstalledRefresh() = Fixture().use { v ->
+    @Test fun unsignedAbandonmentDoesNotEraseHistoryAndCannotBeMistakenForAnInstalledRefresh(): Unit = Fixture().use { v ->
         assertTrue(v.dao.reserve(v.reserved) {})
         assertEquals(1, v.dao.retire(v.reserved.refreshId))
         assertTrue(v.dao.reserve(v.next()) {})
@@ -84,7 +84,7 @@ class SelectionRefresh03JournalTest {
         assertFalse(v.dao.advance(v.signed, "reserved") {})
         assertNull(v.f.binding.installedSelectionV2()?.refresh03)
     }
-    @Test fun guardWithdrawalAfterWriteRollsBackAndOriginalBindingCannotBeSubstituted() = Fixture().use { v ->
+    @Test fun guardWithdrawalAfterWriteRollsBackAndOriginalBindingCannotBeSubstituted(): Unit = Fixture().use { v ->
         var calls = 0
         assertThrows(IllegalStateException::class.java) {
             v.dao.reserve(v.reserved) { check(++calls <= 2) } // Pre/post original() invokes twice each.
@@ -99,7 +99,7 @@ class SelectionRefresh03JournalTest {
             v.dao.advance(v.signed.copy(electionIdentitySha256 = "a".repeat(64)), "reserved") {}
         }
     }
-    @Test fun signaturesAndOriginalAcceptanceTimesCannotChangeAcrossLaterTransitions() = Fixture().use { v ->
+    @Test fun signaturesAndOriginalAcceptanceTimesCannotChangeAcrossLaterTransitions(): Unit = Fixture().use { v ->
         assertTrue(v.dao.reserve(v.reserved) {})
         assertTrue(v.dao.advance(v.signed, "reserved") {})
         val changed = Profile03ElectionEncoding.encode(ByteArray(64) { 3 })
@@ -120,7 +120,7 @@ class SelectionRefresh03JournalTest {
             assertNull(v.dao.find(v.reserved.refreshId))
         }
     }
-    @Test fun storedReceiptCannotSubstituteAnotherSessionEpochOrGenuinelyWithdrawnIssuer() = Fixture().use { v ->
+    @Test fun storedReceiptCannotSubstituteAnotherSessionEpochOrGenuinelyWithdrawnIssuer(): Unit = Fixture().use { v ->
         assertTrue(v.dao.reserve(v.reserved) {})
         for ((next, expected) in listOf(v.signed to "reserved", v.accepted to "signed", v.ackReserved to "accepted",
             v.ackSigned to "ack_reserved", v.installed to "ack_signed")) assertTrue(v.dao.advance(next, expected) {})
