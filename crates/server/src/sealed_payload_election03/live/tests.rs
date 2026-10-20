@@ -21,6 +21,7 @@ mod manifest_permission_tests;
 mod manifest_tests;
 mod reviewed_send_billing_tests;
 mod reviewed_send_tests;
+mod selection_refresh_tests;
 use fixture::{prepared, sign, source};
 
 #[tokio::test]
