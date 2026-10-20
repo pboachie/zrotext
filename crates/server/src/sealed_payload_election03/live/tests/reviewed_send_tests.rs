@@ -3,6 +3,7 @@
 //! synthetic encrypted payload is opaque to the server; no decrypt/radio claim.
 use super::interval_queue_tests::{lease, prepared, request};
 use super::*;
+use crate::sealed_payload_election03::adapter_contract;
 use crate::{
     conversation_interval03::{self as consent, live as intervals},
     reviewed_intent03::live as reviewed,
