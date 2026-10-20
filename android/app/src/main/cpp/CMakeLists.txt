@@ -56,6 +56,7 @@ set(ZT_BRIDGE_CORE "${CMAKE_CURRENT_SOURCE_DIR}/zrotext_hpke_core.c")
 if(ANDROID)
     add_library(zrotext_hpke_keystore SHARED
         "${ZT_BRIDGE_CORE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/zrotext_hpke_sender_jni.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/zrotext_hpke_jni.c")
     target_link_libraries(zrotext_hpke_keystore PRIVATE wolfssl_zt log)
 endif()

@@ -190,3 +190,60 @@ int zt_hpke_open(const struct zt_hpke_bridge* bridge,
     wc_ForceZero(&hpke, sizeof(hpke));
     return ret;
 }
+
+int zt_hpke_seal_cek(const struct zt_hpke_bridge* bridge,
+                    const unsigned char* ephemeral, size_t ephemeralSz,
+                    const unsigned char* recipient, size_t recipientSz,
+                    const unsigned char* cek, size_t cekSz,
+                    const unsigned char* info, size_t infoSz,
+                    const unsigned char* aad, size_t aadSz,
+                    unsigned char* ct, size_t ctCap)
+{
+    Hpke hpke;
+    ecc_key ephemeralKey;
+    ecc_key recipientKey;
+    int ret;
+    if (bridge == NULL || bridge->agree == NULL || ephemeral == NULL ||
+        recipient == NULL || cek == NULL || info == NULL || aad == NULL ||
+        ct == NULL || ephemeralSz != 65U || recipientSz != 65U || cekSz != 32U ||
+        infoSz == 0U || aadSz == 0U || infoSz > 1024U || aadSz > 1024U ||
+        (infoSz == aadSz && XMEMCMP(info, aad, (word32)infoSz) == 0))
+        return BAD_FUNC_ARG;
+    if (ctCap < 48U)
+        return BUFFER_E;
+    XMEMSET(ct, 0, 48U);
+    ret = zt_hpke_init();
+    if (ret != 0)
+        return ret;
+    XMEMSET(&hpke, 0, sizeof(hpke));
+    XMEMSET(&ephemeralKey, 0, sizeof(ephemeralKey));
+    XMEMSET(&recipientKey, 0, sizeof(recipientKey));
+    ret = wc_HpkeInit(&hpke, DHKEM_P256_HKDF_SHA256, HKDF_SHA256,
+                     HPKE_AES_128_GCM, NULL);
+    if (ret != 0)
+        return ret;
+    ret = wc_ecc_init_ex(&ephemeralKey, NULL, ZT_HPKE_DEVID);
+    if (ret != 0)
+        goto hpke_done;
+    ephemeralKey.devCtx = (void*)bridge;
+    ret = wc_ecc_init_ex(&recipientKey, NULL, INVALID_DEVID);
+    if (ret != 0)
+        goto ephemeral_done;
+    ret = wc_ecc_import_x963_ex(ephemeral, (word32)ephemeralSz,
+                              &ephemeralKey, ECC_SECP256R1);
+    if (ret == 0)
+        ret = wc_ecc_import_x963_ex(recipient, (word32)recipientSz,
+                                  &recipientKey, ECC_SECP256R1);
+    if (ret == 0)
+        ret = wc_HpkeSealBase(&hpke, &ephemeralKey, &recipientKey,
+                             (byte*)info, (word32)infoSz, (byte*)aad, (word32)aadSz,
+                             (byte*)cek, 32U, ct);
+    wc_ecc_free(&recipientKey);
+ephemeral_done:
+    wc_ecc_free(&ephemeralKey);
+hpke_done:
+    wc_ForceZero(&hpke, sizeof(hpke));
+    if (ret != 0)
+        wc_ForceZero(ct, 48U);
+    return ret;
+}

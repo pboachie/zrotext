@@ -79,9 +79,10 @@ extern "C" {
 /* Heap over stack for large temporaries; Android worker stacks are small. */
 #define WOLFSSL_SMALL_STACK
 
-/* Single-threaded library: the bridge serializes key operations per alias in
- * Kotlin (PayloadKeyLifecycle file lock + device monitor) and the crypto
- * callback registry is written once during JNI_OnLoad and never mutated. */
+/* Single-threaded library: receiver custody remains serialized per alias;
+ * WolfHpkeOperationGate additionally serializes every receiver/sender native
+ * entry in this process. The callback registry is written once during
+ * JNI_OnLoad and never mutated while operations are live. */
 #define SINGLE_THREADED
 
 /* The bridge is embed-only: no TLS, no sockets, no diagnostics text.

@@ -88,9 +88,11 @@ class WolfHpkeKeystoreReceiver(private val keystore: DevicePayloadKeyStore) {
             admission.get()?.invoke()
             val result = keystore.withRecipientKey(pinnedKeyId) { privateKey, public ->
                 admission.get()?.invoke() // Acquisition of the existing hardware identity can wait.
-                nativeOpen(privateKey, public.point, enc, ct, info, aad).also {
-                    pending = it
-                    admission.get()?.invoke()
+                WolfHpkeOperationGate.operation({ admission.get()?.invoke(); Unit }) {
+                    nativeOpen(privateKey, public.point, enc, ct, info, aad).also {
+                        pending = it
+                        admission.get()?.invoke()
+                    }
                 }
             }
             admission.get()?.invoke() // Including the lifecycle's post-operation identity check.

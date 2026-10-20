@@ -204,6 +204,33 @@ class DeviceSigningKeyStore(
         return Draft01SignaturePrimitive.canonicalRawFromDer(der)
     }
 
+    /** Additive03 role04 only, called AFTER the future actual capture journal's one-use
+     * reservation. A public proof never substitutes for that caller's current113/physical
+     * provenance. Missing/nonmatching/exportable keys refuse; no key is created or aliased. */
+    internal fun signPreparedInbound03(prepared: Draft03InboundEnvelope.Unsigned,
+        now: () -> Long, current: () -> Unit): ByteArray {
+        var latest = 0L
+        fun checked() {
+            current(); val value = now(); check(value >= latest)
+            prepared.requirePublicCurrent(value); current(); latest = value
+        }
+        checked()
+        val point = prepared.signerPoint()
+        check(java.security.MessageDigest.isEqual(existingConversationPublicPoint(), point))
+        checked()
+        val key = privateKey()
+        check(key.encoded == null && securityLevel(key) in setOf(SigningKeySecurity.STRONGBOX, SigningKeySecurity.TRUSTED_ENVIRONMENT))
+        checked()
+        val der = Signature.getInstance("SHA256withECDSA").run { initSign(key); update(prepared.transcript()); sign() }
+        checked()
+        check(java.security.MessageDigest.isEqual(existingConversationPublicPoint(), point))
+        checked()
+        val raw = Draft01SignaturePrimitive.canonicalRawFromDer(der)
+        prepared.signed(raw) // Independently verify our new signature over the exact03 transcript.
+        checked()
+        return raw
+    }
+
     internal fun signInboundMetadata(accountId: UUID, deviceId: UUID, upload: InboundUpload,
                                      event: InboundEvent): ByteArray =
         sign(InboundUploadFrame.signedBytes(accountId, deviceId, upload, event))
