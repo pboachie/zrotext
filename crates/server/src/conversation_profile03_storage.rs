@@ -23,15 +23,24 @@ pub enum ConversationSchemaError {
     Database(#[from] tokio_postgres::Error),
 }
 type Result<T> = std::result::Result<T, ConversationSchemaError>;
-fn body(name: &str) -> Result<&'static str> {
-    MIGRATION
+fn body(name: &str, version: i64) -> Result<&'static str> {
+    let source = if version == 114
+        && matches!(
+            name,
+            "payload_profile_writer_version" | "payload_profile_writer_ready"
+        ) {
+        include_str!("../../../deploy/compose/migrations/114_conversation_reviewed_sends03.sql")
+    } else {
+        MIGRATION
+    };
+    source
         .split_once(&format!("FUNCTION public.{name}("))
         .and_then(|(_, sql)| sql.split_once("AS $function$"))
         .and_then(|(_, sql)| sql.split_once("$function$;"))
         .map(|(body, _)| body)
         .ok_or(ConversationSchemaError::Invalid)
 }
-async fn functions<C: GenericClient + Sync>(db: &C) -> Result<()> {
+async fn functions<C: GenericClient + Sync>(db: &C, version: i64) -> Result<()> {
     for (name, args, result, language, volatility, strict, definer, set, config, names) in [
         (
             "conversation_profile03_key_until",
@@ -272,7 +281,7 @@ async fn functions<C: GenericClient + Sync>(db: &C) -> Result<()> {
         let row = &rows[0];
         let config = config.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
         let names = names.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
-        if row.try_get::<_, String>(0)? != body(name)?
+        if row.try_get::<_, String>(0)? != body(name, version)?
             || row.try_get::<_, String>(1)? != args
             || !row.try_get::<_, bool>(2)?
             || row.try_get::<_, String>(3)? != language
@@ -327,10 +336,10 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
         )
         .await?
         .try_get(0)?;
-    if version != 113 {
+    if !matches!(version, 113..=114) {
         return Err(ConversationSchemaError::Invalid);
     }
-    functions(db).await?;
+    functions(db, version).await?;
     if db.query_one("SELECT EXISTS(SELECT FROM pg_catalog.pg_proc p CROSS JOIN LATERAL pg_catalog.aclexplode(coalesce(p.proacl,pg_catalog.acldefault('f',p.proowner))) a WHERE p.pronamespace='public'::pg_catalog.regnamespace AND(p.proname LIKE 'conversation_profile03_%') AND a.grantee=0)",&[]).await?.try_get::<_,bool>(0)? {return Err(ConversationSchemaError::Invalid);}
     Ok(true)
 }

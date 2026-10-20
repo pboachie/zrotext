@@ -1,8 +1,10 @@
 use super::*;
 
-// Keep the admission fixtures on the complete, reviewed schema. SQL is
-// embedded at build time so tests never execute files discovered at runtime.
-const TEST_MIGRATIONS: [(&str, &str); 107] = [
+// Keep the source inventory on the complete numbered schema. Legacy isolated
+// delivery fixtures deliberately stop at107; actual108+ public/ledger/runtime
+// coverage lives in current_schema_tests and uses the genuine migrator.
+const LEGACY_ISOLATED_MIGRATIONS: usize = 107;
+const TEST_MIGRATIONS: [(&str, &str); 114] = [
     (
         "001_foundation.sql",
         include_str!("../../../deploy/compose/migrations/001_foundation.sql"),
@@ -441,12 +443,50 @@ const TEST_MIGRATIONS: [(&str, &str); 107] = [
         "107_registration_browser_intents.sql",
         include_str!("../../../deploy/compose/migrations/107_registration_browser_intents.sql"),
     ),
+    (
+        "108_payload_profile_writer_fences.sql",
+        include_str!("../../../deploy/compose/migrations/108_payload_profile_writer_fences.sql"),
+    ),
+    (
+        "109_original_sealed_activation_receipts.sql",
+        include_str!(
+            "../../../deploy/compose/migrations/109_original_sealed_activation_receipts.sql"
+        ),
+    ),
+    (
+        "110_payload_profile_elections.sql",
+        include_str!("../../../deploy/compose/migrations/110_payload_profile_elections.sql"),
+    ),
+    (
+        "111_payload_profile_selection_refresh.sql",
+        include_str!(
+            "../../../deploy/compose/migrations/111_payload_profile_selection_refresh.sql"
+        ),
+    ),
+    (
+        "112_payload_profile_manifest_successors.sql",
+        include_str!(
+            "../../../deploy/compose/migrations/112_payload_profile_manifest_successors.sql"
+        ),
+    ),
+    (
+        "113_conversation_profile03_intervals.sql",
+        include_str!("../../../deploy/compose/migrations/113_conversation_profile03_intervals.sql"),
+    ),
+    (
+        "114_conversation_reviewed_sends03.sql",
+        include_str!("../../../deploy/compose/migrations/114_conversation_reviewed_sends03.sql"),
+    ),
 ];
 
-/// Applies every numbered migration in order. Shared by the PostgreSQL-backed
-/// test modules so each one runs against the complete reviewed schema.
-pub(crate) async fn apply_test_migrations(client: &Client) {
-    for (name, migration) in TEST_MIGRATIONS {
+#[path = "current_schema_tests.rs"]
+mod current_schema_tests;
+
+/// Preserve pre108 isolated-schema delivery coverage explicitly.108+ requires
+/// exact public installation and a real checksummed ledger; it must not be
+/// namespace-rewritten or run by this manual historical fixture.
+pub(crate) async fn apply_legacy_isolated_test_migrations(client: &Client) {
+    for &(name, migration) in TEST_MIGRATIONS.iter().take(LEGACY_ISOLATED_MIGRATIONS) {
         if name == "070_message_summary_metadata.sql" {
             client.batch_execute("CREATE INDEX CONCURRENTLY messages_summary_queue ON messages(account_id,state,created_at) WHERE state IN ('accepted','queued','claimed','submitting','submitted')").await.unwrap();
             client.batch_execute("BEGIN").await.unwrap();
@@ -592,6 +632,15 @@ fn admission_fixture_tracks_numbered_migrations() {
         .map(|(name, _)| name.to_string())
         .collect::<Vec<_>>();
     assert_eq!(discovered, embedded, "update the embedded migration list");
+    assert_eq!(TEST_MIGRATIONS.len(), 114);
+    assert_eq!(
+        TEST_MIGRATIONS[LEGACY_ISOLATED_MIGRATIONS - 1].0,
+        "107_registration_browser_intents.sql"
+    );
+    assert_eq!(
+        TEST_MIGRATIONS[LEGACY_ISOLATED_MIGRATIONS].0,
+        "108_payload_profile_writer_fences.sql"
+    );
 }
 
 #[tokio::test]
@@ -610,7 +659,7 @@ async fn radio_timestamp_rejection_preserves_state_and_accepts_offline_evidence(
         ))
         .await
         .unwrap();
-    apply_test_migrations(&client).await;
+    apply_legacy_isolated_test_migrations(&client).await;
     let account_id = Uuid::new_v4();
     let device_id = Uuid::new_v4();
     let message_id = Uuid::new_v4();
@@ -783,7 +832,7 @@ async fn released_attempt_cannot_change_a_new_grant() {
         ))
         .await
         .unwrap();
-    apply_test_migrations(&client).await;
+    apply_legacy_isolated_test_migrations(&client).await;
     let account_id = Uuid::new_v4();
     let device_id = Uuid::new_v4();
     let message_id = Uuid::new_v4();
@@ -954,7 +1003,7 @@ async fn expired_message_replay_keeps_identity_without_new_dispatch() {
         ))
         .await
         .unwrap();
-    apply_test_migrations(&client).await;
+    apply_legacy_isolated_test_migrations(&client).await;
     let account = Uuid::new_v4();
     let device = Uuid::new_v4();
     let message = Uuid::new_v4();
@@ -1090,7 +1139,7 @@ async fn exact_alpha_replay_survives_customer_binding_without_new_work() {
         ))
         .await
         .unwrap();
-    apply_test_migrations(&client).await;
+    apply_legacy_isolated_test_migrations(&client).await;
     let account = Uuid::new_v4();
     let device = Uuid::new_v4();
     let message = Uuid::new_v4();
@@ -1218,8 +1267,8 @@ async fn parallel_acceptance_respects_pending_queue_capacity() {
         ))
         .await
         .unwrap();
-    // Apply the complete numbered schema, including accept-time metering.
-    apply_test_migrations(&client).await;
+    // Preserve the legacy107 isolated schema, including accept-time metering.
+    apply_legacy_isolated_test_migrations(&client).await;
     let account = Uuid::new_v4();
     let device = Uuid::new_v4();
     client
@@ -1411,7 +1460,7 @@ async fn postgres_fences_unknown_and_tenant_idempotency() {
         ))
         .await
         .unwrap();
-    apply_test_migrations(&client).await;
+    apply_legacy_isolated_test_migrations(&client).await;
 
     let account = Uuid::new_v4();
     let other_account = Uuid::new_v4();
@@ -2424,7 +2473,7 @@ async fn recent_grant_precheck_is_one_bounded_index_probe() {
         ))
         .await
         .unwrap();
-    apply_test_migrations(&client).await;
+    apply_legacy_isolated_test_migrations(&client).await;
     let account_id = Uuid::new_v4();
     let device_id = Uuid::new_v4();
     let message_id = Uuid::new_v4();
@@ -2797,7 +2846,7 @@ async fn admission_pending_count_reads_the_account_pending_index_only() {
         ))
         .await
         .unwrap();
-    apply_test_migrations(&client).await;
+    apply_legacy_isolated_test_migrations(&client).await;
     let account = Uuid::new_v4();
     let device = Uuid::new_v4();
     let other_account = Uuid::new_v4();
@@ -2935,7 +2984,7 @@ async fn admission_pays_one_round_trip_per_statement() {
         ))
         .await
         .unwrap();
-    apply_test_migrations(&setup).await;
+    apply_legacy_isolated_test_migrations(&setup).await;
     let account_id = Uuid::new_v4();
     let device_id = Uuid::new_v4();
     setup
@@ -3074,7 +3123,7 @@ async fn one_evidence_aggregate_keeps_conflict_segment_and_proof_rules() {
         ))
         .await
         .unwrap();
-    apply_test_migrations(&client).await;
+    apply_legacy_isolated_test_migrations(&client).await;
     let account_id = Uuid::new_v4();
     let device_id = Uuid::new_v4();
     let message_id = Uuid::new_v4();
@@ -3234,7 +3283,7 @@ async fn billed_admission_guard_share_locks_every_row_it_reads() {
         ))
         .await
         .unwrap();
-    apply_test_migrations(&client).await;
+    apply_legacy_isolated_test_migrations(&client).await;
     let account = Uuid::new_v4();
     client
         .execute("INSERT INTO accounts(id) VALUES($1)", &[&account])
@@ -3337,7 +3386,7 @@ async fn recovery_sweeps_pay_one_round_trip_per_batch() {
         ))
         .await
         .unwrap();
-    apply_test_migrations(&setup).await;
+    apply_legacy_isolated_test_migrations(&setup).await;
     let account = Uuid::new_v4();
     setup
         .execute("INSERT INTO accounts(id) VALUES($1)", &[&account])

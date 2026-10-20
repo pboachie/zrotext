@@ -63,7 +63,7 @@ impl Fixture {
         let applied = zrotext_migrator::apply(&mut owner, &directory, false)
             .await
             .unwrap();
-        assert_eq!(applied.last().unwrap().version, 113);
+        assert_eq!(applied.last().unwrap().version, 114);
         let snapshot: Vec<u8> = owner
             .query_one("SELECT public.payload_profile_writer_graph()", &[])
             .await

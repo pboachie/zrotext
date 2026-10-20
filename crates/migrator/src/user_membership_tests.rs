@@ -70,7 +70,7 @@ impl Fixture {
         let directory =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
         let applied = apply(&mut owner, &directory, false).await.unwrap();
-        assert_eq!(applied.last().unwrap().version, 113);
+        assert_eq!(applied.last().unwrap().version, 114);
         let capture = "SELECT json_build_array((SELECT json_agg(json_build_array(version,checksum_sha256,applied_at::text) ORDER BY version) FROM schema_migrations),(SELECT json_build_array(proowner,proacl::text,prosrc,proconfig,prosecdef) FROM pg_proc WHERE oid='public.user_membership_freshness_guard()'::regprocedure))::text";
         let before: String = owner.query_one(capture, &[]).await.unwrap().get(0);
         assert!(
