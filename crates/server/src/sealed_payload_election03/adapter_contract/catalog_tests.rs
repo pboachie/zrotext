@@ -115,6 +115,19 @@ async fn candidate_inventory_covers_exact_numbered_schema_relations_columns_fk_a
                         | "closed_rows_never_accept_or_restore02_fallback"
                         | "historical_acceptance_not_current_permission"
                 )
+            ) || matches!(
+                (table.as_str(), policy["current_profile"].as_str()),
+                (
+                    "payload_profile_selection_challenges",
+                    Some(
+                        "new_mutations_version_actual_anchor_at_unchanged_epoch1_no_historical_retry_touch"
+                    )
+                ) | (
+                    "payload_profile_selection_receipts",
+                    Some(
+                        "one_accepted_per_full_connection_historical_receipt_not_message_permission"
+                    )
+                )
             ),
             "{table}: unknown current-profile writer policy"
         );
