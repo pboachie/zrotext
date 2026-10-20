@@ -9,6 +9,12 @@ async fn fixture() -> Fixture {
     let fixture = Fixture::new().await;
     let role = escape_identifier(&fixture.runtime_role);
     fixture.owner.batch_execute(&format!("GRANT EXECUTE ON FUNCTION public.payload_profile_v2_capture(uuid,uuid,bytea,bytea,bytea,bytea,bytea,bytea),public.payload_profile_v2_ready(),public.payload_profile_election_reserve(uuid,uuid,uuid,uuid,uuid,bytea,bytea,bigint),public.payload_profile_election_device_proof(uuid,uuid,bytea),public.payload_profile_election_accept(uuid,uuid,uuid,bytea,bigint),public.payload_profile_election_ready(),public.payload_profile_selection_reserve(uuid,uuid,uuid,uuid,bytea,bigint),public.payload_profile_selection_device_proof(uuid,uuid,bytea,bytea),public.payload_profile_selection_approve(uuid,uuid,uuid,bytea,bigint),public.payload_profile_selection_install(uuid,uuid,bytea,bytea),public.payload_profile_selection_ready(),public.payload_profile_manifest_install(uuid,uuid,uuid,uuid,bytea,bytea,bytea,bigint),public.payload_profile_manifest_retention(uuid,uuid,bigint,bytea,bytea,bigint,bytea),public.payload_profile_manifest_ready(),public.conversation_profile03_interval_reserve(uuid,uuid,uuid,uuid,uuid,uuid,bytea,bigint),public.conversation_profile03_interval_request(uuid,uuid,uuid,bytea,bigint),public.conversation_profile03_interval_approve(uuid,uuid,bytea),public.conversation_profile03_interval_install(uuid,uuid,bytea),public.conversation_profile03_interval_stop(uuid,uuid,uuid,uuid),public.conversation_profile03_interval_device_stop(uuid,uuid,uuid,text,text,bigint,bigint,bytea),public.conversation_profile03_interval_ready(),public.conversation_reviewed_send03_admit(uuid,uuid,uuid,bytea,bytea,bytea,bigint),public.conversation_reviewed_send03_ready() TO {role}")).await.unwrap();
+    crate::payload_profile_manifests::require(&fixture.db)
+        .await
+        .unwrap();
+    crate::conversation_profile03_storage::require(&fixture.db)
+        .await
+        .unwrap();
     require(&fixture.db).await.unwrap();
     assert!(require(&fixture.owner).await.is_err());
     fixture
@@ -129,6 +135,14 @@ async fn actual_queue_metadata_constraint_rejects_null_or_out_of_range_profile03
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE on a disposable PostgreSQL cluster"]
 async fn reviewed_admission_storage_refuses_missing_disabled_unknown_and_substituted_graph() {
     let mut fixture = fixture().await;
+    for search_path in ["pg_catalog", "pg_catalog, public", "public"] {
+        let tx = fixture.db.transaction().await.unwrap();
+        tx.batch_execute(&format!("SET LOCAL search_path TO {search_path}"))
+            .await
+            .unwrap();
+        require(&tx).await.unwrap();
+        tx.rollback().await.unwrap();
+    }
     for sql in [
         "ALTER TABLE public.conversation_reviewed_sends03 DISABLE TRIGGER conversation_reviewed_send03_before_change",
         "ALTER TABLE public.conversation_reviewed_sends03 DISABLE TRIGGER conversation_reviewed_send03_after_change",
@@ -139,6 +153,7 @@ async fn reviewed_admission_storage_refuses_missing_disabled_unknown_and_substit
         "DROP TABLE public.conversation_reviewed_sends03 CASCADE",
         "CREATE OR REPLACE FUNCTION public.conversation_reviewed_send03_ready() RETURNS boolean LANGUAGE sql STABLE SET search_path TO pg_catalog AS 'SELECT true'",
         "ALTER FUNCTION public.conversation_reviewed_send03_admit(uuid,uuid,uuid,bytea,bytea,bytea,bigint) SECURITY INVOKER",
+        "CREATE FUNCTION public.conversation_reviewed_send03_envelope(bytea,bytea) RETURNS void LANGUAGE plpgsql AS 'BEGIN RETURN; END'",
         "GRANT EXECUTE ON FUNCTION public.conversation_reviewed_send03_scope(uuid,bytea,bytea,bigint,bigint) TO PUBLIC",
     ] {
         let tx = fixture.owner.transaction().await.unwrap();

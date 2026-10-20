@@ -25,7 +25,9 @@ fn body(name: &str, version: i64) -> Result<&'static str> {
     let source = if version == 114
         && matches!(
             name,
-            "payload_profile_writer_version" | "payload_profile_writer_ready"
+            "payload_profile_writer_version"
+                | "payload_profile_writer_ready"
+                | "payload_profile_writer_policy"
         ) {
         include_str!("../../../deploy/compose/migrations/114_conversation_reviewed_sends03.sql")
     } else if version == 113
