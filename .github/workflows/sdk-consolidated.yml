@@ -24,7 +24,7 @@ jobs:
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
         with:
           dotnet-version: '8.0.x'
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
@@ -145,7 +145,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
@@ -392,7 +392,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
       - name: "Python candidate body conformance: Install pinned native crypto provider"
@@ -442,7 +442,7 @@ jobs:
         run: |
           python sdk/native/sealed-candidate/python/check_package.py --output native-python-artifacts --workflow-source workflow-source/sdk/python/workflow --time-policy-source time-policy-source
       - name: "Python sealed candidate interoperability: Preserve tested candidate distributions"
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: native-python-candidate-${{ matrix.os }}
           path: native-python-artifacts/*
@@ -476,7 +476,7 @@ jobs:
         run: |
           python sdk/python/workflow/check_package.py --output workflow-python-artifacts --alpha-source alpha-source/sdk/python
       - name: "Installed Python workflow candidate: Preserve tested candidate archives"
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: workflow-python-${{ matrix.os }}-3.11
           path: workflow-python-artifacts/*
@@ -506,7 +506,7 @@ jobs:
         run: |
           python sdk/python/workflow/check_package.py --output workflow-python-artifacts --alpha-source alpha-source/sdk/python
       - name: "Installed Python workflow candidate: Preserve tested candidate archives"
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: workflow-python-${{ matrix.os }}-3.12
           path: workflow-python-artifacts/*
@@ -519,7 +519,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
@@ -622,7 +622,7 @@ jobs:
           python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten-2" --target go --out "$RUNNER_TEMP/zrotext-sdk-packages-7/go"
           python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten-2" --target rust --out "$RUNNER_TEMP/zrotext-sdk-packages-7/rust"
       - name: "Tungsten SDK generation: Preserve artifacts"
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: experimental-sdk-packages
           path: ${{ runner.temp }}/zrotext-sdk-packages-7
@@ -632,14 +632,14 @@ jobs:
         run: |
           python3 sdk/tungsten/package-mcp.py --out "$RUNNER_TEMP/zrotext-guarded-mcp"
       - name: "Tungsten SDK generation: Preserve artifacts"
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: experimental-guarded-mcp
           path: ${{ runner.temp }}/zrotext-guarded-mcp
           if-no-files-found: error
           retention-days: 7
       - name: "Tungsten SDK generation: Preserve artifacts"
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: experimental-sdk-sources
           path: ${{ runner.temp }}/zrotext-sdk-sources
@@ -653,7 +653,7 @@ jobs:
         run: |
           python3 sdk/tungsten/package-webmcp.py --out "$RUNNER_TEMP/zrotext-webmcp"
       - name: "Tungsten SDK generation: Preserve artifacts"
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: experimental-webmcp
           path: ${{ runner.temp }}/zrotext-webmcp
@@ -676,7 +676,7 @@ jobs:
       - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a
         with:
           ruby-version: '3.3.9'
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
       - name: "Managed candidate envelope integrity: Export existing signed public fixtures"
@@ -814,7 +814,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
       - name: "Managed authenticated original current proof [java]: Toolchain for java"
@@ -1329,7 +1329,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
       - name: "Managed reviewed template authoring interoperability [java]: Toolchain for java"
@@ -1787,7 +1787,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
@@ -2824,7 +2824,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
@@ -3486,7 +3486,7 @@ jobs:
         with:
           go-version: '1.26.9'
           cache: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
       - name: "Native reviewed template authoring [rust]"
@@ -4103,7 +4103,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6
@@ -4398,7 +4398,7 @@ jobs:
           python3 sdk/native/package-webhooks.py --target csharp --out "$RUNNER_TEMP/webhooks-3/csharp"
           python3 sdk/native/package-webhooks.py --target ruby --out "$RUNNER_TEMP/webhooks-3/ruby"
       - name: "Installed native webhook companions: Preserve artifacts"
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: experimental-webhook-packages
           path: ${{ runner.temp }}/webhooks-3
@@ -4557,7 +4557,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
@@ -4644,7 +4644,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
       - name: "Scoped WebMCP adapter: Build shared guarded workflow vocabulary"
@@ -4672,7 +4672,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
