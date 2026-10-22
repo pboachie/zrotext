@@ -34,7 +34,11 @@ def main():
     with tempfile.TemporaryDirectory(prefix='zrotext-installed-contact-') as temporary:
         path = Path(temporary) / 'command.json'; path.write_text(json.dumps(command), encoding='utf-8')
         if not args.hardware:
-            subprocess.run([sys.executable, str((args.mutation_fixture or args.fixture) / ('sdk/native/hpke-candidate/test-contact-mutation.py' if args.mutation_fixture else 'sdk/native/hpke-candidate/test-contact-field.py')),
+            # Preserve the pinned mutation driver; the field driver applies the
+            # current versioned origin contract to the unchanged producer.
+            driver = (args.mutation_fixture / 'sdk/native/hpke-candidate/test-contact-mutation.py'
+                      if args.mutation_fixture else Path(__file__).resolve().parents[2] / 'hpke-candidate/test-contact-field.py')
+            subprocess.run([sys.executable, str(driver),
                             '--producer', str(args.producer), '--command-file', str(path)], check=True)
             return
     if os.name != 'nt':
