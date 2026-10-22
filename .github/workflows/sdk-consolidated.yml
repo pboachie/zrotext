@@ -26,7 +26,7 @@ jobs:
           dotnet-version: '8.0.x'
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: '24.13.0'
+          node-version: '24.22.1'
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
         with:
           distribution: temurin
@@ -147,7 +147,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: '24.13.0'
+          node-version: '24.22.1'
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
@@ -394,7 +394,7 @@ jobs:
           python-version: '3.12'
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: '24.13.0'
+          node-version: '24.22.1'
       - name: "Python candidate body conformance: Install pinned native crypto provider"
         run: |
           python -m pip install --only-binary=:all: -r sdk/native/crypto-candidate/python/requirements.txt
@@ -521,7 +521,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: '24.13.0'
+          node-version: '24.22.1'
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
         with:
           distribution: temurin
@@ -678,7 +678,7 @@ jobs:
           ruby-version: '3.3.9'
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: '24.13.0'
+          node-version: '24.22.1'
       - name: "Managed candidate envelope integrity: Export existing signed public fixtures"
         run: |
           python3 sdk/native/crypto-envelope/java/envelope_rows.py > "$RUNNER_TEMP/envelopes.tsv"
@@ -816,7 +816,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: '24.13.0'
+          node-version: '24.22.1'
       - name: "Managed authenticated original current proof [java]: Toolchain for java"
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
         with:
@@ -1331,7 +1331,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: '24.13.0'
+          node-version: '24.22.1'
       - name: "Managed reviewed template authoring interoperability [java]: Toolchain for java"
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
         with:
@@ -1789,7 +1789,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: '24.13.0'
+          node-version: '24.22.1'
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
         with:
           distribution: temurin
@@ -2826,7 +2826,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: '24.13.0'
+          node-version: '24.22.1'
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
@@ -3488,7 +3488,7 @@ jobs:
           cache: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: '24.13.0'
+          node-version: '24.22.1'
       - name: "Native reviewed template authoring [rust]"
         run: |
           rustup toolchain install 1.97.1 --profile minimal
@@ -4105,7 +4105,7 @@ jobs:
           python-version: '3.12'
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: '24.13.0'
+          node-version: '24.22.1'
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6
         with:
           distribution: temurin
@@ -4559,7 +4559,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: '24.13.0'
+          node-version: '24.22.1'
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version: '1.26.9'
@@ -4646,7 +4646,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: '24.13.0'
+          node-version: '24.22.1'
       - name: "Scoped WebMCP adapter: Build shared guarded workflow vocabulary"
         run: |
           npm --prefix sdk/typescript ci --ignore-scripts --no-audit --no-fund
@@ -4674,7 +4674,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: '24.13.0'
+          node-version: '24.22.1'
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
