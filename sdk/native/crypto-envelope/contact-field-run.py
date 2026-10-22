@@ -110,7 +110,9 @@ def main():
         else:
             command = [args.ruby, str(HERE / 'ruby/contact/test.rb'), str(asset)]
         command_file = folder / 'command.json'; command_file.write_text(json.dumps(command), encoding='utf-8')
-        run(sys.executable, fixture / 'sdk/native/hpke-candidate/test-contact-field.py',
+        # The current driver retains all pinned signature/bit-flip controls while
+        # applying the versioned origin contract to the unchanged producer.
+        run(sys.executable, HERE.parent / 'hpke-candidate/test-contact-field.py',
             '--producer', producer, '--command-file', command_file, env=env)
         missing = command[:-1] + [str(folder / 'missing-origin')]
         result = subprocess.run(missing, input='[]', text=True, encoding='utf-8', capture_output=True, env=env, timeout=20)

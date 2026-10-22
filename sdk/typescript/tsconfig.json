@@ -5,9 +5,10 @@
     "moduleResolution": "NodeNext",
     "lib": ["ES2022", "DOM"],
     "strict": true,
+    "allowJs": true,
     "skipLibCheck": true,
     "declaration": true,
     "outDir": "dist"
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "src/contact-origin.js", "src/contact-idna16.js"]
 }

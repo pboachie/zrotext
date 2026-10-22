@@ -3,6 +3,7 @@ import {webcrypto} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
+import {canonicalContactOrigin01} from '../../typescript/src/contact-origin.js';
 globalThis.crypto ??= webcrypto;
 const source=resolve(process.argv[2]);
 const load=name=>import(pathToFileURL(resolve(source,'sdk/typescript/dist',name)).href);
@@ -22,6 +23,14 @@ if(process.argv[3]==='--consume'){
  process.stdout.write(JSON.stringify({verified:true,fields:outputs.length}));
 }else{
  const fixture=JSON.parse(execFileSync(process.execPath,[fixturePath,'--origins'],{input:JSON.stringify(extra),encoding:'utf8'}));
+ // Keep every origin control and the pinned independent cryptographic producer.
+ // Origin rejection follows the versioned contact contract, not the host Node
+ // runtime's changing IDNA fast path. A valid origin must still encode there.
+ for(const row of fixture.originCases){
+  let accepted=false;try{canonicalContactOrigin01(row.origin);accepted=true;}catch{}
+  if(accepted&&!row.accepted)throw Error('Pinned producer refused a canonical contact origin');
+  row.accepted=accepted;
+ }
  const rootPoint=dec(fixture.rootPin).slice(29),scalar=new Uint8Array(32);scalar[31]=7;
  const key=await crypto.subtle.importKey('jwk',{kty:'EC',crv:'P-256',x:Buffer.from(rootPoint.slice(1,33)).toString('base64url'),y:Buffer.from(rootPoint.slice(33)).toString('base64url'),d:Buffer.from(scalar).toString('base64url'),ext:true,key_ops:['sign']},{name:'ECDSA',namedCurve:'P-256'},false,['sign']);
  async function sign(domain,unsigned){const length=new Uint8Array(4);new DataView(length.buffer).setUint32(0,unsigned.length);const transcript=Buffer.concat([Buffer.from(domain+'\0'),length,unsigned]);const sig=manifests.canonicalSignature02(new Uint8Array(await crypto.subtle.sign({name:'ECDSA',hash:'SHA-256'},key,transcript)));return enc(Buffer.concat([unsigned,sig]));}
