@@ -24,6 +24,11 @@ test('contact origins reject malformed A-labels without rejecting valid internat
 test('generated browser validator matches locked Unicode 16 UTS46 across scalar and contextual cases',()=>{
   // The unmodified upstream package checks our browser artifact transformation.
   const labels=['faß','bücher','a\u200cb','a\u200db','a\u0300','\u0300ab','\u200c','xn--é'];
+  // Exercise every endpoint/interior value in the upstream astral mark range
+  // whose generated escape spelling differs from the original package.
+  for(let code=0x1daa1;code<=0x1daaf;code++){
+    const mark=String.fromCodePoint(code);labels.push('a'+mark+'b',mark+'ab');
+  }
   for(let code=128;code<0x110000;code+=257)if(code<0xd800||code>0xdfff)labels.push('a'+String.fromCodePoint(code)+'b');
   for(const label of labels){
     const value='https://xn--'+punycode(label)+'.invalid';

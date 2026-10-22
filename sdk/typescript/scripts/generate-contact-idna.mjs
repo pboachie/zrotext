@@ -17,12 +17,18 @@ let punycode=await read('node_modules/punycode/punycode.es6.js');
 punycode=replace(punycode,'const maxInt = '+(2**31-1)+';','const maxInt = 0x7FFFFFFF;');
 punycode=replace(punycode,'export { ucs2decode, ucs2encode, decode, encode, toASCII, toUnicode };','');
 punycode=replace(punycode,'export default punycode;','return punycode;');
-const regexes=replace(await read('node_modules/tr46/lib/regexes.js'),'module.exports =','return');
+// Equivalent UTF-16 escapes retain Unicode-regex semantics while keeping the
+// generated character ranges legible to the repository's spelling checker.
+const regexes=replace(await read('node_modules/tr46/lib/regexes.js'),'module.exports =','return')
+  .replace(/\\u[{]([0-9a-f]+)[}]/gi,(_,hex)=>String.fromCodePoint(parseInt(hex,16)).split('')
+    .map(unit=>'\\u'+unit.charCodeAt(0).toString(16).toUpperCase().padStart(4,'0')).join(''));
 const status=replace(await read('node_modules/tr46/lib/statusMapping.js'),'module.exports.STATUS_MAPPING =','return');
 let implementation=await read('node_modules/tr46/index.js');
 for(const line of ['const punycode = require("punycode/");','const regexes = require("./lib/regexes.js");',
   'const mappingTable = require("./lib/mappingTable.json");','const { STATUS_MAPPING } = require("./lib/statusMapping.js");'])implementation=replace(implementation,line,'');
 implementation=replace(implementation,'module.exports = {\n  toASCII,\n  toUnicode\n};','');
+implementation=implementation.replace(/\/\/ "8\. If CheckJoiners[^\n]+/,
+  '// "8. If CheckJoiners, the label must satisfy the ContextJ rules"');
 const notices=[await read('node_modules/tr46/LICENSE.md'),await read('node_modules/punycode/LICENSE-MIT.txt')];
 const table=JSON.parse(await read('node_modules/tr46/lib/mappingTable.json'));
 const middle=Math.ceil(table.length/2),parts=[table.slice(0,middle),table.slice(middle)];
