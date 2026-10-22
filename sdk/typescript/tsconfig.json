@@ -10,5 +10,5 @@
     "declaration": true,
     "outDir": "dist"
   },
-  "include": ["src/**/*.ts", "src/contact-origin.js", "src/contact-idna16.js"]
+  "include": ["src/**/*.ts", "src/contact-origin.js", "src/contact-idna16*.js"]
 }
