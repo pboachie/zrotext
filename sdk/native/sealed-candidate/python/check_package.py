@@ -15,6 +15,7 @@ import zipfile
 ROOT=Path(__file__).resolve().parent
 MODULES={'__init__','sealed_candidate','checkpoint_store','cng_custody','cng_signing','election03','election_journal','compose03','compose02','outbound_journal','root_checkpoint','reply_selection','outbound02_journal','sealed_http','original_reply_reader','original_reply_client','original_reply_checkpoint','encrypted_template','contact_integrity','contact_history','contact_producer','workflow_context','sealed_lifecycle','template_store','owner_template','owner_template_save','owner_context','template_authoring','template_opening','conversation_proposals','enrollment_ceremony','genesis_ceremony','conversation_signer','context_authoring','opening_capacity','conversation_custody','root_bundle'}
 PACKAGE='zrotext_native_candidate'
+MODULES|={'contact_bidi16','contact_bidi16_data'}
 DIST=PACKAGE+'-0.1.0a1'
 
 

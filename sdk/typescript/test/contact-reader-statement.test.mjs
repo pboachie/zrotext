@@ -28,6 +28,13 @@ async function fixture(){
   }
   const bytes=await sign();return {f,s,bytes,sign,input:{bytes,acceptedManifest:f.predecessor,expectedAccountId:s.accountId,expectedOrigin:s.origin,expectedRootFingerprint:s.rootFingerprint,comparison:'declared_issued_ms'}};
 }
+
+test('unsigned contact statements reject malformed and context-invalid A-labels on every runtime',async()=>{
+  const {s}=await fixture();
+  for(const host of ['xn--','xn--abc-','xn--a','xn--ab-j1t','xn--xn--a--gua'])
+    assert.throws(()=>encode({...s,origin:'https://'+host+'.invalid'}),host);
+  assert.ok(encode({...s,origin:'https://xn--fa-hia.invalid'}).length>0);
+});
 test('authentic genesis statement yields historical integrity only with defensive identity',async()=>{
   const f=await fixture(),parsed=await parse(f.bytes),v=await verify(f.input),id=identity(v);
   assert.equal(f.bytes.length,305+f.s.origin.length);assert.deepEqual(parsed.unsigned,encode(f.s));

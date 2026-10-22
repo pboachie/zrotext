@@ -27,6 +27,7 @@ macOS recipe (not locally qualified):
     c++ -std=c++20 -O2 -fPIC -fvisibility=hidden -dynamiclib ada.cpp contact_origin.cpp -o libzrotext_contact_origin.dylib
 
 Retain all source files, this recipe and both parent license files when distributing.
+Keep contact_bidi16.h alongside contact_origin.cpp when rebuilding.
 The source is pinned; byte-identical compiler output is not claimed.
 '''
 FILES = {
@@ -34,6 +35,7 @@ FILES = {
     'ada.cpp': ('https://github.com/ada-url/ada/releases/download/v3.3.0/ada.cpp', '1e3225743961998510c87c9aa59572ed441cf89d7e192e4b90d0754c2b74b94f'),
     'LICENSE-MIT': ('https://raw.githubusercontent.com/ada-url/ada/' + REVISION + '/LICENSE-MIT', 'af0d7d2cef91fc243cf4ad98570b03d1f26f5e0227cad0f5f4a7376e2feb3160'),
 }
+LOCAL_FILES = ('contact_origin.cpp', 'contact_bidi16.h')
 
 
 def build(output):
@@ -48,7 +50,8 @@ def build(output):
             if hashlib.sha256(data).hexdigest() != digest:
                 raise ValueError('Unexpected Ada dependency bytes')
             (stage / name).write_bytes(data)
-        shutil.copyfile(HERE / 'contact_origin.cpp', stage / 'contact_origin.cpp')
+        for name in LOCAL_FILES:
+            shutil.copyfile(HERE / name, stage / name)
         if os.name == 'nt':
             # Caller selects an installed, trusted compiler environment. No system changes.
             compiler = shutil.which('cl')
@@ -71,7 +74,7 @@ def build(output):
         # Include complete corresponding source and notices with the native asset.
         sources = output / 'source'
         sources.mkdir()
-        for name in (*FILES, 'contact_origin.cpp'):
+        for name in (*FILES, *LOCAL_FILES):
             shutil.copyfile(stage / name, sources / name)
         (sources / 'BUILDING.md').write_text(BUILDING, encoding='utf-8')
         shutil.copyfile(root / 'LICENSE', output / 'LICENSE')

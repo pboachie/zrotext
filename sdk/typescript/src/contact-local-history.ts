@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 /** Unmounted application-owned local history. No current authority or integrity-brand restoration. */
+import {canonicalContactOrigin01} from './contact-origin.js';
 import { Draft02TrustStore, type Draft02TrustSnapshot } from './draft02-trust-store.js';
 import { enrollRootPin02, verifiedManifestIdentity02, verifiedAccountArchiveStatementRecords02 } from './draft02-manifest.js';
 import { verifiedContactTransitionIdentity01, type VerifiedHistoricalTransition } from './contact-content-contract.js';
@@ -181,8 +182,7 @@ export async function openContactLocalHistory01(input: Readonly<{expectedAccount
   independentlyComparedRootFingerprint:Uint8Array;maximumRecords:number;mode:'history'|'local_reduction';signal:AbortSignal}>): Promise<ContactLocalHistory01> {
   const i=object(input,['expectedAccountId','expectedOrigin','rootPin','independentlyComparedRootFingerprint','maximumRecords','mode','signal']);
   const account=bytes(i.expectedAccountId,16),pin=bytes(i.rootPin,94),fingerprint=bytes(i.independentlyComparedRootFingerprint,32);
-  if(typeof i.expectedOrigin!=='string'||new TextEncoder().encode(i.expectedOrigin).length>512||new URL(i.expectedOrigin).origin!==i.expectedOrigin||
-    new URL(i.expectedOrigin).protocol!=='https:'||!Number.isInteger(i.maximumRecords)||i.maximumRecords<1||i.maximumRecords>256||
+  if(canonicalContactOrigin01(i.expectedOrigin)!==i.expectedOrigin||!Number.isInteger(i.maximumRecords)||i.maximumRecords<1||i.maximumRecords>256||
     !['history','local_reduction'].includes(i.mode)||!(i.signal instanceof AbortSignal)||i.signal.aborted||permits>=4)refuse();
   permits++;const s:Session={header:{schema:1,accountId:account,rootPoint:new Uint8Array(65),rootFingerprint:fingerprint,
     origin:i.expectedOrigin,maximumRecords:i.maximumRecords,count:0},db:null,root:null,mode:i.mode,closed:false,busy:false,released:false,

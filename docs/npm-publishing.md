@@ -39,7 +39,7 @@ npm access or publish.
    `zrotext`, workflow filename `npm-publish.yml`, and environment
    `npm-publication`. Select direct publishing only if that is the owner's
    approved operating mode. The workflow uses GitHub-hosted Ubuntu runners,
-   Node.js `24.13.0` and npm `11.21.0`. It needs no `NPM_TOKEN` or
+   Node.js `24.22.1` and npm `11.21.0`. It needs no `NPM_TOKEN` or
    `NODE_AUTH_TOKEN`. OIDC publishing requires npm at least `11.5.1` and Node
    at least `22.14.0`; the pinned client also supports OIDC publication with a
    new distribution tag.

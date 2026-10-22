@@ -36,7 +36,7 @@ jobs:
           python3 scripts/npm_release.py preflight
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24.13.0'
+          node-version: '24.22.1'
       - name: Pin npm without release dependency caching
         run: npm install --global npm@11.21.0 --ignore-scripts
       - name: Install, audit and test the locked SDK
@@ -121,7 +121,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '24.13.0'
+          node-version: '24.22.1'
       - name: Pin the trusted-publishing client
         run: npm install --global npm@11.21.0 --ignore-scripts
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
