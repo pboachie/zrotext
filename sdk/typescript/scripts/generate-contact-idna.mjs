@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Deterministic browser ESM from lockfile-installed, MIT-licensed dependencies.
-// No downloads, package execution, eval, bundler or runtime Node imports.
+// No downloads or eval. Only the hash-verified constant regexp module is loaded.
 import {readFile,writeFile} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import {createRequire} from 'node:module';
 const root=new URL('../',import.meta.url),read=async path=>(await readFile(new URL(path,root),'utf8')).replace(/\r\n/g,'\n');
 if(process.argv.length!==3||!['--write','--check'].includes(process.argv[2]))throw Error('Choose --write or --check');
 for(const [name,version] of [['tr46','5.1.1'],['punycode','2.3.1']]){
@@ -20,6 +22,7 @@ punycode=replace(punycode,'export default punycode;','return punycode;');
 // Equivalent UTF-16 escapes retain Unicode-regex semantics while keeping the
 // generated character ranges legible to the repository's spelling checker.
 const regexSource=await read('node_modules/tr46/lib/regexes.js');
+if(createHash('sha256').update(regexSource).digest('hex')!=='891f21489462424d90b2b028ff3f4900d45cfb7700ccf945a235d09f77c76bd0')throw Error('Unexpected IDNA regexp data');
 const regexes=replace(regexSource,'module.exports =','return')
   .replace(/\\u[{]([0-9a-f]+)[}]/gi,(_,hex)=>String.fromCodePoint(parseInt(hex,16)).split('')
     .map(unit=>'\\u'+unit.charCodeAt(0).toString(16).toUpperCase().padStart(4,'0')).join(''));
@@ -32,10 +35,11 @@ implementation=implementation.replace(/\/\/ "8\. If CheckJoiners[^\n]+/,
   '// "8. If CheckJoiners, the label must satisfy the ContextJ rules"');
 const notices=[await read('node_modules/tr46/LICENSE.md'),await read('node_modules/punycode/LICENSE-MIT.txt')];
 // Export the same Unicode 16 directional classes for the independent native
-// wrappers. Compile regex data only; never evaluate upstream package code.
-const bidi={};
-for(const match of regexSource.matchAll(/^const (bidi\w+) = \/(.+)\/u;$/gm))bidi[match[1]]=new RegExp(match[2],'u');
-if(Object.keys(bidi).length!==9)throw Error('Unexpected directional data');
+// wrappers. Use constant expressions from the verified data module, never
+// construct executable patterns from file contents or caller-supplied text.
+const constants=createRequire(import.meta.url)('tr46/lib/regexes.js');
+const bidi=Object.fromEntries(Object.entries(constants).filter(([name])=>name.startsWith('bidi')));
+if(Object.keys(bidi).length!==9||Object.values(bidi).some(value=>!(value instanceof RegExp)||value.flags!=='u'))throw Error('Unexpected directional data');
 const matches=(expression,value)=>expression.exec(value)?.[0]===value;
 const ranges=[];let start=0,previous=-1;
 for(let cp=0;cp<=0x110000;cp++){
