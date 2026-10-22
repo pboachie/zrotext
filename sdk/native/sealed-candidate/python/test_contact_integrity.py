@@ -48,6 +48,13 @@ class ContactTests(unittest.TestCase):
                 self.assertEqual(accepted,case['accepted'])
         self.assertEqual(self.f['origin'],'https://xn--fa-hia.invalid')
         self.assertTrue(next(x['accepted'] for x in self.f['originCases'] if x['origin']=='https://xn--fa-hia.invalid'))
+    def test_directional_origins_refuse_mixed_labels_and_preserve_valid_scripts(self):
+        parsed=c.parse_contact_reader_statement01(decode(self.f['statement']))
+        values={key:parsed[key] for key in c._STATEMENT}
+        for host in ('xn--a-0hc.invalid','xn--ab-jbf.invalid'):
+            with self.subTest(host=host),self.assertRaises(c.ContactIntegrityError):c.encode_contact_reader_statement01(values|dict(origin='https://'+host))
+        for label in ('שלום','مثال'):
+            self.assertTrue(c.encode_contact_reader_statement01(values|dict(origin='https://xn--'+label.encode('punycode').decode('ascii')+'.invalid')))
     def test_unicode_contexts_scalar_sampling_and_exact_ts_unsigned_bytes(self):
         labels=['faß','bücher','δοκιμή','пример','مثال','例子','☃','a\u200cb','a\u200db','a\u0300','\u0300ab','אa','aא','\u200c']
         labels+=['a'+chr(code)+'b' for code in range(128,0x110000,257) if not 0xd800<=code<=0xdfff]

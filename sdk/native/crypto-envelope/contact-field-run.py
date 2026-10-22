@@ -75,7 +75,7 @@ def main():
             raise ValueError('Unexpected origin dependency')
         library = ('zrotext_contact_origin.dll' if os.name == 'nt' else
                    'libzrotext_contact_origin.dylib' if sys.platform == 'darwin' else 'libzrotext_contact_origin.so')
-        required = {library, 'LICENSE', 'ADA-LICENSE-MIT', 'source/contact_origin.cpp', 'source/BUILDING.md',
+        required = {library, 'LICENSE', 'ADA-LICENSE-MIT', 'source/BUILDING.md', *('source/' + name for name in builder['LOCAL_FILES']),
                     *('source/' + name for name in builder['FILES'])}
         if manifest['library'] != library or set(manifest['sha256']) != required:
             raise ValueError('Incomplete origin source/license inventory')
@@ -84,7 +84,7 @@ def main():
                 raise ValueError('Origin dependency source changed')
         if (source / 'source/BUILDING.md').read_text(encoding='utf-8') != builder['BUILDING']:
             raise ValueError('Origin build recipe changed')
-        for actual, expected in ((source / 'source/contact_origin.cpp', HERE / 'contact-origin/contact_origin.cpp'),
+        for actual, expected in (*((source / 'source' / name, HERE / 'contact-origin' / name) for name in builder['LOCAL_FILES']),
                                  (source / 'LICENSE', HERE.parents[2] / 'LICENSE'),
                                  (source / 'ADA-LICENSE-MIT', source / 'source/LICENSE-MIT')):
             if actual.read_bytes() != expected.read_bytes():

@@ -5,6 +5,7 @@ import re
 from ada_url import URL as _URL
 from weakref import WeakKeyDictionary
 from . import sealed_candidate as s
+from .contact_bidi16 import valid_bidi16_host
 
 _statements,_fields,_mutations,_transitions=(WeakKeyDictionary() for _ in range(4))
 _STATEMENT=('authorizationId','accountId','origin','trustGeneration','manifestVersion','readerGeneration','rootFingerprint','manifestDigest','readerId','readerPoint','issuedMs','untilMs','capability')
@@ -44,6 +45,7 @@ def _origin(value):
     u=_URL(value)
     s.require(u.protocol=='https:' and u.origin==value and not u.username and not u.password and
               u.pathname=='/' and not u.search and not u.hash,'contact canonical origin')
+    s.require(valid_bidi16_host(u.hostname),'contact directional origin')
     return value
 
 

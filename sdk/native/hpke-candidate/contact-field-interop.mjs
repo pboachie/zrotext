@@ -11,6 +11,7 @@ const manifests=await load('draft02-manifest.js'),statements=await load('contact
 const dec=x=>new Uint8Array(Buffer.from(x,'base64')),enc=x=>Buffer.from(x).toString('base64');
 const fixturePath=resolve(source,'sdk/native/sealed-candidate/python/contact-interop.mjs');
 const extra=['https://xn--xn--a--gua.pt','https://xn--xn---epa','https://xn--a','https://xn--0','https://xn--ls8h.example','https://a..b','https://.example','https://example.',...Array.from({length:94},(_,i)=>'https://xn--a'+String.fromCharCode(33+i)+'.invalid')];
+extra.push('https://xn--a-0hc.invalid','https://xn--ab-jbf.invalid','https://123.xn--4db.invalid','https://xn--4db.invalid');
 async function statement(f,which){
  const root=await manifests.enrollRootPin02(dec(f.rootPin),dec(f.fingerprint));
  let m=await manifests.verifyManifest02(dec(f.manifest),root,10000n);
