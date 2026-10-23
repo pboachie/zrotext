@@ -78,6 +78,26 @@ class TypedSubmit03JournalTest {
         assertThrows(IllegalArgumentException::class.java) { closure.requireCommand(other) }
     }
 
+    @Test fun negativeClosureCannotPredateTheExactOriginalSubmitObservation() {
+        val command = command()
+        val original = TypedNoSubmit03Record.create(command, id(813), 0, command.observedMs)
+        assertEquals(command.observedMs, original.closedMs)
+        val malformed = original.bytes().also { java.nio.ByteBuffer.wrap(it, 202, 8).putLong(command.observedMs - 1) }
+        assertThrows(IllegalArgumentException::class.java) { TypedNoSubmit03Record.decode(malformed) }
+        assertThrows(IllegalArgumentException::class.java) { TypedNoSubmit03Record.create(command, id(813), 0, command.observedMs - 1) }
+    }
+
+    @Test fun invalidClosureTimeLeavesTheRealRoomOriginalUnchanged() = memory().use { db ->
+        val row = ack(db, reserve(db)); val dao = db.typedSubmits03()
+        assertThrows(IllegalArgumentException::class.java) { dao.closeBeforeEntry(row, id(814), row.command().observedMs - 1) }
+        assertEquals(row, dao.get(row.attemptId)); assertNull(dao.get(row.attemptId)!!.closureB64url)
+        assertTrue(dao.callbacks(row.attemptId).isEmpty())
+        val closed = dao.closeBeforeEntry(row, id(814), row.command().observedMs)!!
+        assertEquals("closed_no_submit", closed.phase)
+        assertEquals(row.command().observedMs, TypedNoSubmit03Record.decode(bytes(closed.closureB64url!!)).closedMs)
+        assertFalse(dao.retainPlatformEntry(closed, row.command().observedMs + 1) {})
+    }
+
     @Test fun classificationCommitsBeforeTransportAndCannotAdoptLegacyAttempt() = memory().use { db ->
         val row = reserve(db); assertEquals("reserved", row.phase)
         assertTrue(db.typedSubmits03().callbacks(row.attemptId).isEmpty()); assertNull(row.ackSha256)

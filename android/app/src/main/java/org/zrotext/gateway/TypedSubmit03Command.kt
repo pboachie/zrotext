@@ -72,7 +72,8 @@ internal class TypedNoSubmit03Record private constructor(private val exact: Byte
             for (at in 0 until 96 step 16) require(owned.copyOfRange(at, at + 16).any { it != 0.toByte() })
             for (at in listOf(96, 128, 160)) require(owned.copyOfRange(at, at + 32).any { it != 0.toByte() })
             require((owned[192].toInt() and 255) in 1..6 && ByteBuffer.wrap(owned, 193, 8).long > 0 &&
-                (owned[201].toInt() and 255) in 0..1 && ByteBuffer.wrap(owned, 202, 8).long > 0)
+                (owned[201].toInt() and 255) in 0..1 &&
+                ByteBuffer.wrap(owned, 202, 8).long >= ByteBuffer.wrap(owned, 193, 8).long)
             return TypedNoSubmit03Record(owned)
         }
         fun create(command: TypedSubmit03Command, closureId: String, closedFrom: Int, closedMs: Long): TypedNoSubmit03Record {
