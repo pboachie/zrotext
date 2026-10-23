@@ -43,4 +43,5 @@ prepared-holder seams do not establish hardware HPKE, native server admission,
 a complete installed interval ceremony, or carrier delivery. The production
 caller requires the maintained recipient and full current reader. These tests
 do not qualify a live service, physical phone, SMS, release or Play submission.
-Typed outcome uploads and no-submit proof upload/recovery are separate work.
+The [passive typed outcome uploader](android-typed-history03.md) is separate from
+positive submit permission. No-submit proof upload/recovery remains separate work.

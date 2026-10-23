@@ -173,6 +173,7 @@ class TypedHistory03JournalTest {
             f.elapsedRead = { if (calls++ == 0) f.elapsed.get() else f.elapsed.get() + 30_000 }
             assertThrows(IllegalArgumentException::class.java) { db.typedHistory03().retainFirstAssertion(source, sample) }
             assertEquals(source, db.typedHistory03().source(source.slot))
+            assertNull(db.typedOutcomes03().report(source.eventId))
             assertEquals(Long.MAX_VALUE, db.typedSubmits03().callbacks(row.attemptId).single().observedMs)
         } }
     }
@@ -217,7 +218,7 @@ class TypedHistory03JournalTest {
     @Test fun additiveMigrationRetainsOldOriginAndOrderAsUnknownInsteadOfAdoptingTheReportingHost() {
         val name = "history23-${UUID.randomUUID().toString().take(10)}"
         fun open() = Room.databaseBuilder(app, SmsJournalDatabase::class.java, name).allowMainThreadQueries()
-            .addMigrations(SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24).build()
+            .addMigrations(SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24, SmsJournalDatabase.MIGRATION_24_25).build()
         try {
             TypedHistory03Fixture().use { f ->
                 val old = TypedSubmit03Record.candidate(f.command, f.point)
@@ -236,7 +237,7 @@ class TypedHistory03JournalTest {
                     }
                 }
                 open().use { db ->
-                    assertEquals(24, db.openHelper.readableDatabase.version)
+                    assertEquals(25, db.openHelper.readableDatabase.version)
                     val retained = db.typedSubmits03().get(old.attemptId)!!
                     assertEquals(old, retained)
                     val raw = db.typedSubmits03().callbacks(old.attemptId).single()

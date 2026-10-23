@@ -223,7 +223,7 @@ class TypedSubmit03JournalTest {
     @Test fun additiveMigrationPreservesOldUnknownAndCreatesNoTypedAttemptOrAck() {
         val name = "tm-${UUID.randomUUID().toString().take(8)}.db"
         fun open() = Room.databaseBuilder(app, SmsJournalDatabase::class.java, name).allowMainThreadQueries()
-            .addMigrations(SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24).build()
+            .addMigrations(SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24, SmsJournalDatabase.MIGRATION_24_25).build()
         val original = SmsAttempt(id(806), 3, 1, AttemptState.UNKNOWN, 10, 10)
         try {
             open().use { db ->
@@ -234,7 +234,7 @@ class TypedSubmit03JournalTest {
                 }
             }
             open().use { db ->
-                assertEquals(24, db.openHelper.readableDatabase.version)
+                assertEquals(25, db.openHelper.readableDatabase.version)
                 assertEquals(original, db.attempts().getAttempt(original.attemptId))
                 assertNull(db.typedSubmits03().get(original.attemptId))
                 assertTrue(db.typedSubmits03().callbacks(original.attemptId).isEmpty())

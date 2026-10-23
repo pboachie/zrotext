@@ -173,7 +173,9 @@ internal fun GatewayHome(
     onSetup: () -> Unit,
     onConnection: () -> Unit,
     onPause: () -> Unit,
-    recovery: GatewaySetupRecovery? = null
+    recovery: GatewaySetupRecovery? = null,
+    deliveryUpdateStatus: String? = null,
+    onSyncDeliveryUpdates: (() -> Unit)? = null
 ) {
     val motion = gatewayMotionAllowed()
     val mood = GatewayConnectionMood.from(authenticatedStatus)
@@ -276,6 +278,10 @@ internal fun GatewayHome(
                         summary.snapshot != null && summary.phase != GatewaySummaryState.Phase.UNAVAILABLE)
                     GatewayObservationRow("Awaiting receipt", label(summary.snapshot?.inFlight))
                     Text(summaryStatus)
+                    deliveryUpdateStatus?.let { Text(it) }
+                    onSyncDeliveryUpdates?.let { sync ->
+                        GatewayHomeButton("Sync delivery updates", sync, Modifier.fillMaxWidth())
+                    }
                     summary.snapshot?.let { snapshot ->
                         Text("Device-scoped UTC observation: ${java.time.Instant.ofEpochMilli(snapshot.observedMs)}. Submitted is not delivered. In queue includes accepted, queued and claimed work, which can already hold a grant. Awaiting receipt includes submitting and submitted states.")
                     }
