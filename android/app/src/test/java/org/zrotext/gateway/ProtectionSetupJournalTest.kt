@@ -196,6 +196,7 @@ class ProtectionSetupJournalTest {
     @Test fun additiveMigrationPreservesOldNegativeRoutesAndCreatesNoSetupOrigin() {
         val app = RuntimeEnvironment.getApplication()
         val name = "protection-migration-${UUID.randomUUID()}.db"
+        app.deleteDatabase(name)
         try {
             Room.databaseBuilder(app, SmsJournalDatabase::class.java, name).allowMainThreadQueries().build().use { db ->
                 db.openHelper.writableDatabase.apply {
@@ -203,6 +204,7 @@ class ProtectionSetupJournalTest {
                     execSQL("INSERT INTO local_recipient_suppressions VALUES(?, 1000)", arrayOf("b".repeat(64)))
                     execSQL("DROP TABLE protection_setup_providers")
                     execSQL("DROP TABLE protection_setup_command")
+                    execSQL("DROP TABLE room_master_table")
                     version = 19
                 }
             }
@@ -214,6 +216,9 @@ class ProtectionSetupJournalTest {
                     assertTrue(db.protectionSetup().providers().isEmpty())
                     assertNull(db.captures03().protection())
                 }
+        } catch (failure: android.database.sqlite.SQLiteCantOpenDatabaseException) {
+            val path = app.getDatabasePath(name).absolutePath
+            throw AssertionError("Native database open failed: path=$path; pathLength=${path.length}; walLength=${path.length + 4}", failure)
         } finally { app.deleteDatabase(name) }
     }
 
