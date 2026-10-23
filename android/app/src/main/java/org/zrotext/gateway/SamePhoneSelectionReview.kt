@@ -16,7 +16,7 @@ internal class SamePhoneSelectionReview(private val inputs: Inputs) : AutoClosea
         fun requireSession()
     }
     /** Exact retained public journal metadata, not proof of current physical SIM continuity. */
-    class Retained(val binding: LocalLineBinding, val activation: LineActivationV2Record,
+    class Retained(val origins: Profile03Origins, val binding: LocalLineBinding, val activation: LineActivationV2Record,
         val election: Profile03ElectionRecord, enrollmentPoint: ByteArray) {
         private val point = enrollmentPoint.copyOf()
         fun point() = point.copyOf()
@@ -26,13 +26,16 @@ internal class SamePhoneSelectionReview(private val inputs: Inputs) : AutoClosea
                 activation.matchesBinding(binding) && election.state == "installed" &&
                 election.accountId == binding.accountId && election.deviceId == binding.deviceId &&
                 election.lineId == binding.lineId && election.oldGeneration == binding.generation &&
-                activation.originHash == election.originHash && activation.signerFingerprint == hex(sha(point)))
+                origins.routing.accountId == binding.accountId && origins.routing.deviceId == binding.deviceId &&
+                activation.originHash == origins.routingHash && election.originHash == origins.protocolHash &&
+                activation.signerFingerprint == hex(sha(point)))
             DevicePayloadKeyStore.decodePoint(point)
             val core = Profile03ElectionEncoding.decode(election.coreB64url, 500)
             require(MessageDigest.isEqual(core.copyOfRange(288, 320),
                 sha("ZTSE/key/v1\u0000".toByteArray(Charsets.US_ASCII) + byteArrayOf(1, 1) + point)))
         }
-        fun same(other: Retained) = binding == other.binding && activation == other.activation &&
+        fun same(other: Retained) = origins.routing == other.origins.routing && origins.protocolOrigin == other.origins.protocolOrigin &&
+            binding == other.binding && activation == other.activation &&
             election == other.election && MessageDigest.isEqual(point, other.point)
         override fun toString() = "RetainedSamePhoneMetadata(historical-only)"
     }

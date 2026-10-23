@@ -13,7 +13,7 @@ import java.util.UUID
  * This reader never creates a root, key, v2 activation, binding allocation or accepted election.
  * Its caller obtains the packet exclusively through the existing device-signed HTTPS client.
  */
-internal class Profile03CurrentReader(context: Context, private val origin: String,
+internal class Profile03CurrentReader(context: Context, private val origins: Profile03Origins,
     private val db: SmsJournalDatabase, private val trust: Draft02TrustStore,
     private val payloadKeys: DevicePayloadKeyStore, private val signingKeys: DeviceSigningKeyStore,
     private val clock: Profile03SessionTime, private val socketCurrent: () -> Boolean,
@@ -21,7 +21,8 @@ internal class Profile03CurrentReader(context: Context, private val origin: Stri
     private val manifests: Profile03ManifestResolver? = null,
 ) {
     private val application = checkNotNull(context.applicationContext)
-    private val originDigest = sha(origin.toByteArray(Charsets.UTF_8))
+    private val origin = origins.protocolOrigin
+    private val originDigest = origins.protocolDigest()
 
     class Selection internal constructor(val election: Draft03PayloadElectionProof, val authority: Draft03ManifestAuthority,
         val selected: Draft03PayloadElectionProof.CurrentAuthority03, val installation: Profile03ElectionRecord,
@@ -48,7 +49,7 @@ internal class Profile03CurrentReader(context: Context, private val origin: Stri
         val intervalRamCurrent = requireInterval(packet, grant, value)
         val instant = checkNotNull(clock.nowMs())
         check(instant < grant.expiresAtMs && grant.expiresAtMs <= value.selected.permissionExpiresAtMs)
-        val intent = ReviewedIntent03.decode(packet.intent())
+        val intent = ReviewedIntent03V2.decode(packet.intent())
         intent.requireGrant(grant)
         require(intent.ownerUserId == value.user && intent.ownerSessionId == value.ownerSession && packet.selectionEpoch == value.epoch)
         val compared = value.election.requireCurrent(value.authority, value.selected, instant)
@@ -60,7 +61,7 @@ internal class Profile03CurrentReader(context: Context, private val origin: Stri
             checkNotNull(clock.nowMs())), hardware.point))
         value.election.requireCurrent(value.authority, value.selected, checkNotNull(clock.nowMs()))
         check(socketCurrent() && value.baseBinding.installedSelectionV2()?.isCurrent() == true)
-        return Draft03OutboundPreparation.Current(value.election, value.authority, value.selected, value.installation,
+        return Draft03OutboundPreparation.Current(origins, value.election, value.authority, value.selected, value.installation,
             value.baseBinding, intent, packet.signature(), packet.acceptedMs, packet.selectionEpoch, intent.ownerUserId,
             intent.ownerSessionId, packet.intervalStartsMs, packet.intervalExpiresMs, value.selectedSubscription, value.cards(),
             value.physical, intervalRamCurrent)
@@ -97,6 +98,7 @@ internal class Profile03CurrentReader(context: Context, private val origin: Stri
         val observed = checkNotNull(clock.snapshot())
         val identity = observed.first
         val session = identity.session
+        origins.requireProtocol(bytes("origin_digest"), session)
         fun now(): Long = checkNotNull(clock.nowMs()).also {
             check(socketCurrent() && clock.snapshot()?.first?.session === session && it > 0)
         }
@@ -104,8 +106,7 @@ internal class Profile03CurrentReader(context: Context, private val origin: Stri
         require(fieldId("account_id") == session.accountId && fieldId("device_id") == session.deviceId &&
             fieldId("line_id") == expectedLine && number("connection_epoch") == session.connectionEpoch &&
             number("deployment_epoch") == session.deploymentEpoch &&
-            Profile03Json.text(f, "site_id") == identity.site && Profile03Json.text(f, "instance_id") == identity.instance &&
-            same(bytes("origin_digest"), originDigest) && hex(originDigest) == session.originHash)
+            Profile03Json.text(f, "site_id") == identity.site && Profile03Json.text(f, "instance_id") == identity.instance)
 
         val evidence = Profile03Json.nested(f, "evidence")
         require(evidence.keys == EVIDENCE_KEYS)
@@ -118,7 +119,7 @@ internal class Profile03CurrentReader(context: Context, private val origin: Stri
         retained.requireShape()
         require((retained.state == "installed" || install && retained.state == "signed") &&
             retained.accountId == session.accountId.toString() && retained.deviceId == session.deviceId.toString() &&
-            retained.lineId == expectedLine.toString() && retained.originHash == session.originHash &&
+            retained.lineId == expectedLine.toString() && retained.originHash == origins.protocolHash &&
             same(Profile03ElectionEncoding.decode(retained.coreB64url, 500), core) &&
             same(Profile03ElectionEncoding.decode(checkNotNull(retained.deviceSignatureB64url), 64), bundle.copyOfRange(500, 564)))
         val old = Profile03Json.binary(evidence, "prior_manifest02", 364, 9751)

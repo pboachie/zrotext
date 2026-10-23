@@ -17,6 +17,7 @@ data class SelectionRefresh03Record(
     val bindingId: String, val bindingGeneration: Long, val originalActivationId: String,
     val originalGeneration: Long, val electionChallengeId: String, val electionIdentitySha256: String,
     val deviceSessionSha256: String, val connectionEpoch: Long, val deploymentEpoch: Long,
+    /** The core's signed HTTPS origin. The actual socket/v2 record retains its WSS domain. */
     val originHash: String, val selectedSubscription: Int,
     val consentId: String, val consentConfirmedMs: Long, val consentExpiresMs: Long,
     val coreB64url: String, val observationB64url: String, val state: String = "reserved",

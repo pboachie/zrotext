@@ -150,7 +150,7 @@ class SelectionRefresh03RecoveryTest {
             override fun requireSession() = Unit
             override fun nowMs() = instant
             override fun captureFresh() = r.v.f.line.owner.capture()
-            override fun retained() = SamePhoneSelectionReview.Retained(r.v.f.binding,
+            override fun retained() = SamePhoneSelectionReview.Retained(r.v.f.origins, r.v.f.binding,
                 checkNotNull(r.v.f.line.db.lineActivationsV2().find("sealed", r.v.f.line.challengeId.toString())),
                 r.v.f.installed, r.v.f.line.point)
         }

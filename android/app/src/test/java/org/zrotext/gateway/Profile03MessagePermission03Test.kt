@@ -20,8 +20,8 @@ class Profile03MessagePermission03Test {
         return JSONObject().put("v", 1).put("kind", "message_manifest_permission03").put("request_kind", "fetch")
             .put("request_id", f.attempt).put("fetch_transcript_sha256", b64(Profile03ExecutionFixture.sha(SealedEnvelopeFetch03.transcript(f.grant))))
             .put("envelope_profile", 3).put("manifest_profile", 3).put("account_id", f.line.account).put("user_id", f.ownerUser)
-            .put("owner_session_id", f.ownerSession).put("device_id", f.line.device).put("line_id", f.line.line).put("selection_epoch", "3")
-            .put("origin_digest", b64(Profile03ExecutionFixture.unhex(f.session.originHash)))
+            .put("owner_session_id", f.ownerSession).put("device_id", f.line.device).put("line_id", f.line.line).put("selection_epoch", "1")
+            .put("origin_digest", b64(f.origins.protocolDigest()))
             .put("owner_session_digest", b64(v.statement().ownerSessionDigest)).put("device_session_digest", b64(v.deviceSession))
             .put("site_id", "synthetic-site").put("instance_id", "synthetic-instance").put("connection_epoch", f.line.epoch.toString())
             .put("deployment_epoch", "1").put("old_binding_id", f.oldBinding).put("old_binding_generation", "1")
@@ -43,9 +43,9 @@ class Profile03MessagePermission03Test {
         Profile03MessagePermission03.requireFetch(current.toString().toByteArray(), v.decode(interval), grant)
     private fun packet(v: ConversationInterval03TestFixture, current: JSONObject = projection(v),
         interval: JSONObject = permission(v)) = JSONObject().put("v", 1).put("envelope", b64(v.f.envelope))
-        .put("reviewed_intent", b64(v.f.intentBytes)).put("reviewed_signature", b64(v.f.intentSignature))
+        .put("reviewed_intent", b64(v.f.intentV2Bytes)).put("reviewed_signature", b64(v.f.intentV2Signature))
         .put("accepted_ms", v.f.admittedAt.toString()).put("interval_starts_ms", "100000").put("interval_expires_ms", "100800")
-        .put("selection_epoch", "3").put("current", current).put("interval_permission", interval)
+        .put("selection_epoch", "1").put("current", current).put("interval_permission", interval)
 
     @Test fun exactAttemptTranscriptAndBothDeadlinesCorrelateWithoutInstallingOrPromotingAnyProjection(): Unit = ConversationInterval03TestFixture().use { v ->
         val before = v.f.line.db.profile03Elections().find(v.f.challenge.toString())
@@ -54,13 +54,13 @@ class Profile03MessagePermission03Test {
         Profile03MessagePermission03.requireFetch(p.currentProjection(), p.intervalPermission(), v.f.grant)
         // Genuine independent interval crypto is still a different check, under actual synthetic v2 RAM continuity.
         val roles = p.intervalPermission().verifyCurrent(v.selected(), Profile03ExecutionFixture.point(v.f.reader),
-            Profile03ExecutionFixture.unhex(v.f.session.originHash), v.f.now)
+            v.f.origins.protocolDigest(), v.f.now)
         assertArrayEquals(Profile03ExecutionFixture.point(v.f.eventSigning), roles.phonePoint())
         assertEquals(before, v.f.line.db.profile03Elections().find(v.f.challenge.toString()))
         assertNull(v.f.line.db.attempts().getAttempt(v.f.attempt.toString()))
         v.f.line.callback()
         assertThrows(Exception::class.java) { p.intervalPermission().verifyCurrent(v.selected(), Profile03ExecutionFixture.point(v.f.reader),
-            Profile03ExecutionFixture.unhex(v.f.session.originHash), v.f.now) }
+            v.f.origins.protocolDigest(), v.f.now) }
     }
 
     @Test fun everyGrantTranscriptFieldIsCommittedAndAnotherAttemptCannotReuseTheResponse(): Unit = ConversationInterval03TestFixture().use { v ->

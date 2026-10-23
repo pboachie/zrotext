@@ -18,13 +18,13 @@ internal class ConversationInterval03TestFixture(val f: Profile03ExecutionFixtur
             .put(f.account).put(f.device).put(f.lineId).put(ReviewedIntent03.uuid(f.newBinding))
             .put(ReviewedIntent03.uuid(UUID(0, id))).put(ReviewedIntent03.uuid(UUID(0, id + 100)))
             .put(ReviewedIntent03.uuid(f.ownerUser)).put(ReviewedIntent03.uuid(f.ownerSession)).put(ReviewedIntent03.uuid(UUID(0, id + 200)))
-            .putLong(2).putLong(1).putLong(2).putLong(3).putLong(issued).putLong(issued + 700).putLong(issued).putLong(end)
+            .putLong(2).putLong(1).putLong(2).putLong(1).putLong(issued).putLong(issued + 700).putLong(issued).putLong(end)
             .put(Profile03ExecutionFixture.keyId(f.reader, false)).put(Profile03ExecutionFixture.keyId(f.archive, false))
             .put(Profile03ExecutionFixture.keyId(f.eventSigning, true)).put(Profile03ExecutionFixture.keyId(f.signer, true))
             .put(f.fingerprint).put(f.authority.digest).put(f.accepted.electionCommitment).put(f.accepted.electionBundleSha256)
             .put(Profile03ExecutionFixture.sha(ReviewedIntent03.framed("ZTSE/line/payload-profile/owner-session/v1",
                 f.account + ReviewedIntent03.uuid(f.ownerUser) + ReviewedIntent03.uuid(f.ownerSession))))
-            .put(Profile03ExecutionFixture.unhex(f.session.originHash)).put(deviceSession).put(physical)
+            .put(f.origins.protocolDigest()).put(deviceSession).put(physical)
             .put(Profile03ExecutionFixture.sha(ReviewedIntent03.uuid(UUID(0, id + 300))))
             .put(25).put(ConversationInterval03.DISCLOSURE_VERSION.toByteArray(Charsets.US_ASCII))
             .put(Profile03ExecutionFixture.sha(ConversationInterval03.DISCLOSURE.toByteArray(Charsets.UTF_8)))
@@ -51,7 +51,7 @@ internal class ConversationInterval03TestFixture(val f: Profile03ExecutionFixtur
         .put("owner_session_digest", b64(proof.statement.ownerSessionDigest)).put("compared_ms", f.now.toString())
         .put("permission_expires_ms", "100600").put("readers", JSONArray())
     fun selected() = Profile03CurrentReader.Selection(f.election, f.authority, f.currentSelection, f.installed,
-        f.binding, f.ownerUser, f.ownerSession, 3, f.line.selected, f.line.cards(), checkNotNull(f.binding.installedSelectionV2()), deviceSession, physical)
+        f.binding, f.ownerUser, f.ownerSession, 1, f.line.selected, f.line.cards(), checkNotNull(f.binding.installedSelectionV2()), deviceSession, physical)
     fun decode(json: JSONObject) = ConversationInterval03Permission.decode(Profile03Json.nested(Profile03Json.objectValue(
         JSONObject().put("interval_permission", json).toString().toByteArray()), "interval_permission"))
     override fun close() = f.close()

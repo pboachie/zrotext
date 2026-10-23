@@ -46,13 +46,14 @@ internal class InstalledSelectionRefresh03 private constructor(val record: Selec
  * hardware and a held complete-observation issuer are all required before a reserved signature.
  * Nothing here opens an owner challenge, supplies MFA, re-signs after a crash or resets history.
  */
-internal class SelectionRefresh03Runtime(private val origin: String, private val database: SmsJournalDatabase,
+internal class SelectionRefresh03Runtime(private val origins: Profile03Origins, private val database: SmsJournalDatabase,
     private val trust: Draft02TrustStore, private val readers: () -> DevicePayloadKeyStore,
     private val signer: DeviceSigningKeyStore, private val clock: Profile03SessionTime,
     private val socketCurrent: () -> Boolean, private val send: (String) -> Boolean,
     private val currentManifest: ((Map<String, Any>, Profile03RetainedElection.Verified, SelectionRefresh03.Core) -> Profile03ManifestResolver.Authority)? = null,
     private val installed: () -> Unit,
 ) : AutoCloseable {
+    private val origin = origins.protocolOrigin
     private class Work(val decision: SamePhoneSelectionReview.Pending, val core: SelectionRefresh03.Core,
         val evidence: Map<String, Any>, val observation: ByteArray, var row: SelectionRefresh03Record,
         val identity: Profile03SessionTime.Identity) {
@@ -74,7 +75,7 @@ internal class SelectionRefresh03Runtime(private val origin: String, private val
     private var work: Work? = null
     @Volatile private var activeHandle: InstalledSelectionRefresh03? = null
     private val dao get() = database.selectionRefreshes03()
-    private fun session() = checkNotNull(clock.snapshot()).first.also { check(!closed && socketCurrent()) }
+    private fun session() = checkNotNull(clock.snapshot()).first.also { check(!closed && socketCurrent()); origins.requireSession(it.session) }
     private fun now(): Long = checkNotNull(clock.nowMs()).also { check(!closed && socketCurrent() && it > 0) }
 
     fun acceptDecision(input: SamePhoneSelectionReview.Pending) = synchronized(lock) {
@@ -151,6 +152,7 @@ internal class SelectionRefresh03Runtime(private val origin: String, private val
     }
     private fun ram(w: Work) {
         check(!closed && socketCurrent() && clock.snapshot()?.first?.session === w.identity.session)
+        origins.requireSession(w.identity.session)
         w.manifestCurrent?.invoke()
         w.decision.requireRamCurrent()
         w.core.requireCurrent(now())
@@ -173,7 +175,7 @@ internal class SelectionRefresh03Runtime(private val origin: String, private val
             core.line.toString(), core.binding.toString(), core.bindingGeneration, retained.activation.challengeId,
             retained.binding.generation, retained.election.challengeId, checkNotNull(retained.election.acceptedEvidenceSha256),
             hex(core.deviceSessionDigest), identity.session.connectionEpoch, identity.session.deploymentEpoch,
-            identity.session.originHash, SelectionRefresh03.selectedSubscription(observation), pending.consentId.toString(),
+            origins.protocolHash, SelectionRefresh03.selectedSubscription(observation), pending.consentId.toString(),
             pending.confirmedMs, pending.expiresMs, b64(core.bytes()), b64(observation))
         val next = Work(pending, core, Profile03Json.nested(fields, "evidence"), observation, row, identity)
         verify(next)

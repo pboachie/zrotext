@@ -11,13 +11,14 @@ import java.util.UUID
  * statements are public evidence; the locally compared encrypted store and existing keys are
  * independent. No missing root/reader/history is provisioned by receiving this frame.
  */
-internal class Profile03SetupRuntime(context: Context, private val origin: String,
+internal class Profile03SetupRuntime(context: Context, private val origins: Profile03Origins,
     private val db: SmsJournalDatabase, private val trust: Draft02TrustStore,
     private val payloadKeys: DevicePayloadKeyStore, private val signingKeys: DeviceSigningKeyStore,
     private val clock: Profile03SessionTime, private val socketCurrent: () -> Boolean,
 ) {
     private val application = checkNotNull(context.applicationContext)
-    private val originDigest = sha(origin.toByteArray(Charsets.UTF_8))
+    private val origin = origins.protocolOrigin
+    private val originDigest = origins.protocolDigest()
 
     /** Called only by the raw authenticated03 socket listener. Never retries signing. A signed
      * record is retained on transport loss and its exact proof may be re-emitted while the SAME
@@ -43,6 +44,7 @@ internal class Profile03SetupRuntime(context: Context, private val origin: Strin
         fun fieldId(name: String) = id(f, name)
         val identity = checkNotNull(clock.snapshot()).first
         val session = identity.session
+        origins.requireProtocol(bytes("origin_digest"), session)
         val lineId = fieldId("line_id")
         val oldBinding = fieldId("old_binding_id")
         var lastNow = 0L
@@ -60,8 +62,7 @@ internal class Profile03SetupRuntime(context: Context, private val origin: Strin
             long(core, 392) - long(core, 384) <= 300_000 && long(core, 96) > long(core, 88))
         require(fieldId("account_id") == session.accountId && fieldId("device_id") == session.deviceId &&
             number("connection_epoch") == session.connectionEpoch && number("deployment_epoch") == session.deploymentEpoch &&
-            Profile03Json.text(f, "site_id") == identity.site && Profile03Json.text(f, "instance_id") == identity.instance &&
-            same(bytes("origin_digest"), originDigest) && hex(originDigest) == session.originHash)
+            Profile03Json.text(f, "site_id") == identity.site && Profile03Json.text(f, "instance_id") == identity.instance)
         for ((at, value) in listOf(8 to uuid(session.accountId), 24 to uuid(session.deviceId), 40 to uuid(lineId),
             72 to uuid(oldBinding), 104 to bytes("old_binding_proof_digest"), 136 to bytes("root_fingerprint"),
             184 to bytes("manifest_digest"), 256 to bytes("reader_key_id"), 288 to bytes("device_signing_key_id"),
@@ -114,7 +115,7 @@ internal class Profile03SetupRuntime(context: Context, private val origin: Strin
         fresh()
         val record = Profile03ElectionRecord(challenge.toString(), session.accountId.toString(), session.deviceId.toString(),
             lineId.toString(), oldBinding.toString(), newBinding.toString(), long(core, 88), long(core, 96),
-            hex(bytes("root_fingerprint")), hex(bytes("reader_key_id")), session.originHash, session.connectionEpoch,
+            hex(bytes("root_fingerprint")), hex(bytes("reader_key_id")), origins.protocolHash, session.connectionEpoch,
             session.deploymentEpoch, Profile03ElectionEncoding.encode(core))
         // Withdraw the older content protocol before Room or hardware can block. This is
         // negative-only: failed/unsigned setup grants nothing and cannot revive an old lease.

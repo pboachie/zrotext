@@ -14,10 +14,11 @@ internal object Draft03OutboundPreparation {
      * The same Room record and independently installed v2 SIM lease are checked here on every use.
      */
     class Current(
+        val origins: Profile03Origins,
         val election: Draft03PayloadElectionProof, val authority: Draft03ManifestAuthority,
         val selection: Draft03PayloadElectionProof.CurrentAuthority03,
         val installation: Profile03ElectionRecord, val baseBinding: LocalLineBinding,
-        val intent: ReviewedIntent03, intentSignature: ByteArray, val acceptedMs: Long,
+        val intent: ReviewedIntent03V2, intentSignature: ByteArray, val acceptedMs: Long,
         val selectionEpoch: Long, val ownerUserId: UUID, val ownerSessionId: UUID,
         val intervalStartsMs: Long, val intervalExpiresMs: Long,
         val selectedSubscriptionId: Int, activeCards: List<ActiveSimCard>?,
@@ -83,12 +84,13 @@ internal object Draft03OutboundPreparation {
         fun fresh(): Current {
             now()
             val c = checkNotNull(current())
+            c.origins.requireSession(session)
             c.intervalRamCurrent()
             val row = c.installation
             row.requireShape()
             check(row.state == "installed" && row.accountId == session.accountId.toString() &&
                 row.deviceId == session.deviceId.toString() && row.lineId == grant.lineId.toString() &&
-                row.originHash == session.originHash && row.newGeneration == grant.bindingGeneration &&
+                row.originHash == c.origins.protocolHash && row.newGeneration == grant.bindingGeneration &&
                 row.readerKeyId == hex(grant.readerKeyId) && row.rootFingerprint == hex(grant.rootFingerprint))
             val accepted = c.election.acceptedRecord()
             check(row.acceptedEvidenceSha256 == acceptedIdentity(accepted) &&
@@ -113,7 +115,7 @@ internal object Draft03OutboundPreparation {
             c.intent.requireGrant(grant)
             check(c.intent.ownerUserId == c.ownerUserId && c.intent.ownerSessionId == c.ownerSessionId)
             val request = c.intent.verifyReceipt(c.signature(), c.authority, comparison, c.acceptedMs, instant,
-                c.selectionEpoch, unhex(session.originHash), c.intervalStartsMs, c.intervalExpiresMs)
+                c.selectionEpoch, c.origins.protocolDigest(), c.intervalStartsMs, c.intervalExpiresMs)
             verified?.parts(c.authority, request, instant)
             val identity = hash(row.acceptedEvidenceSha256.toByteArray(Charsets.US_ASCII) + c.intent.bytes() +
                 c.signature() + ByteBuffer.allocate(8).putLong(c.acceptedMs).array())
@@ -168,10 +170,9 @@ internal object Draft03OutboundPreparation {
                 clear = Draft03Body.open(proof, after.authority, after.intent.request(), lastNow, cek)
             } finally { cek.fill(0) }
             val body = checkNotNull(clear)
-            val encoded = Charsets.UTF_8.newEncoder().encode(java.nio.CharBuffer.wrap(body))
-            val bodyBytes = ByteArray(encoded.remaining()).also(encoded::get)
-            try { check(same(MessageDigest.getInstance("SHA-256").digest(bodyBytes), fresh().intent.bodySha256)) }
-            finally { bodyBytes.fill(0); if (encoded.hasArray()) encoded.array().fill(0) }
+            // The exact reviewed final/unsigned ciphertext and both real role5 signatures
+            // were verified above. Draft03Body performs strict authenticated UTF-8 decoding.
+            // V2 deliberately has no plaintext hash, including no temporary comparison hash.
             val live = fresh()
             val manager = SmsManager.getSmsManagerForSubscriptionId(live.selectedSubscriptionId)
             val count = Draft02OutboundPreparation.segmentCount(body, manager::divideMessage)

@@ -8,7 +8,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import java.util.UUID
 import okhttp3.OkHttpClient
-import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.WebSocket
 import org.json.JSONObject
 
@@ -30,12 +29,8 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
 ) : AutoCloseable {
     private val application = checkNotNull(context.applicationContext)
     private val protectionEpoch = InboundProtectionHealth.snapshot()
-    private val origin = streamUrl.replaceFirst("wss://", "https://").let {
-        it.toHttpUrl().let { url ->
-            require(url.scheme == "https" && url.username.isEmpty() && url.password.isEmpty())
-            url.newBuilder().encodedPath("/").query(null).fragment(null).build().toString().removeSuffix("/")
-        }
-    }
+    private val origins = Profile03Origins.fromStream(account, device, streamUrl)
+    private val origin = origins.protocolOrigin
     private val db = SmsJournalDatabase.get(application)
     private val storage = Draft02AndroidTrustStorage(application)
     private val trust = Draft02TrustStore(storage)
@@ -48,7 +43,7 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
     @Volatile private var closed = false
     private val effects = Any()
     private val time = Profile03SessionTime(account, device, epoch,
-        EvidenceIdentity.fromStream(account, device, streamUrl).originHash, SystemClock::elapsedRealtime,
+        origins.routingHash, SystemClock::elapsedRealtime,
         ::current, lineConsumerVersion, socket::send)
     private val wire = ConversationSocketWire(socket, { time.snapshot()?.first?.session?.let(ConversationPhoneSession::from) })
     private val intervals: ConversationInterval03Runtime by lazy { ConversationInterval03Runtime(this,
@@ -57,15 +52,15 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
         ConversationInterval03HardwareProofSigner(keys) { recipients }, time, ::current,
         { bytes, line -> reader.manifestDeviceSelection(bytes, line) }, socket::send) }
     private val manifestResolver: Profile03ManifestResolver by lazy { Profile03ManifestResolver({ manifests }, manifestStore, time) }
-    private val reader: Profile03CurrentReader by lazy { Profile03CurrentReader(application, origin, db, trust, recipients, keys, time, ::current,
+    private val reader: Profile03CurrentReader by lazy { Profile03CurrentReader(application, origins, db, trust, recipients, keys, time, ::current,
         { packet, grant, selected -> intervals.requireFetch(packet, grant, selected) }, manifestResolver) }
-    private val manifests: Profile03ManifestRuntime by lazy { Profile03ManifestRuntime(db,
-        Profile03ManifestOriginal(origin, db, trust, { recipients }, keys, time, ::current), manifestStore, time, ::current,
+    private val manifests: Profile03ManifestRuntime by lazy { Profile03ManifestRuntime(origins, db,
+        Profile03ManifestOriginal(origins, db, trust, { recipients }, keys, time, ::current), manifestStore, time, ::current,
         keys::existingConversationPublicPoint, socket::send,
         { intervals.withdrawAuthority(); projection = null },
         { text -> Profile03MessagingStatus.update(this, text) }, ::publishManifestCurrent) }
-    private val setup by lazy { Profile03SetupRuntime(application, origin, db, trust, recipients, keys, time, ::current) }
-    private val refresh = SelectionRefresh03Runtime(origin, db, trust, { recipients }, keys, time, ::current, socket::send,
+    private val setup by lazy { Profile03SetupRuntime(application, origins, db, trust, recipients, keys, time, ::current) }
+    private val refresh = SelectionRefresh03Runtime(origins, db, trust, { recipients }, keys, time, ::current, socket::send,
         currentManifest = manifestResolver::refresh) {
         synchronized(effects) { check(current()); projection = null }
         Profile03MessagingStatus.update(this, "SIM approval acknowledged. Checking current messaging availability.")
@@ -110,7 +105,7 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
             synchronized(effects) {
                 check(current())
                 val session = checkNotNull(time.snapshot()).first.session
-                Profile03BootstrapClock.publish(this, session) { if (current()) time.nowMs() else null }
+                Profile03BootstrapClock.publish(this, session, origins) { if (current()) time.nowMs() else null }
                 if (projection == null) Profile03MessagingStatus.update(this, "Phone connected. Finish messaging setup in your owner workspace.")
             }
             manifests.requestIfDue()

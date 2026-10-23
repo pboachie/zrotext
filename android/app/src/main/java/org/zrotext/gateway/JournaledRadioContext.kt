@@ -47,6 +47,7 @@ internal class Profile03RadioContext(
     override val binding = current.baseBinding
     override val segmentCeiling = grant.segmentCount
     override fun requireGrantBinding(selected: LocalLineBinding) {
+        current.origins.requireSession(session)
         current.intent.requireGrant(grant)
         val row = current.installation
         val physical = checkNotNull(current.physicalSelection)
@@ -54,7 +55,7 @@ internal class Profile03RadioContext(
         check(selected == binding && selected.protocolVersion == 2 && selected.v2Purpose == "sealed" &&
             row.state == "installed" && row.accountId == accountId && row.deviceId == deviceId &&
             row.lineId == selected.lineId && row.oldGeneration == selected.generation &&
-            row.newGeneration == grant.bindingGeneration && row.originHash == session.originHash &&
+            row.newGeneration == grant.bindingGeneration && row.originHash == current.origins.protocolHash &&
             grant.accountId == session.accountId && grant.deviceId == session.deviceId &&
             grant.connectionEpoch == session.connectionEpoch && grant.deploymentEpoch == session.deploymentEpoch &&
             deadlineMs <= originalDeadlineMs && segmentCeiling == current.intent.segmentCeiling)

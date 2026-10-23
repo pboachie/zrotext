@@ -23,7 +23,7 @@ class SamePhoneSelectionReviewTest {
         override fun captureFresh() = f.line.owner.capture()
         override fun retained(): SamePhoneSelectionReview.Retained {
             readHook()
-            return SamePhoneSelectionReview.Retained(f.binding,
+            return SamePhoneSelectionReview.Retained(f.origins, f.binding,
                 checkNotNull(f.line.db.lineActivationsV2().find("sealed", f.line.challengeId.toString())),
                 checkNotNull(f.line.db.profile03Elections().find(f.record.challengeId)), f.line.point)
         }
@@ -116,6 +116,31 @@ class SamePhoneSelectionReviewTest {
             inputs.readHook = { inputs.readHook = {}; controller.cancel() }
             assertFalse(controller.confirm(displayed)); assertNull(controller.takePending())
             assertNull(f.binding.installedSelectionV2())
+        }
+    }
+
+    @Test fun samePhoneReviewRequiresBothOriginalOriginDomainsAndTheActualConfiguredHost() {
+        Profile03ExecutionFixture().use { f ->
+            f.install()
+            val activation = checkNotNull(f.line.db.lineActivationsV2().find("sealed", f.line.challengeId.toString()))
+            val election = checkNotNull(f.line.db.profile03Elections().find(f.record.challengeId))
+            val retained = SamePhoneSelectionReview.Retained(f.origins, f.binding, activation, election, f.line.point)
+            assertNotEquals(activation.originHash, election.originHash)
+            assertEquals(f.origins.routingHash, retained.activation.originHash)
+            assertEquals(f.origins.protocolHash, retained.election.originHash)
+            for (stream in listOf("wss://other.example.test/device", "wss://gateway.example.test:9443/device")) {
+                val wrong = Profile03Origins.fromStream(f.line.account, f.line.device, stream)
+                assertThrows(IllegalArgumentException::class.java) {
+                    SamePhoneSelectionReview.Retained(wrong, f.binding, activation, election, f.line.point) }
+            }
+            assertThrows(IllegalArgumentException::class.java) {
+                SamePhoneSelectionReview.Retained(f.origins, f.binding,
+                    activation.copy(originHash = f.origins.protocolHash), election, f.line.point) }
+            assertThrows(IllegalArgumentException::class.java) {
+                SamePhoneSelectionReview.Retained(f.origins, f.binding, activation,
+                    election.copy(originHash = f.origins.routingHash), f.line.point) }
+            assertEquals(activation, f.line.db.lineActivationsV2().find("sealed", activation.challengeId))
+            assertEquals(election, f.line.db.profile03Elections().find(election.challengeId))
         }
     }
 }

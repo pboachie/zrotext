@@ -22,8 +22,10 @@ internal class Profile03ExecutionFixture(private val selectedReaderUntilMs: Long
     distinctEventSigner: Boolean = false, private val includeEventSigner: Boolean = true) : AutoCloseable {
     val enrollment = pair()
     val eventSigning = if (distinctEventSigner) pair() else enrollment
-    private val originHash = canonicalOrigin?.let { hex(sha(it.toByteArray(Charsets.UTF_8))) } ?: testEvidenceIdentity.originHash
-    val line = LineActivationV2RuntimeFixture(true, enrollment, originHash)
+    val origins = Profile03Origins.fromProtocol(UUID.fromString(testEvidenceIdentity.accountId),
+        UUID.fromString(testEvidenceIdentity.deviceId), canonicalOrigin ?: "https://gateway.example.test")
+    private val originHash = origins.protocolHash
+    val line = LineActivationV2RuntimeFixture(true, enrollment, origins.routingHash)
     val binding = line.installSealed()
     val account = uuid(line.account)
     val device = uuid(line.device)
@@ -36,7 +38,7 @@ internal class Profile03ExecutionFixture(private val selectedReaderUntilMs: Long
     val oldBinding = UUID(0, 15)
     val newBinding = UUID(0, 16)
     val challenge = UUID(0, 17)
-    val session = SealedDispatchExecutor.Session(line.account, line.device, line.epoch, 1, UUID(0, 18), originHash)
+    val session = SealedDispatchExecutor.Session(line.account, line.device, line.epoch, 1, UUID(0, 18), origins.routingHash)
     val root = pair()
     val reader = pair()
     val archive = pair()
@@ -61,7 +63,7 @@ internal class Profile03ExecutionFixture(private val selectedReaderUntilMs: Long
         .put(ByteArray(32) { 7 }).put(fingerprint).putLong(1).putLong(1).put(unsigned(old))
         .putLong(2).put(unsigned(next)).put(keyId(reader, false)).put(keyId(enrollment, true))
         .put(keyId(approval, true)).put(ByteArray(32) { 8 }).putLong(99_900).putLong(101_000)
-        .put(unhex(session.originHash)).put(ByteArray(32) { 9 }).put(ByteArray(32) { 10 }).putInt(0).array()
+        .put(origins.protocolDigest()).put(ByteArray(32) { 9 }).put(ByteArray(32) { 10 }).putInt(0).array()
     val deviceProof = rawSign(enrollment, ReviewedIntent03.framed("ZTSE/line/payload-profile/device/v1", core))
     val bundle = core + deviceProof + rawSign(approval,
         ReviewedIntent03.framed("ZTSE/line/payload-profile/owner/v1", core + sha(deviceProof)))
@@ -75,7 +77,7 @@ internal class Profile03ExecutionFixture(private val selectedReaderUntilMs: Long
         accepted.electionCommitment, accepted.electionBundleSha256, now, 101_000)
     val record = Profile03ElectionRecord(challenge.toString(), line.account.toString(), line.device.toString(),
         line.line.toString(), oldBinding.toString(), newBinding.toString(), 1, 2, hex(fingerprint),
-        hex(keyId(reader, false)), session.originHash, session.connectionEpoch, session.deploymentEpoch,
+        hex(keyId(reader, false)), originHash, session.connectionEpoch, session.deploymentEpoch,
         Profile03ElectionEncoding.encode(core))
     val installed = record.copy(state = "installed", deviceSignatureB64url = Profile03ElectionEncoding.encode(deviceProof),
         acceptedEvidenceSha256 = Draft03OutboundPreparation.acceptedIdentity(accepted))
@@ -84,6 +86,12 @@ internal class Profile03ExecutionFixture(private val selectedReaderUntilMs: Long
     val intent = ReviewedIntent03.decode(intentBytes)
     val intentSignature = signIntent(intentBytes)
     fun signIntent(bytes: ByteArray) = rawSign(signer, ReviewedIntent03.framed("zrotext/conversation/reviewed-send03/v1", bytes))
+    // Separate genuine V2 test production. Historical V1 fields/signatures above remain exact.
+    val intentV2Bytes = intentV2()
+    val intentV2 = ReviewedIntent03V2.decode(intentV2Bytes)
+    val intentV2Signature = signIntentV2(intentV2Bytes)
+    fun signIntentV2(bytes: ByteArray) = rawSign(signer,
+        ReviewedIntent03.framed("zrotext/conversation/reviewed-send03/v2", bytes))
     val grant get() = SealedDispatch03Frames.grant(JSONObject().put("v", 1).put("type", "sealed_execution_grant")
         .put("grant_version", 3).put("envelope_profile", 3).put("manifest_profile", 3).put("reader_role", 1)
         .put("segment_count", 1).put("account_id", line.account).put("device_id", line.device).put("line_id", line.line)
@@ -95,8 +103,8 @@ internal class Profile03ExecutionFixture(private val selectedReaderUntilMs: Long
         .put("election_digest", b64(accepted.electionCommitment)).toString())
     var intervalCurrent = true
     fun current(selected: Draft03PayloadElectionProof.CurrentAuthority03 = currentSelection,
-        reviewed: ReviewedIntent03 = intent, signature: ByteArray = intentSignature,
-        epoch: Long = 3, acceptedMs: Long = admittedAt) = Draft03OutboundPreparation.Current(election, authority, selected,
+        reviewed: ReviewedIntent03V2 = intentV2, signature: ByteArray = intentV2Signature,
+        epoch: Long = 1, acceptedMs: Long = admittedAt) = Draft03OutboundPreparation.Current(origins, election, authority, selected,
         installed, binding, reviewed, signature, acceptedMs, epoch, ownerUser, ownerSession, 1, 200_000, line.selected, line.cards(),
         intervalRamCurrent = { check(intervalCurrent) })
     fun install() {
@@ -111,7 +119,14 @@ internal class Profile03ExecutionFixture(private val selectedReaderUntilMs: Long
         long(2) + long(1) + long(2) + long(3) + long(100_010) + long(100_500) + long(100_010) + long(100_030) +
         keyId(reader, false) + fingerprint + authority.digest + accepted.electionCommitment + accepted.electionBundleSha256 +
         sha(ReviewedIntent03.framed("ZTSE/line/payload-profile/owner-session/v1", account + uuid(ownerUser) + uuid(ownerSession))) +
-        unhex(session.originHash) + keyId(signer, true) + sha(envelope) + unsigned(envelope) + sha(body) +
+        origins.protocolDigest() + keyId(signer, true) + sha(envelope) + unsigned(envelope) + sha(body) +
+        byteArrayOf(peer.size.toByte()) + peer + byteArrayOf(2, 1) + keyId(reader, false) + byteArrayOf(2) + keyId(archive, false) + byteArrayOf(1)
+    private fun intentV2(): ByteArray = byteArrayOf(90, 84, 82, 73, 2, 3, 3, 0) +
+        account + device + lineId + uuid(newBinding) + uuid(ownerUser) + uuid(ownerSession) + uuid(interval) + uuid(message) +
+        long(2) + long(1) + long(2) + long(1) + long(100_010) + long(100_500) + long(100_010) + long(100_030) +
+        keyId(reader, false) + fingerprint + authority.digest + accepted.electionCommitment + accepted.electionBundleSha256 +
+        sha(ReviewedIntent03.framed("ZTSE/line/payload-profile/owner-session/v1", account + uuid(ownerUser) + uuid(ownerSession))) +
+        origins.protocolDigest() + keyId(signer, true) + sha(envelope) + unsigned(envelope) +
         byteArrayOf(peer.size.toByte()) + peer + byteArrayOf(2, 1) + keyId(reader, false) + byteArrayOf(2) + keyId(archive, false) + byteArrayOf(1)
     private fun manifest(profile: Int, version: Long, previous: ByteArray): ByteArray {
         fun row(role: Int, key: KeyPair, scope: Int): ByteArray = byteArrayOf(role.toByte()) + keyId(key, role > 3) +

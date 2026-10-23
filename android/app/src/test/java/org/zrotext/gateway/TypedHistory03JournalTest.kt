@@ -231,10 +231,10 @@ class TypedHistory03JournalTest {
                         execSQL("DROP TABLE typed_submit03")
                         SmsJournalDatabase.MIGRATION_21_22.migrate(this)
                         execSQL("INSERT INTO typed_submit03 (attemptId,eventId,accountId,deviceId,messageId,commandB64url,commandSha256,originalEnrolledPoint,originalEnrolledKeyId,phase,conflict) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                            arrayOf(old.attemptId, old.eventId, old.accountId, old.deviceId, old.messageId, old.commandB64url,
+                            arrayOf<Any>(old.attemptId, old.eventId, old.accountId, old.deviceId, old.messageId, old.commandB64url,
                                 old.commandSha256, old.originalEnrolledPoint, old.originalEnrolledKeyId, old.phase, 0))
                         execSQL("INSERT INTO typed_callback03 (eventId,attemptId,segmentIndex,delivery,resultCode,deliveryStatus,observedMs) VALUES (?,?,?,?,?,?,?)",
-                            arrayOf(rawId, old.attemptId, 0, 0, Activity.RESULT_OK, -1, observed))
+                            arrayOf<Any>(rawId, old.attemptId, 0, 0, Activity.RESULT_OK, -1, observed))
                         execSQL("DROP TABLE room_master_table"); version = 22
                     }
                 }

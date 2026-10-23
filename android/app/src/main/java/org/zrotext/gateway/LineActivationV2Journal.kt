@@ -14,6 +14,7 @@ import java.util.UUID
 data class LineActivationV2Record(
     val purpose: String, val challengeId: String, val accountId: String, val deviceId: String,
     val lineId: String, val generation: Long, val expiresAtMs: Long,
+    /** Existing authenticated socket routing hash; never replaced by a protocol HTTPS digest. */
     val proofConnectionEpoch: Long, val originHash: String, val signerFingerprint: String,
     val observationB64url: String, val state: String = "reserved",
     val signatureDerB64url: String? = null, val statementSha256: String? = null,

@@ -83,6 +83,36 @@ selection reads are bounded and never reserve, re-sign or renew an election.
 Not-yet-accepted replies preserve the signed row; unsupported/expired replies
 pause reads and retain recovery history.
 
+## Protocol origin and socket routing
+
+The actual configured secure WebSocket supplies two separately checked origin
+names for the same host and port. `Profile03Origins` binds those names when the
+shipping connection is constructed. It rejects another scheme, user information,
+fragment or inconsistent host/port normalization. A default secure port becomes
+an omitted port in the canonical HTTPS origin and explicit port443 in the existing
+WSS routing identity. The origin mapping is public configuration metadata; it
+grants no authentication, reader, SIM or message permission.
+
+| Retained or received value | Required domain |
+| --- | --- |
+| Signed registration, E500 election, refresh496 and reviewed-intent origin | SHA256 of the canonical HTTPS origin |
+| `Profile03ElectionRecord.originHash` and `SelectionRefresh03Record.originHash` | The original signed HTTPS digest |
+| Authenticated session, original v2 activation and preparation routing | Existing `EvidenceIdentity` WSS host and explicit port hash |
+| Typed passive-history original origin pin | Original WSS routing hash |
+
+Original-proof comparison derives the matching routing name from the independently
+configured protocol origin and compares the existing v2 record without changing it.
+Election setup, accepted-current reads, retained manifest history, fresh same-phone
+review and the radio context check each domain explicitly. The same-phone review
+captures its mapping, actor, connection/deployment epochs and clock from one current
+publication. A clock read checks that original publication again after any wait;
+withdrawal or a replacement connection cannot supply its time to an old observation.
+
+There is no migration or relabeling of existing origin fields, wire bytes, signatures
+or attempt history. Missing or inconsistent provenance refuses. These source checks
+and their JVM regression cases require combined compilation and execution; they do
+not establish hardware custody, hosted current permission or carrier delivery.
+
 ## Message path and recovery limits
 
 Explicit root/reader enrollment uses separate full validation and a
