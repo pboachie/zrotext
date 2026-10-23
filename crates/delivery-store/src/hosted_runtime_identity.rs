@@ -40,6 +40,26 @@ fn body(name: &str) -> Result<&'static str> {
     body_for(name, 116)
 }
 fn body_for(name: &str, version: i64) -> Result<&'static str> {
+    if version == 119
+        && matches!(
+            name,
+            "payload_profile_writer_version"
+                | "payload_profile_writer_ready"
+                | "hosted_runtime_native_schema_valid"
+                | "hosted_runtime_identity_ready"
+                | "hosted_runtime_scope"
+        )
+    {
+        return declared_function_body(
+            include_str!(
+                "../../../deploy/compose/migrations/119_conversation_profile03_effects.sql"
+            ),
+            name,
+            "$function$",
+        )
+        .ok_or(IdentitySchemaError::Invalid);
+    }
+
     if version == 118
         && matches!(
             name,
@@ -77,7 +97,7 @@ fn body_for(name: &str, version: i64) -> Result<&'static str> {
             .map(|(body, _)| body)
             .ok_or(IdentitySchemaError::Invalid);
     }
-    if matches!(version, 117..=118)
+    if matches!(version, 117..=119)
         && matches!(
             name,
             "hosted_runtime_native_schema_valid"
@@ -523,7 +543,7 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
         )
         .await?
         .try_get(0)?;
-    if !matches!(version,116..=118) || db.query_one("SELECT count(*) FROM pg_catalog.pg_proc WHERE pronamespace='public'::pg_catalog.regnamespace AND proname LIKE 'hosted_runtime_%'",&[]).await?.try_get::<_,i64>(0)?!=15 {return Err(IdentitySchemaError::Invalid);}
+    if !matches!(version,116..=119) || db.query_one("SELECT count(*) FROM pg_catalog.pg_proc WHERE pronamespace='public'::pg_catalog.regnamespace AND proname LIKE 'hosted_runtime_%'",&[]).await?.try_get::<_,i64>(0)?!=15 {return Err(IdentitySchemaError::Invalid);}
     functions(db, version).await?;
     tables(db).await?;
     if !db.query_one("SELECT public.payload_profile_writer_version() AND coalesce((SELECT migration_version=$1 AND graph_sha256=public.payload_profile_writer_graph() FROM public.payload_profile_writer_catalog WHERE singleton),false)",&[&version]).await?.try_get::<_,bool>(0)? {return Err(IdentitySchemaError::Invalid);}
