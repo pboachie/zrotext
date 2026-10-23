@@ -894,7 +894,8 @@ private const val PRUNE_BATCH = 500
     ProtectionSetupCommand::class, ProtectionSetupProvider::class,
     ProtectionOriginAttempt::class, ProtectionOriginInstallation::class,
     TypedSubmit03Record::class, TypedCallback03Record::class,
-    TypedHistory03Source::class, TypedHistory03Request::class, TypedSubmit03Request::class], version = 24, exportSchema = false)
+    TypedHistory03Source::class, TypedHistory03Request::class, TypedSubmit03Request::class,
+    TypedOutcome03Report::class, TypedOutcome03Upload::class], version = 25, exportSchema = false)
 abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun attempts(): SmsAttemptDao
     abstract fun sealedPreparations(): SealedPreparationDao
@@ -906,6 +907,7 @@ abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun protectionOrigins(): ProtectionOriginDao
     internal abstract fun typedSubmits03(): TypedSubmit03Dao
     internal abstract fun typedHistory03(): TypedHistory03Dao
+    internal abstract fun typedOutcomes03(): TypedOutcome03Dao
 
     companion object {
         @Volatile private var instance: SmsJournalDatabase? = null
@@ -915,7 +917,7 @@ abstract class SmsJournalDatabase : RoomDatabase() {
                 context.applicationContext, SmsJournalDatabase::class.java, "sms_attempts.db"
             ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
                 MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
-                MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24)
+                MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25)
                 .build().also { instance = it }
         }
 
@@ -949,6 +951,18 @@ abstract class SmsJournalDatabase : RoomDatabase() {
                 // typed classification and genuine original live context before insertion.
                 db.execSQL("CREATE TABLE IF NOT EXISTS typed_submit03_requests (attemptId TEXT NOT NULL, eventId TEXT NOT NULL, commandSha256 TEXT NOT NULL, connectionEpoch INTEGER NOT NULL, requestB64url TEXT NOT NULL, PRIMARY KEY(attemptId))")
                 db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_typed_submit03_requests_eventId ON typed_submit03_requests(eventId)")
+            }
+        }
+
+        internal val MIGRATION_24_25 = object : Migration(24, 25) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // No backfill: an old assertion without an original first-I/O classification
+                // needs explicit exact sync. Empty new tables grant no automatic upload.
+                db.execSQL("CREATE TABLE IF NOT EXISTS typed_outcome03_reports (eventId TEXT NOT NULL, attemptId TEXT NOT NULL, sourceSlot TEXT NOT NULL, assertionSha256 TEXT NOT NULL, automaticFirst INTEGER NOT NULL, PRIMARY KEY(eventId))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_typed_outcome03_reports_attemptId ON typed_outcome03_reports(attemptId)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS typed_outcome03_uploads (requestId TEXT NOT NULL, eventId TEXT NOT NULL, attemptId TEXT NOT NULL, sourceSlot TEXT NOT NULL, submitCommandSha256 TEXT NOT NULL, assertionB64url TEXT NOT NULL, assertionSha256 TEXT NOT NULL, originSha256 TEXT NOT NULL, originalEnrolledPoint TEXT NOT NULL, connectionEpoch INTEGER NOT NULL, requestB64url TEXT NOT NULL, ackB64url TEXT, PRIMARY KEY(requestId))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_typed_outcome03_uploads_eventId ON typed_outcome03_uploads(eventId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_typed_outcome03_uploads_attemptId ON typed_outcome03_uploads(attemptId)")
             }
         }
 

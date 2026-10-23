@@ -112,7 +112,7 @@ class TypedSubmit03RequestTest {
         val app = RuntimeEnvironment.getApplication()
         val name = "tsm-${java.util.UUID.randomUUID().toString().take(10)}"
         fun open() = Room.databaseBuilder(app, SmsJournalDatabase::class.java, name).allowMainThreadQueries()
-            .addMigrations(SmsJournalDatabase.MIGRATION_23_24).build()
+            .addMigrations(SmsJournalDatabase.MIGRATION_23_24, SmsJournalDatabase.MIGRATION_24_25).build()
         try {
             TypedSubmit03WireTest.Fixture().use { f ->
                 val row = candidate(f)
@@ -123,12 +123,13 @@ class TypedSubmit03RequestTest {
                             assertTrue(it.moveToFirst()); assertEquals(0L, it.getLong(0))
                         }
                         execSQL("DROP TABLE typed_submit03_requests")
+                        LegacyTypedJournalFixture.removeEmptyOutcomeTables(this)
                         execSQL("DROP TABLE room_master_table")
                         version = 23
                     }
                 }
                 open().use { db ->
-                    assertEquals(24, db.openHelper.readableDatabase.version)
+                    assertEquals(25, db.openHelper.readableDatabase.version)
                     assertEquals(row, db.typedSubmits03().get(row.attemptId))
                     assertNull(db.typedSubmits03().submitRequest(row.attemptId))
                     assertFalse(db.typedSubmits03().reserveNewSubmit(row) {})

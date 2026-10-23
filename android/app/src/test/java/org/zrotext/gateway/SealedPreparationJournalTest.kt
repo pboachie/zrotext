@@ -22,7 +22,7 @@ class SealedPreparationJournalTest {
     private fun memory() = Room.inMemoryDatabaseBuilder(context, SmsJournalDatabase::class.java).allowMainThreadQueries().build()
     private fun file(name: String) = Room.databaseBuilder(context, SmsJournalDatabase::class.java, name)
         .allowMainThreadQueries().addMigrations(SmsJournalDatabase.MIGRATION_11_12,
-            SmsJournalDatabase.MIGRATION_12_13, SmsJournalDatabase.MIGRATION_13_14, SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17, SmsJournalDatabase.MIGRATION_17_18, SmsJournalDatabase.MIGRATION_18_19, SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24).build()
+            SmsJournalDatabase.MIGRATION_12_13, SmsJournalDatabase.MIGRATION_13_14, SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17, SmsJournalDatabase.MIGRATION_17_18, SmsJournalDatabase.MIGRATION_18_19, SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24, SmsJournalDatabase.MIGRATION_24_25).build()
     private fun record(f: PreparationFixture) = f.grant().let {
         SealedPreparationRecord(it.accountId, it.messageId, it.attemptId, it.unsignedDigest, it.identity())
     }
@@ -168,7 +168,7 @@ class SealedPreparationJournalTest {
             file(name).use { db ->
                 assertNotNull(db.attempts().getAttempt(r.attemptId))
                 assertEquals(0, db.sealedPreparations().count())
-                assertEquals(24, db.openHelper.readableDatabase.version)
+                assertEquals(25, db.openHelper.readableDatabase.version)
                 assertEquals(legacy, db.attempts().currentLineBinding())
                 db.sealedPreparations().reserve(r) {}
                 assertEquals(AttemptState.SUBMITTING, db.attempts().getAttempt(r.attemptId)?.state)

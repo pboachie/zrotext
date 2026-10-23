@@ -214,7 +214,7 @@ class ProtectionSetupJournalTest {
                 }
             }
             Room.databaseBuilder(app, SmsJournalDatabase::class.java, name).allowMainThreadQueries()
-                .addMigrations(SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24).build().use { db ->
+                .addMigrations(SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24, SmsJournalDatabase.MIGRATION_24_25).build().use { db ->
                     assertEquals("blocked", db.captures03().route("a".repeat(64))!!.route)
                     assertTrue(db.attempts().isRecipientSuppressed("b".repeat(64)))
                     assertNull(db.protectionSetup().command())

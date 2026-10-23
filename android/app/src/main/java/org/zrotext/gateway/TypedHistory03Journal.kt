@@ -152,6 +152,7 @@ internal abstract class TypedHistory03Dao {
     @Insert(onConflict = OnConflictStrategy.ABORT) protected abstract fun insertClock(row: TypedHistory03Request)
     @Update(onConflict = OnConflictStrategy.ABORT) protected abstract fun updateClock(row: TypedHistory03Request): Int
     @Update(onConflict = OnConflictStrategy.ABORT) protected abstract fun updateSource(row: TypedHistory03Source): Int
+    @Insert(onConflict = OnConflictStrategy.ABORT) protected abstract fun insertOutcomeReport(row: TypedOutcome03Report)
 
     @Transaction
     open fun reserveClock(expected: TypedSubmit03Record, candidate: TypedHistory03Request, current: () -> Unit): Boolean {
@@ -208,6 +209,10 @@ internal abstract class TypedHistory03Dao {
         val next = expected.copy(assertionB64url = TypedSubmit03Record.base(command.bytes()),
             assertionSha256 = TypedSubmit03Record.hex(command.commitment()), assertionClockRequestId = request.requestId)
         next.requireShape(); check(updateSource(next) == 1)
+        // The first assertion and automatic-first classification are one writer commit.
+        // Migration never supplies this classification to an old completed assertion.
+        insertOutcomeReport(TypedOutcome03Report(next.eventId, next.attemptId, next.slot,
+            checkNotNull(next.assertionSha256), automaticFirst = true))
         actual.nowFor(row, request) // RAM-only post-wait guard; any expiry rolls back the first command.
         return next
     }

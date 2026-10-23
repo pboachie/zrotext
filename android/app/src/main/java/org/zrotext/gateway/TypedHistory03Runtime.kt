@@ -5,8 +5,8 @@ import android.content.Context
 import java.util.UUID
 import java.util.concurrent.Executors
 
-/** Passive first-command producer only. Completed assertions remain local exact packets;
- * the distinct outcome/closure-proof transport and positive radio factory are separate.
+/** Passive first-command producer and exact outcome uploader. Closure-proof transport
+ * and positive radio authority remain separate.
  * No legacy AlphaPump, key operation, pin, owner or physical permission is used here. */
 internal object TypedHistory03Runtime {
     private val worker = Executors.newSingleThreadExecutor { task ->
@@ -16,9 +16,45 @@ internal object TypedHistory03Runtime {
     private val pending = TypedHistory03ScanQueue()
     private var running = false
     private var wakeVersion = 0L
+    // Explicit sync walks bounded pages. This is navigation only, never evidence/authority.
+    private var syncHost: TypedHistory03Connections.Host? = null
+    private var syncAfter = ""
+    private val syncRunning = java.util.concurrent.atomic.AtomicBoolean(false)
 
     fun connected(context: Context) = enqueue(context, null)
     fun callbackRecorded(context: Context, attempt: String) = enqueue(context, attempt)
+
+    /** A user action authorizes at most one bounded page of exact historical replays.
+     * Neither reconnect nor a passive scan is an instruction to retry uncertain I/O. */
+    fun syncSavedReports(context: Context, status: (String) -> Unit) {
+        if (!syncRunning.compareAndSet(false, true)) { status("Delivery update sync is already pending."); return }
+        val app = context.applicationContext
+        val selected = TypedHistory03Connections.current() ?: run {
+            syncRunning.set(false); status("Connect this phone to sync saved delivery updates."); return
+        }
+        worker.execute {
+            try {
+                // The explicit action keeps the actual actor selected at the click. A later
+                // connection/realm cannot adopt a queued user's sync decision.
+                val host = selected.also { it.requireCurrent() }
+                if (syncHost !== host) { syncHost = host; syncAfter = "" }
+                val journal = SmsJournalDatabase.get(app)
+                val slots = journal.typedOutcomes03().unacknowledged(host.identity.accountId, host.identity.deviceId,
+                    host.identity.originHash, TypedSubmit03Record.base(host.point()), syncAfter)
+                var acknowledged = 0
+                for (slot in slots) {
+                    syncAfter = slot
+                    val fact = journal.typedHistory03().source(slot) ?: continue
+                    try { if (TypedOutcome03Uploader.report(journal, host, fact, explicitReplay = true)) acknowledged++ }
+                    catch (_: Exception) { /* The exact original burn remains pending. */ }
+                }
+                if (slots.size < 16) syncAfter = ""
+                status(if (slots.isEmpty()) "No delivery updates are ready to sync in this page."
+                    else "$acknowledged saved delivery updates acknowledged. Unconfirmed updates stay saved; sync again to check the next page.")
+            } catch (_: Exception) { status("Delivery updates remain saved. Reconnect this phone and sync again.") }
+            finally { syncRunning.set(false) }
+        }
+    }
 
     /** The caller's genuine RAM lifetime is withdrawn synchronously BEFORE queue/writer
      * waits. This entry does not acquire a clock, sign a proof or report server success. */
@@ -61,8 +97,11 @@ internal object TypedHistory03Runtime {
                     continue
                 }
                 val traversal = synchronized(queueLock) { pending.page(host) }
-                val page = journal.typedHistory03().pendingAttempts(host.identity.accountId, host.identity.deviceId,
+                val commandPage = journal.typedHistory03().pendingAttempts(host.identity.accountId, host.identity.deviceId,
                     host.identity.originHash, TypedSubmit03Record.base(host.point()), traversal.after)
+                val reportPage = journal.typedOutcomes03().pendingAutomaticAttempts(host.identity.accountId, host.identity.deviceId,
+                    host.identity.originHash, TypedSubmit03Record.base(host.point()), traversal.after)
+                val page = (commandPage + reportPage).distinct().sorted().take(16)
                 for (attempt in page) try { prepareAttempt(journal, host, attempt) } catch (_: Exception) { /* No rearm. */ }
                 synchronized(queueLock) { pending.complete(traversal, page) }
             }
@@ -92,11 +131,15 @@ internal object TypedHistory03Runtime {
             journal.typedSubmits03().finishClosing(current, retained, request)
         }
         for (source in journal.typedHistory03().sources(attempt)) {
-            if (source.assertionB64url != null) continue
-            val current = journal.typedSubmits03().get(attempt) ?: return
-            host.requireOriginal(current)
-            val sample = freshRead(journal, host, current, source.eventId, "assertion") ?: continue
-            journal.typedHistory03().retainFirstAssertion(source, sample)
+            try {
+                val retained = if (source.assertionB64url != null) source else {
+                    val current = journal.typedSubmits03().get(attempt) ?: return
+                    host.requireOriginal(current)
+                    val sample = freshRead(journal, host, current, source.eventId, "assertion") ?: continue
+                    journal.typedHistory03().retainFirstAssertion(source, sample) ?: continue
+                }
+                TypedOutcome03Uploader.report(journal, host, retained, explicitReplay = false)
+            } catch (_: Exception) { /* No automatic replay of a possibly entered report. */ }
         }
     }
 

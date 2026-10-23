@@ -31,6 +31,9 @@ internal object TypedHistory03Connections {
         private class Pending(val request: TypedHistory03Request, val sent: Long,
             val future: CompletableFuture<Pair<TypedHistory03Wire.Reply, Pair<Long, ByteArray>>>)
         private val pending = AtomicReference<Pending?>()
+        private class OutcomePending(val entry: TypedOutcome03Entry,
+            val future: CompletableFuture<TypedOutcome03Wire.Ack>)
+        private val outcomePending = AtomicReference<OutcomePending?>()
         private var observation: TypedHistory03Clock.Sample? = null
         private var primaryFloor = 0L
         fun elapsedMs() = elapsed()
@@ -101,11 +104,53 @@ internal object TypedHistory03Connections {
                 throw failure
             }
         }
+
+        /** The same passive original actor, independent of effect-health withdrawal.
+         * A committed report envelope enters only once and conveys no current clock. */
+        fun report(entry: TypedOutcome03Entry): TypedOutcome03Wire.Ack {
+            Capture03IngressGate.requireOutside()
+            val bytes = entry.consume()
+            requireOriginal(entry.original)
+            require(entry.upload.connectionEpoch == epoch)
+            val text = Charsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes)).toString()
+            val call = OutcomePending(entry, CompletableFuture())
+            check(outcomePending.compareAndSet(null, call)) { "A passive outcome report is already pending" }
+            try {
+                // Last actual same-socket/actor check follows writer and transport waits.
+                requireOriginal(entry.original)
+                check(socket.send(text))
+                val ack = call.future.get(10, TimeUnit.SECONDS)
+                requireOriginal(entry.original)
+                return ack
+            } finally { outcomePending.compareAndSet(call, null) }
+        }
+
+        fun acceptOutcome(raw: ByteArray) {
+            requireCurrent()
+            val call = outcomePending.get() ?: return
+            val exact = raw.copyOf()
+            try {
+                val f = Profile03Json.outcomeAckObject(exact)
+                // A late original reply must not fail or settle a different pending event.
+                if (f["event_id"] != call.entry.upload.eventId) return
+                val ack = TypedOutcome03Wire.Ack.decode(exact, call.entry.original.command(),
+                    call.entry.upload.assertion(), epoch)
+                // The wire correlates the immutable event, not an individual replay nonce.
+                // A same-epoch late receipt for that SAME211 may confirm its original history;
+                // this never claims fresh I/O acceptance, time or permission.
+                requireOriginal(call.entry.original)
+                call.future.complete(ack)
+            } catch (failure: Exception) {
+                call.future.completeExceptionally(failure)
+                throw failure
+            }
+        }
         override fun close() {
             if (closed.compareAndSet(false, true)) {
                 current.compareAndSet(this, null)
                 synchronized(this) { observation = null }
                 pending.getAndSet(null)?.future?.completeExceptionally(IllegalStateException("History actor connection ended"))
+                outcomePending.getAndSet(null)?.future?.completeExceptionally(IllegalStateException("History actor connection ended"))
             }
         }
         override fun toString() = "TypedHistory03Host(passive-original-actor)"
