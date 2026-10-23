@@ -8,6 +8,7 @@ pub mod contact_content_contract;
 pub mod contact_reader_issuer;
 pub mod contact_reader_statement;
 pub mod conversation_grant03;
+pub mod conversation_profile03_effect_storage;
 pub mod conversation_profile03_grant_storage;
 pub mod conversation_profile03_storage;
 pub mod conversation_reviewed_send03_storage;
