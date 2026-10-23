@@ -504,7 +504,7 @@ DECLARE relation_name text; columns_sql text; routine record;
 BEGIN
  -- Only a completely absent earlier capability may skip this reset.
  IF NOT EXISTS(SELECT FROM pg_class WHERE relnamespace='public'::regnamespace AND (starts_with(relname::text,'hosted_runtime_entries') OR starts_with(relname::text,'hosted_runtime_requests')))
-  AND NOT EXISTS(SELECT FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname IN('hosted_runtime_native_start','hosted_runtime_native_schema_valid','hosted_runtime_identity_ready','hosted_runtime_scope','hosted_runtime_expiry','hosted_runtime_request_apply','hosted_runtime_request_remove')) THEN
+  AND NOT EXISTS(SELECT FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname IN('hosted_runtime_native_start','hosted_runtime_native_schema_valid','hosted_runtime_identity_ready','hosted_runtime_scope','hosted_runtime_expiry','hosted_runtime_request_apply','hosted_runtime_request_remove','hosted_runtime_enter')) THEN
   SELECT max(version) INTO recorded_version FROM public.schema_migrations;
   IF coalesce(recorded_version,0)>=116 THEN
    RAISE EXCEPTION 'recorded capability 116 is absent'; END IF;
@@ -520,7 +520,7 @@ BEGIN
       AND relname IN('hosted_runtime_entries','hosted_runtime_requests') AND relkind='r')<>2
   OR EXISTS(SELECT FROM pg_class WHERE relnamespace='public'::regnamespace
       AND (starts_with(relname::text,'hosted_runtime_entries') OR starts_with(relname::text,'hosted_runtime_requests')) AND relkind NOT IN('r','i'))
-  OR NOT ARRAY['hosted_runtime_native_start','hosted_runtime_native_schema_valid','hosted_runtime_identity_ready','hosted_runtime_scope','hosted_runtime_expiry','hosted_runtime_request_apply','hosted_runtime_request_remove']::text[] <@ ARRAY(SELECT proname::text FROM pg_proc
+  OR NOT ARRAY['hosted_runtime_native_start','hosted_runtime_native_schema_valid','hosted_runtime_identity_ready','hosted_runtime_scope','hosted_runtime_expiry','hosted_runtime_request_apply','hosted_runtime_request_remove','hosted_runtime_enter']::text[] <@ ARRAY(SELECT proname::text FROM pg_proc
       WHERE pronamespace='public'::regnamespace) THEN
   RAISE EXCEPTION 'partial capability 116 installation'; END IF;
  FOREACH relation_name IN ARRAY ARRAY['hosted_runtime_entries','hosted_runtime_requests'] LOOP
