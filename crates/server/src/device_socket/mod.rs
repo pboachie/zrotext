@@ -52,6 +52,7 @@ mod line_activation_v2;
 mod line_readiness;
 mod payload_profile03;
 mod preconditions;
+mod protection_origin;
 mod sealed_line_setup;
 mod sealed_session;
 mod stream_diagnostic;
@@ -296,6 +297,8 @@ pub struct DeviceSession {
 #[derive(Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 enum ClientFrame {
+    #[serde(skip)]
+    ProtectionOrigin(protection_origin::Incoming),
     #[serde(skip)]
     PayloadProfile03(payload_profile03::Incoming),
     #[serde(skip)]
@@ -943,6 +946,11 @@ async fn receive_frame(socket: &mut WebSocket, budget: &mut FrameBudget) -> Opti
                 if text.len() > MAX_FRAME_BYTES {
                     return None;
                 }
+                match protection_origin::parse(text.as_str()) {
+                    Ok(Some(frame)) => return Some(ClientFrame::ProtectionOrigin(frame)),
+                    Ok(None) => {}
+                    Err(()) => return None,
+                }
                 match payload_profile03::parse(text.as_str()) {
                     Ok(Some(frame)) => return Some(ClientFrame::PayloadProfile03(frame)),
                     Ok(None) => {}
@@ -1322,6 +1330,10 @@ async fn run_socket(
         tokio::select! {
             message = receive_frame(&mut socket, &mut frame_budget) => {
                 match message {
+                    Some(ClientFrame::ProtectionOrigin(frame)) => {
+                        let Some(policy)=conversation_policy.as_ref() else {close_with_code=Some(close_code::POLICY);break;};
+                        if protection_origin::dispatch(&mut socket,&state,actor,policy.protection_origin_digest(),frame).await.is_none(){close_with_code=Some(RETRY_LATER);break;}
+                    }
                     Some(ClientFrame::PayloadProfile03(payload_profile03::Incoming::Ready(ready)))=>{
                         if !profile03_negotiated || !profile_clock.is_sampled()
                             || !state.sealed_dispatch_enabled || !state.dispatch_runtime_enabled
