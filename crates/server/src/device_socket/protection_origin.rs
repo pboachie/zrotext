@@ -167,8 +167,8 @@ async fn opening(
 ) -> Result<Option<Row>, ()> {
     let s = actor.session();
     let row=tx.query_opt("SELECT * FROM public.device_protection_origins WHERE account_id=$1 AND device_id=$2 AND setup_id=$3 AND opening_id=$4 AND command_id=$5",&[&s.account_id,&s.device_id,&scope[0],&scope[1],&scope[2]]).await.map_err(|_|())?;
-    if let Some(row) = &row {
-        if !actor.proof().matches_point(
+    if let Some(row) = &row
+        && (!actor.proof().matches_point(
             &row.try_get::<_, Vec<u8>>("enrolled_point")
                 .map_err(|_| ())?,
         ) || row
@@ -180,10 +180,9 @@ async fn opening(
                 .try_get::<_, Vec<u8>>("origin_digest")
                 .map_err(|_| ())?
                 .as_slice()
-                != origin
-        {
-            return Err(());
-        }
+                != origin)
+    {
+        return Err(());
     }
     // Keep full actor/retirement checks after every possibly waiting lookup.
     lock(tx, actor, state).await?;
