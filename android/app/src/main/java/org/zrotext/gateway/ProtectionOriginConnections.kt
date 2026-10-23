@@ -78,6 +78,7 @@ internal object ProtectionOriginConnections {
          * storage/key lock, ingress gate, OkHttp listener or the main/UI thread. */
         fun request(command: ProtectionSetupCommand, request: ByteArray,
             association: ProtectionOriginProof.Association? = null,
+            beforeSend: () -> Unit,
             expected: (ProtectionOriginWire.Reply) -> Boolean): Received {
             Capture03IngressGate.requireOutside()
             require(request.size <= ProtectionOriginJson.MAX_BYTES)
@@ -87,8 +88,13 @@ internal object ProtectionOriginConnections {
             val call = Pending(command, association, expected, sent, CompletableFuture())
             check(pending.compareAndSet(null, call)) { "An original setup request is already pending" }
             try {
+                val text = Charsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(ownedRequest)).toString()
                 requireCurrent()
-                check(socket.send(Charsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(ownedRequest)).toString()))
+                // Actual transport entry comes AFTER any caller's Room COMMIT/read and all
+                // entry/encoding work. Socket identity alone cannot preserve an old user's
+                // foreground decision. This guard must be RAM-only and never wait on keys.
+                beforeSend()
+                check(socket.send(text))
                 val (reply, received) = call.future.get(10, TimeUnit.SECONDS)
                 requireCurrent()
                 return Received(reply, sent, received.first, this, received.second).also { lastObservation.set(it) }

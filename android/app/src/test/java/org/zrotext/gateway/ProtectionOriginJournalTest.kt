@@ -177,7 +177,7 @@ class ProtectionOriginJournalTest {
             parameter("enrolled_point"), 9).use { socket ->
             val nonce = UUID.randomUUID(); val proofId = UUID.fromString(old.proofRequestId)
             val received = socket.host.request(prepared.command, ProtectionOriginWire.status(prepared.command, 9, nonce, proofId),
-                prepared.association) { it is ProtectionOriginWire.Status && it.requestId == nonce && it.proofRequestId == proofId }
+                prepared.association, beforeSend = {}) { it is ProtectionOriginWire.Status && it.requestId == nonce && it.proofRequestId == proofId }
             val next = candidate(prepared).copy(proofRequestId = id(90), absentPreviousProofRequestId = old.proofRequestId)
             val witness = received.laterMissing(old)
             assertEquals(next, dao.reserveAfterLaterMissing(prepared, old, next, witness) {})
@@ -238,6 +238,42 @@ class ProtectionOriginJournalTest {
         assertThrows(IllegalArgumentException::class.java) { dao.enterSignature(retained, true, 3_000_011) {} }
         assertEquals(listOf(next.proofRequestId), dao.unresolved().map { it.proofRequestId })
         assertNull(dao.installed()); assertNull(dao.protection())
+    }
+
+    @Test fun withdrawalAfterProofBurnDuringTransportEntrySendsNothingAndPreservesOriginalRequest() = memory().use { db ->
+        val prepared = opened(db); val dao = db.protectionOrigins()
+        val row = dao.reserve(prepared, candidate(prepared)) {}
+        val frame = originalRequest(); var foreground = true
+        assertTrue(dao.enterRequest(row, 7, frame) { check(foreground) })
+        ProtectionOriginSocketFixture(EvidenceIdentity(original().accountId, original().deviceId, original().originSha256),
+            parameter("enrolled_point"), 7).use { socket ->
+            // The original Room commit completed while foreground. Withdrawal happens
+            // during subsequent entry work, before the real socket.send boundary.
+            socket.actorCheck = { foreground = false }
+            assertThrows(IllegalStateException::class.java) {
+                socket.host.request(prepared.command, frame, prepared.association, beforeSend = { check(foreground) }) { true }
+            }
+            assertEquals(0, socket.sentCount)
+            val retained = dao.attempt(row.proofRequestId)!!
+            assertEquals(7L, retained.requestEpoch); assertEquals(encode(frame), retained.requestB64url)
+            assertNull(retained.coreB64url); assertNull(retained.deviceEnteredMs)
+            assertEquals(4, db.protectionSetup().providers().size); assertNull(dao.installed())
+        }
+    }
+
+    @Test fun withdrawalAfterOpeningBurnDuringTransportEntrySendsNothingAndCreatesNoProvider() = memory().use { db ->
+        val setup = db.protectionSetup(); var foreground = true
+        val command = setup.openingWillBeSubmitted(setup.reserveCommand(original()) { check(foreground) }) { check(foreground) }
+        ProtectionOriginSocketFixture(EvidenceIdentity(original().accountId, original().deviceId, original().originSha256),
+            parameter("enrolled_point"), 7).use { socket ->
+            socket.actorCheck = { foreground = false }
+            assertThrows(IllegalStateException::class.java) {
+                socket.host.request(command, ProtectionOriginWire.open(command, 7), beforeSend = { check(foreground) }) { true }
+            }
+            assertEquals(0, socket.sentCount); assertTrue(setup.command()!!.openingSubmitted)
+            assertNull(setup.command()!!.openingCandidateB64url); assertTrue(setup.providers().isEmpty())
+            assertNull(db.protectionOrigins().installed()); assertNull(db.protectionOrigins().protection())
+        }
     }
 
     private fun header(type: String) = linkedMapOf<String, Any>("v" to ProtectionOriginJson.Integer(1), "type" to type,

@@ -37,7 +37,7 @@ class ProtectionOriginConnectionsTest {
         EvidenceIdentity(command().accountId, command().deviceId, command().originSha256), bytes("enrolled_point"), epoch)
     private fun status(socket: ProtectionOriginSocketFixture): ProtectionOriginConnections.Received {
         val nonce = UUID.randomUUID(); val command = command(); val proof = UUID.fromString(pending().proofRequestId)
-        return socket.host.request(command, ProtectionOriginWire.status(command, socket.host.epoch, nonce, proof), association()) {
+        return socket.host.request(command, ProtectionOriginWire.status(command, socket.host.epoch, nonce, proof), association(), beforeSend = {}) {
             it is ProtectionOriginWire.Status && it.requestId == nonce && it.proofRequestId == proof
         }
     }
@@ -80,11 +80,15 @@ internal class ProtectionOriginSocketFixture(identity: EvidenceIdentity, point: 
     lateinit var host: ProtectionOriginConnections.Host
         private set
     var beforeCorrect: (Map<String, Any>) -> Unit = {}
+    var actorCheck: () -> Unit = {}
+    var sentCount = 0
+        private set
     private val socket = object : WebSocket {
         override fun request(): Request = Request.Builder().url("https://gateway.example.test/").build()
         override fun queueSize() = 0L
         override fun send(bytes: ByteString) = error("Binary setup frame refused")
         override fun send(text: String): Boolean {
+            sentCount++
             val request = ProtectionOriginJson.objectValue(text.toByteArray())
             beforeCorrect(request)
             host.accept(ProtectionOriginJson.render(reply(request)))
@@ -93,7 +97,7 @@ internal class ProtectionOriginSocketFixture(identity: EvidenceIdentity, point: 
         override fun close(code: Int, reason: String?) = true
         override fun cancel() = Unit
     }
-    init { host = ProtectionOriginConnections.register(socket, identity, epoch, point) {} }
+    init { host = ProtectionOriginConnections.register(socket, identity, epoch, point) { actorCheck() } }
     fun reply(request: Map<String, Any>) = request.filterKeys { it in setOf("v", "connection_epoch", "setup_id", "opening_id", "command_id", "request_id", "proof_request_id") }
         .toMutableMap().apply {
             put("type", "protection_origin_status"); put("status", "not_found")

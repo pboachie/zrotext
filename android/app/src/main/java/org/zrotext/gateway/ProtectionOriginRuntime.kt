@@ -26,7 +26,8 @@ internal class ProtectionOriginRuntime(private val context: Context) {
         val db = SmsJournalDatabase.get(context); val setup = db.protectionSetup(); val dao = db.protectionOrigins()
         val keys = ProtectionOriginKeys(context)
         val current = {
-            check(decision.isCurrent()); host.requireCurrent(); InboundProtectionHealth.checked(health); Unit
+            check(decision.isCurrent()); host.requireCurrent(); InboundProtectionHealth.checked(health)
+            check(decision.isCurrent()); Unit
         }
         current(); InboundProtectionFaultJournal.requireReadable(context, false)
         check(dao.protection()?.blocked != true) { "Saved withdrawal needs recovery" }
@@ -53,20 +54,20 @@ internal class ProtectionOriginRuntime(private val context: Context) {
         val opening: ProtectionOriginWire.Opening
         if (!original.openingSubmitted) {
             original = setup.openingWillBeSubmitted(original, current)
-            val reply = host.request(original, ProtectionOriginWire.open(original, host.epoch)) {
+            val reply = host.request(original, ProtectionOriginWire.open(original, host.epoch), beforeSend = current) {
                 it is ProtectionOriginWire.Opened
             }
             current(); opening = (reply.reply as ProtectionOriginWire.Opened).opening
         } else {
             val nonce = UUID.randomUUID()
-            val reply = host.request(original, ProtectionOriginWire.status(original, host.epoch, nonce, null)) {
+            val reply = host.request(original, ProtectionOriginWire.status(original, host.epoch, nonce, null), beforeSend = current) {
                 it is ProtectionOriginWire.Status && it.requestId == nonce && it.proofRequestId == null
             }
             current()
             val status = reply.reply as ProtectionOriginWire.Status
             if (status.state == "not_found") {
                 // Retrying the SAME opening is idempotent; no new original command/nonce.
-                opening = (host.request(original, ProtectionOriginWire.open(original, host.epoch)) {
+                opening = (host.request(original, ProtectionOriginWire.open(original, host.epoch), beforeSend = current) {
                     it is ProtectionOriginWire.Opened
                 }.reply as ProtectionOriginWire.Opened).opening
             } else opening = checkNotNull(status.opening)
@@ -128,7 +129,7 @@ internal class ProtectionOriginRuntime(private val context: Context) {
             check(dao.enterRequest(pending, host.epoch, request, current))
             pending = checkNotNull(dao.attempt(pending.proofRequestId))
             val proofId = UUID.fromString(pending.proofRequestId)
-            val reply = host.request(original, request, prepared.association) {
+            val reply = host.request(original, request, prepared.association, beforeSend = current) {
                 it is ProtectionOriginWire.ProofChallenge && it.challenge.proofRequestId == proofId
             }
             current()
@@ -157,7 +158,7 @@ internal class ProtectionOriginRuntime(private val context: Context) {
         check(dao.enterProofSubmission(pending, current)); pending = checkNotNull(dao.attempt(pending.proofRequestId))
         signingCurrent()
         val proofId = UUID.fromString(pending.proofRequestId)
-        host.request(original, ProtectionOriginWire.proof(original, host.epoch, proofId, bundle), prepared.association) {
+        host.request(original, ProtectionOriginWire.proof(original, host.epoch, proofId, bundle), prepared.association, beforeSend = current) {
             it is ProtectionOriginWire.Accepted && it.proofRequestId == proofId && it.attemptId == bundle.core.attemptId
         }.also { (it.reply as ProtectionOriginWire.Accepted).receipt.requireMatches(bundle) }
         current()
@@ -168,7 +169,7 @@ internal class ProtectionOriginRuntime(private val context: Context) {
     private fun readStatus(host: ProtectionOriginConnections.Host, command: ProtectionSetupCommand,
         attempt: ProtectionOriginAttempt, prepared: ProtectionOriginPrepared, current: () -> Unit): ProtectionOriginConnections.Received {
         current(); val nonce = UUID.randomUUID(); val proof = UUID.fromString(attempt.proofRequestId)
-        val received = host.request(command, ProtectionOriginWire.status(command, host.epoch, nonce, proof), prepared.association) {
+        val received = host.request(command, ProtectionOriginWire.status(command, host.epoch, nonce, proof), prepared.association, beforeSend = current) {
             it is ProtectionOriginWire.Status && it.requestId == nonce && it.proofRequestId == proof
         }
         current()
