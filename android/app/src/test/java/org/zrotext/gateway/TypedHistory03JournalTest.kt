@@ -215,7 +215,7 @@ class TypedHistory03JournalTest {
     }
 
     @Test fun additiveMigrationRetainsOldOriginAndOrderAsUnknownInsteadOfAdoptingTheReportingHost() {
-        val name = "thm23-${UUID.randomUUID().toString().take(10)}"
+        val name = "history23-${UUID.randomUUID().toString().take(10)}"
         fun open() = Room.databaseBuilder(app, SmsJournalDatabase::class.java, name).allowMainThreadQueries()
             .addMigrations(SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24).build()
         try {
