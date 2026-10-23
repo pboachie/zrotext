@@ -91,7 +91,8 @@ async fn database_fetch_bytes_equal_independent_existing_grant_codec() {
         "authenticated_segment_ceiling".to_owned(),
         wire["segment_count"].clone(),
     );
-    let actual:Vec<u8>=f.owner.query_one("SELECT public.conversation_profile03_effect_fetch(pg_catalog.jsonb_populate_record(NULL::public.conversation_profile03_grants,$1::jsonb))",&[&Value::Object(row)]).await.unwrap().get(0);
+    let row_json = Value::Object(row).to_string();
+    let actual:Vec<u8>=f.owner.query_one("SELECT public.conversation_profile03_effect_fetch(pg_catalog.jsonb_populate_record(NULL::public.conversation_profile03_grants,$1::text::jsonb))",&[&row_json]).await.unwrap().get(0);
     assert_eq!(actual, grant.fetch_transcript());
     assert_eq!(actual.len(), 362);
     f.finish().await;

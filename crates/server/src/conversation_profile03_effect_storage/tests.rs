@@ -279,7 +279,10 @@ fn every_predecessor_tuple_pins_the_latest_exact_source_body() {
             if let Some(body) = body {
                 latest.insert(
                     name.clone(),
-                    format!("{:x}", Sha256::digest(body.as_bytes())),
+                    Sha256::digest(body.as_bytes())
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>(),
                 );
             }
         }
