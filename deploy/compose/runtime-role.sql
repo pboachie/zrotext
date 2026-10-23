@@ -394,4 +394,31 @@ BEGIN
  END LOOP;
 END;
 $migration$;
+
+-- First-origin ledgers are readable history, never direct writable authority.
+DO $migration$
+DECLARE relation_name text;columns_sql text;routine record;
+BEGIN
+ FOREACH relation_name IN ARRAY ARRAY['device_protection_origins','device_protection_associations','device_protection_attempts','device_protection_receipts','device_protection_retirements'] LOOP
+  EXECUTE format('REVOKE ALL ON TABLE public.%I FROM PUBLIC',relation_name);
+  SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) INTO columns_sql FROM pg_attribute
+   WHERE attrelid=format('public.%I',relation_name)::regclass AND attnum>0 AND NOT attisdropped;
+  EXECUTE format('REVOKE ALL (%s) ON TABLE public.%I FROM PUBLIC',columns_sql,relation_name);
+  IF EXISTS(SELECT FROM pg_roles WHERE rolname='zrotext_runtime') THEN
+   EXECUTE format('REVOKE ALL ON TABLE public.%I FROM zrotext_runtime',relation_name);
+   EXECUTE format('REVOKE ALL (%s) ON TABLE public.%I FROM zrotext_runtime',columns_sql,relation_name);
+   EXECUTE format('GRANT SELECT ON TABLE public.%I TO zrotext_runtime',relation_name);
+  END IF;
+ END LOOP;
+ FOR routine IN SELECT p.oid::regprocedure AS signature,p.proname FROM pg_proc p
+  WHERE p.pronamespace='public'::regnamespace AND p.proname LIKE 'device_protection_%' LOOP
+  EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',routine.signature);
+  IF EXISTS(SELECT FROM pg_roles WHERE rolname='zrotext_runtime') THEN
+   EXECUTE format('REVOKE ALL ON FUNCTION %s FROM zrotext_runtime',routine.signature);
+   IF routine.proname IN('device_protection_lock','device_protection_open','device_protection_attempt','device_protection_accept','device_protection_ready') THEN
+    EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO zrotext_runtime',routine.signature); END IF;
+  END IF;
+ END LOOP;
+END;
+$migration$;
 COMMIT;

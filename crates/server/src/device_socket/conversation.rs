@@ -23,6 +23,9 @@ pub(super) struct Negotiated {
     deployment_epoch: i64,
 }
 impl Policy {
+    pub(super) fn protection_origin_digest(&self) -> [u8; 32] {
+        self.origin_hash
+    }
     pub(super) fn new(origin: &str) -> Result<Self, &'static str> {
         let url = url::Url::parse(origin).map_err(|_| "Conversation WSS origin invalid")?;
         if url.scheme() != "wss"

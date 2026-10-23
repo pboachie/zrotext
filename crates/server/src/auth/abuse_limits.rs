@@ -321,6 +321,48 @@ pub(crate) async fn consume_payload_profile(
     .await
 }
 
+/// Separately committed ordinary device-control admission. A raw UUID or
+/// owner Principal cannot supply the verified socket actor required here.
+pub(crate) async fn consume_device_protection(
+    tx: &Transaction<'_>,
+    hasher: &TokenHasher,
+    actor: &crate::enrollment::VerifiedDevice,
+    mutation: bool,
+) -> Result<bool, tokio_postgres::Error> {
+    let limit = if mutation {
+        Limit::PayloadProfileManage
+    } else {
+        Limit::PayloadProfileRead
+    };
+    let subject = format!(
+        "protection-origin:{}:{}",
+        actor.identity().account_id,
+        actor
+            .signing_key_id()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    );
+    let hash = subject_hash(hasher, limit, &subject, Lane::Verified)
+        .expect("device control policy has a subject");
+    let (scope, _, _, _) = limit.policy();
+    let (maximum, seconds) = limit
+        .subject_policy(Lane::Verified)
+        .expect("device control policy has a bound");
+    Ok(tx
+        .query_typed_one(
+            "SELECT public.auth_abuse_consume($1,$2,NULL::bytea,$3,$4,0,0)",
+            &[
+                (&scope, Type::TEXT),
+                (&&hash[..], Type::BYTEA),
+                (&maximum, Type::INT4),
+                (&seconds, Type::INT4),
+            ],
+        )
+        .await?
+        .get(0))
+}
+
 /// Profile03 fetch uses only the closed public installation. The anonymous
 /// route has no device subject: public UUIDs cannot spend a real device's
 /// share. Only a separately verified enrolled signature may name that subject.
