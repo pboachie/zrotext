@@ -168,6 +168,46 @@ class RuntimeRoleFixture:
         return self.sql((COMPOSE / "runtime-role.sql").read_text(encoding="utf-8"), **kwargs)
 
 class RuntimeRoleTest(RuntimeRoleFixture, unittest.TestCase):
+    # Historical role/default-grant coverage through registration-browser107.
+    # This fixture deliberately has no genuine numbered/checksummed ledger.
+    # Current118 coverage uses the real migrator and stock verifier in
+    # crates/delivery-store/src/current_schema_tests.rs, including CI's actual
+    # ignored PostgreSQL test lane. Never fake ledger rows to pass108 guards.
+    migration_limit = 107
+
+    def test_partial_or_recorded_protection_graph_refuses_without_committing_grants(self):
+        self.provision()
+        catalog = """SELECT json_agg(json_build_array(c.relname,c.relacl::text,
+          (SELECT json_agg(json_build_array(a.attname,a.attacl::text) ORDER BY a.attnum)
+           FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped))
+          ORDER BY c.relname COLLATE "C")::text FROM pg_class c
+          WHERE c.relnamespace='public'::regnamespace AND c.relkind IN('r','p','v','m','f');"""
+        cases = (
+            ("CREATE TABLE public.device_protection_origins(id integer);",
+             "DROP TABLE public.device_protection_origins;"),
+            ("CREATE FUNCTION public.device_protection_ready() RETURNS boolean LANGUAGE sql AS 'SELECT true';",
+             "DROP FUNCTION public.device_protection_ready();"),
+            ("CREATE VIEW public.device_protection_unknown AS SELECT 1 AS id;",
+             "DROP VIEW public.device_protection_unknown;"),
+            ("INSERT INTO public.schema_migrations(version) VALUES(118);",
+             "DELETE FROM public.schema_migrations WHERE version=118;"),
+            ("CREATE TABLE public.payload_profile_writer_catalog(singleton boolean,migration_version bigint);"
+             "INSERT INTO public.payload_profile_writer_catalog VALUES(true,118);",
+             "DROP TABLE public.payload_profile_writer_catalog;"),
+        )
+        for setup, cleanup in cases:
+            with self.subTest(setup=setup.split()[1]):
+                self.sql(setup)
+                try:
+                    before = self.sql(catalog).stdout
+                    self.provision(success=False)
+                    if before != self.sql(catalog).stdout:
+                        self.fail("Partial-graph provisioning changed existing privilege state")
+                finally:
+                    self.sql(cleanup)
+                self.provision()
+                self.sql((COMPOSE / "verify_runtime_role.sql").read_text(encoding="utf-8"), runtime=True)
+
     def test_registration_trigger_permission_is_repaired_after_reprovisioning(self):
         self.provision()
         self.sql("GRANT EXECUTE ON FUNCTION public.registration_browser_intent_binding_guard() "
