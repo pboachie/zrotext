@@ -50,6 +50,7 @@
         ? `Conversation: ${s.peer}. Original expiry: ${new Date(Number(s.expiresMs)).toLocaleString()}. Additional selected readers: ${s.readerCount}.` : "";
       if (s && messages[s.phase]) el("interval-status").textContent = messages[s.phase];
       if (el("interval-message-body")) {
+        el("interval-message-composer").hidden = !s || s.closed;
         el("interval-message-body").disabled = waiting || !s || s.closed || !s.verifiedActive;
         el("interval-message-ceiling").disabled = waiting || !s || s.closed || !s.verifiedActive;
         el("interval-message-review").disabled = waiting || !s || s.closed || !s.verifiedActive;

@@ -147,14 +147,14 @@
       <button id="interval-stop" type="button" hidden>Stop this consent</button>
       <button id="interval-close" type="button" hidden>Close setup</button>
       <p id="interval-status" role="status" aria-live="polite">Recover verified profile history and browser key approval above, then continue here. No request is repeated automatically.</p>
-      <fieldset><legend>Message this approved conversation</legend>
-        <label>Message text <textarea id="interval-message-body" rows="3" maxlength="32768" autocomplete="off" spellcheck="false" disabled></textarea></label>
+      <fieldset id="interval-message-composer" hidden><legend>Message this approved conversation</legend>
+        <label>Conversation message text <textarea id="interval-message-body" rows="3" maxlength="32768" autocomplete="off" spellcheck="false" disabled></textarea></label>
         <label>Maximum SMS segments <select id="interval-message-ceiling" disabled><option value="1">1 segment</option><option value="2">2 segments</option><option value="3">3 segments</option><option value="4">4 segments</option><option value="5">5 segments</option><option value="6">6 segments</option></select></label>
-        <button id="interval-message-review" type="button" disabled>Review message</button>
+        <button id="interval-message-review" type="button" disabled>Review conversation message</button>
         <section id="interval-message-confirmation" hidden aria-label="Confirm exact message">
           <p id="interval-message-review-summary"></p><pre id="interval-message-review-body" tabindex="0"></pre>
-          <button id="interval-message-confirm" type="button" disabled>Confirm this send</button>
-          <button id="interval-message-cancel" type="button">Cancel review</button>
+          <button id="interval-message-confirm" type="button" disabled>Send reviewed message</button>
+          <button id="interval-message-cancel" type="button">Cancel message review</button>
         </section>
         <p id="interval-message-status" role="status" aria-live="polite">Messages need installed conversation consent and a separate review. Saved attempts never send automatically.</p>
         <details><summary>Saved message attempts</summary>

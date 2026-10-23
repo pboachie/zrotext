@@ -51,7 +51,8 @@ test("only proven expired unsent state offers a fresh explicit opening without r
   assert.equal(f.calls.filter(v => v && typeof v === "object" && "durationMs" in v).length, 0);
 });
 test("message UI keeps exact text and SMS limit explicit, and editing withdraws the previous review", async () => {
-  const f = fixture(); await f.click("interval-open"); assert.equal(f.el("interval-message-review").disabled, true);
+  const f = fixture(); assert.equal(f.el("interval-message-composer").hidden, true);
+  await f.click("interval-open"); assert.equal(f.el("interval-message-composer").hidden, false); assert.equal(f.el("interval-message-review").disabled, true);
   f.state({ verifiedActive: true }); f.el("interval-message-body").value = "  Synthetic exact text\n"; f.el("interval-message-ceiling").value = "2";
   await f.click("interval-message-review"); assert.deepEqual(f.calls.at(-1), { reviewMessage: { content: "  Synthetic exact text\n", smsCeiling: 2 } });
   assert.equal(f.el("interval-message-review-body").textContent, "  Synthetic exact text\n"); assert.match(f.el("interval-message-review-summary").textContent, /At most 2 SMS/);
@@ -68,4 +69,5 @@ test("saved attempts use explicit bounded pages and check the original ID withou
   await f.click("interval-message-next"); assert.deepEqual(f.calls.at(-1), { messageHistory: { afterMessageId: "synthetic-next", limit: 16 } });
   assert.equal(f.el("interval-message-next").hidden, true); assert.equal(f.calls.includes("confirmMessage"), false); assert.equal(f.calls.some(v => v?.reviewMessage), false);
   f.state({ closed: true }); assert.deepEqual(f.el("interval-message-attempts").children, []); assert.equal(f.el("interval-message-review-body").textContent, "");
+  assert.equal(f.el("interval-message-composer").hidden, true);
 });
