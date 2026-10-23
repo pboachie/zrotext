@@ -189,7 +189,7 @@ class JournalDeviceUpgradeTest {
             "index_typed_callback03_attemptId_segmentIndex_delivery_resultCode_deliveryStatus", "index_typed_callback03_attemptId_arrivalOrdinal",
             "index_typed_history03_sources_eventId", "index_typed_history03_sources_attemptId",
             "index_typed_history03_clocks_attemptId", "index_typed_history03_clocks_subjectId", "index_typed_submit03_requests_eventId",
-            "index_typed_outcome03_reports_attemptId", "index_typed_outcome03_uploads_eventId", "index_typed_outcome03_uploads_attemptId"), indexes)
+            "index_typed_outcome03_reports_attemptId", "index_typed_outcome03_uploads_eventId_ackB64url", "index_typed_outcome03_uploads_attemptId"), indexes)
         return db.query("SELECT identity_hash FROM room_master_table WHERE id = 42").use { cursor ->
             assertEquals(1, cursor.count)
             assertTrue(cursor.moveToFirst())

@@ -27,7 +27,7 @@ internal data class TypedOutcome03Report(@PrimaryKey val eventId: String, val at
 
 /** Every transport invocation has a permanently retained envelope burn. Reconnection may
  * change only its outer epoch: original211, source event and assertion time never change. */
-@Entity(tableName = "typed_outcome03_uploads", indices = [Index("eventId"), Index("attemptId")])
+@Entity(tableName = "typed_outcome03_uploads", indices = [Index(value = ["eventId", "ackB64url"]), Index("attemptId")])
 internal data class TypedOutcome03Upload(@PrimaryKey val requestId: String, val eventId: String,
     val attemptId: String, val sourceSlot: String, val submitCommandSha256: String,
     val assertionB64url: String, val assertionSha256: String, val originSha256: String,
@@ -69,8 +69,12 @@ internal abstract class TypedOutcome03Dao {
     abstract fun report(event: String): TypedOutcome03Report?
     @Query("SELECT * FROM typed_outcome03_uploads WHERE requestId = :id")
     abstract fun get(id: String): TypedOutcome03Upload?
-    @Query("SELECT * FROM typed_outcome03_uploads WHERE eventId = :event ORDER BY requestId")
-    abstract fun uploads(event: String): List<TypedOutcome03Upload>
+    @Query("SELECT * FROM typed_outcome03_uploads WHERE eventId = :event AND requestId > :after ORDER BY requestId LIMIT 16")
+    abstract fun uploads(event: String, after: String = ""): List<TypedOutcome03Upload>
+    @Query("SELECT EXISTS(SELECT 1 FROM typed_outcome03_uploads WHERE eventId = :event)")
+    protected abstract fun hasUpload(event: String): Boolean
+    @Query("SELECT EXISTS(SELECT 1 FROM typed_outcome03_uploads WHERE eventId = :event AND ackB64url IS NOT NULL)")
+    protected abstract fun hasAcknowledgment(event: String): Boolean
     @Query("SELECT f.slot FROM typed_history03_sources f JOIN typed_submit03 s ON s.attemptId=f.attemptId WHERE s.accountId=:account AND s.deviceId=:device AND s.originalOriginSha256=:origin AND s.originalEnrolledPoint=:point AND f.assertionB64url IS NOT NULL AND f.slot>:after AND NOT EXISTS(SELECT 1 FROM typed_outcome03_uploads u WHERE u.eventId=f.eventId AND u.ackB64url IS NOT NULL) ORDER BY f.slot LIMIT 16")
     abstract fun unacknowledged(account: String, device: String, origin: String, point: String, after: String): List<String>
     @Query("SELECT DISTINCT s.attemptId FROM typed_submit03 s JOIN typed_history03_sources f ON f.attemptId=s.attemptId JOIN typed_outcome03_reports r ON r.eventId=f.eventId WHERE s.accountId=:account AND s.deviceId=:device AND s.originalOriginSha256=:origin AND s.originalEnrolledPoint=:point AND s.attemptId>:after AND r.automaticFirst=1 AND f.assertionB64url IS NOT NULL AND NOT EXISTS(SELECT 1 FROM typed_outcome03_uploads u WHERE u.eventId=f.eventId) ORDER BY s.attemptId LIMIT 16")
@@ -95,9 +99,9 @@ internal abstract class TypedOutcome03Dao {
         val actual = submit(expected.attemptId) ?: return null
         if (actual != expected || source(fact.slot) != fact || get(candidate.requestId) != null) return null
         fact.requireRaw(actual.command(), callbacks(actual.attemptId))
-        val prior = uploads(fact.eventId)
-        for (old in prior) old.requireOriginal(actual, fact)
-        if (prior.any { it.ackB64url != null } || !explicitReplay && prior.isNotEmpty()) return null
+        // The immutable source/report pins the exact packet. Indexed existence predicates
+        // avoid loading an unbounded lifetime of old transport burns under the writer.
+        if (hasAcknowledgment(fact.eventId) || !explicitReplay && hasUpload(fact.eventId)) return null
         val retained = report(fact.eventId)
         retained?.requireSource(fact)
         if (!explicitReplay && retained?.automaticFirst != true) return null

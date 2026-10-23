@@ -961,7 +961,7 @@ abstract class SmsJournalDatabase : RoomDatabase() {
                 db.execSQL("CREATE TABLE IF NOT EXISTS typed_outcome03_reports (eventId TEXT NOT NULL, attemptId TEXT NOT NULL, sourceSlot TEXT NOT NULL, assertionSha256 TEXT NOT NULL, automaticFirst INTEGER NOT NULL, PRIMARY KEY(eventId))")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_typed_outcome03_reports_attemptId ON typed_outcome03_reports(attemptId)")
                 db.execSQL("CREATE TABLE IF NOT EXISTS typed_outcome03_uploads (requestId TEXT NOT NULL, eventId TEXT NOT NULL, attemptId TEXT NOT NULL, sourceSlot TEXT NOT NULL, submitCommandSha256 TEXT NOT NULL, assertionB64url TEXT NOT NULL, assertionSha256 TEXT NOT NULL, originSha256 TEXT NOT NULL, originalEnrolledPoint TEXT NOT NULL, connectionEpoch INTEGER NOT NULL, requestB64url TEXT NOT NULL, ackB64url TEXT, PRIMARY KEY(requestId))")
-                db.execSQL("CREATE INDEX IF NOT EXISTS index_typed_outcome03_uploads_eventId ON typed_outcome03_uploads(eventId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_typed_outcome03_uploads_eventId_ackB64url ON typed_outcome03_uploads(eventId, ackB64url)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_typed_outcome03_uploads_attemptId ON typed_outcome03_uploads(attemptId)")
             }
         }

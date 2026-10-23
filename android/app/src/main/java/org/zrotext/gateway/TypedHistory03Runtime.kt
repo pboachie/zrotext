@@ -49,8 +49,8 @@ internal object TypedHistory03Runtime {
                     catch (_: Exception) { /* The exact original burn remains pending. */ }
                 }
                 if (slots.size < 16) syncAfter = ""
-                status(if (slots.isEmpty()) "No delivery updates are ready to sync in this page."
-                    else "$acknowledged saved delivery updates acknowledged. Unconfirmed updates stay saved; sync again to check the next page.")
+                status(if (slots.isEmpty()) "No saved delivery updates to sync."
+                    else "Synced $acknowledged delivery updates. Unconfirmed updates remain saved.")
             } catch (_: Exception) { status("Delivery updates remain saved. Reconnect this phone and sync again.") }
             finally { syncRunning.set(false) }
         }
