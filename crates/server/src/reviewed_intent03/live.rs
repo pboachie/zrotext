@@ -15,15 +15,69 @@ type Result<T> = std::result::Result<T, Error>;
 mod billing;
 pub(crate) mod execution;
 
+// Version is selected from the immutable, closed storage discriminator, never
+// guessed by trying several decoders. Only V2 is eligible for new effects.
+enum OriginalIntent03 {
+    V1(Intent03),
+    V2(v2::Intent03V2),
+}
+impl OriginalIntent03 {
+    fn parse(version: i16, bytes: &[u8]) -> Result<Self> {
+        match version {
+            1 => Intent03::decode(bytes).map(Self::V1),
+            2 => v2::Intent03V2::decode(bytes).map(Self::V2),
+            _ => return Err(Error::Unsupported),
+        }
+        .map_err(|_| Error::Unsupported)
+    }
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Self::V1(v) => v.bytes(),
+            Self::V2(v) => v.bytes(),
+        }
+    }
+    fn common(&self) -> ReviewParts03<'_> {
+        match self {
+            Self::V1(v) => ReviewParts03 {
+                ids: &v.ids,
+                numbers: &v.numbers,
+                digests: v.digests[..10].try_into().unwrap(),
+                peer: &v.peer,
+                recipients: &v.recipients,
+            },
+            Self::V2(v) => ReviewParts03 {
+                ids: &v.ids,
+                numbers: &v.numbers,
+                digests: &v.digests,
+                peer: &v.peer,
+                recipients: &v.recipients,
+            },
+        }
+    }
+    fn ceiling(&self) -> u8 {
+        match self {
+            Self::V1(v) => v.sms_ceiling(),
+            Self::V2(v) => v.sms_ceiling(),
+        }
+    }
+    fn historical_body(&self) -> Option<&[u8; 32]> {
+        match self {
+            Self::V1(v) => Some(&v.digests[10]),
+            Self::V2(_) => None,
+        }
+    }
+}
+
 /// Immutable replay identity survives permitted content redaction. These
 /// structural fields grant no permission and cannot restore erased originals.
 struct StoredSend03 {
+    intent_version: i16,
     ids: [Uuid; 8],
     numbers: [u64; 8],
-    digests: [[u8; 32]; 11],
+    digests: [[u8; 32]; 10],
     intent_hash: [u8; 32],
     signature_hash: [u8; 32],
-    originals: Option<(Intent03, [u8; 64])>,
+    originals: Option<(OriginalIntent03, [u8; 64])>,
     ceiling: u8,
     admitted: u64,
     permission_deadline: u64,
@@ -45,8 +99,17 @@ fn fixed<const N: usize>(row: &Row, name: &str) -> Result<[u8; N]> {
         .try_into()
         .map_err(|_| Error::Unsupported)
 }
+fn redacted_body_allowed(version: i16, body: Option<&[u8]>) -> bool {
+    match (version, body) {
+        (1 | 2, None) => true,
+        // Already-redacted114 V1 tombstones retain this immutable field. It is
+        // discarded here and never reconstructed into originals or permission.
+        (1, Some(value)) => value.len() == 32,
+        _ => false,
+    }
+}
 async fn ready(tx: &Transaction<'_>) -> Result<()> {
-    crate::conversation_reviewed_send03_storage::require(tx)
+    crate::conversation_reviewed_send03_storage::require_v2(tx)
         .await
         .map_err(|_| Error::Unavailable)
 }
@@ -59,6 +122,10 @@ fn store_error(error: StoreError) -> Error {
 }
 impl StoredSend03 {
     fn from_row(r: &Row) -> Result<Self> {
+        let intent_version: i16 = r.try_get("intent_version")?;
+        if ![1, 2].contains(&intent_version) {
+            return Err(Error::Unsupported);
+        }
         let mut ids = [Uuid::nil(); 8];
         for (value, name) in ids.iter_mut().zip([
             "account_id",
@@ -88,7 +155,7 @@ impl StoredSend03 {
         ]) {
             *value = time(r.try_get(name)?)?;
         }
-        let mut digests = [[0; 32]; 11];
+        let mut digests = [[0; 32]; 10];
         for (value, name) in digests.iter_mut().zip([
             "selected_reader_key_id",
             "root_fingerprint",
@@ -100,7 +167,6 @@ impl StoredSend03 {
             "signer_key_id",
             "envelope_sha256",
             "unsigned_digest",
-            "body_digest",
         ]) {
             *value = fixed(r, name)?;
             if *value == [0; 32] {
@@ -109,6 +175,10 @@ impl StoredSend03 {
         }
         let intent_hash = fixed(r, "intent_sha256")?;
         let signature_hash = fixed(r, "signature_sha256")?;
+        let historical_body: Option<Vec<u8>> = r.try_get("body_digest")?;
+        if intent_version == 2 && historical_body.is_some() {
+            return Err(Error::Unsupported);
+        }
         let ceiling = u8::try_from(r.try_get::<_, i16>("authenticated_segment_ceiling")?)
             .map_err(|_| Error::Unsupported)?;
         let admitted = time(r.try_get("admitted_ms")?)?;
@@ -130,18 +200,20 @@ impl StoredSend03 {
             r.try_get::<_, Option<i64>>("redacted_ms")?,
         ) {
             (Some(intent), Some(signature), Some(peer), None) => {
-                let intent = Intent03::decode(&intent).map_err(|_| Error::Unsupported)?;
+                let intent = OriginalIntent03::parse(intent_version, &intent)?;
                 let signature: [u8; 64] = signature.try_into().map_err(|_| Error::Unsupported)?;
-                let recipients: Vec<u8> = intent
+                let common = intent.common();
+                let recipients: Vec<u8> = common
                     .recipients
                     .iter()
                     .flat_map(|(role, id)| std::iter::once(*role).chain(id.iter().copied()))
                     .collect();
-                if intent.ids.map(Uuid::from_bytes) != ids
-                    || intent.numbers != numbers
-                    || intent.digests != digests
-                    || intent.ceiling != ceiling
-                    || intent.peer != peer.as_bytes()
+                if common.ids.map(Uuid::from_bytes) != ids
+                    || *common.numbers != numbers
+                    || *common.digests != digests
+                    || intent.ceiling() != ceiling
+                    || common.peer != peer.as_bytes()
+                    || historical_body.as_deref() != intent.historical_body().map(|v| v.as_slice())
                     || r.try_get::<_, Vec<u8>>("recipients")? != recipients
                     || crypto::sha(intent.bytes()) != intent_hash
                     || crypto::sha(&signature) != signature_hash
@@ -150,10 +222,16 @@ impl StoredSend03 {
                 }
                 Some((intent, signature))
             }
-            (None, None, None, Some(at)) if time(at)? >= admitted => None,
+            (None, None, None, Some(at))
+                if time(at)? >= admitted
+                    && redacted_body_allowed(intent_version, historical_body.as_deref()) =>
+            {
+                None
+            }
             _ => return Err(Error::Unsupported),
         };
         Ok(Self {
+            intent_version,
             ids,
             numbers,
             digests,
@@ -170,7 +248,11 @@ impl StoredSend03 {
     }
     async fn read(tx: &Transaction<'_>, account: Uuid, message: Uuid) -> Result<Option<Self>> {
         ready(tx).await?;
-        tx.query_opt("SELECT * FROM public.conversation_reviewed_sends03 WHERE account_id=$1 AND message_id=$2 FOR SHARE NOWAIT", &[&account,&message]).await?.map(|r|Self::from_row(&r)).transpose()
+        // Callers hold the genuine owner or execution universal-anchor fence.
+        // The closed admission and parent-content erasure paths acquire its
+        // exclusive counterpart before changing this SELECT-only sidecar.
+        // Tuple SHARE would incorrectly require runtime UPDATE privileges.
+        tx.query_opt("SELECT * FROM public.conversation_reviewed_sends03 WHERE account_id=$1 AND message_id=$2", &[&account,&message]).await?.map(|r|Self::from_row(&r)).transpose()
     }
     fn matches(&self, intent: &[u8], signature: &[u8], envelope: &[u8]) -> Result<()> {
         if crypto::sha(intent) != self.intent_hash
@@ -206,7 +288,7 @@ pub(crate) async fn admit<'held, 'db>(
         .await
         .map_err(|_| Error::Authentication)?;
     let who = owner.selected_identity();
-    let candidate = Intent03::decode(intent).map_err(|_| Error::Unsupported)?;
+    let candidate = v2::Intent03V2::decode(intent).map_err(|_| Error::Unsupported)?;
     if candidate.account_id() != who.account {
         return Err(Error::Authentication);
     }
@@ -249,7 +331,7 @@ pub(crate) async fn admit<'held, 'db>(
         browser,
         &recipients,
     );
-    let verified = verify(candidate, signature, envelope, &expected, held.now_ms())
+    let verified = v2::verify(candidate, signature, envelope, &expected, held.now_ms())
         .map_err(|_| Error::Unsupported)?;
     if verified.expires_ms() > current_deadline {
         return Err(Error::Expired);
@@ -257,7 +339,7 @@ pub(crate) async fn admit<'held, 'db>(
     let before = held.now_ms();
     // Original review expiry bounds acceptance, never a later grant's current
     // permission. It must not be renewed by queueing or exact historical retry.
-    let acceptance_deadline = current_deadline.min(verified.intent.numbers[7]);
+    let acceptance_deadline = current_deadline.min(verified.intent().numbers[7]);
     let rows = tx
         .query(
             "SELECT * FROM public.conversation_reviewed_send03_admit($1,$2,$3,$4,$5,$6,$7)",
@@ -306,7 +388,7 @@ pub(crate) async fn admit<'held, 'db>(
         || stored.device_session != *held.device_session_digest()
         || stored.physical != *held.physical_digest()
         || stored.interval_digest != statement.digest()
-        || stored.digests[10] != *verified.body_digest()
+        || stored.intent_version != 2
     {
         return Err(Error::Conflict);
     }
@@ -318,8 +400,8 @@ pub(crate) async fn admit<'held, 'db>(
         browser,
         &recipients,
     );
-    verify(
-        Intent03::decode(intent).map_err(|_| Error::Unsupported)?,
+    v2::verify(
+        v2::Intent03V2::decode(intent).map_err(|_| Error::Unsupported)?,
         signature,
         envelope,
         &expected,
@@ -366,4 +448,19 @@ pub(crate) async fn status(
         .await
         .map_err(|_| Error::Authentication)?;
     Ok(stored.receipt())
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::redacted_body_allowed;
+
+    #[test]
+    fn legacy_redacted_body_is_passive_only_and_never_a_v2_field() {
+        assert!(redacted_body_allowed(1, Some(&[7; 32])));
+        assert!(redacted_body_allowed(1, None));
+        assert!(redacted_body_allowed(2, None));
+        assert!(!redacted_body_allowed(2, Some(&[7; 32])));
+        assert!(!redacted_body_allowed(1, Some(&[7; 31])));
+        assert!(!redacted_body_allowed(3, None));
+    }
 }

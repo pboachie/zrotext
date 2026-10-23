@@ -214,6 +214,12 @@ fn stream_schema_examples_match_serde_frames() {
             ClientFrame::SealedLineInstalled { .. } => "sealed_line_installed",
             ClientFrame::LineActivationV2(_) => "line_activation_v2",
             ClientFrame::PayloadProfile03(_) => "payload_profile03",
+            ClientFrame::TypedEffect03(_) => {
+                panic!("typed effects use their separate closed decoder")
+            }
+            ClientFrame::ProtectionOrigin(_) => {
+                panic!("early controls use their separate closed decoder")
+            }
         };
         assert_eq!(frame["type"], variant);
     }

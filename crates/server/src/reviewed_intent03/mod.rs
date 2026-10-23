@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Exact ZTRI01 syntax and cryptography, composed only with separately held
-//! current owner/interval/device authority by the admission adapter. A decoded
+//! Historical ZTRI01 syntax and explicit V2 current composition. New effects
+//! require V2 with separately held owner/interval/device authority. A decoded
 //! object or valid signature never authenticates its own database provenance.
 use crate::sealed_manifest03::{self as crypto, Authorization03, Check, VerifiedManifest03};
 use crate::sealed_payload_election03::{self as election, CurrentAuthority03, VerifiedElection03};
@@ -159,11 +159,13 @@ pub(crate) struct ExpectedReview03<'a> {
 
 /// Exact verified candidate bytes only, not a committed admission or radio
 /// permit. Keep immutable originals for idempotency and receiver verification.
+#[cfg(test)]
 pub(crate) struct VerifiedReview03 {
     intent: Intent03,
     signature: [u8; 64],
     envelope: crate::sealed_envelope03::VerifiedEnvelope03,
 }
+#[cfg(test)]
 impl VerifiedReview03 {
     pub(crate) fn intent(&self) -> &Intent03 {
         &self.intent
@@ -182,6 +184,7 @@ impl VerifiedReview03 {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn verify(
     intent: Intent03,
     signature: &[u8],
@@ -199,6 +202,7 @@ pub(super) struct RetainedTiming03 {
     installed_ms: u64,
     required_until_ms: u64,
 }
+#[cfg(test)]
 pub(super) fn verify_retained(
     intent: Intent03,
     signature: &[u8],
@@ -207,6 +211,14 @@ pub(super) fn verify_retained(
     now: u64,
     original: RetainedTiming03,
 ) -> Check<VerifiedReview03> {
+    validate_original(expected, &original, now)?;
+    verify_timed(intent, signature, envelope, expected, now, Some(original))
+}
+fn validate_original(
+    expected: &ExpectedReview03<'_>,
+    original: &RetainedTiming03,
+    now: u64,
+) -> Check<()> {
     for n in [
         original.admitted_ms,
         original.installed_ms,
@@ -220,8 +232,9 @@ pub(super) fn verify_retained(
     {
         return Err("review original installed/admitted times");
     }
-    verify_timed(intent, signature, envelope, expected, now, Some(original))
+    Ok(())
 }
+#[cfg(test)]
 fn verify_timed(
     intent: Intent03,
     signature: &[u8],
@@ -230,6 +243,46 @@ fn verify_timed(
     now: u64,
     original: Option<RetainedTiming03>,
 ) -> Check<VerifiedReview03> {
+    let transcript = intent.transcript();
+    let (envelope, signature) = verify_parts(
+        ReviewParts03 {
+            ids: &intent.ids,
+            numbers: &intent.numbers,
+            digests: intent.digests[..10].try_into().unwrap(),
+            peer: &intent.peer,
+            recipients: &intent.recipients,
+        },
+        signature,
+        envelope,
+        expected,
+        now,
+        original,
+        &transcript,
+    )?;
+    Ok(VerifiedReview03 {
+        intent,
+        signature,
+        envelope,
+    })
+}
+// Only explicit typed V1/V2 candidates supply these common context fields.
+// Their distinct exact headers/domains remain in their own transcript methods.
+struct ReviewParts03<'a> {
+    ids: &'a [[u8; 16]; 8],
+    numbers: &'a [u64; 8],
+    digests: &'a [[u8; 32]; 10],
+    peer: &'a [u8],
+    recipients: &'a [(u8, [u8; 32])],
+}
+fn verify_parts(
+    intent: ReviewParts03<'_>,
+    signature: &[u8],
+    envelope: &[u8],
+    expected: &ExpectedReview03<'_>,
+    now: u64,
+    original: Option<RetainedTiming03>,
+    transcript: &[u8],
+) -> Check<(crate::sealed_envelope03::VerifiedEnvelope03, [u8; 64])> {
     let c = election::require_current(expected.election, expected.manifest, expected.current, now)?;
     crypto::time(expected.selection_epoch)?;
     crypto::time(expected.interval_starts_ms)?;
@@ -293,7 +346,7 @@ fn verify_timed(
         },
         now,
     )?;
-    let [_, _, _, _, observed, expires, issued, review_expires] = intent.numbers;
+    let [_, _, _, _, observed, expires, issued, review_expires] = *intent.numbers;
     let (review_at, required_until) =
         original.map_or((now, expires), |v| (v.admitted_ms, v.required_until_ms));
     if issued > review_at
@@ -328,14 +381,14 @@ fn verify_timed(
     {
         return Err("review exact envelope");
     }
-    crypto::signature(&point, signature, &intent.transcript())?;
-    Ok(VerifiedReview03 {
-        intent,
-        signature: signature.try_into().map_err(|_| "review signature width")?,
-        envelope: sealed,
-    })
+    crypto::signature(&point, signature, transcript)?;
+    Ok((
+        sealed,
+        signature.try_into().map_err(|_| "review signature width")?,
+    ))
 }
 
 pub(crate) mod live;
 #[cfg(test)]
 pub(crate) mod tests;
+pub mod v2;

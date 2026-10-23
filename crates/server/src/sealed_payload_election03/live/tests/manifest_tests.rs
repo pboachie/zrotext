@@ -6,7 +6,13 @@ use super::*;
 use crate::manifest_install03::live as service;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B};
 pub(super) async fn elected() -> (Case, Vec<u8>) {
-    let (mut c, signed) = fixture::prepared_actual_genesis().await;
+    elected_case(fixture::prepared_actual_genesis().await).await
+}
+pub(super) async fn elected_claimed() -> (Case, Vec<u8>) {
+    elected_case(fixture::prepared_claimed_genesis().await).await
+}
+async fn elected_case((mut c, signed): (Case, Vec<u8>)) -> (Case, Vec<u8>) {
+    c.heartbeat().await;
     let opening = Uuid::new_v4();
     let tx = c.db.reader.transaction().await.unwrap();
     let owner = ordinary_owner03::authenticate(&tx, &c.hasher, ORIGIN, source(&c.credentials))
@@ -24,6 +30,7 @@ pub(super) async fn elected() -> (Case, Vec<u8>) {
         .unwrap();
     drop(proof);
     tx.commit().await.unwrap();
+    c.heartbeat().await;
     let device = sign(
         &c.phone_key,
         b"ZTSE/line/payload-profile/device/v1\0",
@@ -49,6 +56,7 @@ pub(super) async fn elected() -> (Case, Vec<u8>) {
     .await
     .unwrap();
     tx.commit().await.unwrap();
+    c.heartbeat().await;
     let owner_sig = sign(
         &c.approval_key,
         b"ZTSE/line/payload-profile/owner/v1\0",

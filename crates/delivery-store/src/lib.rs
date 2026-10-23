@@ -731,12 +731,14 @@ impl<'a> DeliveryStore<'a> {
                 "WITH picked AS ( \
                    SELECT j.account_id,j.message_id FROM dispatch_jobs j JOIN messages m ON m.id=j.message_id \
                    WHERE j.grant_issued_at IS NULL AND j.finished_at IS NULL \
+                     AND m.transport_mode<>'sealed_profile03' \
                      AND m.expires_at<=now() AND m.state IN ('queued','claimed') \
                    ORDER BY m.expires_at,m.id FOR UPDATE OF j SKIP LOCKED LIMIT $1), \
                  expired AS ( \
                    UPDATE messages m SET state='expired',state_version=state_version+1,updated_at=now() \
                    FROM picked WHERE m.account_id=picked.account_id AND m.id=picked.message_id \
                      AND m.state IN ('queued','claimed') AND m.expires_at<=now() \
+                     AND m.transport_mode<>'sealed_profile03' \
                    RETURNING m.account_id,m.id AS message_id), \
                  jobs AS ( \
                    UPDATE dispatch_jobs j SET lease_owner=NULL,lease_until=NULL,finished_at=now() \
@@ -788,9 +790,10 @@ impl<'a> DeliveryStore<'a> {
                    FROM messages m \
                    JOIN dispatch_fences f ON (f.account_id,f.message_id)=(m.account_id,m.id) \
                    JOIN message_attempts a ON a.id=f.attempt_id \
-                   WHERE (m.state='claimed' AND f.outcome='granted' AND f.grant_expires_at<=now()) \
+                   WHERE m.transport_mode<>'sealed_profile03' AND ( \
+                         (m.state='claimed' AND f.outcome='granted' AND f.grant_expires_at<=now()) \
                       OR (m.state='submitting' AND f.outcome='submitting' \
-                          AND a.updated_at<=now()-interval '2 minutes') \
+                          AND a.updated_at<=now()-interval '2 minutes')) \
                    ORDER BY m.updated_at,m.id FOR UPDATE OF m SKIP LOCKED LIMIT $1), \
                  swept AS ( \
                    UPDATE messages m SET state='unknown',state_version=state_version+1,updated_at=now() \
@@ -843,6 +846,7 @@ impl<'a> DeliveryStore<'a> {
                    JOIN dispatch_fences f ON (f.account_id,f.message_id)=(m.account_id,m.id) \
                    JOIN message_attempts a ON a.id=f.attempt_id \
                    WHERE m.state='submitted' AND f.outcome='submitted' AND a.status='submitted' \
+                     AND m.transport_mode<>'sealed_profile03' \
                      AND m.updated_at<=now()-interval '24 hours' \
                    ORDER BY m.updated_at,m.id FOR UPDATE OF m SKIP LOCKED LIMIT $1), \
                  swept AS ( \
@@ -1099,7 +1103,7 @@ impl<'a> DeliveryStore<'a> {
         }
         let row = tx
             .query_typed_opt(
-                "SELECT state,recipient_e164 IS NULL FROM messages \
+                "SELECT state,recipient_e164 IS NULL,transport_mode='sealed_profile03' FROM messages \
                  WHERE account_id=$1 AND id=$2 FOR UPDATE",
                 &[
                     (&event.account_id, Type::UUID),
@@ -1108,6 +1112,11 @@ impl<'a> DeliveryStore<'a> {
             )
             .await?
             .ok_or(StoreError::NotFound)?;
+        if row.get::<_, bool>(2) {
+            // Profile03 requires distinct one-attempt/current submit and
+            // historical outcome factories. Legacy evidence cannot release it.
+            return Err(StoreError::InvalidTransition);
+        }
         let current = state_from_row(&row)?;
         // After terminal content retention, a late receipt is stale even if
         // its old event ID has since been removed from the audit timeline.
@@ -1636,6 +1645,7 @@ pub async fn cancel_pending_recipient(
             "SELECT j.message_id FROM dispatch_jobs j JOIN messages m ON m.id=j.message_id \
          WHERE j.account_id=$1 AND m.account_id=$1 AND m.recipient_e164=$2 \
          AND j.grant_issued_at IS NULL AND j.finished_at IS NULL \
+         AND m.transport_mode<>'sealed_profile03' \
          AND m.state IN ('queued','claimed') ORDER BY j.message_id FOR UPDATE OF j,m",
             &[&account_id, &recipient],
         )
@@ -1664,10 +1674,13 @@ pub async fn cancel_in_transaction(
     }
     let row = tx
         .query_one(
-            "SELECT state,transport_mode='sealed_candidate02' AND expires_at<=clock_timestamp(),transport_mode='sealed_candidate02' FROM messages WHERE account_id=$1 AND id=$2 FOR UPDATE",
+            "SELECT state,transport_mode='sealed_candidate02' AND expires_at<=clock_timestamp(),transport_mode='sealed_candidate02',transport_mode='sealed_profile03' FROM messages WHERE account_id=$1 AND id=$2 FOR UPDATE",
             &[&account_id, &message_id],
         )
         .await?;
+    if row.get::<_, bool>(3) {
+        return Err(StoreError::InvalidTransition);
+    }
     let current = state_from_row(&row)?;
     if current == MessageState::Cancelled && row.get::<_, bool>(2) {
         return Ok(true);

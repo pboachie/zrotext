@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Passive typed history clock candidate frames",
+  "description": "Closed structural shape only. Authentication, original actor and grant, exact nonce/host/epoch, actual held lease, primary clock and RTT/expiry checks remain mandatory. No effect or content permission is represented.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/request"
+    },
+    {
+      "$ref": "#/$defs/reply"
+    }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    "hash32": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$",
+      "not": {
+        "const": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      }
+    },
+    "positive_decimal": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,18}$"
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "type",
+        "connection_epoch",
+        "request_id",
+        "message_id",
+        "attempt_id"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "payload_profile_history_clock03_request"
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "message_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "attempt_id": {
+          "$ref": "#/$defs/uuid"
+        }
+      }
+    },
+    "lease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "site_id",
+        "instance_id",
+        "deployment_epoch",
+        "line_activation_version",
+        "enrolled_signing_key_id",
+        "device_session_digest",
+        "expires_ms"
+      ],
+      "properties": {
+        "site_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\u0000-\u001f\u007f-\u009f]+$"
+        },
+        "instance_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\u0000-\u001f\u007f-\u009f]+$"
+        },
+        "deployment_epoch": {
+          "$ref": "#/$defs/positive_decimal"
+        },
+        "line_activation_version": {
+          "enum": [
+            1,
+            2
+          ]
+        },
+        "enrolled_signing_key_id": {
+          "$ref": "#/$defs/hash32"
+        },
+        "device_session_digest": {
+          "$ref": "#/$defs/hash32"
+        },
+        "expires_ms": {
+          "$ref": "#/$defs/positive_decimal"
+        }
+      }
+    },
+    "reply": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "type",
+        "connection_epoch",
+        "request_id",
+        "message_id",
+        "attempt_id",
+        "account_id",
+        "device_id",
+        "server_time_ms",
+        "sample_expires_ms",
+        "lease"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "payload_profile_history_clock03"
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "message_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "attempt_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "account_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "device_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "server_time_ms": {
+          "$ref": "#/$defs/positive_decimal"
+        },
+        "sample_expires_ms": {
+          "$ref": "#/$defs/positive_decimal"
+        },
+        "lease": {
+          "$ref": "#/$defs/lease"
+        }
+      }
+    }
+  }
+}

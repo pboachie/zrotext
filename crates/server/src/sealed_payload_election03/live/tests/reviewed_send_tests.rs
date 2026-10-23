@@ -16,8 +16,16 @@ pub(super) struct Packet {
     pub(super) message: Uuid,
 }
 pub(super) async fn active() -> (Case, SigningKey, consent::Statement03) {
-    let (mut c, browser, signed) = prepared().await;
+    active_case(prepared().await).await
+}
+pub(super) async fn active_claimed() -> (Case, SigningKey, consent::Statement03) {
+    active_case(super::interval_queue_tests::prepared_claimed().await).await
+}
+async fn active_case(
+    (mut c, browser, signed): (Case, SigningKey, Vec<u8>),
+) -> (Case, SigningKey, consent::Statement03) {
     let p = request(&mut c, &browser, &signed, b"+12", 300_000, 5).await;
+    c.heartbeat().await;
     let statement = consent::Statement03::decode(&p.bytes).unwrap();
     let phone = sign(
         &c.phone_key,
@@ -48,6 +56,14 @@ pub(super) async fn active() -> (Case, SigningKey, consent::Statement03) {
     (c, browser, statement)
 }
 pub(super) async fn packet(c: &mut Case, key: &SigningKey, s: &consent::Statement03) -> Packet {
+    packet_with_lifetime(c, key, s, 60_000).await
+}
+pub(super) async fn packet_with_lifetime(
+    c: &mut Case,
+    key: &SigningKey,
+    s: &consent::Statement03,
+    lifetime_ms: u64,
+) -> Packet {
     let tx = c.db.reader.transaction().await.unwrap();
     let mut owner = ordinary_owner03::authenticate(&tx, &c.hasher, ORIGIN, source(&c.credentials))
         .await
@@ -60,7 +76,7 @@ pub(super) async fn packet(c: &mut Case, key: &SigningKey, s: &consent::Statemen
         .unwrap();
     let deadline = interval.admission_deadline(&mut held).await.unwrap();
     let now = held.now_ms();
-    let expires = (now + 60_000).min(deadline - 1);
+    let expires = (now + lifetime_ms).min(deadline - 1);
     assert!(expires > now + 1000);
     let review_end = (now + 30_000).min(expires);
     let a = held.authority();
@@ -102,7 +118,7 @@ pub(super) async fn packet(c: &mut Case, key: &SigningKey, s: &consent::Statemen
     }
     .digest()
     .unwrap();
-    let mut intent = b"ZTRI\x01\x03\x03\0".to_vec();
+    let mut intent = b"ZTRI\x02\x03\x03\0".to_vec();
     for id in [
         a.account_id,
         a.device_id,
@@ -138,7 +154,6 @@ pub(super) async fn packet(c: &mut Case, key: &SigningKey, s: &consent::Statemen
         *signer,
         crypto::sha(&envelope),
         unsigned,
-        crypto::sha(b"synthetic opaque body"),
     ] {
         intent.extend(d);
     }
@@ -150,7 +165,7 @@ pub(super) async fn packet(c: &mut Case, key: &SigningKey, s: &consent::Statemen
         intent.extend(id);
     }
     intent.push(1);
-    let signature = sign(key, b"zrotext/conversation/reviewed-send03/v1\0", &intent);
+    let signature = sign(key, b"zrotext/conversation/reviewed-send03/v2\0", &intent);
     drop(held);
     drop(owner);
     tx.rollback().await.unwrap();
@@ -254,10 +269,68 @@ async fn genuine_review_queues_once_reserves_once_and_signout_preserves_only_his
             .is_err()
     );
     tx.rollback().await.unwrap();
-    let row=c.db.reader.query_one("SELECT intent,signature,envelope_sha256 FROM public.conversation_reviewed_sends03 WHERE account_id=$1 AND message_id=$2",&[&account,&p.message]).await.unwrap();
+    let row=c.db.reader.query_one("SELECT intent,signature,envelope_sha256,intent_version,body_digest FROM public.conversation_reviewed_sends03 WHERE account_id=$1 AND message_id=$2",&[&account,&p.message]).await.unwrap();
     assert_eq!(row.get::<_, Vec<u8>>(0), p.intent);
     assert_eq!(row.get::<_, Vec<u8>>(1), p.signature);
     assert_eq!(row.get::<_, Vec<u8>>(2), crypto::sha(&p.envelope));
+    assert_eq!(row.get::<_, i16>(3), 2);
+    assert!(row.get::<_, Option<Vec<u8>>>(4).is_none());
+    c.db.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable ZT_AUTH_TEST_DATABASE_URL administrator; actual owner and valid historical format refuse new effects"]
+async fn genuine_owner_cannot_admit_signed_v1_into_the_corrected_v2_composition() {
+    let (mut c, browser, statement) = active().await;
+    let account = c.principal.tenant.account_id();
+    c.db.owner.execute("INSERT INTO public.usage_quota_policies(account_id,metric,limit_units,source) VALUES($1,'outbound_message',10,'operator')",&[&account]).await.unwrap();
+    let p = packet(&mut c, &browser, &statement).await;
+    // This is an independently signed obsolete-format negative control, never
+    // a conversion of retained history or an alternate new V2 producer.
+    let mut legacy = b"ZTRI\x01\x03\x03\0".to_vec();
+    legacy.extend(&p.intent[8..520]);
+    legacy.extend([42; 32]);
+    legacy.extend(&p.intent[520..]);
+    let parsed = crate::reviewed_intent03::Intent03::decode(&legacy).unwrap();
+    let signature = sign(
+        &browser,
+        b"zrotext/conversation/reviewed-send03/v1\0",
+        &legacy,
+    );
+    crypto::signature(
+        browser.verifying_key().to_sec1_point(false).as_bytes(),
+        &signature,
+        &parsed.transcript(),
+    )
+    .unwrap();
+    let tx = c.db.reader.transaction().await.unwrap();
+    let mut owner = ordinary_owner03::authenticate(&tx, &c.hasher, ORIGIN, source(&c.credentials))
+        .await
+        .unwrap();
+    assert!(matches!(
+        reviewed::admit(&tx, &mut owner, &legacy, &signature, &p.envelope, ORIGIN).await,
+        Err(Error::Unsupported)
+    ));
+    for table in [
+        "conversation_reviewed_sends03",
+        "messages",
+        "dispatch_jobs",
+        "usage_ledger",
+    ] {
+        assert_eq!(
+            tx.query_one(
+                &format!("SELECT count(*) FROM public.{table} WHERE account_id=$1"),
+                &[&account]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+            0,
+            "{table}"
+        );
+    }
+    drop(owner);
+    tx.rollback().await.unwrap();
     c.db.finish().await;
 }
 

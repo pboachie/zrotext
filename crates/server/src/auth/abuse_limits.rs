@@ -321,6 +321,103 @@ pub(crate) async fn consume_payload_profile(
     .await
 }
 
+/// Separately committed ordinary device-control admission. A raw UUID or
+/// owner Principal cannot supply the verified socket actor required here.
+pub(crate) async fn consume_device_protection(
+    tx: &Transaction<'_>,
+    hasher: &TokenHasher,
+    actor: &crate::enrollment::VerifiedDevice,
+    mutation: bool,
+) -> Result<bool, tokio_postgres::Error> {
+    let limit = if mutation {
+        Limit::PayloadProfileManage
+    } else {
+        Limit::PayloadProfileRead
+    };
+    let subject = format!(
+        "protection-origin:{}:{}",
+        actor.identity().account_id,
+        actor
+            .signing_key_id()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    );
+    let hash = subject_hash(hasher, limit, &subject, Lane::Verified)
+        .expect("device control policy has a subject");
+    let (scope, _, _, _) = limit.policy();
+    let (maximum, seconds) = limit
+        .subject_policy(Lane::Verified)
+        .expect("device control policy has a bound");
+    Ok(tx
+        .query_typed_one(
+            "SELECT public.auth_abuse_consume($1,$2,NULL::bytea,$3,$4,0,0)",
+            &[
+                (&scope, Type::TEXT),
+                (&&hash[..], Type::BYTEA),
+                (&maximum, Type::INT4),
+                (&seconds, Type::INT4),
+            ],
+        )
+        .await?
+        .get(0))
+}
+
+/// Typed message/evidence admission on the genuine original device actor.
+/// The caller holds its current/native history scope and commits this debit
+/// before beginning a separate effect/proof transaction. No wire account,
+/// connection-local counter or owner Principal selects the subject.
+pub(crate) async fn consume_conversation_effect03(
+    tx: &Transaction<'_>,
+    hasher: &TokenHasher,
+    actor: &crate::enrollment::VerifiedDevice,
+    admission: crate::conversation_effect03::wire::OrdinaryAdmission03,
+) -> Result<bool, tokio_postgres::Error> {
+    use crate::conversation_effect03::wire::OrdinaryAdmission03;
+    let identity = actor.identity();
+    let subject = format!(
+        "conversation-effects03:{}:{}",
+        identity.account_id, identity.device_id
+    );
+    let hash = hasher.digest(b"abuse-verified-v1", &subject);
+    let allowed: bool = tx
+        .query_typed_one(
+            "SELECT public.auth_abuse_consume($1,$2,NULL::bytea,120,60,0,0)",
+            &[
+                (&"conversation_effect03_frames", Type::TEXT),
+                (&&hash[..], Type::BYTEA),
+            ],
+        )
+        .await?
+        .get(0);
+    if !allowed || admission == OrdinaryAdmission03::Evidence {
+        return Ok(allowed);
+    }
+    let limit = if admission == OrdinaryAdmission03::Manage {
+        Limit::PayloadProfileManage
+    } else {
+        Limit::PayloadProfileRead
+    };
+    let (scope, _, _, _) = limit.policy();
+    let (maximum, seconds) = limit
+        .subject_policy(Lane::Verified)
+        .expect("device policy bound");
+    let hash =
+        subject_hash(hasher, limit, &subject, Lane::Verified).expect("device policy subject");
+    Ok(tx
+        .query_typed_one(
+            "SELECT public.auth_abuse_consume($1,$2,NULL::bytea,$3,$4,0,0)",
+            &[
+                (&scope, Type::TEXT),
+                (&&hash[..], Type::BYTEA),
+                (&maximum, Type::INT4),
+                (&seconds, Type::INT4),
+            ],
+        )
+        .await?
+        .get(0))
+}
+
 /// Profile03 fetch uses only the closed public installation. The anonymous
 /// route has no device subject: public UUIDs cannot spend a real device's
 /// share. Only a separately verified enrolled signature may name that subject.

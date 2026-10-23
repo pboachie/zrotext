@@ -2465,6 +2465,18 @@ async fn current_public_runtime_preserves_plan_acl_and_protected_history_excepti
         "conversation_profile03_grants",
         "hosted_runtime_entries",
         "hosted_runtime_requests",
+        "device_protection_origins",
+        "device_protection_associations",
+        "device_protection_attempts",
+        "device_protection_receipts",
+        "device_protection_retirements",
+        "conversation_profile03_effect_actors",
+        "conversation_profile03_submits",
+        "conversation_profile03_outcomes",
+        "conversation_profile03_closure_records",
+        "conversation_profile03_closure_challenges",
+        "conversation_profile03_closure_receipts",
+        "conversation_profile03_effect_quarantines",
     ] {
         assert!(!f.reader.query_one("SELECT pg_catalog.has_table_privilege(CURRENT_USER,pg_catalog.to_regclass(pg_catalog.format('public.%I',$1::text)),'UPDATE,DELETE,TRUNCATE')",&[&table]).await.unwrap().get::<_,bool>(0),"protected history unexpectedly permits table mutation: {table}");
         let columns=f.reader.query("SELECT a.attname::text,pg_catalog.has_column_privilege(CURRENT_USER,a.attrelid,a.attname,'UPDATE') FROM pg_catalog.pg_attribute a WHERE a.attrelid=pg_catalog.to_regclass(pg_catalog.format('public.%I',$1::text)) AND a.attnum>0 AND NOT a.attisdropped ORDER BY a.attnum",&[&table]).await.unwrap();

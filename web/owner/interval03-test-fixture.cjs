@@ -4,6 +4,7 @@ const path = require("node:path"), { createRequire } = require("node:module"), {
 createRequire(path.join(__dirname, "../../sdk/typescript/package.json"))("fake-indexeddb/auto");
 const history = require("./conversation-manifest03-history.js"), highwater = require("./conversation-manifest03-recovery.js");
 const controller = require("./conversation-interval03.js"), recovery = require("./conversation-interval03-recovery.js");
+const messageRecovery = require("./conversation-message03-recovery.js");
 const load = n => import(pathToFileURL(path.join(__dirname, "../../sdk/typescript/dist", n + ".js")).href);
 const hex = b => Buffer.from(b).toString("hex"), un64 = b => Uint8Array.from(Buffer.from(b, "base64url"));
 async function fixture() {
@@ -72,14 +73,16 @@ async function fixture() {
     return new Response(JSON.stringify(value), { headers: { "content-type": "application/json" } });
   };
   f.openAttempts = o => recovery.open({ ...o, name: prefix + "-attempts" });
+  f.openMessages = o => messageRecovery.open({ ...o, name: prefix + "-messages", importSdk: load });
   f.create = async (extra = {}) => {
     const hc = history.create({ enabled: true, readSelection: () => f.selection, document: f.document, window: f.window, fetch: f.fetch, monotonic: () => f.mono,
       importSdk: load, openRecovery: o => highwater.open({ ...o, name: prefix + "-history" }) }); instances.push(hc);
     await hc.open({ size: 65, arrayBuffer: async () => f.phone.point.slice().buffer }); await hc.next();
     const c = controller.create({ enabled: true, history: hc, readSelection: () => f.choice, document: f.document, window: f.window, fetch: f.fetch,
-      monotonic: () => f.mono, importSdk: load, openKeyStore: f.openKeys, openRecovery: f.openAttempts, ...extra }); instances.push(c); await c.open(); return { c, hc };
+      monotonic: () => f.mono, importSdk: load, openKeyStore: f.openKeys, openRecovery: f.openAttempts, openMessageRecovery: f.openMessages, ...extra }); instances.push(c); await c.open(); return { c, hc };
   };
   f.read = async () => { const j = await f.openAttempts({ scope: { ...scope, peer: f.choice.peer }, currentOrigin: () => f.origin }); try { return await j.read(); } finally { j.close(); } };
+  f.readMessages = async () => { const j = await f.openMessages({ scope: { ...scope, peer: f.choice.peer }, currentOrigin: () => f.origin }); try { return await j.page(); } finally { j.close(); } };
   f.close = () => instances.forEach(c => c.close()); f.scope = scope; f.helpers = h; return f;
 }
 module.exports = { fixture };

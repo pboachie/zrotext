@@ -12,6 +12,7 @@ use p256::{
 };
 use uuid::Uuid;
 const ORIGIN: &str = "https://activation.example";
+mod effect_containment_tests;
 mod fixture;
 mod grant_tests;
 mod interval_context_tests;
@@ -24,6 +25,8 @@ mod manifest_tests;
 mod reviewed_send_billing_tests;
 mod reviewed_send_tests;
 mod selection_refresh_tests;
+mod typed_effect_tests;
+mod typed_submit_tests;
 use fixture::{prepared, sign, source};
 
 #[tokio::test]

@@ -39,7 +39,7 @@ pub(super) async fn next(
             AND m.transport_mode='sealed_profile03' AND m.state='queued' AND m.state_version=1
             AND m.transport_payload IS NOT NULL AND m.recipient_e164 IS NOT NULL
             AND m.expires_at>pg_catalog.clock_timestamp()
-            AND review.redacted_ms IS NULL AND review.intent IS NOT NULL AND review.signature IS NOT NULL
+            AND review.intent_version=2 AND review.redacted_ms IS NULL AND review.intent IS NOT NULL AND review.signature IS NOT NULL
             AND review.peer IS NOT NULL AND review.initiating_user_id=c.initiating_user_id
             AND review.initiating_session_id=c.initiating_session_id
             AND review.admitted_ms>=c.installed_ms

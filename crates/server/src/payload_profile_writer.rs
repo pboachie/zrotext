@@ -23,13 +23,27 @@ pub enum WriterSchemaError {
 type Result<T> = std::result::Result<T, WriterSchemaError>;
 
 fn body(name: &str, marker: &str, version: i64) -> Result<&'static str> {
-    let source = if version == 117
+    let source = if version == 119
         && matches!(
             name,
             "payload_profile_writer_version" | "payload_profile_writer_ready"
         ) {
+        include_str!("../../../deploy/compose/migrations/119_conversation_profile03_effects.sql")
+    } else if version == 118
+        && matches!(
+            name,
+            "payload_profile_writer_version" | "payload_profile_writer_ready"
+        )
+    {
+        include_str!("../../../deploy/compose/migrations/118_device_protection_origins.sql")
+    } else if matches!(version, 117..=119)
+        && matches!(
+            name,
+            "payload_profile_writer_version" | "payload_profile_writer_ready"
+        )
+    {
         include_str!("../../../deploy/compose/migrations/117_explicit_reviewed_intent_v2.sql")
-    } else if matches!(version, 116..=117)
+    } else if matches!(version, 116..=119)
         && matches!(
             name,
             "payload_profile_writer_version"
@@ -40,7 +54,7 @@ fn body(name: &str, marker: &str, version: i64) -> Result<&'static str> {
         include_str!(
             "../../../deploy/compose/migrations/116_hosted_native_transaction_identity.sql"
         )
-    } else if matches!(version, 115..=117)
+    } else if matches!(version, 115..=119)
         && matches!(
             name,
             "payload_profile_writer_version" | "payload_profile_writer_ready"
@@ -75,7 +89,7 @@ fn body(name: &str, marker: &str, version: i64) -> Result<&'static str> {
         )
     {
         SELECTION_MIGRATION
-    } else if matches!(version, 110..=117)
+    } else if matches!(version, 110..=119)
         && matches!(
             name,
             "payload_profile_writer_guard"
@@ -85,7 +99,7 @@ fn body(name: &str, marker: &str, version: i64) -> Result<&'static str> {
         )
     {
         ELECTION_MIGRATION
-    } else if matches!(version, 109..=117)
+    } else if matches!(version, 109..=119)
         && matches!(
             name,
             "payload_profile_writer_graph"
@@ -279,7 +293,7 @@ pub(crate) async fn optional<C: GenericClient + Sync>(db: &C, table: &str) -> Re
         )
         .await?
         .try_get(0)?;
-    if !matches!(version, 108..=117) {
+    if !matches!(version, 108..=119) {
         return Err(WriterSchemaError::Invalid);
     }
     functions(db, version).await?;

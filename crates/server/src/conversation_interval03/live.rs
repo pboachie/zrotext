@@ -187,7 +187,12 @@ impl StoredInterval03 {
     }
     pub(crate) async fn read(tx: &Transaction<'_>, account: Uuid, interval: Uuid) -> Result<Self> {
         ready(tx).await?;
-        let row=tx.query_opt("SELECT * FROM public.conversation_profile03_intervals WHERE account_id=$1 AND interval_id=$2 FOR SHARE NOWAIT",&[&account,&interval]).await?.ok_or(Error::NotFound)?;
+        // This ledger is SELECT-only. Reads before owner/device selection are
+        // hints; effect callers reread and validate under their actual held
+        // universal-anchor fence. Insert/phase writers version that anchor
+        // under its exclusive account fence; held account rows also exclude
+        // account erasure. Tuple SHARE would wrongly require runtime UPDATE.
+        let row=tx.query_opt("SELECT * FROM public.conversation_profile03_intervals WHERE account_id=$1 AND interval_id=$2",&[&account,&interval]).await?.ok_or(Error::NotFound)?;
         Self::from_row(&row)
     }
     pub(crate) async fn active(
@@ -327,6 +332,37 @@ impl StoredInterval03 {
             serde_json::json!(grant_expires.to_string()),
         );
         Ok(value)
+    }
+    /// A distinct purpose-specific projection from the SAME actually held
+    /// installed proofs/current owner/reader mapping, covering the full grant.
+    /// The old generic permission/fetch kind allowlist remains unchanged.
+    pub(crate) async fn submit_permission(
+        &self,
+        held: &mut HeldMessageSelection03<'_, '_, '_>,
+        event: Uuid,
+        grant_expires: u64,
+    ) -> Result<serde_json::Value> {
+        if event.is_nil() || self.phase != "active" {
+            return Err(Error::Conflict);
+        }
+        let mapping = self.validate(held, false).await?;
+        let deadline = self.admission_deadline(held).await?;
+        if grant_expires <= held.now_ms() || grant_expires > deadline {
+            return Err(Error::Expired);
+        }
+        Ok(serde_json::json!({
+            "v":1,"kind":"interval_permission03","request_kind":"submit","request_id":event,
+            "interval_id":self.statement.interval_id(),"statement_sha256":B.encode(self.statement.digest()),
+            "statement":B.encode(self.statement.bytes()),"owner_signature":self.owner.map(|s|B.encode(s)),
+            "phone_signature":self.phone.map(|s|B.encode(s)),"installed_signature":self.installed.map(|s|B.encode(s)),
+            "requested_ms":self.requested_ms.map(|v|v.to_string()),"approved_ms":self.approved_ms.map(|v|v.to_string()),
+            "installed_ms":self.installed_ms.map(|v|v.to_string()),"phase":self.phase,
+            "device_session_digest":B.encode(held.device_session_digest()),
+            "physical_selection_digest":B.encode(held.physical_digest()),
+            "owner_session_digest":B.encode(self.statement.owner_digest()),
+            "compared_ms":held.now_ms().to_string(),"permission_expires_ms":grant_expires.to_string(),
+            "readers":mapping.projection()
+        }))
     }
 }
 

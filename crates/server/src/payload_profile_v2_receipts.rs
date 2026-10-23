@@ -164,7 +164,7 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
         )
         .await?
         .try_get(0)?;
-    if !matches!(version, 109..=117) {
+    if !matches!(version, 109..=119) {
         return Err(ReceiptSchemaError::Invalid);
     }
     functions(db).await?;

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Genuine auth/MFA, enrolled device, root and registered-v2 ceremonies on the
-//! stock runtime grants. Only the claimed lease/Android observation are seeded;
-//! this fixture does not claim a real socket, phone, hardware reader or SIM.
+//! stock runtime grants. The default lease and Android observation are seeded;
+//! new_claimed instead performs genuine signed authentication and session claim.
+//! Neither path claims a phone, hardware reader, physical SIM or radio result.
 use super::*;
 use crate::{
     auth, enrollment, http_owner_conversations::sealed_line_setup::registration as setup,
@@ -34,9 +35,40 @@ pub(crate) struct Case {
     pub phone_key: SigningKey,
     pub approval_key: SigningKey,
     pub pin: [u8; 94],
+    socket_actor: Option<crate::device_socket::SocketActor>,
+    socket_state: Option<crate::device_socket::DeviceSocketState>,
 }
 impl Case {
     pub(crate) async fn new() -> Self {
+        Self::build(false).await
+    }
+    pub(crate) async fn new_claimed() -> Self {
+        Self::build(true).await
+    }
+    pub(crate) fn socket_actor(&self) -> crate::device_socket::SocketActor {
+        self.socket_actor
+            .expect("genuine initial verified socket claim")
+    }
+    pub(crate) fn socket_state(&self) -> crate::device_socket::DeviceSocketState {
+        self.socket_state
+            .as_ref()
+            .expect("genuine initial socket state")
+            .clone()
+    }
+    pub(crate) async fn heartbeat(&self) {
+        if let (Some(actor), Some(state)) = (self.socket_actor, self.socket_state.as_ref()) {
+            // The production renewal checks the original verified point and
+            // still-live epoch and applies its unchanged90-second lease. It
+            // cannot revive expiry or change any signed ceremony deadline.
+            assert!(
+                actor
+                    .heartbeat_for_test(&self.db.reader, state)
+                    .await
+                    .unwrap()
+            );
+        }
+    }
+    async fn build(claimed: bool) -> Self {
         let mut db = Fixture::runtime().await;
         crate::payload_profile_v2_receipts::require(&db.reader)
             .await
@@ -187,7 +219,57 @@ impl Case {
             )
             .await
             .unwrap();
-        db.reader.execute("INSERT INTO public.device_sessions(device_id,account_id,site_id,instance_id,connection_epoch,deployment_epoch,lease_until,line_activation_version) VALUES($1,$2,'activation-test','fixture',1,1,clock_timestamp()+interval '10 minutes',2)", &[&device,&account.account_id]).await.unwrap();
+        let (socket_actor, socket_state) = if claimed {
+            let state = crate::device_socket::DeviceSocketState {
+                database_url: String::new(),
+                site_id: "activation-test".into(),
+                instance_id: "fixture".into(),
+                deployment_epoch: 1,
+                enrollment_hasher: std::sync::Arc::new(enrollment_hasher),
+                auth_hasher: hasher.clone(),
+                alpha_policy: std::sync::Arc::new(
+                    crate::alpha_policy::AlphaPolicy::parse(None, None, None).unwrap(),
+                ),
+                dispatch_runtime_enabled: false,
+                sealed_dispatch_enabled: false,
+                inbound_pilot_enabled: false,
+                line_opt_out_enabled: false,
+                sms_line_activation_enabled: false,
+                line_readiness_enabled: false,
+                mms_spike_policy: std::sync::Arc::new(
+                    crate::device_socket::MmsSpikePolicy::disabled(),
+                ),
+                draining: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                drain_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+            };
+            let challenge = enrollment::issue_socket_challenge(
+                &state.enrollment_hasher,
+                account.account_id,
+                device,
+                enrollment::unix_now_ms(),
+            );
+            let signature: Signature =
+                phone_key.sign(&enrollment::device_challenge_bytes(&challenge));
+            let verified = enrollment::authenticate_socket_actor(
+                &db.reader,
+                &state.enrollment_hasher,
+                &challenge,
+                signature.to_der().as_bytes(),
+                enrollment::unix_now_ms(),
+            )
+            .await
+            .unwrap();
+            let socket =
+                crate::device_socket::claim_complete_for_test(&mut db.reader, verified, &state)
+                    .await
+                    .unwrap()
+                    .expect("actual first complete session claim");
+            assert_eq!(socket.session().connection_epoch, 1);
+            (Some(socket), Some(state))
+        } else {
+            db.reader.execute("INSERT INTO public.device_sessions(device_id,account_id,site_id,instance_id,connection_epoch,deployment_epoch,lease_until,line_activation_version) VALUES($1,$2,'activation-test','fixture',1,1,clock_timestamp()+interval '10 minutes',2)", &[&device,&account.account_id]).await.unwrap();
+            (None, None)
+        };
         let line = Uuid::new_v4();
         let statement = setup::issue(
             &mut db.reader,
@@ -245,6 +327,9 @@ impl Case {
             connection_epoch: 1,
             deployment_epoch: 1,
         };
+        if let (Some(actor), Some(state)) = (socket_actor, socket_state.as_ref()) {
+            assert!(actor.heartbeat_for_test(&db.reader, state).await.unwrap());
+        }
         let challenge = run::open(
             &mut db.reader,
             &principal,
@@ -308,6 +393,8 @@ impl Case {
             phone_key,
             approval_key,
             pin,
+            socket_actor,
+            socket_state,
         }
     }
     pub(crate) fn lease(&self) -> InboundSession<'static> {
