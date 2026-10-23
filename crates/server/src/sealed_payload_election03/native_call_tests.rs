@@ -26,27 +26,11 @@ fn binding(namespace: Uuid, key: [u8; 32]) -> runtime_db::HostedBinding {
     runtime_db::HostedBinding::new(&gate, key).unwrap()
 }
 fn runtime_url(f: &Fixture) -> String {
-    let mut url =
-        url::Url::parse(&std::env::var("ZT_AUTH_TEST_DATABASE_URL").expect("disposable URL"))
-            .unwrap();
-    url.set_username(f.reader_config.get_user().unwrap())
-        .unwrap();
-    url.set_password(Some(
-        std::str::from_utf8(f.reader_config.get_password().unwrap()).unwrap(),
-    ))
-    .unwrap();
-    url.set_path(f.reader_config.get_dbname().unwrap());
-    // Replacing these candidate connection settings supplies no native proof.
-    let pairs: Vec<(String, String)> = url
-        .query_pairs()
-        .filter(|(name, _)| name != "options")
-        .map(|(k, v)| (k.into_owned(), v.into_owned()))
-        .collect();
-    url.set_query(None);
-    url.query_pairs_mut()
-        .extend_pairs(pairs)
-        .append_pair("options", "-csearch_path=pg_catalog,public");
-    url.into()
+    // Preserve the genuine fixture Config, including Unix-domain hosts. A
+    // hostless PostgreSQL URL cannot accept URL userinfo, and is not a faithful
+    // reconstruction of the ordinary client's retained connection settings.
+    // Candidate settings still supply no native backend proof.
+    f.runtime_socket_url()
 }
 async fn seed(f: &Fixture, namespace: Uuid, key: &[u8; 32]) {
     f.owner.execute("INSERT INTO public.hosted_billing_namespaces(namespace_id,mode,provider_account,policy_revision,enabled,old_binary_fenced) VALUES($1,'test','acct_nativefixture',1,true,true)", &[&namespace]).await.unwrap();

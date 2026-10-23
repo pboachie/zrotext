@@ -261,6 +261,7 @@ struct SocketRoute {
     state: DeviceSocketState,
     admission: SocketAdmission,
     conversation: Option<conversation::Policy>,
+    protection_origin: Option<[u8; 32]>,
 }
 
 #[derive(Clone)]
@@ -676,13 +677,44 @@ pub fn router_with_account_share(state: DeviceSocketState, sockets_per_account: 
 }
 
 fn router_with_admission(state: DeviceSocketState, admission: SocketAdmission) -> Router {
+    ordinary_router(state, admission, None)
+}
+
+fn ordinary_router(
+    state: DeviceSocketState,
+    admission: SocketAdmission,
+    protection_origin: Option<[u8; 32]>,
+) -> Router {
     Router::new()
         .route("/v1/device-stream", get(upgrade))
         .with_state(SocketRoute {
             state,
             admission,
             conversation: None,
+            protection_origin,
         })
+}
+
+/// Metadata-only first-origin control on the ordinary authenticated stream.
+/// `origin` is trusted deployment configuration, never a frame/header value.
+/// This supplies no conversation negotiation, wider frame cap or dispatch.
+pub fn router_with_protection_origin_and_account_share(
+    state: DeviceSocketState,
+    origin: &str,
+    sockets_per_account: usize,
+) -> Result<Router, &'static str> {
+    Ok(ordinary_router(
+        state,
+        DEVICE_SOCKET_ADMISSION
+            .clone()
+            .with_account_limit(sockets_per_account),
+        Some(protection_origin_digest(origin)?),
+    ))
+}
+
+/// Canonical endpoint metadata only; this digest authenticates no device.
+pub fn protection_origin_digest(origin: &str) -> Result<[u8; 32], &'static str> {
+    conversation::Policy::new(origin).map(|policy| policy.protection_origin_digest())
 }
 
 /// Explicit future composition only. Main continues to call the default disabled router.
@@ -747,6 +779,7 @@ pub fn router_with_profile03(
             admission: DEVICE_SOCKET_ADMISSION
                 .clone()
                 .with_account_limit(sockets_per_account),
+            protection_origin: Some(policy.protection_origin_digest()),
             conversation: Some(policy),
         }))
 }
@@ -766,6 +799,7 @@ fn conversation_router(
             admission: DEVICE_SOCKET_ADMISSION
                 .clone()
                 .with_account_limit(sockets_per_account),
+            protection_origin: Some(policy.protection_origin_digest()),
             conversation: Some(policy),
         }))
 }
@@ -775,6 +809,7 @@ async fn upgrade(
         state,
         admission,
         conversation,
+        protection_origin,
     }): State<SocketRoute>,
     headers: HeaderMap,
     websocket: WebSocketUpgrade,
@@ -829,6 +864,7 @@ async fn upgrade(
                 handshake_slot,
                 deadline,
                 conversation,
+                protection_origin,
             )
         })
         .into_response()
@@ -1203,6 +1239,7 @@ async fn run_socket(
     handshake_slot: OwnedSemaphorePermit,
     deadline: tokio::time::Instant,
     conversation_policy: Option<conversation::Policy>,
+    protection_origin: Option<[u8; 32]>,
 ) {
     let sealed_setup_enabled = conversation_policy
         .as_ref()
@@ -1333,8 +1370,8 @@ async fn run_socket(
             message = receive_frame(&mut socket, &mut frame_budget) => {
                 match message {
                     Some(ClientFrame::ProtectionOrigin(frame)) => {
-                        let Some(policy)=conversation_policy.as_ref() else {close_with_code=Some(close_code::POLICY);break;};
-                        if protection_origin::dispatch(&mut socket,&state,actor,policy.protection_origin_digest(),frame).await.is_none(){close_with_code=Some(RETRY_LATER);break;}
+                        let Some(origin)=protection_origin else {close_with_code=Some(close_code::POLICY);break;};
+                        if protection_origin::dispatch(&mut socket,&state,actor,origin,frame).await.is_none(){close_with_code=Some(RETRY_LATER);break;}
                     }
                     Some(ClientFrame::PayloadProfile03(payload_profile03::Incoming::Ready(ready)))=>{
                         if !profile03_negotiated || !profile_clock.is_sampled()
