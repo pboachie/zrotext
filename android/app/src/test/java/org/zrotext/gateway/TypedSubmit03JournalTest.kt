@@ -87,7 +87,7 @@ class TypedSubmit03JournalTest {
         assertThrows(IllegalArgumentException::class.java) { TypedNoSubmit03Record.create(command, id(813), 0, command.observedMs - 1) }
     }
 
-    @Test fun invalidClosureTimeLeavesTheRealRoomOriginalUnchanged() = memory().use { db ->
+    @Test fun invalidClosureTimeLeavesTheRealRoomOriginalUnchanged(): Unit = memory().use { db ->
         val row = ack(db, reserve(db)); val dao = db.typedSubmits03()
         assertThrows(IllegalArgumentException::class.java) { dao.closeBeforeEntry(row, id(814), row.command().observedMs - 1) }
         assertEquals(row, dao.get(row.attemptId)); assertNull(dao.get(row.attemptId)!!.closureB64url)
@@ -98,7 +98,7 @@ class TypedSubmit03JournalTest {
         assertFalse(dao.retainPlatformEntry(closed, row.command().observedMs + 1) {})
     }
 
-    @Test fun classificationCommitsBeforeTransportAndCannotAdoptLegacyAttempt() = memory().use { db ->
+    @Test fun classificationCommitsBeforeTransportAndCannotAdoptLegacyAttempt(): Unit = memory().use { db ->
         val row = reserve(db); assertEquals("reserved", row.phase)
         assertTrue(db.typedSubmits03().callbacks(row.attemptId).isEmpty()); assertNull(row.ackSha256)
         assertNull(db.attempts().getAttempt(row.attemptId)); assertTrue(db.attempts().controlledTestEvents(row.attemptId).isEmpty())
@@ -107,7 +107,7 @@ class TypedSubmit03JournalTest {
         assertThrows(IllegalStateException::class.java) { db.typedSubmits03().reserve(other) {} }
     }
 
-    @Test fun withdrawnWriterTransactionLeavesNoClassificationOrAcknowledgement() = memory().use { db ->
+    @Test fun withdrawnWriterTransactionLeavesNoClassificationOrAcknowledgement(): Unit = memory().use { db ->
         var checks = 0
         assertThrows(IllegalStateException::class.java) { db.typedSubmits03().reserve(candidate()) { check(++checks < 2) } }
         assertNull(db.typedSubmits03().get(candidate().attemptId))
@@ -116,7 +116,7 @@ class TypedSubmit03JournalTest {
         assertEquals(row, db.typedSubmits03().get(row.attemptId))
     }
 
-    @Test fun anotherAttemptCannotReplaceTheSameMessageAfterPermanentClosure() = memory().use { db ->
+    @Test fun anotherAttemptCannotReplaceTheSameMessageAfterPermanentClosure(): Unit = memory().use { db ->
         val row = reserve(db); val command = row.command()
         db.typedSubmits03().closeBeforeEntry(row, id(810), command.observedMs + 1)
         val replacement = TypedSubmit03Command.create(command.accountId, command.deviceId, id(811), command.messageId,
@@ -127,7 +127,7 @@ class TypedSubmit03JournalTest {
         assertNull(db.typedSubmits03().get(replacement.attemptId))
     }
 
-    @Test fun duplicateAcknowledgementOrStatusMetadataCannotRearmEntry() = memory().use { db ->
+    @Test fun duplicateAcknowledgementOrStatusMetadataCannotRearmEntry(): Unit = memory().use { db ->
         val first = reserve(db); val acknowledged = ack(db, first)
         assertFalse(db.typedSubmits03().retainFirstAck(first, byteArrayOf(1, 2, 3)) {})
         assertTrue(db.typedSubmits03().retainPlatformEntry(acknowledged, first.command().observedMs + 2) {})
@@ -137,7 +137,7 @@ class TypedSubmit03JournalTest {
         assertNull(db.typedSubmits03().closeBeforeEntry(retained, id(802), first.command().observedMs + 4))
     }
 
-    @Test fun actualSameWriterEntryAndNegativeClosureHaveOnlyOneWinner() = memory().use { db ->
+    @Test fun actualSameWriterEntryAndNegativeClosureHaveOnlyOneWinner(): Unit = memory().use { db ->
         val row = ack(db, reserve(db)); val pool = Executors.newFixedThreadPool(2); val start = CyclicBarrier(2)
         try {
             val entry = pool.submit<Boolean> { start.await(5, TimeUnit.SECONDS)
@@ -152,7 +152,7 @@ class TypedSubmit03JournalTest {
         } finally { pool.shutdownNow() }
     }
 
-    @Test fun callbackBeforeEntryOrAfterClosureIsPermanentContraryEvidence() = memory().use { db ->
+    @Test fun callbackBeforeEntryOrAfterClosureIsPermanentContraryEvidence(): Unit = memory().use { db ->
         val row = reserve(db); val closed = db.typedSubmits03().closeBeforeEntry(row, id(804), row.command().observedMs + 1)!!
         val dao = db.typedSubmits03()
         assertTrue(dao.recordCallback(row.attemptId, 0, false, Activity.RESULT_OK, null, row.command().observedMs + 2))
@@ -162,7 +162,7 @@ class TypedSubmit03JournalTest {
         assertFalse(dao.retainPlatformEntry(retained, row.command().observedMs + 3) {})
     }
 
-    @Test fun immutableCallbackFactsAllowUnverifiedDeliveryToResolveWithoutInventingSuccess() = memory().use { db ->
+    @Test fun immutableCallbackFactsAllowUnverifiedDeliveryToResolveWithoutInventingSuccess(): Unit = memory().use { db ->
         val row = ack(db, reserve(db)); val dao = db.typedSubmits03()
         assertTrue(dao.retainPlatformEntry(row, row.command().observedMs + 1) {})
         val now = row.command().observedMs + 2
@@ -176,7 +176,7 @@ class TypedSubmit03JournalTest {
         assertNull(dao.get(row.attemptId)!!.closureB64url)
     }
 
-    @Test fun everyLegacyDriverTimerPumpAndPruneLeavesClassifiedHistoryAlone() = memory().use { db ->
+    @Test fun everyLegacyDriverTimerPumpAndPruneLeavesClassifiedHistoryAlone(): Unit = memory().use { db ->
         val row = reserve(db); val command = row.command(); legacy(db, row)
         val dao = db.attempts(); val initial = dao.getAttempt(row.attemptId)!!
         assertNull(dao.nextAlphaEvent(command.accountId, command.deviceId, "synthetic-origin"))
@@ -206,7 +206,7 @@ class TypedSubmit03JournalTest {
         } finally { app.deleteDatabase(name) }
     }
 
-    @Test fun terminalLegacyPruningCannotDeleteTheTypedOriginalOrItsSeparateFacts() = memory().use { db ->
+    @Test fun terminalLegacyPruningCannotDeleteTheTypedOriginalOrItsSeparateFacts(): Unit = memory().use { db ->
         val row = reserve(db); legacy(db, row)
         db.openHelper.writableDatabase.apply {
             execSQL("UPDATE sms_attempts SET state = 'failed' WHERE attemptId = ?", arrayOf(row.attemptId))
