@@ -353,14 +353,10 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
       }
         return Ok(false);
     }
+    // The complete immediate predecessor validates every earlier schema layer.
     if namespace != "public"
         || !table
         || !helper
-        || !crate::payload_profile_writer::optional(db, "public.line_activation_v2_pending").await?
-        || !crate::payload_profile_v2_receipts::optional(db).await?
-        || !crate::payload_profile_elections::optional(db).await?
-        || !crate::payload_profile_selections::optional(db).await?
-        || !crate::payload_profile_manifests::optional(db).await?
         || !crate::conversation_profile03_storage::optional(db).await?
     {
         return Err(ReviewedSendSchemaError::Invalid);
@@ -419,3 +415,7 @@ mod tests;
 #[cfg(test)]
 #[path = "conversation_reviewed_send03_storage/v2_tests.rs"]
 mod v2_tests;
+
+#[cfg(test)]
+#[path = "conversation_reviewed_send03_storage/chain_tests.rs"]
+mod chain_tests;
