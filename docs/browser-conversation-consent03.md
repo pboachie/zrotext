@@ -134,7 +134,7 @@ If the connection drops, the page reloads or confirmation is interrupted, return
 to the same conversation in the same browser and recover its saved setup. Open
 **Saved message attempts**, select **Show saved attempts**, then use **Check
 original message** for the original uncertain or accepted attempt. **Next saved
-page** continues older retained history. These checks do not sign or send again.
+page** continues more retained history. These checks do not sign or send again.
 A fresh sign-in as the original user can inspect the original receipt; it does
 not restore the old review or its signing approval.
 
