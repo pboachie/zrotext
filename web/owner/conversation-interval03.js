@@ -269,7 +269,7 @@
         messageGuard(epoch, expiry);
         const deadline = start + 30000n < expiry ? start + 30000n : expiry;
         messageGuard(epoch, deadline); await messagesStore(); messageGuard(epoch, deadline);
-        messageReview = { ...installed, content: r.content, smsCeiling: r.smsCeiling, deadline, epoch }; messagePhase = "review"; return snapshot();
+        messageReview = { ...installed, content: r.content, smsCeiling: r.smsCeiling, messageExpiresMs: expiry, deadline, epoch }; messagePhase = "review"; return snapshot();
       });
     }
     async function confirmMessage() {
@@ -277,37 +277,39 @@
       // recover these private handles or authorize another signing invocation.
       const review = messageReview; if (!review) throw Error("Review this exact message first"); messageReview = null;
       return action(async () => {
-        let record;
+        let record, deadline = review.deadline;
         try {
-          messageGuard(review.epoch, review.deadline); const c = await current(saved.receipt, false); messageGuard(review.epoch, review.deadline);
-          if (now() >= c.permissionExpiresMs) throw Error("Current message permission ended");
-          const keyId = hex(review.statement.browserSignerKeyId), retained = await possession(keyId); messageGuard(review.epoch, review.deadline);
-          const envelopeSnapshot = sdk.preparedOutboundEnvelopeSnapshot03(review.prepared), j = await messagesStore(); messageGuard(review.epoch, review.deadline);
+          messageGuard(review.epoch, deadline); const c = await current(saved.receipt, false); messageGuard(review.epoch, deadline);
+          deadline = deadline < c.permissionExpiresMs ? deadline : c.permissionExpiresMs;
+          messageGuard(review.epoch, deadline);
+          if (review.messageExpiresMs > c.permissionExpiresMs) throw Error("Current permission shortened; review a fresh message explicitly");
+          const keyId = hex(review.statement.browserSignerKeyId), retained = await possession(keyId); messageGuard(review.epoch, deadline);
+          const envelopeSnapshot = sdk.preparedOutboundEnvelopeSnapshot03(review.prepared), j = await messagesStore(); messageGuard(review.epoch, deadline);
           const first = { v: 1, message_id: text(envelopeSnapshot.unsignedEnvelope.slice(26, 42)), interval_id: saved.receipt.interval_id, owner_session_id: selected.session,
             unsigned_envelope: sdk.manifestHistoryBase64url03(envelopeSnapshot.unsignedEnvelope), envelope: null, reviewed_intent: null, reviewed_signature: null,
             stage: "envelope_sign_reserved", closed: false, receipt: null };
-          record = await j.compareAndSet(null, first); lastMessageId = record.message_id; messageGuard(review.epoch, review.deadline);
+          record = await j.compareAndSet(null, first); lastMessageId = record.message_id; messageGuard(review.epoch, deadline);
           const sign = async transcript => retained.withKey(keyScope, keyId, async key => {
-            messageGuard(review.epoch, review.deadline);
+            messageGuard(review.epoch, deadline);
             const raw = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, transcript);
-            messageGuard(review.epoch, review.deadline); return sdk.canonicalP256Signature(new Uint8Array(raw));
+            messageGuard(review.epoch, deadline); return sdk.canonicalP256Signature(new Uint8Array(raw));
           });
-          const signature = await sign(envelopeSnapshot.transcript); messageGuard(review.epoch, review.deadline);
-          const out = await sdk.completeSealedOutboundEnvelope03({ prepared: review.prepared, signature, nowMs: now() }); messageGuard(review.epoch, review.deadline);
-          record = await j.compareAndSet(record, { ...record, envelope: sdk.manifestHistoryBase64url03(out.envelope), stage: "envelope_signed" }); messageGuard(review.epoch, review.deadline);
+          const signature = await sign(envelopeSnapshot.transcript); messageGuard(review.epoch, deadline);
+          const out = await sdk.completeSealedOutboundEnvelope03({ prepared: review.prepared, signature, nowMs: now() }); messageGuard(review.epoch, deadline);
+          record = await j.compareAndSet(record, { ...record, envelope: sdk.manifestHistoryBase64url03(out.envelope), stage: "envelope_signed" }); messageGuard(review.epoch, deadline);
           const intent = await sdk.prepareReviewedIntent03V2({ context: review.reviewContext, envelope: out.envelope, reviewIssuedMs: now(),
-            reviewExpiresMs: review.deadline, smsCeiling: review.smsCeiling, nowMs: now() }); messageGuard(review.epoch, review.deadline);
-          record = await j.compareAndSet(record, { ...record, reviewed_intent: sdk.manifestHistoryBase64url03(intent), stage: "intent_sign_reserved" }); messageGuard(review.epoch, review.deadline);
-          const reviewedSignature = await sign(sdk.reviewedIntentTranscript03V2(intent)); messageGuard(review.epoch, review.deadline);
-          record = await j.compareAndSet(record, { ...record, reviewed_signature: sdk.manifestHistoryBase64url03(reviewedSignature), stage: "intent_signed" }); messageGuard(review.epoch, review.deadline);
-          const proof = await sdk.verifyReviewedIntent03V2({ context: review.reviewContext, envelope: out.envelope, intent, signature: reviewedSignature, nowMs: now() }); messageGuard(review.epoch, review.deadline);
+            reviewExpiresMs: deadline, smsCeiling: review.smsCeiling, nowMs: now() }); messageGuard(review.epoch, deadline);
+          record = await j.compareAndSet(record, { ...record, reviewed_intent: sdk.manifestHistoryBase64url03(intent), stage: "intent_sign_reserved" }); messageGuard(review.epoch, deadline);
+          const reviewedSignature = await sign(sdk.reviewedIntentTranscript03V2(intent)); messageGuard(review.epoch, deadline);
+          record = await j.compareAndSet(record, { ...record, reviewed_signature: sdk.manifestHistoryBase64url03(reviewedSignature), stage: "intent_signed" }); messageGuard(review.epoch, deadline);
+          const proof = await sdk.verifyReviewedIntent03V2({ context: review.reviewContext, envelope: out.envelope, intent, signature: reviewedSignature, nowMs: now() }); messageGuard(review.epoch, deadline);
           const client = sendTransport(async original => {
-            messageGuard(review.epoch, review.deadline);
+            messageGuard(review.epoch, deadline);
             if (JSON.stringify(original) !== JSON.stringify(j.recovery(record))) throw Error("Original send packet changed");
-            record = await j.compareAndSet(record, { ...record, stage: "submit_reserved" }); messageGuard(review.epoch, review.deadline);
+            record = await j.compareAndSet(record, { ...record, stage: "submit_reserved" }); messageGuard(review.epoch, deadline);
           });
-          const receipt = await client.send(proof); messageGuard(review.epoch, review.deadline);
-          await j.compareAndSet(record, { ...record, stage: "accepted", receipt }); messageGuard(review.epoch, review.deadline);
+          const receipt = await client.send(proof); messageGuard(review.epoch, deadline);
+          await j.compareAndSet(record, { ...record, stage: "accepted", receipt }); messageGuard(review.epoch, deadline);
           messagePhase = "accepted"; return snapshot();
         } catch (e) {
           messagePhase = record?.stage === "submit_reserved" ? "unknown" : "interrupted";

@@ -95,6 +95,19 @@ test("a review that expires, is edited, or loses a current physical comparison c
     } finally { release?.(); p.close(); }
   }
 });
+test("a shorter fresh permission cannot reuse older prepared ciphertext or its longer signing window", async () => {
+  const p = await setup(); let release; try {
+    await p.c.reviewMessage({ content: "Synthetic shortened permission", smsCeiling: 1 }); let signing = 0;
+    p.f.mutateContext = v => ({ ...v, permission_expires_ms: String(BigInt(v.compared_ms) + 1000n),
+      selection: { ...v.selection, permission_expires_ms: String(BigInt(v.compared_ms) + 1000n) } });
+    release = instrument(args => {
+      const prefix = new TextDecoder().decode(new Uint8Array(args[2]).slice(0, 40));
+      if (prefix.startsWith("ZTSE/sign/v3") || prefix.startsWith("zrotext/conversation/reviewed-send03/v2")) { signing++; p.f.mono += 2000; }
+    });
+    await assert.rejects(p.c.confirmMessage(), /permission shortened/); assert.equal(signing, 0); assert.equal(p.sent.length, 0);
+    assert.deepEqual((await p.f.readMessages()).attempts, []); await assert.rejects(async () => p.c.confirmMessage());
+  } finally { release?.(); p.close(); }
+});
 test("not-found status keeps the original uncertainty and cannot enable another submit", async () => {
   const p = await setup(() => ({})); try {
     p.f.beforeSend = async () => { throw Error("Synthetic lost response"); };
