@@ -195,7 +195,9 @@ class ProtectionSetupJournalTest {
 
     @Test fun additiveMigrationPreservesOldNegativeRoutesAndCreatesNoSetupOrigin() {
         val app = RuntimeEnvironment.getApplication()
-        val name = "protection-migration-${UUID.randomUUID()}.db"
+        // Keep the actual native WAL sidecar below Windows' path limit in a long
+        // Robolectric test directory. The database remains unique to this invocation.
+        val name = "pm-${UUID.randomUUID().toString().take(8)}.db"
         app.deleteDatabase(name)
         try {
             Room.databaseBuilder(app, SmsJournalDatabase::class.java, name).allowMainThreadQueries().build().use { db ->
