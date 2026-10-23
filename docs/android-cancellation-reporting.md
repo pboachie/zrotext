@@ -37,3 +37,8 @@ first proof command atomically records its root on that original cancellation ro
 An older migrated cancellation, a missing root or any missing predecessor, signing
 burn or transport history cannot be adopted as unused. Lost first-command responses
 retain that root; a new explicit decision may reconcile only the same saved command.
+
+While Message details stays open, a genuine connection replacement or app resume
+refreshes only the displayed metadata. Old decisions and pending display loads are
+withdrawn. Reporting and status checks still require a new explicit action; this
+refresh never requests a proof, clock or signature automatically.

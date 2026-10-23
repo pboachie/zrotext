@@ -6,18 +6,28 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import okhttp3.WebSocket
 
 /** Distinct passive port for the actual enrolled socket. Health, old owner/physical/content
  * lifetimes and AlphaPump are deliberately absent; this port cannot create an effect. */
 internal object TypedHistory03Connections {
     private val current = AtomicReference<Host?>()
+    // Notification ONLY. A collector always reads/rechecks the actual current Host;
+    // this revision cannot authenticate an actor or become a time/permission snapshot.
+    private val revisions = AtomicLong(0)
+    private val changes = MutableStateFlow(0L)
+    val hostChanges: StateFlow<Long> = changes.asStateFlow()
+    private fun changed() { changes.value = revisions.incrementAndGet() }
     fun register(socket: WebSocket, identity: EvidenceIdentity, epoch: Long, lineVersion: Int,
         handshakePoint: ByteArray, actorCurrent: () -> Unit, elapsedMs: () -> Long = SystemClock::elapsedRealtime): Host {
         actorCurrent(); require(epoch > 0 && lineVersion in 1..2)
         val host = Host(socket, identity.copy(), epoch, lineVersion, handshakePoint.copyOf(), actorCurrent, elapsedMs)
         current.getAndSet(host)?.close()
-        return host.also { it.requireCurrent() }
+        return host.also { it.requireCurrent(); changed() }
     }
     fun current() = current.get()?.takeIf { try { it.requireCurrent(); true } catch (_: Exception) { false } }
 
@@ -197,7 +207,7 @@ internal object TypedHistory03Connections {
         }
         override fun close() {
             if (closed.compareAndSet(false, true)) {
-                current.compareAndSet(this, null)
+                if (current.compareAndSet(this, null)) changed()
                 synchronized(this) { observation = null; closureObservation = null }
                 pending.getAndSet(null)?.future?.completeExceptionally(IllegalStateException("History actor connection ended"))
                 outcomePending.getAndSet(null)?.future?.completeExceptionally(IllegalStateException("History actor connection ended"))
