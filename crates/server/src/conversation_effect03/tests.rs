@@ -49,7 +49,7 @@ fn closure(phase: u8) -> Vec<u8> {
     assert_eq!(bytes.len(), 210);
     bytes
 }
-fn core(key: &SigningKey) -> Vec<u8> {
+pub(super) fn core(key: &SigningKey) -> Vec<u8> {
     let mut bytes = b"ZTNS\x01\x03\x03\0".to_vec();
     bytes.extend(prefix(8, 0));
     for n in [1_u64, 2, 3, 4, 1, 6, 5_000, 6_000, 7_000, 37_000] {
@@ -57,10 +57,13 @@ fn core(key: &SigningKey) -> Vec<u8> {
     }
     for value in 1..=7 {
         if value == 5 {
-            bytes.extend(crate::sealed_manifest::key_id(
-                4,
-                key.verifying_key().to_sec1_point(false).as_bytes(),
-            ));
+            // Established enrollment/socket ID is algorithm-framed, not
+            // selected from a role4 manifest or supplied as actor authority.
+            let mut id = Sha256::new();
+            id.update(b"ZTSE/key/v1\0");
+            id.update([1, 1]);
+            id.update(key.verifying_key().to_sec1_point(false).as_bytes());
+            bytes.extend(id.finalize());
         } else if value == 7 {
             bytes.extend(manual_hash(
                 b"ZTSE/conversation/no-submit-record03/v1",
