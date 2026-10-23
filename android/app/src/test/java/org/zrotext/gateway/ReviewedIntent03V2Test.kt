@@ -17,7 +17,7 @@ import org.robolectric.annotation.Config
 class ReviewedIntent03V2Test {
     private fun verify(f: Profile03ExecutionFixture, intent: ReviewedIntent03V2 = f.intentV2,
         signature: ByteArray = f.intentV2Signature, admitted: Long = f.admittedAt, now: Long = f.now,
-        epoch: Long = 1, origin: ByteArray = Profile03ExecutionFixture.unhex(f.session.originHash)) =
+        epoch: Long = 1, origin: ByteArray = f.origins.protocolDigest()) =
         intent.verifyReceipt(signature, f.authority, f.election.requireCurrent(f.authority, f.currentSelection, now),
             admitted, now, epoch, origin, 1, 200_000)
 
@@ -38,7 +38,7 @@ class ReviewedIntent03V2Test {
     @Test fun historicalV1RemainsExactButCannotEnterTheV2CodecOrSignatureDomain(): Unit = Profile03ExecutionFixture().use { f ->
         assertEquals(624, f.intentBytes.size)
         f.intent.verifyReceipt(f.intentSignature, f.authority, f.election.requireCurrent(f.authority, f.currentSelection, f.now),
-            f.admittedAt, f.now, 3, Profile03ExecutionFixture.unhex(f.session.originHash), 1, 200_000)
+            f.admittedAt, f.now, 3, f.origins.protocolDigest(), 1, 200_000)
         denied { ReviewedIntent03V2.decode(f.intentBytes) }
         denied { ReviewedIntent03.decode(f.intentV2Bytes) }
         denied { ReviewedIntent03V2.decode(f.intentBytes.copyOf().apply { this[4] = 2 }) }

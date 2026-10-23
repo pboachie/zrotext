@@ -16,14 +16,14 @@ class ConversationInterval03PermissionTest {
     @Test fun activeOriginalProofsRequireExactPendingFetchAndIndependentlySelectedContext(): Unit = ConversationInterval03TestFixture().use { v ->
         val p = v.decode(v.permission()); p.requireRequest("fetch", v.f.attempt)
         val roles = p.verifyCurrent(v.selected(), Profile03ExecutionFixture.point(v.f.reader),
-            Profile03ExecutionFixture.unhex(v.f.session.originHash), v.f.now)
+            v.f.origins.protocolDigest(), v.f.now)
         assertArrayEquals(Profile03ExecutionFixture.point(v.f.eventSigning), roles.phonePoint())
         assertThrows(Exception::class.java) { p.requireRequest("fetch", UUID(0, 888)) }
         assertThrows(Exception::class.java) { p.requireRequest("interval_status", v.f.attempt) }
         assertThrows(Exception::class.java) { p.verifyCurrent(v.selected(), Profile03ExecutionFixture.point(v.f.reader), ByteArray(32), v.f.now) }
         v.f.line.callback()
         assertThrows(Exception::class.java) { p.verifyCurrent(v.selected(), Profile03ExecutionFixture.point(v.f.reader),
-            Profile03ExecutionFixture.unhex(v.f.session.originHash), v.f.now) }
+            v.f.origins.protocolDigest(), v.f.now) }
     }
     @Test fun exactNullSequencesDescribePendingOriginalsAndCanNeverSatisfyFetch(): Unit = ConversationInterval03TestFixture().use { v ->
         for (phase in listOf("reserved", "requested", "install_pending", "active")) {
@@ -50,7 +50,7 @@ class ConversationInterval03PermissionTest {
     @Test fun permissionDeadlineClockAndSamePrimaryComparisonAreIndependentOfSignatureValidity(): Unit = ConversationInterval03TestFixture().use { v ->
         val p = v.decode(v.permission())
         fun verify(p: ConversationInterval03Permission, now: Long = v.f.now) = p.verifyCurrent(v.selected(),
-            Profile03ExecutionFixture.point(v.f.reader), Profile03ExecutionFixture.unhex(v.f.session.originHash), now)
+            Profile03ExecutionFixture.point(v.f.reader), v.f.origins.protocolDigest(), now)
         assertThrows(Exception::class.java) { verify(p, v.f.now - 1) }
         assertThrows(Exception::class.java) { verify(p, p.permissionExpiresMs) }
         assertThrows(Exception::class.java) { verify(v.decode(v.permission().put("compared_ms", (v.f.now - 1).toString()))) }

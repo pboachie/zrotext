@@ -73,7 +73,7 @@ class ConversationInterval03RuntimeTest {
         private fun newStore() = ConversationInterval03Store(app,
             ConversationExistingJournalProtection { SecretKeySpec(ByteArray(32) { 11 }, "AES") },
             ConversationExistingSuppressionTokens { SecretKeySpec(ByteArray(32) { 12 }, "HmacSHA256") })
-        private fun newRuntime() = ConversationInterval03Runtime(owner, Profile03ExecutionFixture.unhex(base.session.originHash),
+        private fun newRuntime() = ConversationInterval03Runtime(owner, base.origins.protocolDigest(),
             store, signer, time, live::get, { raw, line ->
                 assertEquals("{\"v\":1}", raw.toString(Charsets.UTF_8)); assertEquals(base.line.line, line); f.selected()
             }, { sent.add(it); true })

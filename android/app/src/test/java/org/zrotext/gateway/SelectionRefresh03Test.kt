@@ -45,7 +45,7 @@ class SelectionRefresh03Test {
             .put(Profile03ExecutionFixture.keyId(f.approval, true)).put(f.fingerprint).put(f.authority.digest)
             .put(sessionDigest).put(Profile03ExecutionFixture.sha(ReviewedIntent03.framed("ZTSE/line/payload-profile/owner-session/v1",
                 f.account + Profile03ExecutionFixture.uuid(f.ownerUser) + Profile03ExecutionFixture.uuid(f.ownerSession))))
-            .put(Profile03ExecutionFixture.unhex(f.session.originHash)).put(ByteArray(32) { 42 })
+            .put(f.origins.protocolDigest()).put(ByteArray(32) { 42 })
             .putLong(f.now).putLong(f.now + 120_000).putLong(0).array())
         val device = Profile03ExecutionFixture.rawSign(f.enrollment, SelectionRefresh03.deviceTranscript(core, observation))
         val owner = Profile03ExecutionFixture.rawSign(f.approval, SelectionRefresh03.ownerTranscript(core, observation, device))

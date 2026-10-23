@@ -24,7 +24,7 @@ internal class ConversationInterval03TestFixture(val f: Profile03ExecutionFixtur
             .put(f.fingerprint).put(f.authority.digest).put(f.accepted.electionCommitment).put(f.accepted.electionBundleSha256)
             .put(Profile03ExecutionFixture.sha(ReviewedIntent03.framed("ZTSE/line/payload-profile/owner-session/v1",
                 f.account + ReviewedIntent03.uuid(f.ownerUser) + ReviewedIntent03.uuid(f.ownerSession))))
-            .put(Profile03ExecutionFixture.unhex(f.session.originHash)).put(deviceSession).put(physical)
+            .put(f.origins.protocolDigest()).put(deviceSession).put(physical)
             .put(Profile03ExecutionFixture.sha(ReviewedIntent03.uuid(UUID(0, id + 300))))
             .put(25).put(ConversationInterval03.DISCLOSURE_VERSION.toByteArray(Charsets.US_ASCII))
             .put(Profile03ExecutionFixture.sha(ConversationInterval03.DISCLOSURE.toByteArray(Charsets.UTF_8)))

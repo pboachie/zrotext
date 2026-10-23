@@ -24,7 +24,7 @@ class SelectionRefresh03JournalTest {
             .putLong(2).putLong(1).putLong(2).putLong(3).put(f.accepted.electionCommitment).put(f.accepted.electionBundleSha256)
             .put(Profile03ExecutionFixture.keyId(f.reader, false)).put(Profile03ExecutionFixture.keyId(f.enrollment, true))
             .put(Profile03ExecutionFixture.keyId(f.approval, true)).put(f.fingerprint).put(f.authority.digest)
-            .put(session).put(ByteArray(32) { 8 }).put(Profile03ExecutionFixture.unhex(f.session.originHash))
+            .put(session).put(ByteArray(32) { 8 }).put(f.origins.protocolDigest())
             .put(ByteArray(32) { 9 }).putLong(f.now).putLong(f.now + 120_000).putLong(0).array())
         val device = Profile03ExecutionFixture.rawSign(f.enrollment, SelectionRefresh03.deviceTranscript(core, observation))
         val owner = Profile03ExecutionFixture.rawSign(f.approval, SelectionRefresh03.ownerTranscript(core, observation, device))
@@ -33,7 +33,7 @@ class SelectionRefresh03JournalTest {
         val reserved = SelectionRefresh03Record(core.refresh.toString(), f.record.accountId, f.record.deviceId, f.record.lineId,
             f.record.newBindingId, 2, f.line.challengeId.toString(), 1, f.record.challengeId,
             checkNotNull(f.installed.acceptedEvidenceSha256), Profile03ExecutionFixture.hex(session), f.session.connectionEpoch,
-            f.session.deploymentEpoch, f.session.originHash, f.line.selected, UUID(0, 78).toString(), f.now, f.now + 300_000,
+            f.session.deploymentEpoch, f.origins.protocolHash, f.line.selected, UUID(0, 78).toString(), f.now, f.now + 300_000,
             Profile03ElectionEncoding.encode(core.bytes()), Profile03ElectionEncoding.encode(observation))
         val signed = reserved.copy(state = "signed", deviceSignatureB64url = Profile03ElectionEncoding.encode(device))
         val accepted = signed.copy(state = "accepted", ownerSignatureB64url = Profile03ElectionEncoding.encode(owner),

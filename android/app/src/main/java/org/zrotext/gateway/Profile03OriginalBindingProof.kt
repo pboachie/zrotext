@@ -15,7 +15,7 @@ internal class Profile03OriginalBindingProof private constructor(
     private val observation: ByteArray, private val deviceStatement: ByteArray,
     private val deviceSignature: ByteArray, private val ownerStatement: ByteArray,
     private val ownerSignature: ByteArray, private val registrationDigest: ByteArray,
-    private val bindingDigest: ByteArray, private val originDigest: ByteArray,
+    private val bindingDigest: ByteArray, private val routingOriginHash: String,
 ) {
     fun oldBindingProofDigest() = bindingDigest.copyOf()
     fun devicePoint() = enrollmentPoint.copyOf()
@@ -25,7 +25,7 @@ internal class Profile03OriginalBindingProof private constructor(
     fun matchesLocal(record: LineActivationV2Record): Boolean = record.isInstalled() && record.purpose == "sealed" &&
         record.accountId == accountId.toString() && record.deviceId == deviceId.toString() &&
         record.lineId == lineId.toString() && record.generation == generation && record.challengeId == activationId.toString() &&
-        record.originHash == hex(originDigest) && record.signerFingerprint == hex(sha(enrollmentPoint)) &&
+        record.originHash == routingOriginHash && record.signerFingerprint == hex(sha(enrollmentPoint)) &&
         record.observationB64url == Profile03ElectionEncoding.encode(observation) &&
         record.statementSha256 == hex(sha(deviceStatement)) && record.signatureSha256 == hex(sha(deviceSignature)) &&
         record.confirmationSha256 == hex(sha(deviceStatement + deviceSignature)) &&
@@ -95,7 +95,8 @@ internal class Profile03OriginalBindingProof private constructor(
                 same(core.copyOfRange(288, 320), signingId(existing)) && same(core.copyOfRange(400, 432), sha(origin)))
             return Profile03OriginalBindingProof(registrationId, bindingId, challenge, account, device, line,
                 generation, accepted, devicePoint, approvalPoint, observation.bytes(), deviceStatement,
-                deviceSignature, ownerStatement, ownerSignature, sha(registered), digest, sha(origin))
+                deviceSignature, ownerStatement, ownerSignature, sha(registered), digest,
+                Profile03Origins.fromProtocol(account, device, configuredOrigin).routingHash)
         }
 
         private class Registration(val account: UUID, val device: UUID, val line: UUID,
