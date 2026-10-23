@@ -57,8 +57,9 @@ class TypedPreparedRadioSubmissionTest {
                 .put("challenge", metadata.single().getString("challenge")).put("account_id", f.line.account)
                 .put("device_id", f.line.device).put("connection_epoch", f.session.connectionEpoch)
                 .put("deployment_epoch", f.session.deploymentEpoch).put("session_id", f.session.sessionId)
-                .put("server_time_ms", f.now).put("site_id", "synthetic-site").put("instance_id", "synthetic-instance")
+                .put("server_time_ms", f.now - 1).put("site_id", "synthetic-site").put("instance_id", "synthetic-instance")
                 .put("line_activation_version", 2).toString().toByteArray())
+            elapsed++ // A real snapshot must follow its anchor; keep trusted now exactly f.now.
             val identity = checkNotNull(time.snapshot()).first
             v = ConversationInterval03TestFixture(f, identity.deviceSessionDigest(Profile03ExecutionFixture.point(f.enrollment)))
             wire = TypedSubmit03WireTest.Fixture(v)
