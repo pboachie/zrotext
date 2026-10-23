@@ -243,10 +243,21 @@ fn only_pre_entry_closure_can_build_the_exact_original_record() {
 fn proof_outer_nonce_command_and_transport_correlations_are_distinct() {
     let key = p256::ecdsa::SigningKey::generate();
     let core = crate::conversation_effect03::tests::core(&key);
-    let body = json!({"v":1,"type":"payload_profile_no_submit_proof03","connection_epoch":3,"proof_request_id":uuid(7),"closure_id":uuid(6),"challenge_id":uuid(8),"core":B.encode(core),"signature":B.encode([1;64])});
+    let body = json!({"v":1,"type":"payload_profile_no_submit_proof03","connection_epoch":3,"proof_request_id":uuid(7),"closure_id":uuid(6),"challenge_id":uuid(8),"core":B.encode(&core),"signature":B.encode([1;64])});
     assert!(Request03::parse(&body.to_string()).is_ok());
+    let mut reconnected = body.clone();
+    reconnected["connection_epoch"] = json!(4);
+    let Request03::Proof(parsed) = Request03::parse(&reconnected.to_string()).unwrap().unwrap()
+    else {
+        panic!("proof")
+    };
+    assert_eq!(parsed.connection_epoch, 4);
+    assert_eq!(parsed.core.numbers()[2], 3);
+    assert_eq!(parsed.core.bytes().as_slice(), core.as_slice());
+    assert_eq!(parsed.signature, [1; 64]);
+    // Syntax supplies no accepted history or fresh lease authority.
     for (name, value) in [
-        ("connection_epoch", json!(4)),
+        ("connection_epoch", json!(0)),
         ("proof_request_id", json!(uuid(9))),
         ("closure_id", json!(uuid(9))),
         ("challenge_id", json!(uuid(9))),
