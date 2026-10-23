@@ -104,6 +104,27 @@ class TypedOutcome03JournalTest {
         } finally { app.deleteDatabase(name) }
     }
 
+    @Test fun boundedHistoryPageCannotHideAnAcknowledgmentBeyondItsFirstSixteenBurns() {
+        TypedHistory03Fixture().use { f -> memory().use { db ->
+            val (row, fact) = TypedOutcome03TestFixture.completed(db, f)
+            lateinit var last: TypedOutcome03Upload
+            for (index in 0 until 20) {
+                last = TypedOutcome03TestFixture.upload(row, fact, f.epoch)
+                    .copy(requestId = TypedHistory03Fixture.id(1000L + index))
+                assertNotNull(db.typedOutcomes03().enter(row, fact, last, true, f.host::requireCurrent))
+            }
+            val firstPage = db.typedOutcomes03().uploads(fact.eventId)
+            assertEquals(16, firstPage.size)
+            assertFalse(last.requestId in firstPage.map { it.requestId })
+            assertTrue(db.typedOutcomes03().retainAck(last, TypedOutcome03TestFixture.ack(row.command(),
+                last.assertion(), f.epoch, "history_only").toString().toByteArray()))
+            assertFalse(TypedOutcome03Uploader.report(db, f.host, fact, true))
+            assertEquals(1, f.sends)
+            assertEquals(4, db.typedOutcomes03().uploads(fact.eventId, firstPage.last().requestId).size)
+            assertEquals(fact, db.typedHistory03().source(fact.slot))
+        } }
+    }
+
     @Test fun genuineVersion24CompletedHistoryDoesNotAcquireAutomaticFirstIoOnUpgrade() {
         val name = "tom-${java.util.UUID.randomUUID().toString().take(10)}"
         fun open() = Room.databaseBuilder(app, SmsJournalDatabase::class.java, name).allowMainThreadQueries()
