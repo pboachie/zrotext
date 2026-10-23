@@ -40,6 +40,24 @@ fn body(name: &str) -> Result<&'static str> {
     body_for(name, 116)
 }
 fn body_for(name: &str, version: i64) -> Result<&'static str> {
+    if version == 118
+        && matches!(
+            name,
+            "hosted_runtime_native_schema_valid"
+                | "hosted_runtime_identity_ready"
+                | "hosted_runtime_scope"
+                | "payload_profile_writer_version"
+                | "payload_profile_writer_ready"
+        )
+    {
+        return declared_function_body(
+            include_str!("../../../deploy/compose/migrations/118_device_protection_origins.sql"),
+            name,
+            "$function$",
+        )
+        .ok_or(IdentitySchemaError::Invalid);
+    }
+
     // These three applied106 declarations use its original unqualified names
     // and $$ marker. Runtime validation keeps their exact original hash pairs;
     // this narrow source branch lets the regression check those same bytes.
@@ -59,7 +77,7 @@ fn body_for(name: &str, version: i64) -> Result<&'static str> {
             .map(|(body, _)| body)
             .ok_or(IdentitySchemaError::Invalid);
     }
-    if version == 117
+    if matches!(version, 117..=118)
         && matches!(
             name,
             "hosted_runtime_native_schema_valid"
@@ -505,7 +523,7 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
         )
         .await?
         .try_get(0)?;
-    if !matches!(version,116..=117) || db.query_one("SELECT count(*) FROM pg_catalog.pg_proc WHERE pronamespace='public'::pg_catalog.regnamespace AND proname LIKE 'hosted_runtime_%'",&[]).await?.try_get::<_,i64>(0)?!=15 {return Err(IdentitySchemaError::Invalid);}
+    if !matches!(version,116..=118) || db.query_one("SELECT count(*) FROM pg_catalog.pg_proc WHERE pronamespace='public'::pg_catalog.regnamespace AND proname LIKE 'hosted_runtime_%'",&[]).await?.try_get::<_,i64>(0)?!=15 {return Err(IdentitySchemaError::Invalid);}
     functions(db, version).await?;
     tables(db).await?;
     if !db.query_one("SELECT public.payload_profile_writer_version() AND coalesce((SELECT migration_version=$1 AND graph_sha256=public.payload_profile_writer_graph() FROM public.payload_profile_writer_catalog WHERE singleton),false)",&[&version]).await?.try_get::<_,bool>(0)? {return Err(IdentitySchemaError::Invalid);}
