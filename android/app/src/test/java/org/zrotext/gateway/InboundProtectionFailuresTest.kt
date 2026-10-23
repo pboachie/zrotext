@@ -61,4 +61,25 @@ class InboundProtectionFailuresTest {
         }
         assertSame(shared, refusal.cause); assertTrue(shared.suppressed.isEmpty()); assertTrue(refusal.suppressed.isEmpty())
     }
+
+    @Test fun aFatalFileErrorStillAttemptsRoomAndCannotBecomeAnOrdinaryRefusal() {
+        val fatal = LinkageError("synthetic fatal file adapter failure")
+        val room = IOException("synthetic Room failure"); var roomWrites = 0
+        val thrown = assertThrows(LinkageError::class.java) {
+            InboundProtectionFailures.refuse("storage_unavailable", IOException("synthetic original")) {
+                InboundProtectionFailures.persist({}, { throw fatal }, { roomWrites++; throw room })
+            }
+        }
+        assertSame(fatal, thrown); assertEquals(1, roomWrites); assertSame(room, thrown.suppressed.single())
+    }
+
+    @Test fun aFatalRoomErrorPreservesEarlierFileFailureAndRemainsFatal() {
+        val file = IOException("synthetic file failure"); val fatal = LinkageError("synthetic fatal Room adapter failure")
+        val thrown = assertThrows(LinkageError::class.java) {
+            InboundProtectionFailures.refuse("storage_unavailable", IOException("synthetic original")) {
+                InboundProtectionFailures.persist({}, { throw file }, { throw fatal })
+            }
+        }
+        assertSame(fatal, thrown); assertSame(file, thrown.suppressed.single())
+    }
 }

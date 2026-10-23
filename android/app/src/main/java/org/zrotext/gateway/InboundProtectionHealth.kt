@@ -165,11 +165,15 @@ internal object InboundProtectionFailures {
         withdraw() // Synchronous RAM withdrawal always precedes either storage wait.
         val fileFailure = runCatching(files).exceptionOrNull()
         val roomFailure = runCatching(room).exceptionOrNull()
-        if (roomFailure != null) {
-            if (fileFailure != null && fileFailure !== roomFailure) roomFailure.addSuppressed(fileFailure)
-            throw roomFailure
-        }
-        if (fileFailure != null) throw fileFailure
+        val primary = when {
+            fileFailure is Error -> fileFailure
+            roomFailure is Error -> roomFailure
+            roomFailure != null -> roomFailure
+            else -> fileFailure
+        } ?: return
+        val secondary = if (primary === fileFailure) roomFailure else fileFailure
+        if (secondary != null && secondary !== primary) primary.addSuppressed(secondary)
+        throw primary
     }
     fun refuse(reason: String, original: Exception, persistNegative: () -> Unit): Nothing {
         val refusal = InboundProtection.Unavailable(reason, original)
