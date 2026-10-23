@@ -2,19 +2,10 @@
 package org.zrotext.gateway
 
 import java.util.UUID
-import java.util.concurrent.atomic.AtomicLong
 
-/** Negative-only callback epoch, captured at the affirmative action BEFORE queue/writer
- * waits. No epoch value proves absence of callbacks; the SAME Room writer checks facts. */
-internal object TypedNoSubmit03Lifetimes {
-    private val epoch = AtomicLong(0)
-    class Ticket internal constructor(private val captured: Long) { fun requireCurrent() { check(epoch.get() == captured) } }
-    fun capture() = Ticket(epoch.get())
-    fun callbackArriving() { epoch.incrementAndGet() }
-}
 internal class TypedNoSubmit03Action private constructor(val row: TypedSubmit03Record,
     val host: TypedHistory03Connections.Host, val decision: ConversationInterval03Foreground.Decision,
-    private val callbacks: TypedNoSubmit03Lifetimes.Ticket) {
+    private val callbacks: TypedNoSubmit03CallbackLifetime.Ticket) {
     fun requireCurrent() { check(decision.isCurrent()); callbacks.requireCurrent(); host.requireOriginal(row); check(decision.isCurrent()) }
     /** Only the exact committed first-transition receipt may advance this decision. A
      * generic SELECT/new row can never be rebound to an old affirmative action. */

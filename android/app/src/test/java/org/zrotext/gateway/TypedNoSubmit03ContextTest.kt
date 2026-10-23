@@ -68,10 +68,15 @@ class TypedNoSubmit03ContextTest {
             assertThrows(IllegalStateException::class.java) { ready.context.requireCurrent(ready.action.row, ready.proof) }
             val p = db.typedNoSubmits03().proof(ready.proof.requestId)!!
             val row = ready.action.row
-            // Callback arrival invalidates RAM before a potentially blocked writer records it.
-            TypedNoSubmit03Lifetimes.callbackArriving()
+            // Complete the genuine callback route instead of leaving a global arrival
+            // unresolved in this test process. Old tickets remain withdrawn after COMMIT.
+            SmsCallbackJournal.record(db, row.attemptId, 0, false, android.app.Activity.RESULT_OK, null, -11)
             assertThrows(IllegalStateException::class.java) { ready.action.requireCurrent() }
-            assertEquals(p, db.typedNoSubmits03().proof(p.requestId)); assertEquals(row, db.typedSubmits03().get(row.attemptId))
+            assertEquals(p, db.typedNoSubmits03().proof(p.requestId))
+            val changed = db.typedSubmits03().get(row.attemptId)!!
+            assertEquals(row.commandB64url, changed.commandB64url); assertEquals(row.closureB64url, changed.closureB64url)
+            assertTrue(changed.conflict); assertEquals(1L, changed.lastCallbackOrdinal)
+            assertEquals(-11L, db.typedSubmits03().callbacks(row.attemptId).single().observedMs)
             assertEquals(0, f.signs)
         } }
     }

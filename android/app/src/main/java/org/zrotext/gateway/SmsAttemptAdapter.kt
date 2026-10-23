@@ -199,26 +199,38 @@ class SmsCallbackReceiver : BroadcastReceiver() {
         val attemptId = uri.pathSegments[0]
         val index = uri.pathSegments[2].toIntOrNull() ?: return
         if (attemptId.length > 64 || index !in 0..5) return
-        val result = resultCode
-        val pdu = if (delivery) intent.getByteArrayExtra("pdu") else null
-        val format = if (delivery) intent.getStringExtra("format") else null
-        val pending = goAsync()
-        val app = context.applicationContext
-        JournalRuntime.io.execute {
+        // Capture the negative arrival synchronously, before payload/decoder, goAsync,
+        // executor or journal waits. A NEW UI tap must refuse throughout that interval.
+        val arrival = TypedNoSubmit03Lifetimes.callbackArriving()
+        arrival.guard {
+            val result = resultCode
+            val pdu = if (delivery) intent.getByteArrayExtra("pdu") else null
+            val format = if (delivery) intent.getStringExtra("format") else null
+            val pending = goAsync()
+            val app = context.applicationContext
             try {
-                val journal = SmsJournalDatabase.get(app)
-                val status = if (delivery) {
-                    if (result == android.app.Activity.RESULT_OK) readDeliveryStatus(pdu, format)
-                    else DeliveryStatus.UNVERIFIED
-                } else null
-                val now = System.currentTimeMillis()
-                // Permanent classification, not a RAM registry or present effect permission.
-                // Storage failure never falls back to the legacy pump.
-                SmsCallbackJournal.record(journal, attemptId, index, delivery, result, status, now) {
-                    TypedHistory03Runtime.callbackRecorded(app, attemptId)
+                JournalRuntime.io.execute {
+                    try {
+                        arrival.guard {
+                            val journal = SmsJournalDatabase.get(app)
+                            val status = if (delivery) {
+                                if (result == android.app.Activity.RESULT_OK) readDeliveryStatus(pdu, format)
+                                else DeliveryStatus.UNVERIFIED
+                            } else null
+                            val now = System.currentTimeMillis()
+                            // Only the observed writer result retires this exact arrival.
+                            // Queue/storage uncertainty never clears it or falls back.
+                            SmsCallbackJournal.record(journal, attemptId, index, delivery, result, status, now, arrival) {
+                                TypedHistory03Runtime.callbackRecorded(app, attemptId)
+                            }
+                        }
+                    } finally {
+                        pending.finish() // Android broadcast completion is NOT callback COMMIT.
+                    }
                 }
-            } finally {
+            } catch (failure: Throwable) {
                 pending.finish()
+                throw failure // Outer guard retains unknown on rejected scheduling.
             }
         }
     }
@@ -242,12 +254,17 @@ class SmsCallbackReceiver : BroadcastReceiver() {
 /** Shared actual cold receiver route. No catch permits a failed typed read to become legacy. */
 internal object SmsCallbackJournal {
     fun record(journal: SmsJournalDatabase, attempt: String, index: Int, delivery: Boolean,
-        result: Int, status: Int?, observedMs: Long, onTypedCommitted: () -> Unit = {}) {
-        TypedNoSubmit03Lifetimes.callbackArriving() // Negative RAM withdrawal BEFORE any writer wait.
-        if (!journal.typedSubmits03().recordCallback(attempt, index, delivery, result, status, observedMs)) {
-            journal.attempts().recordCallback(attempt, index, delivery, result, status, observedMs)
-            JournalWriteSignal.alphaEventRecorded()
-        } else onTypedCommitted()
+        result: Int, status: Int?, observedMs: Long,
+        arrival: TypedNoSubmit03CallbackLifetime.Arrival = TypedNoSubmit03Lifetimes.callbackArriving(),
+        onTypedCommitted: () -> Unit = {}) {
+        // Direct callers also begin a real pending arrival. No generic finally clears it.
+        val typed = arrival.guard {
+            val found = journal.typedSubmits03().recordCallback(attempt, index, delivery, result, status, observedMs)
+            if (!found) journal.attempts().recordCallback(attempt, index, delivery, result, status, observedMs)
+            arrival.recorded() // Actual transaction/classification returned; no effect permission.
+            found
+        }
+        if (typed) onTypedCommitted() else JournalWriteSignal.alphaEventRecorded()
     }
 }
 

@@ -42,3 +42,15 @@ While Message details stays open, a genuine connection replacement or app resume
 refreshes only the displayed metadata. Old decisions and pending display loads are
 withdrawn. Reporting and status checks still require a new explicit action; this
 refresh never requests a proof, clock or signature automatically.
+
+A validated callback arrival blocks new cancellation decisions before payload,
+queue or storage waits. Only an observed typed or legacy writer completion retires
+that arrival; overlapping arrivals remain independent. Queue rejection, failed
+storage or a lost completion remains uncertain for the current process. No timeout
+or finally block clears it. Existing decisions stay withdrawn after completion.
+
+This negative guard is RAM-only. It does not promise durable knowledge or OS
+redelivery of a callback lost before its first write after abrupt process death.
+Cold recovery still requires the original permanent pre-entry cancellation and
+complete durable proof history; RAM absence never supplies that basis or recreates
+an effect capability. No broader storage-recovery protocol is implied.

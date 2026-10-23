@@ -72,7 +72,7 @@ import kotlinx.coroutines.launch
         fun act(checkOnly: Boolean) {
             if (busy) return
             val action = runCatching { discovery.capture(display) }.getOrNull()
-            if (action == null) { status = "Reconnect this phone and review its saved cancellation while the app is open."; return }
+            if (action == null) { status = "Cancellation reporting is unavailable. Its saved records are kept; no message is retried."; return }
             busy = true
             status = if (checkOnly) "Checking this saved cancellation…" else "Reporting this saved cancellation…"
             TypedHistory03Runtime.cancellationWork {
