@@ -167,6 +167,26 @@ async fn candidate_inventory_covers_exact_numbered_schema_relations_columns_fk_a
                         "ordinary_other_message_accounting_preserves_retained03_reserve_and_aggregate_floor"
                     )
                 ) | (
+                    "messages",
+                    Some("exact_reviewed03_admission_or_one_use_typed_effect_without_rearm")
+                ) | (
+                    "dispatch_jobs",
+                    Some("exact_initial03_claim_or_terminal_typed_effect_completion_without_rearm")
+                ) | (
+                    "message_attempts" | "dispatch_fences",
+                    Some(
+                        "exact_original03_one_use_typed_effect_or_terminal_fence_preserving_history"
+                    )
+                ) | (
+                    "conversation_profile03_effect_actors"
+                        | "conversation_profile03_submits"
+                        | "conversation_profile03_outcomes"
+                        | "conversation_profile03_closure_records"
+                        | "conversation_profile03_closure_challenges"
+                        | "conversation_profile03_closure_receipts"
+                        | "conversation_profile03_effect_quarantines",
+                    Some("typed_one_use_effect_provenance_and_original_actor_history")
+                ) | (
                     "device_protection_origins"
                         | "device_protection_associations"
                         | "device_protection_attempts"
