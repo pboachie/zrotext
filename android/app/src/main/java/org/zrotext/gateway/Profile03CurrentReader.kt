@@ -9,9 +9,10 @@ import java.nio.ByteBuffer
 import java.security.MessageDigest
 import java.util.UUID
 
-/** Device-authenticated fetch projection composed with independently retained local authority.
+/** Device-authenticated fetch or typed-submit projection with independently retained local authority.
  * This reader never creates a root, key, v2 activation, binding allocation or accepted election.
- * Its caller obtains the packet exclusively through the existing device-signed HTTPS client.
+ * Original reviewed bytes arrive through the existing device-signed HTTPS client. A distinct
+ * correlated first-submit ACK supplies its own fresh current/interval permission on the socket.
  */
 internal class Profile03CurrentReader(context: Context, private val origins: Profile03Origins,
     private val db: SmsJournalDatabase, private val trust: Draft02TrustStore,
@@ -19,6 +20,8 @@ internal class Profile03CurrentReader(context: Context, private val origins: Pro
     private val clock: Profile03SessionTime, private val socketCurrent: () -> Boolean,
     private val requireInterval: (Profile03FetchPacket, SealedDispatch03Frames.Grant, Selection) -> (() -> Unit),
     private val manifests: Profile03ManifestResolver? = null,
+    private val requireSubmitInterval: ((TypedSubmit03Wire.Ack, Profile03FetchPacket,
+        SealedDispatch03Frames.Grant, Selection) -> (() -> Unit))? = null,
 ) {
     private val application = checkNotNull(context.applicationContext)
     private val origin = origins.protocolOrigin
@@ -47,6 +50,24 @@ internal class Profile03CurrentReader(context: Context, private val origins: Pro
         if (messageFetch) Profile03MessagePermission03.requireFetch(packet.currentProjection(), packet.intervalPermission(), grant)
         val value = selection(packet.currentProjection(), grant.lineId, false, false, full, messageFetch)
         val intervalRamCurrent = requireInterval(packet, grant, value)
+        return verifiedMessage(packet, grant, value, intervalRamCurrent)
+    }
+
+    /** A fresh typed ACK is a distinct source. Original reviewed bytes stay in the original
+     * device-signed fetch packet; neither projection nor kind is rewritten into a fetch. */
+    fun readSubmit(ack: TypedSubmit03Wire.Ack, packet: Profile03FetchPacket, input: SealedDispatch03Frames.Grant,
+        command: TypedSubmit03Command): Draft03OutboundPreparation.Current {
+        require(ack.submitOnce)
+        ack.requireOriginal(command)
+        val grant = SealedDispatch03Frames.grant(input.json())
+        Profile03SubmitPermission03.requireSubmit(ack.currentProjection(), ack.intervalPermission(), grant, command)
+        val selected = selection(ack.currentProjection(), grant.lineId, false, false, true, messageSubmit = true)
+        val interval = checkNotNull(requireSubmitInterval)(ack, packet, grant, selected)
+        return verifiedMessage(packet, grant, selected, interval)
+    }
+
+    private fun verifiedMessage(packet: Profile03FetchPacket, grant: SealedDispatch03Frames.Grant,
+        value: Selection, intervalRamCurrent: () -> Unit): Draft03OutboundPreparation.Current {
         val instant = checkNotNull(clock.nowMs())
         check(instant < grant.expiresAtMs && grant.expiresAtMs <= value.selected.permissionExpiresAtMs)
         val intent = ReviewedIntent03V2.decode(packet.intent())
@@ -79,17 +100,19 @@ internal class Profile03CurrentReader(context: Context, private val origins: Pro
     fun installAccepted(projection: ByteArray, expectedLine: UUID) = selection(projection, expectedLine, true, true)
 
     private fun selection(projection: ByteArray, expectedLine: UUID, install: Boolean, deviceOnly: Boolean,
-        full: Boolean = false, messageFetch: Boolean = false): Selection {
+        full: Boolean = false, messageFetch: Boolean = false, messageSubmit: Boolean = false): Selection {
         val f = Profile03Json.objectValue(projection)
         val expected = if (full) { if (deviceOnly) DEVICE_MANIFEST_KEYS else MESSAGE_MANIFEST_KEYS }
             else if (deviceOnly) DEVICE_SELECTION_KEYS else CURRENT_KEYS
-        if (messageFetch) {
+        require(!messageFetch || !messageSubmit)
+        if (messageFetch || messageSubmit) {
             require(full && !deviceOnly && !install)
-            Profile03MessagePermission03.requireShape(f)
+            if (messageSubmit) Profile03SubmitPermission03.requireShape(f) else Profile03MessagePermission03.requireShape(f)
         } else require(f.keys == expected)
         require(f["v"] == Profile03Json.Integer(1) &&
             f["envelope_profile"] == Profile03Json.Integer(3) && f["manifest_profile"] == Profile03Json.Integer(3))
-        if (messageFetch) require(f["kind"] == "message_manifest_permission03")
+        if (messageSubmit) require(f["kind"] == "submit_manifest_permission03")
+        else if (messageFetch) require(f["kind"] == "message_manifest_permission03")
         else if (full) require(f["kind"] == if (deviceOnly) "device_manifest_selection03" else "message_permission03")
         else require(!deviceOnly || f["kind"] == "device_selection03")
         fun number(name: String) = Profile03Json.decimal(f, name)
@@ -189,7 +212,7 @@ internal class Profile03CurrentReader(context: Context, private val origins: Pro
         if (refreshed == null) check(!db.selectionRefreshes03().everSigned(installation.newBindingId, hex(bytes("device_session_digest"))))
         if (full && refreshed == null) require(permit.record.proofConnectionEpoch == session.connectionEpoch &&
             installation.connectionEpoch == session.connectionEpoch && installation.deploymentEpoch == session.deploymentEpoch)
-        if (deviceOnly || messageFetch) {
+        if (deviceOnly || messageFetch || messageSubmit) {
             val physical = Profile03Json.nested(f, "physical_selection")
             if (refreshed == null) require(physical.keys == setOf("kind") && physical["kind"] == "original_v2")
             else refreshed.requireProjection(physical, number("selection_epoch"), bytes("device_session_digest"), db)

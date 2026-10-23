@@ -145,7 +145,19 @@ async fn respond(client: &Client, account: Uuid, device: Option<Uuid>) -> Respon
     }
     match client
         .query_one(
-            "SELECT message_summary_metadata_ready(current_schema())",
+            // A hardened search path can put pg_catalog before the application
+            // schema. Check the relations actually resolved by the probes, and
+            // refuse a partial shadow schema rather than validating other tables.
+            "SELECT message_summary_metadata_ready(n.nspname::text) \
+             FROM pg_catalog.pg_class m \
+             JOIN pg_catalog.pg_namespace n ON n.oid=m.relnamespace \
+             JOIN pg_catalog.pg_class r \
+               ON r.oid=pg_catalog.to_regclass('message_submission_receipts') \
+               AND r.relnamespace=m.relnamespace \
+             JOIN pg_catalog.pg_class e \
+               ON e.oid=pg_catalog.to_regclass('message_events') \
+               AND e.relnamespace=m.relnamespace \
+             WHERE m.oid=pg_catalog.to_regclass('messages')",
             &[],
         )
         .await

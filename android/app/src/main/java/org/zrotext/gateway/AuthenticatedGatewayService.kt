@@ -361,6 +361,7 @@ class AuthenticatedGatewayService : Service() {
                     }
                     if (selectedTuple.sealedVersion == 3 && type in setOf("payload_profile_session03", "payload_profile_challenge03",
                             "payload_profile_current03", "payload_profile_current03_unavailable", "sealed_execution_grant",
+                            "payload_profile_submit_ack03",
                             "payload_profile_manifest_original03", "payload_profile_manifest03", "payload_profile_manifest03_installed_ack", "payload_profile_manifest_current03",
                             "payload_profile_selection_challenge03", "payload_profile_selection_approved03", "payload_profile_selection_install_ack03",
                             "conversation_interval_challenge03", "conversation_interval_approved03", "conversation_interval_installed03",
@@ -375,6 +376,7 @@ class AuthenticatedGatewayService : Service() {
                             "payload_profile_manifest_original03", "payload_profile_manifest03", "payload_profile_manifest03_installed_ack",
                             "payload_profile_manifest_current03" -> consumer.manifest(raw)
                             "sealed_execution_grant" -> consumer.grant(text)
+                            "payload_profile_submit_ack03" -> consumer.typedAck(raw)
                             "payload_profile_selection_challenge03", "payload_profile_selection_approved03",
                             "payload_profile_selection_install_ack03" -> consumer.selectionRefresh(raw)
                             "conversation_interval_challenge03", "conversation_interval_approved03", "conversation_interval_installed03",

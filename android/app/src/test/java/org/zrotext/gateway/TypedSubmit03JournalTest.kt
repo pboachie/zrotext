@@ -223,18 +223,18 @@ class TypedSubmit03JournalTest {
     @Test fun additiveMigrationPreservesOldUnknownAndCreatesNoTypedAttemptOrAck() {
         val name = "tm-${UUID.randomUUID().toString().take(8)}.db"
         fun open() = Room.databaseBuilder(app, SmsJournalDatabase::class.java, name).allowMainThreadQueries()
-            .addMigrations(SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23).build()
+            .addMigrations(SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24).build()
         val original = SmsAttempt(id(806), 3, 1, AttemptState.UNKNOWN, 10, 10)
         try {
             open().use { db ->
                 db.attempts().insertAttempt(original)
                 db.openHelper.writableDatabase.apply {
-                    execSQL("DROP TABLE IF EXISTS typed_history03_clocks"); execSQL("DROP TABLE IF EXISTS typed_history03_sources"); execSQL("DROP TABLE typed_callback03"); execSQL("DROP TABLE typed_submit03")
+                    LegacyTypedJournalFixture.removeEmptyFutureTables(this)
                     execSQL("DROP TABLE room_master_table"); version = 21
                 }
             }
             open().use { db ->
-                assertEquals(23, db.openHelper.readableDatabase.version)
+                assertEquals(24, db.openHelper.readableDatabase.version)
                 assertEquals(original, db.attempts().getAttempt(original.attemptId))
                 assertNull(db.typedSubmits03().get(original.attemptId))
                 assertTrue(db.typedSubmits03().callbacks(original.attemptId).isEmpty())

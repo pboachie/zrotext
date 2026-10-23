@@ -146,7 +146,7 @@ class ProtectionOriginJournalTest {
     @Test fun additiveMigrationRetainsUnknownProviderAndCreatesNoProofOrReadyPin() {
         val name = "pom-${UUID.randomUUID().toString().take(8)}.db"
         fun open() = Room.databaseBuilder(app, SmsJournalDatabase::class.java, name).allowMainThreadQueries()
-            .addMigrations(SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23).build()
+            .addMigrations(SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24).build()
         try {
             open().use { db ->
                 val dao = db.protectionSetup(); val sent = dao.openingWillBeSubmitted(dao.reserveCommand(original()) {}) {}
@@ -155,13 +155,12 @@ class ProtectionOriginJournalTest {
                 assertTrue(dao.reserveProviderEntry(command, ProtectionSetupProvider("canary", command.commandId, id(20), 2_996_000)) {})
                 db.openHelper.writableDatabase.apply {
                     execSQL("DROP TABLE protection_origin_attempts"); execSQL("DROP TABLE protection_origin_installed")
-                    execSQL("DROP TABLE IF EXISTS typed_history03_clocks"); execSQL("DROP TABLE IF EXISTS typed_history03_sources"); execSQL("DROP TABLE IF EXISTS typed_callback03")
-                    execSQL("DROP TABLE IF EXISTS typed_submit03")
+                    LegacyTypedJournalFixture.removeEmptyFutureTables(this)
                     execSQL("DROP TABLE room_master_table"); version = 20
                 }
             }
             open().use { db ->
-                assertEquals(23, db.openHelper.readableDatabase.version)
+                assertEquals(24, db.openHelper.readableDatabase.version)
                 assertEquals(1, db.protectionSetup().providers().size); assertNull(db.protectionSetup().providers().single().evidenceB64url)
                 assertEquals(ProtectionSetupRecovery.State.RECONCILE_PROVIDER_RESULT,
                     ProtectionSetupRecovery.state(db.protectionSetup().command(), db.protectionSetup().providers()))

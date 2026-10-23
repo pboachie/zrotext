@@ -1,17 +1,17 @@
 # Android typed submission journal
 
 The additive Room journal retains a content-free profile03 command and its
-original enrolled public point before a future typed submit transport can run.
+original enrolled public point before the typed submit transport can run.
 The command uses the fixed 153-byte submit commitment and the fixed 210-byte
 pre-entry negative record. It contains no peer, message body or ciphertext.
 The public synthetic fixture is copied from the shared protocol producer.
 
-This component is a prerequisite. It does not mount the typed submit transport,
-verify its new current/interval permission projections, create a one-use radio
-capability, invoke SmsManager, sign a closure proof or upload outcomes. Its phase
+The journal itself does not verify current/interval permission projections, create
+a one-use radio capability, invoke SmsManager, sign a closure proof or upload outcomes. Its phase
 methods record metadata only. An ACK hash, Boolean CAS result, status reply or
-callback is never an invocation permit. The production profile03 driver still
-needs a distinct verified submit consumer and actual final platform-entry mount.
+callback is never an invocation permit. The separate
+[typed submit consumer](android-typed-submit03.md) composes the actual profile03
+connection, fresh first-submit permission and final one-use platform entry.
 
 The journal records reserved, ACK-authorized, platform-entry-reserved and
 closed-before-entry phases. Entry and negative closure compete through the same
@@ -35,7 +35,7 @@ classified attempts. Existing legacy history cannot be adopted as a typed attemp
 The additive 21-to-22 migration creates two empty tables and their indexes; it
 does not backfill an original actor, an ACK, an entry or a no-submit assertion.
 
-Future composition must bind the original authenticated grant/Fetch transcript,
+The submit consumer must bind the original authenticated grant/Fetch transcript,
 V2 reviewed intent, installed interval and original three proofs, current manifest
 ancestry, physical selection, full device lease and original owner to a fresh
 submit-specific permission receipt. Only the first committed submit can supply a
