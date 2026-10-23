@@ -13,13 +13,9 @@ internal object TypedHistory03Runtime {
         Thread(task, "typed-history03").also { it.isDaemon = true }
     }
     private val queueLock = Any()
-    private val queued = LinkedHashSet<String>()
-    private var scanning = false
+    private val pending = TypedHistory03ScanQueue()
     private var running = false
-    private var scanVersion = 0L
     private var wakeVersion = 0L
-    private var cursor = ""
-    private var cursorHost: TypedHistory03Connections.Host? = null
 
     fun connected(context: Context) = enqueue(context, null)
     fun callbackRecorded(context: Context, attempt: String) = enqueue(context, attempt)
@@ -44,8 +40,7 @@ internal object TypedHistory03Runtime {
         val app = context.applicationContext
         val launch = synchronized(queueLock) {
             wakeVersion++
-            if (attempt == null || queued.size >= 16) { scanning = true; scanVersion++ }
-            else queued.add(attempt)
+            pending.enqueue(attempt)
             if (running) false else { running = true; true }
         }
         if (launch) worker.execute { drain(app) }
@@ -58,25 +53,18 @@ internal object TypedHistory03Runtime {
                 val host = TypedHistory03Connections.current() ?: return
                 val task = synchronized(queueLock) {
                     seenWake = wakeVersion
-                    queued.firstOrNull()?.also(queued::remove) ?: if (scanning) "" else null
+                    pending.nextQueued() ?: if (pending.needsScan()) "" else null
                 } ?: return
                 val journal = SmsJournalDatabase.get(app)
                 if (task.isNotEmpty()) {
                     try { prepareAttempt(journal, host, task) } catch (_: Exception) { /* Original history stays pending. */ }
                     continue
                 }
-                val version = synchronized(queueLock) {
-                    if (cursorHost !== host) { cursor = ""; cursorHost = host }
-                    scanVersion
-                }
-                val after = synchronized(queueLock) { cursor }
+                val traversal = synchronized(queueLock) { pending.page(host) }
                 val page = journal.typedHistory03().pendingAttempts(host.identity.accountId, host.identity.deviceId,
-                    host.identity.originHash, TypedSubmit03Record.base(host.point()), after)
+                    host.identity.originHash, TypedSubmit03Record.base(host.point()), traversal.after)
                 for (attempt in page) try { prepareAttempt(journal, host, attempt) } catch (_: Exception) { /* No rearm. */ }
-                synchronized(queueLock) {
-                    if (page.size == 16) cursor = page.last()
-                    else { cursor = ""; if (scanVersion == version) scanning = false }
-                }
+                synchronized(queueLock) { pending.complete(traversal, page) }
             }
         } catch (_: Exception) {
             // A storage/read failure is UNKNOWN, not an autonomous retry loop.
@@ -85,7 +73,7 @@ internal object TypedHistory03Runtime {
                 running = false
                 // Original facts/requests are durable. A later actual callback/host connection
                 // can scan them; no completed command is reconstructed or automatically resent.
-                (queued.isNotEmpty() || scanning) && wakeVersion != seenWake
+                pending.hasWork() && wakeVersion != seenWake
             }
             if (newWake && TypedHistory03Connections.current() != null) {
                 val launch = synchronized(queueLock) { if (running) false else { running = true; true } }
