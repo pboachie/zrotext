@@ -231,9 +231,9 @@ class SelectionRefresh03RecoveryTest {
                 it.version = 17
             }
             androidx.room.Room.databaseBuilder(context, SmsJournalDatabase::class.java, name).allowMainThreadQueries()
-                .addMigrations(SmsJournalDatabase.MIGRATION_17_18, SmsJournalDatabase.MIGRATION_18_19, SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23).build().let { migrated ->
+                .addMigrations(SmsJournalDatabase.MIGRATION_17_18, SmsJournalDatabase.MIGRATION_18_19, SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24).build().let { migrated ->
                     try {
-                        assertEquals(23, migrated.openHelper.readableDatabase.version)
+                        assertEquals(24, migrated.openHelper.readableDatabase.version)
                         assertEquals(r.v.signed, migrated.selectionRefreshes03().find(r.first.refreshId))
                         assertEquals(r.v.f.installed, migrated.profile03Elections().find(r.v.f.installed.challengeId))
                         assertEquals(r.v.f.binding, migrated.attempts().currentLineBinding())

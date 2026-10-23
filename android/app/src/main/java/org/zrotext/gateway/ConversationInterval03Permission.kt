@@ -40,7 +40,7 @@ internal class ConversationInterval03Permission private constructor(val requestK
             same(s.electionBundleSha256, c.electionBundleSha256) && same(s.deviceSessionDigest, selection.deviceSessionDigest()) &&
             same(s.physicalSelectionDigest, selection.physicalDigest()) && same(s.originDigest, actualOriginDigest))
         if (selection.user != null) require(selection.user == s.ownerUser && selection.ownerSession == s.ownerSession)
-        if (requestKind == "fetch") require(phase == "active" && comparedMs == c.comparedAtMs)
+        if (requestKind in setOf("fetch", "submit")) require(phase == "active" && comparedMs == c.comparedAtMs)
         if (phase != "active") { s.requireSetupCurrent(now); require(permissionExpiresMs <= s.setupExpiresMs) }
         s.requireIntervalCurrent(now)
         val roles = selection.authority.intervalKeys(s, hardwareReaderPoint, now)
@@ -57,9 +57,13 @@ internal class ConversationInterval03Permission private constructor(val requestK
     override fun toString() = "ConversationInterval03Permission(unverified-current-record-projection)"
 
     companion object {
-        fun decode(f: Map<String, Any>): ConversationInterval03Permission {
+        fun decode(f: Map<String, Any>): ConversationInterval03Permission = decode(f, false)
+        /** A submit ACK has its own request identity, never a relabeled fetch permission. */
+        fun decodeSubmit(f: Map<String, Any>): ConversationInterval03Permission = decode(f, true)
+        private fun decode(f: Map<String, Any>, submit: Boolean): ConversationInterval03Permission {
             require(f.keys == KEYS && f["v"] == Profile03Json.Integer(1) && f["kind"] == "interval_permission03")
-            val kind = Profile03Json.text(f, "request_kind").also { require(it in setOf("interval_challenge", "interval_status", "fetch")) }
+            val kind = Profile03Json.text(f, "request_kind").also { require(if (submit) it == "submit"
+                else it in setOf("interval_challenge", "interval_status", "fetch")) }
             val request = id(f, "request_id")
             val statement = ConversationInterval03.Statement.decode(Profile03Json.binary(f, "statement", 695, 1092))
             require(id(f, "interval_id") == statement.interval && same(Profile03Json.binary(f, "statement_sha256", 32, 32), statement.sha256()))
@@ -80,7 +84,7 @@ internal class ConversationInterval03Permission private constructor(val requestK
                 "install_pending" -> require(owner != null && phone != null && installed == null)
                 "active" -> require(owner != null && phone != null && installed != null)
             }
-            if (kind == "fetch") require(phase == "active")
+            if (kind in setOf("fetch", "submit")) require(phase == "active")
             val compared = Profile03Json.decimal(f, "compared_ms")
             val expires = Profile03Json.decimal(f, "permission_expires_ms")
             for (at in listOfNotNull(requestedAt, approvedAt, installedAt)) require(at in statement.issuedMs until statement.setupExpiresMs && at <= compared)

@@ -140,6 +140,34 @@ internal abstract class TypedSubmit03Dao {
     @Query("SELECT * FROM typed_history03_clocks WHERE requestId = :request")
     protected abstract fun historyClock(request: String): TypedHistory03Request?
     @Insert(onConflict = OnConflictStrategy.ABORT) protected abstract fun insertHistorySource(row: TypedHistory03Source)
+    @Query("SELECT * FROM typed_submit03_requests WHERE attemptId = :attempt")
+    abstract fun submitRequest(attempt: String): TypedSubmit03Request?
+    @Insert(onConflict = OnConflictStrategy.ABORT) protected abstract fun insertSubmitRequest(row: TypedSubmit03Request)
+
+    /** Actual positive producer has already verified the fresh grant/context outside Room.
+     * Only a genuinely NEW classification may enter; old compatible rows are not adopted. */
+    @Transaction
+    open fun reserveNewSubmit(candidate: TypedSubmit03Record, ramCurrent: () -> Unit): Boolean {
+        candidate.requireShape()
+        require(candidate.originalOriginSha256 != null && candidate.lastCallbackOrdinal == 0L &&
+            candidate.phase == "reserved" && !candidate.conflict)
+        ramCurrent()
+        if (get(candidate.attemptId) != null || submitRequest(candidate.attemptId) != null || hasLegacy(candidate.attemptId)) return false
+        insert(candidate); ramCurrent()
+        return true
+    }
+
+    /** The result escapes only after Room's actual COMMIT. A cold or duplicated original
+     * request cannot mint another transport ticket, including after an ACK was lost. */
+    @Transaction
+    open fun enterSubmit(expected: TypedSubmit03Record, request: TypedSubmit03Request,
+        ramCurrent: () -> Unit): TypedSubmit03TransportEntry? {
+        request.requireOriginal(expected); ramCurrent()
+        if (get(expected.attemptId) != expected || expected.phase != "reserved" || expected.conflict ||
+            callbacks(expected.attemptId).isNotEmpty() || submitRequest(expected.attemptId) != null) return null
+        insertSubmitRequest(request); ramCurrent()
+        return TypedSubmit03TransportEntry(request, expected)
+    }
 
     /** Negative classification/retention only. The future verifier must independently check
      * the genuine grant, actor and V2/current/physical state BEFORE requesting any effect. */
@@ -160,8 +188,8 @@ internal abstract class TypedSubmit03Dao {
         return checkNotNull(get(candidate.attemptId))
     }
 
-    /** Component-only journal phase, not an ACK verifier or a radio capability. No shipping
-     * caller invokes this until the distinct submit-specific permission consumer is mounted. */
+    /** Journal phase only, not an ACK verifier or a radio capability. The shipping typed
+     * factory independently verifies the actual submit-specific source before this CAS. */
     @Transaction
     open fun retainFirstAck(expected: TypedSubmit03Record, exactAck: ByteArray, current: () -> Unit): Boolean {
         expected.requireShape(); require(exactAck.isNotEmpty() && exactAck.size <= 192 * 1024)
@@ -174,7 +202,7 @@ internal abstract class TypedSubmit03Dao {
     }
 
     /** Marker and negative closure compete in the SAME writer. The returned Boolean itself
-     * must never be consumed as an invocation permit; a future RAM one-use verifier owns that. */
+     * must never be consumed as an invocation permit; the typed factory owns its RAM entry. */
     @Transaction
     open fun retainPlatformEntry(expected: TypedSubmit03Record, observedMs: Long, current: () -> Unit): Boolean {
         expected.requireShape(); require(observedMs > 0); current()

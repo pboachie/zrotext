@@ -131,16 +131,16 @@ class JournalDeviceUpgradeTest {
             SmsJournalDatabase.MIGRATION_7_8, SmsJournalDatabase.MIGRATION_8_9,
             SmsJournalDatabase.MIGRATION_9_10, SmsJournalDatabase.MIGRATION_10_11,
             SmsJournalDatabase.MIGRATION_11_12, SmsJournalDatabase.MIGRATION_12_13,
-            SmsJournalDatabase.MIGRATION_13_14, SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17, SmsJournalDatabase.MIGRATION_17_18, SmsJournalDatabase.MIGRATION_18_19, SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23,
+            SmsJournalDatabase.MIGRATION_13_14, SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17, SmsJournalDatabase.MIGRATION_17_18, SmsJournalDatabase.MIGRATION_18_19, SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24,
         ) else arrayOf(SmsJournalDatabase.MIGRATION_11_12, SmsJournalDatabase.MIGRATION_12_13,
-            SmsJournalDatabase.MIGRATION_13_14, SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17, SmsJournalDatabase.MIGRATION_17_18, SmsJournalDatabase.MIGRATION_18_19, SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23)
+            SmsJournalDatabase.MIGRATION_13_14, SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17, SmsJournalDatabase.MIGRATION_17_18, SmsJournalDatabase.MIGRATION_18_19, SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24)
         return Room.databaseBuilder(context, SmsJournalDatabase::class.java, name)
             .allowMainThreadQueries().addMigrations(*migrations).build()
     }
 
     private fun assertCurrentSchema(room: SmsJournalDatabase): String {
         val db = room.openHelper.writableDatabase
-        assertEquals(23, db.version)
+        assertEquals(24, db.version)
         val expectedBindingColumns = legacyColumns(11).getValue("local_line_binding") + listOf(
             Column("continuityKind", "TEXT", true, "'physical'"),
             Column("profilePortIndex", "INTEGER", false, "NULL"),
@@ -174,7 +174,7 @@ class JournalDeviceUpgradeTest {
                 if (isApplicationTable(table)) tables.add(table)
             }
         }
-        assertEquals(legacyColumns(11).keys + setOf("sealed_preparations", "line_activation_v2", "profile03_elections", "selection_refresh03", "profile03_unaccepted_closures", "selection_refresh03_closures", "capture03_routes", "capture03_counters", "capture03_records", "capture03_modes", "inbound_protection_state", "protection_setup_command", "protection_setup_providers", "protection_origin_attempts", "protection_origin_installed", "typed_submit03", "typed_callback03", "typed_history03_sources", "typed_history03_clocks"), tables)
+        assertEquals(legacyColumns(11).keys + setOf("sealed_preparations", "line_activation_v2", "profile03_elections", "selection_refresh03", "profile03_unaccepted_closures", "selection_refresh03_closures", "capture03_routes", "capture03_counters", "capture03_records", "capture03_modes", "inbound_protection_state", "protection_setup_command", "protection_setup_providers", "protection_origin_attempts", "protection_origin_installed", "typed_submit03", "typed_callback03", "typed_history03_sources", "typed_history03_clocks", "typed_submit03_requests"), tables)
         val indexes = mutableSetOf<String>()
         db.query("SELECT name FROM sqlite_master WHERE type = 'index'").use { cursor ->
             while (cursor.moveToNext()) {
@@ -188,7 +188,7 @@ class JournalDeviceUpgradeTest {
             "index_typed_submit03_eventId", "index_typed_submit03_accountId_messageId", "index_typed_callback03_attemptId",
             "index_typed_callback03_attemptId_segmentIndex_delivery_resultCode_deliveryStatus", "index_typed_callback03_attemptId_arrivalOrdinal",
             "index_typed_history03_sources_eventId", "index_typed_history03_sources_attemptId",
-            "index_typed_history03_clocks_attemptId", "index_typed_history03_clocks_subjectId"), indexes)
+            "index_typed_history03_clocks_attemptId", "index_typed_history03_clocks_subjectId", "index_typed_submit03_requests_eventId"), indexes)
         return db.query("SELECT identity_hash FROM room_master_table WHERE id = 42").use { cursor ->
             assertEquals(1, cursor.count)
             assertTrue(cursor.moveToFirst())

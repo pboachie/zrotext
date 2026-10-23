@@ -237,10 +237,10 @@ class LocalLineBindingTest {
         old.close()
         val upgraded = Room.databaseBuilder(context, SmsJournalDatabase::class.java, name)
             .allowMainThreadQueries().addMigrations(SmsJournalDatabase.MIGRATION_10_11, SmsJournalDatabase.MIGRATION_11_12,
-                SmsJournalDatabase.MIGRATION_12_13, SmsJournalDatabase.MIGRATION_13_14, SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17, SmsJournalDatabase.MIGRATION_17_18, SmsJournalDatabase.MIGRATION_18_19, SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23).build()
+                SmsJournalDatabase.MIGRATION_12_13, SmsJournalDatabase.MIGRATION_13_14, SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17, SmsJournalDatabase.MIGRATION_17_18, SmsJournalDatabase.MIGRATION_18_19, SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24).build()
         try {
             val dao = upgraded.attempts()
-            assertEquals(23, upgraded.openHelper.readableDatabase.version)
+            assertEquals(24, upgraded.openHelper.readableDatabase.version)
             val legacy = dao.currentLineBinding()!!
             assertEquals("physical", legacy.continuityKind)
             assertEquals(1, legacy.protocolVersion)
@@ -318,10 +318,10 @@ class LocalLineBindingTest {
             .allowMainThreadQueries().addMigrations(SmsJournalDatabase.MIGRATION_8_9,
                 SmsJournalDatabase.MIGRATION_9_10,
                 SmsJournalDatabase.MIGRATION_10_11, SmsJournalDatabase.MIGRATION_11_12,
-                SmsJournalDatabase.MIGRATION_12_13, SmsJournalDatabase.MIGRATION_13_14, SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17, SmsJournalDatabase.MIGRATION_17_18, SmsJournalDatabase.MIGRATION_18_19, SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23).build()
+                SmsJournalDatabase.MIGRATION_12_13, SmsJournalDatabase.MIGRATION_13_14, SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17, SmsJournalDatabase.MIGRATION_17_18, SmsJournalDatabase.MIGRATION_18_19, SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24).build()
         try {
             val dao = upgraded.attempts()
-            assertEquals(23, upgraded.openHelper.readableDatabase.version)
+            assertEquals(24, upgraded.openHelper.readableDatabase.version)
             assertNull(dao.currentLineBinding())
             assertTrue(dao.isRecipientSuppressed(sender))
             val oldWithdrawal = dao.localWithdrawal(firstPdu)!!

@@ -9,10 +9,14 @@ internal object Profile03Json {
     data object Null
     private val nullableIntervalFields = setOf("owner_signature", "phone_signature", "installed_signature", "requested_ms", "approved_ms", "installed_ms")
     const val MAX_BYTES = 192 * 1024
-    fun objectValue(bytes: ByteArray): Map<String, Any> {
+    fun objectValue(bytes: ByteArray): Map<String, Any> = objectValue(bytes, emptySet())
+    /** Distinct receiving grammar; old fetch/current readers still reject root nulls. The
+     * typed ACK decoder must also enforce its exact15 fields and paired disposition. */
+    fun submitAckObject(bytes: ByteArray): Map<String, Any> = objectValue(bytes, setOf("current", "interval_permission"))
+    private fun objectValue(bytes: ByteArray, rootNulls: Set<String>): Map<String, Any> {
         require(bytes.size in 2..MAX_BYTES)
         val text = Charsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes.copyOf())).toString()
-        return Reader(text).read()
+        return Reader(text, rootNulls).read()
     }
     fun render(fields: Map<String, Any>): ByteArray {
         fun value(node: Any, field: String? = null, depth: Int = 0, parent: String? = null): String = when (node) {
@@ -75,7 +79,7 @@ internal object Profile03Json {
             value.entries.associate { (key, field) -> (key as? String ?: error("Interval reader key")) to checkNotNull(field) }
         }
     }
-    private class Reader(private val raw: String) {
+    private class Reader(private val raw: String, private val rootNulls: Set<String>) {
         private var at = 0
         fun read(): Map<String, Any> { val result = obj(0); whitespace(); require(at == raw.length); return result }
         private fun obj(depth: Int, parent: String? = null): Map<String, Any> {
@@ -99,7 +103,7 @@ internal object Profile03Json {
                     }
                     peek('n') -> {
                         require((parent == "interval_permission" && name in nullableIntervalFields && depth == 1 ||
-                            depth == 0 && name in setOf("approved_ms", "installed_ms")) && raw.startsWith("null", at))
+                            depth == 0 && name in (setOf("approved_ms", "installed_ms") + rootNulls)) && raw.startsWith("null", at))
                         at += 4; Null
                     }
                     at < raw.length && raw[at] in '0'..'9' -> integer()

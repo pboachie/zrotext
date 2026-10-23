@@ -19,7 +19,7 @@ internal object Profile03MessagingStatus {
     @Synchronized fun update(candidate: Any, text: String) { if (owner === candidate) value = text }
 }
 
-/** Ordinary shipping03 socket, same existing ACK/CAS/radio consumer and maintained recipient.
+/** Ordinary shipping03 socket, typed ACK/CAS/radio consumer and maintained recipient.
  * User intent to connect is separate from root/activation/election/current permission; this class
  * creates none of those prerequisites. Every absent or withdrawn authority refuses.
  */
@@ -46,6 +46,7 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
         origins.routingHash, SystemClock::elapsedRealtime,
         ::current, lineConsumerVersion, socket::send)
     private val wire = ConversationSocketWire(socket, { time.snapshot()?.first?.session?.let(ConversationPhoneSession::from) })
+    private val typed = TypedSubmit03Transport(socket, { time.snapshot()?.first?.session }, { check(current()) })
     private val intervals: ConversationInterval03Runtime by lazy { ConversationInterval03Runtime(this,
         java.security.MessageDigest.getInstance("SHA-256").digest(origin.toByteArray(Charsets.UTF_8)),
         ConversationInterval03Store(application, ConversationExistingJournalProtection(), suppression),
@@ -53,7 +54,8 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
         { bytes, line -> reader.manifestDeviceSelection(bytes, line) }, socket::send) }
     private val manifestResolver: Profile03ManifestResolver by lazy { Profile03ManifestResolver({ manifests }, manifestStore, time) }
     private val reader: Profile03CurrentReader by lazy { Profile03CurrentReader(application, origins, db, trust, recipients, keys, time, ::current,
-        { packet, grant, selected -> intervals.requireFetch(packet, grant, selected) }, manifestResolver) }
+        { packet, grant, selected -> intervals.requireFetch(packet, grant, selected) }, manifestResolver,
+        { ack, packet, grant, selected -> intervals.requireSubmit(ack, packet, grant, selected) }) }
     private val manifests: Profile03ManifestRuntime by lazy { Profile03ManifestRuntime(origins, db,
         Profile03ManifestOriginal(origins, db, trust, { recipients }, keys, time, ::current), manifestStore, time, ::current,
         keys::existingConversationPublicPoint, socket::send,
@@ -270,16 +272,21 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
             requireGrantCurrent(grant)
             check(!db.attempts().isRecipientSuppressed(suppression.sender(it.intent.peer().toString(Charsets.US_ASCII))))
         }
-        val initial = live()
+        live()
         when (val result = Draft03OutboundPreparation.prepare(packet.envelope(), grant, session, db, recipients, time::nowMs, ::live)) {
             is Draft03OutboundPreparation.Ready -> result.prepared.use { prepared ->
-                val context = Profile03RadioContext(grant, session, initial)
-                fun fresh(): Long { live(); return checkNotNull(time.nowMs()).also { check(it < grant.expiresAtMs) } }
                 synchronized(effects) {
                     check(current())
-                    JournaledPreparedRadioSubmission(db.attempts(), wire,
-                        { binding -> ConversationRadioPlatform(application, binding, suppression, enabled = true) }, true)
-                        .submit(context, prepared, ::fresh)
+                    TypedPreparedRadioSubmission(db, typed, time, keys::existingConversationPublicPoint,
+                        { check(current()) },
+                        { binding -> ConversationRadioPlatform(application, binding, suppression, enabled = true) },
+                        { row, withdraw -> TypedHistory03Runtime.closeBeforeEntry(application, row, withdraw) })
+                        .submit(grant, prepared, ::live) { ack, command ->
+                            reader.readSubmit(ack, packet, grant, command).also { value ->
+                                requireGrantCurrent(grant)
+                                check(!db.attempts().isRecipientSuppressed(suppression.sender(value.intent.peer().toString(Charsets.US_ASCII))))
+                            }
+                        }
                 }
             }
             else -> Unit // Refusal never selects another profile/provider/plaintext path.
@@ -287,9 +294,11 @@ internal class Profile03ExecutionConnection(context: Context, account: UUID, dev
     }
     fun radioAck(event: String, state: String, permitted: Boolean) =
         wire.acceptRadioAck(time.snapshot()?.first?.session?.let(ConversationPhoneSession::from), event, state, permitted)
+    fun typedAck(raw: ByteArray) { check(current()); typed.accept(raw) }
     override fun close() {
         // Withdraw before acquiring a lock that a blocked preparation/radio operation may hold.
         closed = true
+        typed.close() // Release an in-flight typed waiter before any other teardown wait.
         SelectionRefresh03Mount.detach(this)
         ConversationInterval03Mount.detach(this)
         Profile03ManifestMount.detach(this)
