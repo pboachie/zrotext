@@ -893,7 +893,8 @@ private const val PRUNE_BATCH = 500
     Capture03Route::class, Capture03Counter::class, Capture03Record::class, Capture03Mode::class, InboundProtectionRecord::class,
     ProtectionSetupCommand::class, ProtectionSetupProvider::class,
     ProtectionOriginAttempt::class, ProtectionOriginInstallation::class,
-    TypedSubmit03Record::class, TypedCallback03Record::class], version = 22, exportSchema = false)
+    TypedSubmit03Record::class, TypedCallback03Record::class,
+    TypedHistory03Source::class, TypedHistory03Request::class], version = 23, exportSchema = false)
 abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun attempts(): SmsAttemptDao
     abstract fun sealedPreparations(): SealedPreparationDao
@@ -904,6 +905,7 @@ abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun protectionSetup(): ProtectionSetupDao
     abstract fun protectionOrigins(): ProtectionOriginDao
     internal abstract fun typedSubmits03(): TypedSubmit03Dao
+    internal abstract fun typedHistory03(): TypedHistory03Dao
 
     companion object {
         @Volatile private var instance: SmsJournalDatabase? = null
@@ -913,13 +915,31 @@ abstract class SmsJournalDatabase : RoomDatabase() {
                 context.applicationContext, SmsJournalDatabase::class.java, "sms_attempts.db"
             ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
                 MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
-                MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22)
+                MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23)
                 .build().also { instance = it }
         }
 
         internal val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE sms_attempts ADD COLUMN evidenceConflict INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        internal val MIGRATION_22_23 = object : Migration(22, 23) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // NULL origin/order preserves unsupported old provenance; no backfill/zero.
+                db.execSQL("ALTER TABLE typed_submit03 ADD COLUMN originalOriginSha256 TEXT")
+                db.execSQL("ALTER TABLE typed_submit03 ADD COLUMN lastCallbackOrdinal INTEGER")
+                db.execSQL("ALTER TABLE typed_submit03 ADD COLUMN closingId TEXT")
+                db.execSQL("ALTER TABLE typed_submit03 ADD COLUMN closingFrom INTEGER")
+                db.execSQL("ALTER TABLE typed_callback03 ADD COLUMN arrivalOrdinal INTEGER")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_typed_callback03_attemptId_arrivalOrdinal ON typed_callback03(attemptId, arrivalOrdinal)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS typed_history03_sources (slot TEXT NOT NULL, eventId TEXT NOT NULL, attemptId TEXT NOT NULL, commandSha256 TEXT NOT NULL, evidence INTEGER NOT NULL, segmentIndex INTEGER NOT NULL, sourceOrdinal INTEGER NOT NULL, rawEventIds TEXT NOT NULL, derivation TEXT NOT NULL, basisPhase TEXT NOT NULL, assertionB64url TEXT, assertionSha256 TEXT, assertionClockRequestId TEXT, PRIMARY KEY(slot))")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_typed_history03_sources_eventId ON typed_history03_sources(eventId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_typed_history03_sources_attemptId ON typed_history03_sources(attemptId)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS typed_history03_clocks (requestId TEXT NOT NULL, attemptId TEXT NOT NULL, messageId TEXT NOT NULL, commandSha256 TEXT NOT NULL, subjectId TEXT NOT NULL, subjectKind TEXT NOT NULL, accountId TEXT NOT NULL, deviceId TEXT NOT NULL, originSha256 TEXT NOT NULL, originalEnrolledPoint TEXT NOT NULL, connectionEpoch INTEGER NOT NULL, lineVersion INTEGER NOT NULL, requestB64url TEXT NOT NULL, entered INTEGER NOT NULL, replyB64url TEXT, PRIMARY KEY(requestId))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_typed_history03_clocks_attemptId ON typed_history03_clocks(attemptId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_typed_history03_clocks_subjectId ON typed_history03_clocks(subjectId)")
             }
         }
 
