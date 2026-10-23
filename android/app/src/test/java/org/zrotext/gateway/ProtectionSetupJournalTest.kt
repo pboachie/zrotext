@@ -20,6 +20,8 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = android.app.Application::class)
 class ProtectionSetupJournalTest {
+    private fun <T> SmsJournalDatabase.use(block: (SmsJournalDatabase) -> T): T =
+        try { block(this) } finally { close() }
     private class Fixture : AutoCloseable {
         val db = Room.inMemoryDatabaseBuilder(RuntimeEnvironment.getApplication(), SmsJournalDatabase::class.java)
             .allowMainThreadQueries().build()
@@ -171,7 +173,7 @@ class ProtectionSetupJournalTest {
     }
 
     @Test fun reopenedJournalRetainsUnknownAndDoesNotOfferANewProviderEntry() {
-        val app = RuntimeEnvironment.getApplication<android.app.Application>()
+        val app = RuntimeEnvironment.getApplication()
         val name = "protection-setup-${UUID.randomUUID()}.db"
         fun open() = Room.databaseBuilder(app, SmsJournalDatabase::class.java, name).allowMainThreadQueries().build()
         try {
@@ -192,7 +194,7 @@ class ProtectionSetupJournalTest {
     }
 
     @Test fun additiveMigrationPreservesOldNegativeRoutesAndCreatesNoSetupOrigin() {
-        val app = RuntimeEnvironment.getApplication<android.app.Application>()
+        val app = RuntimeEnvironment.getApplication()
         val name = "protection-migration-${UUID.randomUUID()}.db"
         try {
             Room.databaseBuilder(app, SmsJournalDatabase::class.java, name).allowMainThreadQueries().build().use { db ->

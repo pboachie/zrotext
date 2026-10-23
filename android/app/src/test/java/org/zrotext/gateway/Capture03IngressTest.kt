@@ -15,6 +15,8 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = android.app.Application::class)
 class Capture03IngressTest {
+    private fun <T> SmsJournalDatabase.use(block: (SmsJournalDatabase) -> T): T =
+        try { block(this) } finally { close() }
     @Test fun processWithdrawalHasNoResetAndDoesNotAliasAnotherLineOrAccount() {
         Capture03LegacyFence.requireLegacy(id(301), id(302), id(303))
         Capture03LegacyFence.withdraw(id(301), id(302), id(303))
