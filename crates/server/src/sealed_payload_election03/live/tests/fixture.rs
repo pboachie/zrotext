@@ -13,13 +13,21 @@ pub(super) fn sign(key: &SigningKey, label: &[u8], bytes: &[u8]) -> Vec<u8> {
     s.normalize_s().to_bytes().to_vec()
 }
 pub(super) async fn prepared() -> (Case, Vec<u8>) {
-    prepared_with_keys(false).await
+    prepared_with_keys(false, false).await
 }
 pub(super) async fn prepared_actual_genesis() -> (Case, Vec<u8>) {
-    prepared_with_keys(true).await
+    prepared_with_keys(true, false).await
 }
-async fn prepared_with_keys(actual_genesis: bool) -> (Case, Vec<u8>) {
-    let mut c = Case::new().await;
+pub(super) async fn prepared_claimed_genesis() -> (Case, Vec<u8>) {
+    prepared_with_keys(true, true).await
+}
+async fn prepared_with_keys(actual_genesis: bool, claimed: bool) -> (Case, Vec<u8>) {
+    let mut c = if claimed {
+        Case::new_claimed().await
+    } else {
+        Case::new().await
+    };
+    c.heartbeat().await;
     c.approve().await;
     let lease = c.lease();
     let ack = run::next_ack(&mut c.db.reader, lease, run::Purpose::Sealed, &[])

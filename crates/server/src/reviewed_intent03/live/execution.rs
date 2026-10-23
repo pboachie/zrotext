@@ -233,4 +233,26 @@ impl<'held, 'db> HeldReviewed03<'held, 'db> {
             serde_json::json!({"v":1,"envelope":B.encode(&self.envelope),"reviewed_intent":B.encode(intent.bytes()),"reviewed_signature":B.encode(signature),"accepted_ms":self.stored.admitted.to_string(),"interval_starts_ms":starts.to_string(),"interval_expires_ms":expires.to_string(),"selection_epoch":self.stored.numbers[3].to_string(),"current":current,"interval_permission":interval_permission}),
         )
     }
+    /// Called only on a genuinely NEW accepted submit path, after its exact
+    /// SQL transition and final current checks. Commit still belongs to caller.
+    pub(crate) async fn submit_permission(
+        &mut self,
+        grant: &crate::sealed_dispatch::wire03::GrantFrame03,
+        event: Uuid,
+    ) -> Result<(serde_json::Value, serde_json::Value)> {
+        let end = time(grant.claims().expires_at_ms)?;
+        self.verify_until(end).await?;
+        let interval = self
+            .interval
+            .submit_permission(&mut self.held, event, end)
+            .await?;
+        // Last async held revalidation leaves one comparison for BOTH outputs.
+        // No async read separates this synchronous original-crypto check from
+        // the current projection. The caller emits them only after COMMIT.
+        self.verify_current(end)?;
+        let current = self
+            .held
+            .submit_projection(event, &grant.fetch_transcript(), end)?;
+        Ok((current, interval))
+    }
 }

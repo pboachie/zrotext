@@ -47,6 +47,9 @@ use zrotext_delivery_store::{GrantRecord, RadioEvent, SessionRecord, StoreError}
 use zrotext_domain::{Evidence, MessageState};
 
 mod actor;
+pub(crate) use actor::SocketActor;
+#[cfg(test)]
+pub(crate) use actor::claim_complete_for_test;
 mod mms_spike_policy;
 pub use mms_spike_policy::MmsSpikePolicy;
 mod conversation;
@@ -58,6 +61,7 @@ mod protection_origin;
 mod sealed_line_setup;
 mod sealed_session;
 mod stream_diagnostic;
+mod typed_effect03;
 
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 // Whole pre-session phase, from the upgrade request through proof verification,
@@ -300,6 +304,8 @@ pub struct DeviceSession {
 #[derive(Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 enum ClientFrame {
+    #[serde(skip)]
+    TypedEffect03(typed_effect03::Incoming),
     #[serde(skip)]
     ProtectionOrigin(protection_origin::Incoming),
     #[serde(skip)]
@@ -989,6 +995,11 @@ async fn receive_frame(socket: &mut WebSocket, budget: &mut FrameBudget) -> Opti
                     Ok(None) => {}
                     Err(()) => return None,
                 }
+                match typed_effect03::parse(text.as_str()) {
+                    Ok(Some(frame)) => return Some(ClientFrame::TypedEffect03(frame)),
+                    Ok(None) => {}
+                    Err(()) => return None,
+                }
                 match payload_profile03::parse(text.as_str()) {
                     Ok(Some(frame)) => return Some(ClientFrame::PayloadProfile03(frame)),
                     Ok(None) => {}
@@ -1369,6 +1380,17 @@ async fn run_socket(
         tokio::select! {
             message = receive_frame(&mut socket, &mut frame_budget) => {
                 match message {
+                    Some(ClientFrame::TypedEffect03(frame)) => {
+                        // Only a NEW positive submit needs current negotiated
+                        // content/dispatch state. Exact submit history, clocks,
+                        // closure and outcomes retain their separate actor port.
+                        let origin=profile03_origin.filter(|_|profile03_negotiated
+                            && profile_clock.is_sampled() && state.sealed_dispatch_enabled
+                            && state.dispatch_runtime_enabled);
+                        if typed_effect03::dispatch(&mut socket,&state,actor,origin,frame).await.is_none() {
+                            close_with_code=Some(RETRY_LATER);break;
+                        }
+                    }
                     Some(ClientFrame::ProtectionOrigin(frame)) => {
                         let Some(origin)=protection_origin else {close_with_code=Some(close_code::POLICY);break;};
                         if protection_origin::dispatch(&mut socket,&state,actor,origin,frame).await.is_none(){close_with_code=Some(RETRY_LATER);break;}
@@ -1923,7 +1945,7 @@ async fn run_socket(
             _ = dispatch_checks.tick(), if alpha_ready.is_some() || sealed_ready.is_some() || profile_ready.present() => {
                 if profile_ready.present() {
                     let Some(origin)=profile03_origin.filter(|_|profile03_negotiated) else {close_with_code=Some(close_code::POLICY);break;};
-                    if profile_ready.poll(&mut socket,&state,session,origin).await.is_none() {close_with_code=Some(RETRY_LATER);break;}
+                    if profile_ready.poll(&mut socket,&state,actor,origin).await.is_none() {close_with_code=Some(RETRY_LATER);break;}
                     continue;
                 }
                 if let Some((ready, armed_at)) = &sealed_ready {

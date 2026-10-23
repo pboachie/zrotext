@@ -16,8 +16,16 @@ pub(super) struct Packet {
     pub(super) message: Uuid,
 }
 pub(super) async fn active() -> (Case, SigningKey, consent::Statement03) {
-    let (mut c, browser, signed) = prepared().await;
+    active_case(prepared().await).await
+}
+pub(super) async fn active_claimed() -> (Case, SigningKey, consent::Statement03) {
+    active_case(super::interval_queue_tests::prepared_claimed().await).await
+}
+async fn active_case(
+    (mut c, browser, signed): (Case, SigningKey, Vec<u8>),
+) -> (Case, SigningKey, consent::Statement03) {
     let p = request(&mut c, &browser, &signed, b"+12", 300_000, 5).await;
+    c.heartbeat().await;
     let statement = consent::Statement03::decode(&p.bytes).unwrap();
     let phone = sign(
         &c.phone_key,

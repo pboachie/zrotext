@@ -38,7 +38,7 @@ impl Kind03 {
             Self::SubmitStatus | Self::ProofStatus => OrdinaryAdmission03::Read,
         }
     }
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Submit => "payload_profile_submit03",
             Self::Outcome => "payload_profile_outcome03",
@@ -47,6 +47,18 @@ impl Kind03 {
             Self::Proof => "payload_profile_no_submit_proof03",
             Self::ProofStatus => "payload_profile_no_submit_status03_request",
         }
+    }
+    pub(crate) fn from_name(value: &str) -> Option<Self> {
+        [
+            Self::Submit,
+            Self::Outcome,
+            Self::SubmitStatus,
+            Self::Challenge,
+            Self::Proof,
+            Self::ProofStatus,
+        ]
+        .into_iter()
+        .find(|kind| kind.name() == value)
     }
 }
 fn id(s: &str) -> Check<Uuid> {

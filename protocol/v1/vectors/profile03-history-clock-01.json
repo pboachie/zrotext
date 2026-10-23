@@ -1,0 +1,70 @@
+{
+  "format": "synthetic-profile03-history-clock-v1",
+  "description": "Synthetic structural bytes and independently framed session digests only. No authenticated clock, original actor, accepted grant, current content or effect permission. Existing current03 remains version2-only.",
+  "cases": [
+    {
+      "name": "passive-version-1",
+      "request": {
+        "v": 1,
+        "type": "payload_profile_history_clock03_request",
+        "connection_epoch": 7,
+        "request_id": "03030303-0303-0303-0303-030303030303",
+        "message_id": "04040404-0404-0404-0404-040404040404",
+        "attempt_id": "05050505-0505-0505-0505-050505050505"
+      },
+      "reply": {
+        "v": 1,
+        "type": "payload_profile_history_clock03",
+        "connection_epoch": 7,
+        "request_id": "03030303-0303-0303-0303-030303030303",
+        "message_id": "04040404-0404-0404-0404-040404040404",
+        "attempt_id": "05050505-0505-0505-0505-050505050505",
+        "account_id": "01010101-0101-0101-0101-010101010101",
+        "device_id": "02020202-0202-0202-0202-020202020202",
+        "server_time_ms": "120000",
+        "sample_expires_ms": "150000",
+        "lease": {
+          "site_id": "synthetic-site",
+          "instance_id": "synthetic-instance",
+          "deployment_epoch": "9",
+          "line_activation_version": 1,
+          "enrolled_signing_key_id": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+          "device_session_digest": "x17vgFgIyafh6FWe2erlGa2JEJknUm4O_NbUybSh_yY",
+          "expires_ms": "180000"
+        }
+      }
+    },
+    {
+      "name": "passive-version-2",
+      "request": {
+        "v": 1,
+        "type": "payload_profile_history_clock03_request",
+        "connection_epoch": 7,
+        "request_id": "03030303-0303-0303-0303-030303030303",
+        "message_id": "04040404-0404-0404-0404-040404040404",
+        "attempt_id": "05050505-0505-0505-0505-050505050505"
+      },
+      "reply": {
+        "v": 1,
+        "type": "payload_profile_history_clock03",
+        "connection_epoch": 7,
+        "request_id": "03030303-0303-0303-0303-030303030303",
+        "message_id": "04040404-0404-0404-0404-040404040404",
+        "attempt_id": "05050505-0505-0505-0505-050505050505",
+        "account_id": "01010101-0101-0101-0101-010101010101",
+        "device_id": "02020202-0202-0202-0202-020202020202",
+        "server_time_ms": "120000",
+        "sample_expires_ms": "150000",
+        "lease": {
+          "site_id": "synthetic-site",
+          "instance_id": "synthetic-instance",
+          "deployment_epoch": "9",
+          "line_activation_version": 2,
+          "enrolled_signing_key_id": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+          "device_session_digest": "_382BavLwXLDmLUUWLM7g0JT8W9shgxOdAQmxrpTF3k",
+          "expires_ms": "180000"
+        }
+      }
+    }
+  ]
+}
