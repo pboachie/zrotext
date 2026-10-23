@@ -8,7 +8,7 @@ use crate::{
         TokenHasher,
         abuse_limits::{self, Limit},
     },
-    enrollment::{self, AuthenticatedDevice, EnrollmentError, EnrollmentHasher},
+    enrollment::{self, EnrollmentError, EnrollmentHasher},
     inbound::unsolicited::{self, LineOptOut, LineOptOutError},
     inbound::{self, Content, InboundError, InboundEvent, InboundSession},
     runtime_db,
@@ -39,11 +39,14 @@ use tokio::{
     sync::{Notify, OwnedSemaphorePermit, Semaphore},
     time::{interval, timeout, timeout_at},
 };
-use tokio_postgres::{Client, types::Type};
+use tokio_postgres::Client;
+#[cfg(test)]
+use tokio_postgres::types::Type;
 use uuid::Uuid;
-use zrotext_delivery_store::{DeliveryStore, GrantRecord, RadioEvent, SessionRecord, StoreError};
+use zrotext_delivery_store::{GrantRecord, RadioEvent, SessionRecord, StoreError};
 use zrotext_domain::{Evidence, MessageState};
 
+mod actor;
 mod mms_spike_policy;
 pub use mms_spike_policy::MmsSpikePolicy;
 mod conversation;
@@ -51,6 +54,7 @@ mod line_activation_v2;
 mod line_readiness;
 mod payload_profile03;
 mod preconditions;
+mod protection_origin;
 mod sealed_line_setup;
 mod sealed_session;
 mod stream_diagnostic;
@@ -257,6 +261,7 @@ struct SocketRoute {
     state: DeviceSocketState,
     admission: SocketAdmission,
     conversation: Option<conversation::Policy>,
+    protection_origin: Option<[u8; 32]>,
 }
 
 #[derive(Clone)]
@@ -295,6 +300,8 @@ pub struct DeviceSession {
 #[derive(Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 enum ClientFrame {
+    #[serde(skip)]
+    ProtectionOrigin(protection_origin::Incoming),
     #[serde(skip)]
     PayloadProfile03(payload_profile03::Incoming),
     #[serde(skip)]
@@ -670,13 +677,44 @@ pub fn router_with_account_share(state: DeviceSocketState, sockets_per_account: 
 }
 
 fn router_with_admission(state: DeviceSocketState, admission: SocketAdmission) -> Router {
+    ordinary_router(state, admission, None)
+}
+
+fn ordinary_router(
+    state: DeviceSocketState,
+    admission: SocketAdmission,
+    protection_origin: Option<[u8; 32]>,
+) -> Router {
     Router::new()
         .route("/v1/device-stream", get(upgrade))
         .with_state(SocketRoute {
             state,
             admission,
             conversation: None,
+            protection_origin,
         })
+}
+
+/// Metadata-only first-origin control on the ordinary authenticated stream.
+/// `origin` is trusted deployment configuration, never a frame/header value.
+/// This supplies no conversation negotiation, wider frame cap or dispatch.
+pub fn router_with_protection_origin_and_account_share(
+    state: DeviceSocketState,
+    origin: &str,
+    sockets_per_account: usize,
+) -> Result<Router, &'static str> {
+    Ok(ordinary_router(
+        state,
+        DEVICE_SOCKET_ADMISSION
+            .clone()
+            .with_account_limit(sockets_per_account),
+        Some(protection_origin_digest(origin)?),
+    ))
+}
+
+/// Canonical endpoint metadata only; this digest authenticates no device.
+pub fn protection_origin_digest(origin: &str) -> Result<[u8; 32], &'static str> {
+    conversation::Policy::new(origin).map(|policy| policy.protection_origin_digest())
 }
 
 /// Explicit future composition only. Main continues to call the default disabled router.
@@ -741,6 +779,7 @@ pub fn router_with_profile03(
             admission: DEVICE_SOCKET_ADMISSION
                 .clone()
                 .with_account_limit(sockets_per_account),
+            protection_origin: Some(policy.protection_origin_digest()),
             conversation: Some(policy),
         }))
 }
@@ -760,6 +799,7 @@ fn conversation_router(
             admission: DEVICE_SOCKET_ADMISSION
                 .clone()
                 .with_account_limit(sockets_per_account),
+            protection_origin: Some(policy.protection_origin_digest()),
             conversation: Some(policy),
         }))
 }
@@ -769,6 +809,7 @@ async fn upgrade(
         state,
         admission,
         conversation,
+        protection_origin,
     }): State<SocketRoute>,
     headers: HeaderMap,
     websocket: WebSocketUpgrade,
@@ -823,6 +864,7 @@ async fn upgrade(
                 handshake_slot,
                 deadline,
                 conversation,
+                protection_origin,
             )
         })
         .into_response()
@@ -942,6 +984,11 @@ async fn receive_frame(socket: &mut WebSocket, budget: &mut FrameBudget) -> Opti
                 if text.len() > MAX_FRAME_BYTES {
                     return None;
                 }
+                match protection_origin::parse(text.as_str()) {
+                    Ok(Some(frame)) => return Some(ClientFrame::ProtectionOrigin(frame)),
+                    Ok(None) => {}
+                    Err(()) => return None,
+                }
                 match payload_profile03::parse(text.as_str()) {
                     Ok(Some(frame)) => return Some(ClientFrame::PayloadProfile03(frame)),
                     Ok(None) => {}
@@ -1050,7 +1097,7 @@ async fn authenticate(
     state: &DeviceSocketState,
     frame_budget: &mut FrameBudget,
     step_timeout: Duration,
-) -> Result<AuthenticatedDevice, HandshakeRefusal> {
+) -> Result<enrollment::VerifiedDevice, HandshakeRefusal> {
     let Some(ClientFrame::Hello { v: 1, device_id }) =
         timeout(step_timeout, receive_frame(socket, frame_budget))
             .await
@@ -1160,7 +1207,7 @@ async fn authenticate(
     else {
         return Err(Some(RETRY_LATER));
     };
-    let identity = enrollment::authenticate_socket_proof(
+    let identity = enrollment::authenticate_socket_actor(
         &client,
         &state.enrollment_hasher,
         &challenge,
@@ -1192,6 +1239,7 @@ async fn run_socket(
     handshake_slot: OwnedSemaphorePermit,
     deadline: tokio::time::Instant,
     conversation_policy: Option<conversation::Policy>,
+    protection_origin: Option<[u8; 32]>,
 ) {
     let sealed_setup_enabled = conversation_policy
         .as_ref()
@@ -1222,7 +1270,10 @@ async fn run_socket(
     .await
     .unwrap_or(Err(Some(RETRY_LATER)));
     let session_slot = match &authenticated {
-        Ok(identity) => admission.admit_session(identity.account_id, identity.device_id),
+        Ok(identity) => admission.admit_session(
+            identity.identity().account_id,
+            identity.identity().device_id,
+        ),
         Err(_) => None,
     };
     // The handshake budget is released on every path before any close write or
@@ -1248,18 +1299,11 @@ async fn run_socket(
         close_handshake(&mut socket, RETRY_LATER).await;
         return;
     };
-    let claimed = match line_protocol {
-        line_activation_v2::LineProtocol::Legacy => {
-            claim_session(&mut client, identity, &state).await
-        }
-        line_activation_v2::LineProtocol::Complete => {
-            claim_session_for_protocol(&mut client, identity, &state, line_protocol).await
-        }
-    };
-    let session = match claimed {
-        Ok(Some(session)) => session,
+    let claimed = actor::claim(&mut client, identity, &state, line_protocol).await;
+    let actor = match claimed {
+        Ok(Some(actor)) => actor,
         Ok(None) => {
-            let code = match enrollment::device_still_active(&client, identity).await {
+            let code = match enrollment::device_still_active(&client, identity.identity()).await {
                 Ok(false) => close_code::POLICY,
                 _ => RETRY_LATER,
             };
@@ -1274,6 +1318,7 @@ async fn run_socket(
         }
     };
     drop(client);
+    let session = actor.session();
     if !send_frame(
         &mut socket,
         ServerFrame::Session {
@@ -1324,6 +1369,10 @@ async fn run_socket(
         tokio::select! {
             message = receive_frame(&mut socket, &mut frame_budget) => {
                 match message {
+                    Some(ClientFrame::ProtectionOrigin(frame)) => {
+                        let Some(origin)=protection_origin else {close_with_code=Some(close_code::POLICY);break;};
+                        if protection_origin::dispatch(&mut socket,&state,actor,origin,frame).await.is_none(){close_with_code=Some(RETRY_LATER);break;}
+                    }
                     Some(ClientFrame::PayloadProfile03(payload_profile03::Incoming::Ready(ready)))=>{
                         if !profile03_negotiated || !profile_clock.is_sampled()
                             || !state.sealed_dispatch_enabled || !state.dispatch_runtime_enabled
@@ -1340,7 +1389,7 @@ async fn run_socket(
                             close_with_code = Some(close_code::POLICY); break;
                         }
                         let Ok(client) = runtime_db::connect_device(&state.database_url).await else {close_with_code=Some(RETRY_LATER);break;};
-                        if !session_current(&client, session, &state).await.unwrap_or(false) {close_with_code=Some(close_code::POLICY);break;}
+                        if !actor.current(&client, &state).await.unwrap_or(false) {close_with_code=Some(close_code::POLICY);break;}
                         // Capture clock after the live-authority query and all its waits.
                         let Ok(row) = client.query_one("SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint", &[]).await else {close_with_code=Some(RETRY_LATER);break;};
                         let server_time_ms: i64 = row.get(0);
@@ -1358,7 +1407,7 @@ async fn run_socket(
                         }
                         let Some(policy)=conversation_policy.as_ref() else {close_with_code=Some(close_code::POLICY);break;};
                         let Ok(client)=runtime_db::connect_device(&state.database_url).await else {close_with_code=Some(RETRY_LATER);break;};
-                        if !session_current(&client,session,&state).await.unwrap_or(false) {close_with_code=Some(close_code::POLICY);break;}
+                        if !actor.current(&client,&state).await.unwrap_or(false) {close_with_code=Some(close_code::POLICY);break;}
                         drop(client);
                         let negotiated=policy.negotiate(session,state.deployment_epoch,challenge);
                         let Ok((held,reply))=negotiated else {close_with_code=Some(close_code::POLICY);break;};
@@ -1429,7 +1478,7 @@ async fn run_socket(
                                     break;
                                 };
                                 let verified_at = Instant::now();
-                                if !renew_session(&client, session, &state).await.unwrap_or(false) {
+                                if !actor.renew(&client, &state).await.unwrap_or(false) {
                                     close_reason = "heartbeat_renew_failed_or_fenced";
                                     break;
                                 }
@@ -1466,7 +1515,7 @@ async fn run_socket(
                         };
                         if URL_SAFE_NO_PAD.encode(digest) != recipient_digest
                             || !state.alpha_policy.allows_recipient_digest(session.account_id, &digest)
-                            || !session_current(&client, session, &state).await.unwrap_or(false)
+                            || !actor.current(&client, &state).await.unwrap_or(false)
                         { break; }
                         alpha_ready = Some((digest, Instant::now()));
                         alpha_ready_used = true;
@@ -1489,7 +1538,7 @@ async fn run_socket(
                             close_with_code = Some(RETRY_LATER);
                             break;
                         };
-                        if !session_current(&client, session, &state).await.unwrap_or(false) {
+                        if !actor.current(&client, &state).await.unwrap_or(false) {
                             break;
                         }
                         match mms_spike_grant_if_due(&client, session, &state, &digest).await {
@@ -1529,7 +1578,7 @@ async fn run_socket(
                             close_with_code = Some(RETRY_LATER);
                             break;
                         };
-                        if !session_current(&client, session, &state).await.unwrap_or(false) {
+                        if !actor.current(&client, &state).await.unwrap_or(false) {
                             break;
                         }
                         if matches!(evidence, RadioEvidence::DurableSubmitIntent) {
@@ -1562,12 +1611,12 @@ async fn run_socket(
                             segment_index,
                             segment_count,
                         };
-                        let mut store = DeliveryStore::new(&mut client);
+                        let mut store = client.delivery_store();
                         let next = match store.record_radio_event(event).await {
                             Ok(next) => next,
                             Err(error) => {
                                 close_with_code = Some(radio_evidence_close_code(&error,
-                                    session_current(&client, session, &state).await.unwrap_or(false)));
+                                    actor.current(&client, &state).await.unwrap_or(false)));
                                 break;
                             }
                         };
@@ -1865,7 +1914,7 @@ async fn run_socket(
                     break;
                 };
                 let verified_at = Instant::now();
-                if !session_current(&client, session, &state).await.unwrap_or(false) {
+                if !actor.current(&client, &state).await.unwrap_or(false) {
                     close_reason = "session_check_failed_or_fenced";
                     break;
                 }
@@ -1913,7 +1962,7 @@ async fn run_socket(
                     break;
                 };
                 let verified_at = Instant::now();
-                if !session_current(&client, session, &state).await.unwrap_or(false) {
+                if !actor.current(&client, &state).await.unwrap_or(false) {
                     break;
                 }
                 session_checks.verified(verified_at);
@@ -2234,12 +2283,12 @@ async fn durable_intent_preflight(
 
 /// One-statement pre-claim filter for an armed dispatch tick; see
 /// [`DeliveryStore::synthetic_grant_may_be_due`].
-async fn grant_may_be_due(
-    client: &mut Client,
+async fn grant_may_be_due<C: crate::runtime_db::NativeConnection>(
+    client: &mut C,
     session: DeviceSession,
     state: &DeviceSocketState,
 ) -> Result<bool, StoreError> {
-    DeliveryStore::new(client)
+    crate::runtime_db::initialized_store(client, None)
         .synthetic_grant_may_be_due(
             session.account_id,
             session.device_id,
@@ -2251,8 +2300,8 @@ async fn grant_may_be_due(
 
 /// Claim only for this authenticated device and issue at most one fenced grant.
 /// A failed frame send leaves the grant unresolved; reconnect never retries it.
-async fn poll_synthetic_grant(
-    client: &mut Client,
+async fn poll_synthetic_grant<C: crate::runtime_db::NativeConnection>(
+    client: &mut C,
     session: DeviceSession,
     state: &DeviceSocketState,
     recipient_digest: &[u8; 32],
@@ -2274,7 +2323,7 @@ async fn poll_synthetic_grant(
     // The claim transaction returns the message content, so it is read once:
     // policy is applied here, and the same content is released only after
     // the grant is confirmed below.
-    let Some((claim, content)) = DeliveryStore::new(client)
+    let Some((claim, content)) = crate::runtime_db::initialized_store(client, None)
         .claim_synthetic_for_device_and_recipient(
             &worker_id,
             session.account_id,
@@ -2292,12 +2341,12 @@ async fn poll_synthetic_grant(
         && state.alpha_policy.allows(claim.account_id, &recipient)
         && body.as_deref().is_some_and(synthetic_body_is_fixed);
     let (true, Some(body)) = (permitted, body) else {
-        DeliveryStore::new(client)
+        crate::runtime_db::initialized_store(client, None)
             .cancel(claim.account_id, claim.message_id)
             .await?;
         return Ok(None);
     };
-    let mut store = DeliveryStore::new(client);
+    let mut store = crate::runtime_db::initialized_store(client, None);
     let record = store_session(session, state);
     let grant = match store.issue_grant(&claim, &record, Uuid::new_v4()).await {
         Ok(grant) => grant,
@@ -2402,6 +2451,7 @@ fn grant_frame(grant: GrantRecord, recipient_e164: String, body: String) -> Serv
 
 /// Compare-and-swap through the writer. A new proof increments the persistent
 /// epoch; any older socket immediately loses renewal and all future work rights.
+#[cfg(test)]
 async fn claim_session(
     client: &mut Client,
     identity: AuthenticatedDevice,
@@ -2415,12 +2465,29 @@ async fn claim_session(
     )
     .await
 }
+#[cfg(test)]
 async fn claim_session_for_protocol(
     client: &mut Client,
     identity: AuthenticatedDevice,
     state: &DeviceSocketState,
     line_protocol: line_activation_v2::LineProtocol,
 ) -> Result<Option<DeviceSession>, tokio_postgres::Error> {
+    claim_session_for_actor(
+        client,
+        actor::ClaimActor::TestIdentity(identity),
+        state,
+        line_protocol,
+    )
+    .await
+}
+
+async fn claim_session_for_actor(
+    client: &mut Client,
+    actor: actor::ClaimActor,
+    state: &DeviceSocketState,
+    line_protocol: line_activation_v2::LineProtocol,
+) -> Result<Option<DeviceSession>, tokio_postgres::Error> {
+    let identity = actor.identity();
     if state.draining.load(Ordering::Acquire) {
         return Ok(None);
     }
@@ -2442,10 +2509,10 @@ async fn claim_session_for_protocol(
         return Ok(None);
     }
     let active = tx.query_opt(
-        "SELECT 1 FROM devices d JOIN device_keys k ON (k.account_id,k.device_id)=(d.account_id,d.id) JOIN accounts a ON a.id=d.account_id WHERE d.account_id=$1 AND d.id=$2 AND d.revoked_at IS NULL AND k.revoked_at IS NULL AND a.disabled_at IS NULL FOR UPDATE OF d",
+        "SELECT k.signing_key_sec1 FROM devices d JOIN device_keys k ON (k.account_id,k.device_id)=(d.account_id,d.id) JOIN accounts a ON a.id=d.account_id WHERE d.account_id=$1 AND d.id=$2 AND d.revoked_at IS NULL AND k.revoked_at IS NULL AND a.disabled_at IS NULL FOR UPDATE OF d FOR SHARE OF k,a",
         &[&identity.account_id, &identity.device_id],
-    ).await?.is_some();
-    if !active {
+    ).await?;
+    if !active.is_some_and(|row| actor.matches_point(row.get::<_, Vec<u8>>(0).as_slice())) {
         return Ok(None);
     }
     let row = tx.query_one(
@@ -2479,6 +2546,7 @@ async fn claim_session_for_protocol(
     }))
 }
 
+#[cfg(test)]
 async fn session_current(
     client: &Client,
     session: DeviceSession,
@@ -2495,6 +2563,7 @@ async fn session_current(
     ).await?.is_some())
 }
 
+#[cfg(test)]
 async fn renew_session(
     client: &Client,
     session: DeviceSession,
@@ -2523,6 +2592,8 @@ async fn release_session(
     Ok(())
 }
 
+#[cfg(test)]
+use crate::enrollment::AuthenticatedDevice;
 #[cfg(test)]
 use tokio_postgres::NoTls;
 #[cfg(test)]

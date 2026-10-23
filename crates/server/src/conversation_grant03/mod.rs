@@ -120,13 +120,15 @@ impl CommittedGrant03 {
         &self.frame
     }
 }
-pub(crate) async fn issue_next(
-    client: &mut Client,
+pub(crate) async fn issue_next<C: crate::runtime_db::NativeConnection>(
+    client: &mut C,
     actor: DeviceInterval03<'_>,
     ready: &ReadyFrame03,
 ) -> Result<Option<CommittedGrant03>> {
     let attempt = Uuid::new_v4();
-    let tx = client.transaction().await?;
+    let tx = crate::runtime_db::begin_native(client)
+        .await
+        .map_err(|_| Error::Unavailable)?;
     let mode = Mode03::lock(&tx, actor, attempt).await?;
     if mode.prior.is_some() {
         return Err(Error::Conflict);
@@ -207,13 +209,15 @@ async fn preflight(client: &Client, serving: FetchServing03<'_>, request: &Fetch
     request.verify(&key).map_err(|_| Error::Authentication)?;
     Ok(())
 }
-pub(crate) async fn fetch(
-    client: &mut Client,
+pub(crate) async fn fetch<C: crate::runtime_db::NativeConnection>(
+    client: &mut C,
     serving: FetchServing03<'_>,
     request: &Fetch03,
 ) -> Result<serde_json::Value> {
     let claims = request.grant().claims();
-    let tx = client.transaction().await?;
+    let tx = crate::runtime_db::begin_native(client)
+        .await
+        .map_err(|_| Error::Unavailable)?;
     tx.batch_execute("SET LOCAL search_path TO pg_catalog; SET LOCAL lock_timeout='3s'; SET LOCAL statement_timeout='5s'").await?;
     crate::conversation_profile03_grant_storage::require(&tx)
         .await

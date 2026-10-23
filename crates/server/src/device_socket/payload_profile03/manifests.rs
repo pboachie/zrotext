@@ -124,7 +124,7 @@ pub(super) async fn dispatch(
     }
     let mut db = runtime_db::connect_device(&state.database_url).await.ok()?;
     let tx = db
-        .build_transaction()
+        .native_build_transaction()
         .isolation_level(tokio_postgres::IsolationLevel::ReadCommitted)
         .start()
         .await

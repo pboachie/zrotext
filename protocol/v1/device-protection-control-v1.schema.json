@@ -1,0 +1,742 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zrotext.example/protocol/device-protection-control-v1.schema.json",
+  "title": "Ordinary device first-origin control; schema alone supplies no actor or provider authority",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "type",
+        "connection_epoch",
+        "setup_id",
+        "opening_id",
+        "command_id"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "protection_origin_open"
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "setup_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "opening_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "command_id": {
+          "$ref": "#/$defs/uuid"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "type",
+        "connection_epoch",
+        "setup_id",
+        "opening_id",
+        "command_id",
+        "opening"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "protection_origin_opened"
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "setup_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "opening_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "command_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "opening": {
+          "$ref": "#/$defs/opening"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "type",
+        "connection_epoch",
+        "setup_id",
+        "opening_id",
+        "command_id",
+        "proof_request_id",
+        "association",
+        "aes_probe",
+        "previous_attempt_id",
+        "previous_core_sha256",
+        "previous_bundle_sha256"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "protection_origin_proof_open"
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "setup_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "opening_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "command_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "proof_request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "association": {
+          "type": "string",
+          "minLength": 439,
+          "maxLength": 439,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "aes_probe": {
+          "type": "string",
+          "minLength": 160,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "previous_attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "previous_core_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "previous_bundle_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "previous_attempt_id": {
+              "type": "null"
+            },
+            "previous_core_sha256": {
+              "type": "null"
+            },
+            "previous_bundle_sha256": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "previous_attempt_id": {
+              "$ref": "#/$defs/uuid"
+            },
+            "previous_core_sha256": {
+              "$ref": "#/$defs/digest"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "type",
+        "connection_epoch",
+        "setup_id",
+        "opening_id",
+        "command_id",
+        "proof_request_id",
+        "attempt_id",
+        "core",
+        "nonce",
+        "closed_predecessor"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "protection_origin_proof_challenge"
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "setup_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "opening_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "command_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "proof_request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "attempt_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "core": {
+          "type": "string",
+          "minLength": 524,
+          "maxLength": 524,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "nonce": {
+          "$ref": "#/$defs/digest"
+        },
+        "closed_predecessor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/closed_predecessor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "type",
+        "connection_epoch",
+        "setup_id",
+        "opening_id",
+        "command_id",
+        "proof_request_id",
+        "attempt_id",
+        "bundle"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "protection_origin_proof"
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "setup_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "opening_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "command_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "proof_request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "attempt_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "bundle": {
+          "type": "string",
+          "minLength": 695,
+          "maxLength": 695,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "type",
+        "connection_epoch",
+        "setup_id",
+        "opening_id",
+        "command_id",
+        "proof_request_id",
+        "attempt_id",
+        "receipt"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "protection_origin_accepted"
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "setup_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "opening_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "command_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "proof_request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "attempt_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "receipt": {
+          "$ref": "#/$defs/receipt"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "type",
+        "connection_epoch",
+        "setup_id",
+        "opening_id",
+        "command_id",
+        "request_id",
+        "proof_request_id"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "protection_origin_status_request"
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "setup_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "opening_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "command_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "proof_request_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v",
+        "type",
+        "connection_epoch",
+        "setup_id",
+        "opening_id",
+        "command_id",
+        "request_id",
+        "proof_request_id",
+        "status",
+        "opening",
+        "challenge",
+        "receipt"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "protection_origin_status"
+        },
+        "connection_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "setup_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "opening_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "command_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "proof_request_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "not_found",
+            "opened",
+            "challenged",
+            "superseded",
+            "accepted"
+          ]
+        },
+        "opening": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/opening"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "challenge": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/challenge"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "receipt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/receipt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "status": {
+              "const": "not_found"
+            },
+            "opening": {
+              "type": "null"
+            },
+            "challenge": {
+              "type": "null"
+            },
+            "receipt": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "opened"
+            },
+            "proof_request_id": {
+              "type": "null"
+            },
+            "opening": {
+              "$ref": "#/$defs/opening"
+            },
+            "challenge": {
+              "type": "null"
+            },
+            "receipt": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "enum": [
+                "challenged",
+                "superseded"
+              ]
+            },
+            "proof_request_id": {
+              "$ref": "#/$defs/uuid"
+            },
+            "opening": {
+              "$ref": "#/$defs/opening"
+            },
+            "challenge": {
+              "$ref": "#/$defs/challenge"
+            },
+            "receipt": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "accepted"
+            },
+            "proof_request_id": {
+              "$ref": "#/$defs/uuid"
+            },
+            "opening": {
+              "$ref": "#/$defs/opening"
+            },
+            "challenge": {
+              "$ref": "#/$defs/challenge"
+            },
+            "receipt": {
+              "$ref": "#/$defs/receipt"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "$defs": {
+    "opening": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "account_id",
+        "device_id",
+        "source_pairing_id",
+        "origin_digest",
+        "enrolled_point",
+        "enrolled_key_id",
+        "opening_nonce",
+        "created_ms",
+        "pairing_created_ms",
+        "pairing_claimed_ms",
+        "pairing_approved_ms",
+        "pairing_expires_ms"
+      ],
+      "properties": {
+        "account_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "device_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "source_pairing_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "origin_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "enrolled_point": {
+          "type": "string",
+          "minLength": 87,
+          "maxLength": 87,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "enrolled_key_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "opening_nonce": {
+          "$ref": "#/$defs/digest"
+        },
+        "created_ms": {
+          "$ref": "#/$defs/decimal"
+        },
+        "pairing_created_ms": {
+          "$ref": "#/$defs/decimal"
+        },
+        "pairing_claimed_ms": {
+          "$ref": "#/$defs/decimal"
+        },
+        "pairing_approved_ms": {
+          "$ref": "#/$defs/decimal"
+        },
+        "pairing_expires_ms": {
+          "$ref": "#/$defs/decimal"
+        }
+      }
+    },
+    "challenge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "proof_request_id",
+        "attempt_id",
+        "core",
+        "nonce",
+        "closed_predecessor"
+      ],
+      "properties": {
+        "proof_request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "attempt_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "core": {
+          "type": "string",
+          "minLength": 524,
+          "maxLength": 524,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "nonce": {
+          "$ref": "#/$defs/digest"
+        },
+        "closed_predecessor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/closed_predecessor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "association_sha256",
+        "core_sha256",
+        "bundle_sha256",
+        "accepted_ms"
+      ],
+      "properties": {
+        "association_sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "core_sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "bundle_sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "accepted_ms": {
+          "$ref": "#/$defs/decimal"
+        }
+      }
+    },
+    "closed_predecessor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "proof_request_id",
+        "attempt_id",
+        "core_sha256",
+        "bundle_sha256",
+        "closed_ms"
+      ],
+      "properties": {
+        "proof_request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "attempt_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "core_sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "bundle_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "closed_ms": {
+          "$ref": "#/$defs/decimal"
+        }
+      }
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    "digest": {
+      "type": "string",
+      "minLength": 43,
+      "maxLength": 43,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "decimal": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,18}$"
+    }
+  }
+}

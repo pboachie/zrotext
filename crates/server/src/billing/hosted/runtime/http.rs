@@ -88,7 +88,7 @@ fn empty(body: &Bytes) -> Result<(), Error> {
 }
 async fn owner_now(r: &Runtime, p: &SessionPrincipal) -> Result<(), Error> {
     let mut conn = db::connect(r).await?;
-    let tx = conn.transaction().await?;
+    let tx = conn.native_transaction().await?;
     db::owner(&tx, r, p).await?;
     db::final_owner(&tx, p).await?;
     tx.commit().await?;
@@ -110,7 +110,7 @@ async fn status(State(r): State<Arc<Runtime>>, headers: HeaderMap) -> Result<Jso
     };
     observe_checkout(&r, &p).await?;
     let mut conn = db::connect(&r).await?;
-    let tx = conn.transaction().await?;
+    let tx = conn.native_transaction().await?;
     db::owner(&tx, &r, &p).await?;
     let account = p.tenant.account_id();
     let customer = db::customer(&tx, &r, account, false).await?;
@@ -174,7 +174,7 @@ async fn ensure_customer(r: &Runtime, p: &SessionPrincipal) -> Result<String, Er
     let account = p.tenant.account_id();
     let (operation, started, now) = {
         let mut conn = db::connect(r).await?;
-        let tx = conn.transaction().await?;
+        let tx = conn.native_transaction().await?;
         db::owner(&tx, r, p).await?;
         let c = db::customer(&tx, r, account, true)
             .await?
@@ -220,7 +220,7 @@ async fn ensure_customer(r: &Runtime, p: &SessionPrincipal) -> Result<String, Er
         return Err(Error::Identity);
     }
     let mut conn = db::connect(r).await?;
-    let tx = conn.transaction().await?;
+    let tx = conn.native_transaction().await?;
     db::owner(&tx, r, p).await?;
     let c = db::customer(&tx, r, account, false)
         .await?
@@ -249,7 +249,7 @@ async fn checkout(
     let account = p.tenant.account_id();
     let operation = {
         let mut conn = db::connect(&r).await?;
-        let tx = conn.transaction().await?;
+        let tx = conn.native_transaction().await?;
         db::owner(&tx, &r, &p).await?;
         let c = db::customer(&tx, &r, account, false)
             .await?
@@ -352,7 +352,7 @@ async fn recover_checkout(
     empty(&body)?;
     let (customer, operation) = {
         let mut conn = db::connect(&r).await?;
-        let tx = conn.transaction().await?;
+        let tx = conn.native_transaction().await?;
         db::owner(&tx, &r, &p).await?;
         db::require_no_global_review(&tx, &r).await?;
         let c = db::customer(&tx, &r, p.tenant.account_id(), false)
@@ -381,7 +381,7 @@ async fn dispatch_checkout(
     let digest = checkout_digest(r, account, customer, operation);
     {
         let mut conn = db::connect(r).await?;
-        let tx = conn.transaction().await?;
+        let tx = conn.native_transaction().await?;
         db::owner(&tx, r, p).await?;
         db::require_no_global_review(&tx, r).await?;
         let c = db::customer(&tx, r, account, false)
@@ -417,7 +417,7 @@ async fn dispatch_checkout(
         return Err(Error::Identity);
     }
     let mut conn = db::connect(r).await?;
-    let tx = conn.transaction().await?;
+    let tx = conn.native_transaction().await?;
     db::owner(&tx, r, p).await?;
     db::require_no_global_review(&tx, r).await?;
     let current = db::customer(&tx, r, account, false)
@@ -437,7 +437,7 @@ async fn dispatch_checkout(
     tx.commit().await?;
     observe_checkout(r, p).await?;
     let mut conn = db::connect(r).await?;
-    let tx = conn.transaction().await?;
+    let tx = conn.native_transaction().await?;
     db::owner(&tx, r, p).await?;
     let c = db::customer(&tx, r, account, false)
         .await?
@@ -465,7 +465,7 @@ async fn observe_checkout(r: &Runtime, p: &SessionPrincipal) -> Result<(), Error
     let account = p.tenant.account_id();
     let snapshot = {
         let mut conn = db::connect(r).await?;
-        let tx = conn.transaction().await?;
+        let tx = conn.native_transaction().await?;
         db::owner(&tx, r, p).await?;
         let c = db::customer(&tx, r, account, false).await?;
         db::final_owner(&tx, p).await?;
@@ -524,7 +524,7 @@ async fn observe_checkout(r: &Runtime, p: &SessionPrincipal) -> Result<(), Error
         None
     };
     let mut conn = db::connect(r).await?;
-    let tx = conn.transaction().await?;
+    let tx = conn.native_transaction().await?;
     db::owner(&tx, r, p).await?;
     let current = db::customer(&tx, r, account, false)
         .await?
@@ -568,7 +568,7 @@ async fn portal(
     r.provider.current_portal(&r.options).await?;
     let customer = {
         let mut conn = db::connect(&r).await?;
-        let tx = conn.transaction().await?;
+        let tx = conn.native_transaction().await?;
         db::owner(&tx, &r, &p).await?;
         let c = db::customer(&tx, &r, p.tenant.account_id(), false)
             .await?
@@ -717,7 +717,7 @@ async fn webhook(
             | "checkout.session.expired"
     ) || risk;
     let mut conn = db::connect(&r).await?;
-    let tx = conn.transaction().await?;
+    let tx = conn.native_transaction().await?;
     // Lock namespace before discovering/binding any owner. Events never create
     // customer bindings, including exact-ID collisions in a different mode.
     let n = tx
