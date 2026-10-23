@@ -70,7 +70,7 @@ async function fixture(destination = "setup?new=1", width = 1440, changes = {}) 
       billing: state.mode, checkout_available: state.catalog && (state.mode === "test" || state.runtime && state.mode === "live"), plan_catalog_available: state.catalog });
     if (url.pathname === "/v1/auth/session") {
       if (state.sessionUnavailable) return route.abort();
-      if (state.sessionBarrier) await state.sessionBarrier;
+      if (state.sessionBarrier && (!state.sessionBarrierPage || headers.referer === state.sessionBarrierPage)) await state.sessionBarrier;
       return state.signedIn ? json(state.sessionDto || { role: "owner", account_id: account, session_id: state.session, user_id: account }) : json({}, 401);
     }
     if (url.pathname === "/v1/auth/login") {
@@ -178,11 +178,12 @@ for (const [destination, label, panel, inactive] of [
   requires("UX-NAV-01", "UX-A11Y-01");
   const { page, state } = await fixture("devices", 390);
   let releaseSession;
+  state.sessionBarrierPage = "https://example.test/owner/" + destination;
   state.sessionBarrier = new Promise(resolve => { releaseSession = resolve; });
   try {
     const destinationSession = page.waitForRequest(request =>
       new URL(request.url()).pathname === "/v1/auth/session" &&
-      request.frame().url() === "https://example.test/owner/" + destination);
+      request.headers().referer === state.sessionBarrierPage);
     await page.locator(".owner-menu > summary").click();
     await page.getByRole("link", { name: label, exact: true }).click();
     await destinationSession;
