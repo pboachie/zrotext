@@ -171,7 +171,10 @@ for (const width of [320, 390, 1440]) test(`UX-NAV-01 UX-A11Y-01 real destinatio
     assert.equal(await page.locator("body").evaluate(e => getComputedStyle(e).backgroundColor), "rgb(11, 15, 12)");
   } finally { await page.close(); }
 });
-test("owner navigation keeps destination content hidden until its session check completes", async () => {
+for (const [destination, label, panel, inactive] of [
+  ["integrations", "Integrations", "#connection-details", "#approved-devices"],
+  ["phones", "Phones & lines", "#phone-line-tools", "#message-summary"]
+]) test(`owner navigation keeps ${label} hidden until its session check completes`, async () => {
   requires("UX-NAV-01", "UX-A11Y-01");
   const { page, state } = await fixture("devices", 390);
   let releaseSession;
@@ -179,17 +182,17 @@ test("owner navigation keeps destination content hidden until its session check 
   try {
     const destinationSession = page.waitForRequest(request =>
       new URL(request.url()).pathname === "/v1/auth/session" &&
-      request.frame().url() === "https://example.test/owner/integrations");
+      request.frame().url() === "https://example.test/owner/" + destination);
     await page.locator(".owner-menu > summary").click();
-    await page.getByRole("link", { name: "Integrations", exact: true }).click();
+    await page.getByRole("link", { name: label, exact: true }).click();
     await destinationSession;
-    await page.waitForURL("**/owner/integrations");
-    await page.locator("#connection-details").waitFor({ state: "attached" });
+    await page.waitForURL("**/owner/" + destination);
+    await page.locator(panel).waitFor({ state: "attached" });
     assert.equal(await page.locator("#owner-content").isVisible(), false);
-    assert.equal(await page.locator("#connection-details").isVisible(), false);
+    assert.equal(await page.locator(panel).isVisible(), false);
     releaseSession();
-    await page.locator("#connection-details").waitFor({ state: "visible" });
-    assert.equal(await page.locator("#approved-devices").isVisible(), false);
+    await page.locator(panel).waitFor({ state: "visible" });
+    assert.equal(await page.locator(inactive).isVisible(), false);
   } finally { releaseSession(); await page.close(); }
 });
 
@@ -445,6 +448,7 @@ test("UX-NAV-01 UX-OVERVIEW-01 six primary destinations and a bounded desktop in
     const messages = state.requests.filter(r => r.path === "/v1/owner/messages").length;
     await page.getByRole("link", { name: "Phones & lines", exact: true }).click();
     await page.waitForURL("**/owner/phones");
+    await page.locator("#phone-line-tools").waitFor({ state: "visible" });
     assert.equal(await page.locator("#phone-line-tools").isVisible(), true);
     assert.equal(await page.locator("#message-summary").isVisible(), false);
     await page.clock.fastForward(30000);
