@@ -39,8 +39,10 @@ internal object TypedHistory03Runtime {
                 val host = selected.also { it.requireCurrent() }
                 if (syncHost !== host) { syncHost = host; syncAfter = "" }
                 val journal = SmsJournalDatabase.get(app)
-                val slots = journal.typedOutcomes03().unacknowledged(host.identity.accountId, host.identity.deviceId,
-                    host.identity.originHash, TypedSubmit03Record.base(host.point()), syncAfter)
+                val slots = TypedOutcome03Pages.select(syncAfter, host::requireCurrent) { after ->
+                    journal.typedOutcomes03().unacknowledged(host.identity.accountId, host.identity.deviceId,
+                        host.identity.originHash, TypedSubmit03Record.base(host.point()), after)
+                }
                 var acknowledged = 0
                 for (slot in slots) {
                     syncAfter = slot
