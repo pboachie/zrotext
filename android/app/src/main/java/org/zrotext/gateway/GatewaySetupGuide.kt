@@ -28,7 +28,7 @@ import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 
-internal enum class GatewaySetupStep { OVERVIEW, ACCESS, SIM, PAIRING, COMPARE, CONNECT }
+internal enum class GatewaySetupStep { OVERVIEW, ACCESS, SIM, PAIRING, COMPARE, PROTECTION, CONNECT }
 
 /** Presentation state is saveable. Permissions, key proofs and connection consent are not. */
 @Composable
@@ -42,6 +42,7 @@ internal fun GatewaySetupGuide(
     onOwnerCustody: () -> Unit = {},
     onReviewCustody: () -> Unit = {},
     onReplace: () -> Boolean = { false },
+    protectionContent: @Composable ColumnScope.() -> Unit = {},
     accessContent: @Composable ColumnScope.() -> Unit,
     simContent: @Composable ColumnScope.() -> Unit,
     pairingContent: @Composable ColumnScope.() -> Unit,
@@ -52,12 +53,12 @@ internal fun GatewaySetupGuide(
     val resetScroll = LocalGatewayScrollReset.current
     fun show(next: GatewaySetupStep) { step = next; resetScroll() }
     val next = when (recovery) {
-        GatewaySetupRecovery.APPROVED -> if (selectedSim == "Not selected") GatewaySetupStep.SIM else GatewaySetupStep.CONNECT
+        GatewaySetupRecovery.APPROVED -> GatewaySetupStep.PROTECTION
         GatewaySetupRecovery.COMPARE, GatewaySetupRecovery.CHECKING, GatewaySetupRecovery.UNAVAILABLE,
         GatewaySetupRecovery.KEYS_LOST -> GatewaySetupStep.COMPARE
         else -> GatewaySetupStep.PAIRING
     }
-    LaunchedEffect(recovery, selectedSim) {
+    LaunchedEffect(recovery) {
         when (recovery) {
             GatewaySetupRecovery.NEW -> Unit
             GatewaySetupRecovery.APPROVED -> show(next)
@@ -67,7 +68,7 @@ internal fun GatewaySetupGuide(
     BackHandler(enabled = step != GatewaySetupStep.OVERVIEW) { show(GatewaySetupStep.OVERVIEW) }
     if (step == GatewaySetupStep.OVERVIEW) {
         GatewaySectionTitle("Set up this phone")
-        Text("1 Scan  ·  2 Compare  ·  3 SIM & access  ·  4 Connect", style = MaterialTheme.typography.labelSmall)
+        Text("1 Scan  ·  2 Compare  ·  3 Protect  ·  4 SIM & access", style = MaterialTheme.typography.labelSmall)
     }
     key(step) {
         Column(Modifier.fillMaxWidth().semantics { paneTitle = "Phone setup: ${step.name.lowercase()}" },
@@ -80,7 +81,8 @@ internal fun GatewaySetupGuide(
                     Text(when (step) {
                         GatewaySetupStep.PAIRING -> "Step 1 of 4"
                         GatewaySetupStep.COMPARE -> "Step 2 of 4"
-                        GatewaySetupStep.SIM -> "Step 3 of 4"
+                        GatewaySetupStep.PROTECTION -> "Step 3 of 4"
+                        GatewaySetupStep.SIM -> "Step 4 of 4"
                         GatewaySetupStep.CONNECT -> "Step 4 of 4"
                         else -> "Optional access"
                     }, style = MaterialTheme.typography.labelSmall)
@@ -136,9 +138,18 @@ internal fun GatewaySetupGuide(
                     GatewayButton(onClick = { show(GatewaySetupStep.CONNECT) }, modifier = Modifier.fillMaxWidth()) { Text("Next: connection") }
                     Text("SMS sending and receiving access are separate choices. A selected SIM alone does not prove carrier readiness.", style = MaterialTheme.typography.bodySmall)
                 }
+                GatewaySetupStep.PROTECTION -> {
+                    GatewaySectionTitle("Protect this phone")
+                    Text("Connect the approved phone, then finish its saved protection setup before enabling SMS receiving. No SIM or SMS access is needed for this step.")
+                    protectionContent()
+                    TextButton(onClick = { show(GatewaySetupStep.SIM) }, modifier = Modifier.sizeIn(minHeight = 48.dp)) {
+                        Text("Review SIM and Android access")
+                    }
+                }
                 GatewaySetupStep.ACCESS -> {
                     GatewaySectionTitle("Review access")
                     GatewayAccessSummary()
+                    protectionContent()
                     accessContent()
                     GatewayButton(onClick = { show(GatewaySetupStep.SIM) }, modifier = Modifier.fillMaxWidth()) { Text("Back to SIM selection") }
                 }

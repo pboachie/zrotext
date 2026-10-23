@@ -174,7 +174,7 @@ class InboundUploadTest {
                 SmsJournalDatabase.MIGRATION_7_8,
                 SmsJournalDatabase.MIGRATION_8_9, SmsJournalDatabase.MIGRATION_9_10,
                 SmsJournalDatabase.MIGRATION_10_11, SmsJournalDatabase.MIGRATION_11_12,
-                SmsJournalDatabase.MIGRATION_12_13, SmsJournalDatabase.MIGRATION_13_14, SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17, SmsJournalDatabase.MIGRATION_17_18, SmsJournalDatabase.MIGRATION_18_19, SmsJournalDatabase.MIGRATION_19_20).build()
+                SmsJournalDatabase.MIGRATION_12_13, SmsJournalDatabase.MIGRATION_13_14, SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17, SmsJournalDatabase.MIGRATION_17_18, SmsJournalDatabase.MIGRATION_18_19, SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21).build()
         try {
             val legacyEvent = migrated.attempts().inboundByDedupe("e".repeat(64))!!
             val legacyUpload = migrated.attempts().inboundUpload(legacyEvent.eventId)!!
@@ -194,7 +194,7 @@ class InboundUploadTest {
                 migrated.attempts().getAlphaEvent(oldRadioId)?.quarantineReason)
             assertNull(migrated.attempts().inboundUpload(migrated.attempts()
                 .inboundByDedupe("f".repeat(64))!!.eventId))
-            assertEquals(20, migrated.openHelper.readableDatabase.version)
+            assertEquals(21, migrated.openHelper.readableDatabase.version)
             assertNull(migrated.attempts().currentLineBinding())
         } finally {
             migrated.close()

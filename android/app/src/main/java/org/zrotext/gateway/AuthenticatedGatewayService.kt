@@ -82,6 +82,7 @@ class AuthenticatedGatewayService : Service() {
     /** Explicit foreground user intent only; never persisted as an authority or reboot grant. */
     @Volatile private var profile03Requested = false
     private var conversationHost: AutoCloseable? = null
+    private var protectionOriginHost: ProtectionOriginConnections.Host? = null
     @Volatile private var awaitingEventId: String? = null
     @Volatile private var awaitingEventSentAtNanos = 0L
     @Volatile private var awaitingInboundId: String? = null
@@ -303,8 +304,15 @@ class AuthenticatedGatewayService : Service() {
     ) {
         val currentGeneration = retireConnection()
         val keys = DeviceSigningKeyStore(applicationContext)
+        var verifiedHandshakePoint: ByteArray? = null
         val machine = DeviceStreamMachine(deviceId) { account, device, challenge, nonce ->
-            keys.signDeviceChallenge(account, device, challenge, nonce)
+            val point = keys.existingProtectionPublicPoint()
+            val signature = keys.signDeviceChallenge(account, device, challenge, nonce)
+            check(SealedLineActivationTranscript.verify(point,
+                EnrollmentProof.deviceAuthBytes(account, device, challenge, nonce), signature) &&
+                java.security.MessageDigest.isEqual(point, keys.existingProtectionPublicPoint()))
+            verifiedHandshakePoint = point.copyOf()
+            signature
         }
         var grantSeen = false
         val statusPublisher = DeviceStatusPublisher()
@@ -339,6 +347,12 @@ class AuthenticatedGatewayService : Service() {
                     check(raw.size <= if (selectedTuple.sealedVersion == 3) Profile03Json.MAX_BYTES else MAX_FRAME_BYTES)
                     val frame = JSONObject(text)
                     val type = frame.opt("type")
+                    if (type in setOf("protection_origin_opened", "protection_origin_proof_challenge",
+                            "protection_origin_accepted", "protection_origin_status")) {
+                        check(machine.phase == DeviceStreamMachine.Phase.ACTIVE)
+                        checkNotNull(protectionOriginHost).accept(raw)
+                        return
+                    }
                     if (selectedTuple.sealedVersion == 3 && type in setOf("payload_profile_session03", "payload_profile_challenge03",
                             "payload_profile_current03", "payload_profile_current03_unavailable", "sealed_execution_grant",
                             "payload_profile_manifest_original03", "payload_profile_manifest03", "payload_profile_manifest03_installed_ack", "payload_profile_manifest_current03",
@@ -528,6 +542,11 @@ class AuthenticatedGatewayService : Service() {
                                             machine.phase == DeviceStreamMachine.Phase.ACTIVE &&
                                             runCatching { machine.heartbeatEpoch() == epoch }.getOrDefault(false)
                                     }) else null
+                                protectionOriginHost = ProtectionOriginConnections.register(webSocket, identity, epoch,
+                                    checkNotNull(verifiedHandshakePoint)) {
+                                    check(generation == currentGeneration && socket === webSocket && sessionIdentity == identity &&
+                                        machine.phase == DeviceStreamMachine.Phase.ACTIVE && machine.heartbeatEpoch() == epoch)
+                                }
                                 conversationHost = ConversationSocketComposition.registerAuthenticatedHost(webSocket, identity, epoch,
                                     scheduler, {
                                         check(generation == currentGeneration && socket === webSocket && sessionIdentity == identity &&
@@ -1352,6 +1371,8 @@ class AuthenticatedGatewayService : Service() {
     }
 
     private fun closeConversationConnection() {
+        val originHost = protectionOriginHost; protectionOriginHost = null
+        originHost?.close() // Synchronous RAM withdrawal before platform/storage cleanup.
         selectedLineV2Owner?.retireAtEntry()
         val lineV2 = lineActivationV2; lineActivationV2 = null
         if (lineV2 != null) LineActivationV2SelectedLineMount.detachConsumer(lineV2)
