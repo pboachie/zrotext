@@ -112,7 +112,8 @@ internal class ConversationCompiledRadioFixture : AutoCloseable {
         val suppression = suppressionType.getDeclaredConstructor(kotlin.jvm.functions.Function0::class.java)
             .newInstance({ suppressionHook(); SecretKeySpec(ByteArray(32) { 8 }, "HmacSHA256") })
         val platform = platformType.getDeclaredConstructor(LocalLineBinding::class.java, driverType, suppressionType,
-            java.lang.Boolean.TYPE).newInstance(binding, driver, suppression, true)
+            java.lang.Boolean.TYPE, kotlin.jvm.functions.Function0::class.java)
+            .newInstance(binding, driver, suppression, true, InboundProtectionHealth::requireNotRevoked)
         val fresh: (ConversationPreparedSubmissionContext) -> Long = { check(live); now }
         val platformProvider: (LocalLineBinding) -> Any = { assertEquals(binding, it); platform }
         val type = Class.forName("org.zrotext.gateway.ConversationPreparedRadioSubmission")
