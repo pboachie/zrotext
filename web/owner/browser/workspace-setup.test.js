@@ -157,6 +157,7 @@ for (const width of [320, 390, 1440]) test(`UX-NAV-01 UX-A11Y-01 real destinatio
     if (width < 960) await page.locator(".owner-menu > summary").click();
     await page.getByRole("link", { name: "Integrations", exact: true }).click();
     await page.waitForURL("**/owner/integrations");
+    await page.locator("#connection-details").waitFor({ state: "visible" });
     assert.equal(await page.locator("#connection-details").isVisible(), true);
     assert.equal(await page.locator("#approved-devices").isVisible(), false);
     const before = state.requests.filter(r => r.path === "/v1/enrollment/devices").length;
@@ -170,6 +171,28 @@ for (const width of [320, 390, 1440]) test(`UX-NAV-01 UX-A11Y-01 real destinatio
     assert.equal(await page.locator("body").evaluate(e => getComputedStyle(e).backgroundColor), "rgb(11, 15, 12)");
   } finally { await page.close(); }
 });
+test("owner navigation keeps destination content hidden until its session check completes", async () => {
+  requires("UX-NAV-01", "UX-A11Y-01");
+  const { page, state } = await fixture("devices", 390);
+  let releaseSession;
+  state.sessionBarrier = new Promise(resolve => { releaseSession = resolve; });
+  try {
+    const destinationSession = page.waitForRequest(request =>
+      new URL(request.url()).pathname === "/v1/auth/session" &&
+      request.frame().url() === "https://example.test/owner/integrations");
+    await page.locator(".owner-menu > summary").click();
+    await page.getByRole("link", { name: "Integrations", exact: true }).click();
+    await destinationSession;
+    await page.waitForURL("**/owner/integrations");
+    await page.locator("#connection-details").waitFor({ state: "attached" });
+    assert.equal(await page.locator("#owner-content").isVisible(), false);
+    assert.equal(await page.locator("#connection-details").isVisible(), false);
+    releaseSession();
+    await page.locator("#connection-details").waitFor({ state: "visible" });
+    assert.equal(await page.locator("#approved-devices").isVisible(), false);
+  } finally { releaseSession(); await page.close(); }
+});
+
 test("SETUP-PAIR-01 REC-APPROVAL explicit displayed comparison survives unknown approval and reload without another pairing", async () => {
   requires("SETUP-PAIR-01", "SETUP-RESUME-01", "SETUP-UNKNOWN-01");
   const { page, state, count } = await fixture("setup?new=1", 390, { lostApproval: true });
