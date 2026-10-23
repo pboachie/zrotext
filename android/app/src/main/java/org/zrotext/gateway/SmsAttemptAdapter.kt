@@ -243,6 +243,7 @@ class SmsCallbackReceiver : BroadcastReceiver() {
 internal object SmsCallbackJournal {
     fun record(journal: SmsJournalDatabase, attempt: String, index: Int, delivery: Boolean,
         result: Int, status: Int?, observedMs: Long, onTypedCommitted: () -> Unit = {}) {
+        TypedNoSubmit03Lifetimes.callbackArriving() // Negative RAM withdrawal BEFORE any writer wait.
         if (!journal.typedSubmits03().recordCallback(attempt, index, delivery, result, status, observedMs)) {
             journal.attempts().recordCallback(attempt, index, delivery, result, status, observedMs)
             JournalWriteSignal.alphaEventRecorded()

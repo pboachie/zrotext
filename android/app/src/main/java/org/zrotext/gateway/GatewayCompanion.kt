@@ -282,6 +282,7 @@ internal fun GatewayHome(
                     onSyncDeliveryUpdates?.let { sync ->
                         GatewayHomeButton("Sync delivery updates", sync, Modifier.fillMaxWidth())
                     }
+                    TypedNoSubmit03Content()
                     summary.snapshot?.let { snapshot ->
                         Text("Device-scoped UTC observation: ${java.time.Instant.ofEpochMilli(snapshot.observedMs)}. Submitted is not delivered. In queue includes accepted, queued and claimed work, which can already hold a grant. Awaiting receipt includes submitting and submitted states.")
                     }
@@ -457,7 +458,7 @@ private fun GatewayHomeSectionTitle(label: String) {
 
 /** Quiet Home actions retain a visible boundary, native button semantics and full-size targets. */
 @Composable
-private fun GatewayHomeButton(label: String, action: () -> Unit, modifier: Modifier = Modifier) {
+internal fun GatewayHomeButton(label: String, action: () -> Unit, modifier: Modifier = Modifier) {
     OutlinedButton(onClick = action, modifier = modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp), shape = MaterialTheme.shapes.small,
         colors = ButtonDefaults.outlinedButtonColors(containerColor = Color.Transparent,

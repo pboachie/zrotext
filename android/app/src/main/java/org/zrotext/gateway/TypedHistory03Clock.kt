@@ -24,6 +24,29 @@ internal object TypedHistory03Clock {
             lastElapsedMs = elapsed
             return now
         }
+        /** Separate proof-only observation checks. Actual primary and conservative upper
+         * are independent; RTT can never conceal a primary regression below core issuance. */
+        @Synchronized internal fun proofNow(row: TypedSubmit03Record, request: TypedHistory03Request,
+            proof: TypedNoSubmit03Proof): Long {
+            require(request.subjectKind == "proof" && request.subjectId == proof.requestId)
+            proof.requireOriginal(row)
+            val core = proof.challenge().core
+            val upper = nowFor(row, request)
+            require(actualReply.serverMs >= core.issuedMs && core.number(2) == owner.epoch &&
+                core.number(3) == actualReply.deploymentEpoch && core.expiresMs <= actualReply.leaseExpiresMs &&
+                core.digest(3).contentEquals(actualReply.sessionDigest()) && upper < core.expiresMs)
+            owner.requireOriginal(row); return upper
+        }
+        @Synchronized internal fun requireExpiredProof(row: TypedSubmit03Record, request: TypedHistory03Request,
+            core: TypedNoSubmit03Core) {
+            require(proofExpired(row, request, core))
+        }
+        @Synchronized internal fun proofExpired(row: TypedSubmit03Record, request: TypedHistory03Request,
+            core: TypedNoSubmit03Core): Boolean {
+            require(request.subjectKind == "proof" && request.subjectId == core.proofRequestId)
+            nowFor(row, request)
+            return actualReply.serverMs >= core.expiresMs
+        }
         /** Initial publication checks time before any candidate-result append or Room wait. */
         @Synchronized internal fun requireLiveAtPublication(): Long {
             owner.requireCurrent()

@@ -218,7 +218,7 @@ class TypedHistory03JournalTest {
     @Test fun additiveMigrationRetainsOldOriginAndOrderAsUnknownInsteadOfAdoptingTheReportingHost() {
         val name = "history23-${UUID.randomUUID().toString().take(10)}"
         fun open() = Room.databaseBuilder(app, SmsJournalDatabase::class.java, name).allowMainThreadQueries()
-            .addMigrations(SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24, SmsJournalDatabase.MIGRATION_24_25).build()
+            .addMigrations(SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24, SmsJournalDatabase.MIGRATION_24_25, SmsJournalDatabase.MIGRATION_25_26).build()
         try {
             TypedHistory03Fixture().use { f ->
                 val old = TypedSubmit03Record.candidate(f.command, f.point)
@@ -237,7 +237,7 @@ class TypedHistory03JournalTest {
                     }
                 }
                 open().use { db ->
-                    assertEquals(25, db.openHelper.readableDatabase.version)
+                    assertEquals(26, db.openHelper.readableDatabase.version)
                     val retained = db.typedSubmits03().get(old.attemptId)!!
                     assertEquals(old, retained)
                     val raw = db.typedSubmits03().callbacks(old.attemptId).single()

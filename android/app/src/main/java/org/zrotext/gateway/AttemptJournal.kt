@@ -895,7 +895,8 @@ private const val PRUNE_BATCH = 500
     ProtectionOriginAttempt::class, ProtectionOriginInstallation::class,
     TypedSubmit03Record::class, TypedCallback03Record::class,
     TypedHistory03Source::class, TypedHistory03Request::class, TypedSubmit03Request::class,
-    TypedOutcome03Report::class, TypedOutcome03Upload::class], version = 25, exportSchema = false)
+    TypedOutcome03Report::class, TypedOutcome03Upload::class, TypedNoSubmit03Lineage::class,
+    TypedNoSubmit03Proof::class, TypedNoSubmit03Io::class], version = 26, exportSchema = false)
 abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun attempts(): SmsAttemptDao
     abstract fun sealedPreparations(): SealedPreparationDao
@@ -908,6 +909,7 @@ abstract class SmsJournalDatabase : RoomDatabase() {
     internal abstract fun typedSubmits03(): TypedSubmit03Dao
     internal abstract fun typedHistory03(): TypedHistory03Dao
     internal abstract fun typedOutcomes03(): TypedOutcome03Dao
+    internal abstract fun typedNoSubmits03(): TypedNoSubmit03Dao
 
     companion object {
         @Volatile private var instance: SmsJournalDatabase? = null
@@ -917,7 +919,7 @@ abstract class SmsJournalDatabase : RoomDatabase() {
                 context.applicationContext, SmsJournalDatabase::class.java, "sms_attempts.db"
             ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
                 MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
-                MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25)
+                MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26)
                 .build().also { instance = it }
         }
 
@@ -951,6 +953,23 @@ abstract class SmsJournalDatabase : RoomDatabase() {
                 // typed classification and genuine original live context before insertion.
                 db.execSQL("CREATE TABLE IF NOT EXISTS typed_submit03_requests (attemptId TEXT NOT NULL, eventId TEXT NOT NULL, commandSha256 TEXT NOT NULL, connectionEpoch INTEGER NOT NULL, requestB64url TEXT NOT NULL, PRIMARY KEY(attemptId))")
                 db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_typed_submit03_requests_eventId ON typed_submit03_requests(eventId)")
+            }
+        }
+
+        internal val MIGRATION_25_26 = object : Migration(25, 26) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // No backfill/adoption: old finalized closures remain UNKNOWN, even with
+                // empty new tables. Only a genuinely NEW finishClosing creates eligibility.
+                db.execSQL("ALTER TABLE typed_submit03 ADD COLUMN closureProofState TEXT")
+                db.execSQL("CREATE TABLE IF NOT EXISTS typed_no_submit03_lineages (closureId TEXT NOT NULL, attemptId TEXT NOT NULL, closureSha256 TEXT NOT NULL, originalCommandSha256 TEXT NOT NULL, rootRequestId TEXT NOT NULL, currentRequestId TEXT NOT NULL, proofCount INTEGER NOT NULL, ioCount INTEGER NOT NULL, PRIMARY KEY(closureId))")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_typed_no_submit03_lineages_attemptId ON typed_no_submit03_lineages(attemptId)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS typed_no_submit03_proofs (requestId TEXT NOT NULL, attemptId TEXT NOT NULL, closureId TEXT NOT NULL, closureSha256 TEXT NOT NULL, commandSha256 TEXT NOT NULL, previousRequestId TEXT, previousChallengeId TEXT, previousCoreSha256 TEXT, previousExpiresMs INTEGER, coreB64url TEXT, nonceB64url TEXT, signatureState TEXT NOT NULL, signatureB64url TEXT, signatureClockId TEXT, signatureStatusId TEXT, acceptedMs INTEGER, PRIMARY KEY(requestId))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_typed_no_submit03_proofs_closureId ON typed_no_submit03_proofs(closureId)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_typed_no_submit03_proofs_previousRequestId ON typed_no_submit03_proofs(previousRequestId)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS typed_no_submit03_io (requestId TEXT NOT NULL, proofRequestId TEXT NOT NULL, closureId TEXT NOT NULL, kind TEXT NOT NULL, connectionEpoch INTEGER NOT NULL, requestB64url TEXT NOT NULL, replyB64url TEXT, PRIMARY KEY(requestId))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_typed_no_submit03_io_proofRequestId ON typed_no_submit03_io(proofRequestId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_typed_no_submit03_io_closureId ON typed_no_submit03_io(closureId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_typed_no_submit03_io_proofRequestId_kind_replyB64url ON typed_no_submit03_io(proofRequestId,kind,replyB64url)")
             }
         }
 

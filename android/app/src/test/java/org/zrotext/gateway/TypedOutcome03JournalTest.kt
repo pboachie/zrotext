@@ -128,7 +128,7 @@ class TypedOutcome03JournalTest {
     @Test fun genuineVersion24CompletedHistoryDoesNotAcquireAutomaticFirstIoOnUpgrade() {
         val name = "tom-${java.util.UUID.randomUUID().toString().take(10)}"
         fun open() = Room.databaseBuilder(app, SmsJournalDatabase::class.java, name).allowMainThreadQueries()
-            .addMigrations(SmsJournalDatabase.MIGRATION_24_25).build()
+            .addMigrations(SmsJournalDatabase.MIGRATION_24_25, SmsJournalDatabase.MIGRATION_25_26).build()
         try {
             TypedHistory03Fixture().use { f ->
                 lateinit var row: TypedSubmit03Record; lateinit var fact: TypedHistory03Source
@@ -154,7 +154,7 @@ class TypedOutcome03JournalTest {
                     }
                 }
                 open().use { db ->
-                    assertEquals(25, db.openHelper.readableDatabase.version)
+                    assertEquals(26, db.openHelper.readableDatabase.version)
                     assertEquals(row, db.typedSubmits03().get(row.attemptId))
                     assertEquals(fact, db.typedHistory03().source(fact.slot))
                     assertNull(db.typedOutcomes03().report(fact.eventId))

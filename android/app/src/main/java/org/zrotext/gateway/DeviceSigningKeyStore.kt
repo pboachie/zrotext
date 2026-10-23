@@ -125,6 +125,26 @@ class DeviceSigningKeyStore(
         return DevicePayloadKeyStore.encodePoint(public)
     }
 
+    /** Fixed441 existing enrolled hardware signer, after an irreversible writer burn. */
+    internal fun signNoSubmit03(entry: TypedNoSubmit03SignEntry, context: TypedNoSubmit03Context): ByteArray {
+        Capture03IngressGate.requireOutside()
+        val core = entry.consume() // Actual reservation returned after Room COMMIT, once only.
+        val expected = TypedSubmit03Record.unbase(entry.original.originalEnrolledPoint)
+        context.requireCurrent(entry.original, entry.proof)
+        check(java.security.MessageDigest.isEqual(expected, existingConversationPublicPoint()))
+        val key = privateKey(); check(key.encoded == null)
+        val signer = Signature.getInstance("SHA256withECDSA").apply { initSign(key) }
+        context.requireCurrent(entry.original, entry.proof) // Includes waits for provider/key entry.
+        signer.update(core.transcript())
+        context.requireCurrent(entry.original, entry.proof) // Last RAM check at provider entry.
+        val returned = signer.sign()
+        // Retain the actual burned call's result even after a pause. No post-call RAM guard
+        // may discard it and accidentally suggest that this operation can be re-signed.
+        return Draft01SignaturePrimitive.canonicalRawFromDer(returned).also {
+            check(ConversationContentCrypto.verifyRaw(it, expected, core.transcript()))
+        }
+    }
+
     /** Only the first-origin metadata domain; caller owns the durable one-use reservation. */
     internal fun signProtectionOrigin(core: ProtectionOriginProof.Core, expectedPoint: ByteArray): ByteArray {
         val point = expectedPoint.copyOf()
