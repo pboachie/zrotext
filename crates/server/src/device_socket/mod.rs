@@ -39,7 +39,9 @@ use tokio::{
     sync::{Notify, OwnedSemaphorePermit, Semaphore},
     time::{interval, timeout, timeout_at},
 };
-use tokio_postgres::{Client, types::Type};
+use tokio_postgres::Client;
+#[cfg(test)]
+use tokio_postgres::types::Type;
 use uuid::Uuid;
 use zrotext_delivery_store::{GrantRecord, RadioEvent, SessionRecord, StoreError};
 use zrotext_domain::{Evidence, MessageState};
@@ -458,7 +460,7 @@ enum ClientFrame {
         binding_generation: i64,
         kind: line_readiness::LineReadinessKind,
         /// Age of the freshest authenticated observation backing the result,
-        /// or null when none exists — which can only report offline.
+        /// or null when none exists â€” which can only report offline.
         since_observation_ms: Option<i64>,
         observed_at_ms: i64,
         digest: String,
@@ -1508,9 +1510,9 @@ async fn run_socket(
                                     break;
                                 }
                             }
-                            // A ready frame that cannot yield a grant — wrong
+                            // A ready frame that cannot yield a grant â€” wrong
                             // digest, unnamed device, stopped recipient, spent
-                            // one-use budget, or the feature off — is refused
+                            // one-use budget, or the feature off â€” is refused
                             // outright rather than silently ignored, so the
                             // phone learns and the once-per-connection flag is
                             // never stranded.
