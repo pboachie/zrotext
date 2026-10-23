@@ -5,8 +5,9 @@ import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Only this file can implement the final RAM entry. It is created after the actual typed
- * ACK verification and Room entry CAS, never from a public phase/Boolean or cold read. */
+/** The sole implementation below is private and minted after actual typed ACK verification
+ * and Room entry COMMIT, never from a public phase/Boolean or cold read. Sealed syntax itself
+ * is not a same-file, hardware or authority boundary. */
 internal sealed interface TypedPlatformStart { fun consume() }
 private class CommittedTypedPlatformStart(private val ramCurrent: () -> Unit) : TypedPlatformStart {
     private val unused = AtomicBoolean(true)
