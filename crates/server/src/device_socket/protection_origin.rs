@@ -115,6 +115,19 @@ async fn lock(
         .await
         .map_err(|_| ())?;
     tx.batch_execute("SET LOCAL search_path TO pg_catalog; SET LOCAL lock_timeout='2s'; SET LOCAL statement_timeout='5s'").await.map_err(|_|())?;
+    // The absent-original recovery proof depends on a fresh post-claim
+    // snapshot. Structural SQL may support other isolation levels; this
+    // authenticated control port deliberately requires READ COMMITTED.
+    if tx
+        .query_one("SHOW transaction_isolation", &[])
+        .await
+        .map_err(|_| ())?
+        .try_get::<_, String>(0)
+        .map_err(|_| ())?
+        != "read committed"
+    {
+        return Err(());
+    }
     let s = actor.session();
     tx.query_one(
         "SELECT public.device_protection_lock($1,$2,$3,$4,$5,$6)",

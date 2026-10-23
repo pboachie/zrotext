@@ -271,6 +271,69 @@ async fn approved_pairing_and_real_socket_proof_can_install_metadata_before_any_
     association.extend(Sha256::digest(&aes_probe));
     association.extend(canary.verifying_key().to_sec1_point(false).as_bytes());
     assert_eq!(association.len(), 329);
+    // Simulate the old proof_open's lost network outcome before any local
+    // challenge or signature existed. A later claim cannot pass a held old
+    // actor transaction; afterward a delayed old actor can no longer allocate.
+    let unknown_proof_request = Uuid::new_v4();
+    let (mut peer, peer_driver) = f.runtime_peer().await;
+    let next_challenge = enrollment::issue_socket_challenge(
+        &state.enrollment_hasher,
+        signup.account_id,
+        device,
+        enrollment::unix_now_ms(),
+    );
+    let next_signature: Signature =
+        device_key.sign(&enrollment::device_challenge_bytes(&next_challenge));
+    let next_proof = enrollment::authenticate_socket_actor(
+        &peer,
+        &state.enrollment_hasher,
+        &next_challenge,
+        next_signature.to_der().as_bytes(),
+        enrollment::unix_now_ms(),
+    )
+    .await
+    .unwrap();
+    let old = runtime_db::begin_native(&mut f.reader).await.unwrap();
+    lock(&old, actor, &state).await.unwrap();
+    let mut pending = Box::pin(actor::claim(
+        &mut peer,
+        next_proof,
+        &state,
+        line_activation_v2::LineProtocol::Legacy,
+    ));
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut pending)
+            .await
+            .is_err()
+    );
+    old.rollback().await.unwrap();
+    let recovered = tokio::time::timeout(std::time::Duration::from_secs(5), pending)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(recovered.session().connection_epoch > epoch);
+    drop(peer);
+    tokio::time::timeout(std::time::Duration::from_secs(5), peer_driver)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(
+        admit(&mut f.reader, &state, actor, Kind::Attempt)
+            .await
+            .is_err()
+    );
+    let actor = recovered;
+    let epoch = actor.session().connection_epoch;
+    let missing = serde_json::json!({"v":1,"type":"protection_origin_status_request","connection_epoch":epoch,"request_id":Uuid::new_v4(),"setup_id":setup,"opening_id":opening,"command_id":command,"proof_request_id":unknown_proof_request});
+    let absent = request(&mut f.reader, &state, actor, &origin, missing).await;
+    assert_eq!(absent["status"], "not_found");
+    for key in ["opening", "challenge", "receipt"] {
+        assert!(absent[key].is_null());
+    }
+    // No provider operation follows this claim/absence recovery. The exact
+    // existing association/probes are reused only by an explicit new command.
     let proof_request = Uuid::new_v4();
     let body = serde_json::json!({"v":1,"type":"protection_origin_proof_open","connection_epoch":epoch,"setup_id":setup,"opening_id":opening,"command_id":command,"proof_request_id":proof_request,"association":URL_SAFE_NO_PAD.encode(&association),"aes_probe":URL_SAFE_NO_PAD.encode(&aes_probe),"previous_attempt_id":null,"previous_core_sha256":null,"previous_bundle_sha256":null});
     let challenge = request(&mut f.reader, &state, actor, &origin, body).await;
