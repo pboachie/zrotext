@@ -108,6 +108,36 @@ test("a shorter fresh permission cannot reuse older prepared ciphertext or its l
     assert.deepEqual((await p.f.readMessages()).attempts, []); await assert.rejects(async () => p.c.confirmMessage());
   } finally { release?.(); p.close(); }
 });
+test("the original shorter review still bounds retained-key, both signature and submission-commit waits", async () => {
+  for (const boundary of ["key", "envelope", "intent", "submit"]) {
+    let armed = false;
+    const p = await setup(f => ({
+      openKeyStore: async o => {
+        const store = await f.openKeys(o);
+        return { metadata: (...a) => store.metadata(...a), close: () => store.close(), load: async (...a) => {
+          const key = await store.load(...a); if (armed && boundary === "key") f.mono += 30001; return key;
+        } };
+      },
+      openMessageRecovery: async o => {
+        const journal = await f.openMessages(o);
+        return { ...journal, compareAndSet: async (a, b) => { const r = await journal.compareAndSet(a, b);
+          if (armed && boundary === "submit" && b.stage === "submit_reserved") f.mono += 30001; return r; } };
+      }
+    })); let release; try {
+      await p.c.reviewMessage({ content: "Synthetic original shorter review", smsCeiling: 1 }); const originalDeadline = p.c.state().messageReview.expiresMs;
+      let signing = 0; armed = true;
+      release = instrument(args => {
+        const prefix = new TextDecoder().decode(new Uint8Array(args[2]).slice(0, 40));
+        if (prefix.startsWith("ZTSE/sign/v3")) { signing++; if (boundary === "envelope") p.f.mono += 30001; }
+        if (prefix.startsWith("zrotext/conversation/reviewed-send03/v2")) { signing++; if (boundary === "intent") p.f.mono += 30001; }
+      });
+      await assert.rejects(p.c.confirmMessage()); assert.equal(p.sent.length, 0); assert.equal(signing, boundary === "key" ? 0 : boundary === "envelope" ? 1 : 2);
+      assert.equal(p.c.state().messageReview, null); await assert.rejects(async () => p.c.confirmMessage());
+      const codec = await load("conversation-interval03"), original = await codec.decodeConversationStatement03(Uint8Array.from(Buffer.from(p.f.receipt.statement, "base64url")));
+      assert(BigInt(originalDeadline) < original.intervalUntilMs);
+    } finally { release?.(); p.close(); }
+  }
+});
 test("not-found status keeps the original uncertainty and cannot enable another submit", async () => {
   const p = await setup(() => ({})); try {
     p.f.beforeSend = async () => { throw Error("Synthetic lost response"); };
