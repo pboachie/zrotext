@@ -8,7 +8,7 @@ use crate::conversation_grant03::{self as grants, FetchServing03};
 use crate::sealed_dispatch::wire03::{Fetch03, GrantFrame03, ReadyFrame03};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B};
 
-async fn queue(
+pub(super) async fn queue(
     c: &mut Case,
     browser: &SigningKey,
     statement: &crate::conversation_interval03::Statement03,
@@ -35,7 +35,7 @@ async fn queue(
     tx.commit().await.unwrap();
     p
 }
-async fn ready(c: &mut Case) -> ReadyFrame03 {
+pub(super) async fn ready(c: &mut Case) -> ReadyFrame03 {
     let tx = c.db.reader.transaction().await.unwrap();
     let mut owner = ordinary_owner03::authenticate(&tx, &c.hasher, ORIGIN, source(&c.credentials))
         .await
