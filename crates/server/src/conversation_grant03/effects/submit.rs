@@ -138,11 +138,15 @@ pub(super) async fn apply(
         {
             return Err(Error::Authentication);
         }
-        Some(
-            review
-                .submit_permission(&row.frame()?, request.event_id)
-                .await?,
-        )
+        let permissions = review
+            .submit_permission(&row.frame()?, request.event_id)
+            .await?;
+        // The shared final projection clock must also cover the actual SQL
+        // acceptance sample. Refuse a primary regression; never clamp it.
+        if review.selected().now_ms() < accepted_ms {
+            return Err(Error::Expired);
+        }
+        Some(permissions)
     } else {
         None
     };

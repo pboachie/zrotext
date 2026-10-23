@@ -138,6 +138,27 @@ async fn closure_after_reconnect(accept_before_reconnect: bool) {
     assert_eq!(accepted["disposition"], "submit_once");
     assert!(accepted["current"].is_object());
     assert!(accepted["interval_permission"].is_object());
+    let accepted_ms = accepted["accepted_ms"]
+        .as_str()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap();
+    let compared = accepted["current"]["compared_ms"]
+        .as_str()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap();
+    assert!(accepted_ms <= compared);
+    assert_eq!(
+        accepted["current"]["compared_ms"],
+        accepted["interval_permission"]["compared_ms"]
+    );
+    for name in ["current", "interval_permission"] {
+        assert_eq!(
+            accepted[name]["permission_expires_ms"],
+            claim.expires_at_ms.to_string()
+        );
+    }
     assert_eq!(
         liabilities(&c, packet.message).await,
         ("submitting".into(), "submitting".into(), 1, 1, 0)
