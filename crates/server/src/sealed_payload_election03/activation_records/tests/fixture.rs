@@ -14,6 +14,8 @@ use p256::{
     pkcs8::EncodePublicKey,
 };
 use sha2::{Digest, Sha256};
+mod loopback03;
+use loopback03::Loopback03;
 
 pub(crate) struct Case {
     pub(in crate::sealed_payload_election03) db: Fixture,
@@ -37,13 +39,26 @@ pub(crate) struct Case {
     pub pin: [u8; 94],
     socket_actor: Option<crate::device_socket::SocketActor>,
     socket_state: Option<crate::device_socket::DeviceSocketState>,
+    loopback: Option<Loopback03>,
 }
 impl Case {
     pub(crate) async fn new() -> Self {
-        Self::build(false).await
+        Self::build(false, false).await
     }
     pub(crate) async fn new_claimed() -> Self {
-        Self::build(true).await
+        Self::build(true, false).await
+    }
+    pub(crate) async fn new_socket() -> Self {
+        Self::build(false, true).await
+    }
+    pub(crate) fn loopback(&self) -> &Loopback03 {
+        self.loopback.as_ref().expect("actual loopback socket")
+    }
+    pub(crate) async fn close_loopback(&mut self) {
+        if let Some(socket) = self.loopback.take() {
+            socket.finish().await;
+            self.db.drain_runtime_sockets().await;
+        }
     }
     pub(crate) fn socket_actor(&self) -> crate::device_socket::SocketActor {
         self.socket_actor
@@ -56,6 +71,10 @@ impl Case {
             .clone()
     }
     pub(crate) async fn heartbeat(&self) {
+        if let Some(socket) = &self.loopback {
+            socket.heartbeat().await;
+            return;
+        }
         if let (Some(actor), Some(state)) = (self.socket_actor, self.socket_state.as_ref()) {
             // The production renewal checks the original verified point and
             // still-live epoch and applies its unchanged90-second lease. It
@@ -68,7 +87,7 @@ impl Case {
             );
         }
     }
-    async fn build(claimed: bool) -> Self {
+    async fn build(claimed: bool, socket: bool) -> Self {
         let mut db = Fixture::runtime().await;
         crate::payload_profile_v2_receipts::require(&db.reader)
             .await
@@ -219,7 +238,21 @@ impl Case {
             )
             .await
             .unwrap();
-        let (socket_actor, socket_state) = if claimed {
+        let mut loopback = None;
+        let (socket_actor, socket_state) = if socket {
+            let connected = Loopback03::start(
+                &db,
+                hasher.clone(),
+                enrollment_hasher,
+                account.account_id,
+                device,
+                &phone_key,
+            )
+            .await;
+            assert_eq!(connected.epoch().await, 1, "actual first isolated claim");
+            loopback = Some(connected);
+            (None, None)
+        } else if claimed {
             let state = crate::device_socket::DeviceSocketState {
                 database_url: String::new(),
                 site_id: "activation-test".into(),
@@ -327,6 +360,9 @@ impl Case {
             connection_epoch: 1,
             deployment_epoch: 1,
         };
+        if let Some(socket) = &loopback {
+            socket.heartbeat().await;
+        }
         if let (Some(actor), Some(state)) = (socket_actor, socket_state.as_ref()) {
             assert!(actor.heartbeat_for_test(&db.reader, state).await.unwrap());
         }
@@ -395,6 +431,7 @@ impl Case {
             pin,
             socket_actor,
             socket_state,
+            loopback,
         }
     }
     pub(crate) fn lease(&self) -> InboundSession<'static> {
