@@ -448,4 +448,6 @@ async fn apply(
 }
 
 #[cfg(test)]
+mod pg_tests;
+#[cfg(test)]
 mod tests;
