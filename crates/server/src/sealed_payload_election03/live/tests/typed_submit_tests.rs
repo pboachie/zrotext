@@ -77,7 +77,7 @@ async fn retained(c: &Case) -> String {
          UNION ALL SELECT jsonb_build_array('record',t.xmin::text,to_jsonb(t)) FROM public.conversation_profile03_closure_records t WHERE account_id=$1
          UNION ALL SELECT jsonb_build_array('challenge',t.xmin::text,to_jsonb(t)) FROM public.conversation_profile03_closure_challenges t WHERE account_id=$1
          UNION ALL SELECT jsonb_build_array('receipt',t.xmin::text,to_jsonb(t)) FROM public.conversation_profile03_closure_receipts t WHERE account_id=$1
-         UNION ALL SELECT jsonb_build_array('quarantine',t.xmin::text,to_jsonb(t)) FROM public.conversation_profile03_quarantines t WHERE account_id=$1
+         UNION ALL SELECT jsonb_build_array('quarantine',t.xmin::text,to_jsonb(t)) FROM public.conversation_profile03_effect_quarantines t WHERE account_id=$1
          ) AS facts",
         &[&c.principal.tenant.account_id()],
     ).await.unwrap().get(0)
