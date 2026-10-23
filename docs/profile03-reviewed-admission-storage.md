@@ -37,7 +37,7 @@ The original intent contains the recipient. When actual terminal-message content
 is erased under the existing retention and outstanding-effect rules, the intent,
 signature and peer become NULL together. Ciphertext is not duplicated in the
 sidecar. Original hashes, accepted context and replay identity remain with a
-one-way redaction time. Restoring originals, requeueing or charging again is
+one-way redaction time. Restoring originals, requeuing or charging again is
 refused. Actual account/message erasure keeps its parent cascade behavior.
 
 The ordinary non-owning runtime receives SELECT and the narrow admit/readiness
