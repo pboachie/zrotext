@@ -11,7 +11,7 @@ pub(super) async fn elected() -> (Case, Vec<u8>) {
 pub(super) async fn elected_claimed() -> (Case, Vec<u8>) {
     elected_case(fixture::prepared_claimed_genesis().await).await
 }
-async fn elected_case((mut c, signed): (Case, Vec<u8>)) -> (Case, Vec<u8>) {
+pub(super) async fn elected_case((mut c, signed): (Case, Vec<u8>)) -> (Case, Vec<u8>) {
     c.heartbeat().await;
     let opening = Uuid::new_v4();
     let tx = c.db.reader.transaction().await.unwrap();

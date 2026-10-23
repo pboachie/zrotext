@@ -21,7 +21,7 @@ pub(super) async fn active() -> (Case, SigningKey, consent::Statement03) {
 pub(super) async fn active_claimed() -> (Case, SigningKey, consent::Statement03) {
     active_case(super::interval_queue_tests::prepared_claimed().await).await
 }
-async fn active_case(
+pub(super) async fn active_case(
     (mut c, browser, signed): (Case, SigningKey, Vec<u8>),
 ) -> (Case, SigningKey, consent::Statement03) {
     let p = request(&mut c, &browser, &signed, b"+12", 300_000, 5).await;
