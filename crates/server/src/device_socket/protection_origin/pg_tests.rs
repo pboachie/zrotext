@@ -11,6 +11,16 @@ use p256::{
 };
 use sha2::{Digest, Sha256};
 
+#[derive(Debug)]
+enum StreamStep {
+    UnconfiguredChallenge,
+    UnconfiguredSession,
+    UnconfiguredRefusal,
+    ConfiguredChallenge,
+    ConfiguredSession,
+    ConfiguredOpening,
+}
+
 async fn ordinary_stream_open(
     f: &Fixture,
     state: &DeviceSocketState,
@@ -23,10 +33,10 @@ async fn ordinary_stream_open(
     type Stream = tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >;
-    async fn json(socket: &mut Stream) -> serde_json::Value {
+    async fn json(socket: &mut Stream, step: StreamStep) -> serde_json::Value {
         let frame = timeout(Duration::from_secs(5), socket.next())
             .await
-            .unwrap()
+            .unwrap_or_else(|_| panic!("ordinary stream {step:?} timed out"))
             .unwrap()
             .unwrap();
         let Wire::Text(text) = frame else {
@@ -62,7 +72,15 @@ async fn ordinary_stream_open(
         ))
         .await
         .unwrap();
-    let received = json(&mut socket).await;
+    let received = json(
+        &mut socket,
+        if configured {
+            StreamStep::ConfiguredChallenge
+        } else {
+            StreamStep::UnconfiguredChallenge
+        },
+    )
+    .await;
     assert_eq!(received["type"], "challenge");
     let challenge = enrollment::DeviceChallenge {
         id: Uuid::parse_str(received["challenge_id"].as_str().unwrap()).unwrap(),
@@ -72,7 +90,15 @@ async fn ordinary_stream_open(
     };
     let signature: Signature = key.sign(&enrollment::device_challenge_bytes(&challenge));
     socket.send(Wire::Text(serde_json::json!({"v":1,"type":"proof","challenge_id":challenge.id,"account_id":challenge.account_id,"device_id":device,"nonce":received["nonce"],"signature_der":URL_SAFE_NO_PAD.encode(signature.to_der().as_bytes())}).to_string().into())).await.unwrap();
-    let session = json(&mut socket).await;
+    let session = json(
+        &mut socket,
+        if configured {
+            StreamStep::ConfiguredSession
+        } else {
+            StreamStep::UnconfiguredSession
+        },
+    )
+    .await;
     assert_eq!(session["type"], "session");
     body["connection_epoch"] = session["connection_epoch"].clone();
     socket
@@ -80,7 +106,7 @@ async fn ordinary_stream_open(
         .await
         .unwrap();
     let reply = if configured {
-        let reply = json(&mut socket).await;
+        let reply = json(&mut socket, StreamStep::ConfiguredOpening).await;
         assert_eq!(reply["type"], "protection_origin_opened");
         assert_eq!(reply["connection_epoch"], session["connection_epoch"]);
         assert_eq!(
@@ -91,7 +117,12 @@ async fn ordinary_stream_open(
     } else {
         let frame = timeout(Duration::from_secs(5), socket.next())
             .await
-            .unwrap()
+            .unwrap_or_else(|_| {
+                panic!(
+                    "ordinary stream {:?} timed out",
+                    StreamStep::UnconfiguredRefusal
+                )
+            })
             .unwrap()
             .unwrap();
         let Wire::Close(Some(close)) = frame else {
