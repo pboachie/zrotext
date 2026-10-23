@@ -166,6 +166,13 @@ async fn candidate_inventory_covers_exact_numbered_schema_relations_columns_fk_a
                     Some(
                         "ordinary_other_message_accounting_preserves_retained03_reserve_and_aggregate_floor"
                     )
+                ) | (
+                    "device_protection_origins"
+                        | "device_protection_associations"
+                        | "device_protection_attempts"
+                        | "device_protection_receipts"
+                        | "device_protection_retirements",
+                    Some("first_origin_metadata_never_provider_or_effect_permission")
                 )
             ),
             "{table}: unknown current-profile writer policy"

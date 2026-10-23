@@ -11,6 +11,7 @@ pub mod conversation_grant03;
 pub mod conversation_profile03_grant_storage;
 pub mod conversation_profile03_storage;
 pub mod conversation_reviewed_send03_storage;
+pub mod device_protection_storage;
 pub mod device_socket;
 pub mod encrypted_schedule;
 pub mod enrollment;
