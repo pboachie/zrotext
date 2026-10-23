@@ -119,6 +119,9 @@ class TypedSubmit03RequestTest {
                 open().use { db ->
                     assertTrue(db.typedSubmits03().reserveNewSubmit(row) {})
                     db.openHelper.writableDatabase.apply {
+                        query("SELECT COUNT(*) FROM typed_submit03_requests").use {
+                            assertTrue(it.moveToFirst()); assertEquals(0L, it.getLong(0))
+                        }
                         execSQL("DROP TABLE typed_submit03_requests")
                         execSQL("DROP TABLE room_master_table")
                         version = 23

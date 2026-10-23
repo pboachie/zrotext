@@ -229,7 +229,7 @@ class TypedSubmit03JournalTest {
             open().use { db ->
                 db.attempts().insertAttempt(original)
                 db.openHelper.writableDatabase.apply {
-                    execSQL("DROP TABLE IF EXISTS typed_history03_clocks"); execSQL("DROP TABLE IF EXISTS typed_history03_sources"); execSQL("DROP TABLE typed_callback03"); execSQL("DROP TABLE typed_submit03")
+                    LegacyTypedJournalFixture.removeEmptyFutureTables(this)
                     execSQL("DROP TABLE room_master_table"); version = 21
                 }
             }

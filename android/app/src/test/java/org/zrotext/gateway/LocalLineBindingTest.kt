@@ -233,6 +233,7 @@ class LocalLineBindingTest {
         old.execSQL("ALTER TABLE local_line_binding_v10 RENAME TO local_line_binding")
         old.execSQL("DROP TABLE sealed_preparations") // Absent from the reconstructed v10 schema.
         old.execSQL("DROP TABLE line_activation_v2")
+        LegacyTypedJournalFixture.removeEmptyFutureTables(old)
         old.version = 10
         old.close()
         val upgraded = Room.databaseBuilder(context, SmsJournalDatabase::class.java, name)
@@ -312,6 +313,7 @@ class LocalLineBindingTest {
         old.execSQL("ALTER TABLE local_line_binding_v8 RENAME TO local_line_binding")
         old.execSQL("DROP TABLE sealed_preparations") // Absent from the reconstructed v8 schema.
         old.execSQL("DROP TABLE line_activation_v2")
+        LegacyTypedJournalFixture.removeEmptyFutureTables(old)
         old.version = 8
         old.close()
         val upgraded = Room.databaseBuilder(context, SmsJournalDatabase::class.java, name)

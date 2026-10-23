@@ -154,6 +154,7 @@ class Profile03ElectionJournalTest {
                 it.execSQL("DROP TABLE profile03_unaccepted_closures")
                 it.execSQL("DROP TABLE selection_refresh03")
                 it.execSQL("DROP TABLE profile03_elections")
+                LegacyTypedJournalFixture.removeEmptyFutureTables(it)
                 it.version = 14
             }
             Room.databaseBuilder(context, SmsJournalDatabase::class.java, name).allowMainThreadQueries()

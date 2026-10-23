@@ -91,6 +91,7 @@ class LineActivationV2JournalRoomTest {
                 old.execSQL("DROP TABLE local_line_binding")
                 old.execSQL("ALTER TABLE binding_v13 RENAME TO local_line_binding")
                 old.execSQL("DROP TABLE line_activation_v2")
+                LegacyTypedJournalFixture.removeEmptyFutureTables(old)
                 old.version = 13
             }
             Room.databaseBuilder(context, SmsJournalDatabase::class.java, name).allowMainThreadQueries()

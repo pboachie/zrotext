@@ -149,6 +149,7 @@ class Profile03UnacceptedRecoveryJournalTest {
                 context.openOrCreateDatabase(name, Context.MODE_PRIVATE, null).use { old ->
                     old.execSQL("DROP TABLE selection_refresh03_closures")
                     old.execSQL("DROP TABLE profile03_unaccepted_closures")
+                    LegacyTypedJournalFixture.removeEmptyFutureTables(old)
                     old.version = 16
                 }
                 Room.databaseBuilder(context, SmsJournalDatabase::class.java, name).allowMainThreadQueries()

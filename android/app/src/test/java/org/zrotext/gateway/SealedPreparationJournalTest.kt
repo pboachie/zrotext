@@ -162,6 +162,7 @@ class SealedPreparationJournalTest {
                 old.execSQL("ALTER TABLE local_line_binding_v11 RENAME TO local_line_binding")
                 old.execSQL("DROP TABLE sealed_preparations")
                 old.execSQL("DROP TABLE line_activation_v2")
+                LegacyTypedJournalFixture.removeEmptyFutureTables(old)
                 old.version = 11
             }
             file(name).use { db ->

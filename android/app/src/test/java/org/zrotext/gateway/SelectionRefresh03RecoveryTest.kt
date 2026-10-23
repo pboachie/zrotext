@@ -228,6 +228,7 @@ class SelectionRefresh03RecoveryTest {
             }
             context.openOrCreateDatabase(name, android.content.Context.MODE_PRIVATE, null).use {
                 it.execSQL("DROP TABLE selection_refresh03_closures")
+                LegacyTypedJournalFixture.removeEmptyFutureTables(it)
                 it.version = 17
             }
             androidx.room.Room.databaseBuilder(context, SmsJournalDatabase::class.java, name).allowMainThreadQueries()

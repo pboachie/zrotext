@@ -150,10 +150,7 @@ class Capture03IngressTest {
                 for (table in listOf("capture03_routes", "capture03_records", "capture03_counters", "capture03_modes", "inbound_protection_state",
                         "protection_setup_command", "protection_setup_providers", "protection_origin_attempts", "protection_origin_installed"))
                     db.openHelper.writableDatabase.execSQL("DROP TABLE $table")
-                db.openHelper.writableDatabase.execSQL("DROP TABLE IF EXISTS typed_history03_clocks")
-                db.openHelper.writableDatabase.execSQL("DROP TABLE IF EXISTS typed_history03_sources")
-                db.openHelper.writableDatabase.execSQL("DROP TABLE IF EXISTS typed_callback03")
-                db.openHelper.writableDatabase.execSQL("DROP TABLE IF EXISTS typed_submit03")
+                LegacyTypedJournalFixture.removeEmptyFutureTables(db.openHelper.writableDatabase)
                 db.openHelper.writableDatabase.execSQL("DROP TABLE room_master_table")
                 db.openHelper.writableDatabase.version = 18
             }

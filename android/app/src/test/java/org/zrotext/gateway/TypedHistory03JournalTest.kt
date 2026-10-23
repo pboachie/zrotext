@@ -225,10 +225,7 @@ class TypedHistory03JournalTest {
                 val observed = f.command.observedMs + 1
                 open().use { db ->
                     db.openHelper.writableDatabase.apply {
-                        execSQL("DROP TABLE typed_history03_clocks")
-                        execSQL("DROP TABLE typed_history03_sources")
-                        execSQL("DROP TABLE typed_callback03")
-                        execSQL("DROP TABLE typed_submit03")
+                        LegacyTypedJournalFixture.removeEmptyFutureTables(this)
                         SmsJournalDatabase.MIGRATION_21_22.migrate(this)
                         execSQL("INSERT INTO typed_submit03 (attemptId,eventId,accountId,deviceId,messageId,commandB64url,commandSha256,originalEnrolledPoint,originalEnrolledKeyId,phase,conflict) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                             arrayOf<Any>(old.attemptId, old.eventId, old.accountId, old.deviceId, old.messageId, old.commandB64url,

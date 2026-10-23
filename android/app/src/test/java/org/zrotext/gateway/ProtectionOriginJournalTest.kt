@@ -155,8 +155,7 @@ class ProtectionOriginJournalTest {
                 assertTrue(dao.reserveProviderEntry(command, ProtectionSetupProvider("canary", command.commandId, id(20), 2_996_000)) {})
                 db.openHelper.writableDatabase.apply {
                     execSQL("DROP TABLE protection_origin_attempts"); execSQL("DROP TABLE protection_origin_installed")
-                    execSQL("DROP TABLE IF EXISTS typed_history03_clocks"); execSQL("DROP TABLE IF EXISTS typed_history03_sources"); execSQL("DROP TABLE IF EXISTS typed_callback03")
-                    execSQL("DROP TABLE IF EXISTS typed_submit03")
+                    LegacyTypedJournalFixture.removeEmptyFutureTables(this)
                     execSQL("DROP TABLE room_master_table"); version = 20
                 }
             }
