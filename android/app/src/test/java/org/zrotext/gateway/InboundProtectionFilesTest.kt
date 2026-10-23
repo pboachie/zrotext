@@ -8,6 +8,22 @@ import org.junit.Test
 
 /** Actual temporary files; the Android directory-fsync adapter alone is a fixture seam. */
 class InboundProtectionFilesTest {
+    @Test fun descriptorMustBeAnActualDirectoryAndIsClosedWhenValidationRefuses() {
+        val calls = mutableListOf<String>()
+        assertThrows(IllegalStateException::class.java) {
+            ProtectionDirectorySync.sync({ calls.add("open"); 7 }, { calls.add("fstat-$it"); false },
+                { calls.add("flush-$it") }, { calls.add("close-$it") })
+        }
+        assertEquals(listOf("open", "fstat-7", "close-7"), calls)
+    }
+    @Test fun directoryFsyncFailureStillClosesTheOriginalDescriptor() {
+        val calls = mutableListOf<String>()
+        assertThrows(IllegalStateException::class.java) {
+            ProtectionDirectorySync.sync({ 9 }, { calls.add("fstat-$it"); true },
+                { calls.add("flush-$it"); error("Synthetic fsync failure") }, { calls.add("close-$it") })
+        }
+        assertEquals(listOf("fstat-9", "flush-9", "close-9"), calls)
+    }
     private fun directory(action: (File) -> Unit) {
         val parent = Files.createTempDirectory("protection-negative-test").toFile()
         try { action(File(parent, "negative")) } finally { check(parent.deleteRecursively()) }

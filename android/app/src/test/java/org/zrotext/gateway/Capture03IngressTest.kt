@@ -139,20 +139,22 @@ class Capture03IngressTest {
         val context = RuntimeEnvironment.getApplication(); val name = "capture03-upgrade-test.db"
         context.deleteDatabase(name)
         fun open() = Room.databaseBuilder(context, SmsJournalDatabase::class.java, name).allowMainThreadQueries()
-            .addMigrations(SmsJournalDatabase.MIGRATION_18_19).build()
+            .addMigrations(SmsJournalDatabase.MIGRATION_18_19, SmsJournalDatabase.MIGRATION_19_20).build()
         try {
             open().use { db ->
                 db.attempts().insertAttempt(SmsAttempt(id(91), 3, 1, AttemptState.UNKNOWN, 1000, 1000))
-                // Exact parent18 tables are unchanged. Remove ONLY new19 tables to construct
+                // Exact parent18 tables are unchanged. Remove ONLY new19/20 tables to construct
                 // the immediate predecessor, then require Room's independent schema check.
-                for (table in listOf("capture03_routes", "capture03_records", "capture03_counters", "capture03_modes", "inbound_protection_state"))
+                for (table in listOf("capture03_routes", "capture03_records", "capture03_counters", "capture03_modes", "inbound_protection_state",
+                        "protection_setup_command", "protection_setup_providers"))
                     db.openHelper.writableDatabase.execSQL("DROP TABLE $table")
                 db.openHelper.writableDatabase.execSQL("DROP TABLE room_master_table")
                 db.openHelper.writableDatabase.version = 18
             }
             open().use { db ->
-                assertEquals(19, db.openHelper.readableDatabase.version); assertNotNull(db.attempts().getAttempt(id(91)))
+                assertEquals(20, db.openHelper.readableDatabase.version); assertNotNull(db.attempts().getAttempt(id(91)))
                 assertNull(db.captures03().counter(id(1), id(2)))
+                assertNull(db.protectionSetup().command()); assertTrue(db.protectionSetup().providers().isEmpty())
                 Capture03Ingress.claim(db.captures03(), h('a'), 2000, Capture03Exclusion.Candidate("drop03", h('b')), {}, { false })
             }
             open().use { db ->
