@@ -97,7 +97,7 @@ pub enum Request03 {
     Outcome(Outcome03),
     SubmitStatus(SubmitStatus03),
     Challenge(Challenge03),
-    Proof(Proof03),
+    Proof(Box<Proof03>),
     ProofStatus(ProofStatus03),
 }
 impl Request03 {
@@ -233,14 +233,14 @@ impl Request03 {
                 {
                     return Err("effect proof outer/core correlation");
                 }
-                Self::Proof(Proof03 {
+                Self::Proof(Box::new(Proof03 {
                     connection_epoch: epoch,
                     proof_request_id: request,
                     closure_id: closure,
                     challenge_id: challenge,
                     core,
                     signature: binary::<64>(&b.signature)?,
-                })
+                }))
             }
             "payload_profile_no_submit_status03_request" => {
                 let b: ProofStatusBody = closed(raw)?;
