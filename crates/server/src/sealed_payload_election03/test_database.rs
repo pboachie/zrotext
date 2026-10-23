@@ -197,6 +197,14 @@ impl Fixture {
 // protected-table/helper resets. Only a freshly generated role identifier is
 // substituted. This does not bypass production validators or require psql.
 async fn provision_runtime(owner: &Client, database: &str, role: &str) {
+    provision_runtime_from(owner, database, role, "zrotext_runtime").await;
+}
+
+// A migration may have granted its fixed runtime role before this fixture
+// substitutes its isolated role. Remove that predecessor's rights only in this
+// disposable database, then apply the unchanged stock reset in the SAME commit.
+// Table-level REVOKE does not remove explicit column ACLs.
+async fn provision_runtime_from(owner: &Client, database: &str, role: &str, prior_role: &str) {
     // The stock block uses the role in BOTH SQL identifiers and rolname text
     // literals. Replacing with a prequoted identifier changes the literal's
     // value and silently skips the conditional narrow-helper grants.
@@ -207,6 +215,7 @@ async fn provision_runtime(owner: &Client, database: &str, role: &str) {
                 .bytes()
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
     );
+    assert_ne!(role, prior_role);
     let role_id = escape_identifier(role);
     owner
         .batch_execute(&format!(
@@ -228,6 +237,29 @@ async fn provision_runtime(owner: &Client, database: &str, role: &str) {
         !body.lines().any(|line| line.starts_with('\\')),
         "unexpected psql instruction in stock ACL block"
     );
-    let acl = format!("BEGIN; {marker}{body} COMMIT;").replace("zrotext_runtime", role);
+    let cleanup = format!(
+        "DO $fixture$ DECLARE relation record; BEGIN
+         IF EXISTS(SELECT FROM pg_catalog.pg_roles WHERE rolname={prior_literal}) THEN
+          REVOKE ALL ON SCHEMA public FROM {prior_id};
+          REVOKE ALL ON ALL TABLES IN SCHEMA public FROM {prior_id};
+          REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM {prior_id};
+          REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM {prior_id};
+          FOR relation IN
+           SELECT c.relname,string_agg(pg_catalog.quote_ident(a.attname),',' ORDER BY a.attnum) AS columns_sql
+           FROM pg_catalog.pg_class c JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid
+           WHERE c.relnamespace='public'::regnamespace AND c.relkind IN('r','p','v','m','f')
+            AND a.attnum>0 AND NOT a.attisdropped GROUP BY c.oid,c.relname
+          LOOP
+           EXECUTE pg_catalog.format('REVOKE ALL (%s) ON TABLE public.%I FROM %I',relation.columns_sql,relation.relname,{prior_literal});
+          END LOOP;
+         END IF; END $fixture$;",
+        prior_literal = escape_literal(prior_role),
+        prior_id = escape_identifier(prior_role)
+    );
+    let mapped = format!("{marker}{body}").replace("zrotext_runtime", role);
+    let acl = format!("BEGIN; {cleanup} {mapped} COMMIT;");
     owner.batch_execute(&acl).await.unwrap();
 }
+
+#[cfg(test)]
+mod tests;
