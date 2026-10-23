@@ -128,18 +128,7 @@ fn body_for(name: &str, version: i64) -> Result<&'static str> {
     declared_function_body(source, name, "$function$").ok_or(IdentitySchemaError::Invalid)
 }
 async fn functions<C: GenericClient + Sync>(db: &C, version: i64) -> Result<()> {
-    for (
-        name,
-        signature,
-        result,
-        language,
-        volatility,
-        strict,
-        definer,
-        configuration,
-        names,
-        original_hashes,
-    ) in [
+    let expected = [
         (
             "hosted_runtime_native_start",
             "public.hosted_runtime_native_start()",
@@ -425,8 +414,38 @@ async fn functions<C: GenericClient + Sync>(db: &C, version: i64) -> Result<()> 
                 "ba7fcf05e3069d2766bf90f7a868c52e55b2d9c1278bc9bb2279ce30e3b794c0",
             ] as &[&str]),
         ),
-    ] {
-        let row=db.query_opt("SELECT p.prosrc,p.proowner=c.relowner,p.prorettype=pg_catalog.to_regtype($2::text),l.lanname::text,p.provolatile::text,p.proisstrict,p.prosecdef,p.proconfig,p.proargnames,NOT p.proretset AND p.proparallel='u' AND p.prokind='f' AND p.pronargdefaults=0 AND p.provariadic=0 AND NOT p.proleakproof AND p.proargdefaults IS NULL AND p.proargmodes IS NULL AND p.proallargtypes IS NULL AND(SELECT count(*) FROM pg_catalog.pg_proc x WHERE x.pronamespace=p.pronamespace AND x.proname=p.proname)=1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_language l ON l.oid=p.prolang JOIN pg_catalog.pg_class c ON c.oid='public.accounts'::pg_catalog.regclass WHERE p.oid=pg_catalog.to_regprocedure($1::text)",&[&signature,&result]).await?.ok_or(IdentitySchemaError::Invalid)?;
+    ];
+    let signatures = expected.iter().map(|entry| entry.1).collect::<Vec<_>>();
+    let results = expected.iter().map(|entry| entry.2).collect::<Vec<_>>();
+    // Fetch only metadata, with one snapshot for this closed set. Each call
+    // still repeats every comparison and the later graph/readiness checks.
+    let rows=db.query("SELECT p.prosrc,p.proowner=c.relowner,p.prorettype=pg_catalog.to_regtype(($2::text[])[e.ordinal::integer]),l.lanname::text,p.provolatile::text,p.proisstrict,p.prosecdef,p.proconfig,p.proargnames,NOT p.proretset AND p.proparallel='u' AND p.prokind='f' AND p.pronargdefaults=0 AND p.provariadic=0 AND NOT p.proleakproof AND p.proargdefaults IS NULL AND p.proargmodes IS NULL AND p.proallargtypes IS NULL AND(SELECT count(*) FROM pg_catalog.pg_proc x WHERE x.pronamespace=p.pronamespace AND x.proname=p.proname)=1,e.ordinal FROM pg_catalog.unnest($1::text[]) WITH ORDINALITY AS e(signature,ordinal) JOIN pg_catalog.pg_proc p ON p.oid=pg_catalog.to_regprocedure(e.signature) JOIN pg_catalog.pg_language l ON l.oid=p.prolang JOIN pg_catalog.pg_class c ON c.oid='public.accounts'::pg_catalog.regclass ORDER BY e.ordinal",&[&signatures,&results]).await?;
+    if rows.len() != expected.len() {
+        return Err(IdentitySchemaError::Invalid);
+    }
+    for (
+        index,
+        (
+            (
+                name,
+                _,
+                _,
+                language,
+                volatility,
+                strict,
+                definer,
+                configuration,
+                names,
+                original_hashes,
+            ),
+            row,
+        ),
+    ) in expected.into_iter().zip(&rows).enumerate()
+    {
+        // Missing or duplicate metadata may never shift another expected item.
+        if row.try_get::<_, i64>(10)? != (index + 1) as i64 {
+            return Err(IdentitySchemaError::Invalid);
+        }
         let source: String = row.try_get(0)?;
         let original_hashes: &[&str] = original_hashes;
         let configuration = configuration
@@ -465,7 +484,7 @@ async fn functions<C: GenericClient + Sync>(db: &C, version: i64) -> Result<()> 
     Ok(())
 }
 async fn tables<C: GenericClient + Sync>(db: &C) -> Result<()> {
-    for (name, columns) in [
+    let expected = [
         (
             "hosted_runtime_entries",
             &[
@@ -491,8 +510,16 @@ async fn tables<C: GenericClient + Sync>(db: &C) -> Result<()> {
                 "result:jsonb:false:false",
             ] as &[&str],
         ),
-    ] {
-        let row=db.query_one("SELECT c.relkind='r' AND c.relpersistence='p' AND c.relowner=a.relowner AND NOT c.relrowsecurity AND NOT c.relforcerowsecurity,(SELECT pg_catalog.array_agg(x.attname||':'||pg_catalog.format_type(x.atttypid,x.atttypmod)||':'||x.attnotnull::text||':'||(d.adbin IS NOT NULL)::text ORDER BY x.attnum) FROM pg_catalog.pg_attribute x LEFT JOIN pg_catalog.pg_attrdef d ON(d.adrelid,d.adnum)=(x.attrelid,x.attnum) WHERE x.attrelid=c.oid AND x.attnum>0 AND NOT x.attisdropped) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_class a ON a.oid='public.accounts'::pg_catalog.regclass WHERE c.oid=pg_catalog.to_regclass(pg_catalog.format('public.%I',$1::text))",&[&name]).await?;
+    ];
+    let names = expected.iter().map(|entry| entry.0).collect::<Vec<_>>();
+    let rows=db.query("SELECT c.relkind='r' AND c.relpersistence='p' AND c.relowner=a.relowner AND NOT c.relrowsecurity AND NOT c.relforcerowsecurity,(SELECT pg_catalog.array_agg(x.attname||':'||pg_catalog.format_type(x.atttypid,x.atttypmod)||':'||x.attnotnull::text||':'||(d.adbin IS NOT NULL)::text ORDER BY x.attnum) FROM pg_catalog.pg_attribute x LEFT JOIN pg_catalog.pg_attrdef d ON(d.adrelid,d.adnum)=(x.attrelid,x.attnum) WHERE x.attrelid=c.oid AND x.attnum>0 AND NOT x.attisdropped),e.ordinal FROM pg_catalog.unnest($1::text[]) WITH ORDINALITY AS e(name,ordinal) JOIN pg_catalog.pg_class c ON c.oid=pg_catalog.to_regclass(pg_catalog.format('public.%I',e.name)) JOIN pg_catalog.pg_class a ON a.oid='public.accounts'::pg_catalog.regclass ORDER BY e.ordinal",&[&names]).await?;
+    if rows.len() != expected.len() {
+        return Err(IdentitySchemaError::Invalid);
+    }
+    for (index, ((_, columns), row)) in expected.into_iter().zip(&rows).enumerate() {
+        if row.try_get::<_, i64>(2)? != (index + 1) as i64 {
+            return Err(IdentitySchemaError::Invalid);
+        }
         let columns = columns.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
         if !row.try_get::<_, bool>(0)? || row.try_get::<_, Vec<String>>(1)? != columns {
             return Err(IdentitySchemaError::Invalid);
