@@ -12,6 +12,9 @@ class Profile03OriginsTest {
     private val device = UUID(0, 2)
     private fun sha(value: String) = MessageDigest.getInstance("SHA-256").digest(value.toByteArray())
     private fun session(origin: Profile03Origins) = SealedDispatchExecutor.Session(account, device, 7, 1, UUID(0, 3), origin.routingHash)
+    private fun replacement(original: SealedDispatchExecutor.Session, accountId: UUID = original.accountId,
+        deviceId: UUID = original.deviceId, originHash: String = original.originHash) =
+        SealedDispatchExecutor.Session(accountId, deviceId, original.connectionEpoch, original.deploymentEpoch, original.sessionId, originHash)
 
     @Test fun actualStreamDerivationKeepsCanonicalHttpsAndExistingWssIdentitiesDistinct() {
         for ((stream, protocol, routing) in listOf(
@@ -38,10 +41,10 @@ class Profile03OriginsTest {
             assertThrows(IllegalArgumentException::class.java) { actual.requireProtocol(other.protocolDigest(), session(actual)) }
         }
         val original = session(actual)
-        assertThrows(IllegalArgumentException::class.java) { actual.requireSession(original.copy(accountId = UUID(0, 9))) }
-        assertThrows(IllegalArgumentException::class.java) { actual.requireSession(original.copy(deviceId = UUID(0, 9))) }
+        assertThrows(IllegalArgumentException::class.java) { actual.requireSession(replacement(original, accountId = UUID(0, 9))) }
+        assertThrows(IllegalArgumentException::class.java) { actual.requireSession(replacement(original, deviceId = UUID(0, 9))) }
         assertThrows(IllegalArgumentException::class.java) { actual.requireProtocol(sha("wss://gateway.example.test:443"), original) }
-        assertThrows(IllegalArgumentException::class.java) { actual.requireSession(original.copy(originHash = actual.protocolHash)) }
+        assertThrows(IllegalArgumentException::class.java) { actual.requireSession(replacement(original, originHash = actual.protocolHash)) }
     }
 
     @Test fun schemesUserInfoFragmentsAndNoncanonicalProtocolNamesRefuse() {
