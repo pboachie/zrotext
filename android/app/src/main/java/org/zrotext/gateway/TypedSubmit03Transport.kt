@@ -68,6 +68,6 @@ internal class TypedSubmit03Transport(private val socket: WebSocket,
             else { pending.ack = decoded; pending.arrived.countDown(); true }
         }
     }
-    override fun close() = synchronized(lock) { closed = true; waiting?.arrived?.countDown() }
+    override fun close() { synchronized(lock) { closed = true; waiting?.arrived?.countDown() } }
     override fun toString() = "TypedSubmit03Transport(original-socket-only)"
 }
