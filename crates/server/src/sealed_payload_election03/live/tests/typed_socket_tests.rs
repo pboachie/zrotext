@@ -6,7 +6,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B};
 use futures_util::FutureExt;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::{future::Future, panic::AssertUnwindSafe, pin::Pin};
+use std::{collections::BTreeSet, future::Future, panic::AssertUnwindSafe, pin::Pin};
 
 type TestIo<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 type ActiveSocket = (
@@ -32,6 +32,55 @@ struct Saved {
     message: Uuid,
     point: Vec<u8>,
     key_id: Vec<u8>,
+}
+
+fn assert_ack(ack: &Value, request: &Value, epoch: i64, command_sha: &str, accepted: Option<&str>) {
+    let expected = [
+        "v",
+        "type",
+        "connection_epoch",
+        "event_id",
+        "message_id",
+        "attempt_id",
+        "submit_command_sha256",
+        "fetch_transcript_sha256",
+        "segment_count",
+        "observed_ms",
+        "accepted_ms",
+        "state",
+        "disposition",
+        "current",
+        "interval_permission",
+    ];
+    let keys: BTreeSet<_> = ack
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(keys, expected.into_iter().collect());
+    assert_eq!(ack["v"], 1);
+    assert_eq!(ack["type"], "payload_profile_submit_ack03");
+    assert_eq!(ack["connection_epoch"], epoch);
+    for name in [
+        "event_id",
+        "message_id",
+        "attempt_id",
+        "fetch_transcript_sha256",
+        "segment_count",
+        "observed_ms",
+    ] {
+        assert_eq!(ack[name], request[name], "original {name}");
+    }
+    assert_eq!(ack["state"], "submitting");
+    assert_eq!(ack["submit_command_sha256"], command_sha);
+    let time = ack["accepted_ms"].as_str().unwrap();
+    let parsed = time.parse::<u64>().unwrap();
+    assert!(parsed > 0 && parsed <= i64::MAX as u64);
+    assert_eq!(parsed.to_string(), time);
+    if let Some(accepted) = accepted {
+        assert_eq!(time, accepted);
+    }
 }
 
 fn first<'a>(
@@ -104,9 +153,8 @@ fn first<'a>(
             .loopback()
             .exchange(&request, "payload_profile_submit_ack03")
             .await;
-        assert_eq!(ack.as_object().unwrap().len(), 15);
+        assert_ack(&ack, &request, c.loopback().epoch().await, &expected, None);
         assert_eq!(ack["disposition"], "submit_once");
-        assert_eq!(ack["submit_command_sha256"], expected);
         assert_eq!(ack["current"].as_object().unwrap().len(), 40);
         assert_eq!(ack["current"]["kind"], "submit_manifest_permission03");
         assert_eq!(ack["current"]["request_kind"], "submit");
@@ -128,8 +176,9 @@ fn first<'a>(
                 claim.expires_at_ms.to_string()
             );
         }
-        let retained: Vec<u8> = c.db.reader.query_one("SELECT command FROM public.conversation_profile03_submits WHERE account_id=$1 AND attempt_id=$2",&[&account,&claim.attempt_id]).await.unwrap().get(0);
-        assert_eq!(retained, original);
+        let retained = c.db.reader.query_one("SELECT command,accepted_ms FROM public.conversation_profile03_submits WHERE account_id=$1 AND attempt_id=$2",&[&account,&claim.attempt_id]).await.unwrap();
+        assert_eq!(retained.get::<_, Vec<u8>>(0), original);
+        assert_eq!(retained.get::<_, i64>(1).to_string(), accepted);
         assert_eq!(
             super::typed_submit_tests::liabilities(c, packet.message).await,
             ("submitting".into(), "submitting".into(), 1, 1, 0)
@@ -163,13 +212,14 @@ fn retry<'a>(c: &'a Case, saved: &'a Saved, request: Value) -> TestIo<'a, ()> {
             .loopback()
             .exchange(&request, "payload_profile_submit_ack03")
             .await;
-        assert_eq!(ack["connection_epoch"], c.loopback().epoch().await);
-        assert_eq!(ack["disposition"], "history_only");
-        assert_eq!(ack["accepted_ms"], saved.accepted);
-        assert_eq!(
-            ack["submit_command_sha256"],
-            B.encode(command.digest().unwrap())
+        assert_ack(
+            &ack,
+            &request,
+            c.loopback().epoch().await,
+            &B.encode(command.digest().unwrap()),
+            Some(&saved.accepted),
         );
+        assert_eq!(ack["disposition"], "history_only");
         assert!(ack["current"].is_null());
         assert!(ack["interval_permission"].is_null());
         assert_eq!(super::typed_submit_tests::retained(c).await, before);
