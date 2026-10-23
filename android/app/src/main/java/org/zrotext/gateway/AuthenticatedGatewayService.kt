@@ -83,6 +83,7 @@ class AuthenticatedGatewayService : Service() {
     @Volatile private var profile03Requested = false
     private var conversationHost: AutoCloseable? = null
     private var protectionOriginHost: ProtectionOriginConnections.Host? = null
+    private var typedHistoryHost: TypedHistory03Connections.Host? = null
     @Volatile private var awaitingEventId: String? = null
     @Volatile private var awaitingEventSentAtNanos = 0L
     @Volatile private var awaitingInboundId: String? = null
@@ -347,6 +348,11 @@ class AuthenticatedGatewayService : Service() {
                     check(raw.size <= if (selectedTuple.sealedVersion == 3) Profile03Json.MAX_BYTES else MAX_FRAME_BYTES)
                     val frame = JSONObject(text)
                     val type = frame.opt("type")
+                    if (type == "payload_profile_history_clock03") {
+                        check(machine.phase == DeviceStreamMachine.Phase.ACTIVE)
+                        checkNotNull(typedHistoryHost).accept(raw)
+                        return
+                    }
                     if (type in setOf("protection_origin_opened", "protection_origin_proof_challenge",
                             "protection_origin_accepted", "protection_origin_status")) {
                         check(machine.phase == DeviceStreamMachine.Phase.ACTIVE)
@@ -547,6 +553,12 @@ class AuthenticatedGatewayService : Service() {
                                     check(generation == currentGeneration && socket === webSocket && sessionIdentity == identity &&
                                         machine.phase == DeviceStreamMachine.Phase.ACTIVE && machine.heartbeatEpoch() == epoch)
                                 }
+                                typedHistoryHost = TypedHistory03Connections.register(webSocket, identity, epoch,
+                                    selectedTuple.lineVersion, checkNotNull(verifiedHandshakePoint), {
+                                        check(generation == currentGeneration && socket === webSocket && sessionIdentity == identity &&
+                                            machine.phase == DeviceStreamMachine.Phase.ACTIVE && machine.heartbeatEpoch() == epoch)
+                                    })
+                                TypedHistory03Runtime.connected(applicationContext)
                                 conversationHost = ConversationSocketComposition.registerAuthenticatedHost(webSocket, identity, epoch,
                                     scheduler, {
                                         check(generation == currentGeneration && socket === webSocket && sessionIdentity == identity &&
@@ -1371,6 +1383,8 @@ class AuthenticatedGatewayService : Service() {
     }
 
     private fun closeConversationConnection() {
+        val historyHost = typedHistoryHost; typedHistoryHost = null
+        historyHost?.close() // Passive actor port follows the actual socket, not an effect-health epoch.
         val originHost = protectionOriginHost; protectionOriginHost = null
         originHost?.close() // Synchronous RAM withdrawal before platform/storage cleanup.
         selectedLineV2Owner?.retireAtEntry()

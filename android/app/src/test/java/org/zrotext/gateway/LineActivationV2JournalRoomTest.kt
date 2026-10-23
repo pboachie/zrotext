@@ -94,8 +94,8 @@ class LineActivationV2JournalRoomTest {
                 old.version = 13
             }
             Room.databaseBuilder(context, SmsJournalDatabase::class.java, name).allowMainThreadQueries()
-                .addMigrations(SmsJournalDatabase.MIGRATION_13_14, SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17, SmsJournalDatabase.MIGRATION_17_18, SmsJournalDatabase.MIGRATION_18_19, SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22).build().useJournal { migrated ->
-                    assertEquals(22, migrated.openHelper.readableDatabase.version)
+                .addMigrations(SmsJournalDatabase.MIGRATION_13_14, SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17, SmsJournalDatabase.MIGRATION_17_18, SmsJournalDatabase.MIGRATION_18_19, SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23).build().useJournal { migrated ->
+                    assertEquals(23, migrated.openHelper.readableDatabase.version)
                     assertEquals(legacy, migrated.attempts().currentLineBinding())
                     assertTrue(checkNotNull(migrated.attempts().currentLineBinding()).liveContinuity())
                     assertNull(migrated.lineActivationsV2().find("sms", UUID(0, 8).toString()))
