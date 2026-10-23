@@ -549,8 +549,13 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
 /// Ordinary runtime capability only; the actual native entry and opaque
 /// signature-verified enrolled actor remain mandatory in each business TX.
 pub async fn require<C: GenericClient + Sync>(db: &C) -> Result<()> {
-    crate::hosted_runtime_identity::require(db).await?;
+    // The complete optional check pins native and protection definitions first.
+    // Runtime role/column readiness must still be evaluated freshly afterward.
     if !optional(db).await?
+        || !db
+            .query_one("SELECT public.hosted_runtime_identity_ready()", &[])
+            .await?
+            .try_get::<_, bool>(0)?
         || !db
             .query_one("SELECT public.device_protection_ready()", &[])
             .await?
@@ -562,3 +567,7 @@ pub async fn require<C: GenericClient + Sync>(db: &C) -> Result<()> {
 }
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "device_protection_storage/readiness_tests.rs"]
+mod readiness_tests;
