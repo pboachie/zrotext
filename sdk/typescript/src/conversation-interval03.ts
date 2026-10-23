@@ -4,6 +4,8 @@
  * ACK are adapter obligations. No returned object grants permission to send. */
 import { authorizeInbound03, authorizeOutbound03, type VerifiedManifest03 } from './draft03-manifest.js';
 import { isCanonicalP256Signature } from './draft01.js';
+import { prepareSealedOutboundEnvelope03, type PreparedOutboundEnvelope03 } from './sealed-envelope03.js';
+import { captureTrustedReviewContext03, type ReviewContext03 } from './reviewed-intent03.js';
 import { captureCurrentElectionAuthority03, captureElectionBytes03, electionTime03, requireCurrentElection03,
   type CurrentElectionAuthority03, type VerifiedAcceptedElection03 } from './payload-profile-election03.js';
 
@@ -188,4 +190,53 @@ export async function verifyConversationReceipts03(input: ConversationReceiptsIn
   if (approval) await verify(approval, k.inbound.signerPoint, 'zrotext/conversation/approve03/v1', join(raw, await sha(request!.signature)));
   if (installed) await verify(installed, k.inbound.signerPoint, 'zrotext/conversation/install03/v1', join(raw, await sha(request!.signature), await sha(approval!.signature)));
   binding(s, c, nowMs, p.pending); return s;
+}
+
+export type InstalledConversationMessageInput03 = Readonly<{
+  context: ConversationContext03; statement: Uint8Array;
+  request: ConversationReceiptSignature03; approval: ConversationReceiptSignature03;
+  installed: ConversationReceiptSignature03; messageId: Uint8Array;
+  observedMs: bigint; expiresMs: bigint; content: string;
+  nowMs: () => bigint; signal: AbortSignal;
+}>;
+/** Bridge the SAME private checked context and all three original receipts to
+ * unsigned ciphertext and a V2 review context. The actual adapter must obtain
+ * fresh held service facts and authentic original receipt times, retain custody
+ * and journal both signing burns. No signature, HTTP, installed ACK or effect
+ * permission is created here; a displayed active flag cannot enter this API. */
+export async function prepareInstalledConversationMessage03(input: InstalledConversationMessageInput03): Promise<Readonly<{
+  prepared: PreparedOutboundEnvelope03; reviewContext: ReviewContext03; statement: ConversationStatement03;
+}>> {
+  const p = record(input, ['context', 'statement', 'request', 'approval', 'installed', 'messageId',
+    'observedMs', 'expiresMs', 'content', 'nowMs', 'signal']);
+  const c = context(p.context as ConversationContext03), raw = captureElectionBytes03(p.statement as Uint8Array, 695, 1092);
+  const request = receipt(p.request as ConversationReceiptSignature03), approval = receipt(p.approval as ConversationReceiptSignature03);
+  const installed = receipt(p.installed as ConversationReceiptSignature03), messageId = nonzero(p.messageId, 16);
+  if (!request || !approval || !installed || typeof p.content !== 'string' || typeof p.nowMs !== 'function'
+      || !(p.signal instanceof AbortSignal)) fail('original installed proofs and live preparation required');
+  const observed = p.observedMs as bigint, expires = p.expiresMs as bigint, signal = p.signal as AbortSignal;
+  electionTime03(observed); electionTime03(expires);
+  let floor = c.nowMs;
+  const now = () => {
+    if (signal.aborted) fail('preparation withdrawn'); const n = (p.nowMs as () => bigint)(); electionTime03(n);
+    if (signal.aborted || n < floor) fail('preparation clock/withdrawal'); floor = n; return n;
+  };
+  const s = await verifyConversationReceipts03({ context: p.context as ConversationContext03, statement: raw,
+    request, approval, installed, nowMs: now(), pending: false });
+  const from = installed.timeMs > s.intervalFromMs ? installed.timeMs : s.intervalFromMs;
+  const check = () => { const n = now(); binding(s, c, n, false); return n; };
+  check();
+  if (observed < from || expires > s.intervalUntilMs || expires > c.ownerDeadlineMs) fail('installed message bounds');
+  const recipients = [{ role: 1 as const, keyId: c.currentAuthority.selectedReaderKeyId },
+    { role: 2 as const, keyId: c.archiveReaderKeyId }, ...c.integrationReaders.map(r => ({ role: 3 as const, keyId: r.keyId }))];
+  const reviewContext = await captureTrustedReviewContext03({ currentAuthority: c.currentAuthority,
+    manifest: c.manifest, acceptedElection: c.acceptedElection, accountSelectionEpoch: c.selectionEpoch,
+    ownerUserId: c.ownerUserId, ownerSessionId: c.ownerSessionId, canonicalOrigin: c.canonicalOrigin,
+    intervalId: s.intervalId, intervalFromMs: from, intervalUntilMs: s.intervalUntilMs,
+    peer: c.peer, signerKeyId: c.browserSignerKeyId, recipients, nowMs: check() });
+  const k = binding(s, c, check(), false);
+  const prepared = await prepareSealedOutboundEnvelope03({ manifest: c.manifest, acceptedElection: c.acceptedElection,
+    currentAuthority: c.currentAuthority, nowMs: check(), messageId, observedMs: observed, expiresMs: expires,
+    peer: c.peer, content: p.content, signerPublicPoint: k.outbound.signerPoint, recipients });
+  check(); return Object.freeze({ prepared, reviewContext, statement: s });
 }
