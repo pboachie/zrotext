@@ -12,3 +12,4 @@ deploy/compose/migrations/114_conversation_reviewed_sends03.sql text eol=lf
 deploy/compose/migrations/115_conversation_profile03_grants.sql text eol=lf
 deploy/compose/migrations/116_hosted_native_transaction_identity.sql text eol=lf
 deploy/compose/migrations/117_explicit_reviewed_intent_v2.sql text eol=lf
+deploy/compose/migrations/118_device_protection_origins.sql text eol=lf
