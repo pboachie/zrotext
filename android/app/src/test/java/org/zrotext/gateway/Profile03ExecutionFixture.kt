@@ -84,6 +84,12 @@ internal class Profile03ExecutionFixture(private val selectedReaderUntilMs: Long
     val intent = ReviewedIntent03.decode(intentBytes)
     val intentSignature = signIntent(intentBytes)
     fun signIntent(bytes: ByteArray) = rawSign(signer, ReviewedIntent03.framed("zrotext/conversation/reviewed-send03/v1", bytes))
+    // Separate genuine V2 test production. Historical V1 fields/signatures above remain exact.
+    val intentV2Bytes = intentV2()
+    val intentV2 = ReviewedIntent03V2.decode(intentV2Bytes)
+    val intentV2Signature = signIntentV2(intentV2Bytes)
+    fun signIntentV2(bytes: ByteArray) = rawSign(signer,
+        ReviewedIntent03.framed("zrotext/conversation/reviewed-send03/v2", bytes))
     val grant get() = SealedDispatch03Frames.grant(JSONObject().put("v", 1).put("type", "sealed_execution_grant")
         .put("grant_version", 3).put("envelope_profile", 3).put("manifest_profile", 3).put("reader_role", 1)
         .put("segment_count", 1).put("account_id", line.account).put("device_id", line.device).put("line_id", line.line)
@@ -95,8 +101,8 @@ internal class Profile03ExecutionFixture(private val selectedReaderUntilMs: Long
         .put("election_digest", b64(accepted.electionCommitment)).toString())
     var intervalCurrent = true
     fun current(selected: Draft03PayloadElectionProof.CurrentAuthority03 = currentSelection,
-        reviewed: ReviewedIntent03 = intent, signature: ByteArray = intentSignature,
-        epoch: Long = 3, acceptedMs: Long = admittedAt) = Draft03OutboundPreparation.Current(election, authority, selected,
+        reviewed: ReviewedIntent03V2 = intentV2, signature: ByteArray = intentV2Signature,
+        epoch: Long = 1, acceptedMs: Long = admittedAt) = Draft03OutboundPreparation.Current(election, authority, selected,
         installed, binding, reviewed, signature, acceptedMs, epoch, ownerUser, ownerSession, 1, 200_000, line.selected, line.cards(),
         intervalRamCurrent = { check(intervalCurrent) })
     fun install() {
@@ -112,6 +118,13 @@ internal class Profile03ExecutionFixture(private val selectedReaderUntilMs: Long
         keyId(reader, false) + fingerprint + authority.digest + accepted.electionCommitment + accepted.electionBundleSha256 +
         sha(ReviewedIntent03.framed("ZTSE/line/payload-profile/owner-session/v1", account + uuid(ownerUser) + uuid(ownerSession))) +
         unhex(session.originHash) + keyId(signer, true) + sha(envelope) + unsigned(envelope) + sha(body) +
+        byteArrayOf(peer.size.toByte()) + peer + byteArrayOf(2, 1) + keyId(reader, false) + byteArrayOf(2) + keyId(archive, false) + byteArrayOf(1)
+    private fun intentV2(): ByteArray = byteArrayOf(90, 84, 82, 73, 2, 3, 3, 0) +
+        account + device + lineId + uuid(newBinding) + uuid(ownerUser) + uuid(ownerSession) + uuid(interval) + uuid(message) +
+        long(2) + long(1) + long(2) + long(1) + long(100_010) + long(100_500) + long(100_010) + long(100_030) +
+        keyId(reader, false) + fingerprint + authority.digest + accepted.electionCommitment + accepted.electionBundleSha256 +
+        sha(ReviewedIntent03.framed("ZTSE/line/payload-profile/owner-session/v1", account + uuid(ownerUser) + uuid(ownerSession))) +
+        unhex(session.originHash) + keyId(signer, true) + sha(envelope) + unsigned(envelope) +
         byteArrayOf(peer.size.toByte()) + peer + byteArrayOf(2, 1) + keyId(reader, false) + byteArrayOf(2) + keyId(archive, false) + byteArrayOf(1)
     private fun manifest(profile: Int, version: Long, previous: ByteArray): ByteArray {
         fun row(role: Int, key: KeyPair, scope: Int): ByteArray = byteArrayOf(role.toByte()) + keyId(key, role > 3) +

@@ -31,8 +31,10 @@ internal class Profile03FetchPacket private constructor(
                 "interval_starts_ms", "interval_expires_ms", "selection_epoch", "current", "interval_permission") && f["v"] == Profile03Json.Integer(1))
             val envelope = Profile03Json.binary(f, "envelope", 557, 34_213)
             require(MessageDigest.isEqual(MessageDigest.getInstance("SHA-256").digest(envelope), grant.envelopeSha256))
-            val intent = Profile03Json.binary(f, "reviewed_intent", 624, 835)
-            ReviewedIntent03.decode(intent).requireGrant(grant)
+            // Explicit corrected receiving entry. V1 remains a historical primitive;
+            // it cannot enter new execution or be converted after an UNKNOWN attempt.
+            val intent = Profile03Json.binary(f, "reviewed_intent", 592, 803)
+            ReviewedIntent03V2.decode(intent).requireGrant(grant)
             return Profile03FetchPacket(envelope, intent, Profile03Json.binary(f, "reviewed_signature", 64, 64),
                 Profile03Json.decimal(f, "accepted_ms"), Profile03Json.decimal(f, "interval_starts_ms"),
                 Profile03Json.decimal(f, "interval_expires_ms"), Profile03Json.decimal(f, "selection_epoch"),
