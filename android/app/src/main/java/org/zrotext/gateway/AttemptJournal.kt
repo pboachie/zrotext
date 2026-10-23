@@ -882,7 +882,8 @@ private const val PRUNE_BATCH = 500
     LineActivationV2Record::class, Profile03ElectionRecord::class, SelectionRefresh03Record::class,
     Profile03UnacceptedClosureRecord::class, SelectionRefresh03ClosureRecord::class,
     Capture03Route::class, Capture03Counter::class, Capture03Record::class, Capture03Mode::class, InboundProtectionRecord::class,
-    ProtectionSetupCommand::class, ProtectionSetupProvider::class], version = 20, exportSchema = false)
+    ProtectionSetupCommand::class, ProtectionSetupProvider::class,
+    ProtectionOriginAttempt::class, ProtectionOriginInstallation::class], version = 21, exportSchema = false)
 abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun attempts(): SmsAttemptDao
     abstract fun sealedPreparations(): SealedPreparationDao
@@ -891,6 +892,7 @@ abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun selectionRefreshes03(): SelectionRefresh03Dao
     abstract fun captures03(): Capture03Dao
     abstract fun protectionSetup(): ProtectionSetupDao
+    abstract fun protectionOrigins(): ProtectionOriginDao
 
     companion object {
         @Volatile private var instance: SmsJournalDatabase? = null
@@ -900,13 +902,22 @@ abstract class SmsJournalDatabase : RoomDatabase() {
                 context.applicationContext, SmsJournalDatabase::class.java, "sms_attempts.db"
             ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
                 MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
-                MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20)
+                MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21)
                 .build().also { instance = it }
         }
 
         internal val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE sms_attempts ADD COLUMN evidenceConflict INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        internal val MIGRATION_20_21 = object : Migration(20, 21) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Empty proof/installation history grants no ready pin or signature retry.
+                db.execSQL("CREATE TABLE IF NOT EXISTS protection_origin_attempts (proofRequestId TEXT NOT NULL, commandId TEXT NOT NULL, associationB64url TEXT NOT NULL, aesProbeB64url TEXT NOT NULL, createdMs INTEGER NOT NULL, previousProofRequestId TEXT, previousAttemptId TEXT, previousCoreSha256 TEXT, previousBundleSha256 TEXT, requestEpoch INTEGER, requestB64url TEXT, attemptId TEXT, coreB64url TEXT, nonceB64url TEXT, deviceEnteredMs INTEGER, deviceSignatureB64url TEXT, canaryEnteredMs INTEGER, canarySignatureB64url TEXT, bundleB64url TEXT, proofSubmitted INTEGER NOT NULL, acceptedMs INTEGER, closedMs INTEGER, supersededByProofRequestId TEXT, absentEpoch INTEGER, absentStatusB64url TEXT, absentPreviousProofRequestId TEXT, PRIMARY KEY(proofRequestId))")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_protection_origin_attempts_attemptId ON protection_origin_attempts(attemptId)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS protection_origin_installed (slot INTEGER NOT NULL, commandId TEXT NOT NULL, proofRequestId TEXT NOT NULL, associationB64url TEXT NOT NULL, aesProbeB64url TEXT NOT NULL, bundleB64url TEXT NOT NULL, receiptB64url TEXT NOT NULL, enrolledPointB64url TEXT NOT NULL, expectedTag TEXT NOT NULL, installedMs INTEGER NOT NULL, PRIMARY KEY(slot))")
             }
         }
 

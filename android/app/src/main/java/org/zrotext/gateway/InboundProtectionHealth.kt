@@ -4,13 +4,12 @@ package org.zrotext.gateway
 import android.content.Context
 import androidx.room.Entity
 import androidx.room.PrimaryKey
-import java.security.KeyStore
 import java.security.MessageDigest
 import javax.crypto.Mac
 import javax.crypto.SecretKey
 
-/** Local negative state and an expected identity, never permission for content/radio. This slice
- * has no ready/pin insertion API. Genuine first provisioning and legacy adoption are separate. */
+/** Local negative state and an expected identity, never permission for content/radio. Only
+ * the genuine accepted first-origin flow writes the original pin with its proof row. */
 @Entity(tableName = "inbound_protection_state")
 data class InboundProtectionRecord(@PrimaryKey val slot: Int = 1, val expectedTag: String?,
     val originId: String?, val blocked: Boolean, val reason: String?, val debtMask: Int,
@@ -77,12 +76,8 @@ internal val InboundProtectionHealth = InboundProtectionEpochs()
 /** All actual HMAC reads use the same durable expected identity. Nothing here generates or
  * replaces an alias or pins whichever key happens to be present after history loss. */
 internal object InboundProtection {
-    class Unavailable internal constructor(val reason: String) : IllegalStateException("Inbound protection requires recovery")
-    private fun existing(): SecretKey {
-        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        return checkNotNull(store.getKey(ConversationExistingSuppressionTokens.ALIAS, null) as? SecretKey)
-            .also { check(it.algorithm.equals("HmacSHA256", true)) }
-    }
+    class Unavailable internal constructor(val reason: String, cause: Throwable? = null) :
+        IllegalStateException("Inbound protection requires recovery", cause)
     private fun tag(key: SecretKey): String = Draft02OutboundPreparation.hex(Mac.getInstance("HmacSHA256").run {
         init(key); doFinal("zrotext-inbound-protection-continuity-v1\u0000".toByteArray(Charsets.US_ASCII))
     })
@@ -98,19 +93,22 @@ internal object InboundProtection {
         } catch (failure: InboundProtectionEpochs.Withdrawn) { throw failure }
         catch (failure: Exception) {
             val reason = (failure as? Unavailable)?.reason ?: "storage_unavailable"
-            failed(context, null, System.currentTimeMillis(), reason); throw Unavailable(reason)
+            InboundProtectionFailures.refuse(reason, failure) { failed(context, null, System.currentTimeMillis(), reason) }
         }
     }
     internal fun key(context: Context, receipt: InboundProtectionEpochs.Receipt? = null): SecretKey {
         try {
             InboundProtectionFaultJournal.requireReadable(context, receipt != null)
-            return verifiedKey(SmsJournalDatabase.get(context).captures03(), ::existing, current = {
+            val current = {
                 if (receipt == null) InboundProtectionHealth.requireNotRevoked() else receipt.requireReading()
-            })
+            }
+            return verifiedKey(SmsJournalDatabase.get(context).captures03(),
+                { if (receipt == null) ProtectionOriginInstalled.key(context, current)
+                    else ProtectionOriginInstalled.withdrawalKey(context, receipt, current) }, current = current)
         } catch (failure: InboundProtectionEpochs.Withdrawn) { throw failure }
         catch (failure: Exception) {
             val reason = (failure as? Unavailable)?.reason ?: "storage_unavailable"
-            failed(context, null, System.currentTimeMillis(), reason); throw Unavailable(reason)
+            InboundProtectionFailures.refuse(reason, failure) { failed(context, null, System.currentTimeMillis(), reason) }
         }
     }
     /** Fixture seam supplies actual synthetic keys/storage; production has exactly one provider.
@@ -123,8 +121,8 @@ internal object InboundProtection {
             val state = dao.protection()
             state?.requireShape()
             if (state?.blocked == true) throw Unavailable(checkNotNull(state.reason))
-            // Absence is never first-ever or legacy-adoption evidence. No production ready/pin
-            // insertion exists in this slice; the genuine provisioning dependency stays closed.
+            // Absence is never first-ever or legacy-adoption evidence. The actual provider
+            // below also verifies the independently retained original proof and key probes.
             val expected = state?.expectedTag ?: throw Unavailable("continuity_missing")
             if (state.originId == null) throw Unavailable("continuity_missing")
             val key = try { existing() } catch (_: Exception) { throw Unavailable("key_unavailable") }
@@ -142,21 +140,47 @@ internal object InboundProtection {
     fun lease(context: Context, epoch: Long = InboundProtectionHealth.snapshot()): InboundProtectionEpochs.Lease {
         try {
             InboundProtectionFaultJournal.requireReadable(context, false)
-            verifiedKey(SmsJournalDatabase.get(context).captures03(), ::existing,
+            verifiedKey(SmsJournalDatabase.get(context).captures03(),
+                { ProtectionOriginInstalled.key(context) { InboundProtectionHealth.checked(epoch) } },
                 current = { InboundProtectionHealth.checked(epoch) })
             return InboundProtectionHealth.checked(epoch)
         } catch (failure: InboundProtectionEpochs.Withdrawn) { throw failure }
         catch (failure: Exception) {
             val reason = (failure as? Unavailable)?.reason ?: "storage_unavailable"
-            failed(context, null, System.currentTimeMillis(), reason); throw Unavailable(reason)
+            InboundProtectionFailures.refuse(reason, failure) { failed(context, null, System.currentTimeMillis(), reason) }
         }
     }
     fun failed(context: Context, optAction: String?, at: Long, reason: String) {
-        InboundProtectionHealth.revoke() // RAM first, even if Room fails or is unavailable.
-        val latch = runCatching { InboundProtectionFaultJournal.quarantine(context, optAction) }
         val mask = when (optAction) { OptOutParser.OPT_OUT -> 1; OptOutParser.OPT_OUT_REVIEW -> 2; OptOutParser.OPT_IN -> 4; else -> 0 }
-        try { SmsJournalDatabase.get(context).captures03().quarantineProtection(reason, mask, at.coerceAtLeast(1)) }
-        finally { latch.getOrThrow() }
+        InboundProtectionFailures.persist(InboundProtectionHealth::revoke,
+            { InboundProtectionFaultJournal.quarantine(context, optAction) },
+            { SmsJournalDatabase.get(context).captures03().quarantineProtection(reason, mask, at.coerceAtLeast(1)) })
+    }
+}
+
+/** Negative-only error handling. A storage fault never becomes success or skips the other
+ * independent negative write. Preserve both failures while exposing the stable refusal API. */
+internal object InboundProtectionFailures {
+    fun persist(withdraw: () -> Unit, files: () -> Unit, room: () -> Unit) {
+        withdraw() // Synchronous RAM withdrawal always precedes either storage wait.
+        val fileFailure = runCatching(files).exceptionOrNull()
+        val roomFailure = runCatching(room).exceptionOrNull()
+        val primary = when {
+            fileFailure is Error -> fileFailure
+            roomFailure is Error -> roomFailure
+            roomFailure != null -> roomFailure
+            else -> fileFailure
+        } ?: return
+        val secondary = if (primary === fileFailure) roomFailure else fileFailure
+        if (secondary != null && secondary !== primary) primary.addSuppressed(secondary)
+        throw primary
+    }
+    fun refuse(reason: String, original: Exception, persistNegative: () -> Unit): Nothing {
+        val refusal = InboundProtection.Unavailable(reason, original)
+        try { persistNegative() } catch (failure: Exception) {
+            if (failure !== original) refusal.addSuppressed(failure)
+        }
+        throw refusal
     }
 }
 

@@ -83,4 +83,16 @@ class GatewaySetupGuideTest {
         compose.onNodeWithText("Choose SIM permissions").assertExists()
         noAction()
     }
+
+    @Test fun acceptingReceiveDisclosureWithoutOriginalProtectionDoesNotRequestAndroidAccess() {
+        setup()
+        compose.onNodeWithText("Review Android access").performScrollTo().performClick()
+        compose.onNodeWithText("Review SMS receiving access").performScrollTo().performClick()
+        compose.onNodeWithText("Agree and continue").performScrollTo().performClick()
+        compose.waitUntil(10_000) {
+            compose.onAllNodesWithText("Phone protection: Finish original phone protection first; SMS receiving access was not requested")
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        noAction()
+    }
 }

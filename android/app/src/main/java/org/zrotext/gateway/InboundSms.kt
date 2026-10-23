@@ -10,10 +10,8 @@ import java.io.ByteArrayOutputStream
 import java.security.KeyStore
 import java.util.concurrent.Executors
 import javax.crypto.Cipher
-import javax.crypto.KeyGenerator
 import javax.crypto.Mac
 import javax.crypto.SecretKey
-import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 
 /** No country-code inference: only an explicit international sender can match the local approval. */
@@ -71,18 +69,14 @@ internal object InboundPduParser {
 
 /** Android Keystore keys never leave the phone. The Room body is AES-GCM ciphertext. */
 internal object InboundVault {
+    internal const val WITHDRAWAL_ALIAS = "zt_m1_withdrawal_sender_aes_v1"
     data class Sealed(val ciphertext: ByteArray, val nonce: ByteArray)
 
     @Synchronized private fun key(alias: String, algorithm: String): SecretKey {
         require(algorithm == KeyProperties.KEY_ALGORITHM_AES)
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        (store.getKey(alias, null) as? SecretKey)?.let { return it }
-        val generator = KeyGenerator.getInstance(algorithm, "AndroidKeyStore")
-        val spec = KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
-            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build()
-        generator.init(spec)
-        return generator.generateKey()
+        return checkNotNull(store.getKey(alias, null) as? SecretKey) { "Original AES protection is unavailable" }
+            .also { check(it.encoded == null && it.algorithm.equals("AES", true)) }
     }
 
     /** Domain-separated, length-delimited HMAC avoids a guessable plaintext/PDU hash in Room. */
@@ -120,7 +114,7 @@ internal object InboundVault {
 
     /** Separate Keystore key and AAD domain from the inbound body vault. */
     fun sealSender(senderE164: String, dedupeToken: String): Sealed =
-        sealSenderWithKey(key("zt_m1_withdrawal_sender_aes_v1", KeyProperties.KEY_ALGORITHM_AES),
+        sealSenderWithKey(key(WITHDRAWAL_ALIAS, KeyProperties.KEY_ALGORITHM_AES),
             senderE164, dedupeToken)
 
     internal fun sealSenderOrNull(senderE164: String, dedupeToken: String,
@@ -128,7 +122,7 @@ internal object InboundVault {
         try { sealer(senderE164, dedupeToken) } catch (_: Exception) { null }
 
     fun openSender(sealed: Sealed, dedupeToken: String): String =
-        openSenderWithKey(key("zt_m1_withdrawal_sender_aes_v1", KeyProperties.KEY_ALGORITHM_AES),
+        openSenderWithKey(key(WITHDRAWAL_ALIAS, KeyProperties.KEY_ALGORITHM_AES),
             sealed, dedupeToken)
 
     internal fun sealSenderWithKey(secretKey: SecretKey, senderE164: String,
