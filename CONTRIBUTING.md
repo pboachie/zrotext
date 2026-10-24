@@ -52,6 +52,13 @@ On Windows, use `gradlew.bat` and `python` where appropriate. Return to the repo
 
 ### PostgreSQL-backed Rust tests
 
+Some isolated-schema tests deliberately apply migrations001 through107. Their
+legacy boundary is explicit and checked against the exact compiled current
+migration names and SQL. Migrations108 onward require the actual public schema
+and separate migration-owner and ordinary runtime connections; they must not be
+replayed inside an arbitrary test schema. Current-schema ACL checks are distinct
+from the legacy fixture tests, and neither proves a complete hosted flow.
+
 The Windows sealed setup CI consumer owns a fresh disposable PostgreSQL fixture.
 Before initialization it gives the current user and SYSTEM inheritable access to
 that empty fixture directory, so PostgreSQL's restricted token can create its data

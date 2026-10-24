@@ -1,0 +1,26 @@
+{
+  "format": "profile03-closed-unaccepted-01",
+  "status": "Synthetic structural closure candidates only, without server authentication, local signatures or acceptance. Original E500 scope copied from the public contract vector; successor candidates have no signatures.",
+  "authenticated_now_ms": "104010",
+  "target_challenge_id": "00000000-0000-0000-0000-00000000002b",
+  "target_new_binding_id": "00000000-0000-0000-0000-000000000035",
+  "target_core": "WlRQRQMBAgOQLnKvNEijUjnzumsL6IjB-veePaaUoU_4U_ifbcoHqEEIeIkRnbch2dXF1iwBe5AAAAAAAAAAAAAAAAAAAAArx3v5V7krx_oAUMgFhkIe3QAAAAAAAAAEAAAAAAAAAAjKbaGgT3gmYHoF-LAZZYAg1hhYHeUktum8looBuoAVhhxPFqOyIEQlJiYJ5ov6ieD6_m25xk2EujmiS7jKCYplAAAAAAAAAAEAAAAAAAAAAe5Nq825c-NZoQGBScKw6lFMB9A1ZBaEr1M7Rm3C6pVaAAAAAAAAAALreP3WjUFhCIllgYszCDsiD7D0i5SK0lx03zwWayDunPS6mvftenYUTyrAqJQPSiYJO3901_rb12v-YxhTR2hJwoxet_jSAJdDtjifSt_ohMjQP4EqmZwKtRRSXGR-RrGa9cKxEUR0z8dqA7Ug5Bc4l-VD3803XWaPXEOOkGHkGysrKysrKysrKysrKysrKysrKysrKysrKysrKysrKysrAAAAAAABlkAAAAAAAAGaKG9ywJDfYydRb8TypeIvQSDnAVlzlGCa4b7MAQcUUykJLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLQAAAAA",
+  "closed_unaccepted": [
+    {
+      "opening_id": "00000000-0000-0000-0000-00000000003d",
+      "challenge_id": "00000000-0000-0000-0000-000000000029",
+      "new_binding_id": "00000000-0000-0000-0000-000000000033",
+      "core": "WlRQRQMBAgOQLnKvNEijUjnzumsL6IjB-veePaaUoU_4U_ifbcoHqEEIeIkRnbch2dXF1iwBe5AAAAAAAAAAAAAAAAAAAAApx3v5V7krx_oAUMgFhkIe3QAAAAAAAAAEAAAAAAAAAAXKbaGgT3gmYHoF-LAZZYAg1hhYHeUktum8looBuoAVhhxPFqOyIEQlJiYJ5ov6ieD6_m25xk2EujmiS7jKCYplAAAAAAAAAAEAAAAAAAAAAe5Nq825c-NZoQGBScKw6lFMB9A1ZBaEr1M7Rm3C6pVaAAAAAAAAAALreP3WjUFhCIllgYszCDsiD7D0i5SK0lx03zwWayDunPS6mvftenYUTyrAqJQPSiYJO3901_rb12v-YxhTR2hJwoxet_jSAJdDtjifSt_ohMjQP4EqmZwKtRRSXGR-RrGa9cKxEUR0z8dqA7Ug5Bc4l-VD3803XWaPXEOOkGHkGykpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpAAAAAAABhqAAAAAAAAGKiG9ywJDfYydRb8TypeIvQSDnAVlzlGCa4b7MAQcUUykJKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKiorKysrKysrKysrKysrKysrKysrKysrKysrKysrKysrKwAAAAA",
+      "closed_unaccepted_ms": "102000",
+      "superseded_by_challenge_id": "00000000-0000-0000-0000-00000000002a"
+    },
+    {
+      "opening_id": "00000000-0000-0000-0000-00000000003e",
+      "challenge_id": "00000000-0000-0000-0000-00000000002a",
+      "new_binding_id": "00000000-0000-0000-0000-000000000034",
+      "core": "WlRQRQMBAgOQLnKvNEijUjnzumsL6IjB-veePaaUoU_4U_ifbcoHqEEIeIkRnbch2dXF1iwBe5AAAAAAAAAAAAAAAAAAAAAqx3v5V7krx_oAUMgFhkIe3QAAAAAAAAAEAAAAAAAAAAfKbaGgT3gmYHoF-LAZZYAg1hhYHeUktum8looBuoAVhhxPFqOyIEQlJiYJ5ov6ieD6_m25xk2EujmiS7jKCYplAAAAAAAAAAEAAAAAAAAAAe5Nq825c-NZoQGBScKw6lFMB9A1ZBaEr1M7Rm3C6pVaAAAAAAAAAALreP3WjUFhCIllgYszCDsiD7D0i5SK0lx03zwWayDunPS6mvftenYUTyrAqJQPSiYJO3901_rb12v-YxhTR2hJwoxet_jSAJdDtjifSt_ohMjQP4EqmZwKtRRSXGR-RrGa9cKxEUR0z8dqA7Ug5Bc4l-VD3803XWaPXEOOkGHkGyoqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqAAAAAAABjnAAAAAAAAGSWG9ywJDfYydRb8TypeIvQSDnAVlzlGCa4b7MAQcUUykJKysrKysrKysrKysrKysrKysrKysrKysrKysrKysrKyssLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLAAAAAA",
+      "closed_unaccepted_ms": "104000",
+      "superseded_by_challenge_id": "00000000-0000-0000-0000-00000000002b"
+    }
+  ]
+}
