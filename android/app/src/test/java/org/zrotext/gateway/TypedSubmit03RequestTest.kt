@@ -86,7 +86,7 @@ class TypedSubmit03RequestTest {
     }
 
     @Test fun committedEntrySurvivesActualCloseAndReopenWithoutAnotherTransportTicket() {
-        val app = RuntimeEnvironment.getApplication<android.app.Application>()
+        val app = RuntimeEnvironment.getApplication()
         val name = "tsr-${java.util.UUID.randomUUID().toString().take(10)}"
         fun open() = Room.databaseBuilder(app, SmsJournalDatabase::class.java, name).allowMainThreadQueries().build()
         try {
@@ -109,7 +109,7 @@ class TypedSubmit03RequestTest {
     }
 
     @Test fun additiveMigrationPreservesOriginalRowsWithoutInventingAnySubmitEntry() {
-        val app = RuntimeEnvironment.getApplication<android.app.Application>()
+        val app = RuntimeEnvironment.getApplication()
         val name = "tsm-${java.util.UUID.randomUUID().toString().take(10)}"
         fun open() = Room.databaseBuilder(app, SmsJournalDatabase::class.java, name).allowMainThreadQueries()
             .addMigrations(SmsJournalDatabase.MIGRATION_23_24).build()
