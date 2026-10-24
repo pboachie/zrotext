@@ -247,7 +247,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.19.1")
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
     constraints {
-        implementation("androidx.fragment:fragment:1.8.9") {
+        implementation("androidx.fragment:fragment:1.9.1") {
             because("Scanner transitive Fragment must support the existing ActivityResult APIs")
         }
     }
@@ -260,7 +260,7 @@ dependencies {
     androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     // Dormant draft-02 provider probe only; no Tink code enters the release runtime.
-    androidTestImplementation("com.google.crypto.tink:tink:1.23.0")
+    androidTestImplementation("com.google.crypto.tink:tink:1.24.0")
 
     // These constraints affect local unit tests and AGP's lint tools. None of
     // these libraries is present in the app's release runtime classpath.
@@ -269,7 +269,7 @@ dependencies {
         add("androidLintTool", "org.bouncycastle:bcprov-jdk18on:1.86")
         add("androidLintTool", "org.bouncycastle:bcpkix-jdk18on:1.86")
         add("androidLintTool", "org.bouncycastle:bcutil-jdk18on:1.86")
-        add("androidLintTool", "org.apache.commons:commons-lang3:3.20.0")
+        add("androidLintTool", "org.apache.commons:commons-lang3:3.21.0")
         add("androidLintTool", "org.apache.httpcomponents:httpclient:4.5.14")
     }
 }

@@ -410,9 +410,12 @@ function routingJson(text) {
   function string() {
     const start = at++;
     while (at < text.length) {
-      const ch = text[at++];
-      if (ch === '"') return JSON.parse(text.slice(start, at));
-      if (ch === "\\") at += 1;
+      const quote = text.indexOf('"', at);
+      if (quote === -1) return fail();
+      let slashes = 0;
+      for (let i = quote - 1; i >= start && text[i] === '\\'; i--) slashes++;
+      at = quote + 1;
+      if (slashes % 2 === 0) return JSON.parse(text.slice(start, at));
     }
     return fail();
   }

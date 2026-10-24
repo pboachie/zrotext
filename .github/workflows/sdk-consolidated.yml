@@ -21,17 +21,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           dotnet-version: '8.0.x'
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
         with:
           distribution: temurin
           java-version: '17'
-      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a
+      - uses: ruby/setup-ruby@b1da4809b005e0178fe08a1d57317bffc00b7b4c
         with:
           ruby-version: '3.3.9'
       - name: "Csharp protected candidate composition: Checkout pinned fixtures"
@@ -145,13 +145,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: '3.12'
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version: '1.26.9'
           cache: false
@@ -389,10 +389,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: '3.12'
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
       - name: "Python candidate body conformance: Install pinned native crypto provider"
@@ -442,7 +442,7 @@ jobs:
         run: |
           python sdk/native/sealed-candidate/python/check_package.py --output native-python-artifacts --workflow-source workflow-source/sdk/python/workflow --time-policy-source time-policy-source
       - name: "Python sealed candidate interoperability: Preserve tested candidate distributions"
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: native-python-candidate-${{ matrix.os }}
           path: native-python-artifacts/*
@@ -455,7 +455,7 @@ jobs:
           path: alpha-source
           persist-credentials: false
       - name: "Python 3.11"
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: '3.11'
       - name: "Installed Python workflow candidate: Install independent TypeScript fixture dependencies: py3.11"
@@ -476,7 +476,7 @@ jobs:
         run: |
           python sdk/python/workflow/check_package.py --output workflow-python-artifacts --alpha-source alpha-source/sdk/python
       - name: "Installed Python workflow candidate: Preserve tested candidate archives"
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: workflow-python-${{ matrix.os }}-3.11
           path: workflow-python-artifacts/*
@@ -506,7 +506,7 @@ jobs:
         run: |
           python sdk/python/workflow/check_package.py --output workflow-python-artifacts --alpha-source alpha-source/sdk/python
       - name: "Installed Python workflow candidate: Preserve tested candidate archives"
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: workflow-python-${{ matrix.os }}-3.12
           path: workflow-python-artifacts/*
@@ -519,17 +519,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
         with:
           distribution: temurin
           java-version: '17'
-      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           dotnet-version: '10.0.401'
-      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a
+      - uses: ruby/setup-ruby@b1da4809b005e0178fe08a1d57317bffc00b7b4c
         with:
           ruby-version: '3.3.9'
       - name: "Local Tungsten workflow adapter"
@@ -622,7 +622,7 @@ jobs:
           python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten-2" --target go --out "$RUNNER_TEMP/zrotext-sdk-packages-7/go"
           python3 sdk/tungsten/package-artifacts.py --source "$RUNNER_TEMP/tungsten-2" --target rust --out "$RUNNER_TEMP/zrotext-sdk-packages-7/rust"
       - name: "Tungsten SDK generation: Preserve artifacts"
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: experimental-sdk-packages
           path: ${{ runner.temp }}/zrotext-sdk-packages-7
@@ -632,14 +632,14 @@ jobs:
         run: |
           python3 sdk/tungsten/package-mcp.py --out "$RUNNER_TEMP/zrotext-guarded-mcp"
       - name: "Tungsten SDK generation: Preserve artifacts"
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: experimental-guarded-mcp
           path: ${{ runner.temp }}/zrotext-guarded-mcp
           if-no-files-found: error
           retention-days: 7
       - name: "Tungsten SDK generation: Preserve artifacts"
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: experimental-sdk-sources
           path: ${{ runner.temp }}/zrotext-sdk-sources
@@ -653,7 +653,7 @@ jobs:
         run: |
           python3 sdk/tungsten/package-webmcp.py --out "$RUNNER_TEMP/zrotext-webmcp"
       - name: "Tungsten SDK generation: Preserve artifacts"
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: experimental-webmcp
           path: ${{ runner.temp }}/zrotext-webmcp
@@ -666,17 +666,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
         with:
           distribution: temurin
           java-version: '17'
-      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           dotnet-version: '8.0.x'
-      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a
+      - uses: ruby/setup-ruby@b1da4809b005e0178fe08a1d57317bffc00b7b4c
         with:
           ruby-version: '3.3.9'
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
       - name: "Managed candidate envelope integrity: Export existing signed public fixtures"
@@ -814,11 +814,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
       - name: "Managed authenticated original current proof [java]: Toolchain for java"
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
         with:
           distribution: temurin
           java-version: '17'
@@ -847,7 +847,7 @@ jobs:
         run: |
           python sdk/native/crypto-envelope/original-current-run.py --language java --fixture fixture --producer producer
       - name: "Managed authenticated original current proof [csharp]: Toolchain for csharp"
-        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           dotnet-version: '8.0.x'
       - name: "Managed authenticated original current proof: Checkout pinned fixtures"
@@ -875,7 +875,7 @@ jobs:
         run: |
           python sdk/native/crypto-envelope/original-current-run.py --language csharp --fixture fixture --producer producer
       - name: "Managed authenticated original current proof [ruby]: Toolchain for ruby"
-        uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a
+        uses: ruby/setup-ruby@b1da4809b005e0178fe08a1d57317bffc00b7b4c
         with:
           ruby-version: '3.3.9'
       - name: "Managed authenticated original current proof: Checkout pinned fixtures"
@@ -1329,11 +1329,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
       - name: "Managed reviewed template authoring interoperability [java]: Toolchain for java"
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
         with:
           distribution: temurin
           java-version: '17'
@@ -1371,7 +1371,7 @@ jobs:
         run: |
           python sdk/native/crypto-envelope/template-authoring-run.py --language java --fixture fixture --producer producer --authoring-oracle authoring-oracle
       - name: "Managed reviewed template authoring interoperability [csharp]: Toolchain for csharp"
-        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           dotnet-version: '8.0.x'
       - name: "Managed reviewed template authoring interoperability: Checkout pinned fixtures"
@@ -1408,7 +1408,7 @@ jobs:
         run: |
           python sdk/native/crypto-envelope/template-authoring-run.py --language csharp --fixture fixture --producer producer --authoring-oracle authoring-oracle
       - name: "Managed reviewed template authoring interoperability [ruby]: Toolchain for ruby"
-        uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a
+        uses: ruby/setup-ruby@b1da4809b005e0178fe08a1d57317bffc00b7b4c
         with:
           ruby-version: '3.3.9'
       - name: "Managed reviewed template authoring interoperability: Checkout pinned fixtures"
@@ -1787,17 +1787,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
         with:
           distribution: temurin
           java-version: '17'
-      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           dotnet-version: '10.0.401'
-      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a
+      - uses: ruby/setup-ruby@b1da4809b005e0178fe08a1d57317bffc00b7b4c
         with:
           ruby-version: '3.3.9'
       - name: "Managed contact statement and field interoperability: Checkout pinned fixtures"
@@ -2824,13 +2824,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: '3.12'
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version: '1.26.9'
           cache: false
@@ -3479,14 +3479,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: '3.12'
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version: '1.26.9'
           cache: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
       - name: "Native reviewed template authoring [rust]"
@@ -4096,24 +4096,24 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version: '1.22'
           cache: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: '3.12'
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
-      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
         with:
           distribution: temurin
           java-version: '17'
-      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           dotnet-version: '8.0.x'
-      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a
+      - uses: ruby/setup-ruby@b1da4809b005e0178fe08a1d57317bffc00b7b4c
         with:
           ruby-version: '3.3.9'
       - name: "Native body text parity"
@@ -4398,7 +4398,7 @@ jobs:
           python3 sdk/native/package-webhooks.py --target csharp --out "$RUNNER_TEMP/webhooks-3/csharp"
           python3 sdk/native/package-webhooks.py --target ruby --out "$RUNNER_TEMP/webhooks-3/ruby"
       - name: "Installed native webhook companions: Preserve artifacts"
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: experimental-webhook-packages
           path: ${{ runner.temp }}/webhooks-3
@@ -4557,10 +4557,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version: '1.26.9'
           cache: false
@@ -4644,7 +4644,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
       - name: "Scoped WebMCP adapter: Build shared guarded workflow vocabulary"
@@ -4672,18 +4672,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24.13.0'
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: '3.12'
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version: '1.26.9'
           cache: false
       - name: "Managed contact mutation and transition interoperability [java]: Toolchain for java"
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
         with:
           distribution: temurin
           java-version: '17'
@@ -4727,7 +4727,7 @@ jobs:
         run: |
           python sdk/native/crypto-envelope/contact-mutation-run.py --language java --fixture fixture --producer producer --origin-asset "$env:RUNNER_TEMP/contact-origin-mutation-java"
       - name: "Managed contact mutation and transition interoperability [csharp]: Toolchain for csharp"
-        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           dotnet-version: '8.0.x'
       - name: "Managed contact mutation and transition interoperability: Checkout pinned fixtures"
@@ -4770,7 +4770,7 @@ jobs:
         run: |
           python sdk/native/crypto-envelope/contact-mutation-run.py --language csharp --fixture fixture --producer producer --origin-asset "$env:RUNNER_TEMP/contact-origin-mutation-csharp"
       - name: "Managed contact mutation and transition interoperability [ruby]: Toolchain for ruby"
-        uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a
+        uses: ruby/setup-ruby@b1da4809b005e0178fe08a1d57317bffc00b7b4c
         with:
           ruby-version: '3.3.9'
       - name: "Managed contact mutation and transition interoperability: Checkout pinned fixtures"
