@@ -187,7 +187,12 @@ impl StoredInterval03 {
     }
     pub(crate) async fn read(tx: &Transaction<'_>, account: Uuid, interval: Uuid) -> Result<Self> {
         ready(tx).await?;
-        let row=tx.query_opt("SELECT * FROM public.conversation_profile03_intervals WHERE account_id=$1 AND interval_id=$2 FOR SHARE NOWAIT",&[&account,&interval]).await?.ok_or(Error::NotFound)?;
+        // This ledger is SELECT-only. Reads before owner/device selection are
+        // hints; effect callers reread and validate under their actual held
+        // universal-anchor fence. Insert/phase writers version that anchor
+        // under its exclusive account fence; held account rows also exclude
+        // account erasure. Tuple SHARE would wrongly require runtime UPDATE.
+        let row=tx.query_opt("SELECT * FROM public.conversation_profile03_intervals WHERE account_id=$1 AND interval_id=$2",&[&account,&interval]).await?.ok_or(Error::NotFound)?;
         Self::from_row(&row)
     }
     pub(crate) async fn active(

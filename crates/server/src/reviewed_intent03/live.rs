@@ -248,7 +248,11 @@ impl StoredSend03 {
     }
     async fn read(tx: &Transaction<'_>, account: Uuid, message: Uuid) -> Result<Option<Self>> {
         ready(tx).await?;
-        tx.query_opt("SELECT * FROM public.conversation_reviewed_sends03 WHERE account_id=$1 AND message_id=$2 FOR SHARE NOWAIT", &[&account,&message]).await?.map(|r|Self::from_row(&r)).transpose()
+        // Callers hold the genuine owner or execution universal-anchor fence.
+        // The closed admission and parent-content erasure paths acquire its
+        // exclusive counterpart before changing this SELECT-only sidecar.
+        // Tuple SHARE would incorrectly require runtime UPDATE privileges.
+        tx.query_opt("SELECT * FROM public.conversation_reviewed_sends03 WHERE account_id=$1 AND message_id=$2", &[&account,&message]).await?.map(|r|Self::from_row(&r)).transpose()
     }
     fn matches(&self, intent: &[u8], signature: &[u8], envelope: &[u8]) -> Result<()> {
         if crypto::sha(intent) != self.intent_hash

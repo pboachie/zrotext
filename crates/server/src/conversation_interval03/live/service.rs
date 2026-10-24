@@ -39,7 +39,10 @@ pub(crate) async fn reserve<'held, 'db>(
         .await
         .map_err(|_| Error::Authentication)?;
     let who = owner.selected_identity();
-    if let Some(row)=tx.query_opt("SELECT * FROM public.conversation_profile03_intervals WHERE account_id=$1 AND opening_id=$2 FOR SHARE NOWAIT",&[&who.account,&input.opening]).await?{
+    // The genuine held owner pins the universal anchor and account rows;
+    // insert/phase writers require its exclusive counterpart. No ledger UPDATE
+    // grant is necessary for this retained exact-history lookup.
+    if let Some(row)=tx.query_opt("SELECT * FROM public.conversation_profile03_intervals WHERE account_id=$1 AND opening_id=$2",&[&who.account,&input.opening]).await?{
         let prior=StoredInterval03::from_row(&row)?;
         if prior.selected_owner()!=who{return Err(Error::Authentication);}
         matches_request(&prior,&input)?;
