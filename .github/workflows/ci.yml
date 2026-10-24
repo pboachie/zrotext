@@ -141,58 +141,11 @@ jobs:
         run: python3 -m unittest discover -s sdk/python/tests -t sdk/python
       - name: Roadmap output matches docs/roadmap.json
         run: python3 scripts/roadmap.py --check
-      - name: Device stream schema examples
+      - name: Complete protocol contracts and vectors
         run: |
           python3 -m venv /tmp/zrotext-schema-venv
           /tmp/zrotext-schema-venv/bin/pip install --disable-pip-version-check jsonschema==4.25.1
-          /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_device_stream_schema.py'
-      - name: Complete selected-line v2 protocol contract
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_line_activation_v2.py'
-      - name: Same-phone selection refresh03 contract
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_selection_refresh03_vectors.py'
-      - name: Expired unaccepted profile03 election recovery contract
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_profile03_unaccepted_recovery.py'
-      - name: Explicit unapproved same-phone refresh recovery contract
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_refresh03_recovery.py'
-      - name: Profile03 conversation consent proofs
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_conversation_interval03_vectors.py'
-      - name: Candidate encrypted workflow context contract
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_workflow_context.py'
-      - name: Candidate provider SMS submit-body codec
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_provider_submit_body_codec.py'
-      - name: Candidate exact workflow decision requests
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_workflow_decisions.py'
-      - name: Candidate provider proposal history
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_provider_proposal_history.py'
-      - name: Owner managed-grant HTTP contract
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_managed_grant_owner_http.py'
-      - name: Proposed sealed execution grant vectors
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_sealed_execution_grant_vectors.py'
-      - name: Sealed dispatch contract
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_sealed_dispatch.py'
-      - name: Authoritative message summary contract
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_message_summary_schema.py'
-
-      - name: Selected collaboration draft contract
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_collaboration_drafts_schema.py'
-      - name: Proposed opaque encrypted contact takeout shape
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_contact_encrypted_storage_proposal.py'
-      - name: Shared draft vector shape tests
-        run: python3 -m unittest discover -s protocol/v1/tests -p 'test_ztse_draft_vectors.py'
-      - name: Shared body-text vector tests
-        run: python3 -m unittest discover -s protocol/v1/tests -p 'test_ztse_body_text_vectors.py'
-      - name: Sealed draft field-layout tests
-        run: python3 -m unittest discover -s protocol/v1/tests -p 'test_zt_sealed_draft_shape.py'
-      - name: Sealed API v1 contract tests
-        run: python3 -m unittest discover -s protocol/v1/tests -p 'test_sealed_api_v1.py'
-      - name: Public API v1 contract tests
-        run: python3 -m unittest discover -s protocol/v1/tests -p 'test_public_api_v1.py'
-      - name: SMS segment estimate vectors
-        run: python3 -m unittest discover -s protocol/v1/tests -p 'test_sms_segment_estimate.py'
-      - name: OpenRouter body codec vectors
-        run: /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_openrouter_request_body.py'
-      - name: Contact reader signing input key sets
-        run: python3 -m unittest discover -s protocol/v1/tests -p 'test_contact_reader_signing_input_shape.py'
+          /tmp/zrotext-schema-venv/bin/python -m unittest discover -s protocol/v1/tests -p 'test_*.py'
       - name: JavaScript syntax
         run: node --check web/owner/devices.js
       - name: Commit sign-off
