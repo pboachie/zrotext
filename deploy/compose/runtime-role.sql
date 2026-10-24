@@ -398,7 +398,34 @@ $migration$;
 -- First-origin ledgers are readable history, never direct writable authority.
 DO $migration$
 DECLARE relation_name text;columns_sql text;routine record;
+        protection_relations bigint;protection_helpers bigint;recorded_version bigint;writer_rows bigint;
 BEGIN
+ -- Earlier supported installations have none of this capability. Refuse any
+ -- partial graph or recorded new installation instead of silently granting
+ -- ordinary DML after its protection objects have disappeared.
+ SELECT count(*) INTO protection_relations FROM pg_class
+  WHERE relnamespace='public'::regnamespace AND relkind IN('r','p','v','m','f')
+   AND starts_with(relname::text,'device_protection_');
+ SELECT count(*) INTO protection_helpers FROM pg_proc
+  WHERE pronamespace='public'::regnamespace AND starts_with(proname::text,'device_protection_');
+ IF protection_relations=0 AND protection_helpers=0 THEN
+  SELECT max(version) INTO recorded_version FROM public.schema_migrations;
+  IF coalesce(recorded_version,0)>=118 THEN
+   RAISE EXCEPTION 'recorded device protection installation is absent'; END IF;
+  IF to_regclass('public.payload_profile_writer_catalog') IS NOT NULL THEN
+   SELECT count(*),max(migration_version) INTO writer_rows,recorded_version
+    FROM public.payload_profile_writer_catalog WHERE singleton;
+   IF coalesce(recorded_version,0)>=118 THEN
+    RAISE EXCEPTION 'recorded device protection graph is absent'; END IF;
+   IF writer_rows<>1 OR recorded_version IS NULL OR recorded_version NOT BETWEEN 108 AND 117 THEN
+    RAISE EXCEPTION 'earlier writer installation is unavailable'; END IF;
+  END IF;
+  RETURN;
+ END IF;
+ IF protection_relations<>5 OR protection_helpers<>11
+  OR EXISTS(SELECT FROM pg_class WHERE relnamespace='public'::regnamespace
+   AND starts_with(relname::text,'device_protection_') AND relkind IN('p','v','m','f')) THEN
+  RAISE EXCEPTION 'partial device protection installation'; END IF;
  FOREACH relation_name IN ARRAY ARRAY['device_protection_origins','device_protection_associations','device_protection_attempts','device_protection_receipts','device_protection_retirements'] LOOP
   EXECUTE format('REVOKE ALL ON TABLE public.%I FROM PUBLIC',relation_name);
   SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) INTO columns_sql FROM pg_attribute
