@@ -193,6 +193,8 @@ class RuntimeRoleTest(RuntimeRoleFixture, unittest.TestCase):
              "DROP SEQUENCE public.device_protection_unknown;"),
             ("CREATE TYPE public.device_protection_unknown AS (id integer);",
              "DROP TYPE public.device_protection_unknown;"),
+            ("CREATE FUNCTION public.hosted_runtime_enter() RETURNS boolean LANGUAGE sql AS 'SELECT true';",
+             "DROP FUNCTION public.hosted_runtime_enter();"),
             ("CREATE INDEX device_protection_unknown ON public.users(id);",
              "DROP INDEX public.device_protection_unknown;"),
             ("INSERT INTO public.schema_migrations(version) VALUES(118);",
