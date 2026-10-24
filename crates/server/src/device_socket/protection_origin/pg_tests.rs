@@ -11,16 +11,23 @@ use p256::{
 use sha2::{Digest, Sha256};
 
 async fn request(
-    tx: &Transaction<'_>,
+    db: &mut tokio_postgres::Client,
     state: &DeviceSocketState,
     actor: actor::SocketActor,
     origin: &[u8; 32],
     body: serde_json::Value,
 ) -> serde_json::Value {
-    lock(tx, actor, state).await.unwrap();
     let frame = parse(&body.to_string()).unwrap().unwrap();
-    let (reply, _) = apply(tx, state, actor, origin, frame).await.unwrap();
-    lock(tx, actor, state).await.unwrap();
+    admit(db, state, actor, frame.kind).await.unwrap();
+    let tx = runtime_db::begin_native(db).await.unwrap();
+    lock(&tx, actor, state).await.unwrap();
+    let (reply, deadline) = apply(&tx, state, actor, origin, frame).await.unwrap();
+    lock(&tx, actor, state).await.unwrap();
+    if let Some(deadline) = deadline {
+        let now = tx.query_one("SELECT pg_catalog.floor(extract(epoch FROM pg_catalog.clock_timestamp())*1000)::bigint", &[]).await.unwrap().get::<_,i64>(0);
+        assert!(u64::try_from(now).unwrap() < deadline);
+    }
+    tx.commit().await.unwrap();
     reply
 }
 fn raw(value: &serde_json::Value) -> Vec<u8> {
@@ -82,7 +89,7 @@ async fn approved_pairing_and_real_socket_proof_can_install_metadata_before_any_
     .await
     .unwrap();
     let point = device_key.verifying_key().to_sec1_point(false);
-    let fingerprint = Sha256::digest(point.as_bytes()).into();
+    let fingerprint: [u8; 32] = Sha256::digest(point.as_bytes()).into();
     let signature: Signature = device_key.sign(&enrollment::enrollment_challenge_bytes(
         signup.account_id,
         ticket.id,
@@ -176,9 +183,7 @@ async fn approved_pairing_and_real_socket_proof_can_install_metadata_before_any_
     let command = Uuid::new_v4();
     let epoch = actor.session().connection_epoch;
     let body = serde_json::json!({"v":1,"type":"protection_origin_open","connection_epoch":epoch,"setup_id":setup,"opening_id":opening,"command_id":command});
-    let tx = runtime_db::begin_native(&mut f.reader).await.unwrap();
-    let opened = request(&tx, &state, actor, &origin, body.clone()).await;
-    tx.commit().await.unwrap();
+    let opened = request(&mut f.reader, &state, actor, &origin, body.clone()).await;
     // Actual committed opening precedes all synthetic provider result generation.
     assert_eq!(
         f.reader
@@ -191,9 +196,7 @@ async fn approved_pairing_and_real_socket_proof_can_install_metadata_before_any_
             .get::<_, i64>(0),
         0
     );
-    let tx = runtime_db::begin_native(&mut f.reader).await.unwrap();
-    let retry = request(&tx, &state, actor, &origin, body).await;
-    tx.commit().await.unwrap();
+    let retry = request(&mut f.reader, &state, actor, &origin, body).await;
     assert_eq!(opened, retry);
     let mut context = Vec::new();
     for id in [
@@ -270,9 +273,7 @@ async fn approved_pairing_and_real_socket_proof_can_install_metadata_before_any_
     assert_eq!(association.len(), 329);
     let proof_request = Uuid::new_v4();
     let body = serde_json::json!({"v":1,"type":"protection_origin_proof_open","connection_epoch":epoch,"setup_id":setup,"opening_id":opening,"command_id":command,"proof_request_id":proof_request,"association":URL_SAFE_NO_PAD.encode(&association),"aes_probe":URL_SAFE_NO_PAD.encode(&aes_probe),"previous_attempt_id":null,"previous_core_sha256":null,"previous_bundle_sha256":null});
-    let tx = runtime_db::begin_native(&mut f.reader).await.unwrap();
-    let challenge = request(&tx, &state, actor, &origin, body).await;
-    tx.commit().await.unwrap();
+    let challenge = request(&mut f.reader, &state, actor, &origin, body).await;
     let core = raw(&challenge["core"]);
     let ds: Signature = device_key.sign(
         &crate::sealed_manifest03::framed(b"ZT/protection/first-origin-device/v1\0", &core)
@@ -287,16 +288,66 @@ async fn approved_pairing_and_real_socket_proof_can_install_metadata_before_any_
     );
     let bundle = [core.as_slice(), &ds, &cs.normalize_s().to_bytes()].concat();
     let body = serde_json::json!({"v":1,"type":"protection_origin_proof","connection_epoch":epoch,"setup_id":setup,"opening_id":opening,"command_id":command,"proof_request_id":proof_request,"attempt_id":challenge["attempt_id"],"bundle":URL_SAFE_NO_PAD.encode(bundle)});
-    let tx = runtime_db::begin_native(&mut f.reader).await.unwrap();
-    let accepted = request(&tx, &state, actor, &origin, body).await;
-    tx.commit().await.unwrap();
+    let accepted = request(&mut f.reader, &state, actor, &origin, body).await;
     let body = serde_json::json!({"v":1,"type":"protection_origin_status_request","connection_epoch":epoch,"request_id":Uuid::new_v4(),"setup_id":setup,"opening_id":opening,"command_id":command,"proof_request_id":proof_request});
-    let tx = runtime_db::begin_native(&mut f.reader).await.unwrap();
-    let status = request(&tx, &state, actor, &origin, body).await;
-    tx.commit().await.unwrap();
+    let status = request(&mut f.reader, &state, actor, &origin, body).await;
     assert_eq!(status["status"], "accepted");
     assert_eq!(status["receipt"], accepted["receipt"]);
     assert!(status.to_string().len() <= MAX_FRAME_BYTES);
+    let fresh_challenge = enrollment::issue_socket_challenge(
+        &state.enrollment_hasher,
+        signup.account_id,
+        device,
+        enrollment::unix_now_ms(),
+    );
+    let fresh_signature: Signature =
+        device_key.sign(&enrollment::device_challenge_bytes(&fresh_challenge));
+    let fresh_verified = enrollment::authenticate_socket_actor(
+        &f.reader,
+        &state.enrollment_hasher,
+        &fresh_challenge,
+        fresh_signature.to_der().as_bytes(),
+        enrollment::unix_now_ms(),
+    )
+    .await
+    .unwrap();
+    let later = actor::claim(
+        &mut f.reader,
+        fresh_verified,
+        &state,
+        line_activation_v2::LineProtocol::Legacy,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(later.session().connection_epoch > epoch);
+    let later_status = serde_json::json!({"v":1,"type":"protection_origin_status_request","connection_epoch":later.session().connection_epoch,"request_id":Uuid::new_v4(),"setup_id":setup,"opening_id":opening,"command_id":command,"proof_request_id":proof_request});
+    let resumed = request(&mut f.reader, &state, later, &origin, later_status).await;
+    assert_eq!(resumed["receipt"], accepted["receipt"]);
+    assert_eq!(resumed["opening"], opened["opening"]);
+    // Actual A->B->A is a permanently retired origin, even though the restored
+    // A point again matches the genuine socket signature witness.
+    let replacement = SigningKey::generate_from_rng(&mut rand::rng());
+    let replacement_point = replacement.verifying_key().to_sec1_point(false);
+    let replacement_fp: [u8; 32] = Sha256::digest(replacement_point.as_bytes()).into();
+    f.owner.execute("UPDATE public.device_keys SET signing_key_sec1=$3,fingerprint=$4 WHERE account_id=$1 AND device_id=$2", &[&signup.account_id,&device,&replacement_point.as_bytes(),&&replacement_fp[..]]).await.unwrap();
+    f.owner.execute("UPDATE public.device_keys SET signing_key_sec1=$3,fingerprint=$4 WHERE account_id=$1 AND device_id=$2", &[&signup.account_id,&device,&point.as_bytes(),&&fingerprint[..]]).await.unwrap();
+    assert!(
+        admit(&mut f.reader, &state, later, Kind::Status)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        f.reader
+            .query_one(
+                "SELECT count(*) FROM public.device_protection_receipts WHERE account_id=$1",
+                &[&signup.account_id]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        1
+    );
     assert_eq!(
         f.reader
             .query_one("SELECT count(*) FROM public.payload_profile_elections", &[])

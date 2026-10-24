@@ -239,6 +239,29 @@ fn scope(setup: &str, opening: &str, command: &str) -> Result<[Uuid; 3], ()> {
     Ok([id(setup)?, id(opening)?, id(command)?])
 }
 
+// This request admission commits separately, even if later closed parsing,
+// signatures or the business command refuse. No owner credential is invented.
+async fn admit<C: runtime_db::NativeConnection>(
+    db: &mut C,
+    state: &DeviceSocketState,
+    actor: actor::SocketActor,
+    kind: Kind,
+) -> Result<(), ()> {
+    let admission = runtime_db::begin_native(db).await.map_err(|_| ())?;
+    lock(&admission, actor, state).await?;
+    let allowed = abuse_limits::consume_device_protection(
+        &admission,
+        &state.auth_hasher,
+        actor.proof(),
+        !matches!(kind, Kind::Status),
+    )
+    .await
+    .map_err(|_| ())?;
+    lock(&admission, actor, state).await?;
+    admission.commit().await.map_err(|_| ())?;
+    if allowed { Ok(()) } else { Err(()) }
+}
+
 pub(super) async fn dispatch(
     socket: &mut WebSocket,
     state: &DeviceSocketState,
@@ -250,23 +273,7 @@ pub(super) async fn dispatch(
         return None;
     }
     let mut db = runtime_db::connect_device(&state.database_url).await.ok()?;
-    {
-        let admission = db.native_transaction().await.ok()?;
-        lock(&admission, actor, state).await.ok()?;
-        let allowed = abuse_limits::consume_device_protection(
-            &admission,
-            &state.auth_hasher,
-            actor.proof(),
-            !matches!(frame.kind, Kind::Status),
-        )
-        .await
-        .ok()?;
-        lock(&admission, actor, state).await.ok()?;
-        admission.commit().await.ok()?;
-        if !allowed {
-            return None;
-        }
-    }
+    admit(&mut db, state, actor, frame.kind).await.ok()?;
     let tx = db.native_transaction().await.ok()?;
     lock(&tx, actor, state).await.ok()?;
     let (reply, deadline) = apply(&tx, state, actor, &origin, frame).await.ok()?;
