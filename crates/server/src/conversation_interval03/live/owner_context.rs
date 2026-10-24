@@ -17,7 +17,9 @@ pub(crate) async fn opening_status(
         .await
         .map_err(|_| Error::Authentication)?;
     let who = owner.selected_identity();
-    let row=tx.query_opt("SELECT * FROM public.conversation_profile03_intervals WHERE account_id=$1 AND opening_id=$2 FOR SHARE NOWAIT", &[&who.account,&opening]).await?.ok_or(Error::NotFound)?;
+    // The held genuine owner pins the universal anchor and account rows;
+    // interval insert/phase writers require its exclusive counterpart.
+    let row=tx.query_opt("SELECT * FROM public.conversation_profile03_intervals WHERE account_id=$1 AND opening_id=$2", &[&who.account,&opening]).await?.ok_or(Error::NotFound)?;
     let prior = StoredInterval03::from_row(&row)?;
     if prior.statement.opening_id() != opening || prior.selected_owner().user != who.user {
         return Err(Error::Authentication);
