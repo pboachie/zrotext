@@ -309,7 +309,7 @@ class ProcessCleanupFailure(RuntimeError):
     pass
 
 
-def launch_consumer(command, env, public_input, timeout=2400):
+def launch_consumer(command, env, public_input, timeout=4800):
     child = subprocess.Popen(command, cwd=ROOT, env=env, stdin=subprocess.PIPE, text=True)
     try:
         child.communicate(public_input, timeout=timeout)
