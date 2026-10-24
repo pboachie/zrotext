@@ -10,6 +10,10 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class Profile03BootstrapClockTest {
+    private fun replacement(original: SealedDispatchExecutor.Session,
+        connectionEpoch: Long = original.connectionEpoch, deploymentEpoch: Long = original.deploymentEpoch,
+        sessionId: UUID = original.sessionId, originHash: String = original.originHash) =
+        SealedDispatchExecutor.Session(original.accountId, original.deviceId, connectionEpoch, deploymentEpoch, sessionId, originHash)
     @Test fun metadataClockIsBoundToTheCurrentOwnerAndNeverSurvivesWithdrawalOrAReplacement() {
         val first = Any(); val second = Any()
         val origins = Profile03Origins.fromStream(UUID(0, 1), UUID(0, 2), "wss://gateway.example.test/device")
@@ -38,7 +42,7 @@ class Profile03BootstrapClockTest {
         val origins = Profile03Origins.fromStream(UUID(0, 1), UUID(0, 2), "wss://gateway.example.test/device")
         val nextOrigins = Profile03Origins.fromStream(UUID(0, 1), UUID(0, 2), "wss://other.example.test:9443/device")
         val original = SealedDispatchExecutor.Session(UUID(0, 1), UUID(0, 2), 7, 2, UUID(0, 3), origins.routingHash)
-        val successor = original.copy(connectionEpoch = 8, deploymentEpoch = 3, originHash = nextOrigins.routingHash)
+        val successor = replacement(original, connectionEpoch = 8, deploymentEpoch = 3, originHash = nextOrigins.routingHash)
         try {
             Profile03BootstrapClock.publish(first, original, origins) { 100 }
             val observed = Profile03BootstrapClock.observation(original.accountId, original.deviceId, original.originHash)
@@ -65,8 +69,8 @@ class Profile03BootstrapClockTest {
         val original = SealedDispatchExecutor.Session(UUID(0, 1), UUID(0, 2), 7, 2, UUID(0, 3), origins.routingHash)
         try {
             Profile03BootstrapClock.publish(owner, original, origins) { 100 }
-            for (changed in listOf(original.copy(connectionEpoch = 8), original.copy(deploymentEpoch = 3),
-                original.copy(sessionId = UUID(0, 4))))
+            for (changed in listOf(replacement(original, connectionEpoch = 8), replacement(original, deploymentEpoch = 3),
+                replacement(original, sessionId = UUID(0, 4))))
                 assertThrows(IllegalStateException::class.java) {
                     Profile03BootstrapClock.publish(owner, changed, origins) { 200 } }
             Profile03BootstrapClock.publish(owner, original, origins) { 999 }
@@ -93,7 +97,7 @@ class Profile03BootstrapClockTest {
             worker = Thread(result, "synthetic-bootstrap-clock-wait").also { it.start() }
             assertTrue(entered.await(5, TimeUnit.SECONDS))
             Profile03BootstrapClock.withdraw(first)
-            Profile03BootstrapClock.publish(second, session.copy(connectionEpoch = 2), origins) { 200 }
+            Profile03BootstrapClock.publish(second, replacement(session, connectionEpoch = 2), origins) { 200 }
             release.countDown()
             assertTrue(result.get(5, TimeUnit.SECONDS).exceptionOrNull() is IllegalStateException)
             assertEquals(200L, Profile03BootstrapClock.observation(session.accountId, session.deviceId, session.originHash).now())
