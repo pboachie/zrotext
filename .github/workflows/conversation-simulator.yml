@@ -80,7 +80,7 @@ jobs:
         run: rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
       - name: Cache Rust build artifacts
         # Dependency cache shared with the CI rust job; PR runs only read it.
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: linux-cargo-deps
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -180,7 +180,7 @@ jobs:
         run: rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
       - name: Cache Rust build artifacts
         # Dependency cache shared with the CI rust job; PR runs only read it.
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: linux-cargo-deps
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -278,7 +278,7 @@ jobs:
           sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;28.2.13676358'
       - name: Cache Rust build artifacts
         # Dependency cache shared with the CI rust job; PR runs only read it.
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: linux-cargo-deps
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -331,7 +331,7 @@ jobs:
           java-version: '21'
       - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
       - name: Restore existing Windows dependency cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:
           shared-key: windows-cargo-deps
           save-if: ${{ github.ref == 'refs/heads/main' }}
