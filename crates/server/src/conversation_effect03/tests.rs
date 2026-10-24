@@ -24,6 +24,47 @@ fn manual_hash(label: &[u8], bytes: &[u8]) -> [u8; 32] {
     h.update(bytes);
     h.finalize().into()
 }
+
+#[test]
+fn independent_public_vectors_match_all_commands_and_real_enrolled_proofs() {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B};
+    let vector: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../protocol/v1/vectors/conversation-effects03-v1.json"
+    ))
+    .unwrap();
+    let bytes = |value: &serde_json::Value| B.decode(value.as_str().unwrap()).unwrap();
+    let point = bytes(&vector["enrolled_point"]);
+    for case in vector["cases"].as_array().unwrap() {
+        let submit = SubmitCommand03::decode(&bytes(&case["submit"])).unwrap();
+        assert_eq!(
+            submit.digest().unwrap().as_slice(),
+            bytes(&case["submit_commitment"])
+        );
+        let record = NoSubmitRecord03::decode(&bytes(&case["closure_record"])).unwrap();
+        assert_eq!(
+            record.digest().unwrap().as_slice(),
+            bytes(&case["closure_commitment"])
+        );
+        let core = NoSubmitCore03::decode(&bytes(&case["core"])).unwrap();
+        core.matches_record(&record).unwrap();
+        let signature = bytes(&case["signature"]);
+        core.verify_candidate_signature(&point, &signature).unwrap();
+        assert!(core.verify_candidate_signature(&point, &[0; 64]).is_err());
+        assert!(
+            core.verify_candidate_signature(&[0; 65], &signature)
+                .is_err()
+        );
+        for outcome in case["outcomes"].as_array().unwrap() {
+            let command = OutcomeCommand03::decode(&bytes(&outcome["command"])).unwrap();
+            assert_eq!(
+                command.digest().unwrap().as_slice(),
+                bytes(&outcome["commitment"])
+            );
+            assert_eq!(command.segment_count(), submit.segment_count());
+            assert_eq!(command.submit_observed_ms(), submit.observed_ms());
+        }
+    }
+}
 fn submit() -> Vec<u8> {
     let mut bytes = prefix(5, 2);
     bytes.push(6);
