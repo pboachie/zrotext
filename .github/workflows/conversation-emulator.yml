@@ -39,8 +39,8 @@ jobs:
       - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd
       - name: Install existing toolchains and isolated browser tooling
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
-          rustup target add --toolchain 1.97.1 aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
+          rustup toolchain install 1.99.1 --profile minimal
+          rustup target add --toolchain 1.99.1 aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
           sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;28.2.13676358' 'emulator' 'system-images;android-28;google_apis;x86_64'
           npm install --prefix "$RUNNER_TEMP/conversation-browser-tools" --no-save --ignore-scripts playwright@1.58.2
           node "$RUNNER_TEMP/conversation-browser-tools/node_modules/playwright/cli.js" install --with-deps chromium
@@ -51,7 +51,7 @@ jobs:
           python3 -m unittest discover -s scripts -p test_conversation_emulator.py
           python3 -m unittest discover -s scripts -p test_conversation_compiled_acceptance.py
           (cd sdk/typescript && npm ci --ignore-scripts && npm run build)
-          cargo +1.97.1 test --locked -p zrotext-server --lib --features conversation-simulator-tests --no-run
+          cargo +1.99.1 test --locked -p zrotext-server --lib --features conversation-simulator-tests --no-run
           (cd android && ./gradlew -PisolatedConversationProbe=true :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon)
       - name: Boot owned isolated emulator and require round trip
         run: |
@@ -117,9 +117,9 @@ jobs:
             --receipt "$diagnostics/boot-readiness.json"
           require_emulator_process
           phase='compiled-roundtrip'
-          python3 scripts/conversation_emulator.py --serial emulator-5596 --adb "$ANDROID_HOME/platform-tools/adb" --aapt "$ANDROID_HOME/build-tools/37.0.0/aapt" --toolchain 1.97.1 --skip-build --scenario roundtrip
+          python3 scripts/conversation_emulator.py --serial emulator-5596 --adb "$ANDROID_HOME/platform-tools/adb" --aapt "$ANDROID_HOME/build-tools/37.0.0/aapt" --toolchain 1.99.1 --skip-build --scenario roundtrip
           phase='compiled-capture-ack'
-          python3 scripts/conversation_emulator.py --serial emulator-5596 --adb "$ANDROID_HOME/platform-tools/adb" --aapt "$ANDROID_HOME/build-tools/37.0.0/aapt" --toolchain 1.97.1 --skip-build --scenario capture-ack
+          python3 scripts/conversation_emulator.py --serial emulator-5596 --adb "$ANDROID_HOME/platform-tools/adb" --aapt "$ANDROID_HOME/build-tools/37.0.0/aapt" --toolchain 1.99.1 --skip-build --scenario capture-ack
           python3 scripts/conversation_compiled_acceptance.py \
             --commit "$(git rev-parse HEAD)" \
             --app-sha256 "$(sha256sum android/app/build/outputs/apk/debug/app-debug.apk | cut -d ' ' -f 1)" \

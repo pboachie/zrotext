@@ -68,7 +68,14 @@
         index = token.lastIndex;
       } else {
         if (template[index] === "}") throw new Error("Use only {{identifier}} variables; braces must form a complete variable.");
-        piece = template[index++];
+        let searchIndex = template[index] === "{" ? index + 1 : index;
+        let nextOpen = template.indexOf("{", searchIndex);
+        let nextClose = template.indexOf("}", searchIndex);
+        let next = template.length;
+        if (nextOpen !== -1 && nextOpen < next) next = nextOpen;
+        if (nextClose !== -1 && nextClose < next) next = nextClose;
+        piece = template.slice(index, next);
+        index = next;
       }
       if (output.length + piece.length > limits.output) throw new Error("Rendered text exceeds the output limit.");
       output += piece;
