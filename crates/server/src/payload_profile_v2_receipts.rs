@@ -17,12 +17,12 @@ pub enum ReceiptSchemaError {
 type Result<T> = std::result::Result<T, ReceiptSchemaError>;
 
 fn body(name: &str) -> Result<&'static str> {
-    MIGRATION
-        .split_once(&format!("FUNCTION public.{name}("))
-        .and_then(|(_, sql)| sql.split_once("AS $function$"))
-        .and_then(|(_, sql)| sql.split_once("$function$;"))
-        .map(|(body, _)| body)
-        .ok_or(ReceiptSchemaError::Invalid)
+    zrotext_delivery_store::hosted_runtime_identity::declared_function_body(
+        MIGRATION,
+        name,
+        "$function$",
+    )
+    .ok_or(ReceiptSchemaError::Invalid)
 }
 
 async fn functions<C: GenericClient + Sync>(db: &C) -> Result<()> {
@@ -164,7 +164,7 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
         )
         .await?
         .try_get(0)?;
-    if !matches!(version, 109..=115) {
+    if !matches!(version, 109..=116) {
         return Err(ReceiptSchemaError::Invalid);
     }
     functions(db).await?;

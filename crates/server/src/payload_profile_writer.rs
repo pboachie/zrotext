@@ -23,11 +23,22 @@ pub enum WriterSchemaError {
 type Result<T> = std::result::Result<T, WriterSchemaError>;
 
 fn body(name: &str, marker: &str, version: i64) -> Result<&'static str> {
-    let source = if version == 115
+    let source = if version == 116
+        && matches!(
+            name,
+            "payload_profile_writer_version"
+                | "payload_profile_writer_ready"
+                | "payload_profile_writer_guard"
+        ) {
+        include_str!(
+            "../../../deploy/compose/migrations/116_hosted_native_transaction_identity.sql"
+        )
+    } else if matches!(version, 115..=116)
         && matches!(
             name,
             "payload_profile_writer_version" | "payload_profile_writer_ready"
-        ) {
+        )
+    {
         include_str!("../../../deploy/compose/migrations/115_conversation_profile03_grants.sql")
     } else if version == 114
         && matches!(
@@ -57,7 +68,7 @@ fn body(name: &str, marker: &str, version: i64) -> Result<&'static str> {
         )
     {
         SELECTION_MIGRATION
-    } else if matches!(version, 110..=115)
+    } else if matches!(version, 110..=116)
         && matches!(
             name,
             "payload_profile_writer_guard"
@@ -67,7 +78,7 @@ fn body(name: &str, marker: &str, version: i64) -> Result<&'static str> {
         )
     {
         ELECTION_MIGRATION
-    } else if matches!(version, 109..=115)
+    } else if matches!(version, 109..=116)
         && matches!(
             name,
             "payload_profile_writer_graph"
@@ -79,11 +90,7 @@ fn body(name: &str, marker: &str, version: i64) -> Result<&'static str> {
     } else {
         MIGRATION
     };
-    source
-        .split_once(&format!("FUNCTION public.{name}("))
-        .and_then(|(_, sql)| sql.split_once(&format!("AS {marker}")))
-        .and_then(|(_, sql)| sql.split_once(&format!("{marker};")))
-        .map(|(body, _)| body)
+    zrotext_delivery_store::hosted_runtime_identity::declared_function_body(source, name, marker)
         .ok_or(WriterSchemaError::Invalid)
 }
 
@@ -265,7 +272,7 @@ pub(crate) async fn optional<C: GenericClient + Sync>(db: &C, table: &str) -> Re
         )
         .await?
         .try_get(0)?;
-    if !matches!(version, 108..=115) {
+    if !matches!(version, 108..=116) {
         return Err(WriterSchemaError::Invalid);
     }
     functions(db, version).await?;
