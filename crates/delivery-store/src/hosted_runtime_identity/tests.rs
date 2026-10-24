@@ -734,3 +734,35 @@ fn trigger_calls_comments_unknown_and_duplicate_declarations_never_supply_bodies
         Some("at-start")
     );
 }
+
+#[test]
+fn explicit_second_intent_native_body_routes_keep_exact_current_pins() {
+    for (name, expected) in [
+        (
+            "hosted_runtime_native_schema_valid",
+            "6fe7bf0ce4d4cb6f4113c45a2397502d99afafec4c4f026a9af6c37c5e610b4e",
+        ),
+        (
+            "hosted_runtime_identity_ready",
+            "7fda07320588b52036fe5002b3c4082f5fce7c19f57d9763ecda85beb02a343f",
+        ),
+        (
+            "hosted_runtime_scope",
+            "5af80385e9460db2d4381a082df2e6a1c63059b66019678518bf4133f5b5673f",
+        ),
+        (
+            "payload_profile_writer_version",
+            "887ad6ecb8df729687fb1ba9d05436eb7511f035f7cafc8b27685d9d5c9b2bc6",
+        ),
+        (
+            "payload_profile_writer_ready",
+            "10d2f8fa9ab50a4440ff98b529637fb92f71b79743a3b23ea763b585e7d98458",
+        ),
+    ] {
+        let actual = Sha256::digest(body_for(name, 117).unwrap().as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(actual, expected, "{name}");
+    }
+}

@@ -28,14 +28,24 @@ pub enum GrantSchemaError {
 }
 type Result<T> = std::result::Result<T, GrantSchemaError>;
 fn body(name: &str, version: i64) -> Result<&'static str> {
-    let source = if version == 116
+    let source = if version == 117
+        && matches!(
+            name,
+            "payload_profile_writer_version"
+                | "payload_profile_writer_ready"
+                | "conversation_profile03_grant_scope"
+                | "conversation_profile03_grant_issue"
+        ) {
+        include_str!("../../../deploy/compose/migrations/117_explicit_reviewed_intent_v2.sql")
+    } else if matches!(version, 116..=117)
         && matches!(
             name,
             "payload_profile_writer_version"
                 | "payload_profile_writer_ready"
                 | "payload_profile_writer_guard"
                 | "conversation_profile03_grant_billing"
-        ) {
+        )
+    {
         include_str!(
             "../../../deploy/compose/migrations/116_hosted_native_transaction_identity.sql"
         )
@@ -402,7 +412,7 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
         )
         .await?
         .try_get(0)?;
-    if !matches!(version, 115..=116) {
+    if !matches!(version, 115..=117) {
         return Err(GrantSchemaError::Invalid);
     }
     functions(db, version).await?;
