@@ -684,7 +684,7 @@ async fn erase_account(
             Err(error) => return auth_error(error),
         };
     let account_id = principal.tenant.account_id();
-    let tx = match client.transaction().await {
+    let tx = match begin_erasure_transaction(&mut client).await {
         Ok(tx) => tx,
         Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
     };
@@ -1150,6 +1150,14 @@ async fn erase_account(
         statement: ERASED_STATEMENT,
     })
     .into_response()
+}
+
+/// Enter the actual initialized backend before any erasure business locks.
+/// This is not an owner/password/MFA or erasure-blocker witness.
+pub(crate) async fn begin_erasure_transaction(
+    client: &mut crate::runtime_db::PooledClient,
+) -> Result<tokio_postgres::Transaction<'_>, crate::runtime_db::ConnectError> {
+    client.native_transaction().await
 }
 
 #[cfg(test)]

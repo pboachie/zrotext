@@ -47,12 +47,18 @@ actual absence fence are installed, without requiring a hosted HMAC key.
 
 The explicit callers cover profile03 owner HTTP and device socket transaction
 builders, the grant/fetch helpers, hosted billing HTTP and worker transactions,
-actual pairing approval/revocation, and the initialized delivery-store call
+actual pairing approval/revocation, account-erasure transaction entry, and the initialized delivery-store call
 sites. Startup's namespace marker is read-only public metadata before bind;
 it is compared with configured provider identity and does not confer paid or
 content permission. Legacy TEST billing remains separately isolated and must
 refuse a scoped database. This change does not convert dormant legacy candidate
 or provider APIs into hosted profile03 paths.
+
+Account erasure still performs its original password/MFA/current-owner checks
+and complete blocker scan. Native entry does not make those blockers readable
+or authorize deletion. In particular, a populated hosted installation whose
+runtime cannot read an operator-only blocker still refuses the whole request;
+this caller change does not add that privilege or claim successful hosted erasure.
 
 The native schema capability must be installed and qualified separately. These
 callers do not replace genuine owner authentication, fresh consent factors,

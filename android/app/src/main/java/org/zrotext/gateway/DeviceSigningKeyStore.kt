@@ -144,6 +144,34 @@ class DeviceSigningKeyStore(
         }
     }
 
+    /** Additive03 transcript only. Canonicalize our own randomized signing output; received
+     * signatures are never normalized. This neither authenticates a grant nor selects a key.
+     */
+    internal fun signSealedEnvelopeFetch03(grant: SealedDispatch03Frames.Grant,
+        expectedPoint: ByteArray, current: () -> Unit): ByteArray {
+        val transcript = SealedEnvelopeFetch03.transcript(SealedDispatch03Frames.grant(grant.json()))
+        val point = expectedPoint.copyOf()
+        current()
+        check(java.security.MessageDigest.isEqual(existingConversationPublicPoint(), point))
+        val key = privateKey()
+        check(key.encoded == null && securityLevel(key) in setOf(
+            SigningKeySecurity.STRONGBOX, SigningKeySecurity.TRUSTED_ENVIRONMENT))
+        current()
+        val der = Signature.getInstance("SHA256withECDSA").run {
+            initSign(key); update(transcript); sign()
+        }
+        current()
+        check(java.security.MessageDigest.isEqual(existingConversationPublicPoint(), point))
+        val raw = Draft01SignaturePrimitive.canonicalRawFromDer(der)
+        fun integer(at: Int) = java.math.BigInteger(1, raw.copyOfRange(at, at + 32)).toByteArray()
+            .let { byteArrayOf(2, it.size.toByte()) + it }
+        val fields = integer(0) + integer(32)
+        val canonical = byteArrayOf(0x30, fields.size.toByte()) + fields
+        SealedEnvelopeFetch03.requireCanonicalDer(canonical)
+        current()
+        return canonical
+    }
+
     /** Explicit approved conversation only; missing/unsupported existing keys are never created. */
     internal fun signConversationStatement(domain:ByteArray,statement:ByteArray,expectedPoint:ByteArray):ByteArray {
         ConversationActivationCodec.decode(statement)
@@ -174,6 +202,33 @@ class DeviceSigningKeyStore(
             sign()
         }
         return Draft01SignaturePrimitive.canonicalRawFromDer(der)
+    }
+
+    /** Additive03 role04 only, called AFTER the future actual capture journal's one-use
+     * reservation. A public proof never substitutes for that caller's current113/physical
+     * provenance. Missing/nonmatching/exportable keys refuse; no key is created or aliased. */
+    internal fun signPreparedInbound03(prepared: Draft03InboundEnvelope.Unsigned,
+        now: () -> Long, current: () -> Unit): ByteArray {
+        var latest = 0L
+        fun checked() {
+            current(); val value = now(); check(value >= latest)
+            prepared.requirePublicCurrent(value); current(); latest = value
+        }
+        checked()
+        val point = prepared.signerPoint()
+        check(java.security.MessageDigest.isEqual(existingConversationPublicPoint(), point))
+        checked()
+        val key = privateKey()
+        check(key.encoded == null && securityLevel(key) in setOf(SigningKeySecurity.STRONGBOX, SigningKeySecurity.TRUSTED_ENVIRONMENT))
+        checked()
+        val der = Signature.getInstance("SHA256withECDSA").run { initSign(key); update(prepared.transcript()); sign() }
+        checked()
+        check(java.security.MessageDigest.isEqual(existingConversationPublicPoint(), point))
+        checked()
+        val raw = Draft01SignaturePrimitive.canonicalRawFromDer(der)
+        prepared.signed(raw) // Independently verify our new signature over the exact03 transcript.
+        checked()
+        return raw
     }
 
     internal fun signInboundMetadata(accountId: UUID, deviceId: UUID, upload: InboundUpload,
@@ -220,6 +275,60 @@ class DeviceSigningKeyStore(
 
     private fun selectedSubscription(): Int = context.getSharedPreferences("gateway_selection", Context.MODE_PRIVATE)
         .getInt("subscription_id", android.telephony.SubscriptionManager.INVALID_SUBSCRIPTION_ID)
+
+    /** Same enrolled nonexportable signer, only after the caller's durable one-use reservation.
+     * Canonicalizes this newly generated outgoing signature; received originalv2 DER is untouched.
+     */
+    internal fun signPayloadElection03(core: ByteArray, expectedPoint: ByteArray, current: () -> Unit): ByteArray {
+        require(core.size == 500 && expectedPoint.size == 65)
+        val owned = core.copyOf()
+        val point = expectedPoint.copyOf()
+        current()
+        check(java.security.MessageDigest.isEqual(point, existingConversationPublicPoint()))
+        current()
+        val transcript = ReviewedIntent03.framed("ZTSE/line/payload-profile/device/v1", owned)
+        val raw = Draft01SignaturePrimitive.canonicalRawFromDer(sign(transcript))
+        current()
+        check(java.security.MessageDigest.isEqual(point, existingConversationPublicPoint()) &&
+            ConversationContentCrypto.verifyRaw(raw, point, transcript))
+        current()
+        return raw
+    }
+
+    /** Caller commits the distinct refresh reservation before this dedicated signing operation. */
+    internal fun signSelectionRefresh03(core: SelectionRefresh03.Core, observation: ByteArray,
+        expectedPoint: ByteArray, current: () -> Unit): ByteArray = signExistingRefreshTranscript(
+        SelectionRefresh03.deviceTranscript(core, observation), expectedPoint, current)
+
+    /** Caller atomically installs the original exact accepted refresh row before this ACK. */
+    internal fun signSelectionRefreshInstalled03(bundle: SelectionRefresh03.Bundle, actualDeviceSessionDigest: ByteArray,
+        expectedPoint: ByteArray, current: () -> Unit): ByteArray = signExistingRefreshTranscript(
+        SelectionRefresh03.installedTranscript(bundle, actualDeviceSessionDigest), expectedPoint, current)
+
+    /** Actual selected manifest role04, independently compared to this existing hardware key.
+     * Reader availability and the separately enrolled socket key never supply that selection.
+     * The caller must commit the distinct one-use phase before either operation.
+     */
+    internal fun signConversationApproval03(statement: ConversationInterval03.Statement, ownerSignature: ByteArray,
+        expectedRole04: ByteArray, current: () -> Unit): ByteArray = signExistingRefreshTranscript(
+        ConversationInterval03.approvalTranscript(statement, ownerSignature), expectedRole04, current)
+
+    internal fun signConversationInstalled03(statement: ConversationInterval03.Statement, ownerSignature: ByteArray,
+        phoneSignature: ByteArray, expectedRole04: ByteArray, current: () -> Unit): ByteArray = signExistingRefreshTranscript(
+        ConversationInterval03.installedTranscript(statement, ownerSignature, phoneSignature), expectedRole04, current)
+
+    private fun signExistingRefreshTranscript(transcript: ByteArray, expectedPoint: ByteArray, current: () -> Unit): ByteArray {
+        val point = expectedPoint.copyOf()
+        current()
+        check(java.security.MessageDigest.isEqual(point, existingConversationPublicPoint()))
+        current()
+        val raw = Draft01SignaturePrimitive.canonicalRawFromDer(sign(transcript))
+        current()
+        check(java.security.MessageDigest.isEqual(point, existingConversationPublicPoint()) &&
+            ConversationContentCrypto.verifyRaw(raw, point, transcript))
+        current()
+        return raw
+    }
 
     /** Existing enrolled identity only. A received line challenge cannot create a replacement key. */
     internal fun existingLineActivationV2Point(purpose: LineActivationV2Purpose): ByteArray {

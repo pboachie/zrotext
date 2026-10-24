@@ -144,7 +144,7 @@ async fn versioned_schema_upgrade_preserves_legacy_rows_defaults_and_contracts()
     let c = Case::new("sms", true).await;
     let challenge = c.challenge(1).await;
     let before = legacy_constraints(&c.db).await;
-    for (name, sql) in TEST_MIGRATIONS {
+    for (name, sql) in LEGACY_TEST_MIGRATIONS {
         if name.starts_with("095_") || name.starts_with("096_") {
             c.db.batch_execute(sql).await.unwrap();
         }

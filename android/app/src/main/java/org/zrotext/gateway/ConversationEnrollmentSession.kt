@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal class ConversationEnrollmentSession(
     private val accountId: String,
     private val requireCurrent: () -> Unit,
+    private val requireStorageCurrent: () -> Unit,
     private val createReader: () -> DevicePayloadPublic,
     storage: Draft02TrustStore.Storage,
     private val prepareProtection: () -> Unit,
@@ -19,20 +20,22 @@ internal class ConversationEnrollmentSession(
     private val closed = AtomicBoolean(false)
     private val comparison = Draft02RootComparison()
     private fun current() { check(!closed.get()); requireCurrent(); check(!closed.get()) }
+    private fun storageCurrent() { check(!closed.get()); requireStorageCurrent(); check(!closed.get()) }
     private val trust = Draft02TrustStore(object : Draft02TrustStore.Storage {
         override fun <T> locked(action: Draft02TrustStore.Session.() -> T): T = storage.locked {
+            storageCurrent()
             val delegate = this
             action(object : Draft02TrustStore.Session {
-                private fun <V> checked(work: () -> V): V { current(); return work().also { current() } }
+                private fun <V> checked(work: () -> V): V { storageCurrent(); return work().also { storageCurrent() } }
                 override fun keyState() = checked { delegate.keyState() }
                 override fun read() = checked { delegate.read() }
                 override fun createKey() = checked { delegate.createKey() }
                 override fun seal(plaintext: ByteArray) = checked { delegate.seal(plaintext) }
                 override fun open(ciphertext: ByteArray) = checked { delegate.open(ciphertext) }
                 override fun write(ciphertext: ByteArray, preCommit: () -> Unit) = checked {
-                    delegate.write(ciphertext) { current(); preCommit(); current() }
+                    delegate.write(ciphertext) { storageCurrent(); preCommit(); storageCurrent() }
                 }
-            })
+            }).also { storageCurrent() }
         }
     })
 

@@ -27,286 +27,328 @@ pub enum GrantSchemaError {
     Database(#[from] tokio_postgres::Error),
 }
 type Result<T> = std::result::Result<T, GrantSchemaError>;
-fn body(name: &str) -> Result<&'static str> {
-    MIGRATION
-        .split_once(&format!("FUNCTION public.{name}("))
-        .and_then(|(_, sql)| sql.split_once("AS $function$"))
-        .and_then(|(_, sql)| sql.split_once("$function$;"))
-        .map(|(body, _)| body)
-        .ok_or(GrantSchemaError::Invalid)
+fn body(name: &str, version: i64) -> Result<&'static str> {
+    let source = if version == 117
+        && matches!(
+            name,
+            "payload_profile_writer_version"
+                | "payload_profile_writer_ready"
+                | "conversation_profile03_grant_scope"
+                | "conversation_profile03_grant_issue"
+                | "conversation_reviewed_send03_admit"
+        ) {
+        include_str!("../../../deploy/compose/migrations/117_explicit_reviewed_intent_v2.sql")
+    } else if matches!(version, 116..=117)
+        && matches!(
+            name,
+            "payload_profile_writer_version"
+                | "payload_profile_writer_ready"
+                | "payload_profile_writer_guard"
+                | "conversation_profile03_grant_billing"
+        )
+    {
+        include_str!(
+            "../../../deploy/compose/migrations/116_hosted_native_transaction_identity.sql"
+        )
+    } else {
+        MIGRATION
+    };
+    zrotext_delivery_store::hosted_runtime_identity::declared_function_body(
+        source,
+        name,
+        "$function$",
+    )
+    .ok_or(GrantSchemaError::Invalid)
 }
-async fn functions<C: GenericClient + Sync>(db: &C) -> Result<()> {
-    for (name, args, result, language, volatility, strict, definer, set, config, names) in [
-        (
-            "conversation_profile03_grant_mode",
-            "uuid",
-            "void",
-            "plpgsql",
-            "v",
-            false,
-            true,
-            false,
-            (&["search_path=pg_catalog", "lock_timeout=3s"] as &[&str]),
-            (&["account"] as &[&str]),
-        ),
-        (
-            "conversation_profile03_grant_issued",
-            "uuid, uuid",
-            "void",
-            "plpgsql",
-            "v",
-            false,
-            true,
-            false,
-            (&["search_path=pg_catalog", "lock_timeout=3s"] as &[&str]),
-            (&["account", "attempt"] as &[&str]),
-        ),
-        (
-            "conversation_profile03_grant_lock",
-            "uuid, uuid, uuid, text, text, bigint, bigint",
-            "public.conversation_profile03_grants",
-            "plpgsql",
-            "v",
-            false,
-            true,
-            true,
-            (&["search_path=pg_catalog", "lock_timeout=3s"] as &[&str]),
-            (&[
-                "account",
-                "attempt",
-                "device",
-                "site",
-                "instance",
-                "connection_epoch",
-                "deployment_epoch",
-            ] as &[&str]),
-        ),
-        (
-            "conversation_profile03_grant_issue",
-            "uuid, uuid, uuid, uuid, text, text, bigint, bigint, bigint",
-            "public.conversation_profile03_grants",
-            "plpgsql",
-            "v",
-            false,
-            true,
-            true,
-            (&["search_path=pg_catalog", "lock_timeout=3s"] as &[&str]),
-            (&[
-                "account",
-                "message",
-                "attempt",
-                "device",
-                "site",
-                "instance",
-                "connection_epoch",
-                "deployment_epoch",
-                "permission_deadline_ms",
-            ] as &[&str]),
-        ),
-        (
-            "conversation_profile03_grant_rows_guard",
-            "",
-            "trigger",
-            "plpgsql",
-            "v",
-            false,
-            true,
-            false,
-            (&["search_path=pg_catalog", "lock_timeout=3s"] as &[&str]),
-            (&[] as &[&str]),
-        ),
-        (
-            "conversation_profile03_grant_complete",
-            "",
-            "trigger",
-            "plpgsql",
-            "v",
-            false,
-            true,
-            false,
-            (&["search_path=pg_catalog", "lock_timeout=3s"] as &[&str]),
-            (&[] as &[&str]),
-        ),
-        (
-            "conversation_profile03_grant_billing",
-            "uuid, uuid",
-            "bigint",
-            "plpgsql",
-            "v",
-            false,
-            true,
-            false,
-            (&["search_path=pg_catalog", "lock_timeout=3s"] as &[&str]),
-            (&["account", "message"] as &[&str]),
-        ),
-        (
-            "conversation_profile03_grant_usage_writer",
-            "uuid, text, text, jsonb, jsonb",
-            "void",
-            "plpgsql",
-            "v",
-            false,
-            true,
-            false,
-            (&["search_path=pg_catalog", "lock_timeout=3s"] as &[&str]),
-            (&[
-                "account",
-                "relation_name",
-                "operation",
-                "old_row",
-                "new_row",
-            ] as &[&str]),
-        ),
-        (
-            "conversation_profile03_grant_scope",
-            "uuid, uuid, uuid, text, text, bigint, bigint",
-            "public.conversation_profile03_grants",
-            "plpgsql",
-            "v",
-            false,
-            true,
-            false,
-            (&["search_path=pg_catalog", "lock_timeout=3s"] as &[&str]),
-            (&[
-                "account",
-                "message",
-                "device",
-                "site",
-                "instance",
-                "connection_epoch",
-                "deployment_epoch",
-            ] as &[&str]),
-        ),
-        (
-            "conversation_profile03_grant_same_scope",
-            "jsonb, jsonb",
-            "boolean",
-            "sql",
-            "i",
-            true,
-            false,
-            false,
-            (&["search_path=pg_catalog"] as &[&str]),
-            (&["original", "current_scope"] as &[&str]),
-        ),
-        (
-            "conversation_profile03_grant_writer",
-            "uuid, text, text, jsonb, jsonb",
-            "void",
-            "plpgsql",
-            "v",
-            false,
-            true,
-            false,
-            (&["search_path=pg_catalog", "lock_timeout=3s"] as &[&str]),
-            (&[
-                "account",
-                "relation_name",
-                "operation",
-                "old_row",
-                "new_row",
-            ] as &[&str]),
-        ),
-        (
-            "payload_profile_writer_policy",
-            "uuid, bigint, text, text, jsonb, jsonb",
-            "void",
-            "plpgsql",
-            "v",
-            false,
-            true,
-            false,
-            (&["search_path=pg_catalog"] as &[&str]),
-            (&[
-                "account",
-                "epoch",
-                "relation_name",
-                "operation",
-                "old_row",
-                "new_row",
-            ] as &[&str]),
-        ),
-        (
-            "conversation_reviewed_send03_admit",
-            "uuid, uuid, uuid, bytea, bytea, bytea, bigint",
-            "public.conversation_reviewed_sends03",
-            "plpgsql",
-            "v",
-            false,
-            true,
-            true,
-            (&["search_path=pg_catalog", "lock_timeout=3s"] as &[&str]),
-            (&[
-                "account",
-                "interval",
-                "message",
-                "intent",
-                "signature",
-                "envelope",
-                "permission_deadline_ms",
-            ] as &[&str]),
-        ),
-        (
-            "alpha_message_effect_guard",
-            "",
-            "trigger",
-            "plpgsql",
-            "v",
-            false,
-            false,
-            false,
-            (&["search_path=pg_catalog, public, pg_temp"] as &[&str]),
-            (&[] as &[&str]),
-        ),
-        (
-            "conversation_profile03_interval_ready",
-            "",
-            "boolean",
-            "sql",
-            "s",
-            false,
-            false,
-            false,
-            (&["search_path=pg_catalog"] as &[&str]),
-            (&[] as &[&str]),
-        ),
-        (
-            "payload_profile_writer_version",
-            "",
-            "boolean",
-            "sql",
-            "s",
-            false,
-            true,
-            false,
-            (&["search_path=pg_catalog"] as &[&str]),
-            (&[] as &[&str]),
-        ),
-        (
-            "payload_profile_writer_ready",
-            "",
-            "boolean",
-            "sql",
-            "s",
-            false,
-            false,
-            false,
-            (&["search_path=pg_catalog"] as &[&str]),
-            (&[] as &[&str]),
-        ),
-        (
-            "conversation_profile03_grant_ready",
-            "",
-            "boolean",
-            "sql",
-            "s",
-            false,
-            false,
-            false,
-            (&["search_path=pg_catalog"] as &[&str]),
-            (&[] as &[&str]),
-        ),
-    ] {
+type FunctionDeclaration = (
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    bool,
+    bool,
+    bool,
+    &'static [&'static str],
+    &'static [&'static str],
+);
+// One actual declaration inventory drives runtime validation and the independent
+// stock-pin regression, including transitive admission and writer dependencies.
+const REQUIRED_FUNCTIONS: &[FunctionDeclaration] = &[
+    (
+        "conversation_profile03_grant_mode",
+        "uuid",
+        "void",
+        "plpgsql",
+        "v",
+        false,
+        true,
+        false,
+        (&["search_path=pg_catalog", "lock_timeout=3s"] as &[&str]),
+        (&["account"] as &[&str]),
+    ),
+    (
+        "conversation_profile03_grant_issued",
+        "uuid, uuid",
+        "void",
+        "plpgsql",
+        "v",
+        false,
+        true,
+        false,
+        (&["search_path=pg_catalog", "lock_timeout=3s"] as &[&str]),
+        (&["account", "attempt"] as &[&str]),
+    ),
+    (
+        "conversation_profile03_grant_lock",
+        "uuid, uuid, uuid, text, text, bigint, bigint",
+        "public.conversation_profile03_grants",
+        "plpgsql",
+        "v",
+        false,
+        true,
+        true,
+        (&["search_path=pg_catalog", "lock_timeout=3s"] as &[&str]),
+        (&[
+            "account",
+            "attempt",
+            "device",
+            "site",
+            "instance",
+            "connection_epoch",
+            "deployment_epoch",
+        ] as &[&str]),
+    ),
+    (
+        "conversation_profile03_grant_issue",
+        "uuid, uuid, uuid, uuid, text, text, bigint, bigint, bigint",
+        "public.conversation_profile03_grants",
+        "plpgsql",
+        "v",
+        false,
+        true,
+        true,
+        (&["search_path=pg_catalog", "lock_timeout=3s"] as &[&str]),
+        (&[
+            "account",
+            "message",
+            "attempt",
+            "device",
+            "site",
+            "instance",
+            "connection_epoch",
+            "deployment_epoch",
+            "permission_deadline_ms",
+        ] as &[&str]),
+    ),
+    (
+        "conversation_profile03_grant_rows_guard",
+        "",
+        "trigger",
+        "plpgsql",
+        "v",
+        false,
+        true,
+        false,
+        (&["search_path=pg_catalog", "lock_timeout=3s"] as &[&str]),
+        (&[] as &[&str]),
+    ),
+    (
+        "conversation_profile03_grant_complete",
+        "",
+        "trigger",
+        "plpgsql",
+        "v",
+        false,
+        true,
+        false,
+        (&["search_path=pg_catalog", "lock_timeout=3s"] as &[&str]),
+        (&[] as &[&str]),
+    ),
+    (
+        "conversation_profile03_grant_billing",
+        "uuid, uuid",
+        "bigint",
+        "plpgsql",
+        "v",
+        false,
+        true,
+        false,
+        (&["search_path=pg_catalog", "lock_timeout=3s"] as &[&str]),
+        (&["account", "message"] as &[&str]),
+    ),
+    (
+        "conversation_profile03_grant_usage_writer",
+        "uuid, text, text, jsonb, jsonb",
+        "void",
+        "plpgsql",
+        "v",
+        false,
+        true,
+        false,
+        (&["search_path=pg_catalog", "lock_timeout=3s"] as &[&str]),
+        (&[
+            "account",
+            "relation_name",
+            "operation",
+            "old_row",
+            "new_row",
+        ] as &[&str]),
+    ),
+    (
+        "conversation_profile03_grant_scope",
+        "uuid, uuid, uuid, text, text, bigint, bigint",
+        "public.conversation_profile03_grants",
+        "plpgsql",
+        "v",
+        false,
+        true,
+        false,
+        (&["search_path=pg_catalog", "lock_timeout=3s"] as &[&str]),
+        (&[
+            "account",
+            "message",
+            "device",
+            "site",
+            "instance",
+            "connection_epoch",
+            "deployment_epoch",
+        ] as &[&str]),
+    ),
+    (
+        "conversation_profile03_grant_same_scope",
+        "jsonb, jsonb",
+        "boolean",
+        "sql",
+        "i",
+        true,
+        false,
+        false,
+        (&["search_path=pg_catalog"] as &[&str]),
+        (&["original", "current_scope"] as &[&str]),
+    ),
+    (
+        "conversation_profile03_grant_writer",
+        "uuid, text, text, jsonb, jsonb",
+        "void",
+        "plpgsql",
+        "v",
+        false,
+        true,
+        false,
+        (&["search_path=pg_catalog", "lock_timeout=3s"] as &[&str]),
+        (&[
+            "account",
+            "relation_name",
+            "operation",
+            "old_row",
+            "new_row",
+        ] as &[&str]),
+    ),
+    (
+        "payload_profile_writer_policy",
+        "uuid, bigint, text, text, jsonb, jsonb",
+        "void",
+        "plpgsql",
+        "v",
+        false,
+        true,
+        false,
+        (&["search_path=pg_catalog"] as &[&str]),
+        (&[
+            "account",
+            "epoch",
+            "relation_name",
+            "operation",
+            "old_row",
+            "new_row",
+        ] as &[&str]),
+    ),
+    (
+        "conversation_reviewed_send03_admit",
+        "uuid, uuid, uuid, bytea, bytea, bytea, bigint",
+        "public.conversation_reviewed_sends03",
+        "plpgsql",
+        "v",
+        false,
+        true,
+        true,
+        (&["search_path=pg_catalog", "lock_timeout=3s"] as &[&str]),
+        (&[
+            "account",
+            "interval",
+            "message",
+            "intent",
+            "signature",
+            "envelope",
+            "permission_deadline_ms",
+        ] as &[&str]),
+    ),
+    (
+        "alpha_message_effect_guard",
+        "",
+        "trigger",
+        "plpgsql",
+        "v",
+        false,
+        false,
+        false,
+        (&["search_path=pg_catalog, public, pg_temp"] as &[&str]),
+        (&[] as &[&str]),
+    ),
+    (
+        "conversation_profile03_interval_ready",
+        "",
+        "boolean",
+        "sql",
+        "s",
+        false,
+        false,
+        false,
+        (&["search_path=pg_catalog"] as &[&str]),
+        (&[] as &[&str]),
+    ),
+    (
+        "payload_profile_writer_version",
+        "",
+        "boolean",
+        "sql",
+        "s",
+        false,
+        true,
+        false,
+        (&["search_path=pg_catalog"] as &[&str]),
+        (&[] as &[&str]),
+    ),
+    (
+        "payload_profile_writer_ready",
+        "",
+        "boolean",
+        "sql",
+        "s",
+        false,
+        false,
+        false,
+        (&["search_path=pg_catalog"] as &[&str]),
+        (&[] as &[&str]),
+    ),
+    (
+        "conversation_profile03_grant_ready",
+        "",
+        "boolean",
+        "sql",
+        "s",
+        false,
+        false,
+        false,
+        (&["search_path=pg_catalog"] as &[&str]),
+        (&[] as &[&str]),
+    ),
+];
+async fn functions<C: GenericClient + Sync>(db: &C, version: i64) -> Result<()> {
+    for &(name, args, result, language, volatility, strict, definer, set, config, names) in
+        REQUIRED_FUNCTIONS
+    {
         // Composite argument display names depend on the caller's search_path.
         // Resolve the exact qualified signature instead of trusting that display.
         let args = args
@@ -331,7 +373,7 @@ async fn functions<C: GenericClient + Sync>(db: &C) -> Result<()> {
         let row = &rows[0];
         let config = config.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
         let names = names.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
-        if row.try_get::<_, String>(0)? != body(name)?
+        if row.try_get::<_, String>(0)? != body(name, version)?
             || !row.try_get::<_, bool>(1)?
             || !row.try_get::<_, bool>(2)?
             || row.try_get::<_, String>(3)? != language
@@ -388,10 +430,10 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
         )
         .await?
         .try_get(0)?;
-    if version != 115 {
+    if !matches!(version, 115..=117) {
         return Err(GrantSchemaError::Invalid);
     }
-    functions(db).await?;
+    functions(db, version).await?;
     if db.query_one("SELECT EXISTS(SELECT FROM pg_catalog.pg_proc p CROSS JOIN LATERAL pg_catalog.aclexplode(coalesce(p.proacl,pg_catalog.acldefault('f',p.proowner))) a WHERE p.pronamespace='public'::pg_catalog.regnamespace AND(p.proname LIKE 'conversation_profile03_grant_%') AND a.grantee=0)",&[]).await?.try_get::<_,bool>(0)? {return Err(GrantSchemaError::Invalid);}
     Ok(true)
 }
