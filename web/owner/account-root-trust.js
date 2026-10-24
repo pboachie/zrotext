@@ -54,7 +54,7 @@ async function digest(b){return new Uint8Array(await crypto.subtle.digest('SHA-2
 function issuerJson(text,limit=20480){
  if(typeof text!=='string'||encoder.encode(text).length>limit)refuse();let at=0,members=0;
  const ws=()=>{while(at<text.length&&/[ \t\r\n]/.test(text[at]))at++;};
- const string=key=>{const start=at++;let escape=false;for(;at<text.length;at++){const c=text[at];if(!escape&&c==='"'){at++;const raw=text.slice(start,at);if(key&&!/^"[A-Za-z][A-Za-z0-9_]*"$/.test(raw))refuse();let s;try{s=JSON.parse(raw);}catch{refuse();}if(s.length>16384)refuse();return s;}if(!escape&&c==='\\')escape=true;else escape=false;}refuse();};
+ const string=key=>{const start=at++;while(at<text.length){const quote=text.indexOf('"',at);if(quote===-1)refuse();let slashes=0;for(let i=quote-1;i>=start&&text[i]==='\\';i--)slashes++;at=quote+1;if(slashes%2===0){const raw=text.slice(start,at);if(key&&!/^"[A-Za-z][A-Za-z0-9_]*"$/.test(raw))refuse();let s;try{s=JSON.parse(raw);}catch{refuse();}if(s.length>16384)refuse();return s;}}refuse();};
  const value=depth=>{if(depth>8)refuse();ws();if(text[at]==='"')return string(false);if(text.slice(at,at+4)==='null'){at+=4;return null;}if(text[at++]!=='{')refuse();const o={};ws();if(text[at]==='}'){at++;return o;}for(;;){ws();if(text[at]!=='"')refuse();const k=string(true);if(Object.hasOwn(o,k)||++members>256)refuse();ws();if(text[at++]!==':')refuse();Object.defineProperty(o,k,{value:value(depth+1),enumerable:true});ws();const c=text[at++];if(c==='}')return o;if(c!==',')refuse();}};
  const result=value(0);ws();if(at!==text.length)refuse();return result;
 }

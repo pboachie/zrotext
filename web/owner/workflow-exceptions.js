@@ -23,13 +23,16 @@
     function string() {
       const start = at++;
       while (at < text.length && at - start <= 1024) {
-        const c = text[at++];
-        if (c === '"') {
+        const quote = text.indexOf('"', at);
+        if (quote === -1 || quote - start > 1023) refuse();
+        let slashes = 0;
+        for (let i = quote - 1; i >= start && text[i] === '\\'; i--) slashes++;
+        at = quote + 1;
+        if (slashes % 2 === 0) {
           let value; try { value = JSON.parse(text.slice(start, at)); } catch { refuse(); }
           if (value.length > 128 || /[\uD800-\uDFFF]/.test(value)) refuse();
           return value;
         }
-        if (c === "\\") at++;
       }
       refuse();
     }
