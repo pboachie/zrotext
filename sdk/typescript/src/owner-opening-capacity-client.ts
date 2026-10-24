@@ -70,7 +70,7 @@ function equalSource(a:OwnerAcknowledgedSourceSnapshot,b:OwnerAcknowledgedSource
 /** Bounded JSON syntax with duplicate-key detection before closed DTO validation. */
 function json(text:string):unknown {
   let at=0;const ws=()=>{while(/[ \r\n\t]/.test(text[at]??'!'))at++;};
-  function string():string { const start=at++;while(at<text.length){const c=text[at++];if(c==='"'){try{return JSON.parse(text.slice(start,at));}catch{fail('response');}}if(c==='\\'){if(at>=text.length)fail('response');at++;}}return fail('response'); }
+  function string():string { const start=at++;while(at<text.length){const quote=text.indexOf('"',at);if(quote===-1)fail('response');let slashes=0;for(let i=quote-1;i>=start&&text[i]==='\\';i--)slashes++;at=quote+1;if(slashes%2===0){try{return JSON.parse(text.slice(start,at));}catch{fail('response');}}}return fail('response'); }
   function value(depth:number):any {
     if(depth>6)fail('response');ws();const c=text[at];
     if(c==='"')return string();
