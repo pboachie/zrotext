@@ -216,7 +216,13 @@ impl Db {
         let message = Uuid::new_v4();
         let synthetic_event = Uuid::new_v4();
         let synthetic_attempt = Uuid::new_v4();
-        let identifier = format!("zt-usage-v1-{:x}", Sha256::digest(message.as_bytes()));
+        let identifier = format!(
+            "zt-usage-v1-{}",
+            Sha256::digest(message.as_bytes())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
         let fixture = self.current.as_mut().unwrap();
         let tx = fixture.owner.transaction().await.unwrap();
         let absent: bool = tx.query_one(
