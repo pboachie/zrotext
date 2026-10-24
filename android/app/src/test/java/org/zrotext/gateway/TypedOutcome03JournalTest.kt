@@ -82,7 +82,7 @@ class TypedOutcome03JournalTest {
     }
 
     @Test fun coldUnknownBurnSurvivesReopenAndOnlyExplicitSame211MayUseANewEpoch() {
-        val name = "tou-${java.util.UUID.randomUUID().toString().take(10)}"
+        val name = "outcome-${java.util.UUID.randomUUID().toString().take(10)}"
         fun open() = Room.databaseBuilder(app, SmsJournalDatabase::class.java, name).allowMainThreadQueries().build()
         try {
             lateinit var row: TypedSubmit03Record; lateinit var fact: TypedHistory03Source
