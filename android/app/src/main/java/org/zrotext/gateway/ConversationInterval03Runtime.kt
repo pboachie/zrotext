@@ -248,6 +248,18 @@ internal class ConversationInterval03Runtime(private val owner: Any, private val
     fun requireFetch(packet: Profile03FetchPacket, grant: SealedDispatch03Frames.Grant,
         selected: Profile03CurrentReader.Selection): () -> Unit {
         val p = packet.intervalPermission(); p.requireRequest("fetch", grant.attemptId)
+        return requireInstalledMessage(p, packet, grant, selected)
+    }
+    /** Distinct correlated submit source, without accepting a fetch as a submit projection. */
+    fun requireSubmit(ack: TypedSubmit03Wire.Ack, packet: Profile03FetchPacket, grant: SealedDispatch03Frames.Grant,
+        selected: Profile03CurrentReader.Selection): () -> Unit {
+        require(ack.submitOnce)
+        val p = ack.intervalPermission()
+        p.requireRequest("submit", java.util.UUID.fromString(ack.eventId))
+        return requireInstalledMessage(p, packet, grant, selected)
+    }
+    private fun requireInstalledMessage(p: ConversationInterval03Permission, packet: Profile03FetchPacket,
+        grant: SealedDispatch03Frames.Grant, selected: Profile03CurrentReader.Selection): () -> Unit {
         val w = checkNotNull(works[p.statement.interval]); check(w.active && w.row?.state == "active")
         ram(w, false)
         val proof = checkNotNull(w.proof)

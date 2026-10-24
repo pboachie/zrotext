@@ -154,12 +154,13 @@ class Profile03ElectionJournalTest {
                 it.execSQL("DROP TABLE profile03_unaccepted_closures")
                 it.execSQL("DROP TABLE selection_refresh03")
                 it.execSQL("DROP TABLE profile03_elections")
+                LegacyTypedJournalFixture.removeEmptyFutureTables(it)
                 it.version = 14
             }
             Room.databaseBuilder(context, SmsJournalDatabase::class.java, name).allowMainThreadQueries()
-                .addMigrations(SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17, SmsJournalDatabase.MIGRATION_17_18, SmsJournalDatabase.MIGRATION_18_19, SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23).build().let { db ->
+                .addMigrations(SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17, SmsJournalDatabase.MIGRATION_17_18, SmsJournalDatabase.MIGRATION_18_19, SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24).build().let { db ->
                     try {
-                        assertEquals(23, db.openHelper.readableDatabase.version)
+                        assertEquals(24, db.openHelper.readableDatabase.version)
                         assertEquals(line, db.attempts().currentLineBinding())
                         assertEquals(AttemptState.UNKNOWN, db.attempts().getAttempt(attempt)?.state)
                         assertNull(db.profile03Elections().installed(line.accountId, line.lineId))

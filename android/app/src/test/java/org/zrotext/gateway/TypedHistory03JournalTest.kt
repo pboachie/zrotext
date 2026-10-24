@@ -217,7 +217,7 @@ class TypedHistory03JournalTest {
     @Test fun additiveMigrationRetainsOldOriginAndOrderAsUnknownInsteadOfAdoptingTheReportingHost() {
         val name = "thm23-${UUID.randomUUID().toString().take(10)}"
         fun open() = Room.databaseBuilder(app, SmsJournalDatabase::class.java, name).allowMainThreadQueries()
-            .addMigrations(SmsJournalDatabase.MIGRATION_22_23).build()
+            .addMigrations(SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24).build()
         try {
             TypedHistory03Fixture().use { f ->
                 val old = TypedSubmit03Record.candidate(f.command, f.point)
@@ -225,10 +225,7 @@ class TypedHistory03JournalTest {
                 val observed = f.command.observedMs + 1
                 open().use { db ->
                     db.openHelper.writableDatabase.apply {
-                        execSQL("DROP TABLE typed_history03_clocks")
-                        execSQL("DROP TABLE typed_history03_sources")
-                        execSQL("DROP TABLE typed_callback03")
-                        execSQL("DROP TABLE typed_submit03")
+                        LegacyTypedJournalFixture.removeEmptyFutureTables(this)
                         SmsJournalDatabase.MIGRATION_21_22.migrate(this)
                         execSQL("INSERT INTO typed_submit03 (attemptId,eventId,accountId,deviceId,messageId,commandB64url,commandSha256,originalEnrolledPoint,originalEnrolledKeyId,phase,conflict) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                             arrayOf<Any>(old.attemptId, old.eventId, old.accountId, old.deviceId, old.messageId, old.commandB64url,
@@ -239,7 +236,7 @@ class TypedHistory03JournalTest {
                     }
                 }
                 open().use { db ->
-                    assertEquals(23, db.openHelper.readableDatabase.version)
+                    assertEquals(24, db.openHelper.readableDatabase.version)
                     val retained = db.typedSubmits03().get(old.attemptId)!!
                     assertEquals(old, retained)
                     val raw = db.typedSubmits03().callbacks(old.attemptId).single()

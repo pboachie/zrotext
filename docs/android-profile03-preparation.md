@@ -85,10 +85,11 @@ owned characters on consume, close or error. Failure after reservation aborts
 the row but never deletes the replay fence. Platform/provider internal copies
 cannot be guaranteed erased. No plaintext is logged or persisted.
 
-The shared ACK/radio consumer accepts additive03 metadata without converting a03
-grant into02 fields. Durable intent, authenticated writer ACK, local suppression,
-selected-card continuity and one-use radio-start CAS remain mandatory. Throws
-after invocation remain unknown, with no automatic retry.
+The distinct [typed submit consumer](android-typed-submit03.md) accepts additive03
+metadata without converting a03 grant into02 fields. Its exact durable command,
+fresh submit-specific writer ACK, local suppression, selected-card continuity and
+same-writer one-use entry remain mandatory. It does not insert an alpha event or
+consume a legacy radio-start CAS. Throws after entry remain unknown, with no retry.
 
 ## Signed fetch transport and verification limits
 
