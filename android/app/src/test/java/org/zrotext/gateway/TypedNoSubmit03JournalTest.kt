@@ -168,9 +168,9 @@ class TypedNoSubmit03JournalTest {
                 old = current.copy(closureProofState = null) // Historical25 had no affirmative eligibility witness.
                 val raw = db.openHelper.writableDatabase
                 assertEquals("eligible:${current.closingId}", current.closureProofState)
-                raw.execSQL("ALTER TABLE typed_submit03 DROP COLUMN closureProofState")
                 for (table in listOf("typed_no_submit03_io", "typed_no_submit03_proofs", "typed_no_submit03_lineages")) raw.query("SELECT COUNT(*) FROM $table").use { assertTrue(it.moveToFirst()); assertEquals(0L, it.getLong(0)) }
                 for (table in listOf("typed_no_submit03_io", "typed_no_submit03_proofs", "typed_no_submit03_lineages")) raw.execSQL("DROP TABLE $table")
+                LegacyTypedJournalFixture.restoreVersion25Submit(raw)
                 raw.execSQL("DROP TABLE room_master_table"); raw.version = 25
             } finally { db.close() } }
             open().let { db -> try {
