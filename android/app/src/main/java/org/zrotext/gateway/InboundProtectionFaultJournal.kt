@@ -19,8 +19,18 @@ internal object InboundProtectionFaultJournal {
     fun quarantine(context: Context, action: String?) = files.quarantine(root(context), action)
     fun requireReadable(context: Context, withdrawal: Boolean) = files.requireReadable(root(context), withdrawal)
     private fun syncDirectory(directory: File) {
-        val descriptor = Os.open(directory.path, OsConstants.O_RDONLY or OsConstants.O_DIRECTORY, 0)
-        try { Os.fsync(descriptor) } finally { Os.close(descriptor) }
+        ProtectionDirectorySync.sync({ Os.open(directory.path, OsConstants.O_RDONLY, 0) },
+            { OsConstants.S_ISDIR(Os.fstat(it).st_mode) }, Os::fsync, Os::close)
+    }
+}
+
+/** Validate the actual opened descriptor using public Android APIs before flushing it. A path
+ * check alone could describe a different object; every opened descriptor is closed on failure. */
+internal object ProtectionDirectorySync {
+    fun <T> sync(open: () -> T, directory: (T) -> Boolean, flush: (T) -> Unit, close: (T) -> Unit) {
+        val descriptor = open()
+        try { check(directory(descriptor)) { "Protection journal descriptor is not a directory" }; flush(descriptor) }
+        finally { close(descriptor) }
     }
 }
 
