@@ -7,22 +7,29 @@ use crate::conversation_grant03::{self as grants, effects};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B};
 use p256::ecdsa::{Signature, signature::Signer};
 use serde_json::{Value, json};
+use std::{future::Future, pin::Pin};
 
-async fn apply(c: &mut Case, raw: &Value) -> Value {
-    let actor = c.socket_actor();
-    apply_as(c, actor, raw).await.unwrap()
+type TestIo<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
+
+fn apply<'a>(c: &'a mut Case, raw: &'a Value) -> TestIo<'a, Value> {
+    Box::pin(async move {
+        let actor = c.socket_actor();
+        apply_as(c, actor, raw).await.unwrap()
+    })
 }
 
-async fn apply_as(
-    c: &mut Case,
+fn apply_as<'a>(
+    c: &'a mut Case,
     actor: crate::device_socket::SocketActor,
-    raw: &Value,
-) -> Result<Value> {
-    let request = wire::Request03::parse(&raw.to_string()).unwrap().unwrap();
-    let state = c.socket_state();
-    let admitted =
-        effects::admit(&mut c.db.reader, actor, &state, request.kind().admission()).await?;
-    effects::apply(&mut c.db.reader, admitted, &state, Some(ORIGIN), request).await
+    raw: &'a Value,
+) -> TestIo<'a, Result<Value>> {
+    Box::pin(async move {
+        let request = wire::Request03::parse(&raw.to_string()).unwrap().unwrap();
+        let state = c.socket_state();
+        let admitted =
+            effects::admit(&mut c.db.reader, actor, &state, request.kind().admission()).await?;
+        effects::apply(&mut c.db.reader, admitted, &state, Some(ORIGIN), request).await
+    })
 }
 
 async fn reconnect(c: &mut Case) -> crate::device_socket::SocketActor {
