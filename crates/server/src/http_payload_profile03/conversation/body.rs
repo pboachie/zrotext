@@ -5,12 +5,16 @@ pub(super) enum Operation {
     Reserve,
     Request,
     Status,
+    OpeningStatus,
+    Context,
     Stop,
 }
 object_body! {struct Mapping{connector_id:String,read_grant_id:String,key_id:String}}
 object_body! {struct Reserve{v:u8,opening_id:String,line_id:String,peer:String,archive_reader_key_id:String,phone_signer_key_id:String,browser_signer_key_id:String,interval_expires_ms:String,integration_readers:Vec<Mapping>}}
 object_body! {struct Request03{v:u8,opening_id:String,interval_id:String,statement:String,owner_signature:String,password:String,factor:String}}
 object_body! {struct Status{v:u8,opening_id:String,interval_id:String}}
+object_body! {struct OpeningStatus{v:u8,opening_id:String}}
+object_body! {struct Context{v:u8,request_id:String,opening_id:String,interval_id:String}}
 object_body! {struct Stop{v:u8,interval_id:String}}
 pub(super) enum Body {
     Reserve {
@@ -32,6 +36,14 @@ pub(super) enum Body {
         factor: String,
     },
     Status {
+        opening: Uuid,
+        interval: Uuid,
+    },
+    OpeningStatus {
+        opening: Uuid,
+    },
+    Context {
+        request: Uuid,
         opening: Uuid,
         interval: Uuid,
     },
@@ -129,6 +141,22 @@ pub(super) fn parse(op: Operation, bytes: &[u8]) -> Result<Body, StatusCode> {
                 interval: id(&b.interval_id)?,
             }
         }
+        Operation::OpeningStatus => {
+            let b = read!(OpeningStatus);
+            version(b.v)?;
+            Body::OpeningStatus {
+                opening: id(&b.opening_id)?,
+            }
+        }
+        Operation::Context => {
+            let b = read!(Context);
+            version(b.v)?;
+            Body::Context {
+                request: id(&b.request_id)?,
+                opening: id(&b.opening_id)?,
+                interval: id(&b.interval_id)?,
+            }
+        }
         Operation::Stop => {
             let b = read!(Stop);
             version(b.v)?;
@@ -142,6 +170,27 @@ pub(super) fn parse(op: Operation, bytes: &[u8]) -> Result<Body, StatusCode> {
 mod tests {
     use super::*;
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B};
+    #[test]
+    fn context_and_opening_reads_are_distinct_closed_nonce_correlated_shapes() {
+        let request = Uuid::from_u128(1);
+        let opening = Uuid::from_u128(2);
+        let interval = Uuid::from_u128(3);
+        let context=serde_json::json!({"v":1,"request_id":request,"opening_id":opening,"interval_id":interval}).to_string();
+        let status = serde_json::json!({"v":1,"opening_id":opening}).to_string();
+        assert!(parse(Operation::Context, context.as_bytes()).is_ok());
+        assert!(parse(Operation::OpeningStatus, status.as_bytes()).is_ok());
+        assert!(parse(Operation::Status, status.as_bytes()).is_err());
+        assert!(parse(Operation::Context, status.as_bytes()).is_err());
+        assert!(parse(Operation::OpeningStatus, context.as_bytes()).is_err());
+        for raw in [
+            format!("{{\"owner_session_id\":\"x\",{}", &context[1..]),
+            format!("{{\"request_id\":\"{request}\",{}", &context[1..]),
+            context.replace(&request.to_string(), &Uuid::nil().to_string()),
+            "[]".into(),
+        ] {
+            assert!(parse(Operation::Context, raw.as_bytes()).is_err());
+        }
+    }
     #[test]
     fn interval_bodies_are_closed_and_preserve_original_opening_and_mapping_scope() {
         let opening = Uuid::from_u128(1);

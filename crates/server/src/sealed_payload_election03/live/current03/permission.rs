@@ -258,6 +258,43 @@ impl HeldMessageSelection03<'_, '_, '_> {
         object.insert("physical_selection".into(), self.physical.projection());
         Ok(value)
     }
+    /// Same-held owner/current projection for a purpose-specific context read.
+    /// The supplied conservative bound is calculated by the locked interval
+    /// adapter, never accepted as authority from a request or unsigned packet.
+    pub(crate) fn owner_projection(&self, deadline: u64) -> Result<serde_json::Value> {
+        if self.current.selected_manifest.is_none()
+            || deadline <= self.now_ms()
+            || deadline > self.authority().permission_expires_at_ms
+        {
+            return Err(Error::Expired);
+        }
+        let who = self.selected();
+        let digest = crate::sealed_payload_election03::adapter_contract::OwnerSessionIdentity03 {
+            account_id: *who.account.as_bytes(),
+            user_id: *who.user.as_bytes(),
+            session_id: *who.session.as_bytes(),
+        }
+        .digest()
+        .map_err(|_| Error::Unsupported)?;
+        let mut value = self.current.projection(&self.origin)?;
+        let object = value.as_object_mut().ok_or(Error::Unavailable)?;
+        object.insert(
+            "kind".into(),
+            serde_json::json!("owner_manifest_selection03"),
+        );
+        object.insert("user_id".into(), serde_json::json!(who.user));
+        object.insert("owner_session_id".into(), serde_json::json!(who.session));
+        object.insert(
+            "owner_session_digest".into(),
+            serde_json::json!(B.encode(digest)),
+        );
+        object.insert(
+            "permission_expires_ms".into(),
+            serde_json::json!(deadline.to_string()),
+        );
+        object.insert("physical_selection".into(), self.physical.projection());
+        Ok(value)
+    }
     pub(crate) fn consent_context<'a>(
         &'a self,
         archive: &'a [u8; 32],
