@@ -189,6 +189,12 @@ class RuntimeRoleTest(RuntimeRoleFixture, unittest.TestCase):
              "DROP FUNCTION public.device_protection_ready();"),
             ("CREATE VIEW public.device_protection_unknown AS SELECT 1 AS id;",
              "DROP VIEW public.device_protection_unknown;"),
+            ("CREATE SEQUENCE public.device_protection_unknown;",
+             "DROP SEQUENCE public.device_protection_unknown;"),
+            ("CREATE TYPE public.device_protection_unknown AS (id integer);",
+             "DROP TYPE public.device_protection_unknown;"),
+            ("CREATE INDEX device_protection_unknown ON public.users(id);",
+             "DROP INDEX public.device_protection_unknown;"),
             ("INSERT INTO public.schema_migrations(version) VALUES(118);",
              "DELETE FROM public.schema_migrations WHERE version=118;"),
             ("CREATE TABLE public.payload_profile_writer_catalog(singleton boolean,migration_version bigint);"
