@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           dotnet-version: '8.0.x'
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
@@ -526,7 +526,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           dotnet-version: '10.0.401'
       - uses: ruby/setup-ruby@b1da4809b005e0178fe08a1d57317bffc00b7b4c
@@ -670,7 +670,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           dotnet-version: '8.0.x'
       - uses: ruby/setup-ruby@b1da4809b005e0178fe08a1d57317bffc00b7b4c
@@ -847,7 +847,7 @@ jobs:
         run: |
           python sdk/native/crypto-envelope/original-current-run.py --language java --fixture fixture --producer producer
       - name: "Managed authenticated original current proof [csharp]: Toolchain for csharp"
-        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           dotnet-version: '8.0.x'
       - name: "Managed authenticated original current proof: Checkout pinned fixtures"
@@ -1371,7 +1371,7 @@ jobs:
         run: |
           python sdk/native/crypto-envelope/template-authoring-run.py --language java --fixture fixture --producer producer --authoring-oracle authoring-oracle
       - name: "Managed reviewed template authoring interoperability [csharp]: Toolchain for csharp"
-        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           dotnet-version: '8.0.x'
       - name: "Managed reviewed template authoring interoperability: Checkout pinned fixtures"
@@ -1794,7 +1794,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           dotnet-version: '10.0.401'
       - uses: ruby/setup-ruby@b1da4809b005e0178fe08a1d57317bffc00b7b4c
@@ -4110,7 +4110,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           dotnet-version: '8.0.x'
       - uses: ruby/setup-ruby@b1da4809b005e0178fe08a1d57317bffc00b7b4c
@@ -4727,7 +4727,7 @@ jobs:
         run: |
           python sdk/native/crypto-envelope/contact-mutation-run.py --language java --fixture fixture --producer producer --origin-asset "$env:RUNNER_TEMP/contact-origin-mutation-java"
       - name: "Managed contact mutation and transition interoperability [csharp]: Toolchain for csharp"
-        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           dotnet-version: '8.0.x'
       - name: "Managed contact mutation and transition interoperability: Checkout pinned fixtures"
