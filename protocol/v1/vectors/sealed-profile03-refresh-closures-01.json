@@ -1,0 +1,23 @@
+{
+  "format": "profile03-refresh-closures-01",
+  "status": "Synthetic structural candidates only, no local observations, signatures, server authentication or acceptance. Scope copied from public refresh proof vector; these changed candidates have no signatures.",
+  "authenticated_now_ms": "104010",
+  "target_core": "WlRTUgEDAwAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAAAMAAAAAAAAAAAAAAAAAAAArAAAAAAAAAAAAAAAAAAAABQAAAAAAAAACAAAAAAAAAAEAAAAAAAAAAgAAAAAAAAAH2-4QJBloozADZ-u3k2lW6bPa5dL4_ENnIKoMush0yxjdeYLKAV04Ude1YpMmita-HaVhKplFDBcnqnxk0MzTspDNiOWRFoRJ4q2vjnq_jdeVr4Pa4au-ejPsfmyXhjz2x-Mtpp6qDN4b9d2vzr8CZocQAi-zzC4_Q_OJ8iR0TEptS-TcH1WInS1RSvWFUwkbZUvhHzuymW2UXVeiZ-xHMa64dduWmk1ErybDXVfSr6Lta1J15ad_4H00ySYfzamLMqEF5chatEeCm6ca1B5iarTpqhLHcXkvpw8x-aBZuYAHskRKhPLtjlzd-MhMW41Q_0100pyTYDa6nR1HxxRsIisrKysrKysrKysrKysrKysrKysrKysrKysrKysrKysr32jBI66bxmCDyN-gTkWeLUdIUH9-HhX69DkrLfZ1So0sLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLAAAAAAAAZZAAAAAAAABmigAAAAAAAAAAA",
+  "target_refresh_id": "00000000-0000-0000-0000-00000000002b",
+  "closed_unaccepted": [
+    {
+      "opening_id": "00000000-0000-0000-0000-00000000003d",
+      "refresh_id": "00000000-0000-0000-0000-000000000029",
+      "core": "WlRTUgEDAwAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAAAMAAAAAAAAAAAAAAAAAAAApAAAAAAAAAAAAAAAAAAAABQAAAAAAAAACAAAAAAAAAAEAAAAAAAAAAgAAAAAAAAAH2-4QJBloozADZ-u3k2lW6bPa5dL4_ENnIKoMush0yxjdeYLKAV04Ude1YpMmita-HaVhKplFDBcnqnxk0MzTspDNiOWRFoRJ4q2vjnq_jdeVr4Pa4au-ejPsfmyXhjz2x-Mtpp6qDN4b9d2vzr8CZocQAi-zzC4_Q_OJ8iR0TEptS-TcH1WInS1RSvWFUwkbZUvhHzuymW2UXVeiZ-xHMa64dduWmk1ErybDXVfSr6Lta1J15ad_4H00ySYfzamLMqEF5chatEeCm6ca1B5iarTpqhLHcXkvpw8x-aBZuYAHskRKhPLtjlzd-MhMW41Q_0100pyTYDa6nR1HxxRsIikpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkp32jBI66bxmCDyN-gTkWeLUdIUH9-HhX69DkrLfZ1So0qKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKgAAAAAAAYagAAAAAAABiogAAAAAAAAAAA",
+      "closed_unaccepted_ms": "102000",
+      "superseded_by_refresh_id": "00000000-0000-0000-0000-00000000002a"
+    },
+    {
+      "opening_id": "00000000-0000-0000-0000-00000000003e",
+      "refresh_id": "00000000-0000-0000-0000-00000000002a",
+      "core": "WlRTUgEDAwAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAAAMAAAAAAAAAAAAAAAAAAAAqAAAAAAAAAAAAAAAAAAAABQAAAAAAAAACAAAAAAAAAAEAAAAAAAAAAgAAAAAAAAAH2-4QJBloozADZ-u3k2lW6bPa5dL4_ENnIKoMush0yxjdeYLKAV04Ude1YpMmita-HaVhKplFDBcnqnxk0MzTspDNiOWRFoRJ4q2vjnq_jdeVr4Pa4au-ejPsfmyXhjz2x-Mtpp6qDN4b9d2vzr8CZocQAi-zzC4_Q_OJ8iR0TEptS-TcH1WInS1RSvWFUwkbZUvhHzuymW2UXVeiZ-xHMa64dduWmk1ErybDXVfSr6Lta1J15ad_4H00ySYfzamLMqEF5chatEeCm6ca1B5iarTpqhLHcXkvpw8x-aBZuYAHskRKhPLtjlzd-MhMW41Q_0100pyTYDa6nR1HxxRsIioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioq32jBI66bxmCDyN-gTkWeLUdIUH9-HhX69DkrLfZ1So0rKysrKysrKysrKysrKysrKysrKysrKysrKysrKysrKwAAAAAAAY5wAAAAAAABklgAAAAAAAAAAA",
+      "closed_unaccepted_ms": "104000",
+      "superseded_by_refresh_id": "00000000-0000-0000-0000-00000000002b"
+    }
+  ]
+}

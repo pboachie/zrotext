@@ -181,6 +181,9 @@ mod tests {
             "conversation-bootstrap.js",
             "conversation-owner-adapter.js",
             "conversation-owner-setup.js",
+            "conversation-profile03-recovery.js",
+            "conversation-profile03-setup.js",
+            "conversation-profile03-page.js",
             "conversation.css",
         ] {
             let response = enabled

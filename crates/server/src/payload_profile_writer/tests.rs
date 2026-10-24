@@ -63,7 +63,7 @@ impl Fixture {
         let applied = zrotext_migrator::apply(&mut owner, &directory, false)
             .await
             .unwrap();
-        assert_eq!(applied.last().unwrap().version, 115);
+        assert_eq!(applied.last().unwrap().version, 117);
         let snapshot: Vec<u8> = owner
             .query_one("SELECT public.payload_profile_writer_graph()", &[])
             .await
@@ -89,7 +89,7 @@ impl Fixture {
             "REVOKE ALL ON DATABASE {database_identifier} FROM PUBLIC; GRANT CONNECT ON DATABASE {database_identifier} TO {role};
              GRANT USAGE ON SCHEMA public TO {role};
              GRANT SELECT ON ALL TABLES IN SCHEMA public TO {role};
-             REVOKE ALL ON public.schema_migrations,public.hosted_runtime_secrets,public.hosted_runtime_sessions,public.hosted_billing_resolutions FROM {role};
+             REVOKE ALL ON public.schema_migrations,public.hosted_runtime_secrets,public.hosted_runtime_sessions,public.hosted_runtime_entries,public.hosted_runtime_requests,public.hosted_billing_resolutions FROM {role};
              GRANT UPDATE(account_id) ON public.payload_profile_account_anchors TO {role};
              GRANT UPDATE(review_required) ON public.hosted_billing_namespaces TO {role};
              GRANT INSERT,UPDATE,DELETE ON public.accounts,public.users,public.memberships,public.devices,public.device_sessions,public.auth_abuse_counters TO {role};

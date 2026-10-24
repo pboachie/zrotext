@@ -22,6 +22,11 @@ pub async fn router(state: ProfileHttpState) -> Result<Router, &'static str> {
         )
         .route("/v1/owner/conversation/interval03/requests", post(request))
         .route("/v1/owner/conversation/interval03/status", post(status))
+        .route(
+            "/v1/owner/conversation/interval03/openings/status",
+            post(opening_status),
+        )
+        .route("/v1/owner/conversation/interval03/context", post(context))
         .route("/v1/owner/conversation/interval03/stop", post(stop))
         .with_state(Arc::new(state)))
 }
@@ -47,6 +52,8 @@ macro_rules! route {
 route!(reserve, Reserve);
 route!(request, Request);
 route!(status, Status);
+route!(opening_status, OpeningStatus);
+route!(context, Context);
 route!(stop, Stop);
 async fn handle(
     s: &ProfileHttpState,
@@ -54,7 +61,15 @@ async fn handle(
     request: Request,
 ) -> Result<(StatusCode, serde_json::Value), StatusCode> {
     let (parts, stream) = request.into_parts();
-    preflight(s, &parts.headers, !matches!(op, Operation::Status)).await?;
+    preflight(
+        s,
+        &parts.headers,
+        !matches!(
+            op,
+            Operation::Status | Operation::OpeningStatus | Operation::Context
+        ),
+    )
+    .await?;
     if parts.headers.get_all(header::CONTENT_TYPE).iter().count() != 1
         || parts
             .headers
@@ -127,6 +142,31 @@ async fn handle(
             interval::owner_status(&tx, &mut owner, opening, interval)
                 .await
                 .map_err(mapped)?,
+        ),
+        Body::OpeningStatus { opening } => (
+            StatusCode::OK,
+            interval::opening_status(&tx, &mut owner, opening)
+                .await
+                .map_err(mapped)?,
+        ),
+        Body::Context {
+            request,
+            opening,
+            interval,
+        } => (
+            StatusCode::OK,
+            interval::owner_context(
+                &tx,
+                &mut owner,
+                interval::ContextRead03 {
+                    request,
+                    opening,
+                    interval,
+                },
+                &s.origin,
+            )
+            .await
+            .map_err(mapped)?,
         ),
         Body::Stop { interval } => {
             interval::stop(&tx, &mut owner, interval)
