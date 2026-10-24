@@ -1,6 +1,28 @@
 use super::*;
 
 #[test]
+fn fetch_subjects_cannot_share_anonymous_or_owner_budget_and_are_prunable() {
+    let hasher = TokenHasher::new(crate::test_keys::key(91)).unwrap();
+    let device = "synthetic-account:synthetic-device";
+    let fetch = Limit::PayloadProfileFetch;
+    assert_ne!(
+        subject_hash(&hasher, fetch, device, Lane::Anonymous),
+        subject_hash(&hasher, fetch, device, Lane::Verified)
+    );
+    assert_ne!(
+        subject_hash(&hasher, fetch, device, Lane::Verified),
+        subject_hash(&hasher, Limit::PayloadProfileRead, device, Lane::Anonymous)
+    );
+    assert!(!fetch.subject_only());
+    assert!(
+        prune_retention()
+            .iter()
+            .any(|(scope, seconds)| *scope == fetch.policy().0
+                && *seconds >= fetch.longest_window_seconds())
+    );
+}
+
+#[test]
 fn payload_profile_budgets_are_authenticated_subject_only_and_retained_for_pruning() {
     for limit in [Limit::PayloadProfileManage, Limit::PayloadProfileRead] {
         assert!(limit.subject_only());

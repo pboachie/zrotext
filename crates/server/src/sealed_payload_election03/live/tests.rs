@@ -13,6 +13,7 @@ use p256::{
 use uuid::Uuid;
 const ORIGIN: &str = "https://activation.example";
 mod fixture;
+mod grant_tests;
 mod interval_context_tests;
 mod interval_queue_tests;
 mod interval_tests;
