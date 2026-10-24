@@ -589,3 +589,145 @@ async fn manual_namespace_absence_holds_real_configuration_tuple_in_both_transit
     assert_eq!(f.owner.execute(sql, &[&namespace_id]).await.unwrap(), 1);
     f.finish().await;
 }
+
+#[test]
+fn every_native_required_body_matches_the_independent_closed_stock_pins() {
+    for (name, pins) in [
+        (
+            "hosted_runtime_native_start",
+            &["ec771eafcc009af67e4dcb156d3b5406c8cec64ea5e045ba624e6850d7614b54"] as &[&str],
+        ),
+        (
+            "hosted_runtime_native_schema_valid",
+            &["899ca98ace0d006efc0fde4e0fba02ef2f207fc112ad94f091013d2e9e503644"] as &[&str],
+        ),
+        (
+            "hosted_runtime_identity_ready",
+            &["88de695db32691204e5126b0b5e003aadced6f61ec77918a00618f1e2f59a532"] as &[&str],
+        ),
+        (
+            "hosted_runtime_scope",
+            &["604e7c39da10e1c34c5193dd04d5742637c611a40e3d7a28bf300ec066756dbe"] as &[&str],
+        ),
+        (
+            "hosted_runtime_marker",
+            &["22de9f7196cc521eecffc5652aac84040597db4f7a247cfd91ab208aed4c2082"] as &[&str],
+        ),
+        (
+            "hosted_runtime_request_apply",
+            &["71e1abc66badc284df0804536950134dc07560eb7ca9453876ebfd4c801b85e2"] as &[&str],
+        ),
+        (
+            "hosted_runtime_request_remove",
+            &["116d1461147797b8272d44684d9e85e7ce1ba5d515d9a2b36440287dac94dcb6"] as &[&str],
+        ),
+        (
+            "hosted_runtime_challenge",
+            &["da750b1b75c8cd0b61ea45e0502eaf421d29e9d46bf0ef21f504ea6c4b3adf37"] as &[&str],
+        ),
+        (
+            "hosted_runtime_bind",
+            &["fa7997c018ee674b417e09472bac835a69b0cd965f7b9859f89536b0cb2c5317"] as &[&str],
+        ),
+        (
+            "hosted_runtime_enter",
+            &["bcf16eeaf2b711c362ad7b65baa09276dd80cba1341529f7f94f004b0ddbf810"] as &[&str],
+        ),
+        (
+            "hosted_runtime_verified",
+            &["7dfb68c9052feb74e09a214fc2151a45766874d5e87ad0a36af18d695a0bb16c"] as &[&str],
+        ),
+        (
+            "hosted_runtime_expiry",
+            &["7b8ec8ff0ce04d481b95b815b9b44bc2416db7b6185af6a6d249e7f8e520edb9"] as &[&str],
+        ),
+        (
+            "conversation_profile03_grant_billing",
+            &["2e9f58851146928cebfe79ec54160f0718d6cdd6ed05b3fcec29e414c84e7bf3"] as &[&str],
+        ),
+        (
+            "payload_profile_writer_guard",
+            &["f0cc270d7de8b3c0cf1335c310bae04ab2653aa8cb0ce07c56e07d74e6b1af37"] as &[&str],
+        ),
+        (
+            "payload_profile_writer_version",
+            &["ed66b42a6a2dea25f770957e7c502f16adb31e784bd9fe8776e0c8f416388dd9"] as &[&str],
+        ),
+        (
+            "payload_profile_writer_ready",
+            &["04a3ce5ea884a1e1a62971a833e2d15e7687a137a86846395275c6bdd53fc2f3"] as &[&str],
+        ),
+        (
+            "payload_profile_writer_json",
+            &["ba20a6a52c8e77012dc41546475ab19f0d1743bd4675a3184108b78abdfb4b45"] as &[&str],
+        ),
+        (
+            "payload_profile_writer_global_guard",
+            &["b8837a0f8a53c45722524ff8082ffaebb3d992cac441a69f02e9750b2a9ee106"] as &[&str],
+        ),
+        (
+            "payload_profile_writer_catalog_guard",
+            &["07fb697ab77abd9ae2142bb44ca59d0fdf3515a5507f0ab74c57b2d42d73bc8a"] as &[&str],
+        ),
+        (
+            "payload_profile_writer_graph",
+            &["93654ee42134f973861336539b90c0b4f6727355c087e6d25cb86617aa6e2061"] as &[&str],
+        ),
+        (
+            "hosted_runtime_schema_ready",
+            &[
+                "7aa17580ac81a8f630b55797daee4fd22b178b236605f71c21491cb85e30865b",
+                "f4317324a9ba8ed8799696d4944d9382a847eaa98251e8d147353b159433102b",
+            ] as &[&str],
+        ),
+        (
+            "hosted_runtime_role_safe",
+            &[
+                "898ddd403142d0b048b0e528c2b2ab9832ed3197ca86f1dc271e7d0ed7a26b9b",
+                "3aa8eb73d8355243b5181d500582d38609e5f5effe681bd14a8c8383f5db48c3",
+            ] as &[&str],
+        ),
+        (
+            "hosted_runtime_projection",
+            &[
+                "25cd5c35228ee26a82bda8d04084a763681d209b4f17ec8e0e92b51e417ed72e",
+                "ba7fcf05e3069d2766bf90f7a868c52e55b2d9c1278bc9bb2279ce30e3b794c0",
+            ] as &[&str],
+        ),
+    ] {
+        let extracted = body(name).unwrap();
+        let actual = format!("{:x}", Sha256::digest(extracted.as_bytes()));
+        assert!(
+            pins.contains(&actual.as_str()),
+            "wrong declared body for {name}"
+        );
+    }
+}
+
+#[test]
+fn trigger_calls_comments_unknown_and_duplicate_declarations_never_supply_bodies() {
+    let source = "-- CREATE FUNCTION public.selected() AS $function$wrong$function$;\nCREATE TRIGGER first BEFORE INSERT ON public.example FOR EACH ROW EXECUTE FUNCTION public.selected();\nCREATE FUNCTION public.other() RETURNS void LANGUAGE sql AS $function$other$function$;\nCREATE OR REPLACE FUNCTION public.selected() RETURNS void LANGUAGE sql AS $function$exact$function$;\n";
+    assert_eq!(
+        declared_function_body(source, "selected", "$function$"),
+        Some("exact")
+    );
+    assert_eq!(
+        declared_function_body(source, "missing", "$function$"),
+        None
+    );
+    let duplicate = format!(
+        "{source}CREATE FUNCTION public.selected() RETURNS void LANGUAGE sql AS $function$duplicate$function$;\n"
+    );
+    assert_eq!(
+        declared_function_body(&duplicate, "selected", "$function$"),
+        None
+    );
+    assert_eq!(
+        declared_function_body(
+            "CREATE FUNCTION public.first() RETURNS void LANGUAGE sql AS $function$at-start$function$;",
+            "first",
+            "$function$"
+        ),
+        Some("at-start")
+    );
+}
