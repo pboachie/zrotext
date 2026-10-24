@@ -48,6 +48,14 @@ pub(super) async fn active() -> (Case, SigningKey, consent::Statement03) {
     (c, browser, statement)
 }
 pub(super) async fn packet(c: &mut Case, key: &SigningKey, s: &consent::Statement03) -> Packet {
+    packet_with_lifetime(c, key, s, 60_000).await
+}
+pub(super) async fn packet_with_lifetime(
+    c: &mut Case,
+    key: &SigningKey,
+    s: &consent::Statement03,
+    lifetime_ms: u64,
+) -> Packet {
     let tx = c.db.reader.transaction().await.unwrap();
     let mut owner = ordinary_owner03::authenticate(&tx, &c.hasher, ORIGIN, source(&c.credentials))
         .await
@@ -60,7 +68,7 @@ pub(super) async fn packet(c: &mut Case, key: &SigningKey, s: &consent::Statemen
         .unwrap();
     let deadline = interval.admission_deadline(&mut held).await.unwrap();
     let now = held.now_ms();
-    let expires = (now + 60_000).min(deadline - 1);
+    let expires = (now + lifetime_ms).min(deadline - 1);
     assert!(expires > now + 1000);
     let review_end = (now + 30_000).min(expires);
     let a = held.authority();
