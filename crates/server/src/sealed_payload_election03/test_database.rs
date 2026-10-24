@@ -24,7 +24,7 @@ async fn close(client: Client, driver: Driver) {
 pub(crate) struct Fixture {
     admin: Client,
     admin_driver: Driver,
-    pub(super) owner: Client,
+    pub(crate) owner: Client,
     owner_driver: Driver,
     pub(crate) reader: Client,
     reader_driver: Driver,
@@ -39,6 +39,16 @@ impl Fixture {
     }
     pub(crate) async fn runtime() -> Self {
         Self::build(true).await
+    }
+    /// A distinct connection using this fixture's unchanged ordinary-role
+    /// configuration. This creates no grant and exposes no retained credential.
+    pub(crate) async fn runtime_peer(
+        &self,
+    ) -> (
+        Client,
+        tokio::task::JoinHandle<std::result::Result<(), tokio_postgres::Error>>,
+    ) {
+        connect(&self.reader_config).await
     }
     // Privileged-negative tests may corrupt data in an owner transaction, then
     // SET LOCAL ROLE to the genuine narrow runtime and roll the whole operation
