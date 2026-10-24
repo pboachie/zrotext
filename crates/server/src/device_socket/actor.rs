@@ -31,15 +31,23 @@ impl ClaimActor {
 /// Only the real session-claim path can bind a verified signing point to an
 /// actual claimed epoch. This does not itself establish current permission.
 #[derive(Clone, Copy)]
-pub(super) struct SocketActor {
+pub(crate) struct SocketActor {
     proof: VerifiedDevice,
     session: DeviceSession,
 }
 impl SocketActor {
-    pub(super) fn proof(&self) -> &crate::enrollment::VerifiedDevice {
+    #[cfg(test)]
+    pub(crate) async fn heartbeat_for_test(
+        &self,
+        client: &Client,
+        state: &DeviceSocketState,
+    ) -> Result<bool, tokio_postgres::Error> {
+        self.renew(client, state).await
+    }
+    pub(crate) fn proof(&self) -> &crate::enrollment::VerifiedDevice {
         &self.proof
     }
-    pub(super) fn session(&self) -> DeviceSession {
+    pub(crate) fn session(&self) -> DeviceSession {
         self.session
     }
     pub(super) async fn current(
@@ -89,6 +97,23 @@ pub(super) async fn claim(
             .await?
             .map(|session| SocketActor { proof, session }),
     )
+}
+
+/// Tests outside this private module must exercise the real verified claim;
+/// no fixture can construct an opaque actor from UUIDs or a later key SELECT.
+#[cfg(test)]
+pub(crate) async fn claim_complete_for_test(
+    client: &mut Client,
+    proof: VerifiedDevice,
+    state: &DeviceSocketState,
+) -> Result<Option<SocketActor>, tokio_postgres::Error> {
+    claim(
+        client,
+        proof,
+        state,
+        line_activation_v2::LineProtocol::Complete,
+    )
+    .await
 }
 
 #[cfg(test)]

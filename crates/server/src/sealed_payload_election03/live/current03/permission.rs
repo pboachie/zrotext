@@ -5,6 +5,19 @@
 use super::*;
 use crate::conversation_interval03::{ExpectedConsent03, IntegrationReader03};
 
+enum MessagePurpose03 {
+    Fetch(Uuid),
+    Submit(Uuid),
+}
+impl MessagePurpose03 {
+    fn correlation(self) -> (&'static str, &'static str, Uuid) {
+        match self {
+            Self::Fetch(id) => ("message_manifest_permission03", "fetch", id),
+            Self::Submit(id) => ("submit_manifest_permission03", "submit", id),
+        }
+    }
+}
+
 enum Proof<'a, 'held, 'db> {
     Ordinary(&'a mut HeldOrdinaryOwner03<'held, 'db>),
     StepUp(&'a mut HeldStepUp03<'held, 'db>),
@@ -284,7 +297,34 @@ impl HeldMessageSelection03<'_, '_, '_> {
         fetch_transcript: &[u8; 362],
         grant_expires: u64,
     ) -> Result<serde_json::Value> {
-        if attempt.is_nil()
+        self.effect_projection(
+            MessagePurpose03::Fetch(attempt),
+            fetch_transcript,
+            grant_expires,
+        )
+    }
+    /// Independently selected NEW-submit projection. It never rewrites a
+    /// received fetch kind or turns historical acceptance into fresh authority.
+    pub(crate) fn submit_projection(
+        &self,
+        event: Uuid,
+        fetch_transcript: &[u8; 362],
+        grant_expires: u64,
+    ) -> Result<serde_json::Value> {
+        self.effect_projection(
+            MessagePurpose03::Submit(event),
+            fetch_transcript,
+            grant_expires,
+        )
+    }
+    fn effect_projection(
+        &self,
+        purpose: MessagePurpose03,
+        fetch_transcript: &[u8; 362],
+        grant_expires: u64,
+    ) -> Result<serde_json::Value> {
+        let (kind, request_kind, request_id) = purpose.correlation();
+        if request_id.is_nil()
             || self.current.selected_manifest.is_none()
             || grant_expires <= self.now_ms()
             || grant_expires > self.authority().permission_expires_at_ms
@@ -302,12 +342,9 @@ impl HeldMessageSelection03<'_, '_, '_> {
             .map_err(|_| Error::Unsupported)?;
         let mut value = self.current.projection(&self.origin)?;
         let object = value.as_object_mut().ok_or(Error::Unavailable)?;
-        object.insert(
-            "kind".into(),
-            serde_json::json!("message_manifest_permission03"),
-        );
-        object.insert("request_kind".into(), serde_json::json!("fetch"));
-        object.insert("request_id".into(), serde_json::json!(attempt));
+        object.insert("kind".into(), serde_json::json!(kind));
+        object.insert("request_kind".into(), serde_json::json!(request_kind));
+        object.insert("request_id".into(), serde_json::json!(request_id));
         object.insert(
             "fetch_transcript_sha256".into(),
             serde_json::json!(B.encode(crypto::sha(fetch_transcript))),

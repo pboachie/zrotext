@@ -6,7 +6,13 @@ use crate::{conversation_interval03::live as intervals, manifest_install03::live
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B};
 
 pub(super) async fn prepared() -> (Case, SigningKey, Vec<u8>) {
-    let (mut c, _) = elected().await;
+    prepared_case(elected().await.0).await
+}
+pub(super) async fn prepared_claimed() -> (Case, SigningKey, Vec<u8>) {
+    prepared_case(super::manifest_tests::elected_claimed().await.0).await
+}
+async fn prepared_case(mut c: Case) -> (Case, SigningKey, Vec<u8>) {
+    c.heartbeat().await;
     let browser = SigningKey::generate_from_rng(&mut rand::rng());
     let (opening, statement, signed, signature) = packet(&mut c, &browser, false).await;
     let tx = c.db.reader.transaction().await.unwrap();
@@ -65,6 +71,7 @@ pub(super) async fn request(
     lifetime: u64,
     factor: usize,
 ) -> Pending {
+    c.heartbeat().await;
     let key = |role| -> [u8; 32] {
         signed[153..signed.len() - 64]
             .chunks_exact(149)
@@ -102,6 +109,7 @@ pub(super) async fn request(
     let bytes = B.decode(reply["statement"].as_str().unwrap()).unwrap();
     drop(owner);
     tx.commit().await.unwrap();
+    c.heartbeat().await;
     let signature = sign(browser, b"zrotext/conversation/request03/v1\0", &bytes);
     let tx = c.db.reader.transaction().await.unwrap();
     let owner = ordinary_owner03::authenticate(&tx, &c.hasher, ORIGIN, source(&c.credentials))

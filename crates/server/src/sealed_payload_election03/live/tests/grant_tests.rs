@@ -2,7 +2,7 @@
 //! Actual independently signed originals, ordinary runtime and one real quota
 //! reservation. Opaque synthetic ciphertext proves no HPKE open or radio send.
 use super::interval_queue_tests::{lease, request};
-use super::reviewed_send_tests::{Packet, active, packet};
+use super::reviewed_send_tests::{Packet, active_claimed as active, packet};
 use super::*;
 use crate::conversation_grant03::{self as grants, FetchServing03};
 use crate::sealed_dispatch::wire03::{Fetch03, GrantFrame03, ReadyFrame03};
@@ -13,6 +13,7 @@ pub(super) async fn queue(
     browser: &SigningKey,
     statement: &crate::conversation_interval03::Statement03,
 ) -> Packet {
+    c.heartbeat().await;
     let p = packet(c, browser, statement).await;
     let tx = c.db.reader.transaction().await.unwrap();
     let mut owner = ordinary_owner03::authenticate(&tx, &c.hasher, ORIGIN, source(&c.credentials))
@@ -36,6 +37,7 @@ pub(super) async fn queue(
     p
 }
 pub(super) async fn ready(c: &mut Case) -> ReadyFrame03 {
+    c.heartbeat().await;
     let tx = c.db.reader.transaction().await.unwrap();
     let mut owner = ordinary_owner03::authenticate(&tx, &c.hasher, ORIGIN, source(&c.credentials))
         .await
@@ -78,13 +80,36 @@ async fn actual_grant_fetch_preserves_originals_one_attempt_and_refuses_owner_wi
     let p = queue(&mut c, &browser, &statement).await;
     let ready = ready(&mut c).await;
     let actor = lease(&c);
-    let grant = grants::issue_next(&mut c.db.reader, actor, &ready)
+    let socket = c.socket_actor();
+    let mut other_epoch = actor;
+    other_epoch.session.connection_epoch += 1;
+    assert!(matches!(
+        grants::issue_next(&mut c.db.reader, socket, other_epoch, &ready).await,
+        Err(Error::Authentication)
+    ));
+    let grant = grants::issue_next(&mut c.db.reader, socket, actor, &ready)
         .await
         .unwrap()
         .unwrap();
     let claims = grant.frame().claims();
     assert_eq!(claims.message_id, p.message);
     assert_eq!(claims.segment_count, 1);
+    let original = c.db.reader.query_one(
+        "SELECT original_enrolled_point,original_enrolled_key_id,fetch_transcript_sha256,original_device_session_digest,minted_ms FROM public.conversation_profile03_effect_actors WHERE account_id=$1 AND attempt_id=$2",
+        &[&account,&claims.attempt_id],
+    ).await.unwrap();
+    assert_eq!(
+        original.get::<_, Vec<u8>>(0).as_slice(),
+        socket.proof().signing_point().as_slice()
+    );
+    assert_eq!(
+        original.get::<_, Vec<u8>>(1).as_slice(),
+        socket.proof().signing_key_id().as_slice()
+    );
+    assert_eq!(
+        original.get::<_, Vec<u8>>(2).as_slice(),
+        crypto::sha(grant.frame().fetch_transcript().as_slice()).as_slice()
+    );
     let request = fetch(&c, grant.frame());
     let first = grants::fetch(&mut c.db.reader, serving(), &request)
         .await
@@ -126,7 +151,7 @@ async fn actual_grant_fetch_preserves_originals_one_attempt_and_refuses_owner_wi
     assert_eq!(repeat["envelope"], first["envelope"]);
     assert_eq!(repeat["accepted_ms"], first["accepted_ms"]);
     assert!(
-        grants::issue_next(&mut c.db.reader, actor, &ready)
+        grants::issue_next(&mut c.db.reader, socket, actor, &ready)
             .await
             .unwrap()
             .is_none()
@@ -210,6 +235,7 @@ async fn old_revoked_owner_message_cannot_starve_fresh_owner_queue_or_gain_an_at
         .concat(),
     );
     let actor = lease(&c);
+    let socket = c.socket_actor();
     let tx = c.db.reader.transaction().await.unwrap();
     crate::conversation_interval03::live::device_approve(
         &tx,
@@ -234,7 +260,7 @@ async fn old_revoked_owner_message_cannot_starve_fresh_owner_queue_or_gain_an_at
     tx.commit().await.unwrap();
     let fresh = queue(&mut c, &browser, &s).await;
     let ready = ready(&mut c).await;
-    let grant = grants::issue_next(&mut c.db.reader, actor, &ready)
+    let grant = grants::issue_next(&mut c.db.reader, socket, actor, &ready)
         .await
         .unwrap()
         .unwrap();

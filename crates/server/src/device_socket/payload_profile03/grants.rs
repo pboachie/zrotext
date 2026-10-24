@@ -64,7 +64,7 @@ impl Readiness03 {
         &mut self,
         socket: &mut WebSocket,
         state: &DeviceSocketState,
-        session: DeviceSession,
+        socket_actor: crate::device_socket::SocketActor,
         origin: &str,
     ) -> Option<()> {
         // Explicit reconnect after the last grant's entire bounded lifetime,
@@ -77,6 +77,7 @@ impl Readiness03 {
             return Some(());
         }
         let ready = self.ready.as_ref()?;
+        let session = socket_actor.session();
         let mut db = runtime_db::connect_device(&state.database_url).await.ok()?;
         let deployment = u64::try_from(state.deployment_epoch)
             .ok()
@@ -88,7 +89,7 @@ impl Readiness03 {
             deployment,
             origin,
         };
-        let grant = crate::conversation_grant03::issue_next(&mut db, actor, ready)
+        let grant = crate::conversation_grant03::issue_next(&mut db, socket_actor, actor, ready)
             .await
             .ok()?;
         drop(db);

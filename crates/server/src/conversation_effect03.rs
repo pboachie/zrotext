@@ -4,6 +4,7 @@
 //! permission or invocation permit. The authenticated adapters remain separate.
 use crate::sealed_manifest03::{self as crypto, Check};
 
+pub mod history_clock;
 pub mod wire;
 
 const SUBMIT: &[u8] = b"ZTSE/conversation/submit-command03/v1\0";
@@ -124,6 +125,10 @@ impl Outcome03 {
 }
 /// A reported fact relative to an original submit tuple. Its outer reporting
 /// connection is intentionally absent from this immutable historical identity.
+/// A NEW mounted producer's observed_ms is the first durable authenticated
+/// assertion time from a fresh passive clock, not the raw callback wall time.
+/// Raw/derived source facts and original event IDs remain separate and immutable;
+/// prior unqualified/UNKNOWN bytes are never relabeled or rewritten.
 pub struct OutcomeCommand03 {
     bytes: [u8; 211],
     ids: [[u8; 16]; 6],
