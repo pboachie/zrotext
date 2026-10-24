@@ -4,7 +4,7 @@ use postgres_protocol::escape::{escape_identifier, escape_literal};
 use tokio_postgres::{Client, Config, NoTls};
 use uuid::Uuid;
 
-type Driver = tokio::task::JoinHandle<Result<(), tokio_postgres::Error>>;
+pub(crate) type Driver = tokio::task::JoinHandle<Result<(), tokio_postgres::Error>>;
 async fn connect(config: &Config) -> (Client, Driver) {
     let (client, connection) = config.connect(NoTls).await.unwrap();
     (client, tokio::spawn(connection))
@@ -31,6 +31,15 @@ pub(crate) struct Fixture {
     database: String,
 }
 impl Fixture {
+    /// Current Store positives use the real migrator and stock ordinary role.
+    pub async fn for_store() -> Self {
+        let fixture = Self::new().await;
+        fixture.verify().await;
+        crate::hosted_runtime_identity::require(&fixture.runtime)
+            .await
+            .unwrap();
+        fixture
+    }
     pub async fn new() -> Self {
         let mut config: Config = std::env::var("ZT_DELIVERY_TEST_DATABASE_URL")
             .expect("disposable CREATEDB/CREATEROLE cluster")
@@ -145,5 +154,20 @@ impl Fixture {
                 .unwrap();
         }
         close(self.admin, self.admin_driver).await;
+    }
+}
+
+/// Keeps the real runtime configuration and its connection driver together.
+pub(crate) struct RuntimeConnection {
+    pub client: Client,
+    driver: Driver,
+}
+impl RuntimeConnection {
+    pub async fn connect(config: &Config) -> Self {
+        let (client, driver) = connect(config).await;
+        Self { client, driver }
+    }
+    pub async fn finish(self) {
+        close(self.client, self.driver).await;
     }
 }
