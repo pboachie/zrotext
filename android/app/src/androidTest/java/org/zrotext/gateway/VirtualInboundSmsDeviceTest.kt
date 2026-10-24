@@ -40,9 +40,10 @@ class VirtualInboundSmsDeviceTest {
         val subId = subscriptions.single().subscriptionId
         assertTrue(subId >= 0)
 
-        val senderToken = InboundVault.token("sender-v1", "+12025550199".toByteArray(Charsets.US_ASCII))
         // Application startup reconciliation must finish before this test-only fixture is seeded.
         JournalRuntime.io.submit { }.get(10, TimeUnit.SECONDS)
+        InboundProtectionDeviceFixture.prepare(app)
+        val senderToken = InboundVault.token(app, "sender-v1", "+12025550199".toByteArray(Charsets.US_ASCII))
         val dao = SmsJournalDatabase.get(app).attempts()
         val attempt = UUID.randomUUID().toString()
         val message = UUID.randomUUID().toString()

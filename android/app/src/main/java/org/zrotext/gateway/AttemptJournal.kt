@@ -880,13 +880,15 @@ private const val PRUNE_BATCH = 500
     LocalRecipientSuppression::class, LocalLineBinding::class,
     LocalInboundWithdrawal::class, LocalWithdrawalSequence::class, SealedPreparationRecord::class,
     LineActivationV2Record::class, Profile03ElectionRecord::class, SelectionRefresh03Record::class,
-    Profile03UnacceptedClosureRecord::class, SelectionRefresh03ClosureRecord::class], version = 18, exportSchema = false)
+    Profile03UnacceptedClosureRecord::class, SelectionRefresh03ClosureRecord::class,
+    Capture03Route::class, Capture03Counter::class, Capture03Record::class, Capture03Mode::class, InboundProtectionRecord::class], version = 19, exportSchema = false)
 abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun attempts(): SmsAttemptDao
     abstract fun sealedPreparations(): SealedPreparationDao
     abstract fun lineActivationsV2(): LineActivationV2Dao
     abstract fun profile03Elections(): Profile03ElectionDao
     abstract fun selectionRefreshes03(): SelectionRefresh03Dao
+    abstract fun captures03(): Capture03Dao
 
     companion object {
         @Volatile private var instance: SmsJournalDatabase? = null
@@ -896,13 +898,27 @@ abstract class SmsJournalDatabase : RoomDatabase() {
                 context.applicationContext, SmsJournalDatabase::class.java, "sms_attempts.db"
             ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
                 MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
-                MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18)
+                MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19)
                 .build().also { instance = it }
         }
 
         internal val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE sms_attempts ADD COLUMN evidenceConflict INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        internal val MIGRATION_18_19 = object : Migration(18, 19) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // No allocator/ready-protection row or first-ever inference is created by migration.
+                db.execSQL("CREATE TABLE IF NOT EXISTS inbound_protection_state (slot INTEGER NOT NULL, expectedTag TEXT, originId TEXT, blocked INTEGER NOT NULL, reason TEXT, debtMask INTEGER NOT NULL, firstObservedMs INTEGER NOT NULL, PRIMARY KEY(slot))")
+                db.execSQL("CREATE TABLE IF NOT EXISTS capture03_routes (token TEXT NOT NULL, route TEXT NOT NULL, provenanceSha256 TEXT, captureId TEXT, recordedMs INTEGER NOT NULL, PRIMARY KEY(token))")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_capture03_routes_captureId ON capture03_routes(captureId)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS capture03_counters (accountId TEXT NOT NULL, deviceId TEXT NOT NULL, bootstrapId TEXT NOT NULL, openingId TEXT NOT NULL, associationSha256 TEXT NOT NULL, receiptSha256 TEXT NOT NULL, canaryKeyId TEXT NOT NULL, enrolledSigningKeyId TEXT NOT NULL, lastSequence INTEGER NOT NULL, protectedOrigin BLOB NOT NULL, nonce BLOB NOT NULL, PRIMARY KEY(accountId, deviceId))")
+                db.execSQL("CREATE TABLE IF NOT EXISTS capture03_records (captureId TEXT NOT NULL, routeToken TEXT NOT NULL, accountId TEXT NOT NULL, deviceId TEXT NOT NULL, lineId TEXT NOT NULL, intervalId TEXT NOT NULL, requestId TEXT NOT NULL, statementSha256 TEXT NOT NULL, firstLowerMs INTEGER NOT NULL, firstUpperMs INTEGER NOT NULL, firstElapsedMs INTEGER NOT NULL, phase TEXT NOT NULL, sequence INTEGER, permissionExpiresMs INTEGER, unsignedEnvelopeSha256 TEXT, envelopeSha256 TEXT, envelopeSignatureSha256 TEXT, intentSha256 TEXT, intentSignatureSha256 TEXT, packetSha256 TEXT, receiptSha256 TEXT, unknown INTEGER NOT NULL, redactedMs INTEGER, protectedPayload BLOB, nonce BLOB, PRIMARY KEY(captureId))")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_capture03_records_routeToken ON capture03_records(routeToken)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_capture03_records_accountId_deviceId_sequence ON capture03_records(accountId, deviceId, sequence)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS capture03_modes (electionId TEXT NOT NULL, accountId TEXT NOT NULL, deviceId TEXT NOT NULL, lineId TEXT NOT NULL, bindingId TEXT NOT NULL, originalIdentity TEXT NOT NULL, evidenceSha256 TEXT NOT NULL, protectedEvidence BLOB NOT NULL, nonce BLOB NOT NULL, PRIMARY KEY(electionId))")
             }
         }
 

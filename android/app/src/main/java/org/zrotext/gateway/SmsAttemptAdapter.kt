@@ -43,6 +43,7 @@ internal object SmsAttemptAdapter {
     private fun sendOnJournalThread(
         context: Context, grant: AlphaGrantValidator.Grant, isSessionCurrent: () -> Boolean
     ): StartResult {
+        val healthEpoch = try { InboundProtectionHealth.snapshot() } catch (_: Exception) { return StartResult.NOT_STARTED }
         val attemptId = grant.attemptId.toString()
         val subscriptionId = grant.subscriptionId
         if (!isSessionCurrent() || System.currentTimeMillis() >= grant.expiresAtMs ||
@@ -72,8 +73,9 @@ internal object SmsAttemptAdapter {
         val dao = try { SmsJournalDatabase.get(context).attempts() }
                   catch (_: RuntimeException) { return StartResult.JOURNAL_ERROR }
         val senderToken = try {
-            InboundVault.token("sender-v1", grant.recipientE164.toByteArray(Charsets.US_ASCII))
+            InboundVault.token(context, "sender-v1", grant.recipientE164.toByteArray(Charsets.US_ASCII))
         } catch (_: Exception) { return StartResult.NOT_STARTED }
+        val health = try { InboundProtection.lease(context, healthEpoch) } catch (_: Exception) { return StartResult.NOT_STARTED }
         if (try { dao.isRecipientSuppressed(senderToken) } catch (_: Exception) { true })
             return StartResult.NOT_STARTED
         // The writer ack changed Room from reserved to submitting. This single conditional
@@ -121,6 +123,7 @@ internal object SmsAttemptAdapter {
                         JournalWriteSignal.alphaEventRecorded()
                     StartResult.RESERVED_NOT_SENT
                 }, {
+                    health.requireCurrent() // RAM epoch follows every provider/Room wait.
                     if (parts.size == 1) {
                         manager.sendTextMessage(grant.recipientE164, null, parts[0], sent[0], delivered[0])
                     } else {

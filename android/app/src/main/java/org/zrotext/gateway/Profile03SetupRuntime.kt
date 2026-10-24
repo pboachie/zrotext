@@ -116,6 +116,9 @@ internal class Profile03SetupRuntime(context: Context, private val origin: Strin
             lineId.toString(), oldBinding.toString(), newBinding.toString(), long(core, 88), long(core, 96),
             hex(bytes("root_fingerprint")), hex(bytes("reader_key_id")), session.originHash, session.connectionEpoch,
             session.deploymentEpoch, Profile03ElectionEncoding.encode(core))
+        // Withdraw the older content protocol before Room or hardware can block. This is
+        // negative-only: failed/unsigned setup grants nothing and cannot revive an old lease.
+        Capture03LegacyFence.withdraw(record.accountId, record.deviceId, record.lineId)
         val dao = db.profile03Elections()
         val existing = dao.find(record.challengeId)
         val signature: ByteArray
