@@ -12,6 +12,7 @@ pub mod conversation_profile03_grant_storage;
 pub mod conversation_profile03_storage;
 pub mod conversation_reviewed_send03_storage;
 pub mod device_protection;
+pub mod device_protection_storage;
 pub mod device_socket;
 pub mod encrypted_schedule;
 pub mod enrollment;
@@ -86,7 +87,7 @@ pub mod workflow_runtime;
 /// Synthetic recognizable plaintext markers for the sealed downgrade and
 /// leakage acceptance harness (issue #632). A marker is planted in fixture
 /// message content on the client side; every server-side surface the harness
-/// can observe — database values, digests, HTTP responses — must never
+/// can observe â€” database values, digests, HTTP responses â€” must never
 /// contain it. The scan helper has its own positive controls so an all-clear
 /// result can never pass vacuously.
 pub(crate) mod sealed_marker {
