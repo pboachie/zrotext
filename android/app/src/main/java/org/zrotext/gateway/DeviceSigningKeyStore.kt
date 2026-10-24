@@ -116,6 +116,27 @@ class DeviceSigningKeyStore(
         return DevicePayloadKeyStore.encodePoint(public)
     }
 
+    /** Ordinary first-origin metadata, without a conversation/API31 hardware claim. This
+     * reads the already enrolled nonexportable key only and never enrolls/replaces it. */
+    internal fun existingProtectionPublicPoint(): ByteArray {
+        check(privateKey().encoded == null)
+        val public = openStore().getCertificate(alias)?.publicKey as? ECPublicKey
+            ?: error("Original enrolled protection signer unavailable")
+        return DevicePayloadKeyStore.encodePoint(public)
+    }
+
+    /** Only the first-origin metadata domain; caller owns the durable one-use reservation. */
+    internal fun signProtectionOrigin(core: ProtectionOriginProof.Core, expectedPoint: ByteArray): ByteArray {
+        val point = expectedPoint.copyOf()
+        check(java.security.MessageDigest.isEqual(point, existingProtectionPublicPoint()))
+        val key = privateKey(); check(key.encoded == null)
+        val transcript = ProtectionOriginProof.deviceTranscript(core)
+        val der = Signature.getInstance("SHA256withECDSA").run { initSign(key); update(transcript); sign() }
+        return Draft01SignaturePrimitive.canonicalRawFromDer(der).also {
+            check(ConversationContentCrypto.verifyRaw(it, point, transcript))
+        }
+    }
+
     fun signEnrollmentChallenge(accountId: UUID, pairingId: UUID, nonce: ByteArray): ByteArray {
         val fingerprint = getOrCreate().fingerprint
         return sign(EnrollmentProof.enrollmentBytes(accountId, pairingId, fingerprint, nonce))

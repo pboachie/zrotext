@@ -41,7 +41,7 @@ internal enum class GatewaySetupRecovery(val title: String, val detail: String) 
     NEW("Connect this phone", "Keep the owner dashboard open. Select the service you trust, then scan its pairing QR."),
     CHECKING("Checking your last pairing", "Your progress is saved. This checks the original phone key; it does not repeat an approval or start a connection."),
     COMPARE("Compare on both screens", "Compare both complete values with your owner dashboard, then approve there. The result updates automatically."),
-    APPROVED("Phone approval confirmed", "Choose the active SIM and review access, then explicitly start the connection. Account and billing steps stay on the website."),
+    APPROVED("Phone approval confirmed", "Connect and finish phone protection before enabling SMS receiving. Then choose the active SIM and review access. Account and billing steps stay on the website."),
     EXPIRED("Replace the expired pairing", "Your account and subscription are unchanged. Replace only this pairing in the owner dashboard, then scan the new QR."),
     CANCELLED("Pairing was cancelled", "Your account and subscription are unchanged. Create a new pairing in the owner dashboard when you are ready."),
     PROOF_REQUIRED("Pairing needs a new QR", "The original key proof did not finish. Cancel this pairing in the owner dashboard and replace only this step; no claim is retried automatically."),

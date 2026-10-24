@@ -206,12 +206,14 @@ class ProtectionSetupJournalTest {
                     execSQL("INSERT INTO local_recipient_suppressions VALUES(?, 1000)", arrayOf("b".repeat(64)))
                     execSQL("DROP TABLE protection_setup_providers")
                     execSQL("DROP TABLE protection_setup_command")
+                    execSQL("DROP TABLE protection_origin_attempts")
+                    execSQL("DROP TABLE protection_origin_installed")
                     execSQL("DROP TABLE room_master_table")
                     version = 19
                 }
             }
             Room.databaseBuilder(app, SmsJournalDatabase::class.java, name).allowMainThreadQueries()
-                .addMigrations(SmsJournalDatabase.MIGRATION_19_20).build().use { db ->
+                .addMigrations(SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21).build().use { db ->
                     assertEquals("blocked", db.captures03().route("a".repeat(64))!!.route)
                     assertTrue(db.attempts().isRecipientSuppressed("b".repeat(64)))
                     assertNull(db.protectionSetup().command())

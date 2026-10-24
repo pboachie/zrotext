@@ -63,9 +63,10 @@ internal fun GatewayStatusText(label: String, value: String, textAlign: TextAlig
 
 @Composable
 internal fun GatewayButton(onClick: () -> Unit, modifier: Modifier = Modifier,
+    enabled: Boolean = true,
     content: @Composable RowScope.() -> Unit) {
     // Keep visible and semantic bounds at least 48 dp, not just expanded hit slop.
-    Button(onClick = onClick, shape = MaterialTheme.shapes.medium,
+    Button(onClick = onClick, enabled = enabled, shape = MaterialTheme.shapes.medium,
         modifier = modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
         content = content)
 }

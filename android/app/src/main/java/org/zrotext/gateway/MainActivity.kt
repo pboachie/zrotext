@@ -157,6 +157,11 @@ class MainActivity : ComponentActivity() {
     internal var conversationHandleFactory: ((Uri, (ConversationPresentationPort) -> Unit) -> ConversationSetupEntrySession.Handle)? = null
     internal var conversationReplyInstaller: ((ByteArray, ByteArray, (Boolean) -> Unit) -> Unit)? = null
     private val conversationWorker = Executors.newSingleThreadExecutor()
+    private val protectionWorker = Executors.newSingleThreadExecutor()
+    private val protectionForeground = ConversationInterval03Foreground()
+    private var protectionVisible = false
+    private var protectionBusy by mutableStateOf(false)
+    private var protectionStatus by mutableStateOf("Finish protection before enabling SMS receiving")
     private var conversationEntryOpen by mutableStateOf(false)
     private var conversationSetupFile by mutableStateOf<Uri?>(null)
     private var conversationMessageReference by mutableStateOf("")
@@ -335,6 +340,7 @@ class MainActivity : ComponentActivity() {
                 GatewayCompanion(initialPage = GatewayPage.entries.firstOrNull {
                     it.name == intent.getStringExtra("gateway_screen")
                 } ?: GatewayPage.HOME, onPageChanged = { page ->
+                    if (page != GatewayPage.SETUP) protectionForeground.update(false)
                     if (page != GatewayPage.TOOLS) cancelControlledTestReview()
                     summaryPageChanged(page)
                     bindingSetupVisible = page == GatewayPage.SETUP
@@ -380,6 +386,31 @@ class MainActivity : ComponentActivity() {
                             initialStep = GatewaySetupStep.entries.firstOrNull {
                                 it.name == intent.getStringExtra("gateway_setup_step")
                             } ?: GatewaySetupStep.OVERVIEW,
+                            protectionContent = {
+                                DisposableEffect(Unit) {
+                                    protectionVisible = true
+                                    protectionForeground.update(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+                                    onDispose { protectionVisible = false; protectionForeground.update(false) }
+                                }
+                                GatewayStatusText("Phone protection", protectionStatus)
+                                GatewayButton(onClick = {
+                                    if (!bindingCurrent || SystemClock.elapsedRealtime() - bindingCheckedAt !in 0..30_000L) {
+                                        checkSavedPairing()
+                                        protectionStatus = "Check saved pairing, then start the approved connection"
+                                    } else startHeartbeat(rebootResume = false, protectionOnly = true)
+                                }, enabled = !protectionBusy, modifier = Modifier.fillMaxWidth()) { Text("Connect for protection setup") }
+                                GatewayButton(onClick = { continueProtection(false) }, enabled = !protectionBusy,
+                                    modifier = Modifier.fillMaxWidth()) { Text("Set up or check saved protection") }
+                                TextButton(onClick = { continueProtection(true) }, enabled = !protectionBusy,
+                                    modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Recover original setup proof") }
+                                if (protectionBusy) TextButton(onClick = {
+                                    protectionForeground.update(false)
+                                    protectionForeground.update(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+                                    protectionStatus = "Setup paused. Any operation already entered keeps its original result; no next operation is authorized."
+                                }, modifier = Modifier.fillMaxWidth().sizeIn(minHeight = 48.dp)) { Text("Pause setup") }
+                                Text("Recovery keeps the original pairing, keys and attempts. An unknown key-generation result or older setup without its original proof needs operator help; it is never reset automatically.",
+                                    style = MaterialTheme.typography.bodySmall)
+                            },
                             accessContent = {
                                 GatewayButton(onClick = { permissionDisclosure = GatewayPermissionPurpose.SIM }) { Text("Choose SIM permissions") }
                                 GatewayButton(onClick = { permissionDisclosure = GatewayPermissionPurpose.SEND }) { Text("Review SMS sending access") }
@@ -726,6 +757,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        protectionForeground.update(protectionVisible)
         completeSelectionForeground = true
         summaryResumed = true
         bindingForeground = true
@@ -737,6 +769,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
+        protectionForeground.update(false)
         closeSamePhoneReview()
         cancelControlledTestReview()
         bindingForeground = false
@@ -756,6 +789,10 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        protectionForeground.close()
+        // Do not interrupt an entered provider: its exact return must remain appendable as
+        // history. The withdrawn foreground decision forbids every next operation/pin.
+        protectionWorker.shutdown()
         closeSamePhoneReview()
         completeSelectionForeground = false
         completeSelectionCoordinator?.close()
@@ -1672,12 +1709,13 @@ class MainActivity : ComponentActivity() {
             pairingStatus = "Pairing input refused or another operation is active. Check the current server and browser ticket."
         else pairingStatus = "Claiming and proving key; compare in the browser before approval"
     }
-    private fun startHeartbeat(rebootResume: Boolean, profile03: Boolean = false) {
+    private fun startHeartbeat(rebootResume: Boolean, profile03: Boolean = false, protectionOnly: Boolean = false) {
+        check(!protectionOnly || !profile03 && !rebootResume)
         if (profile03 && Build.VERSION.SDK_INT < 33) {
             AuthenticatedGatewayStatus.value = "Encrypted messaging requires Android 13 or later"
             return
         }
-        if (selectedSim == null) {
+        if (selectedSim == null && !protectionOnly) {
             AuthenticatedGatewayStatus.value = "Select a SIM first"
             return
         }
@@ -1772,6 +1810,48 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun askPermissions(purpose: GatewayPermissionPurpose) {
+        if (purpose == GatewayPermissionPurpose.RECEIVE) {
+            if (protectionBusy) return
+            val decision = runCatching { protectionForeground.decision() }.getOrNull() ?: return
+            protectionBusy = true
+            protectionWorker.execute {
+                val verifiedEpoch = runCatching {
+                    val epoch = InboundProtectionHealth.snapshot()
+                    ProtectionOriginInstalled.key(applicationContext) {
+                        check(decision.isCurrent()); InboundProtectionHealth.checked(epoch)
+                    }
+                    epoch
+                }.getOrNull()
+                runOnUiThread {
+                    protectionBusy = false
+                    if (!decision.isCurrent() || isDestroyed) return@runOnUiThread
+                    if (verifiedEpoch != null && InboundProtectionHealth.current(verifiedEpoch)) launchPermissions(purpose)
+                    else protectionStatus = "Finish original phone protection first; SMS receiving access was not requested"
+                }
+            }
+            return
+        }
+        launchPermissions(purpose)
+    }
+
+    private fun continueProtection(recoverProof: Boolean) {
+        if (protectionBusy) return
+        val decision = runCatching { protectionForeground.decision() }.getOrNull() ?: return
+        protectionBusy = true
+        protectionStatus = "Checking the original setup on this approved connection…"
+        protectionWorker.execute {
+            val result = runCatching { ProtectionOriginRuntime(applicationContext).continueSetup(decision, recoverProof) }
+            runOnUiThread {
+                protectionBusy = false
+                if (!decision.isCurrent() || isDestroyed) return@runOnUiThread
+                protectionStatus = if (result.isSuccess) "Phone protection verified. You can now review SMS receiving access."
+                    else (result.exceptionOrNull() as? ProtectionOriginRuntime.NeedsRecovery)?.message
+                        ?: "Protection needs recovery. Keep this setup and its keys; reconnect and check the original status."
+            }
+        }
+    }
+
+    private fun launchPermissions(purpose: GatewayPermissionPurpose) {
         val requested = purpose.permissions(Build.VERSION.SDK_INT).filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }

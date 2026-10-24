@@ -39,7 +39,7 @@ class GatewaySetupRecoveryUiTest {
         }
     }
 
-    @Test fun approvedObservationMovesToSimWithoutGrantingAccessOrStartingConnection() {
+    @Test fun approvedObservationMovesToProtectionBeforeSimWithoutGrantingAccessOrStartingConnection() {
         val recovery = mutableStateOf(GatewaySetupRecovery.COMPARE)
         var checks = 0
         compose.runOnIdle { compose.activity.setContent { GatewayTheme {
@@ -56,7 +56,7 @@ class GatewaySetupRecoveryUiTest {
         compose.onNodeWithText("Check saved pairing").assertDoesNotExist()
         assertEquals(0, checks)
         compose.runOnIdle { recovery.value = GatewaySetupRecovery.APPROVED }
-        compose.onNodeWithText("Choose a SIM").assertExists()
+        compose.onNodeWithText("Protect this phone").assertExists()
         compose.onNodeWithText("Step 3 of 4").assertExists()
         compose.runOnIdle {
             assertNull(shadowOf(compose.activity).lastRequestedPermission)
@@ -89,7 +89,9 @@ class GatewaySetupRecoveryUiTest {
                     accessContent = {}, simContent = {}, pairingContent = {})
             }
         } } }
-        compose.onNodeWithText("Connect this phone").assertExists()
+        compose.onNodeWithText("Protect this phone").assertExists()
+        compose.onNodeWithText("Review SIM and Android access").performScrollTo().performClick()
+        compose.onNodeWithText("Choose a SIM").assertExists()
         compose.runOnIdle { sim.value = "Not selected" }
         compose.onNodeWithText("Choose a SIM").assertExists()
         compose.runOnIdle { recovery.value = GatewaySetupRecovery.UNAVAILABLE }
