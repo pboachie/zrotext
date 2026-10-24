@@ -24,7 +24,7 @@ async fn close(client: Client, driver: Driver) {
 pub(crate) struct Fixture {
     admin: Client,
     admin_driver: Driver,
-    pub(super) owner: Client,
+    pub(crate) owner: Client,
     owner_driver: Driver,
     pub(crate) reader: Client,
     reader_driver: Driver,
