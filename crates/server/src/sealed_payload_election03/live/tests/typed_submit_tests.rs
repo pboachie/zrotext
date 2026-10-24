@@ -94,16 +94,22 @@ async fn liabilities(c: &Case, message: Uuid) -> (String, String, i64, i64, i64)
 #[tokio::test]
 #[ignore = "requires disposable ZT_AUTH_TEST_DATABASE_URL administrator; actual typed commit and signed no-rearm closure"]
 async fn first_submit_commit_is_once_and_signed_closure_releases_only_busy_without_rearming() {
-    closure_after_reconnect(true).await;
+    closure_after_reconnect(true, false).await;
 }
 
 #[tokio::test]
 #[ignore = "requires disposable ZT_AUTH_TEST_DATABASE_URL administrator; original unaccepted proof cannot acquire a new reconnect lease"]
 async fn unaccepted_original_proof_refuses_after_genuine_same_actor_reconnect_without_mutation() {
-    closure_after_reconnect(false).await;
+    closure_after_reconnect(false, false).await;
 }
 
-async fn closure_after_reconnect(accept_before_reconnect: bool) {
+#[tokio::test]
+#[ignore = "requires disposable ZT_AUTH_TEST_DATABASE_URL administrator; lost submit ACK permits reserved closure without rearming"]
+async fn lost_first_submit_ack_allows_reserved_closure_without_another_permit() {
+    closure_after_reconnect(true, true).await;
+}
+
+async fn closure_after_reconnect(accept_before_reconnect: bool, lose_first_ack: bool) {
     let (mut c, browser, statement) = super::reviewed_send_tests::active_claimed().await;
     let account = c.principal.tenant.account_id();
     c.db.owner.execute("INSERT INTO public.usage_quota_policies(account_id,metric,limit_units,source) VALUES($1,'outbound_message',10,'operator')",&[&account]).await.unwrap();
@@ -134,41 +140,57 @@ async fn closure_after_reconnect(accept_before_reconnect: bool) {
         "message_id":packet.message,"attempt_id":claim.attempt_id,
         "fetch_transcript_sha256":B.encode(fetch),"segment_count":1,
         "observed_ms":observed.to_string()});
+    // The simulated phone retains this original command BEFORE I/O. The lost
+    // ACK case cannot borrow identity or acceptance fields from that response.
+    let wire::Request03::Submit(local) = wire::Request03::parse(&submit.to_string())
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("original submit")
+    };
+    let submit_hash = local
+        .candidate_command(account, socket.session().device_id, &session)
+        .unwrap()
+        .digest()
+        .unwrap();
     let accepted = apply(&mut c, &submit).await;
-    assert_eq!(accepted["disposition"], "submit_once");
-    assert!(accepted["current"].is_object());
-    assert!(accepted["interval_permission"].is_object());
-    let accepted_ms = accepted["accepted_ms"]
-        .as_str()
-        .unwrap()
-        .parse::<u64>()
-        .unwrap();
-    let compared = accepted["current"]["compared_ms"]
-        .as_str()
-        .unwrap()
-        .parse::<u64>()
-        .unwrap();
-    assert!(accepted_ms <= compared);
-    assert_eq!(
-        accepted["current"]["compared_ms"],
-        accepted["interval_permission"]["compared_ms"]
-    );
-    for name in ["current", "interval_permission"] {
+    if lose_first_ack {
+        // Actual server COMMIT already happened. Drop its complete response,
+        // simulating loss before local ACK-authorized CAS. No retransmit or
+        // response field is used before the reserved-phase closure request.
+        drop(accepted);
+    } else {
+        assert_eq!(accepted["disposition"], "submit_once");
+        assert!(accepted["current"].is_object());
+        assert!(accepted["interval_permission"].is_object());
+        assert_eq!(accepted["submit_command_sha256"], B.encode(submit_hash));
+        let accepted_ms = accepted["accepted_ms"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        let compared = accepted["current"]["compared_ms"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        assert!(accepted_ms <= compared);
         assert_eq!(
-            accepted[name]["permission_expires_ms"],
-            claim.expires_at_ms.to_string()
+            accepted["current"]["compared_ms"],
+            accepted["interval_permission"]["compared_ms"]
         );
+        for name in ["current", "interval_permission"] {
+            assert_eq!(
+                accepted[name]["permission_expires_ms"],
+                claim.expires_at_ms.to_string()
+            );
+        }
+        let duplicate = apply(&mut c, &submit).await;
+        assert_eq!(duplicate["disposition"], "history_only");
+        assert!(duplicate["current"].is_null());
+        assert!(duplicate["interval_permission"].is_null());
+        assert_eq!(duplicate["accepted_ms"], accepted["accepted_ms"]);
     }
-    assert_eq!(
-        liabilities(&c, packet.message).await,
-        ("submitting".into(), "submitting".into(), 1, 1, 0)
-    );
-
-    let duplicate = apply(&mut c, &submit).await;
-    assert_eq!(duplicate["disposition"], "history_only");
-    assert!(duplicate["current"].is_null());
-    assert!(duplicate["interval_permission"].is_null());
-    assert_eq!(duplicate["accepted_ms"], accepted["accepted_ms"]);
     assert_eq!(
         liabilities(&c, packet.message).await,
         ("submitting".into(), "submitting".into(), 1, 1, 0)
@@ -208,11 +230,6 @@ async fn closure_after_reconnect(accept_before_reconnect: bool) {
     assert!(closed >= observed as u64);
     let closure = Uuid::new_v4();
     let proof_request = Uuid::new_v4();
-    let submit_hash: [u8; 32] = B
-        .decode(accepted["submit_command_sha256"].as_str().unwrap())
-        .unwrap()
-        .try_into()
-        .unwrap();
     let mut record = Vec::with_capacity(210);
     for id in [
         account,
@@ -229,7 +246,7 @@ async fn closure_after_reconnect(accept_before_reconnect: bool) {
     record.extend(session);
     record.push(1);
     record.extend((observed as u64).to_be_bytes());
-    record.push(1); // Genuine prior committed submit, ACK-authorized report.
+    record.push(if lose_first_ack { 0 } else { 1 });
     record.extend(closed.to_be_bytes());
     let record = NoSubmitRecord03::decode(&record).unwrap();
     let challenge_request = json!({"v":1,"type":"payload_profile_no_submit_challenge03_request",
@@ -237,7 +254,7 @@ async fn closure_after_reconnect(accept_before_reconnect: bool) {
         "closure_id":closure,"event_id":event,"message_id":packet.message,
         "attempt_id":claim.attempt_id,"submit_command_sha256":B.encode(submit_hash),
         "fetch_transcript_sha256":B.encode(fetch),"segment_count":1,
-        "submit_observed_ms":observed.to_string(),"closed_from":"ack_authorized",
+        "submit_observed_ms":observed.to_string(),"closed_from":if lose_first_ack { "reserved" } else { "ack_authorized" },
         "closed_ms":closed.to_string(),"closure_record_sha256":B.encode(record.digest().unwrap()),
         "previous_challenge_id":null});
     let challenge = apply(&mut c, &challenge_request).await;
