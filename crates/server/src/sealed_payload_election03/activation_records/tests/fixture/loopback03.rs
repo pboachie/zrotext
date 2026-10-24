@@ -349,6 +349,8 @@ impl Loopback03 {
         *peer = next;
     }
     pub(super) async fn finish(mut self) {
+        // Peer close is best effort. Mandatory server drain/stop follows even
+        // on timeout/close error; Case then observes all pool sockets drained.
         let _ = timeout(IO_BOUND, self.io.get_mut().socket.close(None)).await;
         self.server.stop().await;
     }
