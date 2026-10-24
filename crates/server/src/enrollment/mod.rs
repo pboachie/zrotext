@@ -19,6 +19,8 @@ use tokio_postgres::Client;
 use uuid::Uuid;
 
 pub mod binding;
+mod socket_actor;
+pub use socket_actor::VerifiedDevice;
 
 const PAIRING_LIFETIME_SECS: i32 = 300;
 /// A stateless socket challenge stays verifiable this long after issuance.
@@ -802,13 +804,13 @@ pub async fn cancel_pairing(
 /// still be active. A valid proof authorizes `claim_session`; an invalid
 /// nonce, an expired challenge, or a bad signature all return `Unauthorized`
 /// without distinguishing which check failed.
-pub(crate) async fn authenticate_socket_proof(
+pub(crate) async fn authenticate_socket_actor(
     client: &Client,
     hasher: &EnrollmentHasher,
     challenge: &DeviceChallenge,
     signature_der: &[u8],
     now_ms: u64,
-) -> Result<AuthenticatedDevice, EnrollmentError> {
+) -> Result<VerifiedDevice, EnrollmentError> {
     if !socket_challenge_is_current(hasher, challenge, now_ms) {
         return Err(EnrollmentError::Unauthorized);
     }
@@ -821,13 +823,22 @@ pub(crate) async fn authenticate_socket_proof(
     let Some(sec1) = row.map(|row| row.get::<_, Vec<u8>>(0)) else {
         return Err(EnrollmentError::Unauthorized);
     };
-    if !verify_signature(&sec1, &device_challenge_bytes(challenge), signature_der) {
-        return Err(EnrollmentError::Unauthorized);
-    }
-    Ok(AuthenticatedDevice {
-        account_id: challenge.account_id,
-        device_id: challenge.device_id,
-    })
+    socket_actor::verify(challenge, &sec1, signature_der)
+}
+
+// Historical fixtures exercise UUID-only consumers separately. Production
+// socket admission retains the opaque verified point instead of this projection.
+#[cfg(test)]
+pub(crate) async fn authenticate_socket_proof(
+    client: &Client,
+    hasher: &EnrollmentHasher,
+    challenge: &DeviceChallenge,
+    signature_der: &[u8],
+    now_ms: u64,
+) -> Result<AuthenticatedDevice, EnrollmentError> {
+    authenticate_socket_actor(client, hasher, challenge, signature_der, now_ms)
+        .await
+        .map(|actor| actor.identity())
 }
 
 pub async fn device_still_active(
