@@ -13,6 +13,10 @@ internal object Profile03Json {
     /** Distinct receiving grammar; old fetch/current readers still reject root nulls. The
      * typed ACK decoder must also enforce its exact15 fields and paired disposition. */
     fun submitAckObject(bytes: ByteArray): Map<String, Any> = objectValue(bytes, setOf("current", "interval_permission"))
+    /** Passive outcome grammars have their own single nullable scalar. No other reader
+     * admits these fields or treats an outcome receipt as current permission. */
+    fun outcomeAckObject(bytes: ByteArray): Map<String, Any> = objectValue(bytes, setOf("resulting_state"))
+    fun outcomeRequestObject(bytes: ByteArray): Map<String, Any> = objectValue(bytes, setOf("segment_index"))
     private fun objectValue(bytes: ByteArray, rootNulls: Set<String>): Map<String, Any> {
         require(bytes.size in 2..MAX_BYTES)
         val text = Charsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes.copyOf())).toString()

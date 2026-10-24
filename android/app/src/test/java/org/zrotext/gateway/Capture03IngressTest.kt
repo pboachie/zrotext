@@ -141,7 +141,7 @@ class Capture03IngressTest {
         val context = RuntimeEnvironment.getApplication(); val name = "capture03-upgrade-test.db"
         context.deleteDatabase(name)
         fun open() = Room.databaseBuilder(context, SmsJournalDatabase::class.java, name).allowMainThreadQueries()
-            .addMigrations(SmsJournalDatabase.MIGRATION_18_19, SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24).build()
+            .addMigrations(SmsJournalDatabase.MIGRATION_18_19, SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24, SmsJournalDatabase.MIGRATION_24_25).build()
         try {
             open().use { db ->
                 db.attempts().insertAttempt(SmsAttempt(id(91), 3, 1, AttemptState.UNKNOWN, 1000, 1000))
@@ -155,7 +155,7 @@ class Capture03IngressTest {
                 db.openHelper.writableDatabase.version = 18
             }
             open().use { db ->
-                assertEquals(24, db.openHelper.readableDatabase.version); assertNotNull(db.attempts().getAttempt(id(91)))
+                assertEquals(25, db.openHelper.readableDatabase.version); assertNotNull(db.attempts().getAttempt(id(91)))
                 assertNull(db.captures03().counter(id(1), id(2)))
                 assertNull(db.protectionSetup().command()); assertTrue(db.protectionSetup().providers().isEmpty())
                 Capture03Ingress.claim(db.captures03(), h('a'), 2000, Capture03Exclusion.Candidate("drop03", h('b')), {}, { false })

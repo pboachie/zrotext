@@ -141,6 +141,7 @@ class MainActivity : ComponentActivity() {
     private var summaryCredential by mutableStateOf("")
     private var summaryView by mutableStateOf(GatewaySummaryState.View(GatewaySummaryState.Phase.UNAVAILABLE, null))
     private var summaryStatus by mutableStateOf("Message counts are unavailable on this phone. An authorized summary reader is not connected.")
+    private var deliveryUpdateStatus by mutableStateOf("Saved delivery updates can be synced through this phone's authenticated connection.")
     private val summaryState = GatewaySummaryState()
     private val summaryClient = GatewaySummaryClient()
     private val summaryWorker = Executors.newSingleThreadExecutor()
@@ -361,6 +362,13 @@ class MainActivity : ComponentActivity() {
                             power = rememberGatewayPower(),
                             summary = summaryView,
                             summaryStatus = summaryStatus,
+                            deliveryUpdateStatus = deliveryUpdateStatus,
+                            onSyncDeliveryUpdates = {
+                                deliveryUpdateStatus = "Syncing saved delivery updates…"
+                                TypedHistory03Runtime.syncSavedReports(applicationContext) { status ->
+                                    runOnUiThread { deliveryUpdateStatus = status }
+                                }
+                            },
                             onSetup = { navigate(GatewayPage.SETUP) },
                             onConnection = { navigate(GatewayPage.CONNECTION) },
                             recovery = setupRecovery,
