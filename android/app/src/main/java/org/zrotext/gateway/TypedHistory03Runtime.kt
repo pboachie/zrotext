@@ -24,6 +24,10 @@ internal object TypedHistory03Runtime {
     fun connected(context: Context) = enqueue(context, null)
     fun callbackRecorded(context: Context, attempt: String) = enqueue(context, attempt)
 
+    /** Explicit cancellation work shares this worker. Connection/callback scans never
+     * call a proof producer or replay its signature/provider/transport burns. */
+    internal fun cancellationWork(work: () -> Unit) { worker.execute(work) }
+
     /** A user action authorizes at most one bounded page of exact historical replays.
      * Neither reconnect nor a passive scan is an instruction to retry uncertain I/O. */
     fun syncSavedReports(context: Context, status: (String) -> Unit) {

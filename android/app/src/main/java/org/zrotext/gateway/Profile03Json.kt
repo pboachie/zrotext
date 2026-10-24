@@ -17,6 +17,12 @@ internal object Profile03Json {
      * admits these fields or treats an outcome receipt as current permission. */
     fun outcomeAckObject(bytes: ByteArray): Map<String, Any> = objectValue(bytes, setOf("resulting_state"))
     fun outcomeRequestObject(bytes: ByteArray): Map<String, Any> = objectValue(bytes, setOf("segment_index"))
+    /** Separate closure-proof grammar; old readers retain their original null rules. */
+    fun noSubmitObject(bytes: ByteArray): Map<String, Any> {
+        require(bytes.size in 2..4096)
+        val text = Charsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes.copyOf())).toString()
+        return Reader(text, setOf("previous_challenge_id", "closed_predecessor", "challenge", "receipt"), true).read()
+    }
     private fun objectValue(bytes: ByteArray, rootNulls: Set<String>): Map<String, Any> {
         require(bytes.size in 2..MAX_BYTES)
         val text = Charsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes.copyOf())).toString()
@@ -83,7 +89,7 @@ internal object Profile03Json {
             value.entries.associate { (key, field) -> (key as? String ?: error("Interval reader key")) to checkNotNull(field) }
         }
     }
-    private class Reader(private val raw: String, private val rootNulls: Set<String>) {
+    private class Reader(private val raw: String, private val rootNulls: Set<String>, private val noSubmit: Boolean = false) {
         private var at = 0
         fun read(): Map<String, Any> { val result = obj(0); whitespace(); require(at == raw.length); return result }
         private fun obj(depth: Int, parent: String? = null): Map<String, Any> {
@@ -107,7 +113,8 @@ internal object Profile03Json {
                     }
                     peek('n') -> {
                         require((parent == "interval_permission" && name in nullableIntervalFields && depth == 1 ||
-                            depth == 0 && name in (setOf("approved_ms", "installed_ms") + rootNulls)) && raw.startsWith("null", at))
+                            depth == 0 && name in (setOf("approved_ms", "installed_ms") + rootNulls) ||
+                            noSubmit && depth == 1 && parent == "challenge" && name == "closed_predecessor") && raw.startsWith("null", at))
                         at += 4; Null
                     }
                     at < raw.length && raw[at] in '0'..'9' -> integer()

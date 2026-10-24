@@ -40,7 +40,10 @@ internal data class TypedSubmit03Record(
     /** Negative fact order within this immutable attempt, not a global capture allocator. */
     val lastCallbackOrdinal: Long? = null,
     val closingId: String? = null,
-    val closingFrom: Int? = null
+    val closingFrom: Int? = null,
+    /** Positive local proof origin: migration leaves old finalized rows UNKNOWN. Once
+     * started, loss of every new lineage table cannot make this closure first/unused. */
+    val closureProofState: String? = null
 ) {
     fun command(): TypedSubmit03Command = TypedSubmit03Command.decode(unbase(commandB64url)).also {
         require(it.attemptId == attemptId && it.eventId == eventId && it.accountId == accountId &&
@@ -66,6 +69,14 @@ internal data class TypedSubmit03Record(
             require(UUID.fromString(value).let { it != UUID(0, 0) && it.toString() == value } &&
                 phase in setOf("pre_entry_closing", "closed_no_submit") &&
                 closingFrom == if (ackSha256 == null) 0 else 1)
+        }
+        closureProofState?.let { state ->
+            require(phase == "closed_no_submit" && originalOriginSha256 != null && closingId != null)
+            when {
+                state.startsWith("eligible:") -> require(state == "eligible:$closingId")
+                state.startsWith("started:") -> TypedNoSubmit03Wire.uuid(state.removePrefix("started:"))
+                else -> error("Unknown cancellation proof origin")
+            }
         }
         if (ackSha256 != null) require(ackSha256.matches(Regex("[0-9a-f]{64}")))
         require((entryReservedMs != null) == (phase == "platform_entry_reserved"))
@@ -179,7 +190,7 @@ internal abstract class TypedSubmit03Dao {
         val existing = get(candidate.attemptId)
         if (existing != null) {
             require(existing.copy(phase = "reserved", ackSha256 = null, entryReservedMs = null,
-                closureB64url = null, closureSha256 = null, conflict = false, closingId = null, closingFrom = null,
+                closureB64url = null, closureSha256 = null, conflict = false, closingId = null, closingFrom = null, closureProofState = null,
                 lastCallbackOrdinal = if (existing.originalOriginSha256 == null) null else 0) == candidate)
             return existing.also { it.requireShape(); current() }
         }
@@ -253,7 +264,7 @@ internal abstract class TypedSubmit03Dao {
         val closure = TypedNoSubmit03Record.create(expected.command(), checkNotNull(expected.closingId),
             checkNotNull(expected.closingFrom), actual.nowFor(expected, request))
         val next = expected.copy(phase = "closed_no_submit", closureB64url = TypedSubmit03Record.base(closure.bytes()),
-            closureSha256 = TypedSubmit03Record.hex(closure.commitment()))
+            closureSha256 = TypedSubmit03Record.hex(closure.commitment()), closureProofState = "eligible:${closure.closureId}")
         next.requireShape(); check(update(next) == 1)
         actual.nowFor(expected, request) // expiry/actor loss rolls back, retaining the barrier.
         return next

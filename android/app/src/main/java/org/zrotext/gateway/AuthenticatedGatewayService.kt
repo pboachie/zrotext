@@ -358,6 +358,11 @@ class AuthenticatedGatewayService : Service() {
                         checkNotNull(typedHistoryHost).acceptOutcome(raw)
                         return
                     }
+                    if (type in setOf("payload_profile_no_submit_challenge03", "payload_profile_no_submit_status03", "payload_profile_no_submit_ack03")) {
+                        check(machine.phase == DeviceStreamMachine.Phase.ACTIVE)
+                        checkNotNull(typedHistoryHost).acceptClosure(raw)
+                        return
+                    }
                     if (type in setOf("protection_origin_opened", "protection_origin_proof_challenge",
                             "protection_origin_accepted", "protection_origin_status")) {
                         check(machine.phase == DeviceStreamMachine.Phase.ACTIVE)

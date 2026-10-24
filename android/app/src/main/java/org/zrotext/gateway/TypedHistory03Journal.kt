@@ -104,7 +104,7 @@ internal data class TypedHistory03Request(
     fun requireShape() {
         query()
         for (id in listOf(subjectId, accountId, deviceId)) require(UUID.fromString(id).let { it != UUID(0, 0) && it.toString() == id })
-        require(subjectKind in setOf("assertion", "closure") && connectionEpoch > 0 && lineVersion in 1..2 &&
+        require(subjectKind in setOf("assertion", "closure", "proof") && connectionEpoch > 0 && lineVersion in 1..2 &&
             commandSha256.matches(Regex("[0-9a-f]{64}")) && originSha256.matches(Regex("[0-9a-f]{64}")))
         require(TypedSubmit03Record.unbase(originalEnrolledPoint).size == 65 &&
             TypedSubmit03Record.unbase(requestB64url).contentEquals(TypedHistory03Wire.request(connectionEpoch, query())))
@@ -153,6 +153,17 @@ internal abstract class TypedHistory03Dao {
     @Update(onConflict = OnConflictStrategy.ABORT) protected abstract fun updateClock(row: TypedHistory03Request): Int
     @Update(onConflict = OnConflictStrategy.ABORT) protected abstract fun updateSource(row: TypedHistory03Source): Int
     @Insert(onConflict = OnConflictStrategy.ABORT) protected abstract fun insertOutcomeReport(row: TypedOutcome03Report)
+    @Query("SELECT * FROM typed_no_submit03_proofs WHERE requestId=:id") protected abstract fun proof(id: String): TypedNoSubmit03Proof?
+    @Query("SELECT * FROM typed_no_submit03_lineages WHERE closureId=:id") protected abstract fun proofLineage(id: String): TypedNoSubmit03Lineage?
+
+    private fun proofSubject(row: TypedSubmit03Record, request: TypedHistory03Request): Boolean {
+        val p = proof(request.subjectId) ?: return false
+        p.requireOriginal(row)
+        val lineage = proofLineage(p.closureId) ?: return false
+        return p.coreB64url != null && p.acceptedMs == null && lineage.currentRequestId == p.requestId &&
+            row.closureProofState == "started:${lineage.rootRequestId}" &&
+            row.phase == "closed_no_submit" && !row.conflict && row.lastCallbackOrdinal == 0L && callbacks(row.attemptId).isEmpty()
+    }
 
     @Transaction
     open fun reserveClock(expected: TypedSubmit03Record, candidate: TypedHistory03Request, current: () -> Unit): Boolean {
@@ -163,8 +174,11 @@ internal abstract class TypedHistory03Dao {
             val source = sources(expected.attemptId).singleOrNull { it.eventId == candidate.subjectId } ?: return false
             source.requireShape(); if (source.assertionB64url != null || source.commandSha256 != expected.commandSha256) return false
             source.requireRaw(expected.command(), callbacks(expected.attemptId))
-        } else if (expected.phase != "pre_entry_closing" || expected.closingId != candidate.subjectId ||
-            expected.conflict || callbacks(expected.attemptId).isNotEmpty()) return false
+        } else if (candidate.subjectKind == "closure") {
+            if (expected.phase != "pre_entry_closing" || expected.closingId != candidate.subjectId ||
+                expected.conflict || callbacks(expected.attemptId).isNotEmpty()) return false
+        } else if (candidate.subjectKind == "proof") { if (!proofSubject(expected, candidate)) return false }
+        else return false
         insertClock(candidate); current(); return true
     }
 
@@ -179,8 +193,11 @@ internal abstract class TypedHistory03Dao {
             val source = sources(expected.attemptId).singleOrNull { it.eventId == expected.subjectId } ?: return null
             if (source.assertionB64url != null) return null
             source.requireRaw(row.command(), callbacks(row.attemptId))
-        } else if (row.phase != "pre_entry_closing" || row.closingId != expected.subjectId ||
-            row.conflict || callbacks(row.attemptId).isNotEmpty()) return null
+        } else if (expected.subjectKind == "closure") {
+            if (row.phase != "pre_entry_closing" || row.closingId != expected.subjectId ||
+                row.conflict || callbacks(row.attemptId).isNotEmpty()) return null
+        } else if (expected.subjectKind == "proof") { if (!proofSubject(row, expected)) return null }
+        else return null
         val next = expected.copy(entered = true)
         check(updateClock(next) == 1)
         current(); return CommittedTypedHistory03Entry(next)
