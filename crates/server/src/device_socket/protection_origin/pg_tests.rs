@@ -214,7 +214,7 @@ async fn approved_pairing_and_real_socket_proof_can_install_metadata_before_any_
     context.extend(raw(&opened["opening"]["opening_nonce"]));
     assert_eq!(context.len(), 192);
     let mut hmac =
-        <hmac::Hmac<Sha256> as hmac::Mac>::new_from_slice(&rand::random::<[u8; 32]>()).unwrap();
+        <hmac::Hmac<Sha256> as hmac::KeyInit>::new_from_slice(&rand::random::<[u8; 32]>()).unwrap();
     hmac::Mac::update(
         &mut hmac,
         &crate::sealed_manifest03::framed(b"ZT/protection/hmac-probe/v1\0", &context).unwrap(),
