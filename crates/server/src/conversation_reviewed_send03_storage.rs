@@ -26,14 +26,25 @@ pub enum ReviewedSendSchemaError {
 }
 type Result<T> = std::result::Result<T, ReviewedSendSchemaError>;
 fn body(name: &str, version: i64) -> Result<&'static str> {
-    let source = if version == 115
+    let source = if version == 116
+        && matches!(
+            name,
+            "payload_profile_writer_version"
+                | "payload_profile_writer_ready"
+                | "payload_profile_writer_guard"
+        ) {
+        include_str!(
+            "../../../deploy/compose/migrations/116_hosted_native_transaction_identity.sql"
+        )
+    } else if matches!(version, 115..=116)
         && matches!(
             name,
             "payload_profile_writer_version"
                 | "payload_profile_writer_ready"
                 | "payload_profile_writer_policy"
                 | "conversation_reviewed_send03_admit"
-        ) {
+        )
+    {
         include_str!("../../../deploy/compose/migrations/115_conversation_profile03_grants.sql")
     } else {
         MIGRATION
@@ -312,7 +323,7 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
         )
         .await?
         .try_get(0)?;
-    if !matches!(version, 114..=115) {
+    if !matches!(version, 114..=116) {
         return Err(ReviewedSendSchemaError::Invalid);
     }
     functions(db, version).await?;
