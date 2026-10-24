@@ -1,0 +1,1084 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zrotext.example/protocol/profile03-capture.schema.json",
+  "title": "Additive profile03 capture transport",
+  "$comment": "Closed syntax only, not permission. Exact current-source correlation, strict canonical bytes and signed i64 range, installed original113 proofs/custody/manifest ancestry/physical lease, first-receipt clock interval, one-use durable sequence/signing phases and commit ACK remain mandatory. Outer socket epoch is a JSON integer; projection counters/times are canonical decimal strings. Request/status <=4096 UTF8 bytes, upload <=48000, reply <=192KiB. Old grammars unchanged.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/permission_request"
+    },
+    {
+      "$ref": "#/$defs/permission_reply"
+    },
+    {
+      "$ref": "#/$defs/upload"
+    },
+    {
+      "$ref": "#/$defs/ack"
+    },
+    {
+      "$ref": "#/$defs/status_request"
+    },
+    {
+      "$ref": "#/$defs/status"
+    }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    "decimal": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,18}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "minLength": 43,
+      "maxLength": 43
+    },
+    "signature": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "minLength": 86,
+      "maxLength": 86
+    },
+    "statement": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "minLength": 927,
+      "maxLength": 1456
+    },
+    "reader": {
+      "type": "object",
+      "required": [
+        "connector_id",
+        "read_grant_id",
+        "key_id",
+        "key_point",
+        "manifest_generation",
+        "read_directions",
+        "registration_expires_ms",
+        "grant_expires_ms",
+        "key_valid_from_ms",
+        "key_valid_until_ms"
+      ],
+      "properties": {
+        "connector_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "read_grant_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "key_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "key_point": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 87,
+          "maxLength": 87
+        },
+        "manifest_generation": {
+          "$ref": "#/$defs/decimal"
+        },
+        "read_directions": {
+          "const": 12
+        },
+        "registration_expires_ms": {
+          "$ref": "#/$defs/decimal"
+        },
+        "grant_expires_ms": {
+          "$ref": "#/$defs/decimal"
+        },
+        "key_valid_from_ms": {
+          "$ref": "#/$defs/decimal"
+        },
+        "key_valid_until_ms": {
+          "$ref": "#/$defs/decimal"
+        }
+      },
+      "additionalProperties": false
+    },
+    "evidence": {
+      "type": "object",
+      "required": [
+        "root_pin",
+        "prior_manifest02",
+        "prior_accepted_ms",
+        "accepted_manifest03",
+        "accepted_ms",
+        "bundle",
+        "device_signing_point",
+        "owner_approval_point",
+        "registration_evidence",
+        "activation_evidence"
+      ],
+      "properties": {
+        "root_pin": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 126,
+          "maxLength": 126
+        },
+        "prior_manifest02": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 486,
+          "maxLength": 13002
+        },
+        "prior_accepted_ms": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "accepted_manifest03": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 488,
+          "maxLength": 13004
+        },
+        "accepted_ms": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$"
+        },
+        "bundle": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 838,
+          "maxLength": 838
+        },
+        "device_signing_point": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 87,
+          "maxLength": 87
+        },
+        "owner_approval_point": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 87,
+          "maxLength": 87
+        },
+        "registration_evidence": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 2,
+          "maxLength": 2731
+        },
+        "activation_evidence": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 2,
+          "maxLength": 2731
+        }
+      },
+      "additionalProperties": false
+    },
+    "physical": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "original_v2"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "refresh_id",
+            "bundle",
+            "accepted_ms",
+            "installed_ms"
+          ],
+          "properties": {
+            "kind": {
+              "const": "owner_refresh03"
+            },
+            "refresh_id": {
+              "$ref": "#/$defs/uuid"
+            },
+            "bundle": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "minLength": 994,
+              "maxLength": 994
+            },
+            "accepted_ms": {
+              "$ref": "#/$defs/decimal"
+            },
+            "installed_ms": {
+              "$ref": "#/$defs/decimal"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "permission": {
+      "type": "object",
+      "required": [
+        "v",
+        "kind",
+        "request_kind",
+        "request_id",
+        "interval_id",
+        "statement_sha256",
+        "statement",
+        "owner_signature",
+        "phone_signature",
+        "installed_signature",
+        "requested_ms",
+        "approved_ms",
+        "installed_ms",
+        "phase",
+        "device_session_digest",
+        "physical_selection_digest",
+        "owner_session_digest",
+        "compared_ms",
+        "permission_expires_ms",
+        "readers"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "kind": {
+          "const": "interval_permission03"
+        },
+        "request_kind": {
+          "const": "capture"
+        },
+        "request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "interval_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "statement_sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "statement": {
+          "$ref": "#/$defs/statement"
+        },
+        "owner_signature": {
+          "$ref": "#/$defs/signature"
+        },
+        "phone_signature": {
+          "$ref": "#/$defs/signature"
+        },
+        "installed_signature": {
+          "$ref": "#/$defs/signature"
+        },
+        "requested_ms": {
+          "$ref": "#/$defs/decimal"
+        },
+        "approved_ms": {
+          "$ref": "#/$defs/decimal"
+        },
+        "installed_ms": {
+          "$ref": "#/$defs/decimal"
+        },
+        "phase": {
+          "const": "active"
+        },
+        "device_session_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "physical_selection_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "owner_session_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "compared_ms": {
+          "$ref": "#/$defs/decimal"
+        },
+        "permission_expires_ms": {
+          "$ref": "#/$defs/decimal"
+        },
+        "readers": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "$ref": "#/$defs/reader"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "phase": {
+                "const": "reserved"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "owner_signature": {
+                "type": "null"
+              },
+              "requested_ms": {
+                "type": "null"
+              },
+              "phone_signature": {
+                "type": "null"
+              },
+              "approved_ms": {
+                "type": "null"
+              },
+              "installed_signature": {
+                "type": "null"
+              },
+              "installed_ms": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "phase": {
+                "const": "requested"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "owner_signature": {
+                "$ref": "#/$defs/signature"
+              },
+              "requested_ms": {
+                "$ref": "#/$defs/decimal"
+              },
+              "phone_signature": {
+                "type": "null"
+              },
+              "approved_ms": {
+                "type": "null"
+              },
+              "installed_signature": {
+                "type": "null"
+              },
+              "installed_ms": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "phase": {
+                "const": "install_pending"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "owner_signature": {
+                "$ref": "#/$defs/signature"
+              },
+              "requested_ms": {
+                "$ref": "#/$defs/decimal"
+              },
+              "phone_signature": {
+                "$ref": "#/$defs/signature"
+              },
+              "approved_ms": {
+                "$ref": "#/$defs/decimal"
+              },
+              "installed_signature": {
+                "type": "null"
+              },
+              "installed_ms": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "phase": {
+                "const": "active"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "owner_signature": {
+                "$ref": "#/$defs/signature"
+              },
+              "requested_ms": {
+                "$ref": "#/$defs/decimal"
+              },
+              "phone_signature": {
+                "$ref": "#/$defs/signature"
+              },
+              "approved_ms": {
+                "$ref": "#/$defs/decimal"
+              },
+              "installed_signature": {
+                "$ref": "#/$defs/signature"
+              },
+              "installed_ms": {
+                "$ref": "#/$defs/decimal"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "request_kind": {
+                "const": "fetch"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "phase": {
+                "const": "active"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "owner_signature": {
+                "type": "null"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "requested_ms": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "requested_ms": {
+                "$ref": "#/$defs/decimal"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "phone_signature": {
+                "type": "null"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "approved_ms": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "approved_ms": {
+                "$ref": "#/$defs/decimal"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "installed_signature": {
+                "type": "null"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "installed_ms": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "installed_ms": {
+                "$ref": "#/$defs/decimal"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "phone_signature": {
+                "type": "string"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "owner_signature": {
+                "$ref": "#/$defs/signature"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "installed_signature": {
+                "type": "string"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "phone_signature": {
+                "$ref": "#/$defs/signature"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "socket_epoch": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9223372036854775807
+    },
+    "current": {
+      "type": "object",
+      "required": [
+        "v",
+        "kind",
+        "request_kind",
+        "request_id",
+        "capture_id",
+        "interval_id",
+        "account_id",
+        "user_id",
+        "owner_session_id",
+        "device_id",
+        "line_id",
+        "old_binding_id",
+        "binding_id",
+        "observed_ms",
+        "observed_upper_ms",
+        "selection_epoch",
+        "connection_epoch",
+        "deployment_epoch",
+        "old_binding_generation",
+        "binding_generation",
+        "trust_generation",
+        "manifest_version",
+        "compared_ms",
+        "permission_expires_ms",
+        "origin_digest",
+        "owner_session_digest",
+        "device_session_digest",
+        "old_binding_proof_digest",
+        "reader_key_id",
+        "archive_reader_key_id",
+        "phone_signer_key_id",
+        "device_signing_key_id",
+        "approval_key_id",
+        "root_fingerprint",
+        "manifest_digest",
+        "election_digest",
+        "election_bundle_sha256",
+        "manifest_ancestry_sha256",
+        "envelope_profile",
+        "manifest_profile",
+        "site_id",
+        "instance_id",
+        "evidence",
+        "physical_selection",
+        "current_manifest03"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "kind": {
+          "const": "capture_permission03"
+        },
+        "request_kind": {
+          "const": "capture"
+        },
+        "request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "capture_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "interval_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "account_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "user_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "owner_session_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "device_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "line_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "old_binding_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "binding_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "observed_ms": {
+          "$ref": "#/$defs/decimal"
+        },
+        "observed_upper_ms": {
+          "$ref": "#/$defs/decimal"
+        },
+        "selection_epoch": {
+          "$ref": "#/$defs/decimal"
+        },
+        "connection_epoch": {
+          "$ref": "#/$defs/decimal"
+        },
+        "deployment_epoch": {
+          "$ref": "#/$defs/decimal"
+        },
+        "old_binding_generation": {
+          "$ref": "#/$defs/decimal"
+        },
+        "binding_generation": {
+          "$ref": "#/$defs/decimal"
+        },
+        "trust_generation": {
+          "$ref": "#/$defs/decimal"
+        },
+        "manifest_version": {
+          "$ref": "#/$defs/decimal"
+        },
+        "compared_ms": {
+          "$ref": "#/$defs/decimal"
+        },
+        "permission_expires_ms": {
+          "$ref": "#/$defs/decimal"
+        },
+        "origin_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "owner_session_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "device_session_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "old_binding_proof_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "reader_key_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "archive_reader_key_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "phone_signer_key_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "device_signing_key_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "approval_key_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "root_fingerprint": {
+          "$ref": "#/$defs/digest"
+        },
+        "manifest_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "election_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "election_bundle_sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "manifest_ancestry_sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "envelope_profile": {
+          "const": 3
+        },
+        "manifest_profile": {
+          "const": 3
+        },
+        "site_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\u0000-\u001f\u007f]+$"
+        },
+        "instance_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\u0000-\u001f\u007f]+$"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        },
+        "physical_selection": {
+          "$ref": "#/$defs/physical"
+        },
+        "current_manifest03": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 488,
+          "maxLength": 13004
+        }
+      },
+      "additionalProperties": false
+    },
+    "permission_request": {
+      "type": "object",
+      "required": [
+        "v",
+        "type",
+        "connection_epoch",
+        "request_id",
+        "capture_id",
+        "interval_id",
+        "statement_sha256",
+        "observed_ms",
+        "observed_upper_ms"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "conversation_capture_permission03_request"
+        },
+        "connection_epoch": {
+          "$ref": "#/$defs/socket_epoch"
+        },
+        "request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "capture_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "interval_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "statement_sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "observed_ms": {
+          "$ref": "#/$defs/decimal"
+        },
+        "observed_upper_ms": {
+          "$ref": "#/$defs/decimal"
+        }
+      },
+      "additionalProperties": false
+    },
+    "permission_reply": {
+      "type": "object",
+      "required": [
+        "v",
+        "type",
+        "connection_epoch",
+        "request_id",
+        "capture_id",
+        "interval_id",
+        "current",
+        "interval_permission"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "conversation_capture_permission03"
+        },
+        "connection_epoch": {
+          "$ref": "#/$defs/socket_epoch"
+        },
+        "request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "capture_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "interval_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "current": {
+          "$ref": "#/$defs/current"
+        },
+        "interval_permission": {
+          "$ref": "#/$defs/permission"
+        }
+      },
+      "additionalProperties": false
+    },
+    "upload": {
+      "type": "object",
+      "required": [
+        "v",
+        "type",
+        "connection_epoch",
+        "request_id",
+        "capture_id",
+        "interval_id",
+        "device_sequence",
+        "envelope",
+        "intent",
+        "signature"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "conversation_capture03"
+        },
+        "connection_epoch": {
+          "$ref": "#/$defs/socket_epoch"
+        },
+        "request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "capture_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "interval_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "device_sequence": {
+          "$ref": "#/$defs/decimal"
+        },
+        "envelope": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 568,
+          "maxLength": 45443
+        },
+        "intent": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 1256,
+          "maxLength": 1538
+        },
+        "signature": {
+          "$ref": "#/$defs/signature"
+        }
+      },
+      "additionalProperties": false
+    },
+    "receipt": {
+      "type": "object",
+      "required": [
+        "receipt_id",
+        "request_id",
+        "capture_id",
+        "interval_id",
+        "device_sequence",
+        "envelope_sha256",
+        "intent_sha256",
+        "signature_sha256",
+        "device_session_digest",
+        "accepted_ms"
+      ],
+      "properties": {
+        "receipt_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "capture_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "interval_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "device_sequence": {
+          "$ref": "#/$defs/decimal"
+        },
+        "envelope_sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "intent_sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "signature_sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "device_session_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "accepted_ms": {
+          "$ref": "#/$defs/decimal"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ack": {
+      "type": "object",
+      "required": [
+        "v",
+        "type",
+        "connection_epoch",
+        "receipt"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "conversation_capture03_ack"
+        },
+        "connection_epoch": {
+          "$ref": "#/$defs/socket_epoch"
+        },
+        "receipt": {
+          "$ref": "#/$defs/receipt"
+        }
+      },
+      "additionalProperties": false
+    },
+    "status_request": {
+      "type": "object",
+      "required": [
+        "v",
+        "type",
+        "connection_epoch",
+        "status_request_id",
+        "capture_id",
+        "envelope_sha256",
+        "intent_sha256",
+        "signature_sha256"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "conversation_capture_status03_request"
+        },
+        "connection_epoch": {
+          "$ref": "#/$defs/socket_epoch"
+        },
+        "status_request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "capture_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "envelope_sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "intent_sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "signature_sha256": {
+          "$ref": "#/$defs/digest"
+        }
+      },
+      "additionalProperties": false
+    },
+    "status": {
+      "type": "object",
+      "required": [
+        "v",
+        "type",
+        "connection_epoch",
+        "status_request_id",
+        "capture_id",
+        "status",
+        "receipt"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "const": "conversation_capture_status03"
+        },
+        "connection_epoch": {
+          "$ref": "#/$defs/socket_epoch"
+        },
+        "status_request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "capture_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "status": {
+          "enum": [
+            "accepted",
+            "not_found"
+          ]
+        },
+        "receipt": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/receipt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "status": {
+              "const": "accepted"
+            },
+            "receipt": {
+              "$ref": "#/$defs/receipt"
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "not_found"
+            },
+            "receipt": {
+              "type": "null"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
