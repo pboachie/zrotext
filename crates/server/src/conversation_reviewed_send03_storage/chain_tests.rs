@@ -163,6 +163,16 @@ async fn namespace_shadow_and_owner_role_still_cannot_supply_runtime_readiness()
         .batch_execute(&format!("SET search_path TO pg_catalog,{schema},public"))
         .await
         .unwrap();
+    // An entirely absent feature in a resolved older namespace stays optional;
+    // it still cannot provide the required current capability.
+    assert!(!optional(&f.reader).await.unwrap());
+    assert!(require_v2(&f.reader).await.is_err());
+    f.owner
+        .batch_execute(&format!(
+            "CREATE TABLE {schema}.conversation_reviewed_sends03(value integer)"
+        ))
+        .await
+        .unwrap();
     assert!(optional(&f.reader).await.is_err());
     assert!(require_v2(&f.reader).await.is_err());
     f.reader
