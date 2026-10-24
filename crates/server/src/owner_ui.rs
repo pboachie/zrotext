@@ -237,6 +237,27 @@ pub fn conversation_router() -> Router {
             ),
         )
         .route(
+            "/owner/conversation-interval03-recovery.js",
+            asset(
+                include_str!("../../../web/owner/conversation-interval03-recovery.js"),
+                "text/javascript; charset=utf-8",
+            ),
+        )
+        .route(
+            "/owner/conversation-interval03.js",
+            asset(
+                include_str!("../../../web/owner/conversation-interval03.js"),
+                "text/javascript; charset=utf-8",
+            ),
+        )
+        .route(
+            "/owner/conversation-interval03-page.js",
+            asset(
+                include_str!("../../../web/owner/conversation-interval03-page.js"),
+                "text/javascript; charset=utf-8",
+            ),
+        )
+        .route(
             "/owner/conversation-line-setup.js",
             asset(
                 include_str!("../../../web/owner/conversation-line-setup.js"),
