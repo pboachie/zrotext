@@ -601,4 +601,48 @@ BEGIN
  END LOOP;
 END;
 $migration$;
+
+-- Typed effect originals are account-lifetime history, not direct authority.
+DO $migration$
+DECLARE relation_name text;columns_sql text;routine record;
+BEGIN
+
+ -- Exact119 capability only. A completely absent older installation may skip;
+ -- a partial or recorded capability cannot receive a weaker stock reset.
+ IF NOT EXISTS(SELECT FROM pg_class c WHERE c.relnamespace='public'::regnamespace AND EXISTS(SELECT FROM unnest(ARRAY['conversation_profile03_effect_actors','conversation_profile03_submits','conversation_profile03_outcomes','conversation_profile03_closure_records','conversation_profile03_closure_challenges','conversation_profile03_closure_receipts','conversation_profile03_effect_quarantines']::text[]) AS f(name) WHERE starts_with(c.relname::text,f.name)))
+  AND NOT EXISTS(SELECT FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname LIKE 'conversation_profile03_effect_%') THEN
+  IF EXISTS(SELECT FROM public.schema_migrations WHERE version>=119) THEN RAISE EXCEPTION 'recorded typed effect capability absent'; END IF;
+  IF to_regclass('public.payload_profile_writer_catalog') IS NOT NULL THEN
+   IF EXISTS(SELECT FROM public.payload_profile_writer_catalog WHERE migration_version>=119) THEN RAISE EXCEPTION 'recorded typed effect catalog absent'; END IF;
+  END IF;
+  RETURN;
+ END IF;
+ IF(SELECT count(*) FROM pg_class WHERE relnamespace='public'::regnamespace AND relname IN('conversation_profile03_effect_actors','conversation_profile03_submits','conversation_profile03_outcomes','conversation_profile03_closure_records','conversation_profile03_closure_challenges','conversation_profile03_closure_receipts','conversation_profile03_effect_quarantines') AND relkind='r')<>7
+  OR(SELECT count(*) FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname LIKE 'conversation_profile03_effect_%')<>22
+  OR NOT ARRAY['conversation_profile03_effect_fetch','conversation_profile03_effect_mode','conversation_profile03_effect_actor','conversation_profile03_effect_history_lock','conversation_profile03_effect_not_quarantined','conversation_profile03_effect_submit_bytes','conversation_profile03_effect_identity','conversation_profile03_effect_current','conversation_profile03_effect_submit','conversation_profile03_effect_state','conversation_profile03_effect_project','conversation_profile03_effect_outcome','conversation_profile03_effect_session','conversation_profile03_effect_closure_core','conversation_profile03_effect_closure_challenge','conversation_profile03_effect_closure_accept','conversation_profile03_effect_pending','conversation_profile03_effect_target','conversation_profile03_effect_writer','conversation_profile03_effect_rows_guard','conversation_profile03_effect_complete','conversation_profile03_effect_ready']::text[] <@ ARRAY(SELECT proname::text FROM pg_proc WHERE pronamespace='public'::regnamespace)
+  OR EXISTS(SELECT FROM pg_class c WHERE c.relnamespace='public'::regnamespace AND EXISTS(SELECT FROM unnest(ARRAY['conversation_profile03_effect_actors','conversation_profile03_submits','conversation_profile03_outcomes','conversation_profile03_closure_records','conversation_profile03_closure_challenges','conversation_profile03_closure_receipts','conversation_profile03_effect_quarantines']::text[]) AS f(name) WHERE starts_with(c.relname::text,f.name)) AND(c.relkind NOT IN('r','i')
+ OR(c.relkind='r' AND c.relname::text NOT IN('conversation_profile03_effect_actors','conversation_profile03_submits','conversation_profile03_outcomes','conversation_profile03_closure_records','conversation_profile03_closure_challenges','conversation_profile03_closure_receipts','conversation_profile03_effect_quarantines'))
+ OR(c.relkind='i' AND NOT EXISTS(SELECT FROM pg_index i JOIN pg_class t ON t.oid=i.indrelid WHERE i.indexrelid=c.oid AND t.relnamespace='public'::regnamespace AND t.relname::text IN('conversation_profile03_effect_actors','conversation_profile03_submits','conversation_profile03_outcomes','conversation_profile03_closure_records','conversation_profile03_closure_challenges','conversation_profile03_closure_receipts','conversation_profile03_effect_quarantines'))))) THEN
+  RAISE EXCEPTION 'partial typed effect capability'; END IF;
+ FOREACH relation_name IN ARRAY ARRAY['conversation_profile03_effect_actors','conversation_profile03_submits','conversation_profile03_outcomes','conversation_profile03_closure_records','conversation_profile03_closure_challenges','conversation_profile03_closure_receipts','conversation_profile03_effect_quarantines'] LOOP
+  EXECUTE format('REVOKE ALL ON TABLE public.%I FROM PUBLIC',relation_name);
+  SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) INTO columns_sql FROM pg_attribute WHERE attrelid=format('public.%I',relation_name)::regclass AND attnum>0 AND NOT attisdropped;
+  EXECUTE format('REVOKE ALL (%s) ON TABLE public.%I FROM PUBLIC',columns_sql,relation_name);
+  IF EXISTS(SELECT FROM pg_roles WHERE rolname='zrotext_runtime') THEN
+   EXECUTE format('REVOKE ALL ON TABLE public.%I FROM zrotext_runtime',relation_name);
+   EXECUTE format('REVOKE ALL (%s) ON TABLE public.%I FROM zrotext_runtime',columns_sql,relation_name);
+   EXECUTE format('GRANT SELECT ON TABLE public.%I TO zrotext_runtime',relation_name);
+  END IF;
+ END LOOP;
+ FOR routine IN SELECT p.oid::regprocedure AS signature,p.proname FROM pg_proc p
+  WHERE p.pronamespace='public'::regnamespace AND p.proname LIKE 'conversation_profile03_effect_%' LOOP
+  EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',routine.signature);
+  IF EXISTS(SELECT FROM pg_roles WHERE rolname='zrotext_runtime') THEN
+   EXECUTE format('REVOKE ALL ON FUNCTION %s FROM zrotext_runtime',routine.signature);
+   IF routine.proname IN('conversation_profile03_effect_history_lock','conversation_profile03_effect_submit','conversation_profile03_effect_outcome','conversation_profile03_effect_closure_challenge','conversation_profile03_effect_closure_accept','conversation_profile03_effect_ready') THEN EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO zrotext_runtime',routine.signature); END IF;
+  END IF;
+ END LOOP;
+END;
+$migration$;
+
 COMMIT;
