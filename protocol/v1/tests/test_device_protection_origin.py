@@ -62,6 +62,18 @@ class ProtectionOriginTests(unittest.TestCase):
         self.assertEqual(self.b,core+raw(self.v['device_signature'])+raw(self.v['canary_signature']));self.assertEqual(len(self.b),521)
         self.assertEqual(raw(p['enrolled_key_id']),H(b'ZTSE/key/v1\0\x01\x01'+raw(p['enrolled_point'])))
         for name,data in [('association',self.a),('core',self.c),('bundle',self.b)]:self.assertEqual(raw(self.v['sha256'][name]),H(data))
+    def test_closed_control_shapes_preserve_nulls_and_reject_other_protocols(self):
+        schema=json.loads((ROOT/'device-protection-control-v1.schema.json').read_text());validator=jsonschema.Draft202012Validator(schema)
+        p=self.p;shared=dict(v=1,connection_epoch=1,setup_id=p['setup_id'],opening_id=p['opening_id'],command_id=p['command_id'])
+        request=dict(shared,type='protection_origin_proof_open',proof_request_id=p['attempt_id'],association=self.v['association'],aes_probe=p['aes_probe'],previous_attempt_id=None,previous_core_sha256=None,previous_bundle_sha256=None)
+        validator.validate(request)
+        for changed in [dict(request,body_digest=p['origin_digest']),dict(request,type='radio_event'),{k:v for k,v in request.items() if k!='previous_bundle_sha256'}]:
+            with self.assertRaises(jsonschema.ValidationError):validator.validate(changed)
+        proof=dict(shared,type='protection_origin_proof',proof_request_id=p['attempt_id'],attempt_id=p['attempt_id'],bundle=self.v['bundle']);validator.validate(proof)
+        self.assertLess(len(json.dumps(proof,separators=(',',':')).encode()),4096)
+        status=dict(shared,type='protection_origin_status',request_id=p['attempt_id'],proof_request_id=None,status='not_found',opening=None,challenge=None,receipt=None);validator.validate(status)
+        with self.assertRaises(jsonschema.ValidationError):validator.validate(dict(status,permission=True))
+
     def test_two_actual_low_s_signatures_and_domain_scope_refusals(self):
         p=self.p;ds=raw(self.v['device_signature']);cs=raw(self.v['canary_signature']);dp=raw(p['enrolled_point']);cp=raw(p['canary_point'])
         first=framed('ZT/protection/first-origin-device/v1',self.c);second=framed('ZT/protection/first-origin-canary/v1',self.c+H(ds))
