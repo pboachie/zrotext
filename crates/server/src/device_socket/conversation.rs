@@ -27,6 +27,9 @@ impl Policy {
         self.origin_hash
     }
     pub(super) fn new(origin: &str) -> Result<Self, &'static str> {
+        if origin.chars().any(char::is_whitespace) {
+            return Err("Conversation WSS origin invalid");
+        }
         let url = url::Url::parse(origin).map_err(|_| "Conversation WSS origin invalid")?;
         if url.scheme() != "wss"
             || !url.username().is_empty()

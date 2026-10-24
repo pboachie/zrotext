@@ -210,7 +210,7 @@ fn validate_protection_stream_origin(
 ) -> Result<(), &'static str> {
     if let Some(origin) = ordinary {
         let digest = device_socket::protection_origin_digest(origin)?;
-        if let Some(other) = conversation
+        if let Some(other) = conversation.filter(|value| !value.is_empty())
             && digest != device_socket::protection_origin_digest(other)?
         {
             return Err("device-stream and conversation WSS origins disagree");
@@ -234,9 +234,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let conversation_wss_origin = env::var("CONVERSATION_WSS_ORIGIN").ok();
     validate_protection_stream_origin(
         device_stream_origin.as_deref(),
-        conversation_enabled
-            .then_some(conversation_wss_origin.as_deref())
-            .flatten(),
+        conversation_wss_origin.as_deref(),
     )?;
     let sealed_setup_enabled = optional_bool("SEALED_LINE_SETUP_ENABLED")?;
     if sealed_setup_enabled && !conversation_enabled {
@@ -1961,6 +1959,17 @@ mod tests {
                 validate_protection_stream_origin(Some("wss://example.org"), Some(other)).is_err()
             );
         }
+    }
+
+    #[test]
+    fn disabled_conversations_do_not_hide_a_conflicting_configured_stream_origin() {
+        use zrotext_server::http_owner_conversations::composition::Startup;
+        let other = "wss://other.example";
+        assert!(Startup::load(false, None, Some(other)).unwrap().is_none());
+        assert!(validate_protection_stream_origin(Some("wss://example.org"), Some(other)).is_err());
+        assert!(validate_protection_stream_origin(Some("wss://example.org"), Some("")).is_ok());
+        // Unconfigured ordinary metadata leaves the legacy disabled path alone.
+        assert!(validate_protection_stream_origin(None, Some("invalid")).is_ok());
     }
 
     #[test]
