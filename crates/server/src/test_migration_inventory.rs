@@ -129,6 +129,7 @@ const CURRENT: &[(&str, &str)] = &[
     migration!("115_conversation_profile03_grants.sql"),
     migration!("116_hosted_native_transaction_identity.sql"),
     migration!("117_explicit_reviewed_intent_v2.sql"),
+    migration!("118_device_protection_origins.sql"),
 ];
 
 fn assert_current_inventory() {

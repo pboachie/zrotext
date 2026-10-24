@@ -26,7 +26,16 @@ pub enum ReviewedSendSchemaError {
 }
 type Result<T> = std::result::Result<T, ReviewedSendSchemaError>;
 fn body(name: &str, version: i64) -> Result<&'static str> {
-    let source = if version == 117
+    let source = if version == 118
+        && matches!(
+            name,
+            "payload_profile_writer_policy"
+                | "payload_profile_writer_version"
+                | "payload_profile_writer_ready"
+                | "conversation_reviewed_send03_v2_ready"
+        ) {
+        include_str!("../../../deploy/compose/migrations/118_device_protection_origins.sql")
+    } else if matches!(version, 117..=118)
         && matches!(
             name,
             "payload_profile_writer_version"
@@ -39,9 +48,10 @@ fn body(name: &str, version: i64) -> Result<&'static str> {
                 | "conversation_reviewed_send03_writer"
                 | "conversation_reviewed_send03_ready"
                 | "conversation_reviewed_send03_v2_ready"
-        ) {
+        )
+    {
         include_str!("../../../deploy/compose/migrations/117_explicit_reviewed_intent_v2.sql")
-    } else if matches!(version, 116..=117)
+    } else if matches!(version, 116..=118)
         && matches!(
             name,
             "payload_profile_writer_version"
@@ -52,7 +62,7 @@ fn body(name: &str, version: i64) -> Result<&'static str> {
         include_str!(
             "../../../deploy/compose/migrations/116_hosted_native_transaction_identity.sql"
         )
-    } else if matches!(version, 115..=117)
+    } else if matches!(version, 115..=118)
         && matches!(
             name,
             "payload_profile_writer_version"
@@ -260,7 +270,7 @@ async fn functions<C: GenericClient + Sync>(db: &C, version: i64) -> Result<()> 
         ),
     ]
     .into_iter()
-    .chain((version == 117).then_some((
+    .chain(matches!(version, 117..=118).then_some((
         "conversation_reviewed_send03_v2_ready",
         "",
         "boolean",
@@ -352,7 +362,7 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
         )
         .await?
         .try_get(0)?;
-    if !matches!(version, 114..=117) {
+    if !matches!(version, 114..=118) {
         return Err(ReviewedSendSchemaError::Invalid);
     }
     functions(db, version).await?;
@@ -383,7 +393,7 @@ pub async fn require_v2<C: GenericClient + Sync>(db: &C) -> Result<()> {
         )
         .await?
         .try_get(0)?;
-    if version != 117
+    if !matches!(version, 117..=118)
         || !db
             .query_one("SELECT public.conversation_reviewed_send03_v2_ready()", &[])
             .await?
