@@ -21,12 +21,18 @@ pub(super) async fn prepared_actual_genesis() -> (Case, Vec<u8>) {
 pub(super) async fn prepared_claimed_genesis() -> (Case, Vec<u8>) {
     prepared_with_keys(true, true).await
 }
+pub(super) async fn prepared_socket_genesis() -> (Case, Vec<u8>) {
+    prepared_case(Case::new_socket().await, true).await
+}
 async fn prepared_with_keys(actual_genesis: bool, claimed: bool) -> (Case, Vec<u8>) {
-    let mut c = if claimed {
+    let c = if claimed {
         Case::new_claimed().await
     } else {
         Case::new().await
     };
+    prepared_case(c, actual_genesis).await
+}
+async fn prepared_case(mut c: Case, actual_genesis: bool) -> (Case, Vec<u8>) {
     c.heartbeat().await;
     c.approve().await;
     let lease = c.lease();

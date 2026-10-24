@@ -26,6 +26,7 @@ mod reviewed_send_billing_tests;
 mod reviewed_send_tests;
 mod selection_refresh_tests;
 mod typed_effect_tests;
+mod typed_socket_tests;
 mod typed_submit_tests;
 use fixture::{prepared, sign, source};
 

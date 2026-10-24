@@ -69,7 +69,7 @@ async fn reconnect(c: &mut Case) -> crate::device_socket::SocketActor {
     current
 }
 
-async fn retained(c: &Case) -> String {
+pub(super) async fn retained(c: &Case) -> String {
     c.db.reader.query_one(
         "SELECT jsonb_agg(fact ORDER BY fact::text)::text FROM (
          SELECT jsonb_build_array('anchor',t.xmin::text,to_jsonb(t)) AS fact FROM public.payload_profile_account_anchors t WHERE account_id=$1
@@ -90,7 +90,7 @@ async fn retained(c: &Case) -> String {
     ).await.unwrap().get(0)
 }
 
-async fn liabilities(c: &Case, message: Uuid) -> (String, String, i64, i64, i64) {
+pub(super) async fn liabilities(c: &Case, message: Uuid) -> (String, String, i64, i64, i64) {
     let row=c.db.reader.query_one(
         "SELECT m.state,f.outcome,(SELECT count(*) FROM public.message_attempts a WHERE(a.account_id,a.message_id)=(m.account_id,m.id)),(SELECT count(*) FROM public.usage_ledger u WHERE(u.account_id,u.message_id)=(m.account_id,m.id) AND u.entry_kind='reserve'),(SELECT count(*) FROM public.usage_ledger u WHERE(u.account_id,u.message_id)=(m.account_id,m.id) AND u.entry_kind='refund') FROM public.messages m JOIN public.conversation_profile03_grants g ON(g.account_id,g.message_id)=(m.account_id,m.id) JOIN public.dispatch_fences f ON(f.account_id,f.attempt_id)=(g.account_id,g.attempt_id) WHERE m.account_id=$1 AND m.id=$2",
         &[&c.principal.tenant.account_id(),&message],
