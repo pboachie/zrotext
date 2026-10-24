@@ -158,9 +158,9 @@ class Profile03ElectionJournalTest {
                 it.version = 14
             }
             Room.databaseBuilder(context, SmsJournalDatabase::class.java, name).allowMainThreadQueries()
-                .addMigrations(SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17, SmsJournalDatabase.MIGRATION_17_18, SmsJournalDatabase.MIGRATION_18_19, SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24, SmsJournalDatabase.MIGRATION_24_25).build().let { db ->
+                .addMigrations(SmsJournalDatabase.MIGRATION_14_15, SmsJournalDatabase.MIGRATION_15_16, SmsJournalDatabase.MIGRATION_16_17, SmsJournalDatabase.MIGRATION_17_18, SmsJournalDatabase.MIGRATION_18_19, SmsJournalDatabase.MIGRATION_19_20, SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22, SmsJournalDatabase.MIGRATION_22_23, SmsJournalDatabase.MIGRATION_23_24, SmsJournalDatabase.MIGRATION_24_25, SmsJournalDatabase.MIGRATION_25_26).build().let { db ->
                     try {
-                        assertEquals(25, db.openHelper.readableDatabase.version)
+                        assertEquals(26, db.openHelper.readableDatabase.version)
                         assertEquals(line, db.attempts().currentLineBinding())
                         assertEquals(AttemptState.UNKNOWN, db.attempts().getAttempt(attempt)?.state)
                         assertNull(db.profile03Elections().installed(line.accountId, line.lineId))

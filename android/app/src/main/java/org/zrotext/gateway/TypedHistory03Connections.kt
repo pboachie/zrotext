@@ -6,18 +6,28 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import okhttp3.WebSocket
 
 /** Distinct passive port for the actual enrolled socket. Health, old owner/physical/content
  * lifetimes and AlphaPump are deliberately absent; this port cannot create an effect. */
 internal object TypedHistory03Connections {
     private val current = AtomicReference<Host?>()
+    // Notification ONLY. A collector always reads/rechecks the actual current Host;
+    // this revision cannot authenticate an actor or become a time/permission snapshot.
+    private val revisions = AtomicLong(0)
+    private val changes = MutableStateFlow(0L)
+    val hostChanges: StateFlow<Long> = changes.asStateFlow()
+    private fun changed() { changes.value = revisions.incrementAndGet() }
     fun register(socket: WebSocket, identity: EvidenceIdentity, epoch: Long, lineVersion: Int,
         handshakePoint: ByteArray, actorCurrent: () -> Unit, elapsedMs: () -> Long = SystemClock::elapsedRealtime): Host {
         actorCurrent(); require(epoch > 0 && lineVersion in 1..2)
         val host = Host(socket, identity.copy(), epoch, lineVersion, handshakePoint.copyOf(), actorCurrent, elapsedMs)
         current.getAndSet(host)?.close()
-        return host.also { it.requireCurrent() }
+        return host.also { it.requireCurrent(); changed() }
     }
     fun current() = current.get()?.takeIf { try { it.requireCurrent(); true } catch (_: Exception) { false } }
 
@@ -34,6 +44,18 @@ internal object TypedHistory03Connections {
         private class OutcomePending(val entry: TypedOutcome03Entry,
             val future: CompletableFuture<TypedOutcome03Wire.Ack>)
         private val outcomePending = AtomicReference<OutcomePending?>()
+        private class ClosurePending(val entry: TypedNoSubmit03Entry, val future: CompletableFuture<ClosureReply>)
+        private val closurePending = AtomicReference<ClosurePending?>()
+        private var closureObservation: ClosureReply? = null
+        class ClosureReply private constructor(private val owner: Host, val io: TypedNoSubmit03Io, private val raw: ByteArray) {
+            fun bytes() = raw.copyOf()
+            fun requireLiveStatus() {
+                owner.requireCurrent()
+                synchronized(owner) { check(owner.closureObservation === this) }
+                require(io.kind == "status"); owner.requireCurrent()
+            }
+            companion object { internal fun returned(owner: Host, io: TypedNoSubmit03Io, raw: ByteArray) = ClosureReply(owner, io, raw.copyOf()) }
+        }
         private var observation: TypedHistory03Clock.Sample? = null
         private var primaryFloor = 0L
         fun elapsedMs() = elapsed()
@@ -52,7 +74,7 @@ internal object TypedHistory03Connections {
 
         /** The dedicated history worker must win its durable new-request entry CAS first.
          * Never wait here from Room, a key/storage lock, ingress gate, UI or socket listener. */
-        fun request(expected: TypedSubmit03Record, entry: TypedHistory03Entry): TypedHistory03Clock.Sample {
+        fun request(expected: TypedSubmit03Record, entry: TypedHistory03Entry, currentDecision: () -> Unit = {}): TypedHistory03Clock.Sample {
             Capture03IngressGate.requireOutside()
             val request = entry.consume()
             requireOriginal(expected); request.requireOriginal(expected)
@@ -65,7 +87,7 @@ internal object TypedHistory03Connections {
             val call = Pending(request, sent, CompletableFuture())
             check(pending.compareAndSet(null, call)) { "A passive history read is already pending" }
             try {
-                requireCurrent()
+                requireCurrent(); currentDecision()
                 check(socket.send(text))
                 val (reply, received) = call.future.get(10, TimeUnit.SECONDS)
                 requireCurrent()
@@ -145,12 +167,51 @@ internal object TypedHistory03Connections {
                 throw failure
             }
         }
+        /** One original-actor management invocation only after its writer entry. The
+         * decision is checked at the actual send, after all storage/transport entry work. */
+        fun exchangeClosure(entry: TypedNoSubmit03Entry, currentDecision: () -> Unit): ClosureReply {
+            Capture03IngressGate.requireOutside()
+            val raw = entry.consume(); requireOriginal(entry.original)
+            require(entry.io.connectionEpoch == epoch)
+            val text = Charsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(raw)).toString()
+            val call = ClosurePending(entry, CompletableFuture())
+            check(closurePending.compareAndSet(null, call))
+            try {
+                requireOriginal(entry.original); currentDecision(); check(socket.send(text))
+                // A returned result remains candidate history after foreground withdrawal.
+                // Its private live-status check is independently required for progress.
+                return call.future.get(10, TimeUnit.SECONDS)
+            } finally { closurePending.compareAndSet(call, null) }
+        }
+        fun acceptClosure(raw: ByteArray) {
+            requireCurrent(); val call = closurePending.get() ?: return
+            val exact = raw.copyOf()
+            try {
+                val f = Profile03Json.noSubmitObject(exact)
+                val io = call.entry.io; val p = call.entry.proof; val row = call.entry.original
+                val expectedType = when (io.kind) { "challenge" -> "payload_profile_no_submit_challenge03"
+                    "status" -> "payload_profile_no_submit_status03"; "proof" -> "payload_profile_no_submit_ack03"; else -> error("Closure operation") }
+                if (f["type"] != expectedType) return
+                if (f["proof_request_id"] != p.requestId || io.kind == "status" && f["request_id"] != io.requestId) return
+                when (io.kind) {
+                    "challenge" -> TypedNoSubmit03Wire.decodeChallenge(exact, row, p, epoch)
+                    "status" -> TypedNoSubmit03Wire.decodeStatus(exact, row, p, io.requestId, epoch)
+                    "proof" -> TypedNoSubmit03Wire.decodeAck(exact, row, p, epoch)
+                    else -> error("Closure operation")
+                }
+                requireOriginal(row)
+                val reply = ClosureReply.returned(this, io, exact)
+                synchronized(this) { requireCurrent(); check(closurePending.get() === call); closureObservation = reply }
+                call.future.complete(reply)
+            } catch (failure: Exception) { call.future.completeExceptionally(failure); throw failure }
+        }
         override fun close() {
             if (closed.compareAndSet(false, true)) {
-                current.compareAndSet(this, null)
-                synchronized(this) { observation = null }
+                if (current.compareAndSet(this, null)) changed()
+                synchronized(this) { observation = null; closureObservation = null }
                 pending.getAndSet(null)?.future?.completeExceptionally(IllegalStateException("History actor connection ended"))
                 outcomePending.getAndSet(null)?.future?.completeExceptionally(IllegalStateException("History actor connection ended"))
+                closurePending.getAndSet(null)?.future?.completeExceptionally(IllegalStateException("History actor connection ended"))
             }
         }
         override fun toString() = "TypedHistory03Host(passive-original-actor)"
