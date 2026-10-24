@@ -206,14 +206,15 @@ class SmsCallbackReceiver : BroadcastReceiver() {
         val app = context.applicationContext
         JournalRuntime.io.execute {
             try {
-                SmsJournalDatabase.get(app).attempts()
-                    .recordCallback(attemptId, index, delivery, result,
-                        if (delivery) {
-                            if (result == android.app.Activity.RESULT_OK) readDeliveryStatus(pdu, format)
-                            else DeliveryStatus.UNVERIFIED
-                        } else null,
-                        System.currentTimeMillis())
-                JournalWriteSignal.alphaEventRecorded()
+                val journal = SmsJournalDatabase.get(app)
+                val status = if (delivery) {
+                    if (result == android.app.Activity.RESULT_OK) readDeliveryStatus(pdu, format)
+                    else DeliveryStatus.UNVERIFIED
+                } else null
+                val now = System.currentTimeMillis()
+                // Permanent classification, not a RAM registry or present effect permission.
+                // Storage failure never falls back to the legacy pump.
+                SmsCallbackJournal.record(journal, attemptId, index, delivery, result, status, now)
             } finally {
                 pending.finish()
             }
@@ -233,6 +234,17 @@ class SmsCallbackReceiver : BroadcastReceiver() {
     companion object {
         const val ACTION_SENT = "org.zrotext.gateway.SMS_SENT"
         const val ACTION_DELIVERED = "org.zrotext.gateway.SMS_DELIVERED"
+    }
+}
+
+/** Shared actual cold receiver route. No catch permits a failed typed read to become legacy. */
+internal object SmsCallbackJournal {
+    fun record(journal: SmsJournalDatabase, attempt: String, index: Int, delivery: Boolean,
+        result: Int, status: Int?, observedMs: Long) {
+        if (!journal.typedSubmits03().recordCallback(attempt, index, delivery, result, status, observedMs)) {
+            journal.attempts().recordCallback(attempt, index, delivery, result, status, observedMs)
+            JournalWriteSignal.alphaEventRecorded()
+        }
     }
 }
 

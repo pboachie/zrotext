@@ -63,7 +63,7 @@ class ProtectionOriginJournalTest {
             ProtectionOriginProof.Association.decode(value("association"))) as ProtectionOriginWire.ProofChallenge).challenge
     }
 
-    @Test fun durableRequestEntryIsOnceOnlyAndStoresNoClockOrReadyProtection() = memory().use { db ->
+    @Test fun durableRequestEntryIsOnceOnlyAndStoresNoClockOrReadyProtection(): Unit = memory().use { db ->
         val prepared = opened(db); val dao = db.protectionOrigins()
         val row = dao.reserve(prepared, candidate(prepared)) {}
         assertTrue(dao.enterRequest(row, 7, originalRequest()) {})
@@ -73,7 +73,7 @@ class ProtectionOriginJournalTest {
         assertNull(dao.installed()); assertNull(dao.protection()); assertNull(db.captures03().counter(original().accountId, original().deviceId))
     }
 
-    @Test fun deviceSignatureUnknownCannotBeInvokedAgainOrSkippedForCanary() = memory().use { db ->
+    @Test fun deviceSignatureUnknownCannotBeInvokedAgainOrSkippedForCanary(): Unit = memory().use { db ->
         val prepared = opened(db); val dao = db.protectionOrigins(); val row = challenged(db, prepared)
         assertThrows(IllegalArgumentException::class.java) { dao.enterSignature(row, true, 3_000_001) {} }
         assertTrue(dao.enterSignature(row, false, 3_000_001) {})
@@ -85,7 +85,7 @@ class ProtectionOriginJournalTest {
         assertNull(dao.installed())
     }
 
-    @Test fun withdrawalAfterActualReturnRetainsCandidateButPreventsNextSignature() = memory().use { db ->
+    @Test fun withdrawalAfterActualReturnRetainsCandidateButPreventsNextSignature(): Unit = memory().use { db ->
         val prepared = opened(db); val dao = db.protectionOrigins(); val row = challenged(db, prepared)
         var foreground = true
         fun current() { check(foreground) }
@@ -98,7 +98,7 @@ class ProtectionOriginJournalTest {
         assertNull(dao.attempt(row.proofRequestId)!!.canaryEnteredMs); assertNull(dao.installed()); assertNull(dao.protection())
     }
 
-    @Test fun actualDualProofAndAcceptedReceiptStillCannotInstallFromJournalAlone() = memory().use { db ->
+    @Test fun actualDualProofAndAcceptedReceiptStillCannotInstallFromJournalAlone(): Unit = memory().use { db ->
         val prepared = opened(db); val dao = db.protectionOrigins(); var row = challenged(db, prepared)
         assertTrue(dao.enterSignature(row, false, 3_000_001) {})
         row = dao.retainSignature(dao.attempt(row.proofRequestId)!!, false, value("device_signature")) {}
@@ -121,7 +121,7 @@ class ProtectionOriginJournalTest {
         assertThrows(IllegalStateException::class.java) { dao.reserve(prepared, candidate(prepared).copy(proofRequestId = id(90))) {} }
     }
 
-    @Test fun staleWriterAndRamWithdrawalRollBackWithoutErasingOriginalProviderBurns() = memory().use { db ->
+    @Test fun staleWriterAndRamWithdrawalRollBackWithoutErasingOriginalProviderBurns(): Unit = memory().use { db ->
         val prepared = opened(db); val dao = db.protectionOrigins(); var checks = 0
         assertThrows(IllegalStateException::class.java) { dao.reserve(prepared, candidate(prepared)) { check(++checks < 2) } }
         assertTrue(dao.attempts().isEmpty()); assertEquals(4, db.protectionSetup().providers().size)
@@ -146,7 +146,7 @@ class ProtectionOriginJournalTest {
     @Test fun additiveMigrationRetainsUnknownProviderAndCreatesNoProofOrReadyPin() {
         val name = "pom-${UUID.randomUUID().toString().take(8)}.db"
         fun open() = Room.databaseBuilder(app, SmsJournalDatabase::class.java, name).allowMainThreadQueries()
-            .addMigrations(SmsJournalDatabase.MIGRATION_20_21).build()
+            .addMigrations(SmsJournalDatabase.MIGRATION_20_21, SmsJournalDatabase.MIGRATION_21_22).build()
         try {
             open().use { db ->
                 val dao = db.protectionSetup(); val sent = dao.openingWillBeSubmitted(dao.reserveCommand(original()) {}) {}
@@ -155,11 +155,13 @@ class ProtectionOriginJournalTest {
                 assertTrue(dao.reserveProviderEntry(command, ProtectionSetupProvider("canary", command.commandId, id(20), 2_996_000)) {})
                 db.openHelper.writableDatabase.apply {
                     execSQL("DROP TABLE protection_origin_attempts"); execSQL("DROP TABLE protection_origin_installed")
+                    execSQL("DROP TABLE IF EXISTS typed_callback03")
+                    execSQL("DROP TABLE IF EXISTS typed_submit03")
                     execSQL("DROP TABLE room_master_table"); version = 20
                 }
             }
             open().use { db ->
-                assertEquals(21, db.openHelper.readableDatabase.version)
+                assertEquals(22, db.openHelper.readableDatabase.version)
                 assertEquals(1, db.protectionSetup().providers().size); assertNull(db.protectionSetup().providers().single().evidenceB64url)
                 assertEquals(ProtectionSetupRecovery.State.RECONCILE_PROVIDER_RESULT,
                     ProtectionSetupRecovery.state(db.protectionSetup().command(), db.protectionSetup().providers()))
@@ -168,7 +170,7 @@ class ProtectionOriginJournalTest {
         } finally { app.deleteDatabase(name) }
     }
 
-    @Test fun laterActualClaimAbsenceRetainsOldRequestWithoutInventingServerClosure() = memory().use { db ->
+    @Test fun laterActualClaimAbsenceRetainsOldRequestWithoutInventingServerClosure(): Unit = memory().use { db ->
         val prepared = opened(db); val dao = db.protectionOrigins()
         val first = dao.reserve(prepared, candidate(prepared)) {}
         assertTrue(dao.enterRequest(first, 7, originalRequest()) {})
@@ -190,7 +192,7 @@ class ProtectionOriginJournalTest {
         }
     }
 
-    @Test fun atomicPinRefusesQuarantineAndRollsBackBothHalvesOnForegroundWithdrawal() = memory().use { db ->
+    @Test fun atomicPinRefusesQuarantineAndRollsBackBothHalvesOnForegroundWithdrawal(): Unit = memory().use { db ->
         val prepared = opened(db); val dao = db.protectionOrigins(); var row = challenged(db, prepared)
         assertTrue(dao.enterSignature(row, false, 3_000_001) {})
         row = dao.retainSignature(dao.attempt(row.proofRequestId)!!, false, value("device_signature")) {}
@@ -214,7 +216,7 @@ class ProtectionOriginJournalTest {
         assertNull(dao.installed()); assertTrue(dao.protection()!!.blocked); assertEquals(1, dao.protection()!!.debtMask)
     }
 
-    @Test fun delayedSignatureResultSurvivesAuthenticatedClosureWithoutReopeningOldAttempt() = memory().use { db ->
+    @Test fun delayedSignatureResultSurvivesAuthenticatedClosureWithoutReopeningOldAttempt(): Unit = memory().use { db ->
         val prepared = opened(db); val dao = db.protectionOrigins(); val first = challenged(db, prepared)
         assertTrue(dao.enterSignature(first, false, 3_000_001) {})
         val burned = dao.attempt(first.proofRequestId)!!
@@ -240,7 +242,7 @@ class ProtectionOriginJournalTest {
         assertNull(dao.installed()); assertNull(dao.protection())
     }
 
-    @Test fun withdrawalAfterProofBurnDuringTransportEntrySendsNothingAndPreservesOriginalRequest() = memory().use { db ->
+    @Test fun withdrawalAfterProofBurnDuringTransportEntrySendsNothingAndPreservesOriginalRequest(): Unit = memory().use { db ->
         val prepared = opened(db); val dao = db.protectionOrigins()
         val row = dao.reserve(prepared, candidate(prepared)) {}
         val frame = originalRequest(); var foreground = true
@@ -261,7 +263,7 @@ class ProtectionOriginJournalTest {
         }
     }
 
-    @Test fun withdrawalAfterOpeningBurnDuringTransportEntrySendsNothingAndCreatesNoProvider() = memory().use { db ->
+    @Test fun withdrawalAfterOpeningBurnDuringTransportEntrySendsNothingAndCreatesNoProvider(): Unit = memory().use { db ->
         val setup = db.protectionSetup(); var foreground = true
         val command = setup.openingWillBeSubmitted(setup.reserveCommand(original()) { check(foreground) }) { check(foreground) }
         ProtectionOriginSocketFixture(EvidenceIdentity(original().accountId, original().deviceId, original().originSha256),

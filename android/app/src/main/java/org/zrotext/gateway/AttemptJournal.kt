@@ -326,6 +326,9 @@ internal object CallbackEvidence {
 
 @Dao
 abstract class SmsAttemptDao {
+    @Query("SELECT EXISTS(SELECT 1 FROM typed_submit03 WHERE attemptId = :attempt)")
+    protected abstract fun isTypedSubmit03(attempt: String): Boolean
+
     @Query("SELECT EXISTS(SELECT 1 FROM profile03_elections WHERE (state IN ('reserved','signed','installed') OR deviceSignatureB64url IS NOT NULL OR acceptedEvidenceSha256 IS NOT NULL) AND (:account IS NULL OR accountId = :account))")
     protected abstract fun hasProfile03EffectFence(account: String?): Boolean
 
@@ -561,7 +564,7 @@ abstract class SmsAttemptDao {
     @Query("SELECT * FROM alpha_radio_events WHERE eventId = :eventId")
     abstract fun getAlphaEvent(eventId: String): AlphaRadioEvent?
 
-    @Query("SELECT e.* FROM alpha_radio_events e WHERE e.acknowledgedAtMs IS NULL AND e.quarantinedAtMs IS NULL AND e.accountId = :accountId AND e.deviceId = :deviceId AND e.originHash = :originHash AND (e.evidence != 'durable_submit_intent' OR (instr(:excludedEvents, ',' || e.eventId || ',') = 0 AND NOT EXISTS (SELECT 1 FROM sealed_preparations p WHERE p.accountId = e.accountId AND p.messageId = e.messageId AND p.attemptId = e.attemptId))) ORDER BY e.rowid LIMIT 1")
+    @Query("SELECT e.* FROM alpha_radio_events e WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = e.attemptId) AND e.acknowledgedAtMs IS NULL AND e.quarantinedAtMs IS NULL AND e.accountId = :accountId AND e.deviceId = :deviceId AND e.originHash = :originHash AND (e.evidence != 'durable_submit_intent' OR (instr(:excludedEvents, ',' || e.eventId || ',') = 0 AND NOT EXISTS (SELECT 1 FROM sealed_preparations p WHERE p.accountId = e.accountId AND p.messageId = e.messageId AND p.attemptId = e.attemptId))) ORDER BY e.rowid LIMIT 1")
     protected abstract fun nextAlphaEventExcluding(accountId: String, deviceId: String,
                                                    originHash: String, excludedEvents: String): AlphaRadioEvent?
 
@@ -585,16 +588,16 @@ abstract class SmsAttemptDao {
     @Query("UPDATE alpha_radio_events SET quarantinedAtMs = :now, quarantineReason = :reason WHERE eventId = :eventId AND acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL")
     abstract fun quarantineAlphaEvent(eventId: String, reason: String, now: Long): Int
 
-    @Query("SELECT e.* FROM alpha_radio_events e JOIN sms_attempts a ON a.attemptId = e.attemptId WHERE e.evidence = 'durable_submit_intent' AND e.acknowledgedAtMs IS NULL AND e.quarantinedAtMs IS NULL AND a.state IN ('reserved','not_submitted') AND instr(:excludedEvents, ',' || e.eventId || ',') = 0 ORDER BY e.rowid")
+    @Query("SELECT e.* FROM alpha_radio_events e JOIN sms_attempts a ON a.attemptId = e.attemptId WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = e.attemptId) AND e.evidence = 'durable_submit_intent' AND e.acknowledgedAtMs IS NULL AND e.quarantinedAtMs IS NULL AND a.state IN ('reserved','not_submitted') AND instr(:excludedEvents, ',' || e.eventId || ',') = 0 ORDER BY e.rowid")
     protected abstract fun orphanedAlphaIntents(excludedEvents: String): List<AlphaRadioEvent>
 
-    @Query("UPDATE alpha_radio_events SET acknowledgedAtMs = :now WHERE eventId = :eventId AND acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL")
+    @Query("UPDATE alpha_radio_events SET acknowledgedAtMs = :now WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = alpha_radio_events.attemptId) AND eventId = :eventId AND acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL")
     abstract fun acknowledgeAlphaEvent(eventId: String, now: Long): Int
 
     @Query("SELECT * FROM sms_attempts WHERE attemptId = :attemptId")
     abstract fun getAttempt(attemptId: String): SmsAttempt?
 
-    @Query("SELECT a.* FROM sms_attempts a WHERE a.messageId IS NOT NULL AND a.deviceId = :deviceId AND a.originHash = :originHash AND NOT EXISTS (SELECT 1 FROM sealed_preparations p WHERE p.attemptId = a.attemptId) ORDER BY a.createdAtMs DESC, a.rowid DESC LIMIT 1")
+    @Query("SELECT a.* FROM sms_attempts a WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = a.attemptId) AND a.messageId IS NOT NULL AND a.deviceId = :deviceId AND a.originHash = :originHash AND NOT EXISTS (SELECT 1 FROM sealed_preparations p WHERE p.attemptId = a.attemptId) ORDER BY a.createdAtMs DESC, a.rowid DESC LIMIT 1")
     abstract fun latestControlledTest(deviceId: String, originHash: String): SmsAttempt?
 
     @Query("SELECT count(*) FROM sms_attempts WHERE attemptId != :excluded AND (evidenceConflict = 1 OR state IN ('reserved','radio_started','submitting','unknown','partial_failure'))")
@@ -609,17 +612,17 @@ abstract class SmsAttemptDao {
     @Query("SELECT * FROM sms_segments WHERE attemptId = :attemptId AND segmentIndex = :index")
     abstract fun getSegment(attemptId: String, index: Int): SmsSegment?
 
-    @Query("UPDATE sms_attempts SET state = :state, updatedAtMs = :now WHERE attemptId = :attemptId")
+    @Query("UPDATE sms_attempts SET state = :state, updatedAtMs = :now WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = sms_attempts.attemptId) AND attemptId = :attemptId")
     abstract fun setState(attemptId: String, state: String, now: Long)
 
-    @Query("UPDATE sms_attempts SET state = 'radio_started', updatedAtMs = :now WHERE attemptId = :attemptId AND messageId = :messageId AND subscriptionId = :subscriptionId AND segmentCount = :segmentCount AND state = 'submitting'")
+    @Query("UPDATE sms_attempts SET state = 'radio_started', updatedAtMs = :now WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = sms_attempts.attemptId) AND attemptId = :attemptId AND messageId = :messageId AND subscriptionId = :subscriptionId AND segmentCount = :segmentCount AND state = 'submitting'")
     abstract fun consumeRadioStart(attemptId: String, messageId: String, subscriptionId: Int,
                                    segmentCount: Int, now: Long): Int
 
-    @Query("UPDATE sms_attempts SET state = 'not_submitted', updatedAtMs = :now WHERE attemptId = :attemptId AND state = 'submitting' AND messageId IS NOT NULL")
+    @Query("UPDATE sms_attempts SET state = 'not_submitted', updatedAtMs = :now WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = sms_attempts.attemptId) AND attemptId = :attemptId AND state = 'submitting' AND messageId IS NOT NULL")
     protected abstract fun markAcknowledgedNoRadioState(attemptId: String, now: Long): Int
 
-    @Query("UPDATE sms_attempts SET state = 'not_submitted', updatedAtMs = :now WHERE attemptId = :attemptId AND state = 'radio_started' AND messageId IS NOT NULL")
+    @Query("UPDATE sms_attempts SET state = 'not_submitted', updatedAtMs = :now WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = sms_attempts.attemptId) AND attemptId = :attemptId AND state = 'radio_started' AND messageId IS NOT NULL")
     protected abstract fun markPreflightNoRadioState(attemptId: String, now: Long): Int
 
     @Query("SELECT EXISTS(SELECT 1 FROM alpha_radio_events WHERE attemptId = :attemptId AND evidence = 'proven_no_submit')")
@@ -674,7 +677,7 @@ abstract class SmsAttemptDao {
         }
     }
 
-    @Query("UPDATE sms_attempts SET state = 'unknown', evidenceConflict = 1, updatedAtMs = :now WHERE attemptId = :attemptId AND evidenceConflict = 0")
+    @Query("UPDATE sms_attempts SET state = 'unknown', evidenceConflict = 1, updatedAtMs = :now WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = sms_attempts.attemptId) AND attemptId = :attemptId AND evidenceConflict = 0")
     abstract fun markCallbackConflict(attemptId: String, now: Long): Int
 
     /** Preserve the first conflict in the same transaction as the local unknown state. */
@@ -688,22 +691,22 @@ abstract class SmsAttemptDao {
             originHash = attempt.originHash))
     }
 
-    @Query("UPDATE sms_segments SET sentResultCode = :result WHERE attemptId = :attemptId AND segmentIndex = :index AND sentResultCode IS NULL")
+    @Query("UPDATE sms_segments SET sentResultCode = :result WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = sms_segments.attemptId) AND attemptId = :attemptId AND segmentIndex = :index AND sentResultCode IS NULL")
     abstract fun recordSent(attemptId: String, index: Int, result: Int): Int
 
-    @Query("UPDATE sms_segments SET deliveryResultCode = :result, deliveryStatus = :status WHERE attemptId = :attemptId AND segmentIndex = :index AND (deliveryStatus IS NULL OR (deliveryStatus = 2 AND :status != 2))")
+    @Query("UPDATE sms_segments SET deliveryResultCode = :result, deliveryStatus = :status WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = sms_segments.attemptId) AND attemptId = :attemptId AND segmentIndex = :index AND (deliveryStatus IS NULL OR (deliveryStatus = 2 AND :status != 2))")
     abstract fun recordDelivery(attemptId: String, index: Int, result: Int, status: Int): Int
 
-    @Query("UPDATE sms_attempts SET state = 'unknown', updatedAtMs = :now WHERE state IN ('submitting','radio_started')")
+    @Query("UPDATE sms_attempts SET state = 'unknown', updatedAtMs = :now WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = sms_attempts.attemptId) AND state IN ('submitting','radio_started')")
     abstract fun markInterrupted(now: Long)
 
-    @Query("UPDATE sms_attempts SET state = 'not_submitted', updatedAtMs = :now WHERE state = 'reserved'")
+    @Query("UPDATE sms_attempts SET state = 'not_submitted', updatedAtMs = :now WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = sms_attempts.attemptId) AND state = 'reserved'")
     abstract fun markUnsentReservations(now: Long)
 
-    @Query("UPDATE sms_attempts SET state = 'unknown', updatedAtMs = :now WHERE attemptId = :attemptId AND state IN ('submitting','radio_started')")
+    @Query("UPDATE sms_attempts SET state = 'unknown', updatedAtMs = :now WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = sms_attempts.attemptId) AND attemptId = :attemptId AND state IN ('submitting','radio_started')")
     abstract fun markStalledSubmission(attemptId: String, now: Long)
 
-    @Query("UPDATE sms_attempts SET state = 'delivery_unknown', updatedAtMs = :now WHERE state = 'submitted' AND updatedAtMs < :cutoff")
+    @Query("UPDATE sms_attempts SET state = 'delivery_unknown', updatedAtMs = :now WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = sms_attempts.attemptId) AND state = 'submitted' AND updatedAtMs < :cutoff")
     abstract fun markTimedOutDeliveries(cutoff: Long, now: Long)
 
     /** Every prune statement is capped so one tick does bounded work on the journal thread. */
@@ -715,7 +718,7 @@ abstract class SmsAttemptDao {
     protected abstract fun pruneOldInboundEvents(cutoff: Long, limit: Int): Int
 
     /** Terminal attempts whose every alpha event and inbound upload already settled. */
-    @Query("DELETE FROM sms_attempts WHERE rowid IN (SELECT rowid FROM sms_attempts WHERE state IN ('submitted','delivered','delivery_failed','delivery_unknown','failed','partial_failure','not_submitted') AND updatedAtMs < :cutoff AND attemptId NOT IN (SELECT attemptId FROM alpha_radio_events WHERE acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL) AND attemptId NOT IN (SELECT e.attemptId FROM inbound_events e JOIN inbound_uploads u ON u.eventId = e.eventId WHERE u.acknowledgedAtMs IS NULL AND u.quarantinedAtMs IS NULL) LIMIT :limit)")
+    @Query("DELETE FROM sms_attempts WHERE rowid IN (SELECT rowid FROM sms_attempts WHERE NOT EXISTS (SELECT 1 FROM typed_submit03 t WHERE t.attemptId = sms_attempts.attemptId) AND state IN ('submitted','delivered','delivery_failed','delivery_unknown','failed','partial_failure','not_submitted') AND updatedAtMs < :cutoff AND attemptId NOT IN (SELECT attemptId FROM alpha_radio_events WHERE acknowledgedAtMs IS NULL AND quarantinedAtMs IS NULL) AND attemptId NOT IN (SELECT e.attemptId FROM inbound_events e JOIN inbound_uploads u ON u.eventId = e.eventId WHERE u.acknowledgedAtMs IS NULL AND u.quarantinedAtMs IS NULL) LIMIT :limit)")
     protected abstract fun pruneTerminalAttempts(cutoff: Long, limit: Int): Int
 
     /** The suppression row keeps enforcing the STOP; only the settled upload record goes. */
@@ -744,6 +747,7 @@ abstract class SmsAttemptDao {
 
     @Transaction
     open fun reserve(attemptId: String, subscriptionId: Int, segmentCount: Int, now: Long) {
+        check(!isTypedSubmit03(attemptId)) { "Typed attempt history cannot enter the legacy driver" }
         check(!hasProfile03EffectFence(null)) { "Unbound submission is unavailable during or after election03" }
         require(segmentCount in 1..6)
         insertAttempt(SmsAttempt(attemptId, subscriptionId, segmentCount, AttemptState.SUBMITTING, now, now))
@@ -782,6 +786,7 @@ abstract class SmsAttemptDao {
 
     private fun reserveAlphaChecked(attemptId: String, messageId: String, subscriptionId: Int,
         segmentCount: Int, intentEventId: String, now: Long, approvedSenderToken: String?, identity: EvidenceIdentity) {
+        check(!isTypedSubmit03(attemptId)) { "Typed attempt history cannot enter the legacy driver" }
         require(segmentCount in 1..6)
         require(listOf(attemptId, messageId, intentEventId).all {
             runCatching { UUID.fromString(it).toString() == it }.getOrDefault(false)
@@ -805,6 +810,7 @@ abstract class SmsAttemptDao {
     @Transaction
     open fun acknowledgeAlphaIntent(eventId: String, permitted: Boolean, now: Long): Boolean {
         val event = getAlphaEvent(eventId) ?: return false
+        if (isTypedSubmit03(event.attemptId)) return false
         if (event.evidence != "durable_submit_intent" || event.acknowledgedAtMs != null ||
             event.quarantinedAtMs != null) return false
         val attempt = getAttempt(event.attemptId) ?: return false
@@ -822,6 +828,9 @@ abstract class SmsAttemptDao {
 
     @Transaction
     open fun recordCallback(attemptId: String, index: Int, delivery: Boolean, result: Int, deliveryStatus: Int?, now: Long) {
+        // The receiver routes these to the separate durable typed journal first. Defensive
+        // callers cannot reinterpret them as legacy evidence, even after process loss.
+        if (isTypedSubmit03(attemptId)) return
         val attempt = getAttempt(attemptId) ?: return
         if (index !in 0 until attempt.segmentCount) return
         val segment = getSegment(attemptId, index) ?: run {
@@ -883,7 +892,8 @@ private const val PRUNE_BATCH = 500
     Profile03UnacceptedClosureRecord::class, SelectionRefresh03ClosureRecord::class,
     Capture03Route::class, Capture03Counter::class, Capture03Record::class, Capture03Mode::class, InboundProtectionRecord::class,
     ProtectionSetupCommand::class, ProtectionSetupProvider::class,
-    ProtectionOriginAttempt::class, ProtectionOriginInstallation::class], version = 21, exportSchema = false)
+    ProtectionOriginAttempt::class, ProtectionOriginInstallation::class,
+    TypedSubmit03Record::class, TypedCallback03Record::class], version = 22, exportSchema = false)
 abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun attempts(): SmsAttemptDao
     abstract fun sealedPreparations(): SealedPreparationDao
@@ -893,6 +903,7 @@ abstract class SmsJournalDatabase : RoomDatabase() {
     abstract fun captures03(): Capture03Dao
     abstract fun protectionSetup(): ProtectionSetupDao
     abstract fun protectionOrigins(): ProtectionOriginDao
+    internal abstract fun typedSubmits03(): TypedSubmit03Dao
 
     companion object {
         @Volatile private var instance: SmsJournalDatabase? = null
@@ -902,13 +913,25 @@ abstract class SmsJournalDatabase : RoomDatabase() {
                 context.applicationContext, SmsJournalDatabase::class.java, "sms_attempts.db"
             ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
                 MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
-                MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21)
+                MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22)
                 .build().also { instance = it }
         }
 
         internal val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE sms_attempts ADD COLUMN evidenceConflict INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        internal val MIGRATION_21_22 = object : Migration(21, 22) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Empty retained metadata creates neither an ACK nor an invocation capability.
+                db.execSQL("CREATE TABLE IF NOT EXISTS typed_submit03 (attemptId TEXT NOT NULL, eventId TEXT NOT NULL, accountId TEXT NOT NULL, deviceId TEXT NOT NULL, messageId TEXT NOT NULL, commandB64url TEXT NOT NULL, commandSha256 TEXT NOT NULL, originalEnrolledPoint TEXT NOT NULL, originalEnrolledKeyId TEXT NOT NULL, phase TEXT NOT NULL, ackSha256 TEXT, entryReservedMs INTEGER, closureB64url TEXT, closureSha256 TEXT, conflict INTEGER NOT NULL, PRIMARY KEY(attemptId))")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_typed_submit03_eventId ON typed_submit03(eventId)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_typed_submit03_accountId_messageId ON typed_submit03(accountId, messageId)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS typed_callback03 (eventId TEXT NOT NULL, attemptId TEXT NOT NULL, segmentIndex INTEGER NOT NULL, delivery INTEGER NOT NULL, resultCode INTEGER NOT NULL, deliveryStatus INTEGER NOT NULL, observedMs INTEGER NOT NULL, PRIMARY KEY(eventId))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_typed_callback03_attemptId ON typed_callback03(attemptId)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_typed_callback03_attemptId_segmentIndex_delivery_resultCode_deliveryStatus ON typed_callback03(attemptId, segmentIndex, delivery, resultCode, deliveryStatus)")
             }
         }
 
