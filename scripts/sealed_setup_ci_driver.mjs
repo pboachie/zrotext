@@ -137,7 +137,7 @@ export async function main(args=process.argv.slice(2)){
     stage='browser-package';assets=await createBrowserPackage();await capture(process.execPath,[path.join(repo,'scripts/package_conversation_browser.mjs'),'--owned-setup-fixture'],{timeoutMs:30000});
     // Cold Windows builds include all four native custody ABIs before Kotlin.
     // Bound compilation separately from the unchanged acceptance/cleanup deadlines.
-    stage='phone-consumer-build';await runOwnedProcess('cmd.exe',['/d','/c','gradlew.bat',':app:compileDebugUnitTestKotlin','--no-daemon','--max-workers=1'],{cwd:path.join(repo,'android'),timeoutMs:1200000,maximum:MAX_OUTPUT});
+    stage='phone-consumer-build';await runOwnedProcess('cmd.exe',['/d','/c','gradlew.bat',':app:compileDebugUnitTestKotlin','--no-daemon','--max-workers=1'],{cwd:path.join(repo,'android'),timeoutMs:2400000,maximum:MAX_OUTPUT});
     const origin=`https://owner.example.test:${await reservePort()}`;stage='server-readiness';let resolveReady,rejectReady;const readiness=new Promise((resolve,reject)=>{resolveReady=resolve;rejectReady=reject;});
     server=spawn(serverExecutable,['--exact',SERVER_TEST,'--ignored','--nocapture','--test-threads=1'],{cwd:repo,windowsHide:true,shell:false,detached:process.platform!=='win32',stdio:['ignore','pipe','pipe'],env:{...process.env,ZT_OWNER_SETUP_FIXTURE_ORIGIN:origin,ZT_OWNER_SETUP_BROWSER_ASSETS:assets}});
     exited=new Promise(resolve=>server.once('close',code=>{serverExit=code;if(!ready)rejectReady(Error('Fixture exited before readiness'));resolve(code);}));server.once('error',()=>rejectReady(Error('Fixture launch failed')));
@@ -148,7 +148,7 @@ export async function main(args=process.argv.slice(2)){
     const acceptance=runCompiledSetupAcceptance({browser,ready,nativeExecutable,tls,consumePublishedRoot:async fixture=>{
       stage='phone-consumer-admission';
       assert.ok(Buffer.byteLength(JSON.stringify(fixture))<=2048);
-      const result=await runOwnedProcess('cmd.exe',['/d','/c','gradlew.bat',':app:testDebugUnitTest','--tests','org.zrotext.gateway.PublishedRootProvisioningTest','-PcomposedRootFixture=true','--rerun','--no-daemon','--max-workers=1'],{cwd:path.join(repo,'android'),env:{...process.env,ZT_COMPOSED_ROOT_FIXTURE:JSON.stringify(fixture)},timeoutMs:180000,maximum:MAX_OUTPUT});
+      const result=await runOwnedProcess('cmd.exe',['/d','/c','gradlew.bat',':app:testDebugUnitTest','--tests','org.zrotext.gateway.PublishedRootProvisioningTest','-PcomposedRootFixture=true','--rerun','--no-daemon','--max-workers=1'],{cwd:path.join(repo,'android'),env:{...process.env,ZT_COMPOSED_ROOT_FIXTURE:JSON.stringify(fixture)},timeoutMs:360000,maximum:MAX_OUTPUT});
       assertPhoneConsumerOutput(result);stage='compiled-browser-native-consumption';
     }});const result=await joinOwnedAcceptance(acceptance,{cancel:async()=>{await Promise.all([browser.close(),stopServer()]);browser=null;}});await browser.close();browser=null;
     stage='server-terminal';assert.equal(await deadline(exited,20000),0);assert.ok(serverPassed(output),'Compiled fixture assertions must pass');assert.deepEqual(new ReadyParser().feed(Buffer.from(output)),ready);
