@@ -460,7 +460,7 @@ enum ClientFrame {
         binding_generation: i64,
         kind: line_readiness::LineReadinessKind,
         /// Age of the freshest authenticated observation backing the result,
-        /// or null when none exists â€” which can only report offline.
+        /// or null when none exists — which can only report offline.
         since_observation_ms: Option<i64>,
         observed_at_ms: i64,
         digest: String,
@@ -1510,9 +1510,9 @@ async fn run_socket(
                                     break;
                                 }
                             }
-                            // A ready frame that cannot yield a grant â€” wrong
+                            // A ready frame that cannot yield a grant — wrong
                             // digest, unnamed device, stopped recipient, spent
-                            // one-use budget, or the feature off â€” is refused
+                            // one-use budget, or the feature off — is refused
                             // outright rather than silently ignored, so the
                             // phone learns and the once-per-connection flag is
                             // never stranded.
