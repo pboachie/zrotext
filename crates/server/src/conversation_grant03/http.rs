@@ -62,6 +62,9 @@ pub async fn router(state: FetchState03) -> std::result::Result<Router, &'static
     crate::conversation_reviewed_send03_storage::require_v2(&*db)
         .await
         .map_err(|_| "profile03 reviewed intent V2 schema unavailable")?;
+    crate::conversation_profile03_effect_storage::require(&*db)
+        .await
+        .map_err(|_| "profile03 original actor schema unavailable")?;
     Ok(routes(state))
 }
 fn routes(state: FetchState03) -> Router {
@@ -129,6 +132,9 @@ async fn handle(
         .await
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     crate::conversation_reviewed_send03_storage::require_v2(&*db)
+        .await
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    crate::conversation_profile03_effect_storage::require(&*db)
         .await
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     let anonymous = abuse_limits::consume_profile_fetch(&db, &state.hasher, None)

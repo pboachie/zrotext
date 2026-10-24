@@ -9,6 +9,8 @@ use crate::sealed_payload_election03::live::Error;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B};
 use tokio_postgres::{Client, Transaction};
 use uuid::Uuid;
+mod actor;
+pub(crate) mod effects;
 pub mod http;
 mod pending;
 mod row;
@@ -55,6 +57,9 @@ impl<'held, 'db> Mode03<'held, 'db> {
             .await
             .map_err(|_| Error::Unavailable)?;
         crate::conversation_reviewed_send03_storage::require_v2(tx)
+            .await
+            .map_err(|_| Error::Unavailable)?;
+        crate::conversation_profile03_effect_storage::require(tx)
             .await
             .map_err(|_| Error::Unavailable)?;
         let rows = tx
@@ -125,9 +130,11 @@ impl CommittedGrant03 {
 }
 pub(crate) async fn issue_next<C: crate::runtime_db::NativeConnection>(
     client: &mut C,
+    socket: crate::device_socket::SocketActor,
     actor: DeviceInterval03<'_>,
     ready: &ReadyFrame03,
 ) -> Result<Option<CommittedGrant03>> {
+    actor::socket_matches(socket, actor)?;
     let attempt = Uuid::new_v4();
     let tx = crate::runtime_db::begin_native(client)
         .await
@@ -144,6 +151,9 @@ pub(crate) async fn issue_next<C: crate::runtime_db::NativeConnection>(
         return Ok(None);
     };
     let mut review = execution::lock(&mode, message).await?;
+    // The received Ready and the selected current key do not establish which
+    // enrolled key actually proved possession during this exact session claim.
+    actor::verify_new(socket, actor, &review)?;
     ready_matches(ready, &review, actor)?;
     let permission = review.deadline().await?.min(
         review
@@ -175,10 +185,15 @@ pub(crate) async fn issue_next<C: crate::runtime_db::NativeConnection>(
     let row = GrantRow03::from_row(&rows[0])?;
     row.actor(actor, attempt)?;
     row.matches(&review)?;
+    let original = actor::RetainedActor03::read(&tx, &row).await?;
+    original.matches_socket(socket)?;
+    original.matches_selected(&review)?;
     if row.numbers[9] > permission {
         return Err(Error::Expired);
     }
     review.verify_until(row.numbers[9]).await?;
+    actor::verify_new(socket, actor, &review)?;
+    original.matches_selected(&review)?;
     ready_matches(ready, &review, actor)?;
     let frame = row.frame()?;
     drop(review);
@@ -205,11 +220,15 @@ async fn preflight(client: &Client, serving: FetchServing03<'_>, request: &Fetch
     {
         return Err(Error::Authentication);
     }
+    let original = actor::RetainedActor03::read(client, &hint).await?;
     let row=client.query_opt("SELECT signing_key_sec1 FROM public.device_keys WHERE account_id=$1 AND device_id=$2 AND revoked_at IS NULL",&[&hint.ids[0],&hint.ids[7]]).await?.ok_or(Error::Authentication)?;
     let point: Vec<u8> = row.try_get(0)?;
-    let key =
-        p256::ecdsa::VerifyingKey::from_sec1_bytes(&point).map_err(|_| Error::Authentication)?;
-    request.verify(&key).map_err(|_| Error::Authentication)?;
+    if point.as_slice() != original.point {
+        return Err(Error::Authentication);
+    }
+    request
+        .verify(&original.verifying_key()?)
+        .map_err(|_| Error::Authentication)?;
     Ok(())
 }
 pub(crate) async fn fetch<C: crate::runtime_db::NativeConnection>(
@@ -251,13 +270,16 @@ pub(crate) async fn fetch<C: crate::runtime_db::NativeConnection>(
     if row.frame()?.claims() != claims {
         return Err(Error::Conflict);
     }
+    let original = actor::RetainedActor03::read(&tx, row).await?;
     let mut review = execution::lock(&mode, claims.message_id).await?;
     row.matches(&review)?;
+    original.matches_selected(&review)?;
     request
-        .verify(&review.selected().enrolled_signing_key()?)
+        .verify(&original.verifying_key()?)
         .map_err(|_| Error::Authentication)?;
     review.verify_until(row.numbers[9]).await?;
     let response = review.response(request.grant()).await?;
+    original.matches_selected(&review)?;
     // Fetch is data-read-only: no lease/time/attempt/anchor renewal or commit.
     // Read locks remain held through the complete projection's construction.
     drop(review);

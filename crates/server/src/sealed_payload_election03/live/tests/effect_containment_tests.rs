@@ -151,16 +151,18 @@ async fn actual_expiry_and_recipient_cancellation_preserve_profile03_originals_a
 #[tokio::test]
 #[ignore = "requires disposable ZT_AUTH_TEST_DATABASE_URL administrator; actual independent03 grant and unchanged legacy radio evidence"]
 async fn actual_legacy_events_cannot_change_profile03_grant_and_do_not_poison_other_message() {
-    let (mut c, browser, statement) = active().await;
+    let (mut c, browser, statement) = super::reviewed_send_tests::active_claimed().await;
     let account = c.principal.tenant.account_id();
     c.db.owner.execute("INSERT INTO public.usage_quota_policies(account_id,metric,limit_units,source) VALUES($1,'outbound_message',10,'operator')",&[&account]).await.unwrap();
     let packet = queue(&mut c, &browser, &statement).await;
     let published = ready(&mut c).await;
     let actor = lease(&c);
-    let grant = crate::conversation_grant03::issue_next(&mut c.db.reader, actor, &published)
-        .await
-        .unwrap()
-        .unwrap();
+    let socket = c.socket_actor();
+    let grant =
+        crate::conversation_grant03::issue_next(&mut c.db.reader, socket, actor, &published)
+            .await
+            .unwrap()
+            .unwrap();
     let claims = grant.frame().claims();
     let attempt = claims.attempt_id;
     let before = guarded_snapshot(&c.db.reader, account, packet.message).await;
