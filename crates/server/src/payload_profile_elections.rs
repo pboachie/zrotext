@@ -18,22 +18,31 @@ pub enum ElectionSchemaError {
 }
 type Result<T> = std::result::Result<T, ElectionSchemaError>;
 fn body(name: &str, version: i64) -> Result<&'static str> {
-    let source = if version == 118
+    let source = if version == 119
         && matches!(
             name,
             "payload_profile_writer_policy"
                 | "payload_profile_writer_version"
                 | "payload_profile_writer_ready"
         ) {
+        include_str!("../../../deploy/compose/migrations/119_conversation_profile03_effects.sql")
+    } else if version == 118
+        && matches!(
+            name,
+            "payload_profile_writer_policy"
+                | "payload_profile_writer_version"
+                | "payload_profile_writer_ready"
+        )
+    {
         include_str!("../../../deploy/compose/migrations/118_device_protection_origins.sql")
-    } else if matches!(version, 117..=118)
+    } else if matches!(version, 117..=119)
         && matches!(
             name,
             "payload_profile_writer_version" | "payload_profile_writer_ready"
         )
     {
         include_str!("../../../deploy/compose/migrations/117_explicit_reviewed_intent_v2.sql")
-    } else if matches!(version, 116..=118)
+    } else if matches!(version, 116..=119)
         && matches!(
             name,
             "payload_profile_writer_version"
@@ -44,7 +53,7 @@ fn body(name: &str, version: i64) -> Result<&'static str> {
         include_str!(
             "../../../deploy/compose/migrations/116_hosted_native_transaction_identity.sql"
         )
-    } else if matches!(version, 115..=118)
+    } else if matches!(version, 115..=119)
         && matches!(
             name,
             "payload_profile_writer_version"
@@ -69,7 +78,7 @@ fn body(name: &str, version: i64) -> Result<&'static str> {
         )
     {
         include_str!("../../../deploy/compose/migrations/113_conversation_profile03_intervals.sql")
-    } else if matches!(version, 112..=118)
+    } else if matches!(version, 112..=119)
         && matches!(
             name,
             "payload_profile_writer_version"
@@ -420,11 +429,11 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
   }
         return Ok(false);
     }
+    // The complete immediate predecessor validates every earlier schema layer.
     if namespace != "public"
         || !challenge
         || !accepted
         || !helper
-        || !crate::payload_profile_writer::optional(db, "public.line_activation_v2_pending").await?
         || !crate::payload_profile_v2_receipts::optional(db).await?
     {
         return Err(ElectionSchemaError::Invalid);
@@ -436,7 +445,7 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
         )
         .await?
         .try_get(0)?;
-    if !matches!(version, 110..=118) {
+    if !matches!(version, 110..=119) {
         return Err(ElectionSchemaError::Invalid);
     }
     functions(db, version).await?;
