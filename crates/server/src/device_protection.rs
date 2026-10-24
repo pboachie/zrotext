@@ -117,7 +117,7 @@ impl ProofCore {
         association[..8].copy_from_slice(ASSOCIATION);
         association[8..].copy_from_slice(&bytes[8..329]);
         let association = Association::decode(&association)?;
-        let attempt = bytes[329..345]
+        let attempt: [u8; 16] = bytes[329..345]
             .try_into()
             .map_err(|_| "protection attempt width")?;
         nonzero(&attempt)?;
@@ -128,7 +128,7 @@ impl ProofCore {
         if expires <= issued || expires - issued > 30_000 {
             return Err("protection proof window");
         }
-        let nonce_sha = bytes[361..]
+        let nonce_sha: [u8; 32] = bytes[361..]
             .try_into()
             .map_err(|_| "protection nonce width")?;
         nonzero(&nonce_sha)?;
