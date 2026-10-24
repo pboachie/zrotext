@@ -292,6 +292,9 @@ mod tests {
             "/owner/conversation",
             "/owner/conversation-owner-setup.js",
             "/v1/owner/conversation-sdk/sdk/draft02-manifest.js",
+            "/v1/owner/conversation-sdk/sdk/accepted-manifest-history03.js",
+            "/v1/owner/conversation-sdk/sdk/browser-message-signer-store03.js",
+            "/v1/owner/conversation-sdk/sdk/owner-conversation-interval03.js",
         ] {
             let response = router
                 .clone()
