@@ -201,6 +201,22 @@ class RuntimeRoleTest(RuntimeRoleFixture, unittest.TestCase):
              "INSERT INTO public.payload_profile_writer_catalog VALUES(true,118);",
              "DROP TABLE public.payload_profile_writer_catalog;"),
         )
+        # Each genuinely later family is checked even though its earlier
+        # siblings are absent. Existing106 hosted helpers are not116 objects.
+        for relation, helper in (
+            ("payload_profile_election_unknown", "payload_profile_election_ready"),
+            ("payload_profile_selection_unknown", "payload_profile_selection_ready"),
+            ("payload_profile_manifest_unknown", "payload_profile_manifest_ready"),
+            ("conversation_profile03_intervals_unknown", "conversation_profile03_interval_ready"),
+            ("conversation_reviewed_sends03_unknown", "conversation_reviewed_send03_ready"),
+            ("conversation_profile03_grants_unknown", "conversation_profile03_grant_ready"),
+            ("hosted_runtime_entries_unknown", "hosted_runtime_identity_ready"),
+        ):
+            cases += (
+                (f"CREATE SEQUENCE public.{relation};", f"DROP SEQUENCE public.{relation};"),
+                (f"CREATE FUNCTION public.{helper}() RETURNS boolean LANGUAGE sql AS 'SELECT true';",
+                 f"DROP FUNCTION public.{helper}();"),
+            )
         for setup, cleanup in cases:
             with self.subTest(setup=setup.split()[1]):
                 self.sql(setup)
