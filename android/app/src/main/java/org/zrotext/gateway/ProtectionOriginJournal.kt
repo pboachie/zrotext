@@ -41,7 +41,7 @@ data class ProtectionOriginAttempt(@PrimaryKey val proofRequestId: String, val c
         require(previousBundleSha256 == null || previousAttemptId != null)
         require(listOf(attemptId, coreB64url, nonceB64url).all { it == null } ||
             listOf(attemptId, coreB64url, nonceB64url).all { it != null })
-        attemptId?.let { Profile03ClosedUnaccepted::uuid(it); require(requestEpoch != null) }
+        attemptId?.let { Profile03ClosedUnaccepted.uuid(it); require(requestEpoch != null) }
         coreB64url?.let { canonical(it, 393) }; nonceB64url?.let { canonical(it, 32) }
         deviceEnteredMs?.let { require(it > 0 && coreB64url != null) }
         deviceSignatureB64url?.let { require(deviceEnteredMs != null); canonical(it, 64) }
@@ -63,7 +63,7 @@ data class ProtectionOriginAttempt(@PrimaryKey val proofRequestId: String, val c
         }
         require((closedMs == null && absentEpoch == null) == (supersededByProofRequestId == null))
         supersededByProofRequestId?.let(Profile03ClosedUnaccepted::uuid)
-        closedMs?.let { require(it > 0 && acceptedMs == null); Profile03ClosedUnaccepted::uuid(checkNotNull(supersededByProofRequestId)) }
+        closedMs?.let { require(it > 0 && acceptedMs == null); Profile03ClosedUnaccepted.uuid(checkNotNull(supersededByProofRequestId)) }
     }
     override fun toString() = "ProtectionOriginAttempt(permanent-public-proof-history)"
     companion object {
