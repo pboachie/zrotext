@@ -12,6 +12,7 @@ use p256::{
 };
 use uuid::Uuid;
 const ORIGIN: &str = "https://activation.example";
+mod effect_containment_tests;
 mod fixture;
 mod grant_tests;
 mod interval_context_tests;

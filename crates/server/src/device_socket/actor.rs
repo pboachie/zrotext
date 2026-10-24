@@ -36,6 +36,9 @@ pub(super) struct SocketActor {
     session: DeviceSession,
 }
 impl SocketActor {
+    pub(super) fn proof(&self) -> &crate::enrollment::VerifiedDevice {
+        &self.proof
+    }
     pub(super) fn session(&self) -> DeviceSession {
         self.session
     }
