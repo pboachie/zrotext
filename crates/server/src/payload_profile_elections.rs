@@ -18,17 +18,24 @@ pub enum ElectionSchemaError {
 }
 type Result<T> = std::result::Result<T, ElectionSchemaError>;
 fn body(name: &str, version: i64) -> Result<&'static str> {
-    let source = if version == 116
+    let source = if version == 117
+        && matches!(
+            name,
+            "payload_profile_writer_version" | "payload_profile_writer_ready"
+        ) {
+        include_str!("../../../deploy/compose/migrations/117_explicit_reviewed_intent_v2.sql")
+    } else if matches!(version, 116..=117)
         && matches!(
             name,
             "payload_profile_writer_version"
                 | "payload_profile_writer_ready"
                 | "payload_profile_writer_guard"
-        ) {
+        )
+    {
         include_str!(
             "../../../deploy/compose/migrations/116_hosted_native_transaction_identity.sql"
         )
-    } else if matches!(version, 115..=116)
+    } else if matches!(version, 115..=117)
         && matches!(
             name,
             "payload_profile_writer_version"
@@ -53,7 +60,7 @@ fn body(name: &str, version: i64) -> Result<&'static str> {
         )
     {
         include_str!("../../../deploy/compose/migrations/113_conversation_profile03_intervals.sql")
-    } else if matches!(version, 112..=116)
+    } else if matches!(version, 112..=117)
         && matches!(
             name,
             "payload_profile_writer_version"
@@ -420,7 +427,7 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
         )
         .await?
         .try_get(0)?;
-    if !matches!(version, 110..=116) {
+    if !matches!(version, 110..=117) {
         return Err(ElectionSchemaError::Invalid);
     }
     functions(db, version).await?;

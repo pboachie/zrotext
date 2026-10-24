@@ -1,6 +1,6 @@
 {
-  "status": "native-hosted-transaction-identity-with-stable-namespace-fence-candidate",
-  "migration_version": 116,
+  "status": "explicit-reviewed-intent-v2-with-passive-v1-originals-candidate",
+  "migration_version": 117,
   "row_columns": [
     "relation",
     "account_extraction_review_class",
@@ -54,7 +54,7 @@
     ["conversation_intervals","column:account_id","df33ed25894f9e5dd6d7bc60dcde3848f2828fff8c6775d0b6b7f48534c5aca4","f9edecbd8d565428e25857c908fd2329447efea9f00bcb926297f7c1e0623b4b","e24e6992e6946c2a2acef4c65e3c5db1a8bdaf1b184aeae345fab14ce4cebdd1"],
     ["conversation_profile03_grants","narrow_one_attempt_grant_claim_and_retained_nonpersonal_replay_identity","39d2233b8e77d1498d62d1d2018e2df946d0678cdc5de08f88ea11e7a55578c0","79e2de2c31c3f1f8a0f14dc825dd05f0e526df3195fb1d42c897e20d973753ab","81d97219160a1a01decfda1addf3998902479cdc4ee9c541089df70361fcecea"],
     ["conversation_profile03_intervals","narrow_original_consent_phase_or_real_actor_withdrawal","6a3c066f3f98e0bc3561a14ceb8c1c2c2b3517ed0c086b4e2a6e0c8717246e49","39f28046379fb02f8e1f60b925be35e618a6cda6a84d82020d44fe2bd77f8f7f","1bfd2f80216ab13029962893dacfb0fa24eb558eef1c8080d8ca955a3000a6fe"],
-    ["conversation_reviewed_sends03","narrow_original_reviewed_admission_and_coupled_content_erasure","a37e25ab09f337a5a7c2e3079c2a4cfc4ffb0f163be7c16f42be2faa151557cb","244fcb9ba1ea85272305ced478cf732631b7c3639eecfa9705937bac976ae42f","008f13a0f2255b464bcee0c62b4644a29ed1f2663dedc5c4ff353b7d2afd4885"],
+    ["conversation_reviewed_sends03","narrow_original_reviewed_admission_and_coupled_content_erasure","07dd908f1e9824b8458b23c87850c21ecd8f24c30d4b55e4cf627cca53cb102e","244fcb9ba1ea85272305ced478cf732631b7c3639eecfa9705937bac976ae42f","008f13a0f2255b464bcee0c62b4644a29ed1f2663dedc5c4ff353b7d2afd4885"],
     ["deployment_authority","global_current_authority","02df41059097b9fea8cfe7e81a853abe40e3bd8d40158eda2af87039c514fea6","4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","93da30a4530526f09c26c6fb0516158c57550b8398c702b80974950edc609ea2"],
     ["device_keys","column:account_id","786b26a721c4b92a2b484b03f5448957448ac557afe25b15c7c9e6d824c1de36","0d7e93c93f0b7c6daf79aaf8ecf7bf0e27822466a3c883cfd5a31d5c2a6446a2","9e74c01da6a4df7878efd33c14e7c9b56c47c885430dc8dd9da162ede5f5cc62"],
     ["device_line_bindings","column:account_id","4df362f9060343ad39e69f7626b138ee71ce277a61cb10f1f456a25111d57806","fa9e152970cd2129b75b7f003f0bafb849936b15bf49a4fa0697c950958286a8","f2d880c600a6bea91ebd3c112172259ddabf0a1ade979a146a6edffed608c58c"],
