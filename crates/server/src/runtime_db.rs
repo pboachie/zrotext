@@ -20,6 +20,9 @@ use tokio::{
     time::{Instant, MissedTickBehavior, interval_at, timeout, timeout_at},
 };
 use tokio_postgres::Client;
+mod native;
+pub use native::NativeConnection;
+pub(crate) use native::{begin as begin_native, delivery_store as initialized_store};
 
 /// Verified runtime identity, separately authenticated from the database role.
 /// The database never trusts a caller-set custom setting as this proof.
@@ -63,11 +66,14 @@ pub async fn verify_hosted_connection(
     binding: &HostedBinding,
 ) -> Result<(), ConnectError> {
     use hmac::{Hmac, KeyInit, Mac};
+    zrotext_delivery_store::hosted_runtime_identity::require(db)
+        .await
+        .map_err(|_| ConnectError::Identity)?;
     // The challenge invalidates any previous proof for this backend before a
     // new proof is checked. A failed checkout is dropped, never put in the pool.
     let row = db
         .query_one(
-            "SELECT hosted_runtime_challenge($1,$2),pg_backend_pid()",
+            "SELECT public.hosted_runtime_challenge($1,$2),pg_catalog.pg_backend_pid()",
             &[&binding.namespace, &binding.revision],
         )
         .await?;
@@ -86,7 +92,7 @@ pub async fn verify_hosted_connection(
     let proof = mac.finalize().into_bytes().to_vec();
     let verified: bool = db
         .query_one(
-            "SELECT hosted_runtime_bind($1,$2,$3)",
+            "SELECT public.hosted_runtime_bind($1,$2,$3)",
             &[&binding.namespace, &binding.revision, &proof],
         )
         .await?
@@ -96,7 +102,10 @@ pub async fn verify_hosted_connection(
     }
     Ok(())
 }
-async fn verify_registered(db: &Client, url: &str) -> Result<(), ConnectError> {
+async fn verify_registered(
+    db: &Client,
+    url: &str,
+) -> Result<Option<zrotext_delivery_store::HostedBackendCandidate>, ConnectError> {
     let binding = HOSTED_BINDINGS
         .lock()
         .map_err(|_| ConnectError::Identity)?
@@ -104,20 +113,39 @@ async fn verify_registered(db: &Client, url: &str) -> Result<(), ConnectError> {
         .cloned();
     if let Some(binding) = binding {
         verify_hosted_connection(db, &binding).await?;
+        return zrotext_delivery_store::HostedBackendCandidate::new(
+            binding.namespace,
+            binding.revision,
+        )
+        .map(Some)
+        .map_err(|_| ConnectError::Identity);
     }
-    Ok(())
+    Ok(None)
 }
 /// Disabled/legacy TEST startup cannot silently attach to a scoped database.
 pub async fn require_unscoped(url: &str) -> Result<(), ConnectError> {
     let db = connect(url).await?;
-    let exists: bool = db
+    let tables = db
         .query_one(
-            "SELECT to_regclass('hosted_billing_namespaces') IS NOT NULL",
+            "SELECT pg_catalog.to_regclass('public.hosted_billing_namespaces') IS NOT NULL, pg_catalog.to_regclass('hosted_billing_namespaces') IS NOT NULL",
             &[],
         )
-        .await?
-        .get(0);
-    if exists
+        .await?;
+    if tables.get::<_, bool>(0)
+        && db
+            .query_one(
+                "SELECT EXISTS(SELECT FROM public.hosted_billing_namespaces)",
+                &[],
+            )
+            .await?
+            .get::<_, bool>(0)
+    {
+        return Err(ConnectError::Identity);
+    }
+    // An old isolated hosted schema is also scoped. This second lookup can
+    // only refuse; it cannot authenticate a different installation or hide a
+    // real public namespace behind an empty operator/temporary table.
+    if tables.get::<_, bool>(1)
         && db
             .query_one(
                 "SELECT EXISTS(SELECT 1 FROM hosted_billing_namespaces)",
@@ -373,6 +401,9 @@ pub struct PooledClient {
     url: Arc<str>,
     created: Instant,
     pool: Arc<ClassPool>,
+    // Set only after THIS Client completed its real HMAC challenge/bind.
+    // Configuration selects enter's arguments; native SQL proves each TX.
+    hosted_backend: Option<zrotext_delivery_store::HostedBackendCandidate>,
 }
 
 impl Deref for PooledClient {
@@ -492,6 +523,13 @@ pub async fn connect_worker(url: &str) -> Result<PooledClient, ConnectError> {
 }
 
 #[cfg(test)]
+pub(crate) async fn fixture_connection(url: &str) -> Result<PooledClient, ConnectError> {
+    // An owned test pool has no process-global idle owner. Its final reset
+    // closes the socket, permitting normal disposable database cleanup.
+    acquire(&ClassPool::new(1, false), url).await
+}
+
+#[cfg(test)]
 #[path = "runtime_db/reset_tests.rs"]
 mod reset_tests;
 
@@ -526,12 +564,13 @@ async fn acquire(pool: &Arc<ClassPool>, url: &str) -> Result<PooledClient, Conne
         tokio::pin!(returned);
         returned.as_mut().enable();
         if let Some((client, created)) = pool.take(&url) {
-            verify_registered(&client, &url).await?;
+            let hosted_backend = verify_registered(&client, &url).await?;
             return Ok(PooledClient {
                 client: Some(client),
                 url,
                 created,
                 pool: pool.clone(),
+                hosted_backend,
             });
         }
         // A same-class socket may be milliseconds from reuse: its drop is
@@ -608,12 +647,13 @@ async fn open(
         // Connection errors contain deployment details; do not log them here.
         let _ = connection.await;
     });
-    verify_registered(&client, &url).await?;
+    let hosted_backend = verify_registered(&client, &url).await?;
     Ok(PooledClient {
         client: Some(client),
         url,
         created: Instant::now(),
         pool: pool.clone(),
+        hosted_backend,
     })
 }
 
