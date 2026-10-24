@@ -234,7 +234,29 @@ END $$;
 -- Election rows and epoch helpers are never broad runtime DML.
 DO $migration$
 DECLARE routine record; relation_name text; columns_sql text;
+        recorded_version bigint;writer_rows bigint;
 BEGIN
+ -- Only a completely absent earlier capability may skip this reset.
+ IF NOT EXISTS(SELECT FROM pg_class WHERE relnamespace='public'::regnamespace AND starts_with(relname::text,'payload_profile_election'))
+  AND NOT EXISTS(SELECT FROM pg_proc WHERE pronamespace='public'::regnamespace AND (starts_with(proname::text,'payload_profile_election_') OR proname IN('payload_profile_epoch_valid','payload_profile_writer_policy'))) THEN
+  SELECT max(version) INTO recorded_version FROM public.schema_migrations;
+  IF coalesce(recorded_version,0)>=110 THEN
+   RAISE EXCEPTION 'recorded capability 110 is absent'; END IF;
+  IF to_regclass('public.payload_profile_writer_catalog') IS NOT NULL THEN
+   SELECT count(*),max(migration_version) INTO writer_rows,recorded_version
+    FROM public.payload_profile_writer_catalog WHERE singleton;
+   IF writer_rows<>1 OR recorded_version IS NULL OR recorded_version NOT BETWEEN 108 AND 109 THEN
+    RAISE EXCEPTION 'earlier writer installation for 110 is unavailable'; END IF;
+  END IF;
+  RETURN;
+ END IF;
+ IF (SELECT count(*) FROM pg_class WHERE relnamespace='public'::regnamespace
+      AND relname IN('payload_profile_election_challenges','payload_profile_elections') AND relkind='r')<>2
+  OR EXISTS(SELECT FROM pg_class WHERE relnamespace='public'::regnamespace
+      AND starts_with(relname::text,'payload_profile_election') AND relkind NOT IN('r','i'))
+  OR NOT ARRAY['payload_profile_election_accept','payload_profile_election_complete','payload_profile_election_device_proof','payload_profile_election_frame','payload_profile_election_number','payload_profile_election_old_binding','payload_profile_election_quiescent','payload_profile_election_reader','payload_profile_election_ready','payload_profile_election_reserve','payload_profile_election_rows_guard','payload_profile_election_scope','payload_profile_election_uuid','payload_profile_epoch_valid','payload_profile_writer_policy']::text[] <@ ARRAY(SELECT proname::text FROM pg_proc
+      WHERE pronamespace='public'::regnamespace) THEN
+  RAISE EXCEPTION 'partial capability 110 installation'; END IF;
  FOREACH relation_name IN ARRAY ARRAY['payload_profile_election_challenges','payload_profile_elections'] LOOP
   EXECUTE format('REVOKE ALL ON TABLE public.%I FROM PUBLIC',relation_name);
   IF EXISTS(SELECT FROM pg_roles WHERE rolname='zrotext_runtime') THEN
@@ -260,7 +282,29 @@ $migration$;
 -- Same-phone physical receipts are narrow writes, never message permission.
 DO $migration$
 DECLARE routine record; relation_name text; columns_sql text;
+        recorded_version bigint;writer_rows bigint;
 BEGIN
+ -- Only a completely absent earlier capability may skip this reset.
+ IF NOT EXISTS(SELECT FROM pg_class WHERE relnamespace='public'::regnamespace AND starts_with(relname::text,'payload_profile_selection_'))
+  AND NOT EXISTS(SELECT FROM pg_proc WHERE pronamespace='public'::regnamespace AND starts_with(proname::text,'payload_profile_selection_')) THEN
+  SELECT max(version) INTO recorded_version FROM public.schema_migrations;
+  IF coalesce(recorded_version,0)>=111 THEN
+   RAISE EXCEPTION 'recorded capability 111 is absent'; END IF;
+  IF to_regclass('public.payload_profile_writer_catalog') IS NOT NULL THEN
+   SELECT count(*),max(migration_version) INTO writer_rows,recorded_version
+    FROM public.payload_profile_writer_catalog WHERE singleton;
+   IF writer_rows<>1 OR recorded_version IS NULL OR recorded_version NOT BETWEEN 108 AND 110 THEN
+    RAISE EXCEPTION 'earlier writer installation for 111 is unavailable'; END IF;
+  END IF;
+  RETURN;
+ END IF;
+ IF (SELECT count(*) FROM pg_class WHERE relnamespace='public'::regnamespace
+      AND relname IN('payload_profile_selection_challenges','payload_profile_selection_receipts') AND relkind='r')<>2
+  OR EXISTS(SELECT FROM pg_class WHERE relnamespace='public'::regnamespace
+      AND starts_with(relname::text,'payload_profile_selection_') AND relkind NOT IN('r','i'))
+  OR NOT ARRAY['payload_profile_selection_approve','payload_profile_selection_complete','payload_profile_selection_device_proof','payload_profile_selection_install','payload_profile_selection_observation','payload_profile_selection_owner','payload_profile_selection_ready','payload_profile_selection_reserve','payload_profile_selection_rows_guard','payload_profile_selection_same_scope','payload_profile_selection_scope']::text[] <@ ARRAY(SELECT proname::text FROM pg_proc
+      WHERE pronamespace='public'::regnamespace) THEN
+  RAISE EXCEPTION 'partial capability 111 installation'; END IF;
  FOREACH relation_name IN ARRAY ARRAY['payload_profile_selection_challenges','payload_profile_selection_receipts'] LOOP
   EXECUTE format('REVOKE ALL ON TABLE public.%I FROM PUBLIC',relation_name);
   IF EXISTS(SELECT FROM pg_roles WHERE rolname='zrotext_runtime') THEN
@@ -285,7 +329,29 @@ $migration$;
 -- Same-root03 successor rows are immutable and narrow-write only.
 DO $migration$
 DECLARE routine record; columns_sql text;
+        recorded_version bigint;writer_rows bigint;
 BEGIN
+ -- Only a completely absent earlier capability may skip this reset.
+ IF NOT EXISTS(SELECT FROM pg_class WHERE relnamespace='public'::regnamespace AND starts_with(relname::text,'payload_profile_manifest_'))
+  AND NOT EXISTS(SELECT FROM pg_proc WHERE pronamespace='public'::regnamespace AND starts_with(proname::text,'payload_profile_manifest_')) THEN
+  SELECT max(version) INTO recorded_version FROM public.schema_migrations;
+  IF coalesce(recorded_version,0)>=112 THEN
+   RAISE EXCEPTION 'recorded capability 112 is absent'; END IF;
+  IF to_regclass('public.payload_profile_writer_catalog') IS NOT NULL THEN
+   SELECT count(*),max(migration_version) INTO writer_rows,recorded_version
+    FROM public.payload_profile_writer_catalog WHERE singleton;
+   IF writer_rows<>1 OR recorded_version IS NULL OR recorded_version NOT BETWEEN 108 AND 111 THEN
+    RAISE EXCEPTION 'earlier writer installation for 112 is unavailable'; END IF;
+  END IF;
+  RETURN;
+ END IF;
+ IF (SELECT count(*) FROM pg_class WHERE relnamespace='public'::regnamespace
+      AND relname IN('payload_profile_manifest_successors') AND relkind='r')<>1
+  OR EXISTS(SELECT FROM pg_class WHERE relnamespace='public'::regnamespace
+      AND starts_with(relname::text,'payload_profile_manifest_') AND relkind NOT IN('r','i'))
+  OR NOT ARRAY['payload_profile_manifest_ancestry','payload_profile_manifest_base','payload_profile_manifest_complete','payload_profile_manifest_context','payload_profile_manifest_install','payload_profile_manifest_keys','payload_profile_manifest_ready','payload_profile_manifest_retention','payload_profile_manifest_rows_guard','payload_profile_manifest_scope','payload_profile_manifest_step']::text[] <@ ARRAY(SELECT proname::text FROM pg_proc
+      WHERE pronamespace='public'::regnamespace) THEN
+  RAISE EXCEPTION 'partial capability 112 installation'; END IF;
  REVOKE ALL ON TABLE public.payload_profile_manifest_successors FROM PUBLIC;
  IF EXISTS(SELECT FROM pg_roles WHERE rolname='zrotext_runtime') THEN
   SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) INTO columns_sql FROM pg_attribute WHERE attrelid='public.payload_profile_manifest_successors'::regclass AND attnum>0 AND NOT attisdropped;
@@ -305,7 +371,29 @@ $migration$;
 -- Additive installed conversation03 consent, narrow writes only.
 DO $migration$
 DECLARE routine record; columns_sql text;
+        recorded_version bigint;writer_rows bigint;
 BEGIN
+ -- Only a completely absent earlier capability may skip this reset.
+ IF NOT EXISTS(SELECT FROM pg_class WHERE relnamespace='public'::regnamespace AND starts_with(relname::text,'conversation_profile03_intervals'))
+  AND NOT EXISTS(SELECT FROM pg_proc WHERE pronamespace='public'::regnamespace AND starts_with(proname::text,'conversation_profile03_interval_')) THEN
+  SELECT max(version) INTO recorded_version FROM public.schema_migrations;
+  IF coalesce(recorded_version,0)>=113 THEN
+   RAISE EXCEPTION 'recorded capability 113 is absent'; END IF;
+  IF to_regclass('public.payload_profile_writer_catalog') IS NOT NULL THEN
+   SELECT count(*),max(migration_version) INTO writer_rows,recorded_version
+    FROM public.payload_profile_writer_catalog WHERE singleton;
+   IF writer_rows<>1 OR recorded_version IS NULL OR recorded_version NOT BETWEEN 108 AND 112 THEN
+    RAISE EXCEPTION 'earlier writer installation for 113 is unavailable'; END IF;
+  END IF;
+  RETURN;
+ END IF;
+ IF (SELECT count(*) FROM pg_class WHERE relnamespace='public'::regnamespace
+      AND relname IN('conversation_profile03_intervals') AND relkind='r')<>1
+  OR EXISTS(SELECT FROM pg_class WHERE relnamespace='public'::regnamespace
+      AND starts_with(relname::text,'conversation_profile03_intervals') AND relkind NOT IN('r','i'))
+  OR NOT ARRAY['conversation_profile03_interval_approve','conversation_profile03_interval_complete','conversation_profile03_interval_device_actor','conversation_profile03_interval_device_stop','conversation_profile03_interval_install','conversation_profile03_interval_lock','conversation_profile03_interval_parse','conversation_profile03_interval_ready','conversation_profile03_interval_request','conversation_profile03_interval_reserve','conversation_profile03_interval_rows_guard','conversation_profile03_interval_scope','conversation_profile03_interval_stop']::text[] <@ ARRAY(SELECT proname::text FROM pg_proc
+      WHERE pronamespace='public'::regnamespace) THEN
+  RAISE EXCEPTION 'partial capability 113 installation'; END IF;
  REVOKE ALL ON TABLE public.conversation_profile03_intervals FROM PUBLIC;
  SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) INTO columns_sql FROM pg_attribute WHERE attrelid='public.conversation_profile03_intervals'::regclass AND attnum>0 AND NOT attisdropped;
  EXECUTE format('REVOKE ALL (%s) ON TABLE public.conversation_profile03_intervals FROM PUBLIC',columns_sql);
@@ -326,7 +414,29 @@ $migration$;
 -- Original reviewed03 admission, closed sidecar capture only.
 DO $migration$
 DECLARE routine record; columns_sql text;
+        recorded_version bigint;writer_rows bigint;
 BEGIN
+ -- Only a completely absent earlier capability may skip this reset.
+ IF NOT EXISTS(SELECT FROM pg_class WHERE relnamespace='public'::regnamespace AND starts_with(relname::text,'conversation_reviewed_sends03'))
+  AND NOT EXISTS(SELECT FROM pg_proc WHERE pronamespace='public'::regnamespace AND starts_with(proname::text,'conversation_reviewed_send03_')) THEN
+  SELECT max(version) INTO recorded_version FROM public.schema_migrations;
+  IF coalesce(recorded_version,0)>=114 THEN
+   RAISE EXCEPTION 'recorded capability 114 is absent'; END IF;
+  IF to_regclass('public.payload_profile_writer_catalog') IS NOT NULL THEN
+   SELECT count(*),max(migration_version) INTO writer_rows,recorded_version
+    FROM public.payload_profile_writer_catalog WHERE singleton;
+   IF writer_rows<>1 OR recorded_version IS NULL OR recorded_version NOT BETWEEN 108 AND 113 THEN
+    RAISE EXCEPTION 'earlier writer installation for 114 is unavailable'; END IF;
+  END IF;
+  RETURN;
+ END IF;
+ IF (SELECT count(*) FROM pg_class WHERE relnamespace='public'::regnamespace
+      AND relname IN('conversation_reviewed_sends03') AND relkind='r')<>1
+  OR EXISTS(SELECT FROM pg_class WHERE relnamespace='public'::regnamespace
+      AND starts_with(relname::text,'conversation_reviewed_sends03') AND relkind NOT IN('r','i'))
+  OR NOT ARRAY['conversation_reviewed_send03_admit','conversation_reviewed_send03_complete','conversation_reviewed_send03_envelope','conversation_reviewed_send03_erasure_fence','conversation_reviewed_send03_message_redact','conversation_reviewed_send03_parse','conversation_reviewed_send03_ready','conversation_reviewed_send03_rows_guard','conversation_reviewed_send03_scope','conversation_reviewed_send03_writer']::text[] <@ ARRAY(SELECT proname::text FROM pg_proc
+      WHERE pronamespace='public'::regnamespace) THEN
+  RAISE EXCEPTION 'partial capability 114 installation'; END IF;
  REVOKE ALL ON TABLE public.conversation_reviewed_sends03 FROM PUBLIC;
  SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) INTO columns_sql FROM pg_attribute WHERE attrelid='public.conversation_reviewed_sends03'::regclass AND attnum>0 AND NOT attisdropped;
  EXECUTE format('REVOKE ALL (%s) ON TABLE public.conversation_reviewed_sends03 FROM PUBLIC',columns_sql);
@@ -347,7 +457,29 @@ $migration$;
 -- Distinct one-use03 grant, all other effect transitions stay closed.
 DO $migration$
 DECLARE routine record; columns_sql text;
+        recorded_version bigint;writer_rows bigint;
 BEGIN
+ -- Only a completely absent earlier capability may skip this reset.
+ IF NOT EXISTS(SELECT FROM pg_class WHERE relnamespace='public'::regnamespace AND starts_with(relname::text,'conversation_profile03_grants'))
+  AND NOT EXISTS(SELECT FROM pg_proc WHERE pronamespace='public'::regnamespace AND starts_with(proname::text,'conversation_profile03_grant_')) THEN
+  SELECT max(version) INTO recorded_version FROM public.schema_migrations;
+  IF coalesce(recorded_version,0)>=115 THEN
+   RAISE EXCEPTION 'recorded capability 115 is absent'; END IF;
+  IF to_regclass('public.payload_profile_writer_catalog') IS NOT NULL THEN
+   SELECT count(*),max(migration_version) INTO writer_rows,recorded_version
+    FROM public.payload_profile_writer_catalog WHERE singleton;
+   IF writer_rows<>1 OR recorded_version IS NULL OR recorded_version NOT BETWEEN 108 AND 114 THEN
+    RAISE EXCEPTION 'earlier writer installation for 115 is unavailable'; END IF;
+  END IF;
+  RETURN;
+ END IF;
+ IF (SELECT count(*) FROM pg_class WHERE relnamespace='public'::regnamespace
+      AND relname IN('conversation_profile03_grants') AND relkind='r')<>1
+  OR EXISTS(SELECT FROM pg_class WHERE relnamespace='public'::regnamespace
+      AND starts_with(relname::text,'conversation_profile03_grants') AND relkind NOT IN('r','i'))
+  OR NOT ARRAY['conversation_profile03_grant_billing','conversation_profile03_grant_complete','conversation_profile03_grant_issue','conversation_profile03_grant_issued','conversation_profile03_grant_lock','conversation_profile03_grant_mode','conversation_profile03_grant_ready','conversation_profile03_grant_rows_guard','conversation_profile03_grant_same_scope','conversation_profile03_grant_scope','conversation_profile03_grant_usage_writer','conversation_profile03_grant_writer']::text[] <@ ARRAY(SELECT proname::text FROM pg_proc
+      WHERE pronamespace='public'::regnamespace) THEN
+  RAISE EXCEPTION 'partial capability 115 installation'; END IF;
  REVOKE ALL ON TABLE public.conversation_profile03_grants FROM PUBLIC;
  SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) INTO columns_sql FROM pg_attribute WHERE attrelid='public.conversation_profile03_grants'::regclass AND attnum>0 AND NOT attisdropped;
  EXECUTE format('REVOKE ALL (%s) ON TABLE public.conversation_profile03_grants FROM PUBLIC',columns_sql);
@@ -368,7 +500,29 @@ $migration$;
 -- Native backend inputs are computed by defaults, never runtime-writable.
 DO $migration$
 DECLARE relation_name text; columns_sql text; routine record;
+        recorded_version bigint;writer_rows bigint;
 BEGIN
+ -- Only a completely absent earlier capability may skip this reset.
+ IF NOT EXISTS(SELECT FROM pg_class WHERE relnamespace='public'::regnamespace AND (starts_with(relname::text,'hosted_runtime_entries') OR starts_with(relname::text,'hosted_runtime_requests')))
+  AND NOT EXISTS(SELECT FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname IN('hosted_runtime_native_start','hosted_runtime_native_schema_valid','hosted_runtime_identity_ready','hosted_runtime_scope','hosted_runtime_expiry','hosted_runtime_request_apply','hosted_runtime_request_remove','hosted_runtime_enter')) THEN
+  SELECT max(version) INTO recorded_version FROM public.schema_migrations;
+  IF coalesce(recorded_version,0)>=116 THEN
+   RAISE EXCEPTION 'recorded capability 116 is absent'; END IF;
+  IF to_regclass('public.payload_profile_writer_catalog') IS NOT NULL THEN
+   SELECT count(*),max(migration_version) INTO writer_rows,recorded_version
+    FROM public.payload_profile_writer_catalog WHERE singleton;
+   IF writer_rows<>1 OR recorded_version IS NULL OR recorded_version NOT BETWEEN 108 AND 115 THEN
+    RAISE EXCEPTION 'earlier writer installation for 116 is unavailable'; END IF;
+  END IF;
+  RETURN;
+ END IF;
+ IF (SELECT count(*) FROM pg_class WHERE relnamespace='public'::regnamespace
+      AND relname IN('hosted_runtime_entries','hosted_runtime_requests') AND relkind='r')<>2
+  OR EXISTS(SELECT FROM pg_class WHERE relnamespace='public'::regnamespace
+      AND (starts_with(relname::text,'hosted_runtime_entries') OR starts_with(relname::text,'hosted_runtime_requests')) AND relkind NOT IN('r','i'))
+  OR NOT ARRAY['hosted_runtime_native_start','hosted_runtime_native_schema_valid','hosted_runtime_identity_ready','hosted_runtime_scope','hosted_runtime_expiry','hosted_runtime_request_apply','hosted_runtime_request_remove','hosted_runtime_enter']::text[] <@ ARRAY(SELECT proname::text FROM pg_proc
+      WHERE pronamespace='public'::regnamespace) THEN
+  RAISE EXCEPTION 'partial capability 116 installation'; END IF;
  FOREACH relation_name IN ARRAY ARRAY['hosted_runtime_entries','hosted_runtime_requests'] LOOP
   SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) INTO columns_sql FROM pg_attribute
    WHERE attrelid=to_regclass(format('public.%I',relation_name)) AND attnum>0 AND NOT attisdropped;
@@ -398,7 +552,33 @@ $migration$;
 -- First-origin ledgers are readable history, never direct writable authority.
 DO $migration$
 DECLARE relation_name text;columns_sql text;routine record;
+        protection_objects bigint;protection_relations bigint;protection_helpers bigint;recorded_version bigint;writer_rows bigint;
 BEGIN
+ -- Earlier supported installations have none of this capability. Refuse any
+ -- partial graph or recorded new installation instead of silently granting
+ -- ordinary DML after its protection objects have disappeared.
+ SELECT count(*),count(*) FILTER(WHERE relkind='r') INTO protection_objects,protection_relations FROM pg_class
+  WHERE relnamespace='public'::regnamespace AND starts_with(relname::text,'device_protection_');
+ SELECT count(*) INTO protection_helpers FROM pg_proc
+  WHERE pronamespace='public'::regnamespace AND starts_with(proname::text,'device_protection_');
+ IF protection_objects=0 AND protection_helpers=0 THEN
+  SELECT max(version) INTO recorded_version FROM public.schema_migrations;
+  IF coalesce(recorded_version,0)>=118 THEN
+   RAISE EXCEPTION 'recorded device protection installation is absent'; END IF;
+  IF to_regclass('public.payload_profile_writer_catalog') IS NOT NULL THEN
+   SELECT count(*),max(migration_version) INTO writer_rows,recorded_version
+    FROM public.payload_profile_writer_catalog WHERE singleton;
+   IF coalesce(recorded_version,0)>=118 THEN
+    RAISE EXCEPTION 'recorded device protection graph is absent'; END IF;
+   IF writer_rows<>1 OR recorded_version IS NULL OR recorded_version NOT BETWEEN 108 AND 117 THEN
+    RAISE EXCEPTION 'earlier writer installation is unavailable'; END IF;
+  END IF;
+  RETURN;
+ END IF;
+ IF protection_relations<>5 OR protection_helpers<>11
+  OR EXISTS(SELECT FROM pg_class WHERE relnamespace='public'::regnamespace
+   AND starts_with(relname::text,'device_protection_') AND relkind NOT IN('r','i')) THEN
+  RAISE EXCEPTION 'partial device protection installation'; END IF;
  FOREACH relation_name IN ARRAY ARRAY['device_protection_origins','device_protection_associations','device_protection_attempts','device_protection_receipts','device_protection_retirements'] LOOP
   EXECUTE format('REVOKE ALL ON TABLE public.%I FROM PUBLIC',relation_name);
   SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) INTO columns_sql FROM pg_attribute
