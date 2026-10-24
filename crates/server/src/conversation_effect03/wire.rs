@@ -241,10 +241,13 @@ impl Request03 {
                 if core.identities()[5] != *closure.as_bytes()
                     || core.identities()[6] != *request.as_bytes()
                     || core.identities()[7] != *challenge.as_bytes()
-                    || core.numbers()[2] != epoch as u64
                 {
                     return Err("effect proof outer/core correlation");
                 }
+                // The outer epoch belongs to the current authenticated
+                // transport. An accepted exact proof keeps its original
+                // signed epoch across reconnect. The held adapter requires
+                // that original proof lease only for NEW acceptance.
                 Self::Proof(Box::new(Proof03 {
                     connection_epoch: epoch,
                     proof_request_id: request,
