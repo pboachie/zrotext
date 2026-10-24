@@ -11,7 +11,7 @@ pub(super) async fn prepared() -> (Case, SigningKey, Vec<u8>) {
 pub(super) async fn prepared_claimed() -> (Case, SigningKey, Vec<u8>) {
     prepared_case(super::manifest_tests::elected_claimed().await.0).await
 }
-async fn prepared_case(mut c: Case) -> (Case, SigningKey, Vec<u8>) {
+pub(super) async fn prepared_case(mut c: Case) -> (Case, SigningKey, Vec<u8>) {
     c.heartbeat().await;
     let browser = SigningKey::generate_from_rng(&mut rand::rng());
     let (opening, statement, signed, signature) = packet(&mut c, &browser, false).await;
