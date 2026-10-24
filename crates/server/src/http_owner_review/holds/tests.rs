@@ -30,7 +30,7 @@ macro_rules! migration {
 
 // Holds are checked by admission and released by inbound, so these routes run
 // on the complete schema. SQL is embedded at build time.
-const TEST_MIGRATIONS: [(&str, &str); 107] = [
+const LEGACY_TEST_MIGRATIONS: [(&str, &str); 107] = [
     migration!("001_foundation.sql"),
     migration!("002_auth.sql"),
     migration!("003_delivery.sql"),
@@ -141,21 +141,8 @@ const TEST_MIGRATIONS: [(&str, &str); 107] = [
 ];
 
 #[test]
-fn hold_fixture_tracks_numbered_migrations() {
-    let directory =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/compose/migrations");
-    let mut discovered = std::fs::read_dir(directory)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .filter(|name| name.ends_with(".sql"))
-        .collect::<Vec<_>>();
-    discovered.sort();
-    let embedded = TEST_MIGRATIONS
-        .iter()
-        .filter(|(name, _)| !name.starts_with("../migration-candidates/"))
-        .map(|(name, _)| name.to_string())
-        .collect::<Vec<_>>();
-    assert_eq!(discovered, embedded, "update the embedded migration list");
+fn hold_fixture_retains_exact_legacy107_prefix() {
+    crate::test_migration_inventory::assert_legacy107_fixture(&LEGACY_TEST_MIGRATIONS);
 }
 
 fn hold_body(value: Value) -> Result<HoldBody, serde_json::Error> {
@@ -342,7 +329,7 @@ async fn owner_holds_and_review_decisions_are_owner_bound_tenant_scoped_and_audi
     let database_url = format!("{base_url}{separator}options=-csearch_path%3D{schema}");
     let (mut db, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
-    for (name, migration) in TEST_MIGRATIONS {
+    for (name, migration) in LEGACY_TEST_MIGRATIONS {
         if name == "070_message_summary_metadata.sql" {
             db.batch_execute("CREATE INDEX CONCURRENTLY messages_summary_queue ON messages(account_id,state,created_at) WHERE state IN ('accepted','queued','claimed','submitting','submitted')").await.unwrap();
             db.batch_execute("BEGIN").await.unwrap();

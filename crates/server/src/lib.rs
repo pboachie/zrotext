@@ -56,8 +56,8 @@ pub mod retention;
 pub mod reviewed_intent03;
 pub use zrotext_root_material::root_backup;
 pub mod conversation_interval03;
-pub(crate) mod manifest_install03;
 pub mod hosted_runtime_identity;
+pub(crate) mod manifest_install03;
 pub mod runtime_db;
 pub mod sealed_body;
 pub mod sealed_connector_registry;
@@ -222,3 +222,6 @@ mod sealed_root_roles_tests;
 
 pub mod managed_reader_policy;
 pub mod workflow_templates;
+
+#[cfg(test)]
+mod test_migration_inventory;
