@@ -358,7 +358,9 @@ async fn functions<C: GenericClient + Sync>(db: &C) -> Result<()> {
     }
     Ok(())
 }
-const TABLES: &[(&str, &[(&str, &str, bool)])] = &[
+type Column = (&'static str, &'static str, bool);
+type Table = (&'static str, &'static [Column]);
+const TABLES: &[Table] = &[
     (
         "device_protection_origins",
         &[
