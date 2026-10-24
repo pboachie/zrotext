@@ -40,6 +40,16 @@ impl Fixture {
     pub(crate) async fn runtime() -> Self {
         Self::build(true).await
     }
+    /// A distinct connection using this fixture's unchanged ordinary-role
+    /// configuration. This creates no grant and exposes no retained credential.
+    pub(crate) async fn runtime_peer(
+        &self,
+    ) -> (
+        Client,
+        tokio::task::JoinHandle<std::result::Result<(), tokio_postgres::Error>>,
+    ) {
+        connect(&self.reader_config).await
+    }
     // Privileged-negative tests may corrupt data in an owner transaction, then
     // SET LOCAL ROLE to the genuine narrow runtime and roll the whole operation
     // back. The runtime role itself gets no membership or additional privilege.
