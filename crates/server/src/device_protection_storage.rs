@@ -27,6 +27,31 @@ fn body(name: &str) -> Result<&'static str> {
     )
     .ok_or(ProtectionSchemaError::Invalid)
 }
+fn body_for(name: &str, version: i64) -> Result<&'static str> {
+    if version == 119
+        && matches!(
+            name,
+            "device_protection_ready"
+                | "payload_profile_writer_policy"
+                | "payload_profile_writer_version"
+                | "payload_profile_writer_ready"
+                | "hosted_runtime_native_schema_valid"
+                | "hosted_runtime_identity_ready"
+                | "hosted_runtime_scope"
+                | "conversation_reviewed_send03_v2_ready"
+        )
+    {
+        return zrotext_delivery_store::hosted_runtime_identity::declared_function_body(
+            include_str!(
+                "../../../deploy/compose/migrations/119_conversation_profile03_effects.sql"
+            ),
+            name,
+            "$function$",
+        )
+        .ok_or(ProtectionSchemaError::Invalid);
+    }
+    body(name)
+}
 struct Function {
     name: &'static str,
     args: &'static str,
@@ -318,7 +343,7 @@ const FUNCTIONS: &[Function] = &[
         names: &[],
     },
 ];
-async fn functions<C: GenericClient + Sync>(db: &C) -> Result<()> {
+async fn functions<C: GenericClient + Sync>(db: &C, version: i64) -> Result<()> {
     for expected in FUNCTIONS {
         let signature = format!("public.{}({})", expected.name, expected.args);
         let rows=db.query("SELECT p.prosrc,p.oid=pg_catalog.to_regprocedure($3::text),p.prorettype=$2::text::pg_catalog.regtype,l.lanname,p.provolatile::text,p.proisstrict,p.prosecdef,p.proretset,p.proconfig,p.proargnames,p.proargmodes IS NULL,p.proallargtypes IS NULL,p.proparallel='u',p.prokind='f',p.pronargdefaults=0,p.provariadic=0,p.proowner=c.relowner FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_language l ON l.oid=p.prolang JOIN pg_catalog.pg_class c ON c.oid='public.accounts'::pg_catalog.regclass WHERE p.pronamespace='public'::pg_catalog.regnamespace AND p.proname=$1",&[&expected.name,&expected.returned,&signature]).await?;
@@ -336,7 +361,7 @@ async fn functions<C: GenericClient + Sync>(db: &C) -> Result<()> {
             .iter()
             .map(|s| (*s).to_owned())
             .collect::<Vec<_>>();
-        if row.try_get::<_, String>(0)? != body(expected.name)?
+        if row.try_get::<_, String>(0)? != body_for(expected.name, version)?
             || !row.try_get::<_, bool>(1)?
             || !row.try_get::<_, bool>(2)?
             || row.try_get::<_, String>(3)? != expected.language
@@ -507,18 +532,17 @@ pub async fn optional<C: GenericClient + Sync>(db: &C) -> Result<bool> {
     {
         return Err(ProtectionSchemaError::Invalid);
     }
-    if db
+    let version: i64 = db
         .query_one(
             "SELECT migration_version FROM public.payload_profile_writer_catalog WHERE singleton",
             &[],
         )
         .await?
-        .try_get::<_, i64>(0)?
-        != 118
-    {
+        .try_get(0)?;
+    if !matches!(version, 118..=119) {
         return Err(ProtectionSchemaError::Invalid);
     }
-    functions(db).await?;
+    functions(db, version).await?;
     tables(db).await?;
     Ok(true)
 }
