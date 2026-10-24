@@ -448,7 +448,7 @@ function routingJson(text) {
     for (const [word, literal] of [["true", true], ["false", false], ["null", null]]) {
       if (text.startsWith(word, at)) { at += word.length; return literal; }
     }
-    const match = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/.exec(text.slice(at));
+    const match = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/.exec(text.slice(at, at + 129));
     if (!match) return fail();
     const token = match[0];
     if (token.length > 128) return fail();
