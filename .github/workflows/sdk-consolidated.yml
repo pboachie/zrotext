@@ -168,7 +168,7 @@ jobs:
           npm run build --prefix pin-context_oracle/sdk/typescript
       - name: "Native candidate installed archives [rust]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native candidate installed archives [rust]"
         run: |
           python -m pip install cryptography==46.0.5 ada-url==1.27.0
@@ -201,7 +201,7 @@ jobs:
           }
       - name: "Native candidate installed archives [rust]: Build licensed archive and exercise installed consumer"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           python sdk/native/hpke-candidate/package-test.py
@@ -223,7 +223,7 @@ jobs:
           npm run build --prefix pin-context_oracle/sdk/typescript
       - name: "Native candidate installed archives [go]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native candidate installed archives [go]"
         run: |
           python -m pip install cryptography==46.0.5 ada-url==1.27.0
@@ -257,7 +257,7 @@ jobs:
           }
       - name: "Native candidate installed archives [go]: Build licensed archive and exercise installed consumer"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           python sdk/native/hpke-candidate/package-test.py
@@ -320,7 +320,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native outbound03 time policy [rust]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native outbound03 time policy [rust]: Build pinned shared signed-policy producer"
         shell: pwsh
         run: |
@@ -338,21 +338,21 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native outbound03 time policy [rust]: Conditional actual protected policy qualification"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           python sdk/native/hpke-candidate/run-time-policy.py --language 'rust' --producer "$env:RUNNER_TEMP/time-policy"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native outbound03 time policy [rust]: Authenticated reader lifetime acceptance and refusal"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           python sdk/native/hpke-candidate/run-time-reader.py --language 'rust' --producer "$env:RUNNER_TEMP/time-policy"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native outbound03 time policy [go]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native outbound03 time policy [go]: Build pinned shared signed-policy producer"
         shell: pwsh
         run: |
@@ -370,14 +370,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native outbound03 time policy [go]: Conditional actual protected policy qualification"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           python sdk/native/hpke-candidate/run-time-policy.py --language 'go' --producer "$env:RUNNER_TEMP/time-policy-2"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native outbound03 time policy [go]: Authenticated reader lifetime acceptance and refusal"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           python sdk/native/hpke-candidate/run-time-reader.py --language 'go' --producer "$env:RUNNER_TEMP/time-policy-2"
@@ -2836,7 +2836,7 @@ jobs:
           cache: false
       - name: "Native original reply checkpoint [rust]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native original reply checkpoint [rust]: Prepare pinned independent selected-ciphertext producer"
         shell: pwsh
         run: |
@@ -2854,14 +2854,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native original reply checkpoint [rust]: Durable accepted history, crash recovery and restored reader"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           python sdk/native/hpke-candidate/run-reply-checkpoint.py --language 'rust' --producer "$env:RUNNER_TEMP/selected"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native original reply checkpoint [go]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native original reply checkpoint [go]: Prepare pinned independent selected-ciphertext producer"
         shell: pwsh
         run: |
@@ -2879,7 +2879,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native original reply checkpoint [go]: Durable accepted history, crash recovery and restored reader"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           python sdk/native/hpke-candidate/run-reply-checkpoint.py --language 'go' --producer "$env:RUNNER_TEMP/selected-2"
@@ -2889,7 +2889,7 @@ jobs:
           python -m pip install cryptography==46.0.4
       - name: "Native original owner-review consumption [rust]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native original owner-review consumption [rust]: Prepare pinned signed fixture producer"
         shell: pwsh
         run: |
@@ -2907,7 +2907,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native original owner-review consumption [rust]: Build native saved owner-review probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('rust' -eq 'rust') {
@@ -2936,7 +2936,7 @@ jobs:
           python -m pip install cryptography==46.0.4
       - name: "Native original owner-review consumption [go]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native original owner-review consumption [go]: Prepare pinned signed fixture producer"
         shell: pwsh
         run: |
@@ -2954,7 +2954,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native original owner-review consumption [go]: Build native saved owner-review probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('go' -eq 'rust') {
@@ -2983,7 +2983,7 @@ jobs:
           python -m pip install cryptography==46.0.4
       - name: "Native authenticated original current proof [rust]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native authenticated original current proof [rust]: Prepare pinned signed fixture producer"
         shell: pwsh
         run: |
@@ -3001,7 +3001,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native authenticated original current proof [rust]: Build native current proof probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('rust' -eq 'rust') {
@@ -3030,7 +3030,7 @@ jobs:
           python -m pip install cryptography==46.0.4
       - name: "Native authenticated original current proof [go]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native authenticated original current proof [go]: Prepare pinned signed fixture producer"
         shell: pwsh
         run: |
@@ -3048,7 +3048,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native authenticated original current proof [go]: Build native current proof probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('go' -eq 'rust') {
@@ -3077,10 +3077,10 @@ jobs:
           python -m pip install cryptography==46.0.4
       - name: "Native original grant HTTPS transport [rust]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native original grant HTTPS transport [rust]: Build native transport probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('rust' -eq 'rust') {
@@ -3109,10 +3109,10 @@ jobs:
           python -m pip install cryptography==46.0.4
       - name: "Native original grant HTTPS transport [go]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native original grant HTTPS transport [go]: Build native transport probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('go' -eq 'rust') {
@@ -3141,7 +3141,7 @@ jobs:
           python -m pip install cryptography==46.0.4
       - name: "Native authenticated original page discovery [rust]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native authenticated original page discovery [rust]: Prepare pinned signed fixture producer"
         shell: pwsh
         run: |
@@ -3159,7 +3159,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native authenticated original page discovery [rust]: Build native page discovery probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('rust' -eq 'rust') {
@@ -3188,7 +3188,7 @@ jobs:
           python -m pip install cryptography==46.0.4
       - name: "Native authenticated original page discovery [go]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native authenticated original page discovery [go]: Prepare pinned signed fixture producer"
         shell: pwsh
         run: |
@@ -3206,7 +3206,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native authenticated original page discovery [go]: Build native page discovery probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('go' -eq 'rust') {
@@ -3235,7 +3235,7 @@ jobs:
           python -m pip install cryptography==46.0.4
       - name: "Native original typed proposals [rust]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native original typed proposals [rust]: Prepare pinned signed fixture producer"
         shell: pwsh
         run: |
@@ -3253,7 +3253,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native original typed proposals [rust]: Build native saved typed proposal probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('rust' -eq 'rust') {
@@ -3282,7 +3282,7 @@ jobs:
           python -m pip install cryptography==46.0.4
       - name: "Native original typed proposals [go]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native original typed proposals [go]: Prepare pinned signed fixture producer"
         shell: pwsh
         run: |
@@ -3300,7 +3300,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native original typed proposals [go]: Build native saved typed proposal probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('go' -eq 'rust') {
@@ -3329,7 +3329,7 @@ jobs:
           python -m pip install cryptography==46.0.4
       - name: "Native verified original HTTPS read [rust]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native verified original HTTPS read [rust]: Prepare pinned signed fixture producer"
         shell: pwsh
         run: |
@@ -3347,7 +3347,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native verified original HTTPS read [rust]: Build native verified read probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('rust' -eq 'rust') {
@@ -3376,7 +3376,7 @@ jobs:
           python -m pip install cryptography==46.0.4
       - name: "Native verified original HTTPS read [go]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native verified original HTTPS read [go]: Prepare pinned signed fixture producer"
         shell: pwsh
         run: |
@@ -3394,7 +3394,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native verified original HTTPS read [go]: Build native verified read probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('go' -eq 'rust') {
@@ -3420,7 +3420,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native selected original reply [rust]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native selected original reply [rust]: Prepare pinned independent selected-ciphertext producer"
         shell: pwsh
         run: |
@@ -3438,14 +3438,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native selected original reply [rust]: Native software controls and conditional protected acceptance"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           python sdk/native/hpke-candidate/run-original.py --language 'rust' --producer "$env:RUNNER_TEMP/selected-13"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native selected original reply [go]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native selected original reply [go]: Prepare pinned independent selected-ciphertext producer"
         shell: pwsh
         run: |
@@ -3463,7 +3463,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native selected original reply [go]: Native software controls and conditional protected acceptance"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           python sdk/native/hpke-candidate/run-original.py --language 'go' --producer "$env:RUNNER_TEMP/selected-14"
@@ -3491,7 +3491,7 @@ jobs:
           node-version: '24.13.0'
       - name: "Native reviewed template authoring [rust]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native reviewed template authoring [rust]: Prepare pinned maintained template oracle"
         shell: pwsh
         run: |
@@ -3527,7 +3527,7 @@ jobs:
           python -m pip install cryptography==46.0.4
       - name: "Native reviewed template authoring [rust]: Build native owner template probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('rust' -eq 'rust') {
@@ -3557,7 +3557,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native reviewed template authoring [go]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native reviewed template authoring [go]: Prepare pinned maintained template oracle"
         shell: pwsh
         run: |
@@ -3593,7 +3593,7 @@ jobs:
           python -m pip install cryptography==46.0.4
       - name: "Native reviewed template authoring [go]: Build native owner template probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('go' -eq 'rust') {
@@ -3623,7 +3623,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native template content [rust]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native template content [rust]: Prepare pinned maintained template oracle"
         shell: pwsh
         run: |
@@ -3641,7 +3641,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native template content [rust]: Build native template probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('rust' -eq 'rust') {
@@ -3667,7 +3667,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native template content [go]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native template content [go]: Prepare pinned maintained template oracle"
         shell: pwsh
         run: |
@@ -3685,7 +3685,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native template content [go]: Build native template probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('go' -eq 'rust') {
@@ -3711,7 +3711,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native encrypted templates [rust]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native encrypted templates [rust]: Prepare pinned maintained template oracle"
         shell: pwsh
         run: |
@@ -3729,7 +3729,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native encrypted templates [rust]: Build native template probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('rust' -eq 'rust') {
@@ -3759,7 +3759,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native encrypted templates [go]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native encrypted templates [go]: Prepare pinned maintained template oracle"
         shell: pwsh
         run: |
@@ -3777,7 +3777,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native encrypted templates [go]: Build native template probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('go' -eq 'rust') {
@@ -3807,7 +3807,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native explicit template opening [rust]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native explicit template opening [rust]: Prepare pinned maintained template oracle"
         shell: pwsh
         run: |
@@ -3843,7 +3843,7 @@ jobs:
           python -m pip install cryptography==46.0.4
       - name: "Native explicit template opening [rust]: Build native owner template probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('rust' -eq 'rust') {
@@ -3883,7 +3883,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native explicit template opening [go]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native explicit template opening [go]: Prepare pinned maintained template oracle"
         shell: pwsh
         run: |
@@ -3919,7 +3919,7 @@ jobs:
           python -m pip install cryptography==46.0.4
       - name: "Native explicit template opening [go]: Build native owner template probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('go' -eq 'rust') {
@@ -3959,7 +3959,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native reviewed template saves [rust]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native reviewed template saves [rust]: Prepare pinned maintained template oracle"
         shell: pwsh
         run: |
@@ -3995,7 +3995,7 @@ jobs:
           python -m pip install cryptography==46.0.4
       - name: "Native reviewed template saves [rust]: Build native owner template probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('rust' -eq 'rust') {
@@ -4025,7 +4025,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native reviewed template saves [go]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native reviewed template saves [go]: Prepare pinned maintained template oracle"
         shell: pwsh
         run: |
@@ -4061,7 +4061,7 @@ jobs:
           python -m pip install cryptography==46.0.4
       - name: "Native reviewed template saves [go]: Build native owner template probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('go' -eq 'rust') {
@@ -4134,7 +4134,7 @@ jobs:
           go test ./...
       - name: "Native historical contact fields [rust]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native historical contact fields [rust]: Prepare independent signed contact oracle"
         shell: pwsh
         run: |
@@ -4152,7 +4152,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native historical contact fields [rust]: Run native software contracts"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           $probe = "$env:RUNNER_TEMP/contact"
@@ -4176,7 +4176,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native historical contact fields [rust]: Run signed mutation and transition contracts"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           $probe = "$env:RUNNER_TEMP/contact-mutation"
@@ -4196,7 +4196,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native historical contact fields [rust]: Run durable local contact history contracts"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           $probe = "$env:RUNNER_TEMP/contact-history"
@@ -4216,7 +4216,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native historical contact fields [go]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native historical contact fields [go]: Prepare independent signed contact oracle"
         shell: pwsh
         run: |
@@ -4234,7 +4234,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native historical contact fields [go]: Run native software contracts"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           $probe = "$env:RUNNER_TEMP/contact"
@@ -4258,7 +4258,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native historical contact fields [go]: Run signed mutation and transition contracts"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           $probe = "$env:RUNNER_TEMP/contact-mutation"
@@ -4278,7 +4278,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native historical contact fields [go]: Run durable local contact history contracts"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           $probe = "$env:RUNNER_TEMP/contact-history"
@@ -4331,20 +4331,20 @@ jobs:
           npm run build --prefix "$RUNNER_TEMP/election/sdk/typescript"
       - name: "Native HPKE recipient interop"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
+          rustup toolchain install 1.99.1 --profile minimal --component clippy --component rustfmt
       - name: "Native HPKE recipient interop: Rust native recipient and package"
         working-directory: sdk/native/hpke-candidate/rust
         run: |
-          cargo +1.97.1 fmt --check
-          cargo +1.97.1 clippy --locked --all-targets -- -D warnings
-          node "$RUNNER_TEMP/producer/sdk/typescript/test/emit-native-hpke.mjs" | cargo +1.97.1 run --locked --example interop
-          python "$RUNNER_TEMP/envelopes/sdk/native/crypto-envelope/java/envelope_rows.py" | cargo +1.97.1 run --locked --example envelope
-          cargo +1.97.1 run --locked --example manifest < ../../../../protocol/v1/vectors/sealed-profile03-contract-01.json
-          node "$RUNNER_TEMP/archive/sdk/native/sealed-candidate/python/produce-fixture.mjs" | node ../reader-controls.mjs | cargo +1.97.1 run --locked --example reader
-          node "$RUNNER_TEMP/election/sdk/native/sealed-candidate/python/produce-election03.mjs" | cargo +1.97.1 run --locked --example election
-          node "$RUNNER_TEMP/election/sdk/native/sealed-candidate/python/produce-election03.mjs" | cargo +1.97.1 run --locked --example journal
-          node "$RUNNER_TEMP/archive/sdk/native/sealed-candidate/python/produce-fixture.mjs" | node ../root-controls.mjs "$RUNNER_TEMP/archive" | cargo +1.97.1 run --locked --example root
-          cargo +1.97.1 package --locked
+          cargo +1.99.1 fmt --check
+          cargo +1.99.1 clippy --locked --all-targets -- -D warnings
+          node "$RUNNER_TEMP/producer/sdk/typescript/test/emit-native-hpke.mjs" | cargo +1.99.1 run --locked --example interop
+          python "$RUNNER_TEMP/envelopes/sdk/native/crypto-envelope/java/envelope_rows.py" | cargo +1.99.1 run --locked --example envelope
+          cargo +1.99.1 run --locked --example manifest < ../../../../protocol/v1/vectors/sealed-profile03-contract-01.json
+          node "$RUNNER_TEMP/archive/sdk/native/sealed-candidate/python/produce-fixture.mjs" | node ../reader-controls.mjs | cargo +1.99.1 run --locked --example reader
+          node "$RUNNER_TEMP/election/sdk/native/sealed-candidate/python/produce-election03.mjs" | cargo +1.99.1 run --locked --example election
+          node "$RUNNER_TEMP/election/sdk/native/sealed-candidate/python/produce-election03.mjs" | cargo +1.99.1 run --locked --example journal
+          node "$RUNNER_TEMP/archive/sdk/native/sealed-candidate/python/produce-fixture.mjs" | node ../root-controls.mjs "$RUNNER_TEMP/archive" | cargo +1.99.1 run --locked --example root
+          cargo +1.99.1 package --locked
       - name: "Native HPKE recipient interop: Go native recipient"
         working-directory: sdk/native/hpke-candidate/go
         run: |
@@ -4378,14 +4378,14 @@ jobs:
           node sdk/native/crypto-candidate/rust/tests/generate-profile03.mjs --check
       - name: "Rust Go candidate body crypto"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
+          rustup toolchain install 1.99.1 --profile minimal --component clippy --component rustfmt
       - name: "Rust Go candidate body crypto"
         working-directory: sdk/native/crypto-candidate/rust
         run: |
-          cargo +1.97.1 fmt --check
-          cargo +1.97.1 clippy --locked --all-targets -- -D warnings
-          cargo +1.97.1 test --locked
-          cargo +1.97.1 package --locked
+          cargo +1.99.1 fmt --check
+          cargo +1.99.1 clippy --locked --all-targets -- -D warnings
+          cargo +1.99.1 test --locked
+          cargo +1.99.1 package --locked
       - name: "Rust Go candidate body crypto"
         working-directory: sdk/native/crypto-candidate/go
         run: |
@@ -4450,7 +4450,7 @@ jobs:
           python3 sdk/tungsten/conformance/native/run.py --foundation "$RUNNER_TEMP/foundation-2" --source "$RUNNER_TEMP/tungsten-2"
       - name: "Native current owner templates [rust]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native current owner templates [rust]: Prepare pinned maintained template oracle"
         shell: pwsh
         run: |
@@ -4471,7 +4471,7 @@ jobs:
           python -m pip install cryptography==46.0.4
       - name: "Native current owner templates [rust]: Build native owner template probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('rust' -eq 'rust') {
@@ -4501,7 +4501,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native current owner templates [go]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native current owner templates [go]: Prepare pinned maintained template oracle"
         shell: pwsh
         run: |
@@ -4522,7 +4522,7 @@ jobs:
           python -m pip install cryptography==46.0.4
       - name: "Native current owner templates [go]: Build native owner template probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('go' -eq 'rust') {
@@ -4566,7 +4566,7 @@ jobs:
           cache: false
       - name: "Native HPKE recipient interop"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
+          rustup toolchain install 1.99.1 --profile minimal --component clippy --component rustfmt
       - name: "Native HPKE recipient interop: Prepare exact public-point-only producer"
         shell: pwsh
         run: |
@@ -4614,7 +4614,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native HPKE recipient interop: Native Windows build and conditional protected qualification"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           cargo fmt --manifest-path sdk/native/hpke-candidate/rust/Cargo.toml --check
@@ -4842,7 +4842,7 @@ jobs:
           python sdk/native/crypto-envelope/contact-mutation-run.py --language ruby --fixture fixture --producer producer --origin-asset "$env:RUNNER_TEMP/contact-origin-mutation-ruby"
       - name: "Native owner context persistence [rust]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native owner context persistence [rust]: Prepare pinned maintained context oracle"
         shell: pwsh
         run: |
@@ -4863,7 +4863,7 @@ jobs:
           python -m pip install cryptography==46.0.4
       - name: "Native owner context persistence [rust]: Build native owner context probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('rust' -eq 'rust') {
@@ -4893,7 +4893,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native owner context persistence [go]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native owner context persistence [go]: Prepare pinned maintained context oracle"
         shell: pwsh
         run: |
@@ -4914,7 +4914,7 @@ jobs:
           python -m pip install cryptography==46.0.4
       - name: "Native owner context persistence [go]: Build native owner context probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('go' -eq 'rust') {
@@ -4944,7 +4944,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native workflow context [rust]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native workflow context [rust]: Prepare pinned maintained context oracle"
         shell: pwsh
         run: |
@@ -4962,7 +4962,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native workflow context [rust]: Build native context probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('rust' -eq 'rust') {
@@ -4995,7 +4995,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native workflow context [go]"
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: "Native workflow context [go]: Prepare pinned maintained context oracle"
         shell: pwsh
         run: |
@@ -5013,7 +5013,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: "Native workflow context [go]: Build native context probe"
         env:
-          RUSTUP_TOOLCHAIN: '1.97.1'
+          RUSTUP_TOOLCHAIN: '1.99.1'
         shell: pwsh
         run: |
           if ('go' -eq 'rust') {

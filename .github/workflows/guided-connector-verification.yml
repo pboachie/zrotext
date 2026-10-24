@@ -40,7 +40,7 @@ jobs:
           python -m venv "$RUNNER_TEMP/connector-venv"
           "$RUNNER_TEMP/connector-venv/bin/python" -m pip install --disable-pip-version-check -r sdk/mcp/verify-requirements.txt
           echo "$RUNNER_TEMP/connector-venv/bin" >> "$GITHUB_PATH"
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
       - name: Build actual broker SDK
         working-directory: sdk/typescript
         run: npm ci --ignore-scripts && npm run build

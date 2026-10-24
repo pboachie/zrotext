@@ -243,7 +243,7 @@ jobs:
         run: python3 scripts/check_env_example.py
       - name: Install pinned Rust toolchain
         if: env.RUN_RUST == 'true'
-        run: rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
+        run: rustup toolchain install 1.99.1 --profile minimal --component clippy --component rustfmt
       - name: Cache Rust build artifacts
         if: env.RUN_RUST == 'true'
         # Dependency cache shared with sealed-interop.yml; PR runs only read it.

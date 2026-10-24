@@ -77,7 +77,7 @@ jobs:
           printf 'commit=%s\ntree=%s\n' "$source_commit" "$source_tree" >> "$GITHUB_OUTPUT"
           printf 'Source commit: %s\nSource tree: %s\n' "$source_commit" "$source_tree"
       - name: Install existing Rust toolchain version
-        run: rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
+        run: rustup toolchain install 1.99.1 --profile minimal --component clippy --component rustfmt
       - name: Cache Rust build artifacts
         # Dependency cache shared with the CI rust job; PR runs only read it.
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -177,7 +177,7 @@ jobs:
           test "$source_tree" = "$EXPECTED_SOURCE_TREE"
           printf 'Source commit: %s\nSource tree: %s\n' "$source_commit" "$source_tree"
       - name: Install existing Rust toolchain version
-        run: rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
+        run: rustup toolchain install 1.99.1 --profile minimal --component clippy --component rustfmt
       - name: Cache Rust build artifacts
         # Dependency cache shared with the CI rust job; PR runs only read it.
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -273,8 +273,8 @@ jobs:
       - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
       - name: Install existing toolchain versions
         run: |
-          rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
-          rustup target add --toolchain 1.97.1 aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
+          rustup toolchain install 1.99.1 --profile minimal --component clippy --component rustfmt
+          rustup target add --toolchain 1.99.1 aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
           sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;28.2.13676358'
       - name: Cache Rust build artifacts
         # Dependency cache shared with the CI rust job; PR runs only read it.
@@ -337,9 +337,9 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install pinned fixture tools and build the existing SDK
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal
           if ($LASTEXITCODE -ne 0) { throw 'Toolchain setup failed' }
-          rustup target add --toolchain 1.97.1 aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
+          rustup target add --toolchain 1.99.1 aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
           if ($LASTEXITCODE -ne 0) { throw 'Android Rust targets setup failed' }
           sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;28.2.13676358'
           if ($LASTEXITCODE -ne 0) { throw 'Android SDK setup failed' }
