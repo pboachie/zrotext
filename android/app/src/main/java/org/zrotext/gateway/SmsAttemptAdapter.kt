@@ -214,7 +214,9 @@ class SmsCallbackReceiver : BroadcastReceiver() {
                 val now = System.currentTimeMillis()
                 // Permanent classification, not a RAM registry or present effect permission.
                 // Storage failure never falls back to the legacy pump.
-                SmsCallbackJournal.record(journal, attemptId, index, delivery, result, status, now)
+                SmsCallbackJournal.record(journal, attemptId, index, delivery, result, status, now) {
+                    TypedHistory03Runtime.callbackRecorded(app, attemptId)
+                }
             } finally {
                 pending.finish()
             }
@@ -240,11 +242,11 @@ class SmsCallbackReceiver : BroadcastReceiver() {
 /** Shared actual cold receiver route. No catch permits a failed typed read to become legacy. */
 internal object SmsCallbackJournal {
     fun record(journal: SmsJournalDatabase, attempt: String, index: Int, delivery: Boolean,
-        result: Int, status: Int?, observedMs: Long) {
+        result: Int, status: Int?, observedMs: Long, onTypedCommitted: () -> Unit = {}) {
         if (!journal.typedSubmits03().recordCallback(attempt, index, delivery, result, status, observedMs)) {
             journal.attempts().recordCallback(attempt, index, delivery, result, status, observedMs)
             JournalWriteSignal.alphaEventRecorded()
-        }
+        } else onTypedCommitted()
     }
 }
 
