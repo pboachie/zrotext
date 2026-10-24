@@ -1073,7 +1073,7 @@ async fn expired_message_replay_keeps_identity_without_new_dispatch() {
             &[&account],
         ).await.unwrap();
     let replacement_id = Uuid::new_v4();
-    let replacement = DeliveryStore::with_idempotency_days(&mut client, 1)
+    let replacement = DeliveryStore::with_idempotency_days(&mut fixture.runtime, 1)
         .accept(NewMessage {
             client_message_id: replacement_id,
             synthetic_payload: b"new request after key expiry",

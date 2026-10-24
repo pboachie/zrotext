@@ -145,7 +145,10 @@ fn frame(tag: u8, data: &[u8]) -> Result<Frame, &'static str> {
             }
             Frame::Parse(
                 name,
-                format!("{:x}", Sha256::digest(sql.as_bytes())),
+                Sha256::digest(sql.as_bytes())
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>(),
                 params,
             )
         }
@@ -600,7 +603,10 @@ fn check_transaction(frames: &[Frame], business: &[&str]) -> Result<usize, &'sta
     Ok(typed)
 }
 fn check_raw_control(frames: &[Frame]) -> Result<(), &'static str> {
-    let digest = format!("{:x}", Sha256::digest(b"SELECT $1::text"));
+    let digest = Sha256::digest(b"SELECT $1::text")
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     match frames {
         [
             Frame::Parse(name, sql, 0),
@@ -754,7 +760,10 @@ fn raw_query_control_exposes_prepare_execute_and_named_close() {
     let mut exact = vec![
         Frame::Parse(
             name.clone(),
-            format!("{:x}", Sha256::digest(b"SELECT $1::text")),
+            Sha256::digest(b"SELECT $1::text")
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
             0,
         ),
         Frame::Describe(b'S', name.clone()),
