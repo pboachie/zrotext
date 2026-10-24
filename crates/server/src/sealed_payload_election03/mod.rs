@@ -11,7 +11,7 @@ pub mod owner_records;
 pub mod registration_reader;
 
 #[cfg(test)]
-mod test_database;
+pub(crate) mod test_database;
 
 use crate::sealed_manifest;
 use crate::sealed_manifest03::{

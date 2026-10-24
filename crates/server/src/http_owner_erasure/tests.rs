@@ -2417,8 +2417,8 @@ fn runtime_role_covers_every_erased_table() {
 #[tokio::test]
 #[ignore = "requires ZT_AUTH_TEST_DATABASE_URL with CREATEDB/CREATEROLE on a disposable cluster"]
 async fn current_public_runtime_preserves_plan_acl_and_protected_history_exceptions() {
-    let f = crate::payload_profile_writer::tests::Fixture::new().await;
-    crate::hosted_runtime_identity::require(&f.db)
+    let f = crate::sealed_payload_election03::test_database::Fixture::runtime().await;
+    crate::hosted_runtime_identity::require(&f.reader)
         .await
         .unwrap();
     for table in DELETE_PLAN
@@ -2429,7 +2429,7 @@ async fn current_public_runtime_preserves_plan_acl_and_protected_history_excepti
         if table == OBSERVER_USERS_TABLE {
             continue;
         }
-        let row=f.db.query_one("SELECT pg_catalog.to_regclass(pg_catalog.format('public.%I',$1::text))::pg_catalog.oid",&[&table]).await.unwrap();
+        let row=f.reader.query_one("SELECT pg_catalog.to_regclass(pg_catalog.format('public.%I',$1::text))::pg_catalog.oid",&[&table]).await.unwrap();
         let Some(relation) = row.get::<_, Option<u32>>(0) else {
             assert!(
                 crate::managed_ai::lifecycle::TABLES.contains(&table)
@@ -2439,13 +2439,14 @@ async fn current_public_runtime_preserves_plan_acl_and_protected_history_excepti
             continue;
         };
         assert!(
-            f.db.query_one(
-                "SELECT pg_catalog.has_table_privilege(CURRENT_USER,$1::oid,'DELETE')",
-                &[&relation]
-            )
-            .await
-            .unwrap()
-            .get::<_, bool>(0),
+            f.reader
+                .query_one(
+                    "SELECT pg_catalog.has_table_privilege(CURRENT_USER,$1::oid,'DELETE')",
+                    &[&relation]
+                )
+                .await
+                .unwrap()
+                .get::<_, bool>(0),
             "actual ordinary plan ACL refuses {table}"
         );
     }
@@ -2465,7 +2466,18 @@ async fn current_public_runtime_preserves_plan_acl_and_protected_history_excepti
         "hosted_runtime_entries",
         "hosted_runtime_requests",
     ] {
-        assert!(!f.db.query_one("SELECT pg_catalog.has_table_privilege(CURRENT_USER,pg_catalog.to_regclass(pg_catalog.format('public.%I',$1::text)),'UPDATE,DELETE,TRUNCATE') OR pg_catalog.has_any_column_privilege(CURRENT_USER,pg_catalog.to_regclass(pg_catalog.format('public.%I',$1::text)),'UPDATE')",&[&table]).await.unwrap().get::<_,bool>(0),"protected history unexpectedly permits direct mutation: {table}");
+        assert!(!f.reader.query_one("SELECT pg_catalog.has_table_privilege(CURRENT_USER,pg_catalog.to_regclass(pg_catalog.format('public.%I',$1::text)),'UPDATE,DELETE,TRUNCATE')",&[&table]).await.unwrap().get::<_,bool>(0),"protected history unexpectedly permits table mutation: {table}");
+        let columns=f.reader.query("SELECT a.attname::text,pg_catalog.has_column_privilege(CURRENT_USER,a.attrelid,a.attname,'UPDATE') FROM pg_catalog.pg_attribute a WHERE a.attrelid=pg_catalog.to_regclass(pg_catalog.format('public.%I',$1::text)) AND a.attnum>0 AND NOT a.attisdropped ORDER BY a.attnum",&[&table]).await.unwrap();
+        assert!(!columns.is_empty(), "missing protected table {table}");
+        for column in columns {
+            let name: String = column.get(0);
+            let permitted: bool = column.get(1);
+            assert_eq!(
+                permitted,
+                table == "payload_profile_account_anchors" && name == "account_id",
+                "protected history column capability differs: {table}.{name}"
+            );
+        }
     }
     f.finish().await;
 }
