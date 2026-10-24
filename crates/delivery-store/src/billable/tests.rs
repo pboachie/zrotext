@@ -668,7 +668,7 @@ async fn success_outbox_failure_rolls_back_callback_and_default_off_cannot_call_
         reached,
         "callback reached the exact outbox INSERT table-lock request"
     );
-    let Err(StoreError::Database(error)) = result else {
+    let Err(crate::StoreError::Database(error)) = result else {
         panic!("expected database query cancellation at outbox write")
     };
     assert_eq!(
