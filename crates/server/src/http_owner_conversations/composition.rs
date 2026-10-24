@@ -227,6 +227,9 @@ mod tests {
             "original-manifest-history03",
             "browser-message-signer-store03",
             "owner-conversation-interval03",
+            "sealed-envelope03",
+            "reviewed-intent03",
+            "owner-reviewed-send03",
         ] {
             package
                 .write(&format!("sdk/{name}.js"), b"export const fixture = true;")
