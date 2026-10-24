@@ -51,8 +51,18 @@ internal object LegacyTypedJournalFixture {
         db.query("SELECT COUNT(*) FROM sqlite_master WHERE type='view' AND instr(lower(sql), 'typed_submit03') > 0").use {
             assertTrue(it.moveToFirst()); assertEquals("Historical reconstruction cannot rewrite view references", 0L, it.getLong(0))
         }
-        fun rows() = db.query("SELECT ${columns.joinToString(",")} FROM typed_submit03 ORDER BY attemptId").use { c ->
-            buildList { while (c.moveToNext()) add(columns.indices.map { c.getType(it) to if (c.isNull(it)) null else c.getString(it) }) }
+        fun rows(): List<List<Pair<Int, Any?>>> = db.query("SELECT ${columns.joinToString(",")} FROM typed_submit03 ORDER BY attemptId").use { c ->
+            buildList { while (c.moveToNext()) add(columns.indices.map { index ->
+                val type = c.getType(index)
+                type to when (type) {
+                    Cursor.FIELD_TYPE_NULL -> null
+                    Cursor.FIELD_TYPE_INTEGER -> c.getLong(index)
+                    Cursor.FIELD_TYPE_FLOAT -> c.getDouble(index).toRawBits()
+                    Cursor.FIELD_TYPE_STRING -> c.getString(index)
+                    Cursor.FIELD_TYPE_BLOB -> c.getBlob(index).toList()
+                    else -> error("Unknown synthetic SQLite cell type")
+                }
+            }) }
         }
         fun indexes() = db.query("PRAGMA index_list(typed_submit03)").use { c ->
             buildList {
